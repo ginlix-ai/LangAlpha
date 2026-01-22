@@ -19,7 +19,7 @@ jobs:
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
       issues: write
       id-token: write
@@ -46,6 +46,11 @@ jobs:
           # Optional: Add allowed tools for Claude
           allowed_tools: |
             Bash(git mv:*)
+            Bash(cp:*)
+            Bash(mv:*)
+            Bash(mkdir:*)
+            Bash(rm:*)
+            Bash(rsync:*)
 
           # Optional: Add claude_args to customize behavior and configuration
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
