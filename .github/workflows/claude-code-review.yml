@@ -2,19 +2,27 @@ name: Claude Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize]
-    paths:
-      - "libs/**/*.py"
-      - "mcp_servers/**/*.py"
-      - "example/**/*.py"
+    types: [opened, synchronize, ready_for_review, reopened]
+    # Optional: Only run on specific file changes
+    # paths:
+    #   - "src/**/*.ts"
+    #   - "src/**/*.tsx"
+    #   - "src/**/*.js"
+    #   - "src/**/*.jsx"
 
 jobs:
   claude-review:
+    # Optional: Filter by PR author
+    # if: |
+    #   github.event.pull_request.user.login == 'external-contributor' ||
+    #   github.event.pull_request.user.login == 'new-developer' ||
+    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
+
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
-      issues: write
+      pull-requests: read
+      issues: read
       id-token: write
 
     steps:
@@ -28,54 +36,9 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: |
-            REPO: ${{ github.repository }}
-            PR NUMBER: ${{ github.event.pull_request.number }}
-
-            PROJECT CONTEXT:
-            This is Open PTC Agent - a Python monorepo with two packages:
-            - libs/ptc-agent/ - Core agent library (PTCAgent, sandbox, MCP registry)
-            - libs/ptc-cli/ - Interactive CLI application
-            Uses: Python 3.12+, uv package manager, pytest, ruff, mypy
-
-            PR DESCRIPTION CHECK (Do this FIRST):
-            1. Use `gh pr view ${{ github.event.pull_request.number }}` to check current PR description
-            2. If description is empty or very short (<50 chars):
-               - Analyze changes using `gh pr diff ${{ github.event.pull_request.number }}`
-               - Generate description with: Summary, Key changes, Files affected
-               - Update using: `gh pr edit ${{ github.event.pull_request.number }} --body "..."`
-            3. If already meaningful, skip this step
-
-            CRITICAL BLOCKERS (Must Fix):
-
-            1. Python Best Practices
-               - Missing error handling in critical paths (sandbox execution, MCP communication)
-               - Async/await issues (blocking calls in async code, missing await)
-               - Type hint violations (this project uses strict mypy)
-
-            2. Architecture Violations
-               - Breaks patterns in CLAUDE.md
-               - Wrong package placement (ptc-agent vs ptc-cli separation)
-               - Circular imports between modules
-
-            3. Code Duplication
-               - Duplicated logic that should use existing utilities
-               - Should reuse middleware/tool patterns
-
-            4. Security Issues
-               - Unsafe code execution paths
-               - Missing input validation in sandbox operations
-
-            REVIEW FORMAT:
-            - Keep review BRIEF - only critical issues
-            - Skip minor style (ruff handles that)
-            - Provide specific file:line references
-            - Suggest concrete fixes
-
-            If no critical issues: Simply comment "No critical issues found. Looks good!"
-
-            Reference CLAUDE.md for project patterns.
-            Use `gh pr comment` to post your review.
-
-          claude_args: '--allowedTools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr edit:*)"'
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
+          # or https://code.claude.com/docs/en/cli-reference for available options
 
