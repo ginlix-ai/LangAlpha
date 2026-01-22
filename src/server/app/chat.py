@@ -278,6 +278,10 @@ async def _astream_workflow(
         # Phase 3: Token and Tool Tracking
         # =====================================================================
 
+        # Initialize variables that may be used in error handling
+        ptc_graph = None
+        token_callback = None
+
         # Initialize token tracking if enabled
         token_callback = TokenTrackingManager.initialize_tracking(
             thread_id=thread_id,
@@ -775,9 +779,36 @@ async def _astream_workflow(
             "connection refused" in str(e).lower()
         )
 
+        # API errors (transient server errors, rate limits, etc.)
+        is_api_error = False
+        error_str = str(e).lower()
+        error_type_name = type(e).__name__.lower()
+        
+        # Check for API error types (InternalServerError, APIError, etc.)
+        api_error_indicators = [
+            "internal server error",
+            "api_error",
+            "system error",
+            "error code: 500",
+            "error code: 502",
+            "error code: 503",
+            "error code: 429",  # Rate limit
+            "rate limit",
+            "service unavailable",
+            "bad gateway",
+            "gateway timeout",
+        ]
+        
+        is_api_error = (
+            any(indicator in error_str for indicator in api_error_indicators) or
+            "internal" in error_type_name or
+            "api" in error_type_name or
+            "server" in error_type_name
+        )
+
         # Determine if error is recoverable
         is_recoverable = (
-            (is_postgres_connection or is_timeout or is_network_issue) and
+            (is_postgres_connection or is_timeout or is_network_issue or is_api_error) and
             not is_non_recoverable
         )
 
@@ -790,6 +821,7 @@ async def _astream_workflow(
             error_type = (
                 "connection_error" if is_postgres_connection or is_network_issue
                 else "timeout_error" if is_timeout
+                else "api_error" if is_api_error
                 else "transient_error"
             )
 

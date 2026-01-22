@@ -1,0 +1,27 @@
+/* ============================================
+   App-Level Layout Styles
+   ============================================ */
+
+.app-layout {
+  width: 100%;
+  min-height: 100vh;
+  display: flex;
+  position: relative;
+}
+
+.app-main {
+  width: 100%;
+  min-height: 100vh;
+  padding-left: 72px;
+  background-color: hsl(var(--bg-main));
+  overflow: auto;
+  box-sizing: border-box;
+}
+
+.main {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}

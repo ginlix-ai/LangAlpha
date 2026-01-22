@@ -1,0 +1,191 @@
+/* ============================================
+   Global Styles - Variables, Reset, Base, Utilities
+   ============================================ */
+
+@layer base {
+  :root {
+    /* ========== Base Colors ========== */
+    --background: 222.2 47% 5%;
+    --foreground: 0 0% 98%;
+
+    /* ========== Card Colors ========== */
+    --card: 222 28% 12%;
+    --card-foreground: 0 0% 98%;
+    --popover: 222.2 47% 5%;
+    --popover-foreground: 0 0% 98%;
+
+    /* ========== Primary Colors ========== */
+    --primary: 260 82% 70%;
+    --primary-foreground: 0 0% 98%;
+
+    /* ========== Secondary Colors ========== */
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+
+    /* ========== Accent Colors ========== */
+    --accent: 260 82% 70%;
+    --accent-foreground: 0 0% 98%;
+
+    /* ========== Muted Colors ========== */
+    --muted: 215 20.2% 65.1%;
+    --muted-foreground: 0 0% 100% / 0.60;
+
+    /* ========== Destructive Colors ========== */
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+
+    /* ========== Border & Input ========== */
+    --border: 0 0% 100% / 0.10;
+    --input: 222 28% 12%;
+    --ring: 260 82% 70%;
+    --radius: 0.5rem;
+
+    /* ========== Finance Dashboard Backgrounds ========== */
+    --bg-main: 222 47% 5%; /* #1B1D25 */
+    --bg-card: 0 0% 4%; /* #0A0A0A */
+    --bg-panel: 0 0% 4% / 0.65; /* rgba(10, 10, 10, 0.65) */
+    --bg-input: 25 20% 9%; /* #1C1917 */
+
+    /* ========== Finance Dashboard Borders ========== */
+    --border-main: 0 0% 12%; /* #1F1F1F */
+    --border-card: 0 0% 13%; /* #202020 */
+    --border-input: 25 15% 25%; /* #44403C */
+    --border-light: 0 0% 100% / 0.10; /* rgba(255, 255, 255, 0.1) */
+
+    /* ========== Finance Dashboard Text ========== */
+    --text-primary: 0 0% 100%; /* #FFFFFF */
+    --text-secondary: 0 0% 100% / 0.60; /* #999999 */
+    --text-muted: 0 0% 60%; /* #999999 */
+    --text-muted-light: 0 0% 73%; /* #BBBBBB */
+    --text-placeholder: 0 0% 73%; /* #BBBBBB */
+
+    /* ========== Finance Dashboard Accent ========== */
+    --accent-fin: 260 82% 70%; /* #6155F5 */
+    --accent-soft: 260 82% 70% / 0.15;
+
+    /* ========== Finance Colors (Up/Down) ========== */
+    --color-up: 160 80% 50%; /* #0FEDBE / #34C759 */
+    --color-up-soft: 160 80% 50% / 0.16;
+    --color-down: 359 80% 60%; /* #F73C6B / #FF383C */
+    --color-down-soft: 359 80% 60% / 0.16;
+
+    /* ========== Shadows ========== */
+    --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.35);
+
+    /* ========== Sidebar Colors ========== */
+    --sidebar-bg: 222 47% 5%;
+    --sidebar-border: 0 0% 100% / 0.10;
+    --sidebar-hover: 0 0% 100% / 0.08;
+    --sidebar-active: 260 82% 70% / 0.15;
+    --sidebar-icon: 0 0% 100% / 0.60;
+    --sidebar-icon-active: 260 82% 70%;
+  }
+
+  /* ========== Reset & Base Styles ========== */
+  * {
+    box-sizing: border-box;
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Golos Text', 'Inter', system-ui, sans-serif;
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100vh;
+    min-width: 320px;
+    overflow: hidden;
+  }
+
+  #root {
+    width: 100%;
+    height: 100vh;
+    margin: 0;
+    padding: 0;
+  }
+}
+
+@layer utilities {
+  /* ========== Global Utility Classes ========== */
+  /* Only global utilities that are used across multiple components */
+  
+  .bg-app {
+    background: radial-gradient(1200px 600px at 20% 0%, rgba(255, 255, 255, 0.06), transparent),
+                radial-gradient(900px 500px at 85% 15%, rgba(124, 58, 237, 0.12), transparent),
+                hsl(var(--bg-main));
+  }
+
+  .panel {
+    background: hsl(var(--bg-panel));
+    border: 1px solid hsl(var(--border-light));
+    backdrop-filter: blur(10px);
+    border-radius: 8px;
+  }
+
+  .fin-card {
+    background: hsl(var(--bg-card) / 0.65);
+    border: 1px solid hsl(var(--border-light));
+    border-radius: 8px;
+    box-shadow: var(--shadow-card);
+  }
+
+  .fin-card-inner {
+    background: hsl(var(--bg-card));
+    border: 1px solid hsl(var(--border-card));
+    border-radius: 8px;
+  }
+
+  .text-muted-fin {
+    color: hsl(var(--text-muted));
+    opacity: 0.65;
+  }
+
+  .text-muted2 {
+    color: hsl(var(--text-muted));
+  }
+
+  .text-up {
+    color: hsl(var(--color-up));
+  }
+
+  .text-down {
+    color: hsl(var(--color-down));
+  }
+
+  .bg-up-soft {
+    background: hsl(var(--color-up-soft));
+  }
+
+  .bg-down-soft {
+    background: hsl(var(--color-down-soft));
+  }
+
+  .ring-accent {
+    box-shadow: 0 0 0 1px hsl(var(--accent-fin) / 0.30);
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+}
+
+/* ========== Global Scrollbar Styles ========== */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border-light));
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--border-light) / 0.8);
+}

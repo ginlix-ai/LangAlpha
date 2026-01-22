@@ -1,0 +1,10 @@
+/* ============================================
+   Entry Point - Tailwind Directives + Global Styles
+   ============================================ */
+
+/* Import global styles - must be before @tailwind */
+@import './styles/globals.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

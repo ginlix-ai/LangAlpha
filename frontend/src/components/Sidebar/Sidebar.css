@@ -1,0 +1,73 @@
+/* ============================================
+   Sidebar Component Styles
+   All classes use sidebar- prefix to avoid conflicts
+   ============================================ */
+
+.sidebar {
+  width: 72px;
+  height: 100vh;
+  position: fixed;
+  left: 0;
+  top: 0;
+  background: hsl(var(--sidebar-bg));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  border-right: 1px solid hsl(var(--sidebar-border));
+  z-index: 1000;
+}
+
+.sidebar-logo {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 16px 0;
+  margin-bottom: 8px;
+}
+
+.sidebar-logo-gradient {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, hsl(260 82% 70%), hsl(280 82% 70%));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0 14px;
+}
+
+.sidebar-nav-item {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  border: none;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  color: hsl(var(--sidebar-icon));
+}
+
+.sidebar-nav-item:hover {
+  background: hsl(var(--sidebar-hover));
+}
+
+.sidebar-nav-item.active {
+  background: hsl(var(--sidebar-active));
+  color: hsl(var(--sidebar-icon-active));
+}
+
+.sidebar-nav-icon {
+  width: 20px;
+  height: 20px;
+  stroke-width: 2;
+}

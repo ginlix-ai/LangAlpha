@@ -1,0 +1,32 @@
+/* ============================================
+   Dashboard Page Styles
+   All classes use dashboard- prefix to avoid conflicts
+   ============================================ */
+
+.dashboard-container {
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+/* Dashboard-specific scrollbar styling */
+.dashboard-container ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.dashboard-container ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.dashboard-container ::-webkit-scrollbar-thumb {
+  background: hsl(var(--border-light));
+  border-radius: 4px;
+}
+
+.dashboard-container ::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--border-light) / 0.8);
+}
