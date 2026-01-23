@@ -9,7 +9,7 @@ import logging
 from datetime import date, datetime
 from typing import Optional, Tuple
 
-from src.data_sources.fmp import FMPClient
+from src.data_client.fmp import FMPClient
 
 logger = logging.getLogger(__name__)
 

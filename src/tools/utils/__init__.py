@@ -2,7 +2,7 @@
 Utility modules for financial data tools and validation.
 """
 
-from src.data_sources.fmp import FMPClient
+from src.data_client.fmp import FMPClient
 from .validation_utils import validate_image_url
 
 __all__ = [

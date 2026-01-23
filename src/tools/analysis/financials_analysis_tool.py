@@ -14,7 +14,7 @@ import logging
 import asyncio
 
 from src.tools.analysis.base import FundamentalAnalysisBase
-from src.data_sources.fmp import FMPClient
+from src.data_client.fmp import FMPClient
 
 logger = logging.getLogger(__name__)
 

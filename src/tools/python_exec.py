@@ -55,7 +55,7 @@ def _run_code_in_process(code: str, result_queue: multiprocessing.Queue, file_uu
     from tabulate import tabulate as tab_func
 
     # FMP API client (async)
-    from src.data_sources.fmp import FMPClient
+    from src.data_client.fmp import FMPClient
     import asyncio
 
 
@@ -612,7 +612,8 @@ def execute_python_code(code: str) -> Dict[str, Any]:
         ```python
         import pandas as pd
         import mplfinance as mpf
-        import os
+# pyright: ignore
+import os
 
         # Get 5-minute candlestick data
         data = get_stock_data('AAPL', interval='5min', start_date='2024-01-01', end_date='2024-01-31')

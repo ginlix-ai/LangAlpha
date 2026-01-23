@@ -65,6 +65,20 @@ mcp:
       args: ["run", "python", "mcp_servers/yfinance_mcp_server.py"] # Both absolute and relative path accepted
       env: {}
 
+    # Unified financial data MCP gateway.
+    # OSS/dev: stdio server inside sandbox, uses user's own FMP_API_KEY.
+    # Production: configure this server to use transport: http/sse and a hosted URL.
+    - name: "financial_data"
+      enabled: true
+      description: "Unified market + fundamentals gateway"
+      instruction: "Advanced programmatic data access. Use for raw OHLCV (get_stock_data/get_asset_data) and future fundamentals endpoints."
+      tool_exposure_mode: "summary"
+      transport: "stdio"
+      command: "uv"
+      args: ["run", "python", "mcp_servers/financial_data_mcp_server.py"]
+      env:
+        FMP_API_KEY: "${FMP_API_KEY}"
+
   # Tool discovery settings
   tool_discovery_enabled: true
   lazy_load: true  # Load tools on-demand
@@ -81,6 +95,10 @@ filesystem:
   allowed_directories:
     - "/home/daytona"
     - "/tmp"
+
+  denied_directories:
+    - "/home/daytona/_internal"  # Internal SDKs/packages uploaded to sandbox
+
   enable_path_validation: true  # Validate paths against allowed_directories
 
 storage:

@@ -7,9 +7,8 @@ Core implementations are in dedicated files within src/tools/us/.
 This file provides the LangChain @tool decorated wrappers that agents use.
 """
 
-from typing import Dict, Any
 from langchain_core.tools import tool
-from src.data_sources.fmp import FMPClient
+from src.data_client.fmp import FMPClient
 
 
 @tool
@@ -18,7 +17,7 @@ async def technical_analyze(
     start_date: str,
     end_date: str,
     benchmark: str = "SPY"
-) -> Dict[str, Any]:
+) -> str:
     """
     Technical analysis for stocks using FMP API.
 
@@ -42,7 +41,7 @@ async def financial_analyze(
     period_type: str = "annual",
     lookback_periods: int = 5,
     detail_level: str = "compact"
-) -> Dict[str, Any]:
+) -> str:
     """
     Comprehensive financial statement analysis using FMP API.
 
@@ -71,7 +70,7 @@ async def dcf_analyze(
     symbol: str,
     use_analyst_estimates: bool = True,
     detail_level: str = "compact"
-) -> Dict[str, Any]:
+) -> str:
     """
     Custom DCF valuation with 3 scenarios (Low/Neutral/High).
 

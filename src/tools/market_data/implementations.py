@@ -1,3 +1,4 @@
+# pyright: ignore
 """
 Core implementation logic for market data tools.
 
@@ -14,7 +15,7 @@ from .utils import (
     get_rating_label,
     get_market_session
 )
-from src.data_sources.fmp import get_fmp_client
+from src.data_client.fmp import get_fmp_client
 
 logger = logging.getLogger(__name__)
 

@@ -15,7 +15,7 @@ from typing import Dict, Tuple, Optional, Any, List
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import mplfinance as mpf
-from src.data_sources.fmp import FMPClient
+from src.data_client.fmp import FMPClient
 
 # ====================== Indicator Helper Functions ======================
 
