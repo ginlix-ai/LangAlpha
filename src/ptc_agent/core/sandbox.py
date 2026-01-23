@@ -77,7 +77,7 @@ class PTCSandbox:
     # Default Python dependencies installed in sandbox
     DEFAULT_DEPENDENCIES = [
         # Core
-        "mcp", "fastmcp", "pandas", "requests", "aiohttp", "httpx",
+        "mcp", "fastmcp", "pandas", "requests", "aiohttp", "httpx[http2]",
         # Data science
         "numpy", "scipy", "scikit-learn", "statsmodels",
         # Financial data
@@ -415,6 +415,9 @@ class PTCSandbox:
         # Upload custom Python MCP server files to sandbox
         await self._upload_mcp_server_files()
 
+        # Upload internal Python packages used by sandbox code
+        await self._upload_internal_packages()
+
         # Always generate and install tool modules (dynamic content)
         await self._install_tool_modules()
 
@@ -579,6 +582,7 @@ class PTCSandbox:
             f"{work_dir}/results",
             f"{work_dir}/data",
             f"{work_dir}/code",
+            f"{work_dir}/_internal/src",
         ]
 
         # Create all directories in parallel for faster setup
@@ -595,6 +599,72 @@ class PTCSandbox:
                 logger.warning(f"Error creating directory {directory}: {e}")
 
         await asyncio.gather(*[create_directory(d) for d in directories])
+
+    async def _upload_internal_packages(self) -> None:
+        """Upload internal Python packages for sandbox execution.
+
+        Currently uploads the `src.data_client` package so code executed inside the
+        sandbox can import `src.data_client` without depending on the full repo.
+        """
+        work_dir = getattr(self, "_work_dir", "/home/daytona")
+        internal_root = Path(f"{work_dir}/_internal/src")
+
+        # Resolve local paths relative to config file directory if available.
+        config_dir = getattr(self.config, "config_file_dir", None)
+        repo_root = config_dir or Path.cwd()
+
+        local_src_dir = (repo_root / "src").resolve()
+        local_src_init = local_src_dir / "__init__.py"
+        local_data_client_dir = (local_src_dir / "data_client").resolve()
+
+        if not local_src_init.exists() or not local_data_client_dir.exists():
+            logger.warning(
+                "Skipping internal package upload - local src/data_client not found",
+                src_init=str(local_src_init),
+                data_client_dir=str(local_data_client_dir),
+            )
+            return
+
+        assert self.sandbox is not None
+        sandbox = self.sandbox
+
+        # Ensure internal directory exists
+        await self._daytona_call(
+            sandbox.process.exec,
+            f"mkdir -p {internal_root}",
+            retry_policy=_DaytonaRetryPolicy.SAFE,
+        )
+
+        files: list[tuple[Path, Path]] = []
+        files.append((local_src_init, Path("__init__.py")))
+        for file_path in local_data_client_dir.rglob("*.py"):
+            if "__pycache__" in file_path.parts:
+                continue
+            rel = file_path.relative_to(local_src_dir)
+            files.append((file_path, rel))
+
+        async def upload_one(local_path: Path, rel_path: Path) -> None:
+            sandbox_path = str(internal_root / rel_path)
+            await self._daytona_call(
+                sandbox.process.exec,
+                f"mkdir -p {shlex.quote(str(Path(sandbox_path).parent))}",
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+            )
+            async with aiofiles.open(local_path) as f:
+                content = await f.read()
+            await self._daytona_call(
+                sandbox.fs.upload_file,
+                content.encode("utf-8"),
+                sandbox_path,
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+            )
+
+        await asyncio.gather(*[upload_one(lp, rp) for lp, rp in files])
+        logger.info(
+            "Uploaded internal packages to sandbox",
+            uploaded_files=len(files),
+            sandbox_root=str(internal_root),
+        )
 
     async def _upload_mcp_server_files(self) -> None:
         """Upload custom Python MCP server files to sandbox.
@@ -1031,6 +1101,7 @@ class PTCSandbox:
             "pandas",
             "requests",
             "aiohttp",
+            "httpx[http2]",
         ]
 
         install_cmd = f"uv pip install -q {' '.join(dependencies)}"
@@ -1311,7 +1382,8 @@ class PTCSandbox:
                 retry_policy=_DaytonaRetryPolicy.SAFE,
             )
 
-            exec_env = {"PYTHONPATH": work_dir}
+            internal_dir = f"{work_dir}/_internal"
+            exec_env = {"PYTHONPATH": f"{work_dir}:{internal_dir}"}
 
             # Add environment variables from MCP server configs (only enabled servers)
             import os
@@ -1766,6 +1838,11 @@ class PTCSandbox:
         # Normalize the path first (handles virtual paths like /results/...)
         normalized_path = self.normalize_path(filepath)
 
+        # Denylist takes priority over allowlist
+        for denied_dir in self.config.filesystem.denied_directories:
+            if normalized_path == denied_dir or normalized_path.startswith(denied_dir + "/"):
+                return False
+
         # Check against allowed directories
         for allowed_dir in self.config.filesystem.allowed_directories:
             # Exact match or path within allowed directory
@@ -1899,12 +1976,31 @@ class PTCSandbox:
             logger.debug("Async edit_file failed", filepath=filepath, error=str(e))
             return {"success": False, "error": f"Edit operation failed: {e!s}"}
 
-    async def aglob_files(self, pattern: str, path: str = ".") -> list[str]:
+    def _validate_path_allow_denied(self, path: str) -> bool:
+        """Validate path against allowlist only (ignores denied_directories).
+
+        Intended for user-initiated inspection flows where we want to keep
+        internal directories hidden by default, but still allow explicit access.
+        """
+
+        normalized_path = self._normalize_search_path(path)
+        for allowed_dir in self.config.filesystem.allowed_directories:
+            if normalized_path == allowed_dir or normalized_path.startswith(allowed_dir + "/"):
+                return True
+        return False
+
+    async def aglob_files(self, pattern: str, path: str = ".", *, allow_denied: bool = False) -> list[str]:
         """Async glob; safe to retry automatically."""
         try:
-            if self.config.filesystem.enable_path_validation and not self.validate_path(path):
-                logger.error(f"Access denied: {path} is not in allowed directories")
-                return []
+            if self.config.filesystem.enable_path_validation:
+                is_allowed = (
+                    self._validate_path_allow_denied(path)
+                    if allow_denied
+                    else self.validate_path(path)
+                )
+                if not is_allowed:
+                    logger.error(f"Access denied: {path} is not in allowed directories")
+                    return []
 
             search_path = self._normalize_search_path(path)
 

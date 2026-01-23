@@ -352,10 +352,20 @@ logging:
 # Filesystem
 # ----------
 filesystem:
+  # Filesystem access configuration for first-class filesystem tools
+  # These tools provide direct file and directory operations without code generation
+
+  # Working directory for the sandbox - used as the root for virtual path normalization
+  # Agent sees virtual paths like /results/file.txt which map to {working_directory}/results/file.txt
   working_directory: "/home/daytona"
+
   allowed_directories:
     - "/home/daytona"
     - "/tmp"
+
+  # Denylist takes priority over allowlist (useful for hiding internal SDKs).
+  denied_directories: []
+
   enable_path_validation: true
 
 # Agent Settings (optional)

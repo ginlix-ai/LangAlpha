@@ -98,10 +98,13 @@ class FilesystemConfig(BaseModel):
     """Filesystem access configuration for first-class filesystem tools.
 
     Defaults to the standard Daytona sandbox directories.
+
+    Note: this validation is enforced for first-class filesystem tools only.
     """
 
     working_directory: str = "/home/daytona"
     allowed_directories: list[str] = Field(default_factory=lambda: ["/home/daytona", "/tmp"])
+    denied_directories: list[str] = Field(default_factory=list)
     enable_path_validation: bool = True
 
 

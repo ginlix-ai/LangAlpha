@@ -369,45 +369,36 @@ except ImportError:
         Returns:
             Python code for complete MCP client
         """
-        # Build server configuration dict for code generation
-        # Helper to resolve ${VAR} patterns from host environment
-        import os
-        import re
-        def resolve_env_vars(text: str) -> str:
-            return re.sub(
-                r"\$\{([^}]+)\}",
-                lambda m: os.environ.get(m.group(1), m.group(0)),
-                text
-            )
+        # Build server configuration dict for code generation.
+        # IMPORTANT: do NOT resolve `${VAR}` placeholders here.
+        # This code runs on the host and generates a file uploaded into the sandbox.
+        # Resolving here would inline secrets into sandbox-readable files.
 
         servers_dict = "{\n"
         for server in server_configs:
             if server.transport == "sse":
                 # SSE transport - use URL
                 url = server.url or ""
-                # Resolve env vars from host environment
-                url = resolve_env_vars(url)
-                servers_dict += f"""    "{server.name}": {{
-        "transport": "sse",
-        "url": "{url}",
+                servers_dict += f"""    \"{server.name}\": {{
+        \"transport\": \"sse\",
+        \"url\": {url!r},
     }},
 """
             elif server.transport == "http":
                 # HTTP transport - use URL
                 url = server.url or ""
-                # Resolve env vars from host environment
-                url = resolve_env_vars(url)
-                servers_dict += f"""    "{server.name}": {{
-        "transport": "http",
-        "url": "{url}",
+                servers_dict += f"""    \"{server.name}\": {{
+        \"transport\": \"http\",
+        \"url\": {url!r},
     }},
 """
             else:
                 # Stdio transport - use command
                 env_dict = "{}"
                 if hasattr(server, "env") and server.env:
-                    env_items = [f'"{k}": "{resolve_env_vars(str(v))}"' for k, v in server.env.items()]
-                    env_dict = "{" + ", ".join(env_items) + "}"
+                    safe_env = {k: str(v) for k, v in server.env.items()}
+                    env_dict = repr(safe_env)
+
 
                 # Transform Python MCP servers for sandbox execution
                 # uv run python mcp_servers/xxx.py -> uv run python /home/daytona/mcp_servers/xxx.py
@@ -430,7 +421,7 @@ except ImportError:
                         sandbox_args=args
                     )
 
-                args_list = ", ".join([f'"{arg}"' for arg in args])
+                args_list = ", ".join([repr(str(arg)) for arg in args])
                 servers_dict += f"""    "{server.name}": {{
         "transport": "stdio",
         "command": "{command}",
@@ -503,18 +494,22 @@ def _start_mcp_server(server_name: str) -> subprocess.Popen:
     # Start process with stdio pipes
     # Merge server env with current environment
     proc_env = os.environ.copy()
+
+    # Ensure sandbox-internal packages are importable by Python MCP servers.
+    # We upload them under /home/daytona/_internal and add that to PYTHONPATH.
+    internal_root = "/home/daytona/_internal"
+    existing_pythonpath = proc_env.get("PYTHONPATH", "")
+    extra_paths = ["/home/daytona", internal_root]
+    proc_env["PYTHONPATH"] = ":".join([p for p in [existing_pythonpath, *extra_paths] if p])
+
     server_env = config.get("env", {{}})
     if server_env:
         # Resolve placeholders like "${{VAR_NAME}}" in environment variables
         for key, value in server_env.items():
-            if isinstance(value, str) and value.startswith("${{") and value.endswith("}}"):
+            if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
                 # Extract variable name and resolve from os.environ
                 var_name = value[2:-1]
-                if var_name in proc_env:
-                    proc_env[key] = proc_env[var_name]
-                else:
-                    # Variable not found, keep placeholder (will likely cause error)
-                    proc_env[key] = value
+                proc_env[key] = proc_env.get(var_name, value)
             else:
                 proc_env[key] = value
 

@@ -119,6 +119,10 @@ class Session:
         This is used when persist_session is enabled - stops the sandbox
         so it can be restarted quickly on the next session, rather than
         deleting it entirely.
+
+        Important: this should *not* delete the underlying sandbox.
+        It should, however, ensure the next start/restart path actually
+        reinitializes and reconnects.
         """
         logger.info("Stopping session for persistence", conversation_id=self.conversation_id)
 
@@ -127,6 +131,13 @@ class Session:
 
         if self.mcp_registry:
             await self.mcp_registry.disconnect_all()
+
+        # Mark as uninitialized so the next restart will reconnect.
+        # This preserves the fast early-return path in initialize() when the
+        # session is genuinely already initialized.
+        self._initialized = False
+        self.sandbox = None
+        self.mcp_registry = None
 
         logger.info("Session stopped", conversation_id=self.conversation_id)
 
