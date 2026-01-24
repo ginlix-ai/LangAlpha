@@ -1501,19 +1501,19 @@ class PTCSandbox:
             """)
 
             # Write script to code/ directory for persistent logging
-            # Use relative path for upload (Daytona SDK handles it relative to work_dir)
+            # Normalize path to ensure it's in the correct format for Daytona SDK
             script_relative_path = f"code/{bash_id}.sh"
+            script_normalized_path = self.normalize_path(script_relative_path)
             assert self.sandbox is not None
             await self._daytona_call(
                 self.sandbox.fs.upload_file,
                 script_content.encode("utf-8"),
-                script_relative_path,
+                script_normalized_path,
                 retry_policy=_DaytonaRetryPolicy.SAFE,
             )
 
-            # Get work directory for absolute path in bash execution
-            work_dir_path = getattr(self, "_work_dir", "/home/daytona")
-            script_absolute_path = f"{work_dir_path}/{script_relative_path}"
+            # Use normalized path for bash execution (already absolute)
+            script_absolute_path = script_normalized_path
 
             # Execute the script using the sandbox's execution method
             # Since Daytona SDK uses process.execute, we'll use Python to run bash
@@ -1644,23 +1644,27 @@ class PTCSandbox:
         Raises:
             SandboxTransientError: If a transient sandbox transport error persists.
         """
-        if self.config.filesystem.enable_path_validation and not self.validate_path(filepath):
+        # Normalize the path to ensure it's in the correct format for Daytona SDK
+        normalized_path = self.normalize_path(filepath)
+        
+        if self.config.filesystem.enable_path_validation and not self.validate_path(normalized_path):
             logger.error(f"Access denied: {filepath} is not in allowed directories")
             return False
 
         try:
             assert self.sandbox is not None
+            # Use normalized path for upload - Daytona SDK expects absolute paths
             await self._daytona_call(
                 self.sandbox.fs.upload_file,
                 content,
-                filepath,
+                normalized_path,
                 retry_policy=_DaytonaRetryPolicy.SAFE,
             )
             return True
         except SandboxTransientError:
             raise
         except Exception as e:
-            logger.debug("Failed to upload file bytes", filepath=filepath, error=str(e))
+            logger.debug("Failed to upload file bytes", filepath=filepath, normalized_path=normalized_path, error=str(e))
             return False
 
     async def awrite_file_text(self, filepath: str, content: str) -> bool:
