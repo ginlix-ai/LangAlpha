@@ -578,6 +578,7 @@ async def _astream_workflow(
                     logger.warning(f"[PTC_COMPLETE] Failed to get state snapshot: {state_error}")
 
                 # Persist completion to database
+                _streaming_chunks = handler.get_streaming_chunks() if handler else None
                 await _persistence_service.persist_completion(
                     agent_messages=_agent_messages or None,
                     metadata={
@@ -591,6 +592,7 @@ async def _astream_workflow(
                     execution_time=execution_time,
                     per_call_records=_per_call_records,
                     tool_usage=_tool_usage,
+                    streaming_chunks=_streaming_chunks,
                 )
 
                 # Mark completed in Redis tracker
@@ -687,6 +689,7 @@ async def _astream_workflow(
 
                 # Persist cancellation to database
                 try:
+                    _streaming_chunks = handler.get_streaming_chunks() if handler else None
                     await persistence_service.persist_cancelled(
                         execution_time=time.time() - start_time,
                         metadata={
@@ -696,6 +699,7 @@ async def _astream_workflow(
                         state_snapshot=state_snapshot,
                         per_call_records=_per_call_records,
                         tool_usage=_tool_usage,
+                        streaming_chunks=_streaming_chunks,
                     )
                 except Exception as persist_error:
                     logger.error(f"[PTC_CHAT] Failed to persist cancellation: {persist_error}")
@@ -836,6 +840,7 @@ async def _astream_workflow(
                 if persistence_service:
                     try:
                         error_msg = f"Max retries exceeded ({retry_count}/{MAX_RETRIES}): {type(e).__name__}: {str(e)}"
+                        _streaming_chunks = handler.get_streaming_chunks() if handler else None
                         await persistence_service.persist_error(
                             error_message=error_msg,
                             errors=[error_msg],
@@ -847,6 +852,7 @@ async def _astream_workflow(
                             state_snapshot=state_snapshot,
                             per_call_records=_per_call_records,
                             tool_usage=_tool_usage,
+                            streaming_chunks=_streaming_chunks,
                         )
                     except Exception as persist_error:
                         logger.error(f"[PTC_CHAT] Failed to persist error: {persist_error}")
@@ -891,6 +897,7 @@ async def _astream_workflow(
             # Persist error to database
             if persistence_service:
                 try:
+                    _streaming_chunks = handler.get_streaming_chunks() if handler else None
                     await persistence_service.persist_error(
                         error_message=str(e),
                         execution_time=time.time() - start_time,
@@ -901,6 +908,7 @@ async def _astream_workflow(
                         state_snapshot=state_snapshot,
                         per_call_records=_per_call_records,
                         tool_usage=_tool_usage,
+                        streaming_chunks=_streaming_chunks,
                     )
                 except Exception as persist_error:
                     logger.error(f"[PTC_CHAT] Failed to persist error: {persist_error}")
