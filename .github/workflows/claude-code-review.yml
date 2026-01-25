@@ -12,6 +12,13 @@ on:
 
 jobs:
   claude-review:
+    # Allow bot-triggered runs (including claude[bot] and other bots)
+    # By default, pull_request events run for all PRs including bot-created ones
+    # If you need to explicitly allow only bots, uncomment the condition below:
+    # if: |
+    #   github.event.pull_request.user.type == 'Bot' ||
+    #   endsWith(github.event.pull_request.user.login, '[bot]')
+    
     # Optional: Filter by PR author
     # if: |
     #   github.event.pull_request.user.login == 'external-contributor' ||
@@ -39,6 +46,7 @@ jobs:
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          allowed_bots: '*'  # Allow all bots to trigger this workflow
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
 
