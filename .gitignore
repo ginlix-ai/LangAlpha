@@ -39,6 +39,7 @@ ENV/
 *.swp
 *.swo
 *~
+PRD/
 
 # Logs
 logs/

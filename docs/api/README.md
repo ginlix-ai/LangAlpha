@@ -250,6 +250,7 @@ Currently, user identification is handled via:
 | [Workflow](./workflow.md) | Workflow state, checkpoints, cancellation | `/api/v1/workflow` |
 | [Workspaces](./workspaces.md) | Workspace CRUD, thread listing, messages | `/api/v1/workspaces` |
 | [Conversations](./conversations.md) | Conversation history, replay, thread messages | `/api/v1/conversations`, `/api/v1/threads` |
+| [Market Data](./market-data.md) | FMP intraday data proxy with caching | `/api/v1/market-data` |
 | [Cache](./cache.md) | Cache statistics and management | `/api/v1/cache` |
 | [Health](./chat.md#health-check) | Health check | `/health` |
 

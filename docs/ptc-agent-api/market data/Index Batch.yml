@@ -1,0 +1,24 @@
+info:
+  name: Index Batch
+  type: http
+  seq: 4
+
+http:
+  method: POST
+  url: http://localhost:8000/api/v1/market-data/intraday/indexes
+  headers:
+    - name: Content-Type
+      value: application/json
+  body:
+    type: json
+    data: |-
+      {
+        "symbols": ["GSPC", "DJI", "IXIC"]   
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

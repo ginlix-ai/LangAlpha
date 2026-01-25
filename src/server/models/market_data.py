@@ -1,0 +1,164 @@
+"""
+Pydantic models for market data endpoints.
+
+This module provides request and response models for FMP intraday data proxy endpoints.
+"""
+
+from typing import Optional, List, Dict, Any, Literal
+from datetime import datetime
+from pydantic import BaseModel, Field
+
+
+# Supported intervals for intraday data
+STOCK_INTERVALS = ("1min", "5min", "15min", "30min", "1hour", "4hour")
+INDEX_INTERVALS = ("1min", "5min", "1hour")
+
+StockInterval = Literal["1min", "5min", "15min", "30min", "1hour", "4hour"]
+IndexInterval = Literal["1min", "5min", "1hour"]
+
+
+class IntradayDataPoint(BaseModel):
+    """Single OHLCV data point for intraday chart data."""
+    date: str = Field(..., description="Timestamp in ISO format (YYYY-MM-DD HH:MM:SS)")
+    open: float = Field(..., description="Opening price")
+    high: float = Field(..., description="High price")
+    low: float = Field(..., description="Low price")
+    close: float = Field(..., description="Closing price")
+    volume: int = Field(..., description="Trading volume")
+
+
+class CacheMetadata(BaseModel):
+    """Cache metadata for responses."""
+    cached: bool = Field(..., description="Whether data was served from cache")
+    cache_key: Optional[str] = Field(None, description="Cache key used")
+    ttl_remaining: Optional[int] = Field(None, description="Remaining TTL in seconds")
+    refreshed_in_background: bool = Field(False, description="Whether a background refresh was triggered")
+
+
+class IntradayResponse(BaseModel):
+    """Response for single symbol intraday data request."""
+    symbol: str = Field(..., description="Stock/index symbol")
+    interval: str = Field(..., description="Data interval (e.g., 1min, 5min, 1hour)")
+    data: List[IntradayDataPoint] = Field(default_factory=list, description="Intraday OHLCV data points")
+    count: int = Field(0, description="Number of data points returned")
+    cache: CacheMetadata = Field(..., description="Cache metadata")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "symbol": "AAPL",
+                "interval": "1min",
+                "data": [
+                    {
+                        "date": "2024-01-15 09:30:00",
+                        "open": 185.50,
+                        "high": 185.75,
+                        "low": 185.25,
+                        "close": 185.60,
+                        "volume": 1500000
+                    }
+                ],
+                "count": 1,
+                "cache": {
+                    "cached": True,
+                    "cache_key": "fmp:intraday:stock:symbol=AAPL:interval=1min",
+                    "ttl_remaining": 45,
+                    "refreshed_in_background": False
+                }
+            }
+        }
+
+
+class BatchIntradayRequest(BaseModel):
+    """Request for batch intraday data."""
+    symbols: List[str] = Field(
+        ...,
+        description="List of stock/index symbols (max 50)",
+        min_length=1,
+        max_length=50
+    )
+    interval: str = Field(
+        "1min",
+        description="Data interval (1min, 5min, 15min, 30min, 1hour, 4hour for stocks; 1min, 5min, 1hour for indexes)"
+    )
+    from_date: Optional[str] = Field(
+        None,
+        alias="from",
+        description="Start date (YYYY-MM-DD format)"
+    )
+    to_date: Optional[str] = Field(
+        None,
+        alias="to",
+        description="End date (YYYY-MM-DD format)"
+    )
+
+    class Config:
+        populate_by_name = True
+        json_schema_extra = {
+            "example": {
+                "symbols": ["AAPL", "MSFT", "GOOGL"],
+                "interval": "15min",
+                "from": "2024-01-01",
+                "to": "2024-01-15"
+            }
+        }
+
+
+class BatchCacheStats(BaseModel):
+    """Cache statistics for batch requests."""
+    total_requests: int = Field(..., description="Total number of symbols requested")
+    cache_hits: int = Field(0, description="Number of symbols served from cache")
+    cache_misses: int = Field(0, description="Number of symbols fetched from API")
+    background_refreshes: int = Field(0, description="Number of background refreshes triggered")
+
+
+class BatchIntradayResponse(BaseModel):
+    """Response for batch intraday data request."""
+    interval: str = Field(..., description="Data interval used for the request")
+    results: Dict[str, List[IntradayDataPoint]] = Field(
+        default_factory=dict,
+        description="Map of symbol to intraday data points"
+    )
+    errors: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Map of symbol to error message for failed requests"
+    )
+    cache_stats: BatchCacheStats = Field(..., description="Aggregated cache statistics")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "interval": "15min",
+                "results": {
+                    "AAPL": [
+                        {
+                            "date": "2024-01-15 09:30:00",
+                            "open": 185.50,
+                            "high": 185.75,
+                            "low": 185.25,
+                            "close": 185.60,
+                            "volume": 1500000
+                        }
+                    ],
+                    "MSFT": [
+                        {
+                            "date": "2024-01-15 09:30:00",
+                            "open": 375.00,
+                            "high": 375.50,
+                            "low": 374.80,
+                            "close": 375.25,
+                            "volume": 800000
+                        }
+                    ]
+                },
+                "errors": {
+                    "INVALID": "Symbol not found"
+                },
+                "cache_stats": {
+                    "total_requests": 3,
+                    "cache_hits": 2,
+                    "cache_misses": 1,
+                    "background_refreshes": 1
+                }
+            }
+        }

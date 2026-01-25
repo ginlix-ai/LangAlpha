@@ -288,6 +288,7 @@ from src.server.app.utilities import health_router
 from src.server.app.chat import router as chat_router  # Main chat endpoint (v1)
 from src.server.app.workspaces import router as workspaces_router
 from src.server.app.workspace_files import router as workspace_files_router
+from src.server.app.market_data import router as market_data_router
 
 # Include all routers
 app.include_router(chat_router)  # /api/v1/chat/* - Main chat endpoint
@@ -299,4 +300,5 @@ app.include_router(conversations_router)  # /api/v1/conversations/* - User conve
 app.include_router(threads_router)  # /api/v1/threads/* - Thread utilities (replay)
 app.include_router(messages_router)  # /api/v1/messages/* - Message detail endpoints
 app.include_router(cache_router)  # /api/v1/cache/* - Cache management
+app.include_router(market_data_router)  # /api/v1/market-data/* - Market data proxy
 app.include_router(health_router)  # /health - Health check

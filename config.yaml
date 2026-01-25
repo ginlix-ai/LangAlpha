@@ -84,6 +84,7 @@ redis:
     metadata: 900  # Metadata tags/tickers cache TTL (15 minutes)
     metadata_summary: 600  # Metadata summary cache TTL (10 minutes)
     workflow_events: 86400  # Workflow event buffer TTL (24 hours)
+    intraday_1min: 60  # 1 minute cache for intraday data
 
   # Cache Invalidation
   cache_invalidate_on_write: true  # Invalidate cache on writes

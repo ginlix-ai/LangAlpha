@@ -1,0 +1,27 @@
+opencollection: 1.0.0
+
+info:
+  name: PTC Agent API
+config:
+  proxy:
+    inherit: true
+    config:
+      protocol: http
+      hostname: ""
+      port: ""
+      auth:
+        username: ""
+        password: ""
+      bypassProxy: ""
+
+docs:
+  content: |
+    Bruno API collection for testing PTC Agent server endpoints.
+
+    See README.md for usage instructions and conventions.
+  type: text/markdown
+bundled: false
+extensions:
+  ignore:
+    - node_modules
+    - .git

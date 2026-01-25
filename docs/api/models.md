@@ -370,3 +370,136 @@ Complete response details (admin endpoint).
 | has_more | boolean | More messages available |
 | created_at | datetime | Creation timestamp |
 | updated_at | datetime | Last update timestamp |
+
+---
+
+## Market Data Models
+
+### Supported Intervals
+
+| Asset Type | Intervals |
+|------------|-----------|
+| Stocks | 1min, 5min, 15min, 30min, 1hour, 4hour |
+| Indexes | 1min, 5min, 1hour |
+
+### IntradayDataPoint
+
+Single OHLCV data point for intraday chart data.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| date | string | Yes | Timestamp in ISO format (YYYY-MM-DD HH:MM:SS) |
+| open | float | Yes | Opening price |
+| high | float | Yes | High price |
+| low | float | Yes | Low price |
+| close | float | Yes | Closing price |
+| volume | integer | Yes | Trading volume |
+
+**Example:**
+
+```json
+{
+  "date": "2024-01-15 09:30:00",
+  "open": 185.50,
+  "high": 185.75,
+  "low": 185.25,
+  "close": 185.60,
+  "volume": 1500000
+}
+```
+
+### CacheMetadata
+
+Cache metadata included in intraday responses.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| cached | boolean | Yes | Whether data was served from cache |
+| cache_key | string | No | Cache key used |
+| ttl_remaining | integer | No | Remaining TTL in seconds |
+| refreshed_in_background | boolean | No | Whether a background refresh was triggered |
+
+### IntradayResponse
+
+Response for single symbol intraday data request.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| symbol | string | Stock/index symbol |
+| interval | string | Data interval (e.g., 1min, 5min, 1hour) |
+| data | IntradayDataPoint[] | Intraday OHLCV data points |
+| count | integer | Number of data points returned |
+| cache | CacheMetadata | Cache metadata |
+
+### BatchIntradayRequest
+
+Request for batch intraday data.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| symbols | string[] | Yes | - | List of stock/index symbols (1-50) |
+| interval | string | No | 1min | Data interval |
+| from | string | No | null | Start date (YYYY-MM-DD) |
+| to | string | No | null | End date (YYYY-MM-DD) |
+
+**Example:**
+
+```json
+{
+  "symbols": ["AAPL", "MSFT", "GOOGL"],
+  "interval": "15min",
+  "from": "2024-01-01",
+  "to": "2024-01-15"
+}
+```
+
+### BatchCacheStats
+
+Cache statistics for batch requests.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| total_requests | integer | Total number of symbols requested |
+| cache_hits | integer | Number of symbols served from cache |
+| cache_misses | integer | Number of symbols fetched from API |
+| background_refreshes | integer | Number of background refreshes triggered |
+
+### BatchIntradayResponse
+
+Response for batch intraday data request.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| interval | string | Data interval used for the request |
+| results | object | Map of symbol to IntradayDataPoint[] |
+| errors | object | Map of symbol to error message for failed requests |
+| cache_stats | BatchCacheStats | Aggregated cache statistics |
+
+**Example:**
+
+```json
+{
+  "interval": "15min",
+  "results": {
+    "AAPL": [
+      {
+        "date": "2024-01-15 09:30:00",
+        "open": 185.50,
+        "high": 185.75,
+        "low": 185.25,
+        "close": 185.60,
+        "volume": 1500000
+      }
+    ],
+    "MSFT": [...]
+  },
+  "errors": {
+    "INVALID": "Symbol not found"
+  },
+  "cache_stats": {
+    "total_requests": 3,
+    "cache_hits": 2,
+    "cache_misses": 1,
+    "background_refreshes": 1
+  }
+}
