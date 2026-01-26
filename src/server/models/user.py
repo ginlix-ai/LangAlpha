@@ -77,8 +77,8 @@ class AnalysisFocus(str, Enum):
     RISK = "risk"
 
 
-class ResearchStyle(str, Enum):
-    """Research output style preferences."""
+class OutputStyle(str, Enum):
+    """Agent output style preferences."""
 
     SUMMARY = "summary"
     DATA = "data"
@@ -109,7 +109,9 @@ class RiskPreference(BaseModel):
     risk_tolerance: Optional[RiskTolerance] = Field(
         None, description="Risk tolerance level"
     )
-    # Future fields: max_drawdown, volatility_threshold, position_sizing
+
+    class Config:
+        extra = "allow"  # Allow additional fields (notes, etc.)
 
 
 class InvestmentPreference(BaseModel):
@@ -124,16 +126,20 @@ class InvestmentPreference(BaseModel):
     analysis_focus: Optional[AnalysisFocus] = Field(
         None, description="Primary analysis focus area"
     )
-    # Future fields: sectors, market_cap_range, geographic_focus, dividend_preference
+
+    class Config:
+        extra = "allow"  # Allow additional fields (avoid_sectors, focus_sectors, notes, etc.)
 
 
 class AgentPreference(BaseModel):
     """AI agent behavior preferences stored in JSONB."""
 
-    research_style: Optional[ResearchStyle] = Field(
-        None, description="Preferred research output style"
+    output_style: Optional[OutputStyle] = Field(
+        None, description="Preferred output style"
     )
-    # Future fields: language, chart_density, notification_frequency, report_length
+
+    class Config:
+        extra = "allow"  # Allow additional fields (notes, instruction, etc.)
 
 
 class OtherPreference(BaseModel):

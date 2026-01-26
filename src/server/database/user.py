@@ -240,69 +240,134 @@ async def get_user_preferences(user_id: str) -> Optional[Dict[str, Any]]:
             return dict(result) if result else None
 
 
+def _split_updates_and_deletes(data: Optional[Dict[str, Any]]) -> tuple[Dict[str, Any], list[str]]:
+    """Split data into updates (non-None values) and deletes (None values).
+
+    Args:
+        data: Dict that may contain None values to signal deletion
+
+    Returns:
+        Tuple of (updates_dict, delete_keys_list)
+    """
+    if not data:
+        return {}, []
+    updates = {}
+    deletes = []
+    for key, value in data.items():
+        if value is None:
+            deletes.append(key)
+        else:
+            updates[key] = value
+    return updates, deletes
+
+
 async def upsert_user_preferences(
     user_id: str,
     risk_preference: Optional[Dict[str, Any]] = None,
     investment_preference: Optional[Dict[str, Any]] = None,
     agent_preference: Optional[Dict[str, Any]] = None,
     other_preference: Optional[Dict[str, Any]] = None,
+    replace: bool = False,
 ) -> Dict[str, Any]:
     """
-    Create or update user preferences (upsert with merge).
+    Create or update user preferences (upsert with merge or replace).
 
-    For existing preferences, merges the JSONB fields instead of replacing.
+    For existing preferences, merges the JSONB fields by default.
+    To delete a field within a preference, pass it with a None value (e.g., {"notes": None}).
+    Use replace=True to completely replace the preference instead of merging.
 
     Args:
         user_id: User ID
-        risk_preference: Risk settings dict
-        investment_preference: Investment settings dict
-        agent_preference: Agent behavior settings dict
-        other_preference: Miscellaneous settings dict
+        risk_preference: Risk settings dict (None values = delete field)
+        investment_preference: Investment settings dict (None values = delete field)
+        agent_preference: Agent behavior settings dict (None values = delete field)
+        other_preference: Miscellaneous settings dict (None values = delete field)
+        replace: If True, replace entire preference instead of merging
 
     Returns:
         Updated preferences dict
     """
     preference_id = str(uuid4())
 
+    # Split each preference into updates and deletes
+    risk_updates, risk_deletes = _split_updates_and_deletes(risk_preference)
+    inv_updates, inv_deletes = _split_updates_and_deletes(investment_preference)
+    agent_updates, agent_deletes = _split_updates_and_deletes(agent_preference)
+    other_updates, other_deletes = _split_updates_and_deletes(other_preference)
+
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
-            # Use JSONB merge (||) to combine existing values with new values
-            # COALESCE handles the case where the column or input is NULL
-            await cur.execute("""
-                INSERT INTO user_preferences (
+            if replace:
+                # Replace mode: completely replace the JSONB field (only for provided preferences)
+                await cur.execute("""
+                    INSERT INTO user_preferences (
+                        preference_id, user_id,
+                        risk_preference, investment_preference,
+                        agent_preference, other_preference,
+                        created_at, updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    ON CONFLICT (user_id) DO UPDATE
+                    SET
+                        risk_preference = CASE WHEN %s THEN %s::jsonb ELSE user_preferences.risk_preference END,
+                        investment_preference = CASE WHEN %s THEN %s::jsonb ELSE user_preferences.investment_preference END,
+                        agent_preference = CASE WHEN %s THEN %s::jsonb ELSE user_preferences.agent_preference END,
+                        other_preference = CASE WHEN %s THEN %s::jsonb ELSE user_preferences.other_preference END,
+                        updated_at = NOW()
+                    RETURNING
+                        preference_id, user_id,
+                        risk_preference, investment_preference,
+                        agent_preference, other_preference,
+                        created_at, updated_at
+                """, (
                     preference_id, user_id,
-                    risk_preference, investment_preference,
-                    agent_preference, other_preference,
-                    created_at, updated_at
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
-                ON CONFLICT (user_id) DO UPDATE
-                SET
-                    risk_preference = COALESCE(user_preferences.risk_preference, '{}'::jsonb) || COALESCE(%s::jsonb, '{}'::jsonb),
-                    investment_preference = COALESCE(user_preferences.investment_preference, '{}'::jsonb) || COALESCE(%s::jsonb, '{}'::jsonb),
-                    agent_preference = COALESCE(user_preferences.agent_preference, '{}'::jsonb) || COALESCE(%s::jsonb, '{}'::jsonb),
-                    other_preference = COALESCE(user_preferences.other_preference, '{}'::jsonb) || COALESCE(%s::jsonb, '{}'::jsonb),
-                    updated_at = NOW()
-                RETURNING
+                    Json(risk_updates or {}),
+                    Json(inv_updates or {}),
+                    Json(agent_updates or {}),
+                    Json(other_updates or {}),
+                    # For UPDATE: flag if provided, then the value
+                    risk_preference is not None, Json(risk_updates or {}),
+                    investment_preference is not None, Json(inv_updates or {}),
+                    agent_preference is not None, Json(agent_updates or {}),
+                    other_preference is not None, Json(other_updates or {}),
+                ))
+            else:
+                # Merge mode: use JSONB merge (||) to add/update, remove deleted keys (- text[])
+                await cur.execute("""
+                    INSERT INTO user_preferences (
+                        preference_id, user_id,
+                        risk_preference, investment_preference,
+                        agent_preference, other_preference,
+                        created_at, updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    ON CONFLICT (user_id) DO UPDATE
+                    SET
+                        risk_preference = (COALESCE(user_preferences.risk_preference, '{}'::jsonb) - %s::text[]) || COALESCE(%s::jsonb, '{}'::jsonb),
+                        investment_preference = (COALESCE(user_preferences.investment_preference, '{}'::jsonb) - %s::text[]) || COALESCE(%s::jsonb, '{}'::jsonb),
+                        agent_preference = (COALESCE(user_preferences.agent_preference, '{}'::jsonb) - %s::text[]) || COALESCE(%s::jsonb, '{}'::jsonb),
+                        other_preference = (COALESCE(user_preferences.other_preference, '{}'::jsonb) - %s::text[]) || COALESCE(%s::jsonb, '{}'::jsonb),
+                        updated_at = NOW()
+                    RETURNING
+                        preference_id, user_id,
+                        risk_preference, investment_preference,
+                        agent_preference, other_preference,
+                        created_at, updated_at
+                """, (
                     preference_id, user_id,
-                    risk_preference, investment_preference,
-                    agent_preference, other_preference,
-                    created_at, updated_at
-            """, (
-                preference_id, user_id,
-                Json(risk_preference or {}),
-                Json(investment_preference or {}),
-                Json(agent_preference or {}),
-                Json(other_preference or {}),
-                # For the UPDATE clause
-                Json(risk_preference) if risk_preference else None,
-                Json(investment_preference) if investment_preference else None,
-                Json(agent_preference) if agent_preference else None,
-                Json(other_preference) if other_preference else None,
-            ))
+                    Json(risk_updates or {}),
+                    Json(inv_updates or {}),
+                    Json(agent_updates or {}),
+                    Json(other_updates or {}),
+                    # For the UPDATE clause: deletes then updates for each column
+                    risk_deletes, Json(risk_updates) if risk_updates else None,
+                    inv_deletes, Json(inv_updates) if inv_updates else None,
+                    agent_deletes, Json(agent_updates) if agent_updates else None,
+                    other_deletes, Json(other_updates) if other_updates else None,
+                ))
 
             result = await cur.fetchone()
-            logger.info(f"[user_db] upsert_user_preferences user_id={user_id}")
+            logger.info(f"[user_db] upsert_user_preferences user_id={user_id} replace={replace}")
             return dict(result)
 
 

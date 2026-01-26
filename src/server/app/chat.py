@@ -335,6 +335,7 @@ async def _astream_workflow(
             operation_callback=operation_callback,
             checkpointer=setup.checkpointer,
             background_registry=background_registry,
+            user_id=user_id,
         )
 
         if session.sandbox:
@@ -479,6 +480,8 @@ async def _astream_workflow(
         config = {
             "configurable": {
                 "thread_id": thread_id,
+                "user_id": user_id,           # For user-scoped tools
+                "workspace_id": workspace_id,  # For workspace-scoped tools
             },
             "recursion_limit": 1000,
             "tags": langsmith_tags,

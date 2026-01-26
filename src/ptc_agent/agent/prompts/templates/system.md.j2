@@ -1,4 +1,10 @@
 For context, today's date is {{ date }}.
+{% if user_profile %}
+
+<user_profile>
+{% include 'components/user_profile.md.j2' %}
+</user_profile>
+{% endif %}
 
 <task_workflow>
 # Task Workflow

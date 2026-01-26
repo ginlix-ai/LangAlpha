@@ -67,6 +67,11 @@ from ptc_agent.agent.middleware.summarization import (
     count_tokens_tiktoken,
 )
 
+# Dynamic skill loader middleware
+from ptc_agent.agent.middleware.dynamic_skill_loader import (
+    DynamicSkillLoaderMiddleware,
+)
+
 __all__ = [
     # Background subagent
     "BackgroundSubagentMiddleware",
@@ -98,4 +103,6 @@ __all__ = [
     "SummarizationMiddleware",
     "DEFAULT_SUMMARY_PROMPT",
     "count_tokens_tiktoken",
+    # Dynamic skill loader
+    "DynamicSkillLoaderMiddleware",
 ]

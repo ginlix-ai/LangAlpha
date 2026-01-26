@@ -1,0 +1,14 @@
+# User Profile
+
+- **Name**: {{ user_profile.name | default("User") }}
+- **Timezone**: {{ user_profile.timezone | default("UTC") }}
+- **Locale**: {{ user_profile.locale | default("en-US") }}
+{% if user_profile.agent_preference %}
+
+## Agent Preferences
+
+You MUST follow these user preferences when responding:
+{% for key, value in user_profile.agent_preference.items() %}
+- **{{ key }}**: {{ value }}
+{% endfor %}
+{% endif %}

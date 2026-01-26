@@ -22,6 +22,33 @@ from ptc_agent.core.session import Session
 logger = logging.getLogger(__name__)
 
 
+async def get_user_profile_for_prompt(user_id: str) -> dict[str, Any] | None:
+    """Fetch user profile data for system prompt injection.
+
+    Args:
+        user_id: The user's unique identifier
+
+    Returns:
+        Dict with name, timezone, locale, agent_preference if found, None otherwise
+    """
+    try:
+        from src.server.database import user as user_db
+
+        result = await user_db.get_user_with_preferences(user_id)
+        if result:
+            user = result.get("user", {})
+            preferences = result.get("preferences", {}) or {}
+            return {
+                "name": user.get("name"),
+                "timezone": user.get("timezone"),
+                "locale": user.get("locale"),
+                "agent_preference": preferences.get("agent_preference"),
+            }
+    except Exception as e:
+        logger.warning(f"Failed to fetch user profile for {user_id}: {e}")
+    return None
+
+
 @runtime_checkable
 class SessionProvider(Protocol):
     """Protocol for session management.
@@ -142,6 +169,7 @@ async def build_ptc_graph_with_session(
     operation_callback: Any | None = None,
     checkpointer: Any | None = None,
     background_registry: Any | None = None,
+    user_id: str | None = None,
 ) -> Any:
     """
     Build a compiled LangGraph using a provided session.
@@ -156,6 +184,7 @@ async def build_ptc_graph_with_session(
         operation_callback: Optional callback for file operation logging
         checkpointer: Optional LangGraph checkpointer for state persistence
         background_registry: Optional shared registry for background subagent tasks
+        user_id: Optional user ID for fetching user profile to inject into system prompt
 
     Returns:
         Compiled StateGraph compatible with LangGraph streaming
@@ -178,6 +207,13 @@ async def build_ptc_graph_with_session(
             f"Session for workspace {workspace_id} is not properly initialized"
         )
 
+    # Fetch user profile for prompt injection
+    user_profile = None
+    if user_id:
+        user_profile = await get_user_profile_for_prompt(user_id)
+        if user_profile:
+            logger.debug(f"Loaded user profile for {user_id}: {user_profile}")
+
     # Create PTCAgent instance (blocking I/O wrapped in thread)
     ptc_agent = await asyncio.to_thread(PTCAgent, config)
 
@@ -191,6 +227,7 @@ async def build_ptc_graph_with_session(
         operation_callback=operation_callback,
         checkpointer=checkpointer,
         background_registry=background_registry,
+        user_profile=user_profile,
     )
 
     logger.info(

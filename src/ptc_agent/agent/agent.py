@@ -30,7 +30,10 @@ from ptc_agent.agent.middleware import (
     FileOperationMiddleware,
     # Todo operations SSE middleware
     TodoWriteMiddleware,
+    # Dynamic skill loader middleware
+    DynamicSkillLoaderMiddleware,
 )
+from ptc_agent.agent.skills import SKILL_REGISTRY
 from ptc_agent.agent.middleware.background.registry import BackgroundTaskRegistry
 from ptc_agent.agent.prompts import format_subagent_summary, format_tool_summary, get_loader
 from ptc_agent.agent.subagents import create_subagents_from_names
@@ -136,12 +139,14 @@ class PTCAgent:
         self,
         tool_summary: str,
         subagent_summary: str,
+        user_profile: dict | None = None,
     ) -> str:
         """Build the system prompt for the agent.
 
         Args:
             tool_summary: Formatted MCP tool summary
             subagent_summary: Formatted subagent summary
+            user_profile: Optional user profile dict with name, timezone, locale
 
         Returns:
             Complete system prompt
@@ -152,6 +157,7 @@ class PTCAgent:
         return loader.get_system_prompt(
             tool_summary=tool_summary,
             subagent_summary=subagent_summary,
+            user_profile=user_profile,
             max_concurrent_task_units=DEFAULT_MAX_CONCURRENT_TASK_UNITS,
             max_task_iterations=DEFAULT_MAX_TASK_ITERATIONS,
             storage_enabled=is_storage_enabled(),
@@ -196,6 +202,7 @@ class PTCAgent:
         llm: Any | None = None,
         operation_callback: Any | None = None,
         background_registry: BackgroundTaskRegistry | None = None,
+        user_profile: dict | None = None,
     ) -> Any:
         """Create a deepagent with PTC pattern capabilities.
 
@@ -215,6 +222,8 @@ class PTCAgent:
             operation_callback: Optional callback for file operation logging.
                 Receives dict with operation details (operation, file_path, timestamp, etc.).
             background_registry: Optional shared background task registry for subagents.
+            user_profile: Optional user profile dict with name, timezone, locale for
+                injection into the system prompt.
 
         Returns:
             Configured BackgroundSubagentOrchestrator wrapping the deepagent
@@ -328,6 +337,21 @@ class PTCAgent:
                 plan_tools=[getattr(t, "name", str(t)) for t in plan_middleware.tools],
             )
 
+        # Add dynamic skill loader middleware for user onboarding etc.
+        skill_loader_middleware = DynamicSkillLoaderMiddleware(
+            skill_registry=SKILL_REGISTRY
+        )
+        middleware_list.append(skill_loader_middleware)
+        # Add load_skill tool
+        tools.extend(skill_loader_middleware.tools)
+        # Pre-register all skill tools (they're available but discovered via load_skill)
+        tools.extend(skill_loader_middleware.get_all_skill_tools())
+        logger.info(
+            "Dynamic skill loader enabled",
+            skill_count=len(SKILL_REGISTRY),
+            skill_tool_count=len(skill_loader_middleware.get_all_skill_tools()),
+        )
+
         # Create subagents from names using the registry
         # Pass vision tools to subagents if enabled
         vision_tools = [view_image_tool] if view_image_tool else None
@@ -352,7 +376,7 @@ class PTCAgent:
         subagent_summary = format_subagent_summary(subagents)
 
         # Build system prompt
-        system_prompt = self._build_system_prompt(tool_summary, subagent_summary)
+        system_prompt = self._build_system_prompt(tool_summary, subagent_summary, user_profile)
 
         # Append suffix if provided (e.g., agent.md content)
         if system_prompt_suffix:
