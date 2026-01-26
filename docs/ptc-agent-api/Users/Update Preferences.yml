@@ -1,0 +1,36 @@
+info:
+  name: Update Preferences
+  type: http
+  seq: 5
+
+http:
+  method: PUT
+  url: http://localhost:8000/api/v1/users/me/preferences
+  headers:
+    - name: Content-Type
+      value: application/json
+    - name: X-User-Id
+      value: test-user-001
+  body:
+    type: json
+    data: |-
+      {
+        "risk_preference": {
+          "risk_tolerance": "medium"
+        },
+        "investment_preference": {
+          "company_interest": "growth",
+          "holding_period": "long_term",
+          "analysis_focus": "moat"
+        },
+        "agent_preference": {
+          "research_style": "deep_dive"
+        }
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

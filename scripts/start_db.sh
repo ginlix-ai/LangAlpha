@@ -171,6 +171,14 @@ setup_tables() {
         log_warn "setup_conversation_tables.py not found, skipping..."
     fi
 
+    # Run user tables setup
+    if [ -f "$SCRIPT_DIR/setup_user_tables.py" ]; then
+        log_info "Running setup_user_tables.py..."
+        python "$SCRIPT_DIR/setup_user_tables.py"
+    else
+        log_warn "setup_user_tables.py not found, skipping..."
+    fi
+
     log_info "Database tables setup complete"
 }
 

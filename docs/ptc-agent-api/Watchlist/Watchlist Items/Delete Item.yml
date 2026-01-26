@@ -1,0 +1,25 @@
+info:
+  name: Delete Item
+  type: http
+  seq: 5
+
+http:
+  method: DELETE
+  url: http://localhost:8000/api/v1/users/me/watchlists/:watchlist_id/items/:item_id
+  headers:
+    - name: X-User-Id
+      value: test-user-001
+  params:
+    - name: watchlist_id
+      value: ""
+      type: path
+    - name: item_id
+      value: ""
+      type: path
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

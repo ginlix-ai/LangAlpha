@@ -1,0 +1,32 @@
+info:
+  name: Update Watchlist
+  type: http
+  seq: 4
+
+http:
+  method: PUT
+  url: http://localhost:8000/api/v1/users/me/watchlists/:watchlist_id
+  headers:
+    - name: Content-Type
+      value: application/json
+    - name: X-User-Id
+      value: test-user-001
+  params:
+    - name: watchlist_id
+      value: ""
+      type: path
+  body:
+    type: json
+    data: |-
+      {
+        "name": "Tech Giants",
+        "description": "Updated description for tech watchlist",
+        "display_order": 2
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

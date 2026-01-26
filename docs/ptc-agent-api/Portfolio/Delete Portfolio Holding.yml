@@ -1,0 +1,22 @@
+info:
+  name: Delete Portfolio Holding
+  type: http
+  seq: 5
+
+http:
+  method: DELETE
+  url: http://localhost:8000/api/v1/users/me/portfolio/:holding_id
+  headers:
+    - name: X-User-Id
+      value: test-user-001
+  params:
+    - name: holding_id
+      value: 68ed9325-6f9a-468f-b15c-fb3cfef257b5
+      type: path
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

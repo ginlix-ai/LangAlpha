@@ -289,6 +289,9 @@ from src.server.app.chat import router as chat_router  # Main chat endpoint (v1)
 from src.server.app.workspaces import router as workspaces_router
 from src.server.app.workspace_files import router as workspace_files_router
 from src.server.app.market_data import router as market_data_router
+from src.server.app.users import router as users_router
+from src.server.app.watchlist import router as watchlist_router
+from src.server.app.portfolio import router as portfolio_router
 
 # Include all routers
 app.include_router(chat_router)  # /api/v1/chat/* - Main chat endpoint
@@ -301,4 +304,7 @@ app.include_router(threads_router)  # /api/v1/threads/* - Thread utilities (repl
 app.include_router(messages_router)  # /api/v1/messages/* - Message detail endpoints
 app.include_router(cache_router)  # /api/v1/cache/* - Cache management
 app.include_router(market_data_router)  # /api/v1/market-data/* - Market data proxy
+app.include_router(users_router)  # /api/v1/users/* - User management
+app.include_router(watchlist_router)  # /api/v1/users/me/watchlist/* - Watchlist management
+app.include_router(portfolio_router)  # /api/v1/users/me/portfolio/* - Portfolio management
 app.include_router(health_router)  # /health - Health check
