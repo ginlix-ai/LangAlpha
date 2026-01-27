@@ -24,6 +24,7 @@ from src.server.database.workspace_db import (
     update_workspace_activity,
     update_workspace_status,
 )
+from src.server.services.sync_user_data import sync_user_data_to_sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,9 @@ class WorkspaceManager:
 
         # In-memory session cache (workspace_id -> Session)
         self._sessions: Dict[str, Session] = {}
+
+        # Track which sessions have had user data synced (to avoid syncing every request)
+        self._user_data_synced: set[str] = set()
 
         # Cleanup task
         self._cleanup_task: Optional[asyncio.Task] = None
@@ -99,6 +103,73 @@ class WorkspaceManager:
         """Reset singleton instance (for testing)."""
         cls._instance = None
 
+    async def _sync_user_data_if_needed(
+        self,
+        workspace_id: str,
+        user_id: str | None,
+        sandbox: Any,
+        force: bool = False,
+    ) -> None:
+        """
+        Sync user data to sandbox if not already synced for this workspace.
+
+        Args:
+            workspace_id: Workspace ID
+            user_id: User ID (sync skipped if None)
+            sandbox: Sandbox instance (sync skipped if None)
+            force: If True, sync even if already synced (for create/restart)
+        """
+        if not user_id or not sandbox:
+            return
+        if not force and workspace_id in self._user_data_synced:
+            return
+        try:
+            await sync_user_data_to_sandbox(sandbox, user_id)
+            self._user_data_synced.add(workspace_id)
+            logger.debug(f"User data synced for workspace {workspace_id}")
+        except Exception as e:
+            logger.warning(f"User data sync failed for workspace {workspace_id}: {e}")
+
+    async def _sync_sandbox_assets(
+        self,
+        workspace_id: str,
+        user_id: str | None,
+        sandbox: Any,
+        reusing_sandbox: bool = False,
+    ) -> None:
+        """
+        Sync skills and user data to sandbox in parallel.
+
+        Args:
+            workspace_id: Workspace ID
+            user_id: User ID (user data sync skipped if None)
+            sandbox: Sandbox instance (all syncs skipped if None)
+            reusing_sandbox: If True, sandbox already has skills (skip unchanged)
+        """
+        if not sandbox:
+            return
+
+        tasks = []
+
+        # Skills sync task
+        if self.config.skills.enabled:
+            skill_dirs = self.config.skills.local_skill_dirs_with_sandbox()
+            tasks.append(sandbox.sync_skills(skill_dirs, reusing_sandbox=reusing_sandbox))
+
+        # User data sync task
+        if user_id:
+            tasks.append(sync_user_data_to_sandbox(sandbox, user_id))
+
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.warning(f"Asset sync failed for {workspace_id}: {result}")
+
+            # Track user data sync completion
+            if user_id:
+                self._user_data_synced.add(workspace_id)
+
     async def create_workspace(
         self,
         user_id: str,
@@ -136,18 +207,10 @@ class WorkspaceManager:
                 session = SessionManager.get_session(workspace_id, core_config)
                 await session.initialize()
 
-                # Sync skills to sandbox if enabled
-                if self.config.skills.enabled and session.sandbox:
-                    skill_dirs = self.config.skills.local_skill_dirs_with_sandbox()
-                    try:
-                        did_upload = await session.sandbox.sync_skills(
-                            skill_dirs,
-                            reusing_sandbox=False,  # New workspace
-                        )
-                        if did_upload:
-                            logger.info(f"Skills synced for workspace: {workspace_id}")
-                    except Exception as e:
-                        logger.warning(f"Skills sync failed for {workspace_id}: {e}")
+                # Sync skills and user data to sandbox in parallel
+                await self._sync_sandbox_assets(
+                    workspace_id, user_id, session.sandbox, reusing_sandbox=False
+                )
 
                 # Store session in cache
                 self._sessions[workspace_id] = session
@@ -181,12 +244,14 @@ class WorkspaceManager:
     async def get_session_for_workspace(
         self,
         workspace_id: str,
+        user_id: str | None = None,
     ) -> Session:
         """
         Get or restart session for workspace.
 
         Args:
             workspace_id: Workspace UUID
+            user_id: Optional user ID for syncing user data to sandbox
 
         Returns:
             Initialized Session instance
@@ -196,12 +261,20 @@ class WorkspaceManager:
             RuntimeError: If workspace is in error/deleted state
         """
         async with self._lock:
+            logger.info(
+                f"get_session_for_workspace called: workspace_id={workspace_id}, user_id={user_id}, "
+                f"in_cache={workspace_id in self._sessions}, already_synced={workspace_id in self._user_data_synced}"
+            )
             # Get workspace from DB
             workspace = await db_get_workspace(workspace_id)
             if not workspace:
                 raise ValueError(f"Workspace {workspace_id} not found")
 
             status = workspace["status"]
+            sandbox_id_from_db = workspace.get("sandbox_id")
+            # Use workspace owner's user_id for syncing (don't rely on endpoint passing it)
+            workspace_user_id = workspace.get("user_id") or user_id
+            logger.info(f"Workspace {workspace_id} from DB: status={status}, sandbox_id={sandbox_id_from_db}, user_id={workspace_user_id}")
 
             # Check for invalid states
             if status == "deleted":
@@ -215,7 +288,12 @@ class WorkspaceManager:
             # Check cache first
             if workspace_id in self._sessions:
                 session = self._sessions[workspace_id]
+                logger.info(f"Found cached session for {workspace_id}, initialized={session._initialized}, has_sandbox={session.sandbox is not None}")
                 if session._initialized:
+                    # Sync user data if not already synced
+                    await self._sync_user_data_if_needed(
+                        workspace_id, workspace_user_id, session.sandbox
+                    )
                     # Update activity timestamp
                     await update_workspace_activity(workspace_id)
                     return session
@@ -224,28 +302,32 @@ class WorkspaceManager:
             if status == "stopped":
                 # Restart stopped workspace
                 logger.info(f"Restarting stopped workspace {workspace_id}")
-                return await self._restart_workspace(workspace)
+                return await self._restart_workspace(workspace, user_id=workspace_user_id)
 
             elif status == "running":
                 # Re-fetch session from SessionManager
+                logger.debug(f"Workspace {workspace_id} status is running, getting session from SessionManager")
                 core_config = self.config.to_core_config()
                 session = SessionManager.get_session(workspace_id, core_config)
+                logger.debug(f"Session for {workspace_id}: initialized={session._initialized}, has_sandbox={session.sandbox is not None}")
 
                 if not session._initialized:
                     # Session was dropped, reinitialize with existing sandbox
                     sandbox_id = workspace.get("sandbox_id")
                     await session.initialize(sandbox_id=sandbox_id)
 
-                    # Sync skills to sandbox if enabled
-                    if self.config.skills.enabled and session.sandbox:
-                        skill_dirs = self.config.skills.local_skill_dirs_with_sandbox()
-                        try:
-                            await session.sandbox.sync_skills(
-                                skill_dirs,
-                                reusing_sandbox=sandbox_id is not None,
-                            )
-                        except Exception as e:
-                            logger.warning(f"Skills sync failed for {workspace_id}: {e}")
+                    # Sync skills and user data in parallel
+                    await self._sync_sandbox_assets(
+                        workspace_id,
+                        workspace_user_id,
+                        session.sandbox,
+                        reusing_sandbox=sandbox_id is not None,
+                    )
+                else:
+                    # Session was already initialized - sync user data if not already synced
+                    await self._sync_user_data_if_needed(
+                        workspace_id, workspace_user_id, session.sandbox
+                    )
 
                 self._sessions[workspace_id] = session
                 await update_workspace_activity(workspace_id)
@@ -271,6 +353,7 @@ class WorkspaceManager:
     async def _restart_workspace(
         self,
         workspace: Dict[str, Any],
+        user_id: str | None = None,
     ) -> Session:
         """
         Restart a stopped workspace.
@@ -300,16 +383,10 @@ class WorkspaceManager:
             await session.initialize(sandbox_id=sandbox_id)
             logger.info(f"Session initialized for workspace {workspace_id}")
 
-            # Sync skills to sandbox if enabled
-            if self.config.skills.enabled and session.sandbox:
-                skill_dirs = self.config.skills.local_skill_dirs_with_sandbox()
-                try:
-                    await session.sandbox.sync_skills(
-                        skill_dirs,
-                        reusing_sandbox=True,  # Restarting existing sandbox
-                    )
-                except Exception as e:
-                    logger.warning(f"Skills sync failed for {workspace_id}: {e}")
+            # Sync skills and user data in parallel
+            await self._sync_sandbox_assets(
+                workspace_id, user_id, session.sandbox, reusing_sandbox=True
+            )
 
             # Update status to running
             await update_workspace_status(
@@ -368,6 +445,9 @@ class WorkspaceManager:
                     # Remove from cache (will be recreated on restart)
                     del self._sessions[workspace_id]
 
+                # Clear user data sync tracking (will re-sync on restart)
+                self._user_data_synced.discard(workspace_id)
+
                 # NOTE: Don't call SessionManager.cleanup_session() here!
                 # That would delete the sandbox. The session stays in SessionManager's
                 # cache and will be reused when the workspace is restarted.
@@ -419,6 +499,9 @@ class WorkspaceManager:
                     except Exception as e:
                         logger.warning(f"Error cleaning up session: {e}")
                     del self._sessions[workspace_id]
+
+                # Clear user data sync tracking
+                self._user_data_synced.discard(workspace_id)
 
                 # Also cleanup from SessionManager
                 try:
@@ -522,6 +605,7 @@ class WorkspaceManager:
 
         # Clear session cache (don't stop workspaces on shutdown)
         self._sessions.clear()
+        self._user_data_synced.clear()
 
         logger.info("WorkspaceManager shutdown complete")
 

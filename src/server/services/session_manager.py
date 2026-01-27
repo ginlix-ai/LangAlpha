@@ -110,6 +110,7 @@ class SessionService:
         self,
         workspace_id: str,
         sandbox_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> Session:
         """
         Get existing session or create new one for workspace.
@@ -117,6 +118,7 @@ class SessionService:
         Args:
             workspace_id: Unique workspace identifier
             sandbox_id: Optional existing sandbox ID to reconnect to
+            user_id: Optional user ID for syncing user data to sandbox
 
         Returns:
             Initialized Session instance
@@ -170,6 +172,24 @@ class SessionService:
                             f"Skills sync failed for {workspace_id}: {e}",
                             exc_info=True
                         )
+
+                # Sync user data to sandbox if user_id provided
+                if user_id and session.sandbox:
+                    try:
+                        from src.server.services.sync_user_data import (
+                            sync_user_data_to_sandbox,
+                        )
+                        logger.info(f"Syncing user data for workspace: {workspace_id}, user_id: {user_id}")
+                        result = await sync_user_data_to_sandbox(session.sandbox, user_id)
+                        logger.info(f"User data sync result for workspace {workspace_id}: {result}")
+                    except Exception as e:
+                        # User data sync is helpful but should not prevent session startup
+                        logger.warning(
+                            f"User data sync failed for {workspace_id}: {e}",
+                            exc_info=True
+                        )
+                else:
+                    logger.debug(f"Skipping user data sync: user_id={user_id}, sandbox={session.sandbox is not None}")
 
             return session
 
@@ -336,13 +356,14 @@ class SessionServiceProvider:
         self._session_service = SessionService.get_instance()
 
     async def get_or_create_session(
-        self, workspace_id: str, sandbox_id: Optional[str] = None
+        self, workspace_id: str, sandbox_id: Optional[str] = None, user_id: Optional[str] = None
     ) -> Session:
         """Get or create a session using SessionService.
 
         Args:
             workspace_id: Unique workspace identifier
             sandbox_id: Optional sandbox ID to reconnect to
+            user_id: Optional user ID for syncing user data to sandbox
 
         Returns:
             Initialized Session instance
@@ -350,6 +371,7 @@ class SessionServiceProvider:
         return await self._session_service.get_or_create_session(
             workspace_id=workspace_id,
             sandbox_id=sandbox_id,
+            user_id=user_id,
         )
 
 

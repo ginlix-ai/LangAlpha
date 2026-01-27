@@ -319,7 +319,7 @@ async def _astream_workflow(
         # Use WorkspaceManager for workspace-based sessions
         logger.info(f"[PTC_CHAT] Using workspace: {workspace_id}")
         workspace_manager = WorkspaceManager.get_instance()
-        session = await workspace_manager.get_session_for_workspace(workspace_id)
+        session = await workspace_manager.get_session_for_workspace(workspace_id, user_id=user_id)
 
         # Update workspace activity
         await update_workspace_activity(workspace_id)

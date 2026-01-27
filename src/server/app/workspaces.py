@@ -203,7 +203,10 @@ async def update_workspace(
 
 
 @router.post("/{workspace_id}/start", response_model=WorkspaceActionResponse)
-async def start_workspace(workspace_id: str):
+async def start_workspace(
+    workspace_id: str,
+    x_user_id: str = Header(..., alias="X-User-Id", description="User ID"),
+):
     """
     Start a stopped workspace.
 
@@ -224,6 +227,8 @@ async def start_workspace(workspace_id: str):
         if not workspace:
             raise HTTPException(status_code=404, detail="Workspace not found")
 
+        _require_workspace_owner(workspace, user_id=x_user_id, workspace_id=workspace_id)
+
         if workspace["status"] == "running":
             return WorkspaceActionResponse(
                 workspace_id=workspace_id,
@@ -238,7 +243,7 @@ async def start_workspace(workspace_id: str):
             )
 
         # Start by getting session (triggers restart)
-        await manager.get_session_for_workspace(workspace_id)
+        await manager.get_session_for_workspace(workspace_id, user_id=x_user_id)
 
         logger.info(f"Started workspace {workspace_id}")
         return WorkspaceActionResponse(
@@ -308,7 +313,7 @@ async def refresh_workspace(
     _require_workspace_owner(workspace, user_id=x_user_id, workspace_id=workspace_id)
 
     try:
-        session = await manager.get_session_for_workspace(workspace_id)
+        session = await manager.get_session_for_workspace(workspace_id, user_id=x_user_id)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Sandbox not available: {e}")
 
