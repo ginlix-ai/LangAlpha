@@ -10,6 +10,7 @@ They are designed to be dynamically loaded via the load_skill mechanism.
 """
 
 import asyncio
+import logging
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -20,6 +21,8 @@ from langchain_core.runnables import RunnableConfig
 from src.server.database import user as user_db
 from src.server.database import watchlist as watchlist_db
 from src.server.database import portfolio as portfolio_db
+
+logger = logging.getLogger(__name__)
 
 
 # ==================== Helpers ====================
@@ -32,6 +35,56 @@ def _get_user_id(config: RunnableConfig) -> str:
     if not user_id:
         raise ValueError("user_id not found in config. Ensure it's passed in configurable.")
     return user_id
+
+
+def _get_workspace_id(config: RunnableConfig) -> str | None:
+    """Extract workspace_id from the runnable config."""
+    configurable = config.get("configurable", {})
+    return configurable.get("workspace_id")
+
+
+async def _sync_user_file_async(entity: str, user_id: str, workspace_id: str) -> None:
+    """
+    Sync user data file to sandbox (fire-and-forget).
+
+    Args:
+        entity: Entity type that was changed
+        user_id: User ID
+        workspace_id: Workspace ID to get sandbox from
+    """
+    try:
+        from src.server.services.workspace_manager import WorkspaceManager
+        from src.server.services.sync_user_data import sync_single_file
+
+        workspace_manager = WorkspaceManager.get_instance()
+        # Get session without user_id to avoid re-syncing all files
+        session = await workspace_manager.get_session_for_workspace(workspace_id)
+
+        if session and session.sandbox:
+            await sync_single_file(session.sandbox, entity, user_id)
+            logger.debug(f"[user_profile] Synced {entity} for user {user_id}")
+    except Exception as e:
+        # Non-blocking - don't fail the tool if sync fails
+        logger.warning(f"[user_profile] Failed to sync {entity}: {e}")
+
+
+def _schedule_sync(entity: str, config: RunnableConfig) -> None:
+    """
+    Schedule a background sync task for the affected file.
+
+    Args:
+        entity: Entity type that was changed
+        config: RunnableConfig with user_id and workspace_id
+    """
+    user_id = _get_user_id(config)
+    workspace_id = _get_workspace_id(config)
+
+    if not workspace_id:
+        logger.debug("[user_profile] No workspace_id in config, skipping sync")
+        return
+
+    # Fire-and-forget: schedule sync without awaiting
+    asyncio.create_task(_sync_user_file_async(entity, user_id, workspace_id))
 
 
 def validate_enum_field(
@@ -172,18 +225,28 @@ async def _update_risk_preference(config: RunnableConfig, data: dict[str, Any], 
     """Set risk tolerance settings."""
     user_id = _get_user_id(config)
 
-    valid_values = ["low", "medium", "high", "long_term_focus"]
-    risk_tolerance = validate_enum_field(
-        data.get("risk_tolerance"), valid_values, "risk_tolerance"
-    )
-    if isinstance(risk_tolerance, dict):
-        return risk_tolerance
+    risk_pref: dict[str, Any] = {}
 
-    # Start with validated field, then add any extra fields
-    risk_pref: dict[str, Any] = {"risk_tolerance": risk_tolerance}
+    # Validate risk_tolerance if provided
+    risk_tolerance = data.get("risk_tolerance")
+    if risk_tolerance:
+        valid_values = ["low", "medium", "high", "long_term_focus"]
+        result = validate_enum_field(risk_tolerance, valid_values, "risk_tolerance")
+        if isinstance(result, dict):
+            return result
+        risk_pref["risk_tolerance"] = result
+
+    # Add any extra fields
     for key, value in data.items():
         if key != "risk_tolerance" and value is not None:
             risk_pref[key] = value
+
+    # When replacing, require the main field
+    if replace and "risk_tolerance" not in risk_pref:
+        return {"error": "risk_tolerance is required when replace=True"}
+
+    if not risk_pref:
+        return {"error": "At least one field is required"}
 
     prefs = await user_db.upsert_user_preferences(
         user_id=user_id, risk_preference=risk_pref, replace=replace
@@ -241,18 +304,28 @@ async def _update_agent_preference(config: RunnableConfig, data: dict[str, Any],
     """Set agent behavior settings."""
     user_id = _get_user_id(config)
 
-    valid_values = ["summary", "data", "deep_dive", "quick"]
-    output_style = validate_enum_field(
-        data.get("output_style"), valid_values, "output_style"
-    )
-    if isinstance(output_style, dict):
-        return output_style
+    agent_pref: dict[str, Any] = {}
 
-    # Start with validated field, then add any extra fields (notes, instruction, etc.)
-    agent_pref: dict[str, Any] = {"output_style": output_style}
+    # Validate output_style if provided
+    output_style = data.get("output_style")
+    if output_style:
+        valid_values = ["summary", "data", "deep_dive", "quick"]
+        result = validate_enum_field(output_style, valid_values, "output_style")
+        if isinstance(result, dict):
+            return result
+        agent_pref["output_style"] = result
+
+    # Add any extra fields (notes, instruction, data_visualization, etc.)
     for key, value in data.items():
         if key != "output_style" and value is not None:
             agent_pref[key] = value
+
+    # When replacing, require the main field
+    if replace and "output_style" not in agent_pref:
+        return {"error": "output_style is required when replace=True"}
+
+    if not agent_pref:
+        return {"error": "At least one field is required"}
 
     prefs = await user_db.upsert_user_preferences(
         user_id=user_id, agent_preference=agent_pref, replace=replace
@@ -525,7 +598,14 @@ async def update_user_data(
     handler = UPDATE_HANDLERS.get(entity)
     if not handler:
         return {"error": f"Unknown entity: {entity}. Valid entities: {list(UPDATE_HANDLERS.keys())}"}
-    return await handler(config, data, replace)
+
+    result = await handler(config, data, replace)
+
+    # Schedule sync if operation succeeded
+    if result.get("success"):
+        _schedule_sync(entity, config)
+
+    return result
 
 
 @tool
@@ -549,4 +629,11 @@ async def remove_user_data(
     handler = REMOVE_HANDLERS.get(entity)
     if not handler:
         return {"error": f"Unknown entity: {entity}. Valid entities: {list(REMOVE_HANDLERS.keys())}"}
-    return await handler(config, identifier)
+
+    result = await handler(config, identifier)
+
+    # Schedule sync if operation succeeded
+    if result.get("success"):
+        _schedule_sync(entity, config)
+
+    return result

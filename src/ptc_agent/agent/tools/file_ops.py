@@ -13,6 +13,33 @@ logger = structlog.get_logger(__name__)
 # Type alias for operation callback
 OperationCallback = Callable[[dict[str, Any]], None]
 
+# Protected user data directory and files
+_PROTECTED_USER_DIR = "user/"
+_PROTECTED_USER_FILES = {"preference.md", "watchlist.md", "portfolio.md"}
+
+
+def _is_protected_user_path(path: str) -> bool:
+    """Check if path is in the protected user data directory."""
+    normalized = path.lstrip("/")
+    # Check sandbox absolute path
+    if normalized.startswith("home/daytona/user/"):
+        return True
+    # Check relative path
+    if normalized.startswith(_PROTECTED_USER_DIR):
+        return True
+    return False
+
+
+def _get_protection_error(path: str) -> str:
+    """Get error message for protected path."""
+    return (
+        f"ERROR: Cannot modify {path} directly.\n\n"
+        "User data files are read-only. To update user data:\n"
+        "1. Load the skill: load_skill('user-profile')\n"
+        "2. Use update_user_data() or remove_user_data()\n\n"
+        "See @skills/user-profile/SKILL.md for details."
+    )
+
 
 def create_filesystem_tools(
     sandbox: Any,
@@ -78,6 +105,11 @@ def create_filesystem_tools(
             normalized_path = sandbox.normalize_path(file_path)
             logger.info("Writing file", file_path=file_path, normalized_path=normalized_path, size=len(content))
 
+            # Check for protected user data paths
+            if _is_protected_user_path(normalized_path):
+                logger.warning("Blocked write to protected user path", file_path=file_path)
+                return _get_protection_error(file_path)
+
             if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(normalized_path):
                 error_msg = f"Access denied: {file_path} is not in allowed directories"
                 logger.error(error_msg, file_path=file_path)
@@ -121,6 +153,11 @@ def create_filesystem_tools(
                 old_string_preview=old_string[:50],
                 replace_all=replace_all,
             )
+
+            # Check for protected user data paths
+            if _is_protected_user_path(normalized_path):
+                logger.warning("Blocked edit to protected user path", file_path=file_path)
+                return _get_protection_error(file_path)
 
             if sandbox.config.filesystem.enable_path_validation and not sandbox.validate_path(normalized_path):
                 error_msg = f"Access denied: {file_path} is not in allowed directories"

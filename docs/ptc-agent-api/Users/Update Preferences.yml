@@ -24,7 +24,7 @@ http:
           "analysis_focus": "moat"
         },
         "agent_preference": {
-          "research_style": "deep_dive"
+          "output_style": "deep_dive"
         }
       }
   auth: inherit
