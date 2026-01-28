@@ -19,7 +19,7 @@ import { useChatMessages } from '../hooks/useChatMessages';
  */
 function ChatView({ workspaceId, onBack }) {
   const scrollAreaRef = useRef(null);
-  const { messages, isLoading, messageError, handleSendMessage } = useChatMessages(workspaceId);
+  const { messages, isLoading, isLoadingHistory, messageError, handleSendMessage } = useChatMessages(workspaceId);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -81,7 +81,7 @@ function ChatView({ workspaceId, onBack }) {
 
       {/* Input Area */}
       <div className="flex-shrink-0 p-4" style={{ borderTop: '1px solid rgba(255, 255, 255, 0.1)' }}>
-        <ChatInput onSend={handleSendMessage} disabled={isLoading || !workspaceId} />
+        <ChatInput onSend={handleSendMessage} disabled={isLoading || isLoadingHistory || !workspaceId} />
       </div>
     </div>
   );

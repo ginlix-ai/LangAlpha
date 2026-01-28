@@ -18,10 +18,8 @@ async function enableMocking() {
 // Start MSW before rendering the app
 enableMocking().then(() => {
   ReactDOM.createRoot(document.getElementById('root')).render(
-    <React.StrictMode>
-      <BrowserRouter>
-        <App />
-      </BrowserRouter>
-    </React.StrictMode>,
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>,
   )
 })

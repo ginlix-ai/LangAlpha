@@ -144,6 +144,123 @@ export const getOrCreateWorkspace = async (userId = DEFAULT_USER_ID) => {
 };
 
 /**
+ * Gets all conversations (threads) for a user
+ * @param {string} userId - The user ID
+ * @param {number} limit - Maximum number of threads to return (default: 50)
+ * @param {number} offset - Offset for pagination (default: 0)
+ * @returns {Promise<Object>} Conversations response with threads array and metadata
+ */
+export const getConversations = async (userId = DEFAULT_USER_ID, limit = 50, offset = 0) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/v1/conversations?limit=${limit}&offset=${offset}`, {
+      method: 'GET',
+      headers: {
+        'X-User-Id': userId,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to get conversations: ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error('Error getting conversations:', error);
+    throw error;
+  }
+};
+
+/**
+ * Replays conversation history for a thread via streaming
+ * The backend sends history in Server-Sent Events (SSE) format, not NDJSON
+ * @param {string} threadId - The thread ID to replay
+ * @param {Function} onEvent - Callback for each history event (JSON object)
+ * @returns {Promise<void>}
+ */
+export const replayThreadHistory = async (threadId, onEvent = () => {}) => {
+  try {
+    if (!threadId) {
+      throw new Error('Thread ID is required');
+    }
+
+    const response = await fetch(`${API_BASE_URL}/api/v1/threads/${threadId}/replay`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let currentEvent = {};
+
+    /**
+     * Process SSE format lines:
+     * id: 1
+     * event: user_message
+     * data: {"thread_id": "..."}
+     * 
+     * Empty line indicates end of event
+     */
+    const processSSELine = (line) => {
+      if (line.startsWith('id: ')) {
+        currentEvent.id = line.slice(4).trim();
+      } else if (line.startsWith('event: ')) {
+        currentEvent.event = line.slice(7).trim();
+      } else if (line.startsWith('data: ')) {
+        try {
+          const data = JSON.parse(line.slice(6));
+          // Merge event type from the event line into the data
+          if (currentEvent.event) {
+            data.event = currentEvent.event;
+          }
+          console.log('[API] Parsed history event:', data);
+          onEvent(data);
+          // Reset for next event
+          currentEvent = {};
+        } catch (e) {
+          console.warn('[API] Failed to parse SSE data:', e, line);
+        }
+      } else if (line.trim() === '') {
+        // Empty line indicates end of event, reset
+        currentEvent = {};
+      }
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+      for (const line of lines) {
+        processSSELine(line);
+      }
+    }
+
+    // Process any remaining buffer
+    if (buffer.trim()) {
+      const lines = buffer.split('\n');
+      for (const line of lines) {
+        processSSELine(line);
+      }
+    }
+    
+    console.log('[API] History replay stream completed');
+  } catch (error) {
+    console.error('[API] Error replaying thread history:', error);
+    throw error;
+  }
+};
+
+/**
  * Sends a chat message via SSE streaming
  * @param {string} message - The user's message
  * @param {string} workspaceId - The workspace ID
@@ -151,6 +268,7 @@ export const getOrCreateWorkspace = async (userId = DEFAULT_USER_ID) => {
  * @param {Array} messageHistory - Previous messages for context
  * @param {boolean} planMode - Whether to use plan mode (default: false)
  * @param {Function} onEvent - Callback for SSE events
+ * @param {string} userId - The user ID (default: DEFAULT_USER_ID)
  * @returns {Promise<void>}
  */
 export const sendChatMessageStream = async (
@@ -159,7 +277,8 @@ export const sendChatMessageStream = async (
   threadId = '__default__',
   messageHistory = [],
   planMode = false,
-  onEvent = () => {}
+  onEvent = () => {},
+  userId = DEFAULT_USER_ID
 ) => {
   try {
     const messages = [
@@ -174,11 +293,11 @@ export const sendChatMessageStream = async (
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'X-User-Id': userId,
       },
       body: JSON.stringify({
         workspace_id: workspaceId,
         thread_id: threadId,
-        user_id: 'test_user_001',
         messages: messages,
         plan_mode: planMode,
       }),

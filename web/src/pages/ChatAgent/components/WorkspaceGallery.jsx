@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Plus, Loader2 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import WorkspaceCard from './WorkspaceCard';
@@ -28,10 +28,19 @@ function WorkspaceGallery({ onWorkspaceSelect }) {
   const [deleteError, setDeleteError] = useState(null);
   const navigate = useNavigate();
   const { workspaceId: currentWorkspaceId } = useParams();
+  const loadingRef = useRef(false);
 
   // Load workspaces on mount
   useEffect(() => {
-    loadWorkspaces();
+    // Guard: Prevent duplicate calls
+    if (loadingRef.current) {
+      return;
+    }
+    
+    loadingRef.current = true;
+    loadWorkspaces().finally(() => {
+      loadingRef.current = false;
+    });
   }, []);
 
   /**
