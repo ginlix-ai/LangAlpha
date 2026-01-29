@@ -8,7 +8,8 @@ for comprehensive information gathering.
 from typing import Any
 
 from ptc_agent.agent.prompts import get_loader
-from ptc_agent.agent.tools import web_search, think_tool
+from ptc_agent.agent.tools import think_tool
+from src.tools.search import get_web_search_tool
 
 
 def get_research_subagent_config(
@@ -28,8 +29,15 @@ def get_research_subagent_config(
     loader = get_loader()
     instructions = loader.get_subagent_prompt("researcher")
 
-    # Base tools for research (uses configured search engine from agent_config.yaml)
-    tools = [web_search, think_tool]
+    # Get configured search tool (Tavily, Bocha, or Serper from agent_config.yaml)
+    web_search_tool = get_web_search_tool(
+        max_search_results=10,
+        time_range=None,
+        verbose=False,
+    )
+
+    # Base tools for research
+    tools = [web_search_tool, think_tool]
 
     # Add any MCP tools configured for this sub-agent
     if mcp_tools:

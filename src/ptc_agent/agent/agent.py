@@ -50,6 +50,7 @@ from ptc_agent.agent.tools import (
     create_grep_tool,
     TodoWrite,
 )
+from src.tools.search import get_web_search_tool
 from ptc_agent.config import AgentConfig
 from ptc_agent.core.mcp_registry import MCPRegistry
 from ptc_agent.core.sandbox import ExecutionResult, PTCSandbox
@@ -283,6 +284,15 @@ class PTCAgent:
             "Using custom filesystem tools",
             tools=["read_file", "write_file", "edit_file", "glob", "grep"],
         )
+
+        # Add web search tool (uses configured search engine from agent_config.yaml)
+        web_search_tool = get_web_search_tool(
+            max_search_results=10,
+            time_range=None,
+            verbose=False,
+        )
+        tools.append(web_search_tool)
+        logger.info("Web search tool enabled", tool="web_search")
 
         # Add view_image tool if enabled (with sandbox for reading local images)
         view_image_tool = None
