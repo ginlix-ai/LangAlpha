@@ -1,0 +1,82 @@
+.trading-top-bar {
+  height: 70px;
+  background-color: #0f1422;
+  border-bottom: 1px solid #1a1f35;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 30px;
+}
+
+.trading-top-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 30px;
+}
+
+.trading-top-bar-title {
+  font-size: 24px;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.trading-search-form {
+  display: flex;
+}
+
+.trading-search-input {
+  width: 300px;
+  height: 40px;
+  background-color: #1a1f35;
+  border: 1px solid #2a2f45;
+  border-radius: 8px;
+  padding: 0 15px;
+  color: #ffffff;
+  font-size: 14px;
+  outline: none;
+  transition: all 0.3s;
+}
+
+.trading-search-input:focus {
+  border-color: #667eea;
+  background-color: #1f2435;
+}
+
+.trading-search-input::placeholder {
+  color: #6b7280;
+}
+
+.trading-top-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.trading-top-bar-icon {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #8b8fa3;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: all 0.3s;
+}
+
+.trading-top-bar-icon:hover {
+  background-color: #1a1f35;
+  color: #ffffff;
+}
+
+.trading-user-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background-color: #667eea;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  cursor: pointer;
+}
