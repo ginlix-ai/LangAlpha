@@ -13,13 +13,16 @@ import structlog
 from langchain.agents import create_agent
 
 from ptc_agent.agent.backends import DaytonaBackend
+from deepagents.middleware import FilesystemMiddleware, SkillsMiddleware, SubAgentMiddleware
+from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
+from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
+
 from ptc_agent.agent.middleware import (
     BackgroundSubagentMiddleware,
     BackgroundSubagentOrchestrator,
     PlanModeMiddleware,
     ToolCallCounterMiddleware,
     ViewImageMiddleware,
-    create_deepagent_middleware,
     create_plan_mode_interrupt_config,
     create_view_image_tool,
     # Tool middleware
@@ -32,6 +35,8 @@ from ptc_agent.agent.middleware import (
     TodoWriteMiddleware,
     # Dynamic skill loader middleware
     DynamicSkillLoaderMiddleware,
+    # Summarization middleware
+    SummarizationMiddleware,
 )
 from ptc_agent.agent.skills import SKILL_REGISTRY
 from ptc_agent.agent.middleware.background.registry import BackgroundTaskRegistry
@@ -69,6 +74,21 @@ logger = structlog.get_logger(__name__)
 DEFAULT_MAX_CONCURRENT_TASK_UNITS = 3
 DEFAULT_MAX_TASK_ITERATIONS = 3
 DEFAULT_MAX_GENERAL_ITERATIONS = 10
+
+# Description for the SubAgentMiddleware Task tool
+SUBAGENT_MIDDLEWARE_DESCRIPTION = """Launch a subagent for complex, multi-step tasks.
+
+Args:
+    description: Detailed task instructions for the subagent
+    subagent_type: Agent type to use
+
+Usage:
+- Use for: Complex tasks, isolated research, context-heavy operations
+- NOT for: Simple 1-2 tool operations (do directly)
+- Parallel: Launch multiple agents in single message for concurrent tasks
+- Results: Subagent returns final report only (intermediate steps hidden)
+
+The subagent works autonomously. Provide clear, complete instructions."""
 
 
 class PTCAgent:
@@ -275,12 +295,12 @@ class PTCAgent:
         if subagent_names is None:
             subagent_names = self.config.subagents_enabled
 
-        # Create middleware list
-        middleware_list: list[Any] = []
+        # --- Build shared middleware (for both main agent and subagents) ---
+        shared_middleware: list[Any] = []
 
         # Tool middleware - handles argument parsing, error handling, and result normalization
         # These run in order: parse args -> execute -> handle errors -> normalize results
-        middleware_list.extend([
+        shared_middleware.extend([
             ToolArgumentParsingMiddleware(),   # Parse JSON string args to Python types
             ToolErrorHandlingMiddleware(),     # Catch tool errors, return simplified messages
             ToolResultNormalizationMiddleware(),  # Ensure all results are strings for LLM
@@ -288,11 +308,11 @@ class PTCAgent:
         logger.info("Tool middleware enabled: argument parsing, error handling, result normalization")
 
         # File operation SSE middleware - emits events for write_file/edit_file
-        middleware_list.append(FileOperationMiddleware())
+        shared_middleware.append(FileOperationMiddleware())
         logger.info("FileOperationMiddleware enabled for SSE events")
 
         # Todo operation SSE middleware - emits events for TodoWrite
-        middleware_list.append(TodoWriteMiddleware())
+        shared_middleware.append(TodoWriteMiddleware())
         logger.info("TodoWriteMiddleware enabled for SSE events")
 
         # Add view image middleware (always added when tool is enabled, for image injection)
@@ -302,8 +322,26 @@ class PTCAgent:
                 strict_validation=True,
                 sandbox=sandbox,
             )
-            middleware_list.append(view_image_middleware)
+            shared_middleware.append(view_image_middleware)
             logger.info("ViewImageMiddleware enabled with strict validation and sandbox support")
+
+        # Add dynamic skill loader middleware for user onboarding etc.
+        skill_loader_middleware = DynamicSkillLoaderMiddleware(
+            skill_registry=SKILL_REGISTRY
+        )
+        shared_middleware.append(skill_loader_middleware)
+        # Add load_skill tool
+        tools.extend(skill_loader_middleware.tools)
+        # Pre-register all skill tools (they're available but discovered via load_skill)
+        tools.extend(skill_loader_middleware.get_all_skill_tools())
+        logger.info(
+            "Dynamic skill loader enabled",
+            skill_count=len(SKILL_REGISTRY),
+            skill_tool_count=len(skill_loader_middleware.get_all_skill_tools()),
+        )
+
+        # --- Build main-only middleware (NOT passed to subagents) ---
+        main_only_middleware: list[Any] = []
 
         # Create background subagent middleware (must be created before subagents)
         background_middleware = BackgroundSubagentMiddleware(
@@ -311,7 +349,7 @@ class PTCAgent:
             enabled=True,
             registry=background_registry,
         )
-        middleware_list.append(background_middleware)
+        main_only_middleware.append(background_middleware)
         # Add background management tools (wait, task_progress)
         tools.extend(background_middleware.tools)
         # Create counter middleware for tracking subagent tool calls
@@ -329,32 +367,17 @@ class PTCAgent:
             # Add HITL interrupt config for submit_plan
             interrupt_config: Any = create_plan_mode_interrupt_config()
             hitl_middleware = HumanInTheLoopMiddleware(interrupt_on=interrupt_config)
-            middleware_list.append(hitl_middleware)
+            main_only_middleware.append(hitl_middleware)
 
             # Only add submit_plan tool when plan_mode is enabled
             if plan_mode:
                 plan_middleware = PlanModeMiddleware()
-                middleware_list.append(plan_middleware)
+                main_only_middleware.append(plan_middleware)
                 tools.extend(plan_middleware.tools)
                 logger.info(
                     "Plan tools enabled",
                     plan_tools=[getattr(t, "name", str(t)) for t in plan_middleware.tools],
                 )
-
-        # Add dynamic skill loader middleware for user onboarding etc.
-        skill_loader_middleware = DynamicSkillLoaderMiddleware(
-            skill_registry=SKILL_REGISTRY
-        )
-        middleware_list.append(skill_loader_middleware)
-        # Add load_skill tool
-        tools.extend(skill_loader_middleware.tools)
-        # Pre-register all skill tools (they're available but discovered via load_skill)
-        tools.extend(skill_loader_middleware.get_all_skill_tools())
-        logger.info(
-            "Dynamic skill loader enabled",
-            skill_count=len(SKILL_REGISTRY),
-            skill_tool_count=len(skill_loader_middleware.get_all_skill_tools()),
-        )
 
         # Create subagents from names using the registry
         # Pass vision tools to subagents if enabled
@@ -413,15 +436,48 @@ class PTCAgent:
             skills_enabled=self.config.skills.enabled,
         )
 
-        # Build middleware inherited from deepagent
-        deepagent_middleware = create_deepagent_middleware(
-            model=model,
-            tools=tools,
-            subagents=subagents,
-            backend=backend,
-            skill_sources=skill_sources,
-            custom_middleware=middleware_list,
-        )
+        # --- Build final middleware stacks ---
+        # Skills middleware (optional, based on config)
+        skills_middleware: list[Any] = []
+        if skill_sources:
+            skills_middleware = [SkillsMiddleware(backend=backend, sources=skill_sources)]
+
+        # Custom SSE-enabled summarization emits 'summarization_signal' events
+        summarization = SummarizationMiddleware()
+
+        # Subagent middleware (shared only, no SubAgentMiddleware/BackgroundSubagentMiddleware/HITL)
+        subagent_middleware = [
+            m for m in [
+                *skills_middleware,
+                FilesystemMiddleware(backend=backend),
+                *shared_middleware,
+                summarization,
+                AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
+                PatchToolCallsMiddleware(),
+            ] if m is not None
+        ]
+
+        # Main agent middleware (includes SubAgentMiddleware + main_only)
+        deepagent_middleware = [
+            m for m in [
+                *skills_middleware,
+                FilesystemMiddleware(backend=backend),
+                SubAgentMiddleware(
+                    default_model=model,
+                    default_tools=tools,
+                    subagents=subagents if subagents else [],
+                    task_description=SUBAGENT_MIDDLEWARE_DESCRIPTION,
+                    system_prompt=None,  # Disable verbose TASK_SYSTEM_PROMPT injection
+                    default_middleware=subagent_middleware,
+                    general_purpose_agent=True,
+                ),
+                *shared_middleware,
+                *main_only_middleware,
+                summarization,
+                AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
+                PatchToolCallsMiddleware(),
+            ] if m is not None
+        ]
 
         # Create agent with middleware stack
         agent: Any = create_agent(

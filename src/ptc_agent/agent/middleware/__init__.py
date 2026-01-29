@@ -5,7 +5,6 @@ This module provides middleware for LangChain/LangGraph agents:
 - background/: Background subagent orchestration
 - plan_mode: Human-in-the-loop plan review
 - view_image_middleware: Image viewing capabilities
-- deepagent_middleware: Main middleware stack factory
 - tool/: Tool argument parsing, error handling, result normalization
 - caching/: Tool result caching with SSE events
 - file_operations/: File operation SSE event emission
@@ -18,9 +17,6 @@ from ptc_agent.agent.middleware.background import (
     BackgroundSubagentOrchestrator,
     ToolCallCounterMiddleware,
 )
-
-# Core middleware factory
-from ptc_agent.agent.middleware.deepagent_middleware import create_deepagent_middleware
 
 # Plan mode middleware
 from ptc_agent.agent.middleware.plan_mode import (
@@ -77,8 +73,6 @@ __all__ = [
     "BackgroundSubagentMiddleware",
     "BackgroundSubagentOrchestrator",
     "ToolCallCounterMiddleware",
-    # Core factory
-    "create_deepagent_middleware",
     # Plan mode
     "PlanModeMiddleware",
     "create_plan_mode_interrupt_config",
