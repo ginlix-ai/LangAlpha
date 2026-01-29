@@ -8,6 +8,7 @@ load_dotenv()
 class SearchEngine(enum.Enum):
     TAVILY = "tavily"
     BOCHA = "bocha"
+    SERPER = "serper"
 
 
 

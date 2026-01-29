@@ -6,22 +6,22 @@
 
 llm:
   # Model name from src/llms/manifest/models.json
-  name: "minimax-m2.1"
+  name: "claude-sonnet-4-5" # 切换到 Claude Sonnet 4.5（原：minimax-m2.1）
 
 daytona:
   # Daytona sandbox configuration
   base_url: "https://app.daytona.io/api"
-  auto_stop_interval: 3600  # 1 hour in seconds
-  auto_archive_interval: 86400  # 24 hours in seconds
-  auto_delete_interval: 604800  # 7 days in seconds
+  auto_stop_interval: 3600 # 1 hour in seconds
+  auto_archive_interval: 86400 # 24 hours in seconds
+  auto_delete_interval: 604800 # 7 days in seconds
   python_version: "3.12"
 
   # Snapshot configuration for faster sandbox initialization (7x speedup)
   # First build takes ~10-15 minutes, subsequent sandboxes take ~8 seconds
   # Hash will be automatically appended based on dependencies
-  snapshot_enabled: true  # Recommended: Enable snapshot-based sandbox creation
-  snapshot_name: "open-ptc-v1"  # Base name for snapshot (hash will be appended)
-  snapshot_auto_create: true  # Automatically create snapshot if it doesn't exist
+  snapshot_enabled: true # Recommended: Enable snapshot-based sandbox creation
+  snapshot_name: "open-ptc-v1" # Base name for snapshot (hash will be appended)
+  snapshot_auto_create: true # Automatically create snapshot if it doesn't exist
 
 mcp:
   # MCP server configurations
@@ -43,10 +43,10 @@ mcp:
         FMP_API_KEY: "${FMP_API_KEY}"
 
     - name: "tavily"
-      enabled: false  # Set to false to disable this server
+      enabled: false # Set to false to disable this server
       description: "Web search engine for finding current information online"
       instruction: "Use for web searches, news, research, and real-time information. Best for queries requiring up-to-date data from the internet."
-      tool_exposure_mode: "summary"  # Brief - 4 simple tools
+      tool_exposure_mode: "summary" # Brief - 4 simple tools
       transport: "stdio"
       command: "npx"
       args: ["-y", "tavily-mcp@latest"]
@@ -57,14 +57,14 @@ mcp:
       enabled: false
       description: "Financial market data API for stocks, forex, crypto, and economic indicators"
       instruction: "Use for stock quotes, historical prices, technical indicators, forex rates, crypto data, and economic data."
-      tool_exposure_mode: "summary"  # Full signatures - 118 complex tools
+      tool_exposure_mode: "summary" # Full signatures - 118 complex tools
       transport: "http"
       url: "https://mcp.alphavantage.co/mcp?apikey=${ALPHA_VANTAGE_API_KEY}"
 
     - name: "tickertick"
       description: "Financial news API for ticker news, curated news, and entity news from Tickertick"
       instruction: "Use for getting financial news about specific tickers, curated market news, news from specific sources, or news about entities like people and companies."
-      tool_exposure_mode: "summary"  # 7 news-related tools
+      tool_exposure_mode: "summary" # 7 news-related tools
       transport: "stdio"
       command: "uv"
       args: ["run", "python", "mcp_servers/tickertick_mcp_server.py"]
@@ -74,7 +74,7 @@ mcp:
       enabled: false
       description: "Yahoo Finance API for stock prices, financial statements, options chains, and company data"
       instruction: "Use for historical stock prices, financial statements (income, balance sheet, cash flow), options chains, company info, analyst recommendations, and institutional holders. Best for fundamental analysis, historical data, and comparing multiple stocks. Returns large datasets ideal for code-based post-processing."
-      tool_exposure_mode: "summary"  # 21 tools with high PTC value
+      tool_exposure_mode: "summary" # 21 tools with high PTC value
       transport: "stdio"
       command: "uv"
       args: ["run", "python", "mcp_servers/yfinance_mcp_server.py"] # Both absolute and relative path accepted
@@ -82,8 +82,8 @@ mcp:
 
   # Tool discovery settings
   tool_discovery_enabled: true
-  lazy_load: true  # Load tools on-demand
-  cache_duration: 300  # Cache tool metadata for 5 minutes
+  lazy_load: true # Load tools on-demand
+  cache_duration: 300 # Cache tool metadata for 5 minutes
 
 filesystem:
   # Filesystem access configuration for first-class filesystem tools
@@ -98,9 +98,9 @@ filesystem:
     - "/tmp"
 
   denied_directories:
-    - "/home/daytona/_internal"  # Internal SDKs/packages uploaded to sandbox
+    - "/home/daytona/_internal" # Internal SDKs/packages uploaded to sandbox
 
-  enable_path_validation: true  # Validate paths against allowed_directories
+  enable_path_validation: true # Validate paths against allowed_directories
 
 storage:
   # Cloud storage provider for image/chart uploads
@@ -110,7 +110,7 @@ storage:
 
 logging:
   # Logging configuration
-  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO" # DEBUG, INFO, WARNING, ERROR, CRITICAL
   file: "logs/ptc.log"
 
 agent:
@@ -133,52 +133,49 @@ subagents:
 # Automatically summarizes conversation history when approaching token limits
 # Uses LangChain's built-in SummarizationMiddleware
 summarization:
-  enabled: true  # Enable/disable conversation summarization
-  llm: "minimax-m2.1"  # Model from models.json for generating conversation summaries
-  token_threshold: 120000  # Trigger summarization when messages exceed this token count
-  keep_messages: 5  # Preserve last N messages after summarization
-
+  enabled: true # Enable/disable conversation summarization
+  llm: "minimax-m2.1" # Model from models.json for generating conversation summaries
+  token_threshold: 120000 # Trigger summarization when messages exceed this token count
+  keep_messages: 5 # Preserve last N messages after summarization
 
 # =============================================================================
 # TOOL CONFIGURATION (moved from conf.yaml)
 # =============================================================================
 
 # Search API Configuration
-# Options: tavily, duckduckgo, brave_search, arxiv, bocha
-search_api: tavily
+# Options: tavily, bocha, serper
+search_api: serper
 
 # Crawler Configuration
 # Web crawling settings for Crawl4AI browser-based content extraction
 # Uses SafeCrawlerWrapper for circuit breaker and fault tolerance
 crawler:
-  max_concurrent_crawls: 20  # Max parallel browser contexts (adjust based on RAM: ~150MB each)
-  page_timeout: 60000  # Page load timeout in ms
-  delay_before_return: 3  # Seconds to wait for JS rendering after DOM ready
+  max_concurrent_crawls: 20 # Max parallel browser contexts (adjust based on RAM: ~150MB each)
+  page_timeout: 60000 # Page load timeout in ms
+  delay_before_return: 3 # Seconds to wait for JS rendering after DOM ready
 
   # Circuit breaker settings - prevents cascade failures when browser has issues
   circuit_breaker:
-    failure_threshold: 5      # Number of failures before opening circuit
-    recovery_timeout: 60      # Seconds before attempting recovery (half-open state)
-    success_threshold: 2      # Successes needed to close circuit after recovery
+    failure_threshold: 5 # Number of failures before opening circuit
+    recovery_timeout: 60 # Seconds before attempting recovery (half-open state)
+    success_threshold: 2 # Successes needed to close circuit after recovery
 
   # Queue limits - prevents resource exhaustion
   queue:
-    max_size: 100             # Maximum queued crawl requests
-    slot_timeout: 10          # Seconds to wait for crawl slot before giving up
-
+    max_size: 100 # Maximum queued crawl requests
+    slot_timeout: 10 # Seconds to wait for crawl slot before giving up
 
 # Web Fetch Configuration
 # Settings for web_fetch tool's sitemap-aware content extraction
 web_fetch:
-  sitemap_enabled: true       # Sitemap fetching for URL suggestions
-  sitemap_max_urls: 100       # Max URLs to fetch from sitemap
-  sitemap_max_examples: 3     # Max example URLs per path prefix in summary
-  sitemap_timeout: 10         # Timeout in seconds for sitemap fetch
-
+  sitemap_enabled: true # Sitemap fetching for URL suggestions
+  sitemap_max_urls: 100 # Max URLs to fetch from sitemap
+  sitemap_max_examples: 3 # Max example URLs per path prefix in summary
+  sitemap_timeout: 10 # Timeout in seconds for sitemap fetch
 
 # Embedding Model Configuration
 embedding:
-  model: embedding-small  # Options: embedding-small, embedding-large (see src/llms/llm_config.json)
-  batch_size: 100  # Number of texts to embed in a single batch
-  enable_auto_embedding: true  # Auto-generate embeddings for new infoflow results
-  hybrid_search_alpha: 0.5  # Balance between semantic (0.0) and keyword search (1.0)
+  model: embedding-small # Options: embedding-small, embedding-large (see src/llms/llm_config.json)
+  batch_size: 100 # Number of texts to embed in a single batch
+  enable_auto_embedding: true # Auto-generate embeddings for new infoflow results
+  hybrid_search_alpha: 0.5 # Balance between semantic (0.0) and keyword search (1.0)

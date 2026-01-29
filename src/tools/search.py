@@ -10,6 +10,7 @@ from src.tools.search_services.tavily.tavily_search_tool import (
     TavilySearchTool,
 )
 from src.tools.search_services.bocha import BochaSearchTool
+from src.tools.search_services.serper import SerperSearchTool
 
 from src.tools.decorators import create_logged_tool
 
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 # Create logged versions of the search tools with explicit schemas
 LoggedTavilySearch = create_logged_tool(TavilySearchTool)
 LoggedBochaSearch = create_logged_tool(BochaSearchTool)
+LoggedSerperSearch = create_logged_tool(SerperSearchTool)
 
 
 # Get the selected search tool
@@ -49,6 +51,13 @@ def get_web_search_tool(max_search_results: int,
         )
     elif SELECTED_SEARCH_ENGINE == SearchEngine.BOCHA.value:
         return LoggedBochaSearch(
+            name="web_search",
+            max_results=max_search_results,
+            verbose=verbose,
+            default_time_range=time_range,
+        )
+    elif SELECTED_SEARCH_ENGINE == SearchEngine.SERPER.value:
+        return LoggedSerperSearch(
             name="web_search",
             max_results=max_search_results,
             verbose=verbose,

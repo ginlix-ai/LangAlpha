@@ -1,13 +1,14 @@
 """Research sub-agent definition for deepagent.
 
-This sub-agent specializes in web research using Tavily search
-and strategic thinking for comprehensive information gathering.
+This sub-agent specializes in web research using the configured search engine
+(Tavily, Bocha, or Serper based on agent_config.yaml) and strategic thinking
+for comprehensive information gathering.
 """
 
 from typing import Any
 
 from ptc_agent.agent.prompts import get_loader
-from ptc_agent.agent.tools import tavily_search, think_tool
+from ptc_agent.agent.tools import web_search, think_tool
 
 
 def get_research_subagent_config(
@@ -27,8 +28,8 @@ def get_research_subagent_config(
     loader = get_loader()
     instructions = loader.get_subagent_prompt("researcher")
 
-    # Base tools for research
-    tools = [tavily_search, think_tool]
+    # Base tools for research (uses configured search engine from agent_config.yaml)
+    tools = [web_search, think_tool]
 
     # Add any MCP tools configured for this sub-agent
     if mcp_tools:

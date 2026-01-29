@@ -25,6 +25,7 @@ from .file_ops import create_filesystem_tools
 from .glob import create_glob_tool
 from .grep import create_grep_tool
 from .tavily import tavily_search
+from .web_search import web_search
 from .think import think_tool
 
 # Todo tracking
@@ -58,6 +59,7 @@ __all__ = [
     "get_all_tools",
     # Research
     "tavily_search",
+    "web_search",
     "think_tool",
     # Todo tracking
     "TodoWrite",
