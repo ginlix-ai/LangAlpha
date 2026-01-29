@@ -134,6 +134,7 @@ subagents:
 # Uses LangChain's built-in SummarizationMiddleware
 summarization:
   enabled: true  # Enable/disable conversation summarization
+  llm: "minimax-m2.1"  # Model from models.json for generating conversation summaries
   token_threshold: 120000  # Trigger summarization when messages exceed this token count
   keep_messages: 5  # Preserve last N messages after summarization
 

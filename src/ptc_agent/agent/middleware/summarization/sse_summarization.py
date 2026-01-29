@@ -34,10 +34,138 @@ from langchain.agents.middleware.types import AgentMiddleware, AgentState
 from langchain.chat_models import BaseChatModel, init_chat_model
 
 from src.llms.content_utils import format_llm_content
+from src.llms.token_counter import extract_token_usage
 from src.config.settings import get_summarization_config
 from src.llms import get_llm_by_type
 
 logger = logging.getLogger(__name__)
+
+# Constant for context summary prefix - used in both standalone function and middleware
+CONTEXT_SUMMARY_PREFIX = (
+    "[Context Summary]\n"
+    "This session is being continued from a previous conversation "
+    "that ran out of context. The conversation is summarized below:\n\n"
+)
+
+
+async def summarize_messages(
+    messages: list[AnyMessage],
+    keep_messages: int = 5,
+    model_name: str = "gpt-5-nano",
+) -> dict[str, Any]:
+    """
+    Summarize conversation messages (standalone function for manual triggering).
+
+    This function extracts the summarization logic from CustomSummarizationMiddleware
+    to allow manual invocation outside of the middleware context.
+
+    Args:
+        messages: List of conversation messages to summarize
+        keep_messages: Number of recent messages to preserve (default: 5)
+        model_name: LLM model name for generating summaries (default: gpt-5-nano)
+
+    Returns:
+        Dict with "messages" key containing [summary_message, *preserved_messages]
+        formatted for use with graph.aupdate_state() and the add_messages reducer.
+
+    Example:
+        result = await summarize_messages(current_messages, keep_messages=5)
+        await graph.aupdate_state(config, result)
+    """
+    if not messages:
+        raise ValueError("No messages to summarize")
+
+    # Ensure all messages have IDs
+    for msg in messages:
+        if msg.id is None:
+            msg.id = str(uuid.uuid4())
+
+    # Determine cutoff point (preserve last N messages, respecting tool message pairs)
+    if len(messages) <= keep_messages:
+        raise ValueError(
+            f"Not enough messages to summarize. Have {len(messages)}, "
+            f"need more than {keep_messages} to preserve."
+        )
+
+    target_cutoff = len(messages) - keep_messages
+    # Adjust cutoff to not split AI/Tool message pairs
+    cutoff_index = target_cutoff
+    while cutoff_index < len(messages) and isinstance(messages[cutoff_index], ToolMessage):
+        cutoff_index += 1
+
+    if cutoff_index <= 0:
+        raise ValueError("Cannot determine valid cutoff point for summarization")
+
+    messages_to_summarize = messages[:cutoff_index]
+    preserved_messages = messages[cutoff_index:]
+
+    # Initialize summarization model
+    summarization_model: BaseChatModel = get_llm_by_type(model_name)
+    if hasattr(summarization_model, 'streaming'):
+        summarization_model.streaming = False
+
+    # Trim messages if needed for summarization call
+    config = get_summarization_config()
+    token_threshold = config.get("token_threshold", 120000)
+    trim_limit = token_threshold + 50000
+
+    token_count = count_tokens_tiktoken(messages_to_summarize)
+    if token_count > trim_limit:
+        # Use trim_messages to fit within limit
+        trimmed = cast(
+            "list[AnyMessage]",
+            trim_messages(
+                messages_to_summarize,
+                max_tokens=trim_limit,
+                token_counter=count_tokens_tiktoken,
+                start_on="human",
+                strategy="last",
+                allow_partial=True,
+                include_system=True,
+            ),
+        )
+        if trimmed:
+            messages_to_summarize = trimmed
+        else:
+            # Fallback to last N messages
+            messages_to_summarize = messages_to_summarize[-_DEFAULT_FALLBACK_MESSAGE_COUNT:]
+
+    # Generate summary using the model
+    try:
+        response = await summarization_model.ainvoke(
+            DEFAULT_SUMMARY_PROMPT.format(messages=messages_to_summarize)
+        )
+
+        # Extract text content only (discard reasoning/thinking)
+        content = response.content if hasattr(response, 'content') else response
+        additional_kwargs = getattr(response, 'additional_kwargs', None)
+        formatted = format_llm_content(content, additional_kwargs)
+        summary_text = formatted.get("text", "").strip()
+
+        if not summary_text:
+            summary_text = "Previous conversation context (summary unavailable)."
+
+    except Exception as e:
+        logger.error(f"Error generating summary: {e}")
+        summary_text = f"Previous conversation context (error: {e})"
+
+    # Build summary message with context prefix
+    summary_message = HumanMessage(
+        content=f"{CONTEXT_SUMMARY_PREFIX}{summary_text}",
+        id=str(uuid.uuid4()),
+    )
+
+    # Return in the same format as middleware (for add_messages reducer)
+    return {
+        "messages": [
+            RemoveMessage(id=REMOVE_ALL_MESSAGES),
+            summary_message,
+            *preserved_messages,
+        ],
+        "summary_text": summary_text,
+        "original_count": len(messages),
+        "preserved_count": len(preserved_messages) + 1,  # +1 for summary message
+    }
 
 TokenCounter = Callable[[Iterable[MessageLikeRepresentation]], int]
 
@@ -199,6 +327,10 @@ class CustomSummarizationMiddleware(AgentMiddleware):
         self.summary_prompt = summary_prompt
         self.trim_tokens_to_summarize = trim_tokens_to_summarize
 
+        # Cached token usage from last model call (updated in after_model)
+        self._cached_input_tokens: int = 0
+        self._cached_output_tokens: int = 0
+
         requires_profile = any(condition[0] == "fraction" for condition in self._trigger_conditions)
         if self.keep[0] == "fraction":
             requires_profile = True
@@ -218,7 +350,13 @@ class CustomSummarizationMiddleware(AgentMiddleware):
         messages = state["messages"]
         self._ensure_message_ids(messages)
 
-        total_tokens = self.token_counter(messages)
+        # Use cached token count from last model call (more accurate than tiktoken)
+        # Falls back to tiktoken on first call when cache is empty
+        if self._cached_input_tokens > 0:
+            total_tokens = self._cached_input_tokens + self._cached_output_tokens
+        else:
+            total_tokens = self.token_counter(messages)
+
         if not self._should_summarize(messages, total_tokens):
             return None
 
@@ -231,6 +369,10 @@ class CustomSummarizationMiddleware(AgentMiddleware):
 
         summary = self._create_summary(messages_to_summarize)
         new_messages = self._build_new_messages(summary)
+
+        # Reset cached tokens since context is changing
+        self._cached_input_tokens = 0
+        self._cached_output_tokens = 0
 
         return {
             "messages": [
@@ -246,7 +388,13 @@ class CustomSummarizationMiddleware(AgentMiddleware):
         messages = state["messages"]
         self._ensure_message_ids(messages)
 
-        total_tokens = self.token_counter(messages)
+        # Use cached token count from last model call (more accurate than tiktoken)
+        # Falls back to tiktoken on first call when cache is empty
+        if self._cached_input_tokens > 0:
+            total_tokens = self._cached_input_tokens + self._cached_output_tokens
+        else:
+            total_tokens = self.token_counter(messages)
+
         if not self._should_summarize(messages, total_tokens):
             return None
 
@@ -260,6 +408,10 @@ class CustomSummarizationMiddleware(AgentMiddleware):
         summary = await self._acreate_summary(messages_to_summarize)
         new_messages = self._build_new_messages(summary)
 
+        # Reset cached tokens since context is changing
+        self._cached_input_tokens = 0
+        self._cached_output_tokens = 0
+
         return {
             "messages": [
                 RemoveMessage(id=REMOVE_ALL_MESSAGES),
@@ -267,6 +419,56 @@ class CustomSummarizationMiddleware(AgentMiddleware):
                 *preserved_messages,
             ]
         }
+
+    @override
+    def after_model(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+        """Capture token usage from model response and emit to frontend."""
+        self._update_token_cache(state.get("messages", []))
+        return None
+
+    @override
+    async def aafter_model(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+        """Capture token usage from model response and emit to frontend."""
+        self._update_token_cache(state.get("messages", []))
+        return None
+
+    def _update_token_cache(self, messages: list[AnyMessage]) -> None:
+        """Extract and cache token usage from last AI message, emit to frontend."""
+        if not messages:
+            return
+
+        # Find the last AI message
+        for msg in reversed(messages):
+            if msg.type != "ai":
+                continue
+
+            # Use shared extract_token_usage which handles all provider formats
+            usage = extract_token_usage(msg)
+            input_tokens = usage.get("input_tokens", 0)
+            output_tokens = usage.get("output_tokens", 0)
+
+            if input_tokens > 0:
+                self._cached_input_tokens = input_tokens
+                self._cached_output_tokens = output_tokens
+
+                logger.debug(
+                    f"[Summarization] Token usage: "
+                    f"input={input_tokens}, output={output_tokens}"
+                )
+
+                # Emit token usage to frontend for context window display
+                try:
+                    stream_writer = get_stream_writer()
+                    stream_writer({
+                        "type": "token_usage",
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_tokens": input_tokens + output_tokens,
+                    })
+                except Exception as e:
+                    logger.warning(f"[Summarization] Could not emit token_usage signal: {e}")
+
+                return  # Found usage, done
 
     def _should_summarize(self, messages: list[AnyMessage], total_tokens: int) -> bool:
         """Determine whether summarization should run for the current token usage."""
@@ -277,6 +479,7 @@ class CustomSummarizationMiddleware(AgentMiddleware):
             if kind == "messages" and len(messages) >= value:
                 return True
             if kind == "tokens" and total_tokens >= value:
+                logger.info(f"[Summarization] Triggered: {total_tokens} >= {value} tokens")
                 return True
             if kind == "fraction":
                 max_input_tokens = self._get_profile_limits()
@@ -379,15 +582,66 @@ class CustomSummarizationMiddleware(AgentMiddleware):
         return context
 
     def _build_new_messages(self, summary: str) -> list[HumanMessage]:
-        # Custom prefix for financial research context continuity
-        prefix = (
-            "[Context Summary]\n"
-            "This session is being continued from a previous conversation "
-            "that ran out of context. The conversation is summarized below:\n\n"
-        )
         return [
-            HumanMessage(content=f"{prefix}{summary}")
+            HumanMessage(content=f"{CONTEXT_SUMMARY_PREFIX}{summary}")
         ]
+
+    def _extract_summary_text(self, response: Any) -> str:
+        """Extract text content from LLM response, discarding reasoning/thinking.
+
+        Args:
+            response: The LLM response object
+
+        Returns:
+            Extracted text content, stripped
+        """
+        content = response.content if hasattr(response, 'content') else response
+        additional_kwargs = getattr(response, 'additional_kwargs', None)
+        formatted = format_llm_content(content, additional_kwargs)
+        summary = formatted.get("text", "")
+
+        # Log if reasoning was discarded
+        if formatted.get("reasoning"):
+            logger.debug(
+                f"[Summarization] Discarded reasoning content "
+                f"(length={len(formatted.get('reasoning', ''))})"
+            )
+
+        return summary.strip()
+
+    def _emit_summarization_signal(
+        self,
+        signal: str,
+        *,
+        summary_length: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Emit a summarization signal event via stream writer.
+
+        Args:
+            signal: Signal type ("start", "complete", or "error")
+            summary_length: Length of summary (for "complete" signal)
+            error: Error message (for "error" signal)
+        """
+        try:
+            stream_writer = get_stream_writer()
+            payload: dict[str, Any] = {
+                "type": "summarization_signal",
+                "signal": signal,
+            }
+            if summary_length is not None:
+                payload["summary_length"] = summary_length
+            if error is not None:
+                payload["error"] = error
+            stream_writer(payload)
+            if signal == "start":
+                logger.info("[Summarization] Emitted start signal")
+            elif signal == "complete":
+                logger.info(f"[Summarization] Emitted complete signal (length={summary_length})")
+            elif signal == "error":
+                logger.warning(f"[Summarization] Emitted error signal: {error}")
+        except Exception as e:
+            logger.debug(f"Could not emit summarization {signal} signal: {e}")
 
     def _ensure_message_ids(self, messages: list[AnyMessage]) -> None:
         """Ensure all messages have unique IDs for the add_messages reducer."""
@@ -430,55 +684,13 @@ class CustomSummarizationMiddleware(AgentMiddleware):
             return "Previous conversation was too long to summarize."
 
         try:
-            # Try to emit custom event (may fail if not in graph context)
-            try:
-                stream_writer = get_stream_writer()
-                stream_writer({
-                    "type": "summarization_signal",
-                    "signal": "start"
-                })
-            except Exception as e:
-                logger.debug(f"Could not emit summarization start signal: {e}")
-
+            self._emit_summarization_signal("start")
             response = self.model.invoke(self.summary_prompt.format(messages=trimmed_messages))
-
-            # Extract only text content, discarding reasoning/thinking
-            # This uses format_llm_content() which properly separates text from reasoning
-            content = response.content if hasattr(response, 'content') else response
-            additional_kwargs = getattr(response, 'additional_kwargs', None)
-            formatted = format_llm_content(content, additional_kwargs)
-            summary = formatted.get("text", "")
-
-            # Log if reasoning was discarded
-            if formatted.get("reasoning"):
-                logger.debug(
-                    f"[Summarization] Discarded reasoning content "
-                    f"(length={len(formatted.get('reasoning', ''))})"
-                )
-
-            # Emit completion signal
-            try:
-                stream_writer = get_stream_writer()
-                stream_writer({
-                    "type": "summarization_signal",
-                    "signal": "complete",
-                    "summary_length": len(summary)
-                })
-            except Exception as e:
-                logger.debug(f"Could not emit summarization complete signal: {e}")
-
-            return summary.strip()
+            summary = self._extract_summary_text(response)
+            self._emit_summarization_signal("complete", summary_length=len(summary))
+            return summary
         except Exception as e:
-            # Emit error signal
-            try:
-                stream_writer = get_stream_writer()
-                stream_writer({
-                    "type": "summarization_signal",
-                    "signal": "error",
-                    "error": str(e)
-                })
-            except Exception:
-                pass
+            self._emit_summarization_signal("error", error=str(e))
             return f"Error generating summary: {e!s}"
 
     async def _acreate_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
@@ -491,18 +703,7 @@ class CustomSummarizationMiddleware(AgentMiddleware):
             return "Previous conversation was too long to summarize."
 
         try:
-            # Get stream writer for custom events
-            try:
-                stream_writer = get_stream_writer()
-                # Emit summarization start signal
-                stream_writer({
-                    "type": "summarization_signal",
-                    "signal": "start"
-                })
-                logger.info("[Summarization] Emitted start signal")
-            except Exception as e:
-                logger.debug(f"Could not emit summarization start signal: {e}")
-                stream_writer = None
+            self._emit_summarization_signal("start")
 
             # Use ainvoke (non-streaming) to avoid duplicate events
             # The model should have streaming=False set in factory
@@ -510,45 +711,11 @@ class CustomSummarizationMiddleware(AgentMiddleware):
                 self.summary_prompt.format(messages=trimmed_messages)
             )
 
-            # Extract only text content, discarding reasoning/thinking
-            # This uses format_llm_content() which properly separates text from reasoning
-            content = response.content if hasattr(response, 'content') else response
-            additional_kwargs = getattr(response, 'additional_kwargs', None)
-            formatted = format_llm_content(content, additional_kwargs)
-            summary = formatted.get("text", "")
-
-            # Log if reasoning was discarded
-            if formatted.get("reasoning"):
-                logger.debug(
-                    f"[Summarization] Discarded reasoning content "
-                    f"(length={len(formatted.get('reasoning', ''))})"
-                )
-
-            # Emit summarization complete signal with summary length
-            if stream_writer:
-                try:
-                    stream_writer({
-                        "type": "summarization_signal",
-                        "signal": "complete",
-                        "summary_length": len(summary)
-                    })
-                    logger.info(f"[Summarization] Emitted complete signal (length={len(summary)})")
-                except Exception as e:
-                    logger.debug(f"Could not emit summarization complete signal: {e}")
-
-            return summary.strip()
+            summary = self._extract_summary_text(response)
+            self._emit_summarization_signal("complete", summary_length=len(summary))
+            return summary
         except Exception as e:
-            # Emit error signal
-            try:
-                stream_writer = get_stream_writer()
-                stream_writer({
-                    "type": "summarization_signal",
-                    "signal": "error",
-                    "error": str(e)
-                })
-                logger.warning(f"[Summarization] Emitted error signal: {e}")
-            except Exception:
-                pass
+            self._emit_summarization_signal("error", error=str(e))
             return f"Error generating summary: {e!s}"
 
     def _trim_messages_for_summary(self, messages: list[AnyMessage]) -> list[AnyMessage]:
@@ -654,7 +821,6 @@ Write as if briefing a colleague who needs to continue your work without repeati
 
 
 def SummarizationMiddleware(
-    llm_map: dict[str, str] | None = None,
     config: dict | None = None,
 ) -> CustomSummarizationMiddleware | None:
     """Factory function that creates a configured summarization middleware.
@@ -665,7 +831,6 @@ def SummarizationMiddleware(
     instead of regular message_chunk events.
 
     Args:
-        llm_map: Agent-to-LLM mapping dict (uses "summarization" key)
         config: Optional config override (defaults to get_summarization_config())
 
     Returns:
@@ -677,11 +842,8 @@ def SummarizationMiddleware(
     if not config.get("enabled", False):
         return None
 
-    # Get summarization model
-    model_name = "gpt-5-nano"  # default
-    if llm_map:
-        model_name = llm_map.get("summarization", model_name)
-
+    # Get summarization model from config
+    model_name = config.get("llm", "gpt-5-nano")
     summarization_model: BaseChatModel = get_llm_by_type(model_name)
 
     # Disable streaming to prevent normal message_chunk events

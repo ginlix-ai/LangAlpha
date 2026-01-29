@@ -9,6 +9,7 @@ from ptc_agent.agent.middleware.summarization.sse_summarization import (
     SummarizationMiddleware,
     DEFAULT_SUMMARY_PROMPT,
     count_tokens_tiktoken,
+    summarize_messages,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "SummarizationMiddleware",
     "DEFAULT_SUMMARY_PROMPT",
     "count_tokens_tiktoken",
+    "summarize_messages",
 ]

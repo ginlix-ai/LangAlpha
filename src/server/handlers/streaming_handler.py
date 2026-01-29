@@ -518,6 +518,17 @@ class WorkflowStreamHandler:
                             yield self._format_sse_event("summarization_signal", signal_data)
                             continue
 
+                        # Handle token usage updates (for context window display)
+                        if event_type == "token_usage":
+                            usage_data = {
+                                "thread_id": self.thread_id,
+                                "input_tokens": event_data.get("input_tokens", 0),
+                                "output_tokens": event_data.get("output_tokens", 0),
+                                "total_tokens": event_data.get("total_tokens", 0),
+                            }
+                            yield self._format_sse_event("token_usage", usage_data)
+                            continue
+
                         # Check if this is an artifact event from middleware
                         # Generic handler: any event with artifact_type is emitted as artifact SSE
                         artifact_type = event_data.get("artifact_type")

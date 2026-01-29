@@ -475,11 +475,13 @@ def get_summarization_config() -> Dict[str, Any]:
     Returns:
         Dictionary containing:
         - enabled: Whether summarization is enabled
+        - llm: Model name for generating summaries
         - token_threshold: Token count threshold to trigger summarization
         - keep_messages: Number of recent messages to preserve after summarization
     """
     return {
         "enabled": bool(_get_agent_nested_config('summarization.enabled', True)),
+        "llm": str(_get_agent_nested_config('summarization.llm', 'gpt-5-nano')),
         "token_threshold": int(_get_agent_nested_config('summarization.token_threshold', 120000)),
         "keep_messages": int(_get_agent_nested_config('summarization.keep_messages', 5)),
     }

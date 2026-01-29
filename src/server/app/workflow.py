@@ -19,6 +19,10 @@ from src.server.models.workflow import (
     CheckpointMetadata,
     serialize_message,
 )
+from src.server.utils.checkpoint_helpers import (
+    build_checkpoint_config,
+    get_checkpointer,
+)
 
 # Import setup module to access initialized globals
 from src.server.app import setup
@@ -45,17 +49,9 @@ async def _get_checkpoint_tuple(thread_id: str, checkpoint_id: str = None):
     Returns:
         CheckpointTuple or None if not found
     """
-    if not setup.checkpointer:
-        raise HTTPException(
-            status_code=500,
-            detail="Checkpointer not initialized"
-        )
-
-    config = {"configurable": {"thread_id": thread_id}}
-    if checkpoint_id:
-        config["configurable"]["checkpoint_id"] = checkpoint_id
-
-    return await setup.checkpointer.aget_tuple(config)
+    checkpointer = get_checkpointer()
+    config = build_checkpoint_config(thread_id, checkpoint_id)
+    return await checkpointer.aget_tuple(config)
 
 
 async def _list_checkpoints(thread_id: str, limit: int = 10):
@@ -69,16 +65,11 @@ async def _list_checkpoints(thread_id: str, limit: int = 10):
     Yields:
         CheckpointTuple objects
     """
-    if not setup.checkpointer:
-        raise HTTPException(
-            status_code=500,
-            detail="Checkpointer not initialized"
-        )
-
-    config = {"configurable": {"thread_id": thread_id}}
+    checkpointer = get_checkpointer()
+    config = build_checkpoint_config(thread_id)
     count = 0
 
-    async for checkpoint_tuple in setup.checkpointer.alist(config):
+    async for checkpoint_tuple in checkpointer.alist(config):
         if count >= limit:
             break
         yield checkpoint_tuple
@@ -591,4 +582,157 @@ async def get_workflow_status(thread_id: str):
         raise HTTPException(
             status_code=500,
             detail=f"Failed to check workflow status: {str(e)}"
+        )
+
+
+@router.post("/{thread_id}/summarize", status_code=200)
+async def trigger_summarization(
+    thread_id: str,
+    keep_messages: int = Query(default=5, ge=1, le=20, description="Number of recent messages to preserve")
+):
+    """
+    Manually trigger conversation summarization for a thread.
+
+    This summarizes the conversation history and updates the thread state,
+    preserving the last `keep_messages` messages. Unlike automatic summarization
+    which triggers based on token count, this endpoint allows explicit summarization
+    at any time.
+
+    The summarization replaces all existing messages with:
+    1. A summary message containing the conversation context
+    2. The last N preserved messages (specified by keep_messages)
+
+    Args:
+        thread_id: The thread/conversation ID to summarize
+        keep_messages: Number of recent messages to preserve (1-20, default 5)
+
+    Returns:
+        JSON response with:
+        - success: Whether summarization completed
+        - thread_id: The thread ID
+        - original_message_count: Number of messages before summarization
+        - new_message_count: Number of messages after (1 summary + preserved)
+        - summary_length: Character length of the generated summary
+
+    Raises:
+        404: Thread not found
+        400: Not enough messages to summarize
+        500: Checkpointer not initialized or other internal error
+
+    Example:
+        POST /api/v1/workflow/abc123/summarize?keep_messages=5
+        Response: {
+            "success": true,
+            "thread_id": "abc123",
+            "original_message_count": 45,
+            "new_message_count": 6,
+            "summary_length": 1234
+        }
+    """
+    try:
+        # Import dependencies
+        from src.server.database import conversation as qr_db
+        from src.server.services.workspace_manager import WorkspaceManager
+        from ptc_agent.agent.graph import build_ptc_graph_with_session
+        from ptc_agent.agent.middleware.summarization import summarize_messages
+        from src.config.settings import get_summarization_config
+
+        # 1. Validate thread exists and get workspace_id
+        thread_info = await qr_db.get_thread_with_summary(thread_id)
+        if not thread_info:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Thread not found: {thread_id}"
+            )
+
+        workspace_id = thread_info.get("workspace_id")
+        if not workspace_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Thread {thread_id} has no associated workspace"
+            )
+
+        # 2. Get session for the workspace
+        workspace_manager = WorkspaceManager.get_instance()
+        try:
+            session = await workspace_manager.get_session_for_workspace(workspace_id)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except RuntimeError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        # 3. Verify checkpointer is available
+        checkpointer = get_checkpointer()
+
+        # 4. Build graph to access state (use global config from setup)
+        if not setup.agent_config:
+            raise HTTPException(
+                status_code=500,
+                detail="Agent configuration not initialized"
+            )
+
+        graph = await build_ptc_graph_with_session(
+            session=session,
+            config=setup.agent_config,
+            checkpointer=checkpointer,
+        )
+
+        # 5. Get current state
+        config = build_checkpoint_config(thread_id)
+        state = await graph.aget_state(config)
+
+        if not state or not state.values:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No state found for thread: {thread_id}"
+            )
+
+        messages = state.values.get("messages", [])
+        if not messages:
+            raise HTTPException(
+                status_code=400,
+                detail="No messages to summarize"
+            )
+
+        original_count = len(messages)
+
+        # 6. Call summarize_messages
+        summarization_config = get_summarization_config()
+        model_name = summarization_config.get("llm", "gpt-5-nano")
+
+        try:
+            result = await summarize_messages(
+                messages=messages,
+                keep_messages=keep_messages,
+                model_name=model_name,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        # 7. Update state with summarized messages
+        await graph.aupdate_state(
+            config,
+            {"messages": result["messages"]},
+        )
+
+        logger.info(
+            f"Manual summarization completed for thread {thread_id}: "
+            f"{original_count} -> {result['preserved_count']} messages"
+        )
+
+        return {
+            "success": True,
+            "thread_id": thread_id,
+            "original_message_count": original_count,
+            "new_message_count": result["preserved_count"],
+            "summary_length": len(result.get("summary_text", "")),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error triggering summarization for thread {thread_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to trigger summarization: {str(e)}"
         )
