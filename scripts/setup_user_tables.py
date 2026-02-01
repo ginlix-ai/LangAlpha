@@ -24,12 +24,6 @@ import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
 
-# On Windows, psycopg async requires SelectorEventLoop (not ProactorEventLoop)
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(
-        asyncio.WindowsSelectorEventLoopPolicy()
-    )
-
 # Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))

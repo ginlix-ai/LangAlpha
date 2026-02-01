@@ -18,6 +18,7 @@ http:
         "symbol": "AAPL",
         "instrument_type": "stock",
         "exchange": "NASDAQ",
+        "name": "Apple Inc.",
         "quantity": "10.5",
         "average_cost": "175.50",
         "currency": "USD",

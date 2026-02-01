@@ -412,6 +412,7 @@ async def _upsert_portfolio_holding(config: RunnableConfig, data: dict[str, Any]
             average_cost=Decimal(str(average_cost)) if average_cost else None,
             currency=data.get("currency", "USD"),
             exchange=data.get("exchange"),
+            name=data.get("name"),
             account_name=data.get("account_name"),
             notes=data.get("notes"),
             first_purchased_at=purchase_date,

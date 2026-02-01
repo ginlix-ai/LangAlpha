@@ -6,7 +6,7 @@
 
 llm:
   # Model name from src/llms/manifest/models.json
-  name: "glm-4.7"
+  name: "claude-sonnet-4-5" # 切换到 Claude Sonnet 4.5（原：minimax-m2.1）
 
 daytona:
   # Daytona sandbox configuration

@@ -525,7 +525,6 @@
       }
     }
   },
-  
   "glm-4.7": {
     "model_id": "glm-4.7",
     "provider": "z-ai",
