@@ -6,7 +6,7 @@ markdown files. These files provide context to the agent but cannot be modified
 directly - agents must use the user-profile skill instead.
 
 Directory structure in sandbox:
-    /home/daytona/user/
+    /home/daytona/.agent/user/
     ├── preference.md      # User preferences (risk, investment, agent settings)
     ├── watchlist.md       # All watchlists with symbols
     └── portfolio.md       # Holdings (symbol, quantity, cost basis)
@@ -23,7 +23,7 @@ from src.server.database import portfolio as portfolio_db
 logger = logging.getLogger(__name__)
 
 # Sandbox directory for user data files
-USER_DATA_DIR = "user"
+USER_DATA_DIR = ".agent/user"
 USER_DATA_SANDBOX_PATH = f"/home/daytona/{USER_DATA_DIR}"
 
 # File names

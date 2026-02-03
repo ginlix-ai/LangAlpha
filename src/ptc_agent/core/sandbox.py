@@ -2219,7 +2219,7 @@ class PTCSandbox:
                 search_path = {search_path!r}
 
                 full_pattern = os.path.join(search_path, pattern)
-                matches = glob.glob(full_pattern, recursive=True)
+                matches = glob.glob(full_pattern, recursive=True, include_hidden=True)
                 files = [f for f in matches if os.path.isfile(f)]
 
                 try:

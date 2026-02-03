@@ -24,7 +24,7 @@ VISUAL_EXTENSIONS = IMAGE_EXTENSIONS | DOCUMENT_EXTENSIONS
 OperationCallback = Callable[[dict[str, Any]], None]
 
 # Protected user data directory and files
-_PROTECTED_USER_DIR = "user/"
+_PROTECTED_USER_DIR = ".agent/user/"
 _PROTECTED_USER_FILES = {"preference.md", "watchlist.md", "portfolio.md"}
 
 
@@ -32,7 +32,7 @@ def _is_protected_user_path(path: str) -> bool:
     """Check if path is in the protected user data directory."""
     normalized = path.lstrip("/")
     # Check sandbox absolute path
-    if normalized.startswith("home/daytona/user/"):
+    if normalized.startswith("home/daytona/.agent/user/"):
         return True
     # Check relative path
     if normalized.startswith(_PROTECTED_USER_DIR):

@@ -29,7 +29,7 @@ from src.server.services.workspace_manager import WorkspaceManager
 
 router = APIRouter(prefix="/api/v1/workspaces", tags=["Workspace Files"])
 
-_SYSTEM_DIR_PREFIXES = ("code/", "tools/", "mcp_servers/", "skills/")
+_SYSTEM_DIR_PREFIXES = ("code/", "tools/", "mcp_servers/", "skills/", ".agent/")
 
 # Hidden internal directories (used for SDKs/packages uploaded into the sandbox).
 # These should not show up in `/files` output unless the user explicitly lists them.
@@ -102,12 +102,11 @@ def _is_always_hidden_path(client_path: str) -> bool:
     return False
 
 
-def _requested_hidden_ok(path: str) -> bool:
-    """Return True if caller explicitly requested a hidden directory."""
-
+def _normalize_requested_path(path: str) -> str:
+    """Normalize a requested path for comparison."""
     raw = (path or "").strip()
     if raw in {"", ".", "./"}:
-        return False
+        return ""
 
     normalized = raw
     if normalized.startswith("/home/daytona/"):
@@ -117,7 +116,26 @@ def _requested_hidden_ok(path: str) -> bool:
     if normalized.startswith("./"):
         normalized = normalized[2:]
 
+    return normalized
+
+
+def _requested_hidden_ok(path: str) -> bool:
+    """Return True if caller explicitly requested a hidden directory."""
+    normalized = _normalize_requested_path(path)
+    if not normalized:
+        return False
     return normalized == "_internal" or normalized.startswith("_internal/")
+
+
+def _requested_system_ok(path: str) -> bool:
+    """Return True if caller explicitly requested a system directory."""
+    normalized = _normalize_requested_path(path)
+    if not normalized:
+        return False
+    return any(
+        normalized == prefix.rstrip("/") or normalized.startswith(prefix)
+        for prefix in _SYSTEM_DIR_PREFIXES
+    )
 
 
 @router.get("/{workspace_id}/files")
@@ -159,7 +177,8 @@ async def list_workspace_files(
         if not allow_hidden and _is_hidden_path(client_path):
             continue
 
-        if not include_system and _is_system_path(client_path):
+        # Hide system directories unless explicitly requested or include_system=True.
+        if not include_system and _is_system_path(client_path) and not _requested_system_ok(path):
             continue
 
         files.append(client_path)
