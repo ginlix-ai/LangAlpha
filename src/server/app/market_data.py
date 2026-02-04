@@ -286,6 +286,7 @@ async def get_batch_indexes_intraday(
 async def search_stocks(
     query: str = Query(..., description="Search query (symbol or company name)", min_length=1),
     limit: int = Query(50, description="Maximum number of results to return", ge=1, le=100),
+    exchange: list[str] = Query(default=[], description="Filter by exchange short names (e.g., NASDAQ, NYSE)"),
 ) -> StockSearchResponse:
     """
     Search for stocks by keyword.
@@ -321,7 +322,15 @@ async def search_stocks(
                     exchangeShortName=item.get("exchangeShortName"),
                 )
                 results.append(result)
-            
+
+            # Filter by exchange if specified
+            if exchange:
+                exchange_set = {e.upper() for e in exchange}
+                results = [
+                    r for r in results
+                    if r.exchangeShortName and r.exchangeShortName.upper() in exchange_set
+                ]
+
             return StockSearchResponse(
                 query=query.strip(),
                 results=results,
