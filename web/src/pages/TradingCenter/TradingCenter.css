@@ -5,4 +5,19 @@
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
+  overflow: hidden;
+}
+
+.trading-content-wrapper {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.trading-left-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background-color: #0f1422;
 }
