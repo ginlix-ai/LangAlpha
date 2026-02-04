@@ -21,6 +21,9 @@ cd stealth-agent
 # Create virtual environment and install dependencies
 uv sync
 
+# Install browser dependencies for web crawling
+crawl4ai-setup
+
 # Activate the virtual environment
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
