@@ -4,7 +4,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import WorkspaceCard from './WorkspaceCard';
 import CreateWorkspaceModal from './CreateWorkspaceModal';
 import DeleteConfirmModal from './DeleteConfirmModal';
-import { getWorkspaces, createWorkspace, deleteWorkspace } from '@/api';
+import { getWorkspaces, createWorkspace, deleteWorkspace } from '../utils/api';
 
 /**
  * WorkspaceGallery Component
@@ -82,20 +82,33 @@ function WorkspaceGallery({ onWorkspaceSelect }) {
 
   /**
    * Handles delete icon click - opens confirmation modal
+   * Prevents deletion of "Stealth Agent" workspace (default workspace)
    * @param {Object} workspace - The workspace to delete
    */
   const handleDeleteClick = (workspace) => {
+    // Prevent deletion of default "Stealth Agent" workspace
+    if (workspace.name === 'Stealth Agent') {
+      return;
+    }
     setDeleteModal({ isOpen: true, workspace });
     setDeleteError(null);
   };
 
   /**
    * Handles confirmed workspace deletion
+   * Prevents deletion of "Stealth Agent" workspace (default workspace)
    */
   const handleConfirmDelete = async () => {
     if (!deleteModal.workspace) return;
 
     const workspaceToDelete = deleteModal.workspace;
+    
+    // Prevent deletion of default "Stealth Agent" workspace
+    if (workspaceToDelete.name === 'Stealth Agent') {
+      setDeleteError('Cannot delete the default "Stealth Agent" workspace.');
+      return;
+    }
+    
     const workspaceId = workspaceToDelete.workspace_id;
 
     if (!workspaceId) {

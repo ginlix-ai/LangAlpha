@@ -3,7 +3,7 @@
  * Use watchlistId "default" for the user's default watchlist.
  * GET/POST /api/v1/users/me/watchlists/:id/items, PUT/DELETE .../items/:itemId
  */
-import { api, headers, DEFAULT_USER_ID } from './client.js';
+import { api, headers, DEFAULT_USER_ID } from '@/api/client';
 
 export async function listWatchlistItems(
   watchlistId,

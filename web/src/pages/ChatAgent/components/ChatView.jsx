@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import { ScrollArea } from '../../../components/ui/scroll-area';
 import ChatInput from './ChatInput';
@@ -13,13 +14,31 @@ import { useChatMessages } from '../hooks/useChatMessages';
  * - Message display and streaming
  * - Auto-scrolling
  * - Navigation back to gallery
+ * - Auto-sending initial message from navigation state
  * 
  * @param {string} workspaceId - The workspace ID to chat in
  * @param {Function} onBack - Callback to navigate back to gallery
  */
 function ChatView({ workspaceId, onBack }) {
   const scrollAreaRef = useRef(null);
+  const location = useLocation();
+  const navigate = useNavigate();
   const { messages, isLoading, isLoadingHistory, messageError, handleSendMessage } = useChatMessages(workspaceId);
+  const initialMessageSentRef = useRef(false);
+
+  // Auto-send initial message from navigation state (e.g., from Dashboard)
+  useEffect(() => {
+    if (location.state?.initialMessage && !initialMessageSentRef.current && workspaceId && !isLoading && !isLoadingHistory) {
+      const { initialMessage, planMode } = location.state;
+      initialMessageSentRef.current = true;
+      // Clear navigation state to prevent re-sending on re-renders
+      navigate(location.pathname, { replace: true, state: {} });
+      // Small delay to ensure component is fully mounted
+      setTimeout(() => {
+        handleSendMessage(initialMessage, planMode || false);
+      }, 100);
+    }
+  }, [location.state, workspaceId, isLoading, isLoadingHistory, handleSendMessage, navigate, location.pathname]);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {

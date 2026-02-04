@@ -6,18 +6,13 @@ import { Input } from '../../../components/ui/input';
 import { ScrollArea } from '../../../components/ui/scroll-area';
 
 /**
- * Portfolio panel: table + add/edit modals. Data and handlers via props.
+ * Portfolio panel: table + edit modal. Add modal is handled separately via AddPortfolioHoldingDialog.
  */
 function PortfolioCard({
   rows = [],
   loading = false,
   hasRealHoldings = false,
-  addModalOpen = false,
-  onAddModalClose,
   onHeaderAddClick,
-  addForm = {},
-  onAddFormChange,
-  onAddSubmit,
   editRow = null,
   editForm = {},
   onEditFormChange,
@@ -40,87 +35,14 @@ function PortfolioCard({
 
   return (
     <Card className="panel flex flex-col flex-1 min-h-0">
-      <Dialog open={addModalOpen} onOpenChange={(open) => !open && onAddModalClose?.()}>
-        <CardHeader className="px-3 py-4 flex-shrink-0">
-          <button type="button" onClick={onHeaderAddClick} className="flex items-center justify-between w-full text-left">
-            <CardTitle className="dashboard-title-font text-base font-semibold" style={{ color: 'var(--color-text-primary)', letterSpacing: '0.15px' }}>
-              Create My Portfolio
-            </CardTitle>
-            <Plus className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-primary)' }} />
-          </button>
-        </CardHeader>
-        <DialogContent className="sm:max-w-sm text-white border" style={{ backgroundColor: 'var(--color-bg-elevated)', borderColor: 'var(--color-border-elevated)' }}>
-          <DialogHeader>
-            <DialogTitle className="dashboard-title-font" style={{ color: 'var(--color-text-primary)' }}>Add holding</DialogTitle>
-          </DialogHeader>
-          <div className="grid gap-3 py-2" onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); onAddSubmit?.(); } }}>
-            <div>
-              <label className="text-xs text-gray-400 block mb-1">Symbol *</label>
-              <Input
-                placeholder="e.g. AAPL"
-                value={addForm.symbol ?? ''}
-                onChange={(e) => onAddFormChange?.({ ...addForm, symbol: e.target.value })}
-                className="text-white placeholder:text-gray-500 border"
-                style={{ backgroundColor: 'var(--color-bg-card)', borderColor: 'var(--color-border-default)' }}
-              />
-            </div>
-            <div>
-              <label className="text-xs text-gray-400 block mb-1">Quantity *</label>
-              <Input
-                type="number"
-                min="0"
-                step="any"
-                placeholder="e.g. 10.5"
-                value={addForm.quantity ?? ''}
-                onChange={(e) => onAddFormChange?.({ ...addForm, quantity: e.target.value })}
-                className="text-white placeholder:text-gray-500 border"
-                style={{ backgroundColor: 'var(--color-bg-card)', borderColor: 'var(--color-border-default)' }}
-              />
-            </div>
-            <div>
-              <label className="text-xs text-gray-400 block mb-1">Average Cost *</label>
-              <Input
-                type="number"
-                min="0"
-                step="any"
-                placeholder="e.g. 175.50"
-                value={addForm.averageCost ?? ''}
-                onChange={(e) => onAddFormChange?.({ ...addForm, averageCost: e.target.value })}
-                className="text-white placeholder:text-gray-500 border"
-                style={{ backgroundColor: 'var(--color-bg-card)', borderColor: 'var(--color-border-default)' }}
-              />
-            </div>
-            <div>
-              <label className="text-xs text-gray-400 block mb-1">Account Name</label>
-              <Input
-                placeholder="e.g. Robinhood"
-                value={addForm.accountName ?? ''}
-                onChange={(e) => onAddFormChange?.({ ...addForm, accountName: e.target.value })}
-                className="text-white placeholder:text-gray-500 border"
-                style={{ backgroundColor: 'var(--color-bg-card)', borderColor: 'var(--color-border-default)' }}
-              />
-            </div>
-            <div>
-              <label className="text-xs text-gray-400 block mb-1">Notes</label>
-              <Input
-                placeholder="Optional"
-                value={addForm.notes ?? ''}
-                onChange={(e) => onAddFormChange?.({ ...addForm, notes: e.target.value })}
-                className="text-white placeholder:text-gray-500 border"
-                style={{ backgroundColor: 'var(--color-bg-card)', borderColor: 'var(--color-border-default)' }}
-              />
-            </div>
-          </div>
-          <div className="flex justify-end gap-2 pt-2">
-            <button type="button" onClick={onAddModalClose} className="px-3 py-1.5 rounded text-sm border hover:bg-white/10" style={{ color: 'var(--color-text-primary)', borderColor: 'var(--color-border-default)' }}>
-              Cancel
-            </button>
-            <button type="button" onClick={onAddSubmit} className="px-4 py-1.5 rounded text-sm font-medium hover:opacity-90" style={{ backgroundColor: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}>
-              Add
-            </button>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <CardHeader className="px-3 py-4 flex-shrink-0">
+        <button type="button" onClick={onHeaderAddClick} className="flex items-center justify-between w-full text-left">
+          <CardTitle className="dashboard-title-font text-base font-semibold" style={{ color: 'var(--color-text-primary)', letterSpacing: '0.15px' }}>
+            Add Portfolio Holding
+          </CardTitle>
+          <Plus className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-primary)' }} />
+        </button>
+      </CardHeader>
 
       <Dialog open={!!editRow} onOpenChange={(open) => !open && onEditClose?.()}>
         <DialogContent className="sm:max-w-sm text-white border" style={{ backgroundColor: 'var(--color-bg-elevated)', borderColor: 'var(--color-border-elevated)' }}>

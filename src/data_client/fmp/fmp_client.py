@@ -1178,6 +1178,36 @@ class FMPClient:
                                         params=params,
                                         version="stable")
 
+    # Stock Search
+    async def search_stocks(self, query: str, limit: int = 50) -> List[Dict]:
+        """
+        Search for stocks by symbol or company name.
+
+        Uses FMP API's search endpoint to find matching stocks based on keywords.
+        Searches both ticker symbols and company names.
+
+        Args:
+            query: Search query (e.g., "AAPL", "Apple", "Microsoft")
+            limit: Maximum number of results to return (default 50)
+
+        Returns:
+            List of stock search results with:
+            - symbol: Stock ticker symbol
+            - name: Company name
+            - currency: Currency code
+            - stockExchange: Stock exchange
+            - exchangeShortName: Short exchange name
+
+        Example:
+            # Search for Apple
+            results = await client.search_stocks("Apple", limit=10)
+        """
+        return await self._make_request(
+            "search",
+            params={"query": query, "limit": limit},
+            use_cache=True  # Cache search results for better performance
+        )
+
     # Utility Methods
     def clear_cache(self):
         """Clear all cached data"""

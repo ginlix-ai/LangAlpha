@@ -2,7 +2,7 @@
  * Portfolio CRUD API.
  * GET /api/v1/users/me/portfolio, POST, PUT /:id, DELETE /:id
  */
-import { api, headers, DEFAULT_USER_ID } from './client.js';
+import { api, headers, DEFAULT_USER_ID } from '@/api/client';
 
 export async function listPortfolio(userId = DEFAULT_USER_ID) {
   const { data } = await api.get('/api/v1/users/me/portfolio', {

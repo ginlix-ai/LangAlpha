@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Input, Button, message } from 'antd';
-import { fetchHello } from '@/api';
+import { fetchHello } from './utils/api';
 import './HelloComponent.css';
 
 function HelloComponent() {

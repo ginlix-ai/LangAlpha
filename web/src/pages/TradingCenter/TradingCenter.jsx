@@ -1,15 +1,60 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import './TradingCenter.css';
 import TopBar from './components/TopBar';
 import StockHeader from './components/StockHeader';
 import TradingChart from './components/TradingChart';
 import TradingPanel from './components/TradingPanel';
+import { fetchRealTimePrice, fetchStockInfo } from './utils/api';
 
 function TradingCenter() {
   const [selectedStock, setSelectedStock] = useState('MSFT');
   const [stockInfo, setStockInfo] = useState(null);
   const [realTimePrice, setRealTimePrice] = useState(null);
   const chartRef = useRef();
+
+  // Fetch stock info and real-time price when selected stock changes
+  useEffect(() => {
+    if (!selectedStock) return;
+
+    const loadStockData = async () => {
+      try {
+        // Fetch stock info and real-time price in parallel
+        const [info, price] = await Promise.all([
+          fetchStockInfo(selectedStock),
+          fetchRealTimePrice(selectedStock).catch(() => null), // Don't fail if price fetch fails
+        ]);
+        
+        setStockInfo(info);
+        if (price) {
+          setRealTimePrice(price);
+        }
+      } catch (error) {
+        console.error('Error loading stock data:', error);
+        // Set basic info on error
+        setStockInfo({
+          Symbol: selectedStock,
+          Name: `${selectedStock} Corp`,
+          Exchange: 'NASDAQ',
+        });
+      }
+    };
+
+    loadStockData();
+
+    // Set up interval to refresh real-time price every minute
+    const priceInterval = setInterval(async () => {
+      try {
+        const price = await fetchRealTimePrice(selectedStock);
+        setRealTimePrice(price);
+      } catch (error) {
+        console.error('Error refreshing real-time price:', error);
+      }
+    }, 60000); // Refresh every minute
+
+    return () => {
+      clearInterval(priceInterval);
+    };
+  }, [selectedStock]);
 
   const handleCaptureChart = async () => {
     if (!chartRef.current) return;

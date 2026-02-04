@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef } f
 import { createChart, ColorType } from 'lightweight-charts';
 import html2canvas from 'html2canvas';
 import './TradingChart.css';
-import { fetchStockData } from '../../../utils/stockApiFMP';
+import { fetchStockData } from '../utils/api';
 
 const TradingChart = forwardRef(({ symbol, onCapture }, ref) => {
   const chartContainerRef = useRef();

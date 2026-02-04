@@ -43,8 +43,8 @@ function WorkspaceCard({ workspace, onClick, onDelete }) {
     >
       {/* Action icons */}
       <div className="absolute top-3 right-3 flex items-center gap-1">
-        {/* Delete icon */}
-        {onDelete && (
+        {/* Delete icon - Hide for "Stealth Agent" workspace (default workspace) */}
+        {onDelete && workspace.name !== 'Stealth Agent' && (
           <button
             onClick={handleDeleteClick}
             className="p-1.5 rounded-full transition-colors hover:bg-red-500/20"

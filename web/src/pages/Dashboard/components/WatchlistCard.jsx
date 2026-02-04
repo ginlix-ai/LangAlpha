@@ -1,23 +1,16 @@
 import React, { useState } from 'react';
 import { MoreVertical, Plus, Trash2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../../components/ui/dialog';
-import { Input } from '../../../components/ui/input';
 import { ScrollArea } from '../../../components/ui/scroll-area';
 
 /**
- * Watchlist panel: table + add modal. Data and handlers via props.
+ * Watchlist panel: table. Add modal is handled separately via AddWatchlistItemDialog.
  * rows = [{ item_id?, symbol, price, change, changePercent, isPositive }]
  */
 function WatchlistCard({
   rows = [],
   loading = false,
-  addModalOpen = false,
-  onAddModalClose,
   onHeaderAddClick,
-  addSymbol = '',
-  onAddSymbolChange,
-  onAddSubmit,
   onDeleteItem,
 }) {
   const [menuOpenId, setMenuOpenId] = useState(null);
@@ -32,7 +25,7 @@ function WatchlistCard({
       <CardHeader className="px-3 py-4 flex-shrink-0">
         <button type="button" onClick={onHeaderAddClick} className="flex items-center justify-between w-full text-left">
           <CardTitle className="dashboard-title-font text-base font-semibold" style={{ color: 'var(--color-text-primary)', letterSpacing: '0.15px' }}>
-            Create watchlist
+            Add Watchlist Item
           </CardTitle>
           <Plus className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-primary)' }} />
         </button>
@@ -107,31 +100,6 @@ function WatchlistCard({
           </table>
         </ScrollArea>
       </CardContent>
-
-      <Dialog open={addModalOpen} onOpenChange={(open) => !open && onAddModalClose?.()}>
-        <DialogContent className="sm:max-w-sm text-white border" style={{ backgroundColor: 'var(--color-bg-elevated)', borderColor: 'var(--color-border-elevated)' }}>
-          <DialogHeader>
-            <DialogTitle className="dashboard-title-font" style={{ color: 'var(--color-text-primary)' }}>Add stock</DialogTitle>
-          </DialogHeader>
-          <div className="flex gap-2 pt-2" onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); onAddSubmit?.(); } }}>
-            <Input
-              placeholder="Symbol (e.g. AAPL)"
-              value={addSymbol}
-              onChange={(e) => onAddSymbolChange?.(e.target.value)}
-              className="flex-1 text-white placeholder:text-gray-500 border"
-              style={{ backgroundColor: 'var(--color-bg-card)', borderColor: 'var(--color-border-default)' }}
-            />
-            <button
-              type="button"
-              onClick={onAddSubmit}
-              className="px-4 py-2 rounded font-medium shrink-0 hover:opacity-90"
-              style={{ backgroundColor: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}
-            >
-              Add
-            </button>
-          </div>
-        </DialogContent>
-      </Dialog>
     </Card>
   );
 }

@@ -16,6 +16,8 @@ from src.server.models.market_data import (
     BatchIntradayResponse,
     CacheMetadata,
     BatchCacheStats,
+    StockSearchResult,
+    StockSearchResponse,
     STOCK_INTERVALS,
     INDEX_INTERVALS,
 )
@@ -23,6 +25,7 @@ from src.server.services.intraday_cache_service import (
     IntradayCacheService,
     IntradayCacheKeyBuilder,
 )
+from src.data_client.fmp.fmp_client import FMPClient
 
 logger = logging.getLogger(__name__)
 
@@ -267,3 +270,70 @@ async def get_batch_indexes_intraday(
     except Exception as e:
         logger.error(f"Error fetching batch index intraday data: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Stock Search Endpoint
+# =============================================================================
+
+
+@router.get(
+    "/search/stocks",
+    response_model=StockSearchResponse,
+    summary="Search stocks by keyword",
+    description="Search for stocks by symbol or company name using keywords.",
+)
+async def search_stocks(
+    query: str = Query(..., description="Search query (symbol or company name)", min_length=1),
+    limit: int = Query(50, description="Maximum number of results to return", ge=1, le=100),
+) -> StockSearchResponse:
+    """
+    Search for stocks by keyword.
+    
+    Searches both ticker symbols and company names. Returns matching stocks
+    with their symbols, names, and exchange information.
+    
+    Example queries:
+    - "AAPL" - Find by symbol
+    - "Apple" - Find by company name
+    - "Micro" - Partial match
+    """
+    if not query or not query.strip():
+        raise HTTPException(status_code=422, detail="Query parameter is required and cannot be empty")
+    
+    try:
+        # Create FMP client instance
+        fmp_client = FMPClient()
+        
+        try:
+            # Call FMP API search endpoint
+            raw_results = await fmp_client.search_stocks(query=query.strip(), limit=limit)
+            
+            # Convert raw results to Pydantic models
+            results = []
+            for item in raw_results:
+                # Handle different response formats from FMP API
+                result = StockSearchResult(
+                    symbol=item.get("symbol", ""),
+                    name=item.get("name", ""),
+                    currency=item.get("currency"),
+                    stockExchange=item.get("stockExchange"),
+                    exchangeShortName=item.get("exchangeShortName"),
+                )
+                results.append(result)
+            
+            return StockSearchResponse(
+                query=query.strip(),
+                results=results,
+                count=len(results),
+            )
+            
+        finally:
+            # Always close the client
+            await fmp_client.close()
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error searching stocks for query '{query}': {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to search stocks: {str(e)}")
