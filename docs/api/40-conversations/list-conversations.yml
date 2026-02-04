@@ -1,0 +1,90 @@
+info:
+  name: List Conversations
+  type: http
+  seq: 2
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/conversations?limit={{conv_limit}}&offset={{conv_offset}}&sort_by={{conv_sort_by}}&sort_order={{conv_sort_order}}"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  params:
+    - name: limit
+      value: "{{conv_limit}}"
+      type: query
+    - name: offset
+      value: "{{conv_offset}}"
+      type: query
+    - name: sort_by
+      value: "{{conv_sort_by}}"
+      type: query
+    - name: sort_order
+      value: "{{conv_sort_order}}"
+      type: query
+  auth: inherit
+
+runtime:
+  variables:
+    - name: conv_limit
+      value: "20"
+    - name: conv_offset
+      value: "0"
+    - name: conv_sort_by
+      value: updated_at
+    - name: conv_sort_order
+      value: desc
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## List Conversations
+
+  List all threads across all workspaces for a user.
+
+  ### Headers
+  - `X-User-Id` (required): User identifier
+
+  ### Query Parameters
+  - `limit` (optional): Maximum threads to return (1-100). Defaults to 20
+  - `offset` (optional): Pagination offset. Defaults to 0
+  - `sort_by` (optional): Field to sort by (created_at, updated_at). Defaults to updated_at
+  - `sort_order` (optional): Sort direction (asc, desc). Defaults to desc
+
+  ### Response Fields
+  - `threads`: Array of thread items
+    - `thread_id`: Thread identifier
+    - `workspace_id`: Workspace identifier
+    - `thread_index`: Thread index within workspace
+    - `current_status`: Thread status
+    - `msg_type`: Message type
+    - `first_query_content`: First user query content (preview)
+    - `created_at`: Creation timestamp
+    - `updated_at`: Last update timestamp
+  - `total`: Total number of threads
+  - `limit`: Page limit used
+  - `offset`: Page offset used
+
+  ### Error Responses
+  - 500: Database error during retrieval
+
+tests:
+  test1: |
+    test("should return 200", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("response should have threads array", function() {
+      expect(res.body.threads).to.be.an("array");
+    });
+  test3: |
+    test("response should have total count", function() {
+      expect(res.body.total).to.be.a("number");
+    });
+  test4: |
+    test("response should have pagination info", function() {
+      expect(res.body.limit).to.be.a("number");
+      expect(res.body.offset).to.be.a("number");
+    });

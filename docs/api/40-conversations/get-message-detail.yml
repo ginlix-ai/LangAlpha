@@ -1,0 +1,70 @@
+info:
+  name: Get Message Detail
+  type: http
+  seq: 5
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/messages/{{response_id}}"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Get Message Detail
+
+  Get complete message/response details by response_id.
+
+  This is an admin/debug endpoint that returns all fields including
+  state_snapshot and agent_messages.
+
+  ### Path Parameters
+  - `response_id`: Response identifier
+
+  ### Response Fields
+  - `response_id`: Response identifier
+  - `thread_id`: Thread identifier
+  - `pair_index`: Query-response pair index
+  - `status`: Response status (completed, interrupted, error, timeout)
+  - `interrupt_reason`: Interrupt reason if applicable
+  - `state_snapshot`: Complete LangGraph state snapshot (debug)
+  - `agent_messages`: Agent messages by agent name
+  - `metadata`: Response metadata
+  - `warnings`: Warning messages array
+  - `errors`: Error messages array
+  - `execution_time`: Execution time in seconds
+  - `timestamp`: Response timestamp
+
+  ### Use Cases
+  - Debugging workflow execution
+  - Inspecting agent decision making
+  - Analyzing state transitions
+  - Admin troubleshooting
+
+  ### Error Responses
+  - 404: Response not found
+  - 500: Database error during retrieval
+
+tests:
+  test1: |
+    test("should return 200", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("response should have response_id", function() {
+      expect(res.body.response_id).to.be.a("string");
+    });
+  test3: |
+    test("response should have thread_id", function() {
+      expect(res.body.thread_id).to.be.a("string");
+    });
+  test4: |
+    test("response should have status", function() {
+      expect(res.body.status).to.be.a("string");
+    });
+  test5: |
+    test("response should have execution_time", function() {
+      expect(res.body.execution_time).to.be.a("number");
+    });

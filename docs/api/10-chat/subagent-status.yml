@@ -1,0 +1,66 @@
+info:
+  name: Stream Subagent Status
+  type: http
+  seq: 3
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/chat/stream/{{thread_id}}/status"
+  headers:
+    - name: Accept
+      value: text/event-stream
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+
+docs: |
+  ## Stream Subagent Status
+
+  Stream subagent status updates for a thread.
+
+  ### Features
+  - Real-time updates on active subagent tasks
+  - Polls every 1 second for status changes
+  - Only emits events when status changes
+  - Automatically closes when no active tasks remain
+
+  ### SSE Event Format
+  Event type: `subagent_status`
+
+  ```json
+  {
+    "thread_id": "thread-123",
+    "active_tasks": [
+      {
+        "id": "task-1",
+        "description": "Researching topic...",
+        "type": "research",
+        "tool_calls": 5,
+        "current_tool": "web_search"
+      }
+    ],
+    "completed_tasks": ["task-0"],
+    "timestamp": "2024-01-15T10:30:00Z"
+  }
+  ```
+
+  ### Active Task Fields
+  - `id`: Task display ID
+  - `description`: Brief description (max 100 chars)
+  - `type`: Subagent type (e.g., 'research', 'general')
+  - `tool_calls`: Total tool calls made
+  - `current_tool`: Currently executing tool name
+
+tests:
+  test1: |
+    test("should return 200 for SSE stream", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("should have SSE content type", function() {
+      expect(res.headers["content-type"]).to.include("text/event-stream");
+    });

@@ -1,0 +1,61 @@
+info:
+  name: List Watchlist Items
+  type: http
+  seq: 6
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/users/me/watchlists/{{watchlist_id}}/items"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## List Watchlist Items
+
+  Retrieve all items in a specific watchlist.
+
+  ### Path Parameters
+  - `watchlist_id`: UUID of the watchlist, or "default" to list items from the default watchlist
+
+  ### Response
+  Returns a `WatchlistItemsResponse` object containing:
+  - `items`: Array of watchlist item objects
+  - `total`: Total count of items
+
+  ### Watchlist Item Fields
+  - `item_id`: UUID of the item
+  - `watchlist_id`: Parent watchlist UUID
+  - `user_id`: Owner's user ID
+  - `symbol`: Instrument symbol (uppercase, e.g., "AAPL")
+  - `instrument_type`: One of: stock, etf, index, crypto, future, commodity, currency
+  - `exchange`: Optional exchange code (e.g., "NASDAQ")
+  - `name`: Optional full instrument name (e.g., "Apple Inc.")
+  - `notes`: Optional user notes
+  - `alert_settings`: Optional alert configuration object
+  - `metadata`: Optional additional metadata object
+  - `created_at`: Creation timestamp
+  - `updated_at`: Last update timestamp
+
+  ### Error Responses
+  - `404 Not Found`: Watchlist not found or not owned by user
+
+tests:
+  test1: |
+    test("should return 200", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("should return items array", function() {
+      expect(res.body.items).to.be.an('array');
+    });
+  test3: |
+    test("should include total count", function() {
+      expect(res.body).to.have.property('total');
+      expect(res.body.total).to.be.a('number');
+    });

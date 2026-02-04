@@ -1,0 +1,77 @@
+info:
+  name: Add Holding
+  type: http
+  seq: 2
+
+http:
+  method: POST
+  url: "{{base_url}}/api/v1/users/me/portfolio"
+  headers:
+    - name: Content-Type
+      value: application/json
+    - name: X-User-Id
+      value: "{{user_id}}"
+  body:
+    type: json
+    data: |-
+      {
+        "symbol": "AAPL",
+        "instrument_type": "stock",
+        "quantity": 100,
+        "exchange": "NASDAQ",
+        "name": "Apple Inc.",
+        "average_cost": 150.00,
+        "currency": "USD",
+        "account_name": "Main Brokerage",
+        "notes": "Long-term hold",
+        "metadata": {},
+        "first_purchased_at": "2024-01-15T10:30:00Z"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Add Holding
+
+  Add a holding to the portfolio.
+
+  ### Request Body Fields
+  - `symbol` (required): Instrument symbol (max 50 chars, auto-uppercased)
+  - `instrument_type` (required): Type of instrument
+    - Values: stock, etf, index, crypto, future, commodity, currency
+  - `quantity` (required): Number of units held (decimal)
+  - `exchange` (optional): Exchange name (max 50 chars, e.g., 'NASDAQ')
+  - `name` (optional): Full instrument name (max 255 chars)
+  - `average_cost` (optional): Average cost per unit (decimal)
+  - `currency` (optional): Currency code (max 10 chars, default: 'USD')
+  - `account_name` (optional): Account name (max 100 chars, e.g., 'Robinhood')
+  - `notes` (optional): User notes
+  - `metadata` (optional): Additional metadata object
+  - `first_purchased_at` (optional): First purchase date (ISO 8601)
+
+  ### Response
+  Returns the created portfolio holding.
+
+  ### Error Responses
+  - 409 Conflict: Holding already exists (same symbol + instrument_type + account_name)
+
+tests:
+  test1: |
+    test("should return 201 on success", function() {
+      expect(res.status).to.equal(201);
+    });
+  test2: |
+    test("should return holding_id", function() {
+      expect(res.body.holding_id).to.be.a("string");
+    });
+  test3: |
+    test("should return symbol in uppercase", function() {
+      expect(res.body.symbol).to.equal("AAPL");
+    });
+  test4: |
+    test("should return created_at timestamp", function() {
+      expect(res.body.created_at).to.be.a("string");
+    });

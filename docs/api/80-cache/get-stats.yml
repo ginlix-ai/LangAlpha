@@ -1,0 +1,41 @@
+info:
+  name: Get Cache Stats
+  type: http
+  seq: 1
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/cache/stats"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Get Cache Statistics
+
+  Get cache statistics and performance metrics.
+
+  Returns cache hit/miss rates, total requests, and health status.
+  Useful for monitoring cache performance.
+
+  ### Response Fields
+  - `hits`: Number of cache hits
+  - `misses`: Number of cache misses
+  - `total_requests`: Total number of cache requests
+  - `hit_rate`: Cache hit rate (percentage)
+  - `healthy`: Whether the cache is healthy and connected
+
+  ### Error Responses
+  - 500: Failed to retrieve cache stats
+
+tests:
+  test1: |
+    test("should return 200", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("should return healthy status", function() {
+      expect(res.body.healthy).to.be.a("boolean");
+    });

@@ -1,0 +1,37 @@
+info:
+  name: Health Check
+  type: http
+  seq: 1
+
+http:
+  method: GET
+  url: "{{base_url}}/health"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+
+tests:
+  test1: |
+    test("should return 200", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("should return healthy status", function() {
+      expect(res.body.status).to.equal("healthy");
+    });
+  test3: |
+    test("should return service name", function() {
+      expect(res.body.service).to.equal("ptc-agent");
+    });
+  test4: |
+    test("should return version", function() {
+      expect(res.body.version).to.be.a("string");
+    });
+  test5: |
+    test("should return timestamp", function() {
+      expect(res.body.timestamp).to.be.a("string");
+    });

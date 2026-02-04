@@ -1,0 +1,61 @@
+info:
+  name: Clear Cache
+  type: http
+  seq: 2
+
+http:
+  method: POST
+  url: "{{base_url}}/api/v1/cache/clear?pattern={{cache_pattern}}"
+  params:
+    - name: pattern
+      value: "{{cache_pattern}}"
+      type: query
+  auth: inherit
+
+runtime:
+  variables:
+    - name: cache_pattern
+      value: ""
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Clear Cache
+
+  Clear cache entries (admin endpoint).
+
+  **WARNING:** Use with caution - this will clear cached data.
+
+  ### Query Parameters
+  - `pattern` (optional): Cache key pattern to clear (e.g., 'workflow:*', 'fmp:*')
+    - If not provided, clears ALL caches (nuclear option)
+
+  ### Response Fields (with pattern)
+  - `message`: Confirmation message with count of deleted entries
+  - `deleted`: Number of cache entries deleted
+  - `pattern`: The pattern that was matched
+
+  ### Response Fields (without pattern)
+  - `message`: "Cleared ALL caches"
+  - `success`: Whether the operation succeeded
+
+  ### Example Patterns
+  - `workflow:*` - Clear all workflow-related cache entries
+  - `fmp:intraday:*` - Clear all intraday market data cache
+  - `fmp:intraday:stock:*` - Clear stock intraday cache only
+  - `fmp:intraday:index:*` - Clear index intraday cache only
+
+  ### Error Responses
+  - 500: Failed to clear cache
+
+tests:
+  test1: |
+    test("should return 200", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("should return message", function() {
+      expect(res.body.message).to.be.a("string");
+    });

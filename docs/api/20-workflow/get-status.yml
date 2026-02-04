@@ -1,0 +1,69 @@
+info:
+  name: Get Workflow Status
+  type: http
+  seq: 5
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/workflow/{{thread_id}}/status"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+tests:
+  test1: |
+    test("should return 200 with status", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("response should have thread_id", function() {
+      expect(res.body.thread_id).to.be.a("string");
+    });
+  test3: |
+    test("response should have status", function() {
+      expect(res.body.status).to.be.a("string");
+    });
+  test4: |
+    test("response should have can_reconnect boolean", function() {
+      expect(res.body.can_reconnect).to.be.a("boolean");
+    });
+
+docs: |
+  Get current workflow execution status.
+
+  Checks Redis for active/disconnected/completed status and combines
+  with checkpoint data for detailed progress information.
+
+  Returns workflow status, reconnection capability, and execution progress.
+
+  **Status Values:**
+  - `active`: Workflow is running with active connection
+  - `disconnected`: Workflow is running but client disconnected
+  - `completed`: Workflow finished successfully
+  - `cancelled`: Workflow was explicitly cancelled by user
+  - `unknown`: No tracking info found (may be old workflow or never started)
+
+  **Response Fields:**
+  - `thread_id`: Thread ID
+  - `status`: Current workflow status (see values above)
+  - `can_reconnect`: Whether reconnection is possible (true for active/disconnected)
+  - `last_update`: Timestamp of last status update
+  - `workspace_id`: Associated workspace ID
+  - `user_id`: User ID
+  - `progress`: Checkpoint progress info containing:
+    - `has_plan`: Whether a plan exists (false for PTC agent)
+    - `has_final_report`: Whether final report is generated
+    - `message_count`: Number of messages
+    - `completed`: Whether workflow is completed
+    - `checkpoint_id`: Current checkpoint ID
+  - `active_subagents`: List of active subagent names
+  - `completed_subagents`: List of completed subagent names
+  - `soft_interrupted`: Whether workflow was soft interrupted
+
+  **Error Responses:**
+  - 500: Failed to check workflow status

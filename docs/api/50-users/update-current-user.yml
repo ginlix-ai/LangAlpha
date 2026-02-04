@@ -1,0 +1,66 @@
+info:
+  name: Update Current User
+  type: http
+  seq: 3
+
+http:
+  method: PUT
+  url: "{{base_url}}/api/v1/users/me"
+  headers:
+    - name: Content-Type
+      value: application/json
+    - name: X-User-Id
+      value: "{{user_id}}"
+  body:
+    type: json
+    data: |-
+      {
+        "email": "updated@example.com",
+        "name": "Jane Doe",
+        "avatar_url": "https://example.com/new-avatar.png",
+        "timezone": "Europe/London",
+        "locale": "en-GB",
+        "onboarding_completed": true
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Update Current User
+
+  Update current user profile.
+
+  Updates user profile fields (not preferences). Only provided fields are updated.
+
+  ### Request Body Fields
+  - `email` (optional): User email address (max 255 chars)
+  - `name` (optional): User display name (max 255 chars)
+  - `avatar_url` (optional): URL to user avatar
+  - `timezone` (optional): User timezone (e.g., 'America/New_York')
+  - `locale` (optional): User locale (e.g., 'en-US')
+  - `onboarding_completed` (optional): Whether onboarding is completed
+
+  ### Response
+  Returns the updated user profile and preferences:
+  - `user`: Updated user profile object
+  - `preferences`: User preferences object (may be null if not set)
+
+  ### Error Responses
+  - 404 Not Found: User not found
+
+tests:
+  test1: |
+    test("should return 200", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("should return user object", function() {
+      expect(res.body.user).to.be.an("object");
+    });
+  test3: |
+    test("should return updated_at timestamp", function() {
+      expect(res.body.user.updated_at).to.be.a("string");
+    });

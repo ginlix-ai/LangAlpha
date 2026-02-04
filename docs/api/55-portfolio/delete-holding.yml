@@ -1,0 +1,40 @@
+info:
+  name: Delete Holding
+  type: http
+  seq: 5
+
+http:
+  method: DELETE
+  url: "{{base_url}}/api/v1/users/me/portfolio/{{holding_id}}"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Delete Holding
+
+  Remove a holding from the portfolio.
+
+  ### Path Parameters
+  - `holding_id`: Portfolio holding UUID
+
+  ### Response
+  Returns 204 No Content on success.
+
+  ### Error Responses
+  - 404 Not Found: Holding not found or not owned by user
+
+tests:
+  test1: |
+    test("should return 204 on success", function() {
+      expect(res.status).to.equal(204);
+    });
+  test2: |
+    test("should return empty body", function() {
+      expect(res.body).to.be.empty;
+    });

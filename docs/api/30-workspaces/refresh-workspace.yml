@@ -1,0 +1,75 @@
+info:
+  name: Refresh Workspace
+  type: http
+  seq: 7
+
+http:
+  method: POST
+  url: "{{base_url}}/api/v1/workspaces/{{workspace_id}}/refresh"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+tests:
+  test1: |
+    test("should return 200 on successful refresh", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("response should have workspace_id", function() {
+      expect(res.body.workspace_id).to.be.a("string");
+    });
+  test3: |
+    test("response should have status ok", function() {
+      expect(res.body.status).to.equal("ok");
+    });
+  test4: |
+    test("response should have message", function() {
+      expect(res.body.message).to.be.a("string");
+    });
+  test5: |
+    test("response should have refreshed_tools boolean", function() {
+      expect(res.body.refreshed_tools).to.be.a("boolean");
+    });
+  test6: |
+    test("response should have skills_uploaded boolean", function() {
+      expect(res.body.skills_uploaded).to.be.a("boolean");
+    });
+
+docs: |
+  Refresh sandbox skills and tool modules.
+
+  Intended for long-lived or reconnected sandboxes where tool module generation
+  is skipped during reconnect. This endpoint re-syncs skills and rebuilds
+  the sandbox tools/modules for enabled MCP servers.
+
+  **Headers:**
+  - `X-User-Id` (required): User ID (must be workspace owner)
+
+  **Path Parameters:**
+  - `workspace_id`: Workspace UUID
+
+  **Response Fields:**
+  - `workspace_id`: Workspace identifier
+  - `status`: "ok" or "error"
+  - `message`: Human-readable summary
+  - `refreshed_tools`: Whether tool modules were rebuilt
+  - `skills_uploaded`: Whether skills were uploaded
+  - `servers`: List of connected MCP server names
+  - `details`: Extra info including tool refresh results
+
+  **Notes:**
+  - Requires ownership verification via X-User-Id header
+  - Skills sync uses manifest-based caching (only re-uploads when files change)
+  - Project skills override user skills when names conflict
+
+  **Error Responses:**
+  - 403: Forbidden (not workspace owner)
+  - 404: Workspace not found
+  - 500: Failed to refresh tools
+  - 503: Sandbox not available

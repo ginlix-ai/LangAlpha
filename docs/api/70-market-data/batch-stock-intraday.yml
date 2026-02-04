@@ -1,0 +1,72 @@
+info:
+  name: Batch Stock Intraday
+  type: http
+  seq: 2
+
+http:
+  method: POST
+  url: "{{base_url}}/api/v1/market-data/intraday/stocks"
+  headers:
+    - name: Content-Type
+      value: application/json
+  body:
+    type: json
+    data: |-
+      {
+        "symbols": ["AAPL", "GOOGL", "MSFT"],
+        "interval": "1min"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Batch Stock Intraday Data
+
+  Retrieve intraday OHLCV data for multiple stock symbols (max 50).
+
+  ### Request Body
+  - `symbols` (required): Array of stock ticker symbols (1-50 symbols)
+  - `interval`: Data interval - one of: 1min, 5min, 15min, 30min, 1hour, 4hour (default: 1min)
+  - `from`: Start date in YYYY-MM-DD format (optional)
+  - `to`: End date in YYYY-MM-DD format (optional)
+
+  ### Response Fields
+  - `interval`: Data interval used for the request
+  - `results`: Map of symbol to array of OHLCV data points
+    - Each data point contains: date, open, high, low, close, volume
+  - `errors`: Map of symbol to error message for failed requests
+  - `cache_stats`: Aggregated cache statistics
+    - `total_requests`: Total number of symbols requested
+    - `cache_hits`: Number of symbols served from cache
+    - `cache_misses`: Number of symbols fetched from API
+    - `background_refreshes`: Number of background refreshes triggered
+
+  ### Error Responses
+  - 422: Invalid interval for stocks or invalid symbols array
+  - 500: Failed to fetch data
+
+tests:
+  test1: |
+    test("should return 200", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("should return interval", function() {
+      expect(res.body.interval).to.be.a("string");
+    });
+  test3: |
+    test("should return results object", function() {
+      expect(res.body.results).to.be.an("object");
+    });
+  test4: |
+    test("should return errors object", function() {
+      expect(res.body.errors).to.be.an("object");
+    });
+  test5: |
+    test("should return cache_stats", function() {
+      expect(res.body.cache_stats).to.be.an("object");
+      expect(res.body.cache_stats.total_requests).to.be.a("number");
+    });

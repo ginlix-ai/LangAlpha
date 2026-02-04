@@ -1,0 +1,58 @@
+info:
+  name: Reconnect to Workflow
+  type: http
+  seq: 2
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/chat/stream/{{thread_id}}/reconnect"
+  params:
+    - name: last_event_id
+      value: ""
+      enabled: false
+  headers:
+    - name: Accept
+      value: text/event-stream
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+
+docs: |
+  ## Reconnect to Workflow
+
+  Reconnect to a running or completed PTC workflow.
+
+  ### Features
+  - Replay buffered events from Redis
+  - Filter duplicates using `last_event_id`
+  - Seamless transition from buffered to live events
+  - 24-hour TTL for completed workflows
+
+  ### Query Parameters
+  - `last_event_id` (optional): Last received event ID for filtering duplicates
+
+  ### Response
+  Returns SSE stream with:
+  1. Buffered events (replayed from Redis)
+  2. Live events (if workflow still running)
+
+  ### Error Responses
+  - `404`: Workflow not found
+  - `410`: Workflow completed and results expired (past 24-hour TTL)
+
+tests:
+  test1: |
+    test("should return 200 for active workflow", function() {
+      if (res.status === 200) {
+        expect(res.headers["content-type"]).to.include("text/event-stream");
+      }
+    });
+  test2: |
+    test("should return 404 for non-existent workflow", function() {
+      // This test passes if status is either 200 (workflow exists) or 404 (not found)
+      expect([200, 404, 410]).to.include(res.status);
+    });

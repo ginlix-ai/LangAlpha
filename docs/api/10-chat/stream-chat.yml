@@ -1,0 +1,101 @@
+info:
+  name: Stream Chat
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: "{{base_url}}/api/v1/chat/stream"
+  headers:
+    - name: Accept
+      value: text/event-stream
+    - name: X-User-Id
+      value: "{{user_id}}"
+  body:
+    type: json
+    data: |-
+      {
+        "workspace_id": "{{workspace_id}}",
+        "thread_id": "{{thread_id}}",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Hello, how can you help me?"
+          }
+        ],
+        "plan_mode": false,
+        "locale": "en-US",
+        "timezone": "America/New_York"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+
+docs: |
+  ## Stream Chat
+
+  Stream PTC agent responses as Server-Sent Events (SSE).
+
+  ### Features
+  - Uses a Daytona sandbox session from the specified workspace
+  - Streams agent responses in real-time
+  - Supports tool execution and file operations
+  - Handles interrupts for plan review (HITL)
+
+  ### Prerequisites
+  - Create a workspace first via `POST /api/v1/workspaces`
+  - Set the `workspace_id` environment variable
+
+  ### Request Body Fields
+  - `workspace_id` (required): Workspace identifier
+  - `thread_id` (optional): Thread identifier for checkpointing, defaults to auto-generated UUID
+  - `messages`: Array of chat messages with role and content
+  - `plan_mode`: When true, agent must submit plan for approval before execution
+  - `subagents_enabled`: List of subagent names to enable
+  - `hitl_response`: Structured HITL response for resuming from interrupts
+  - `checkpoint_id`: Specific checkpoint ID to resume from
+  - `locale`: Locale for output language (e.g., 'en-US', 'zh-CN')
+  - `timezone`: IANA timezone identifier
+  - `llm_model`: Override LLM model from models.json
+
+  ### SSE Event Types
+  - `message_chunk`: Text streaming from agents
+  - `tool_call_chunks`: Incremental tool call arguments
+  - `tool_calls`: Complete tool call
+  - `tool_call_result`: Tool execution result
+  - `interrupt`: Human-in-the-loop pause
+  - `subagent_status`: Background task progress
+  - `artifact`: File operation results
+  - `error`: Execution errors
+  - `keepalive`: Periodic heartbeat
+
+  ### HITL Resume Example
+  To resume from an interrupt with approval:
+  ```json
+  {
+    "workspace_id": "ws-123",
+    "thread_id": "thread-456",
+    "hitl_response": {
+      "interrupt-id-1": {
+        "decisions": [
+          {"type": "approve"}
+        ]
+      }
+    },
+    "messages": []
+  }
+  ```
+
+tests:
+  test1: |
+    test("should return 200 for SSE stream", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("should have SSE content type", function() {
+      expect(res.headers["content-type"]).to.include("text/event-stream");
+    });

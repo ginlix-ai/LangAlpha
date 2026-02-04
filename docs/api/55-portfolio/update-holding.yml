@@ -1,0 +1,74 @@
+info:
+  name: Update Holding
+  type: http
+  seq: 4
+
+http:
+  method: PUT
+  url: "{{base_url}}/api/v1/users/me/portfolio/{{holding_id}}"
+  headers:
+    - name: Content-Type
+      value: application/json
+    - name: X-User-Id
+      value: "{{user_id}}"
+  body:
+    type: json
+    data: |-
+      {
+        "name": "Apple Inc.",
+        "quantity": 150,
+        "average_cost": 145.50,
+        "currency": "USD",
+        "notes": "Added more shares",
+        "metadata": {
+          "sector": "Technology"
+        },
+        "first_purchased_at": "2024-01-15T10:30:00Z"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Update Holding
+
+  Update a portfolio holding.
+
+  Partial update supported - only provided fields are updated.
+
+  ### Path Parameters
+  - `holding_id`: Portfolio holding UUID
+
+  ### Request Body Fields
+  - `name` (optional): Full instrument name (max 255 chars)
+  - `quantity` (optional): Number of units held (decimal)
+  - `average_cost` (optional): Average cost per unit (decimal)
+  - `currency` (optional): Currency code (max 10 chars)
+  - `notes` (optional): User notes
+  - `metadata` (optional): Additional metadata object
+  - `first_purchased_at` (optional): First purchase date (ISO 8601)
+
+  Note: `symbol`, `instrument_type`, `exchange`, and `account_name` cannot be updated.
+  To change these, delete the holding and create a new one.
+
+  ### Response
+  Returns the updated portfolio holding.
+
+  ### Error Responses
+  - 404 Not Found: Holding not found or not owned by user
+
+tests:
+  test1: |
+    test("should return 200", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("should return holding_id", function() {
+      expect(res.body.holding_id).to.be.a("string");
+    });
+  test3: |
+    test("should return updated_at timestamp", function() {
+      expect(res.body.updated_at).to.be.a("string");
+    });

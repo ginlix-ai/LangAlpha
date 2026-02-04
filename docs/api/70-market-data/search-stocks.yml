@@ -1,0 +1,73 @@
+info:
+  name: Search Stocks
+  type: http
+  seq: 5
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/market-data/search/stocks?query={{search_query}}&limit={{search_limit}}&exchange=NASDAQ&exchange=NYSE&exchange=OTC"
+  params:
+    - name: query
+      value: "{{search_query}}"
+      type: query
+    - name: limit
+      value: "{{search_limit}}"
+      type: query
+    - name: exchange
+      value: NASDAQ
+      type: query
+    - name: exchange
+      value: NYSE
+      type: query
+    - name: exchange
+      value: OTC
+      type: query
+  auth: inherit
+
+runtime:
+  variables:
+    - name: search_query
+      value: apple
+    - name: search_limit
+      value: "50"
+    - name: search_exchange
+      value: ""
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+
+docs: |
+  ## Search Stocks
+
+  Search for stocks by symbol or company name using keywords.
+
+  ### Query Parameters
+  - `query` (required): Search query - can be a ticker symbol or company name (min 1 character)
+  - `limit`: Maximum number of results to return (1-100, default: 50)
+  - `exchange`: Filter by exchange short names (e.g., NASDAQ, NYSE). Can be specified multiple times for multiple exchanges.
+
+  ### Example Queries
+  - "AAPL" - Find by exact symbol
+  - "Apple" - Find by company name
+  - "Micro" - Partial match for companies containing "Micro"
+
+  ### Example with Exchange Filter
+  - `?query=Apple&exchange=NASDAQ` - Find Apple stocks on NASDAQ only
+  - `?query=Apple&exchange=NASDAQ&exchange=NYSE` - Find Apple stocks on NASDAQ or NYSE
+
+  ### Response Fields
+  - `query`: The search query used
+  - `results`: Array of matching stocks
+    - `symbol`: Stock ticker symbol (e.g., AAPL)
+    - `name`: Company name
+    - `currency`: Currency code (optional)
+    - `stockExchange`: Full stock exchange name (optional)
+    - `exchangeShortName`: Short exchange name (optional)
+  - `count`: Number of results returned
+
+  ### Error Responses
+  - 422: Query parameter is required and cannot be empty
+  - 500: Failed to search stocks

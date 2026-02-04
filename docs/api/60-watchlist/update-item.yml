@@ -1,0 +1,76 @@
+info:
+  name: Update Watchlist Item
+  type: http
+  seq: 9
+
+http:
+  method: PUT
+  url: "{{base_url}}/api/v1/users/me/watchlists/{{watchlist_id}}/items/{{item_id}}"
+  headers:
+    - name: Content-Type
+      value: application/json
+    - name: X-User-Id
+      value: "{{user_id}}"
+  body:
+    type: json
+    data: |-
+      {
+        "name": "Apple Inc. (Updated)",
+        "notes": "Waiting for WWDC announcement",
+        "alert_settings": {
+          "price_above": 210.00,
+          "price_below": 160.00,
+          "percent_change": 3.0,
+          "news_alerts": true
+        },
+        "metadata": {
+          "sector": "Technology",
+          "target_price": 220.00
+        }
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Update Watchlist Item
+
+  Update a watchlist item. Supports partial updates - only provided fields are modified.
+
+  Note: Symbol and instrument_type cannot be changed after creation.
+
+  ### Path Parameters
+  - `watchlist_id`: UUID of the watchlist, or "default"
+  - `item_id`: UUID of the watchlist item
+
+  ### Request Body (all fields optional)
+  - `name`: Updated instrument name
+  - `notes`: Updated user notes
+  - `alert_settings`: Updated alert configuration
+    - `price_above`: Alert when price exceeds this value
+    - `price_below`: Alert when price drops below this value
+    - `percent_change`: Alert on percentage change threshold
+    - `news_alerts`: Enable/disable news alerts
+  - `metadata`: Updated metadata object
+
+  ### Response
+  Returns the updated `WatchlistItemResponse` object.
+
+  ### Error Responses
+  - `404 Not Found`: Item not found or not owned by user
+
+tests:
+  test1: |
+    test("should return 200 on update", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("should return updated name", function() {
+      expect(res.body.name).to.equal("Apple Inc. (Updated)");
+    });
+  test3: |
+    test("should return updated notes", function() {
+      expect(res.body.notes).to.equal("Waiting for WWDC announcement");
+    });

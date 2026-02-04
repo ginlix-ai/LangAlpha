@@ -1,0 +1,58 @@
+info:
+  name: Stop Workspace
+  type: http
+  seq: 6
+
+http:
+  method: POST
+  url: "{{base_url}}/api/v1/workspaces/{{workspace_id}}/stop"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+tests:
+  test1: |
+    test("should return 200 on successful stop", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("response should have workspace_id", function() {
+      expect(res.body.workspace_id).to.be.a("string");
+    });
+  test3: |
+    test("response should have status stopped", function() {
+      expect(res.body.status).to.equal("stopped");
+    });
+  test4: |
+    test("response should have message", function() {
+      expect(res.body.message).to.be.a("string");
+    });
+
+docs: |
+  Stop a running workspace.
+
+  This stops the Daytona sandbox but preserves all data. The workspace
+  can be quickly restarted later using the start endpoint.
+
+  **Path Parameters:**
+  - `workspace_id`: Workspace UUID
+
+  **Response Fields:**
+  - `workspace_id`: Workspace identifier
+  - `status`: New workspace status ("stopped")
+  - `message`: Action result message
+
+  **Notes:**
+  - Stopping preserves all workspace data
+  - Restart is faster than creating a new workspace (~5 seconds vs ~60 seconds)
+  - Stopped workspaces do not consume sandbox resources
+
+  **Error Responses:**
+  - 400: Cannot stop workspace in current state
+  - 404: Workspace not found
+  - 500: Failed to stop workspace

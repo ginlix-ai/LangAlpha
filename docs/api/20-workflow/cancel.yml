@@ -1,0 +1,58 @@
+info:
+  name: Cancel Workflow
+  type: http
+  seq: 3
+
+http:
+  method: POST
+  url: "{{base_url}}/api/v1/workflow/{{thread_id}}/cancel"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+tests:
+  test1: |
+    test("should return 200 on cancellation", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("response should have cancelled true", function() {
+      expect(res.body.cancelled).to.equal(true);
+    });
+  test3: |
+    test("response should have thread_id", function() {
+      expect(res.body.thread_id).to.be.a("string");
+    });
+  test4: |
+    test("response should have message", function() {
+      expect(res.body.message).to.be.a("string");
+    });
+
+docs: |
+  Explicitly cancel a workflow execution.
+
+  Sets cancellation flag that the streaming generator will check.
+  This distinguishes intentional user cancellation from accidental disconnect.
+
+  The cancellation flag has a short TTL (5 minutes) and is checked when
+  the streaming generator encounters a CancelledError exception.
+
+  **Actions performed:**
+  1. Sets cancellation flag in Redis
+  2. Marks workflow as cancelled immediately
+  3. Updates thread status in database to "cancelled"
+  4. Cancels background task if background execution is enabled
+  5. Clears background registry
+
+  **Response Fields:**
+  - `cancelled`: Always true on success
+  - `thread_id`: Thread ID that was cancelled
+  - `message`: Confirmation message
+
+  **Error Responses:**
+  - 500: Failed to cancel workflow

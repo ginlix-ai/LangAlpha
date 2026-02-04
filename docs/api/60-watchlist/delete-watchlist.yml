@@ -1,0 +1,39 @@
+info:
+  name: Delete Watchlist
+  type: http
+  seq: 5
+
+http:
+  method: DELETE
+  url: "{{base_url}}/api/v1/users/me/watchlists/{{watchlist_id}}"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Delete Watchlist
+
+  Delete a watchlist and all its items (cascade delete).
+
+  ### Path Parameters
+  - `watchlist_id`: UUID of the watchlist, or "default" to delete the default watchlist
+
+  ### Response
+  Returns `204 No Content` on successful deletion.
+
+  ### Error Responses
+  - `404 Not Found`: Watchlist not found or not owned by user
+
+  ### Warning
+  This operation is irreversible. All items in the watchlist will be permanently deleted.
+
+tests:
+  test1: |
+    test("should return 204 on deletion", function() {
+      expect(res.status).to.equal(204);
+    });

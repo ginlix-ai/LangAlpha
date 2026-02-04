@@ -1,0 +1,80 @@
+info:
+  name: Replay Thread
+  type: http
+  seq: 4
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/threads/{{thread_id}}/replay"
+  headers:
+    - name: Accept
+      value: text/event-stream
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Replay Thread
+
+  Replay a thread as Server-Sent Events (SSE) using persisted streaming_chunks.
+
+  This endpoint allows replaying a completed thread's conversation, streaming
+  the original events as they were produced during the live session.
+
+  ### Path Parameters
+  - `thread_id`: Thread identifier
+
+  ### SSE Event Types
+
+  **user_message**
+  Emitted once per pair_index containing the user query.
+  ```json
+  {
+    "thread_id": "thread-uuid",
+    "pair_index": 0,
+    "content": "User's question",
+    "timestamp": "2025-01-15T10:30:00Z"
+  }
+  ```
+
+  **message_chunk**
+  Text streaming from agents (from stored streaming_chunks).
+  ```json
+  {
+    "thread_id": "thread-uuid",
+    "pair_index": 0,
+    "response_id": "response-uuid",
+    "content": "Agent response text..."
+  }
+  ```
+
+  **tool_call_chunks / tool_calls / tool_call_result**
+  Tool execution events (from stored streaming_chunks).
+
+  **replay_done**
+  Terminal sentinel event indicating replay is complete.
+  ```json
+  {
+    "thread_id": "thread-uuid"
+  }
+  ```
+
+  ### Response
+  - Content-Type: text/event-stream
+  - Cache-Control: no-cache
+
+  ### Error Responses
+  - 404: Thread not found
+  - 500: Failed to replay thread
+
+tests:
+  test1: |
+    test("should return 200 for SSE stream", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("should have SSE content type", function() {
+      expect(res.headers["content-type"]).to.include("text/event-stream");
+    });

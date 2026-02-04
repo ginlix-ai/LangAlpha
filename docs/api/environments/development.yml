@@ -1,0 +1,20 @@
+name: development
+variables:
+  - name: base_url
+    value: http://localhost:8000
+  - name: user_id
+    value: agent
+  - name: workspace_id
+    value: 3681c10f-26de-4c81-89a5-79665f8848fa
+  - name: thread_id
+    value: d61e11be-4d6d-4177-b527-0327e81b8043
+  - name: response_id
+    value: 4c683be9-e0eb-427d-9152-b0b6c3e65103
+  - name: holding_id
+    value: 364b5ed4-4f1b-4e6c-a257-8e5087c56f24
+  - name: watchlist_id
+    value: f9c52d88-ac4e-4e0f-9168-73cf9f90c3b9
+  - name: item_id
+    value: 14c76772-5adb-4115-b871-d7939186c2ab
+  - name: symbol
+    value: AAPL

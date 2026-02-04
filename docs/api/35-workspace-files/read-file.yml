@@ -1,0 +1,56 @@
+info:
+  name: Read File
+  type: http
+  seq: 2
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/workspaces/{{workspace_id}}/files/read?path={{path_to_file}}"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  params:
+    - name: path
+      value: "{{path_to_file}}"
+      type: query
+  auth: inherit
+
+runtime:
+  variables:
+    - name: path_to_file
+      value: results/nvda_stock_report.pdf
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+
+docs: |
+  ## Read File
+
+  Read a file from the workspace's live Daytona sandbox.
+
+  ### Query Parameters
+  - `path` (required): File path (virtual or absolute)
+  - `offset` (optional): Line offset (0-based). Defaults to 0
+  - `limit` (optional): Max lines to read. Defaults to 20000, max 20000
+
+  ### Path Handling
+  - Accepts virtual paths (e.g., "results/report.md")
+  - Accepts absolute sandbox paths (e.g., "/home/daytona/results/report.md")
+  - Path is validated and normalized by sandbox
+
+  ### Response Fields
+  - `workspace_id`: Workspace identifier
+  - `path`: Virtual client path
+  - `offset`: Line offset used
+  - `limit`: Line limit used
+  - `content`: File content as string
+  - `mime`: MIME type (guessed from extension, defaults to "text/plain")
+  - `truncated`: Whether content was truncated (always false, use offset for pagination)
+
+  ### Error Responses
+  - 403: Forbidden (not workspace owner or path validation failed)
+  - 404: File not found or workspace not found
+  - 503: Sandbox not available

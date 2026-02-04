@@ -1,0 +1,51 @@
+info:
+  name: List Watchlists
+  type: http
+  seq: 1
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/users/me/watchlists"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## List Watchlists
+
+  Retrieve all watchlists for the authenticated user.
+
+  ### Response
+  Returns a `WatchlistsResponse` object containing:
+  - `watchlists`: Array of watchlist objects
+  - `total`: Total count of watchlists
+
+  ### Watchlist Object Fields
+  - `watchlist_id`: UUID of the watchlist
+  - `user_id`: Owner's user ID
+  - `name`: Watchlist name (max 100 chars)
+  - `description`: Optional description
+  - `is_default`: Whether this is the default watchlist
+  - `display_order`: Sort order for UI display
+  - `created_at`: Creation timestamp
+  - `updated_at`: Last update timestamp
+
+tests:
+  test1: |
+    test("should return 200", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("should return watchlists array", function() {
+      expect(res.body.watchlists).to.be.an('array');
+    });
+  test3: |
+    test("should include total count", function() {
+      expect(res.body).to.have.property('total');
+      expect(res.body.total).to.be.a('number');
+    });

@@ -1,0 +1,59 @@
+info:
+  name: Get Watchlist Item
+  type: http
+  seq: 8
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/users/me/watchlists/{{watchlist_id}}/items/{{item_id}}"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Get Watchlist Item
+
+  Retrieve a single watchlist item by ID.
+
+  ### Path Parameters
+  - `watchlist_id`: UUID of the watchlist, or "default"
+  - `item_id`: UUID of the watchlist item
+
+  ### Response
+  Returns a `WatchlistItemResponse` object with:
+  - `item_id`: UUID of the item
+  - `watchlist_id`: Parent watchlist UUID
+  - `user_id`: Owner's user ID
+  - `symbol`: Instrument symbol (uppercase)
+  - `instrument_type`: Instrument type enum value
+  - `exchange`: Exchange code (if set)
+  - `name`: Full instrument name (if set)
+  - `notes`: User notes (if set)
+  - `alert_settings`: Alert configuration (if set)
+  - `metadata`: Additional metadata (if set)
+  - `created_at`: Creation timestamp
+  - `updated_at`: Last update timestamp
+
+  ### Error Responses
+  - `404 Not Found`: Item not found or not owned by user
+
+tests:
+  test1: |
+    test("should return 200", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("should return item details", function() {
+      expect(res.body).to.have.property('item_id');
+      expect(res.body).to.have.property('symbol');
+      expect(res.body).to.have.property('instrument_type');
+    });
+  test3: |
+    test("should include watchlist_id", function() {
+      expect(res.body).to.have.property('watchlist_id');
+    });

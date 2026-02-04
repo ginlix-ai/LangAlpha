@@ -1,0 +1,63 @@
+info:
+  name: List Files
+  type: http
+  seq: 1
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/workspaces/{{workspace_id}}/files?path={{dir_path}}&include_system={{include_system}}"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  params:
+    - name: path
+      value: "{{dir_path}}"
+      type: query
+    - name: include_system
+      value: "{{include_system}}"
+      type: query
+  auth: inherit
+
+runtime:
+  variables:
+    - name: dir_path
+      value: .
+    - name: include_system
+      value: "false"
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+
+docs: |
+  ## List Files
+
+  List files in a workspace's live Daytona sandbox.
+
+  ### Query Parameters
+  - `path` (optional): Directory to list (virtual or absolute). Defaults to "."
+  - `include_system` (optional): Include system directories (code/, tools/, mcp_servers/, skills/). Defaults to false
+  - `pattern` (optional): Glob pattern evaluated in sandbox. Defaults to "**/*"
+
+  ### Path Handling
+  - Supports virtual paths (e.g., "results/foo.txt")
+  - Supports absolute sandbox paths (e.g., "/home/daytona/results/foo.txt")
+  - Returns virtual paths to clients (no leading slash for working directory paths)
+  - Preserves /tmp paths as absolute
+
+  ### Hidden Directories
+  - System directories (code/, tools/, mcp_servers/, skills/) hidden by default
+  - Internal SDK directories (_internal/) hidden unless explicitly requested
+  - Cache/bytecode files (__pycache__/, *.pyc, __init__.py) always hidden
+
+  ### Response Fields
+  - `workspace_id`: Workspace identifier
+  - `path`: Requested path
+  - `files`: Array of file paths (virtual format)
+
+  ### Error Responses
+  - 403: Forbidden (not workspace owner)
+  - 404: Workspace not found
+  - 503: Sandbox not available

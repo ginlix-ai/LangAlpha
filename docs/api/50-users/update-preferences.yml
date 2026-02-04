@@ -1,0 +1,74 @@
+info:
+  name: Update User Preferences
+  type: http
+  seq: 5
+
+http:
+  method: PUT
+  url: "{{base_url}}/api/v1/users/me/preferences"
+  headers:
+    - name: Content-Type
+      value: application/json
+    - name: X-User-Id
+      value: "{{user_id}}"
+  body:
+    type: json
+    data: |-
+      {
+        "risk_preference": {
+          "risk_tolerance": "medium"
+        },
+        "investment_preference": {
+          "company_interest": "growth",
+          "holding_period": "long_term",
+          "analysis_focus": "moat"
+        },
+        "agent_preference": {
+          "output_style": "deep_dive"
+        },
+        "other_preference": {}
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Update User Preferences
+
+  Update user preferences.
+
+  Partial update supported - only provided fields are updated.
+  JSONB fields are merged with existing values.
+
+  ### Request Body Fields
+  - `risk_preference` (optional): Risk tolerance settings
+    - `risk_tolerance`: Risk level (low, medium, high, long_term_focus)
+  - `investment_preference` (optional): Investment style settings
+    - `company_interest`: Company type (growth, stable, value, esg)
+    - `holding_period`: Holding period (short_term, mid_term, long_term, flexible)
+    - `analysis_focus`: Analysis focus (growth, valuation, moat, risk)
+  - `agent_preference` (optional): AI agent behavior settings
+    - `output_style`: Output style (summary, data, deep_dive, quick)
+  - `other_preference` (optional): Miscellaneous preferences
+
+  ### Response
+  Returns the updated preferences object.
+
+  ### Error Responses
+  - 404 Not Found: User not found
+
+tests:
+  test1: |
+    test("should return 200", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("should return preference_id", function() {
+      expect(res.body.preference_id).to.be.a("string");
+    });
+  test3: |
+    test("should return updated_at timestamp", function() {
+      expect(res.body.updated_at).to.be.a("string");
+    });

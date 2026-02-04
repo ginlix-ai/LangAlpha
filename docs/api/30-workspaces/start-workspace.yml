@@ -1,0 +1,62 @@
+info:
+  name: Start Workspace
+  type: http
+  seq: 5
+
+http:
+  method: POST
+  url: "{{base_url}}/api/v1/workspaces/{{workspace_id}}/start"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+tests:
+  test1: |
+    test("should return 200 on successful start", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("response should have workspace_id", function() {
+      expect(res.body.workspace_id).to.be.a("string");
+    });
+  test3: |
+    test("response should have status running", function() {
+      expect(res.body.status).to.equal("running");
+    });
+  test4: |
+    test("response should have message", function() {
+      expect(res.body.message).to.be.a("string");
+    });
+
+docs: |
+  Start a stopped workspace.
+
+  This restarts the Daytona sandbox, which is much faster than creating
+  a new one (~5 seconds vs ~60 seconds).
+
+  **Headers:**
+  - `X-User-Id` (required): User ID (must be workspace owner)
+
+  **Path Parameters:**
+  - `workspace_id`: Workspace UUID
+
+  **Response Fields:**
+  - `workspace_id`: Workspace identifier
+  - `status`: New workspace status ("running")
+  - `message`: Action result message
+
+  **Notes:**
+  - Only stopped workspaces can be started
+  - If workspace is already running, returns success with "already running" message
+  - Requires ownership verification via X-User-Id header
+
+  **Error Responses:**
+  - 400: Cannot start workspace in current state (not stopped)
+  - 403: Forbidden (not workspace owner)
+  - 404: Workspace not found
+  - 500: Failed to start workspace

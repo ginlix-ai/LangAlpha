@@ -1,0 +1,72 @@
+info:
+  name: Create Watchlist
+  type: http
+  seq: 2
+
+http:
+  method: POST
+  url: "{{base_url}}/api/v1/users/me/watchlists"
+  headers:
+    - name: Content-Type
+      value: application/json
+    - name: X-User-Id
+      value: "{{user_id}}"
+  body:
+    type: json
+    data: |-
+      {
+        "name": "Tech Stocks",
+        "description": "Technology sector watchlist",
+        "is_default": false,
+        "display_order": 0
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Create Watchlist
+
+  Create a new watchlist for the authenticated user.
+
+  ### Request Body
+  - `name` (required): Watchlist name (max 100 chars)
+  - `description` (optional): Watchlist description
+  - `is_default` (optional): Set as default watchlist (default: false)
+  - `display_order` (optional): Sort order for UI display (default: 0)
+
+  ### Response
+  Returns the created `WatchlistResponse` object with:
+  - `watchlist_id`: UUID of the new watchlist
+  - `user_id`: Owner's user ID
+  - `name`: Watchlist name
+  - `description`: Watchlist description
+  - `is_default`: Whether this is the default watchlist
+  - `display_order`: Sort order
+  - `created_at`: Creation timestamp
+  - `updated_at`: Last update timestamp
+
+  ### Error Responses
+  - `409 Conflict`: Watchlist with same name already exists
+
+tests:
+  test1: |
+    test("should return 201 on creation", function() {
+      expect(res.status).to.equal(201);
+    });
+  test2: |
+    test("should return watchlist_id", function() {
+      expect(res.body).to.have.property('watchlist_id');
+    });
+  test3: |
+    test("should return correct name", function() {
+      expect(res.body.name).to.equal("Tech Stocks");
+    });
+
+script:
+  res: |
+    if (res.status === 201 && res.body.watchlist_id) {
+      bru.setEnvVar("watchlist_id", res.body.watchlist_id);
+    }

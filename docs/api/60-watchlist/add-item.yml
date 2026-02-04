@@ -1,0 +1,92 @@
+info:
+  name: Add Watchlist Item
+  type: http
+  seq: 7
+
+http:
+  method: POST
+  url: "{{base_url}}/api/v1/users/me/watchlists/{{watchlist_id}}/items"
+  headers:
+    - name: Content-Type
+      value: application/json
+    - name: X-User-Id
+      value: "{{user_id}}"
+  body:
+    type: json
+    data: |-
+      {
+        "symbol": "AAPL",
+        "instrument_type": "stock",
+        "exchange": "NASDAQ",
+        "name": "Apple Inc.",
+        "notes": "Strong iPhone sales expected",
+        "alert_settings": {
+          "price_above": 200.00,
+          "price_below": 150.00,
+          "percent_change": 5.0,
+          "news_alerts": true
+        },
+        "metadata": {
+          "sector": "Technology",
+          "added_reason": "Q4 earnings beat"
+        }
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Add Watchlist Item
+
+  Add a new instrument to a watchlist.
+
+  ### Path Parameters
+  - `watchlist_id`: UUID of the watchlist, or "default" to add to the default watchlist
+
+  ### Request Body
+  - `symbol` (required): Instrument symbol (auto-normalized to uppercase)
+  - `instrument_type` (required): One of: stock, etf, index, crypto, future, commodity, currency
+  - `exchange` (optional): Exchange code (e.g., "NASDAQ", "NYSE")
+  - `name` (optional): Full instrument name
+  - `notes` (optional): User notes
+  - `alert_settings` (optional): Alert configuration object
+    - `price_above`: Alert when price exceeds this value
+    - `price_below`: Alert when price drops below this value
+    - `percent_change`: Alert on percentage change threshold
+    - `news_alerts`: Enable news alerts for this instrument
+  - `metadata` (optional): Additional metadata object
+
+  ### Response
+  Returns the created `WatchlistItemResponse` object with:
+  - `item_id`: UUID of the new item
+  - All request fields plus timestamps
+
+  ### Error Responses
+  - `404 Not Found`: Watchlist not found or not owned by user
+  - `409 Conflict`: Item already exists in watchlist (same symbol + instrument_type)
+
+tests:
+  test1: |
+    test("should return 201 on creation", function() {
+      expect(res.status).to.equal(201);
+    });
+  test2: |
+    test("should return item_id", function() {
+      expect(res.body).to.have.property('item_id');
+    });
+  test3: |
+    test("should normalize symbol to uppercase", function() {
+      expect(res.body.symbol).to.equal("AAPL");
+    });
+  test4: |
+    test("should include watchlist_id", function() {
+      expect(res.body).to.have.property('watchlist_id');
+    });
+
+script:
+  res: |
+    if (res.status === 201 && res.body.item_id) {
+      bru.setEnvVar("item_id", res.body.item_id);
+    }

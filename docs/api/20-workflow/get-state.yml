@@ -1,0 +1,62 @@
+info:
+  name: Get Workflow State
+  type: http
+  seq: 1
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/workflow/state/{{thread_id}}"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+tests:
+  test1: |
+    test("should return 200 with workflow state", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("response should have thread_id", function() {
+      expect(res.body.thread_id).to.be.a("string");
+    });
+  test3: |
+    test("response should have messages array", function() {
+      expect(res.body.messages).to.be.an("array");
+    });
+  test4: |
+    test("response should have completed boolean", function() {
+      expect(res.body.completed).to.be.a("boolean");
+    });
+
+docs: |
+  Get the complete workflow state for a given thread_id.
+
+  Retrieves the latest checkpoint state from the checkpointer, including:
+  - All conversation messages
+  - Execution metadata
+  - Plan iterations and completion status
+
+  **Response Fields:**
+  - `thread_id`: Thread/conversation ID
+  - `checkpoint_id`: Current checkpoint ID
+  - `messages`: All conversation messages
+  - `plan`: Research plan (null for PTC agent)
+  - `observations`: Agent observations (empty for PTC agent)
+  - `final_report`: Final generated report if available
+  - `research_topic`: Research topic/query
+  - `market_type`: Market type identified
+  - `locale`: Locale/language
+  - `deepthinking`: Deep thinking mode enabled
+  - `auto_accepted_plan`: Plan auto-accepted
+  - `plan_iterations`: Number of plan iterations
+  - `completed`: Workflow completed
+  - `next_nodes`: Next nodes to execute
+
+  **Error Responses:**
+  - 404: Thread ID not found or no checkpoints exist
+  - 500: Internal server error

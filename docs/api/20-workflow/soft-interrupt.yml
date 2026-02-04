@@ -1,0 +1,62 @@
+info:
+  name: Soft Interrupt Workflow
+  type: http
+  seq: 4
+
+http:
+  method: POST
+  url: "{{base_url}}/api/v1/workflow/{{thread_id}}/soft-interrupt"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+tests:
+  test1: |
+    test("should return 200 on soft interrupt", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("response should have status", function() {
+      expect(res.body.status).to.be.a("string");
+    });
+  test3: |
+    test("response should have thread_id", function() {
+      expect(res.body.thread_id).to.be.a("string");
+    });
+  test4: |
+    test("response should have can_resume boolean", function() {
+      expect(res.body.can_resume).to.be.a("boolean");
+    });
+  test5: |
+    test("response should have background_tasks array", function() {
+      expect(res.body.background_tasks).to.be.an("array");
+    });
+
+docs: |
+  Soft interrupt a workflow - pause main agent, keep subagents running.
+
+  Unlike /cancel which stops everything, soft interrupt:
+  - Signals the main agent to pause at the next safe point
+  - Background subagents continue execution
+  - Workflow can be resumed with new input
+
+  This is designed for the CLI ESC key behavior where the user wants to
+  interrupt the current response but keep background work running.
+
+  **Response Fields:**
+  - `status`: "soft_interrupted" or "not_supported"
+  - `thread_id`: Thread ID
+  - `can_resume`: Whether workflow can be resumed
+  - `background_tasks`: List of active background task names
+  - `message`: (only when not_supported) Explanation message
+
+  **Note:** Soft interrupt requires background execution mode to be enabled.
+  Without background execution, soft interrupt behaves the same as cancel.
+
+  **Error Responses:**
+  - 500: Failed to soft interrupt workflow

@@ -1,0 +1,70 @@
+info:
+  name: Get Checkpoint History
+  type: http
+  seq: 2
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/workflow/{{thread_id}}/checkpoints"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  params:
+    - name: limit
+      value: "10"
+      enabled: true
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+tests:
+  test1: |
+    test("should return 200 with checkpoint history", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("response should have thread_id", function() {
+      expect(res.body.thread_id).to.be.a("string");
+    });
+  test3: |
+    test("response should have checkpoints array", function() {
+      expect(res.body.checkpoints).to.be.an("array");
+    });
+  test4: |
+    test("response should have total_checkpoints count", function() {
+      expect(res.body.total_checkpoints).to.be.a("number");
+    });
+
+docs: |
+  Get checkpoint history for a workflow thread.
+
+  Returns chronologically ordered list of checkpoints (newest first).
+  Each checkpoint represents a snapshot of the workflow state at that point in time.
+
+  **Use cases:**
+  - Time-travel debugging: Inspect state at different execution points
+  - State inspection: Understand workflow progression
+  - Debugging: Identify where interrupts or errors occurred
+
+  **Query Parameters:**
+  - `limit`: Maximum number of checkpoints to return (1-50, default 10)
+
+  **Response Fields:**
+  - `thread_id`: Thread ID
+  - `total_checkpoints`: Total number of checkpoints returned
+  - `checkpoints`: Array of checkpoint snapshots containing:
+    - `checkpoint_id`: Unique checkpoint identifier
+    - `parent_checkpoint_id`: Parent checkpoint for lineage tracking
+    - `created_at`: Checkpoint creation timestamp
+    - `metadata`: Checkpoint metadata (source, step, writes)
+    - `next_nodes`: Next nodes to execute
+    - `pending_tasks`: Number of pending tasks
+    - `tasks`: Detailed task information
+    - `completed`: Whether workflow is completed at this checkpoint
+    - `state_preview`: Preview of important state fields
+
+  **Error Responses:**
+  - 404: Thread ID not found or no checkpoints exist
+  - 500: Internal server error

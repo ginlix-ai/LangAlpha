@@ -1,0 +1,77 @@
+info:
+  name: List Workspaces
+  type: http
+  seq: 2
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/workspaces"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  params:
+    - name: limit
+      value: "20"
+      enabled: true
+    - name: offset
+      value: "0"
+      enabled: true
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+tests:
+  test1: |
+    test("should return 200 with workspace list", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("response should have workspaces array", function() {
+      expect(res.body.workspaces).to.be.an("array");
+    });
+  test3: |
+    test("response should have total count", function() {
+      expect(res.body.total).to.be.a("number");
+    });
+  test4: |
+    test("response should have limit", function() {
+      expect(res.body.limit).to.be.a("number");
+    });
+  test5: |
+    test("response should have offset", function() {
+      expect(res.body.offset).to.be.a("number");
+    });
+
+docs: |
+  List workspaces for a user.
+
+  Returns a paginated list of workspaces owned by the specified user.
+
+  **Headers:**
+  - `X-User-Id` (required): User ID to list workspaces for
+
+  **Query Parameters:**
+  - `limit`: Maximum number of results (1-100, default 20)
+  - `offset`: Number of results to skip (default 0)
+
+  **Response Fields:**
+  - `workspaces`: Array of workspace objects containing:
+    - `workspace_id`: Unique workspace identifier
+    - `user_id`: Owner user ID
+    - `name`: Workspace name
+    - `description`: Workspace description
+    - `sandbox_id`: Daytona sandbox ID
+    - `status`: Workspace status
+    - `created_at`: Creation timestamp
+    - `updated_at`: Last update timestamp
+    - `last_activity_at`: Last agent activity timestamp
+    - `stopped_at`: When workspace was stopped
+    - `config`: Configuration settings
+  - `total`: Total number of workspaces for user
+  - `limit`: Page size used
+  - `offset`: Number of items skipped
+
+  **Error Responses:**
+  - 500: Failed to list workspaces

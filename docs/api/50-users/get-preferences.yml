@@ -1,0 +1,58 @@
+info:
+  name: Get User Preferences
+  type: http
+  seq: 4
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/users/me/preferences"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Get User Preferences
+
+  Get user preferences only.
+
+  ### Response
+  Returns user preferences object:
+  - `preference_id`: Preference record UUID
+  - `user_id`: User ID
+  - `risk_preference`: Risk tolerance settings
+    - `risk_tolerance`: Risk level (low, medium, high, long_term_focus)
+  - `investment_preference`: Investment style settings
+    - `company_interest`: Company type (growth, stable, value, esg)
+    - `holding_period`: Holding period (short_term, mid_term, long_term, flexible)
+    - `analysis_focus`: Analysis focus (growth, valuation, moat, risk)
+  - `agent_preference`: AI agent behavior settings
+    - `output_style`: Output style (summary, data, deep_dive, quick)
+  - `other_preference`: Miscellaneous preferences
+  - `created_at`: Creation timestamp
+  - `updated_at`: Last update timestamp
+
+  ### Error Responses
+  - 404 Not Found: User or preferences not found
+
+tests:
+  test1: |
+    test("should return 200", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("should return preference_id", function() {
+      expect(res.body.preference_id).to.be.a("string");
+    });
+  test3: |
+    test("should return user_id", function() {
+      expect(res.body.user_id).to.be.a("string");
+    });
+  test4: |
+    test("should return created_at timestamp", function() {
+      expect(res.body.created_at).to.be.a("string");
+    });

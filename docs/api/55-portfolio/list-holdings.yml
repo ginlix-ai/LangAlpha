@@ -1,0 +1,55 @@
+info:
+  name: List Holdings
+  type: http
+  seq: 1
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/users/me/portfolio"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## List Holdings
+
+  List all portfolio holdings for the current user.
+
+  ### Response
+  Returns portfolio with holdings array:
+  - `holdings`: Array of portfolio holding objects
+    - `holding_id`: Holding entry UUID
+    - `user_id`: User ID
+    - `symbol`: Instrument symbol (uppercase)
+    - `instrument_type`: Type (stock, etf, index, crypto, future, commodity, currency)
+    - `exchange`: Exchange name (e.g., 'NASDAQ')
+    - `name`: Full instrument name
+    - `quantity`: Number of units held (decimal)
+    - `average_cost`: Average cost per unit (decimal)
+    - `currency`: Currency code (default: 'USD')
+    - `account_name`: Account name (e.g., 'Robinhood')
+    - `notes`: User notes
+    - `metadata`: Additional metadata object
+    - `first_purchased_at`: First purchase date
+    - `created_at`: Creation timestamp
+    - `updated_at`: Last update timestamp
+  - `total`: Total number of holdings
+
+tests:
+  test1: |
+    test("should return 200", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("should return holdings array", function() {
+      expect(res.body.holdings).to.be.an("array");
+    });
+  test3: |
+    test("should return total count", function() {
+      expect(res.body.total).to.be.a("number");
+    });

@@ -1,0 +1,56 @@
+info:
+  name: Get Chat Sessions
+  type: http
+  seq: 4
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/chat/sessions"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+
+docs: |
+  ## Get Chat Sessions
+
+  Get information about active PTC sessions.
+
+  ### Response
+  Returns session statistics and details:
+  ```json
+  {
+    "active_sessions": 5,
+    "sessions": [
+      {
+        "workspace_id": "ws-123",
+        "sandbox_id": "sandbox-456",
+        "initialized": true,
+        "last_active": "2024-01-15T10:30:00Z",
+        "mcp_servers_connected": 3
+      }
+    ]
+  }
+  ```
+
+  ### Error Response
+  If PTC Session Service is not initialized:
+  ```json
+  {
+    "active_sessions": 0,
+    "message": "PTC Session Service not initialized"
+  }
+  ```
+
+tests:
+  test1: |
+    test("should return 200", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("should return active_sessions count", function() {
+      expect(res.body.active_sessions).to.be.a("number");
+    });

@@ -1,0 +1,84 @@
+info:
+  name: Get Index Intraday
+  type: http
+  seq: 3
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/market-data/intraday/indexes/{{symbol}}?interval={{index_interval}}"
+  params:
+    - name: interval
+      value: "{{index_interval}}"
+      type: query
+  auth: inherit
+
+runtime:
+  variables:
+    - name: index_interval
+      value: 5min
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Get Index Intraday Data
+
+  Retrieve intraday OHLCV data for a single index symbol.
+
+  ### Path Parameters
+  - `symbol` (required): Index symbol (e.g., ^GSPC, ^DJI, ^IXIC)
+
+  ### Query Parameters
+  - `interval`: Data interval - one of: 1min, 5min, 1hour (default: 1min)
+    - Note: Index intervals are more limited than stock intervals
+  - `from`: Start date in YYYY-MM-DD format (optional)
+  - `to`: End date in YYYY-MM-DD format (optional)
+
+  ### Response Fields
+  - `symbol`: Index symbol
+  - `interval`: Data interval used
+  - `data`: Array of OHLCV data points
+    - `date`: Timestamp in ISO format
+    - `open`: Opening price
+    - `high`: High price
+    - `low`: Low price
+    - `close`: Closing price
+    - `volume`: Trading volume
+  - `count`: Number of data points returned
+  - `cache`: Cache metadata
+    - `cached`: Whether data was served from cache
+    - `cache_key`: Cache key used
+    - `ttl_remaining`: Remaining TTL in seconds
+    - `refreshed_in_background`: Whether a background refresh was triggered
+
+  ### Error Responses
+  - 422: Invalid interval for indexes (only 1min, 5min, 1hour supported)
+  - 500: Failed to fetch data
+
+tests:
+  test1: |
+    test("should return 200", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("should return symbol", function() {
+      expect(res.body.symbol).to.be.a("string");
+    });
+  test3: |
+    test("should return interval", function() {
+      expect(res.body.interval).to.be.a("string");
+    });
+  test4: |
+    test("should return data array", function() {
+      expect(res.body.data).to.be.an("array");
+    });
+  test5: |
+    test("should return count", function() {
+      expect(res.body.count).to.be.a("number");
+    });
+  test6: |
+    test("should return cache metadata", function() {
+      expect(res.body.cache).to.be.an("object");
+      expect(res.body.cache.cached).to.be.a("boolean");
+    });

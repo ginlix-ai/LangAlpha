@@ -1,0 +1,75 @@
+info:
+  name: Update Workspace
+  type: http
+  seq: 4
+
+http:
+  method: PUT
+  url: "{{base_url}}/api/v1/workspaces/{{workspace_id}}"
+  headers:
+    - name: Content-Type
+      value: application/json
+    - name: X-User-Id
+      value: "{{user_id}}"
+  body:
+    type: json
+    data: |-
+      {
+        "name": "Updated Workspace Name",
+        "description": "Updated description",
+        "config": {}
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+tests:
+  test1: |
+    test("should return 200 on successful update", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("response should have workspace_id", function() {
+      expect(res.body.workspace_id).to.be.a("string");
+    });
+  test3: |
+    test("response should have updated name", function() {
+      expect(res.body.name).to.be.a("string");
+    });
+  test4: |
+    test("response should have updated_at timestamp", function() {
+      expect(res.body.updated_at).to.be.a("string");
+    });
+
+docs: |
+  Update workspace metadata.
+
+  Updates the name, description, or configuration of an existing workspace.
+  All fields are optional - only provided fields will be updated.
+
+  **Path Parameters:**
+  - `workspace_id`: Workspace UUID
+
+  **Request Body:**
+  - `name` (optional): New workspace name (1-255 characters)
+  - `description` (optional): New workspace description (max 1000 characters)
+  - `config` (optional): New configuration settings (replaces existing)
+
+  **Response Fields:**
+  - `workspace_id`: Unique workspace identifier
+  - `user_id`: Owner user ID
+  - `name`: Updated workspace name
+  - `description`: Updated workspace description
+  - `sandbox_id`: Daytona sandbox ID
+  - `status`: Workspace status
+  - `created_at`: Creation timestamp
+  - `updated_at`: Last update timestamp
+  - `last_activity_at`: Last agent activity timestamp
+  - `stopped_at`: When workspace was stopped
+  - `config`: Updated configuration settings
+
+  **Error Responses:**
+  - 404: Workspace not found
+  - 500: Failed to update workspace

@@ -1,0 +1,60 @@
+info:
+  name: Update Watchlist
+  type: http
+  seq: 4
+
+http:
+  method: PUT
+  url: "{{base_url}}/api/v1/users/me/watchlists/{{watchlist_id}}"
+  headers:
+    - name: Content-Type
+      value: application/json
+    - name: X-User-Id
+      value: "{{user_id}}"
+  body:
+    type: json
+    data: |-
+      {
+        "name": "Tech Giants",
+        "description": "Updated description for tech stocks",
+        "display_order": 1
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Update Watchlist
+
+  Update watchlist metadata. Supports partial updates - only provided fields are modified.
+
+  ### Path Parameters
+  - `watchlist_id`: UUID of the watchlist, or "default" to update the default watchlist
+
+  ### Request Body (all fields optional)
+  - `name`: New watchlist name (max 100 chars)
+  - `description`: New description
+  - `display_order`: New sort order
+
+  ### Response
+  Returns the updated `WatchlistResponse` object.
+
+  ### Error Responses
+  - `404 Not Found`: Watchlist not found or not owned by user
+  - `409 Conflict`: Name conflicts with existing watchlist
+
+tests:
+  test1: |
+    test("should return 200 on update", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("should return updated name", function() {
+      expect(res.body.name).to.equal("Tech Giants");
+    });
+  test3: |
+    test("should return updated description", function() {
+      expect(res.body.description).to.equal("Updated description for tech stocks");
+    });

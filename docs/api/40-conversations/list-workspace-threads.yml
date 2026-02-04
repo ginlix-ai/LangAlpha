@@ -1,0 +1,83 @@
+info:
+  name: List Workspace Threads
+  type: http
+  seq: 1
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/workspaces/{{workspace_id}}/threads?limit={{threads_limit}}&offset={{threads_offset}}&sort_by={{threads_sort_by}}&sort_order={{threads_sort_order}}"
+  params:
+    - name: limit
+      value: "{{threads_limit}}"
+      type: query
+    - name: offset
+      value: "{{threads_offset}}"
+      type: query
+    - name: sort_by
+      value: "{{threads_sort_by}}"
+      type: query
+    - name: sort_order
+      value: "{{threads_sort_order}}"
+      type: query
+  auth: inherit
+
+runtime:
+  variables:
+    - name: threads_limit
+      value: "20"
+    - name: threads_offset
+      value: "0"
+    - name: threads_sort_by
+      value: updated_at
+    - name: threads_sort_order
+      value: desc
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## List Workspace Threads
+
+  List threads for a workspace with pagination.
+
+  ### Query Parameters
+  - `limit` (optional): Maximum threads to return (1-100). Defaults to 20
+  - `offset` (optional): Pagination offset. Defaults to 0
+  - `sort_by` (optional): Field to sort by (created_at, updated_at). Defaults to updated_at
+  - `sort_order` (optional): Sort direction (asc, desc). Defaults to desc
+
+  ### Response Fields
+  - `threads`: Array of thread items
+    - `thread_id`: Thread identifier
+    - `workspace_id`: Workspace identifier
+    - `thread_index`: Thread index within workspace
+    - `current_status`: Thread status (pending, completed, error, etc.)
+    - `msg_type`: Message type (e.g., "ptc")
+    - `created_at`: Creation timestamp
+    - `updated_at`: Last update timestamp
+  - `total`: Total number of threads
+  - `limit`: Page limit used
+  - `offset`: Page offset used
+
+  ### Error Responses
+  - 500: Database error during retrieval
+
+tests:
+  test1: |
+    test("should return 200", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("response should have threads array", function() {
+      expect(res.body.threads).to.be.an("array");
+    });
+  test3: |
+    test("response should have total count", function() {
+      expect(res.body.total).to.be.a("number");
+    });
+  test4: |
+    test("response should have pagination info", function() {
+      expect(res.body.limit).to.be.a("number");
+      expect(res.body.offset).to.be.a("number");
+    });

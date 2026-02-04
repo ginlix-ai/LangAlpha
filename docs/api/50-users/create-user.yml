@@ -1,0 +1,71 @@
+info:
+  name: Create User
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: "{{base_url}}/api/v1/users"
+  headers:
+    - name: Content-Type
+      value: application/json
+    - name: X-User-Id
+      value: "{{user_id}}"
+  body:
+    type: json
+    data: |-
+      {
+        "email": "user@example.com",
+        "name": "John Doe",
+        "avatar_url": "https://example.com/avatar.png",
+        "timezone": "America/New_York",
+        "locale": "en-US"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Create User
+
+  Create a new user in the system.
+
+  Called on first authentication to register the user.
+
+  ### Request Body Fields
+  - `email` (optional): User email address (max 255 chars)
+  - `name` (optional): User display name (max 255 chars)
+  - `avatar_url` (optional): URL to user avatar
+  - `timezone` (optional): User timezone (e.g., 'America/New_York')
+  - `locale` (optional): User locale (e.g., 'en-US')
+
+  ### Response
+  Returns the created user profile with:
+  - `user_id`: User ID from authentication header
+  - `onboarding_completed`: Whether onboarding is completed (default: false)
+  - `created_at`: Creation timestamp
+  - `updated_at`: Last update timestamp
+  - `last_login_at`: Last login timestamp (null on creation)
+
+  ### Error Responses
+  - 409 Conflict: User already exists
+
+tests:
+  test1: |
+    test("should return 201 on success", function() {
+      expect(res.status).to.equal(201);
+    });
+  test2: |
+    test("should return user_id", function() {
+      expect(res.body.user_id).to.be.a("string");
+    });
+  test3: |
+    test("should return created_at timestamp", function() {
+      expect(res.body.created_at).to.be.a("string");
+    });
+  test4: |
+    test("should return onboarding_completed as false by default", function() {
+      expect(res.body.onboarding_completed).to.equal(false);
+    });

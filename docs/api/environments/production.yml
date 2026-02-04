@@ -1,0 +1,19 @@
+variables:
+  - name: base_url
+    value: https://api.ptc-agent.com
+  - name: user_id
+    value: ""
+  - name: workspace_id
+    value: ""
+  - name: thread_id
+    value: ""
+  - name: response_id
+    value: ""
+  - name: holding_id
+    value: ""
+  - name: watchlist_id
+    value: ""
+  - name: item_id
+    value: ""
+  - name: symbol
+    value: AAPL

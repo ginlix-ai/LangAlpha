@@ -1,0 +1,69 @@
+info:
+  name: Trigger Summarization
+  type: http
+  seq: 6
+
+http:
+  method: POST
+  url: "{{base_url}}/api/v1/workflow/{{thread_id}}/summarize"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  params:
+    - name: keep_messages
+      value: "5"
+      enabled: true
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+tests:
+  test1: |
+    test("should return 200 on successful summarization", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("response should have success true", function() {
+      expect(res.body.success).to.equal(true);
+    });
+  test3: |
+    test("response should have thread_id", function() {
+      expect(res.body.thread_id).to.be.a("string");
+    });
+  test4: |
+    test("response should have original_message_count", function() {
+      expect(res.body.original_message_count).to.be.a("number");
+    });
+  test5: |
+    test("response should have new_message_count", function() {
+      expect(res.body.new_message_count).to.be.a("number");
+    });
+
+docs: |
+  Manually trigger conversation summarization for a thread.
+
+  This summarizes the conversation history and updates the thread state,
+  preserving the last `keep_messages` messages. Unlike automatic summarization
+  which triggers based on token count, this endpoint allows explicit summarization
+  at any time.
+
+  The summarization replaces all existing messages with:
+  1. A summary message containing the conversation context
+  2. The last N preserved messages (specified by keep_messages)
+
+  **Query Parameters:**
+  - `keep_messages`: Number of recent messages to preserve (1-20, default 5)
+
+  **Response Fields:**
+  - `success`: Whether summarization completed
+  - `thread_id`: The thread ID
+  - `original_message_count`: Number of messages before summarization
+  - `new_message_count`: Number of messages after (1 summary + preserved)
+  - `summary_length`: Character length of the generated summary
+
+  **Error Responses:**
+  - 400: Not enough messages to summarize, or thread has no workspace
+  - 404: Thread not found
+  - 500: Checkpointer not initialized or other internal error

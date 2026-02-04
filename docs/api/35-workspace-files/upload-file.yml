@@ -1,0 +1,83 @@
+info:
+  name: Upload File
+  type: http
+  seq: 4
+
+http:
+  method: POST
+  url: "{{base_url}}/api/v1/workspaces/{{workspace_id}}/files/upload?path={{upload_path}}"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  params:
+    - name: path
+      value: "{{upload_path}}"
+      type: query
+  body:
+    type: multipartForm
+    data:
+      - name: file
+        type: file
+        value: ""
+  auth: inherit
+
+runtime:
+  variables:
+    - name: upload_path
+      value: ""
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Upload File
+
+  Upload a file to the workspace's live Daytona sandbox.
+
+  ### Query Parameters
+  - `path` (optional): Destination path (virtual or absolute). Defaults to uploaded filename
+
+  ### Request Body
+  - Multipart form data with `file` field containing the file to upload
+
+  ### Path Handling
+  - If path not specified, uses the uploaded file's filename
+  - Accepts virtual paths (e.g., "data/input.csv")
+  - Accepts absolute sandbox paths (e.g., "/home/daytona/data/input.csv")
+  - Path is validated and normalized by sandbox
+
+  ### Size Limits
+  - Maximum file size: 50MB (52,428,800 bytes)
+
+  ### Response Fields
+  - `workspace_id`: Workspace identifier
+  - `path`: Virtual client path where file was saved
+  - `size`: File size in bytes
+  - `filename`: Original uploaded filename
+
+  ### Error Responses
+  - 400: Destination path is required (no path and no filename)
+  - 403: Forbidden (not workspace owner or path validation failed)
+  - 404: Workspace not found
+  - 413: File too large (exceeds 50MB)
+  - 500: Upload failed
+  - 503: Sandbox not available
+
+tests:
+  test1: |
+    test("should return 200", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("response should have path", function() {
+      expect(res.body.path).to.be.a("string");
+    });
+  test3: |
+    test("response should have size", function() {
+      expect(res.body.size).to.be.a("number");
+    });
+  test4: |
+    test("response should have workspace_id", function() {
+      expect(res.body.workspace_id).to.be.a("string");
+    });

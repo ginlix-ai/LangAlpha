@@ -1,0 +1,96 @@
+info:
+  name: Get Messages
+  type: http
+  seq: 3
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/conversations/{{thread_id}}/messages?limit={{msg_limit}}&offset={{msg_offset}}"
+  params:
+    - name: limit
+      value: "{{msg_limit}}"
+      type: query
+    - name: offset
+      value: "{{msg_offset}}"
+      type: query
+  auth: inherit
+
+runtime:
+  variables:
+    - name: msg_limit
+      value: "50"
+    - name: msg_offset
+      value: "0"
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Get Messages
+
+  Get conversation history for a single thread_id.
+
+  ### Path Parameters
+  - `thread_id`: Thread identifier
+
+  ### Query Parameters
+  - `limit` (optional): Maximum messages per page (1-200). Defaults to 50
+  - `offset` (optional): Pagination offset. Defaults to 0
+
+  ### Response Fields
+  - `workspace_id`: Workspace identifier
+  - `user_id`: User identifier
+  - `name`: Workspace name
+  - `messages`: Array of conversation messages
+    - `pair_index`: Query-response pair index (0-based)
+    - `thread_id`: Thread identifier
+    - `thread_index`: Thread index within workspace
+    - `query`: Query details
+      - `query_id`: Query identifier
+      - `content`: Query content
+      - `type`: Query type (initial, resume_feedback)
+      - `feedback_action`: Feedback action if applicable
+      - `metadata`: Query metadata
+      - `timestamp`: Query timestamp
+    - `response`: Response details (may be null if pending)
+      - `response_id`: Response identifier
+      - `status`: Response status (completed, interrupted, error, timeout)
+      - `interrupt_reason`: Interrupt reason if applicable
+      - `agent_messages`: Agent messages for activity panel
+      - `execution_time`: Execution time in seconds
+      - `warnings`: Warning messages
+      - `errors`: Error messages
+      - `timestamp`: Response timestamp
+      - `file_snapshot`: File state at thread start
+      - `file_operations`: File operations performed in this thread
+  - `total_messages`: Total message count
+  - `has_more`: Whether more messages are available
+  - `created_at`: Workspace creation timestamp
+  - `updated_at`: Workspace last update timestamp
+
+  ### Error Responses
+  - 404: Thread not found
+  - 500: Database error during retrieval
+
+tests:
+  test1: |
+    test("should return 200", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("response should have workspace_id", function() {
+      expect(res.body.workspace_id).to.be.a("string");
+    });
+  test3: |
+    test("response should have messages array", function() {
+      expect(res.body.messages).to.be.an("array");
+    });
+  test4: |
+    test("response should have total_messages", function() {
+      expect(res.body.total_messages).to.be.a("number");
+    });
+  test5: |
+    test("response should have has_more boolean", function() {
+      expect(res.body.has_more).to.be.a("boolean");
+    });

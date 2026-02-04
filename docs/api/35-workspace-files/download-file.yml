@@ -1,0 +1,50 @@
+info:
+  name: Download File
+  type: http
+  seq: 3
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/workspaces/{{workspace_id}}/files/download?path={{path_to_file}}"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  params:
+    - name: path
+      value: "{{path_to_file}}"
+      type: query
+  auth: inherit
+
+runtime:
+  variables:
+    - name: path_to_file
+      value: results/nvda_vs_amd_5year_comparison.png
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+
+docs: |
+  ## Download File
+
+  Download raw bytes from the workspace's live Daytona sandbox.
+
+  ### Query Parameters
+  - `path` (required): File path (virtual or absolute)
+
+  ### Path Handling
+  - Accepts virtual paths (e.g., "results/report.pdf")
+  - Accepts absolute sandbox paths (e.g., "/home/daytona/results/report.pdf")
+  - Path is validated and normalized by sandbox
+
+  ### Response
+  - Returns raw file bytes as StreamingResponse
+  - Content-Type header set based on file extension (defaults to application/octet-stream)
+  - Content-Disposition header set for attachment download with filename
+
+  ### Error Responses
+  - 403: Forbidden (not workspace owner or path validation failed)
+  - 404: File not found or workspace not found
+  - 503: Sandbox not available

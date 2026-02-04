@@ -1,0 +1,64 @@
+info:
+  name: Get Current User
+  type: http
+  seq: 2
+
+http:
+  method: GET
+  url: "{{base_url}}/api/v1/users/me"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Get Current User
+
+  Get current user profile and preferences.
+
+  Returns the user profile along with their preferences in a single response.
+
+  ### Response
+  Returns a combined object with:
+  - `user`: User profile object
+    - `user_id`: User ID
+    - `email`: User email
+    - `name`: Display name
+    - `avatar_url`: Avatar URL
+    - `timezone`: User timezone
+    - `locale`: User locale
+    - `onboarding_completed`: Whether onboarding is completed
+    - `created_at`: Creation timestamp
+    - `updated_at`: Last update timestamp
+    - `last_login_at`: Last login timestamp
+  - `preferences`: User preferences object (may be null if not set)
+    - `preference_id`: Preference record ID
+    - `risk_preference`: Risk tolerance settings
+    - `investment_preference`: Investment style settings
+    - `agent_preference`: AI agent behavior settings
+    - `other_preference`: Miscellaneous preferences
+
+  ### Error Responses
+  - 404 Not Found: User not found
+
+tests:
+  test1: |
+    test("should return 200", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("should return user object", function() {
+      expect(res.body.user).to.be.an("object");
+    });
+  test3: |
+    test("should return user_id in user object", function() {
+      expect(res.body.user.user_id).to.be.a("string");
+    });
+  test4: |
+    test("should return created_at timestamp", function() {
+      expect(res.body.user.created_at).to.be.a("string");
+    });

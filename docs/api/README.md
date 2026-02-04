@@ -7,6 +7,62 @@ Version: 0.1.0
 
 The PTC Agent API provides endpoints for interacting with the PTC (Plan-Think-Code) AI agent system. The agent executes code in isolated Daytona sandboxes and supports real-time streaming responses via Server-Sent Events (SSE).
 
+## Documentation Formats
+
+This API is documented in two formats:
+
+| Format | Location | Use Case |
+|--------|----------|----------|
+| **Bruno OpenCollection** | `./` (YAML files) | Interactive API testing with [Bruno](https://www.usebruno.com/) |
+| **Markdown** | `./markdown/` | Human-readable reference documentation |
+
+### Bruno Collection
+
+Open this folder (`docs/api/`) directly in Bruno to test API endpoints interactively.
+
+**Structure:**
+```
+docs/api/
+├── opencollection.yml           # Collection root
+├── environments/
+│   ├── development.yml          # Local development (localhost:8000)
+│   └── production.yml           # Production environment
+├── 00-health/                   # Health check
+├── 10-chat/                     # Chat streaming (SSE)
+├── 20-workflow/                 # Workflow control
+├── 30-workspaces/               # Workspace CRUD
+├── 35-workspace-files/          # File operations
+├── 40-conversations/            # Conversation history
+├── 50-users/                    # User management
+├── 55-portfolio/                # Portfolio holdings
+├── 60-watchlist/                # Watchlist CRUD
+├── 70-market-data/              # Market data endpoints
+└── 80-cache/                    # Cache management
+```
+
+**Getting Started with Bruno:**
+1. Install [Bruno](https://www.usebruno.com/)
+2. Open this folder as a collection
+3. Select "development" environment
+4. Create a workspace via `30-workspaces/create-workspace.yml`
+5. Test chat via `10-chat/stream-chat.yml`
+
+### Markdown Documentation
+
+Detailed endpoint documentation with examples:
+
+| Document | Description |
+|----------|-------------|
+| [Chat API](./markdown/chat.md) | Streaming chat, SSE events, reconnection |
+| [Workflow API](./markdown/workflow.md) | Workflow state, checkpoints, cancellation |
+| [Workspaces API](./markdown/workspaces.md) | Workspace CRUD, file operations |
+| [Conversations API](./markdown/conversations.md) | History, replay, messages |
+| [Market Data API](./markdown/market-data.md) | Intraday data, stock search |
+| [Cache API](./markdown/cache.md) | Cache stats and management |
+| [Data Models](./markdown/models.md) | Request/response schemas |
+
+---
+
 ## Quick Start: Complete API Flow
 
 This section demonstrates the typical workflow for using the PTC Agent API.
@@ -103,7 +159,7 @@ The reconnect endpoint will:
 Check the status of a workflow at any time:
 
 ```bash
-curl "http://localhost:8000/api/v1/chat/status/thread-xyz"
+curl "http://localhost:8000/api/v1/workflow/thread-xyz/status"
 ```
 
 **Response:**
@@ -232,7 +288,7 @@ The agent will have full context from the previous conversation and can continue
 └─────────────────────┘     └─────────────────────┘     └─────────────────────┘
 ```
 
-See [Conversations API](./conversations.md) for detailed endpoint documentation.
+See [Conversations API](./markdown/conversations.md) for detailed endpoint documentation.
 
 ---
 
@@ -246,13 +302,13 @@ Currently, user identification is handled via:
 
 | Group | Description | Prefix |
 |-------|-------------|--------|
-| [Chat](./chat.md) | Streaming chat with SSE, workflow control | `/api/v1/chat` |
-| [Workflow](./workflow.md) | Workflow state, checkpoints, cancellation | `/api/v1/workflow` |
-| [Workspaces](./workspaces.md) | Workspace CRUD, thread listing, messages | `/api/v1/workspaces` |
-| [Conversations](./conversations.md) | Conversation history, replay, thread messages | `/api/v1/conversations`, `/api/v1/threads` |
-| [Market Data](./market-data.md) | FMP intraday data proxy with caching | `/api/v1/market-data` |
-| [Cache](./cache.md) | Cache statistics and management | `/api/v1/cache` |
-| [Health](./chat.md#health-check) | Health check | `/health` |
+| [Chat](./markdown/chat.md) | Streaming chat with SSE, workflow control | `/api/v1/chat` |
+| [Workflow](./markdown/workflow.md) | Workflow state, checkpoints, cancellation | `/api/v1/workflow` |
+| [Workspaces](./markdown/workspaces.md) | Workspace CRUD, thread listing, messages | `/api/v1/workspaces` |
+| [Conversations](./markdown/conversations.md) | Conversation history, replay, thread messages | `/api/v1/conversations`, `/api/v1/threads` |
+| [Market Data](./markdown/market-data.md) | FMP intraday data proxy with caching | `/api/v1/market-data` |
+| [Cache](./markdown/cache.md) | Cache statistics and management | `/api/v1/cache` |
+| [Health](./markdown/chat.md#health-check) | Health check | `/health` |
 
 ## Common Response Formats
 
@@ -286,11 +342,11 @@ Currently, user identification is handled via:
 
 ## SSE Event Types
 
-The streaming endpoints emit Server-Sent Events. See [Chat API - SSE Events](./chat.md#sse-event-types) for the complete list of event types.
+The streaming endpoints emit Server-Sent Events. See [Chat API - SSE Events](./markdown/chat.md#sse-event-types) for the complete list of event types.
 
 ## Data Models
 
-See [Models Reference](./models.md) for all request/response schemas including:
+See [Models Reference](./markdown/models.md) for all request/response schemas including:
 - ChatRequest / StatusResponse
 - WorkspaceCreate / WorkspaceResponse
 - WorkspaceThreadListItem / ThreadMessagesResponse

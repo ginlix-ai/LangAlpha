@@ -1,0 +1,43 @@
+info:
+  name: Delete Workspace
+  type: http
+  seq: 8
+
+http:
+  method: DELETE
+  url: "{{base_url}}/api/v1/workspaces/{{workspace_id}}"
+  headers:
+    - name: X-User-Id
+      value: "{{user_id}}"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+tests:
+  test1: |
+    test("should return 204 on successful deletion", function() {
+      expect(res.status).to.equal(204);
+    });
+
+docs: |
+  Delete a workspace and its sandbox.
+
+  This permanently deletes the workspace and its associated Daytona
+  sandbox. All data will be lost and cannot be recovered.
+
+  **Path Parameters:**
+  - `workspace_id`: Workspace UUID
+
+  **Response:**
+  - Returns 204 No Content on successful deletion
+
+  **Notes:**
+  - This operation is irreversible
+  - All workspace data including conversation history will be deleted
+  - The associated Daytona sandbox will be destroyed
+
+  **Error Responses:**
+  - 404: Workspace not found
+  - 500: Failed to delete workspace

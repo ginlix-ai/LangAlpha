@@ -1,0 +1,85 @@
+info:
+  name: Create Workspace
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: "{{base_url}}/api/v1/workspaces"
+  headers:
+    - name: Content-Type
+      value: application/json
+    - name: X-User-Id
+      value: "{{user_id}}"
+  body:
+    type: json
+    data: |-
+      {
+        "name": "My Workspace",
+        "description": "Optional workspace description",
+        "config": {}
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+tests:
+  test1: |
+    test("should return 201 on successful creation", function() {
+      expect(res.status).to.equal(201);
+    });
+  test2: |
+    test("response should have workspace_id", function() {
+      expect(res.body.workspace_id).to.be.a("string");
+    });
+  test3: |
+    test("response should have user_id", function() {
+      expect(res.body.user_id).to.be.a("string");
+    });
+  test4: |
+    test("response should have name", function() {
+      expect(res.body.name).to.be.a("string");
+    });
+  test5: |
+    test("response should have status", function() {
+      expect(res.body.status).to.be.a("string");
+    });
+  test6: |
+    test("should set workspace_id variable", function() {
+      if (res.body.workspace_id) {
+        bru.setEnvVar("workspace_id", res.body.workspace_id);
+      }
+    });
+
+docs: |
+  Create a new workspace with dedicated sandbox.
+
+  This creates a new Daytona sandbox for the workspace. The operation
+  may take 30-60 seconds as the sandbox needs to be initialized.
+
+  **Headers:**
+  - `X-User-Id` (required): User ID for workspace ownership
+
+  **Request Body:**
+  - `name` (required): Workspace name (1-255 characters)
+  - `description` (optional): Workspace description (max 1000 characters)
+  - `config` (optional): Configuration settings object
+
+  **Response Fields:**
+  - `workspace_id`: Unique workspace identifier (UUID)
+  - `user_id`: Owner user ID
+  - `name`: Workspace name
+  - `description`: Workspace description
+  - `sandbox_id`: Daytona sandbox ID (may be null initially)
+  - `status`: Workspace status (creating, running, stopped, error, deleted)
+  - `created_at`: Creation timestamp
+  - `updated_at`: Last update timestamp
+  - `last_activity_at`: Last agent activity timestamp
+  - `stopped_at`: When workspace was stopped
+  - `config`: Configuration settings
+
+  **Error Responses:**
+  - 400: Invalid request (name too long, etc.)
+  - 500: Failed to create workspace
