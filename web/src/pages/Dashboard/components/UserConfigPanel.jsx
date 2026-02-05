@@ -223,6 +223,10 @@ function UserConfigPanel({ isOpen, onClose }) {
       }
 
       await updatePreferences(preferences);
+
+      // Mark onboarding as completed after saving preferences
+      await updateCurrentUser({ onboarding_completed: true });
+
       onClose();
     } catch (err) {
       setError(err.message || 'Failed to update preferences');
