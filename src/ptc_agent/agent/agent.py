@@ -38,6 +38,7 @@ from ptc_agent.agent.middleware import (
     TodoWriteMiddleware,
     # Dynamic skill loader middleware
     DynamicSkillLoaderMiddleware,
+    MemoryMiddleware,
     # Summarization middleware
     SummarizationMiddleware,
 )
@@ -364,6 +365,12 @@ class PTCAgent:
             skill_registry=SKILL_REGISTRY
         )
         shared_middleware.append(skill_loader_middleware)
+
+        # Memory middleware - 向量记忆层
+        memory_middleware = MemoryMiddleware(
+            user_id=user_profile.get("name", "default") if user_profile else "default",
+        )
+        shared_middleware.append(memory_middleware)
         # Add load_skill tool
         tools.extend(skill_loader_middleware.tools)
         # Pre-register all skill tools (they're available but discovered via load_skill)
