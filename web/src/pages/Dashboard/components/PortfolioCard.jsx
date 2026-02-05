@@ -35,14 +35,14 @@ function PortfolioCard({
 
   return (
     <Card className="panel flex flex-col flex-1 min-h-0">
-      <CardHeader className="px-3 py-4 flex-shrink-0">
-        <button type="button" onClick={onHeaderAddClick} className="flex items-center justify-between w-full text-left">
-          <CardTitle className="dashboard-title-font text-base font-semibold" style={{ color: 'var(--color-text-primary)', letterSpacing: '0.15px' }}>
+        <CardHeader className="px-3 py-4 flex-shrink-0">
+          <button type="button" onClick={onHeaderAddClick} className="flex items-center justify-between w-full text-left">
+            <CardTitle className="dashboard-title-font text-base font-semibold" style={{ color: 'var(--color-text-primary)', letterSpacing: '0.15px' }}>
             Add Portfolio Holding
-          </CardTitle>
-          <Plus className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-primary)' }} />
-        </button>
-      </CardHeader>
+            </CardTitle>
+            <Plus className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-primary)' }} />
+          </button>
+        </CardHeader>
 
       <Dialog open={!!editRow} onOpenChange={(open) => !open && onEditClose?.()}>
         <DialogContent className="sm:max-w-sm text-white border" style={{ backgroundColor: 'var(--color-bg-elevated)', borderColor: 'var(--color-border-elevated)' }}>

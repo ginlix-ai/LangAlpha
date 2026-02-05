@@ -9,36 +9,90 @@ import { useChatMessages } from '../hooks/useChatMessages';
 /**
  * ChatView Component
  * 
- * Displays the chat interface for a specific workspace.
+ * Displays the chat interface for a specific workspace and thread.
  * Handles:
  * - Message display and streaming
  * - Auto-scrolling
- * - Navigation back to gallery
+ * - Navigation back to thread gallery
  * - Auto-sending initial message from navigation state
  * 
  * @param {string} workspaceId - The workspace ID to chat in
- * @param {Function} onBack - Callback to navigate back to gallery
+ * @param {string} threadId - The thread ID to chat in
+ * @param {Function} onBack - Callback to navigate back to thread gallery
  */
-function ChatView({ workspaceId, onBack }) {
+function ChatView({ workspaceId, threadId, onBack }) {
   const scrollAreaRef = useRef(null);
   const location = useLocation();
   const navigate = useNavigate();
-  const { messages, isLoading, isLoadingHistory, messageError, handleSendMessage } = useChatMessages(workspaceId);
+  const { messages, isLoading, isLoadingHistory, messageError, handleSendMessage, threadId: currentThreadId } = useChatMessages(workspaceId, threadId);
   const initialMessageSentRef = useRef(false);
+
+  // Update URL when thread ID changes (e.g., when __default__ becomes actual thread ID)
+  // This triggers a re-render with the new threadId, which will then load history
+  useEffect(() => {
+    if (currentThreadId && currentThreadId !== '__default__' && currentThreadId !== threadId && workspaceId) {
+      console.log('[ChatView] Thread ID changed from', threadId, 'to', currentThreadId, '- updating URL');
+      // Update URL to reflect the actual thread ID
+      // This will cause ChatAgent to re-render with new threadId prop, triggering history load
+      navigate(`/chat/${workspaceId}/${currentThreadId}`, { replace: true });
+    }
+  }, [currentThreadId, threadId, workspaceId, navigate]);
 
   // Auto-send initial message from navigation state (e.g., from Dashboard)
   useEffect(() => {
-    if (location.state?.initialMessage && !initialMessageSentRef.current && workspaceId && !isLoading && !isLoadingHistory) {
-      const { initialMessage, planMode } = location.state;
+    // Only proceed if we have the required IDs
+    if (!workspaceId || !threadId) {
+      return;
+    }
+
+    // Handle onboarding flow
+    if (location.state?.isOnboarding && !initialMessageSentRef.current && !isLoading && !isLoadingHistory) {
       initialMessageSentRef.current = true;
       // Clear navigation state to prevent re-sending on re-renders
       navigate(location.pathname, { replace: true, state: {} });
       // Small delay to ensure component is fully mounted
       setTimeout(() => {
-        handleSendMessage(initialMessage, planMode || false);
+        const onboardingMessage = "Hi! I am new here and would like to set up my profile.";
+        const additionalContext = [
+          {
+            type: "skills",
+            name: "user-profile",
+            instruction: "Help the user with first time onboarding. Reference the skills/user-profile/onboarding.md for details. You should use load_skill tool to load the user-profile skill before calling any of the tools."
+          }
+        ];
+        handleSendMessage(onboardingMessage, false, additionalContext);
       }, 100);
+      return;
     }
-  }, [location.state, workspaceId, isLoading, isLoadingHistory, handleSendMessage, navigate, location.pathname]);
+    
+    // Handle regular message flow
+    if (location.state?.initialMessage && !initialMessageSentRef.current) {
+      // For new threads (__default__), send immediately without waiting for history
+      // For existing threads, wait for history to finish loading
+      if (threadId === '__default__') {
+        // New thread - send immediately
+        initialMessageSentRef.current = true;
+        // Clear navigation state to prevent re-sending on re-renders
+        navigate(location.pathname, { replace: true, state: {} });
+        // Small delay to ensure component is fully mounted
+        setTimeout(() => {
+          const { initialMessage, planMode } = location.state;
+          handleSendMessage(initialMessage, planMode || false);
+        }, 100);
+      } else if (!isLoadingHistory && !isLoading) {
+        // Existing thread - wait for history to load, then send
+        // This ensures we don't send duplicate messages
+        initialMessageSentRef.current = true;
+        // Clear navigation state to prevent re-sending on re-renders
+        navigate(location.pathname, { replace: true, state: {} });
+        // Small delay to ensure component is fully mounted
+        setTimeout(() => {
+          const { initialMessage, planMode } = location.state;
+          handleSendMessage(initialMessage, planMode || false);
+        }, 100);
+      }
+    }
+  }, [location.state, workspaceId, threadId, isLoading, isLoadingHistory, handleSendMessage, navigate, location.pathname]);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -56,6 +110,17 @@ function ChatView({ workspaceId, onBack }) {
     }
   }, [messages]);
 
+  // Early return if workspaceId or threadId is missing
+  if (!workspaceId || !threadId) {
+    return (
+      <div className="flex items-center justify-center h-full" style={{ backgroundColor: '#1B1D25' }}>
+        <p className="text-sm" style={{ color: '#FFFFFF', opacity: 0.65 }}>
+          Missing workspace or thread information
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="chat-agent-container" style={{ backgroundColor: '#1B1D25' }}>
       {/* Header */}
@@ -68,13 +133,18 @@ function ChatView({ workspaceId, onBack }) {
             onClick={onBack}
             className="p-2 rounded-md transition-colors hover:bg-white/10"
             style={{ color: '#FFFFFF' }}
-            title="Back to workspaces"
+            title="Back to threads"
           >
             <ArrowLeft className="h-5 w-5" />
           </button>
           <h1 className="text-lg font-semibold" style={{ color: '#FFFFFF' }}>
             Chat Agent
           </h1>
+          {isLoadingHistory && (
+            <span className="text-xs" style={{ color: '#FFFFFF', opacity: 0.5 }}>
+              Loading history...
+            </span>
+          )}
         </div>
         {messageError && (
           <p className="text-xs" style={{ color: '#FF383C' }}>

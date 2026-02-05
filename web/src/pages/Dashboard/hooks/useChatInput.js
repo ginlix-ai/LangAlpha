@@ -35,8 +35,9 @@ export function useChatInput() {
         () => setShowCreatingDialog(false)
       );
 
-      // Navigate to ChatAgent page with workspace and message in state
-      navigate(`/chat/${workspaceId}`, {
+      // Navigate to ChatAgent page with workspace, new thread, and message in state
+      // Use '__default__' as threadId to create a new thread
+      navigate(`/chat/${workspaceId}/__default__`, {
         state: {
           initialMessage: message.trim(),
           planMode: planMode,

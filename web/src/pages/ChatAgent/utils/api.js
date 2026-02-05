@@ -40,6 +40,23 @@ export async function getConversations(userId = DEFAULT_USER_ID, limit = 50, off
   return data;
 }
 
+/**
+ * Get all threads for a specific workspace
+ * @param {string} workspaceId - The workspace ID
+ * @param {string} userId - User ID (defaults to DEFAULT_USER_ID)
+ * @param {number} limit - Maximum threads to return (default: 20)
+ * @param {number} offset - Pagination offset (default: 0)
+ * @returns {Promise<Object>} Response with threads array, total, limit, offset
+ */
+export async function getWorkspaceThreads(workspaceId, userId = DEFAULT_USER_ID, limit = 20, offset = 0) {
+  if (!workspaceId) throw new Error('Workspace ID is required');
+  const { data } = await api.get(`/api/v1/workspaces/${workspaceId}/threads`, {
+    params: { limit, offset },
+    headers: headers(userId),
+  });
+  return data;
+}
+
 // --- Streaming (fetch + ReadableStream; axios not used) ---
 
 async function streamFetch(url, opts, onEvent) {
@@ -87,15 +104,25 @@ export async function sendChatMessageStream(
   messageHistory = [],
   planMode = false,
   onEvent = () => {},
-  userId = DEFAULT_USER_ID
+  userId = DEFAULT_USER_ID,
+  additionalContext = null
 ) {
   const messages = [...messageHistory, { role: 'user', content: message }];
+  const body = {
+    workspace_id: workspaceId,
+    thread_id: threadId,
+    messages,
+    plan_mode: planMode,
+  };
+  if (additionalContext) {
+    body.additional_context = additionalContext;
+  }
   await streamFetch(
     '/api/v1/chat/stream',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...headers(userId) },
-      body: JSON.stringify({ workspace_id: workspaceId, thread_id: threadId, messages, plan_mode: planMode }),
+      body: JSON.stringify(body),
     },
     onEvent
   );
