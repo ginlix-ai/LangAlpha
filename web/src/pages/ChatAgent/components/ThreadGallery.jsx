@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowLeft, Loader2 } from 'lucide-react';
+import { ArrowLeft, Loader2, Plus, Globe, Zap, ChevronDown, Send } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { Input } from '../../../components/ui/input';
 import ThreadCard from './ThreadCard';
 import { getWorkspaceThreads, getWorkspaces } from '../utils/api';
 import { DEFAULT_USER_ID } from '../utils/api';
+import { useThreadGalleryInput } from '../hooks/useThreadGalleryInput';
 
 /**
  * ThreadGallery Component
@@ -26,6 +28,17 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }) {
   const [error, setError] = useState(null);
   const navigate = useNavigate();
   const loadingRef = useRef(false);
+
+  // Chat input hook for creating new threads
+  const {
+    message,
+    setMessage,
+    planMode,
+    setPlanMode,
+    isLoading: isInputLoading,
+    handleSend,
+    handleKeyPress,
+  } = useThreadGalleryInput(workspaceId);
 
   // Load workspace name and threads on mount
   useEffect(() => {
@@ -163,6 +176,78 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }) {
             ))}
           </div>
         )}
+      </div>
+
+      {/* Chat Input Bar */}
+      <div
+        className="flex-shrink-0 p-4"
+        style={{ borderTop: '1px solid rgba(255, 255, 255, 0.1)' }}
+      >
+        <div
+          className="flex items-center gap-2 p-3 rounded-lg"
+          style={{
+            backgroundColor: 'rgba(10, 10, 10, 0.65)',
+            border: '1.5px solid hsl(var(--primary))',
+          }}
+        >
+          <button
+            className="w-9 h-9 flex items-center justify-center rounded-md transition-colors hover:bg-white/5"
+            style={{ color: '#BBBBBB' }}
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+          <Input
+            placeholder="What would you like to know?"
+            className="flex-1 h-9 rounded-md text-sm focus-visible:ring-0 focus-visible:ring-offset-0 focus:outline-none"
+            style={{
+              backgroundColor: 'transparent',
+              border: 'none',
+              color: '#BBBBBB',
+              fontSize: '14px',
+            }}
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyPress={handleKeyPress}
+            disabled={isInputLoading || !workspaceId}
+          />
+          <div className="flex items-center gap-1">
+            <button
+              className="flex items-center gap-1.5 px-2 py-1.5 rounded-full transition-colors hover:bg-white/5"
+              style={{ color: '#BBBBBB' }}
+            >
+              <Globe className="h-4 w-4" />
+              <span className="text-sm font-medium">Agent</span>
+            </button>
+            <button
+              className={`flex items-center gap-1.5 px-2 py-1.5 rounded-full transition-colors ${
+                planMode ? 'bg-white/100' : 'hover:bg-white/5'
+              }`}
+              style={{ color: '#BBBBBB' }}
+              onClick={() => setPlanMode(!planMode)}
+            >
+              <Zap className="h-4 w-4" />
+              <span className="text-sm font-medium">Plan Mode</span>
+            </button>
+            <button
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors hover:bg-white/5"
+              style={{ color: '#BBBBBB' }}
+            >
+              <span className="text-sm font-medium">Tool</span>
+              <ChevronDown className="h-4 w-4" />
+            </button>
+            <button
+              className="w-8 h-9 rounded-md flex items-center justify-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{
+                backgroundColor: (isInputLoading || !message.trim()) ? 'rgba(97, 85, 245, 0.5)' : '#6155F5',
+                color: '#FFFFFF',
+              }}
+              onClick={handleSend}
+              disabled={isInputLoading || !message.trim() || !workspaceId}
+            >
+              <Send className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

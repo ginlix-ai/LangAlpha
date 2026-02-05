@@ -28,17 +28,25 @@ function ChatView({ workspaceId, threadId, onBack }) {
   const initialMessageSentRef = useRef(false);
 
   // Update URL when thread ID changes (e.g., when __default__ becomes actual thread ID)
+  // This triggers a re-render with the new threadId, which will then load history
   useEffect(() => {
     if (currentThreadId && currentThreadId !== '__default__' && currentThreadId !== threadId && workspaceId) {
+      console.log('[ChatView] Thread ID changed from', threadId, 'to', currentThreadId, '- updating URL');
       // Update URL to reflect the actual thread ID
+      // This will cause ChatAgent to re-render with new threadId prop, triggering history load
       navigate(`/chat/${workspaceId}/${currentThreadId}`, { replace: true });
     }
   }, [currentThreadId, threadId, workspaceId, navigate]);
 
   // Auto-send initial message from navigation state (e.g., from Dashboard)
   useEffect(() => {
+    // Only proceed if we have the required IDs
+    if (!workspaceId || !threadId) {
+      return;
+    }
+
     // Handle onboarding flow
-    if (location.state?.isOnboarding && !initialMessageSentRef.current && workspaceId && threadId && !isLoading && !isLoadingHistory) {
+    if (location.state?.isOnboarding && !initialMessageSentRef.current && !isLoading && !isLoadingHistory) {
       initialMessageSentRef.current = true;
       // Clear navigation state to prevent re-sending on re-renders
       navigate(location.pathname, { replace: true, state: {} });
@@ -58,15 +66,31 @@ function ChatView({ workspaceId, threadId, onBack }) {
     }
     
     // Handle regular message flow
-    if (location.state?.initialMessage && !initialMessageSentRef.current && workspaceId && threadId && !isLoading && !isLoadingHistory) {
-      const { initialMessage, planMode } = location.state;
-      initialMessageSentRef.current = true;
-      // Clear navigation state to prevent re-sending on re-renders
-      navigate(location.pathname, { replace: true, state: {} });
-      // Small delay to ensure component is fully mounted
-      setTimeout(() => {
-        handleSendMessage(initialMessage, planMode || false);
-      }, 100);
+    if (location.state?.initialMessage && !initialMessageSentRef.current) {
+      // For new threads (__default__), send immediately without waiting for history
+      // For existing threads, wait for history to finish loading
+      if (threadId === '__default__') {
+        // New thread - send immediately
+        initialMessageSentRef.current = true;
+        // Clear navigation state to prevent re-sending on re-renders
+        navigate(location.pathname, { replace: true, state: {} });
+        // Small delay to ensure component is fully mounted
+        setTimeout(() => {
+          const { initialMessage, planMode } = location.state;
+          handleSendMessage(initialMessage, planMode || false);
+        }, 100);
+      } else if (!isLoadingHistory && !isLoading) {
+        // Existing thread - wait for history to load, then send
+        // This ensures we don't send duplicate messages
+        initialMessageSentRef.current = true;
+        // Clear navigation state to prevent re-sending on re-renders
+        navigate(location.pathname, { replace: true, state: {} });
+        // Small delay to ensure component is fully mounted
+        setTimeout(() => {
+          const { initialMessage, planMode } = location.state;
+          handleSendMessage(initialMessage, planMode || false);
+        }, 100);
+      }
     }
   }, [location.state, workspaceId, threadId, isLoading, isLoadingHistory, handleSendMessage, navigate, location.pathname]);
 
