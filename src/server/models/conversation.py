@@ -19,6 +19,7 @@ class WorkspaceThreadListItem(BaseModel):
     thread_index: int = Field(..., description="Thread index within workspace")
     current_status: str = Field(..., description="Thread status")
     msg_type: Optional[str] = Field(None, description="Message type")
+    title: Optional[str] = Field(None, description="User-editable thread title")
     first_query_content: Optional[str] = Field(
         None, description="First user query content (preview)"
     )
@@ -33,6 +34,7 @@ class WorkspaceThreadListItem(BaseModel):
                 "thread_index": 0,
                 "current_status": "completed",
                 "msg_type": "ptc",
+                "title": "Tesla Stock Analysis",
                 "created_at": "2025-10-15T10:30:00Z",
                 "updated_at": "2025-10-15T14:45:00Z"
             }
@@ -210,6 +212,36 @@ class WorkspaceMessagesResponse(BaseModel):
                 "has_more": False,
                 "created_at": "2025-10-15T21:03:43Z",
                 "updated_at": "2025-10-15T21:05:47Z"
+            }
+        }
+
+
+# ==================== Thread Management Request/Response Models ====================
+
+class ThreadUpdateRequest(BaseModel):
+    """Request model for updating a thread."""
+    title: Optional[str] = Field(None, max_length=255, description="New thread title")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "title": "Tesla Stock Analysis"
+            }
+        }
+
+
+class ThreadDeleteResponse(BaseModel):
+    """Response model for deleting a thread."""
+    success: bool = Field(..., description="Whether deletion was successful")
+    thread_id: str = Field(..., description="Deleted thread ID")
+    message: str = Field(..., description="Status message")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "thread_id": "3d4e5f6g-7h8i-9j0k-1l2m-3n4o5p6q7r8s",
+                "message": "Thread deleted successfully"
             }
         }
 

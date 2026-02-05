@@ -163,6 +163,7 @@ async def setup_query_response_tables_async():
                             msg_type VARCHAR(50),
                             current_status VARCHAR(50) NOT NULL,  -- Status values: in_progress, interrupted, completed, error, cancelled, timeout
                             thread_index INTEGER NOT NULL,
+                            title VARCHAR(255),  -- User-editable thread title
                             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                             updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                             CONSTRAINT unique_thread_index_per_workspace UNIQUE (workspace_id, thread_index)

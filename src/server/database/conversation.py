@@ -216,6 +216,7 @@ async def create_thread(
     current_status: str,
     msg_type: Optional[str] = None,
     thread_index: Optional[int] = None,
+    title: Optional[str] = None,
     conn=None
 ) -> Dict[str, Any]:
     """
@@ -227,6 +228,7 @@ async def create_thread(
         current_status: Initial status
         msg_type: Message type
         thread_index: Optional thread index (calculated if not provided)
+        title: Optional thread title
         conn: Optional database connection to reuse
     """
     # Calculate thread_index if not provided
@@ -238,10 +240,10 @@ async def create_thread(
             # Reuse provided connection
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute("""
-                    INSERT INTO conversation_thread (thread_id, workspace_id, current_status, msg_type, thread_index)
-                    VALUES (%s, %s, %s, %s, %s)
-                    RETURNING thread_id, workspace_id, current_status, msg_type, thread_index, created_at, updated_at
-                """, (thread_id, workspace_id, current_status, msg_type, thread_index))
+                    INSERT INTO conversation_thread (thread_id, workspace_id, current_status, msg_type, thread_index, title)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING thread_id, workspace_id, current_status, msg_type, thread_index, title, created_at, updated_at
+                """, (thread_id, workspace_id, current_status, msg_type, thread_index, title))
                 result = await cur.fetchone()
                 logger.info(f"[conversation_db] create_thread thread_id={thread_id} thread_index={thread_index} workspace_id={workspace_id}")
                 return dict(result)
@@ -250,10 +252,10 @@ async def create_thread(
             async with get_db_connection() as conn:
                 async with conn.cursor(row_factory=dict_row) as cur:
                     await cur.execute("""
-                        INSERT INTO conversation_thread (thread_id, workspace_id, current_status, msg_type, thread_index)
-                        VALUES (%s, %s, %s, %s, %s)
-                        RETURNING thread_id, workspace_id, current_status, msg_type, thread_index, created_at, updated_at
-                    """, (thread_id, workspace_id, current_status, msg_type, thread_index))
+                        INSERT INTO conversation_thread (thread_id, workspace_id, current_status, msg_type, thread_index, title)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        RETURNING thread_id, workspace_id, current_status, msg_type, thread_index, title, created_at, updated_at
+                    """, (thread_id, workspace_id, current_status, msg_type, thread_index, title))
                     result = await cur.fetchone()
                     return dict(result)
 
@@ -315,7 +317,7 @@ async def ensure_thread_exists(
         workspace_id: Workspace ID (must exist)
         thread_id: Thread ID to create/resume
         user_id: User ID for logging
-        initial_query: Initial query text (for logging only, not stored separately)
+        initial_query: Initial query text (used as thread title)
         initial_status: Initial thread status
         msg_type: Message type (e.g., 'ptc')
     """
@@ -339,12 +341,15 @@ async def ensure_thread_exists(
 
         # Step 3: Create thread if it doesn't exist
         if not thread_exists:
+            # Use initial query as thread title (truncate to 255 chars)
+            title = initial_query[:255] if initial_query else None
             await create_thread(
                 thread_id=thread_id,
                 workspace_id=workspace_id,
                 current_status=initial_status,
                 msg_type=msg_type,
                 thread_index=None,  # Will be calculated inside create_thread using same conn
+                title=title,
                 conn=conn
             )
         else:
@@ -386,7 +391,7 @@ async def get_workspace_threads(
                 query = f"""
                     SELECT
                         thread_id, workspace_id, current_status, msg_type, thread_index,
-                        created_at, updated_at
+                        title, created_at, updated_at
                     FROM conversation_thread
                     WHERE workspace_id = %s
                     ORDER BY {sort_by} {sort_order.upper()}
@@ -441,7 +446,7 @@ async def get_threads_for_user(
                 query = f"""
                     SELECT
                         t.thread_id, t.workspace_id, t.current_status, t.msg_type, t.thread_index,
-                        t.created_at, t.updated_at,
+                        t.title, t.created_at, t.updated_at,
                         fq.content AS first_query_content
                     FROM conversation_thread t
                     JOIN workspaces w ON t.workspace_id = w.workspace_id
@@ -1185,6 +1190,65 @@ async def delete_thread(thread_id: str) -> bool:
 
     except Exception as e:
         logger.error(f"Error deleting thread: {e}")
+        raise
+
+
+async def update_thread_title(thread_id: str, title: Optional[str]) -> Optional[Dict[str, Any]]:
+    """
+    Update thread title.
+
+    Args:
+        thread_id: Thread ID
+        title: New title (can be None to clear title)
+
+    Returns:
+        Updated thread dict, or None if thread not found
+    """
+    try:
+        async with get_db_connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("""
+                    UPDATE conversation_thread
+                    SET title = %s, updated_at = NOW()
+                    WHERE thread_id = %s
+                    RETURNING thread_id, workspace_id, current_status, msg_type, thread_index, title, created_at, updated_at
+                """, (title, thread_id))
+
+                result = await cur.fetchone()
+                if result:
+                    logger.info(f"[conversation_db] update_thread_title thread_id={thread_id} title={title}")
+                    return dict(result)
+                return None
+
+    except Exception as e:
+        logger.error(f"Error updating thread title: {e}")
+        raise
+
+
+async def get_thread_by_id(thread_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Get thread by ID.
+
+    Args:
+        thread_id: Thread ID
+
+    Returns:
+        Thread dict or None if not found
+    """
+    try:
+        async with get_db_connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("""
+                    SELECT thread_id, workspace_id, current_status, msg_type, thread_index, title, created_at, updated_at
+                    FROM conversation_thread
+                    WHERE thread_id = %s
+                """, (thread_id,))
+
+                result = await cur.fetchone()
+                return dict(result) if result else None
+
+    except Exception as e:
+        logger.error(f"Error getting thread by id: {e}")
         raise
 
 

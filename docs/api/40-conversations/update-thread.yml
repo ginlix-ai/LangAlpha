@@ -1,0 +1,73 @@
+info:
+  name: Update Thread
+  type: http
+  seq: 6
+
+http:
+  method: PATCH
+  url: "{{base_url}}/api/v1/threads/{{thread_id}}"
+  headers:
+    - name: Content-Type
+      value: application/json
+  body:
+    type: json
+    data: |-
+      {
+        "title": "test title"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+
+docs: |
+  ## Update Thread
+
+  Update thread properties (currently only title).
+
+  ### Path Parameters
+  - `thread_id`: Thread identifier to update
+
+  ### Request Body
+  - `title` (optional, max 255 chars): New thread title. Set to null to clear the title.
+
+  ### Example Request
+  ```json
+  {
+    "title": "Tesla Stock Analysis"
+  }
+  ```
+
+  ### Response Fields
+  Returns the updated thread:
+  - `thread_id`: Thread identifier
+  - `workspace_id`: Workspace identifier
+  - `thread_index`: Thread index within workspace
+  - `current_status`: Thread status
+  - `msg_type`: Message type
+  - `title`: Updated thread title
+  - `created_at`: Creation timestamp
+  - `updated_at`: Last update timestamp
+
+  ### Example Response
+  ```json
+  {
+    "thread_id": "3d4e5f6g-7h8i-9j0k-1l2m-3n4o5p6q7r8s",
+    "workspace_id": "ws-abc123",
+    "thread_index": 0,
+    "current_status": "completed",
+    "msg_type": "ptc",
+    "title": "Tesla Stock Analysis",
+    "first_query_content": null,
+    "created_at": "2025-10-15T10:30:00Z",
+    "updated_at": "2025-10-15T14:45:00Z"
+  }
+  ```
+
+  ### Error Responses
+  - 404: Thread not found
+  - 422: Validation error (e.g., title exceeds 255 characters)
+  - 500: Database error during update

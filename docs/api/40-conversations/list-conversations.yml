@@ -60,6 +60,7 @@ docs: |
     - `thread_index`: Thread index within workspace
     - `current_status`: Thread status
     - `msg_type`: Message type
+    - `title`: User-editable thread title (defaults to first query content)
     - `first_query_content`: First user query content (preview)
     - `created_at`: Creation timestamp
     - `updated_at`: Last update timestamp

@@ -54,6 +54,7 @@ docs: |
     - `thread_index`: Thread index within workspace
     - `current_status`: Thread status (pending, completed, error, etc.)
     - `msg_type`: Message type (e.g., "ptc")
+    - `title`: User-editable thread title (defaults to first query content)
     - `created_at`: Creation timestamp
     - `updated_at`: Last update timestamp
   - `total`: Total number of threads

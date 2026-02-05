@@ -1,0 +1,59 @@
+info:
+  name: Delete Thread
+  type: http
+  seq: 5
+
+http:
+  method: DELETE
+  url: "{{base_url}}/api/v1/threads/{{thread_id}}"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+
+docs: |
+  ## Delete Thread
+
+  Delete a thread and all its associated data (queries, responses, usage records).
+
+  This permanently deletes the thread due to CASCADE constraints in the database.
+
+  ### Path Parameters
+  - `thread_id`: Thread identifier to delete
+
+  ### Response Fields
+  - `success`: Whether deletion was successful (boolean)
+  - `thread_id`: Deleted thread identifier
+  - `message`: Status message
+
+  ### Example Response
+  ```json
+  {
+    "success": true,
+    "thread_id": "3d4e5f6g-7h8i-9j0k-1l2m-3n4o5p6q7r8s",
+    "message": "Thread deleted successfully"
+  }
+  ```
+
+  ### Error Responses
+  - 404: Thread not found
+  - 500: Database error during deletion
+
+tests:
+  test1: |
+    test("should return 200 on successful deletion", function() {
+      expect(res.status).to.equal(200);
+    });
+  test2: |
+    test("response should have success field", function() {
+      expect(res.body.success).to.be.a("boolean");
+    });
+  test3: |
+    test("response should have thread_id", function() {
+      expect(res.body.thread_id).to.be.a("string");
+    });
+  test4: |
+    test("response should have message", function() {
+      expect(res.body.message).to.be.a("string");
+    });

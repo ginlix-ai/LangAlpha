@@ -23,6 +23,8 @@ from src.server.models.conversation import (
     MessageResponse,
     ConversationMessage,
     WorkspaceMessagesResponse,
+    ThreadUpdateRequest,
+    ThreadDeleteResponse,
 )
 from src.server.database.conversation import (
     get_response_by_id,
@@ -32,6 +34,9 @@ from src.server.database.conversation import (
     get_thread_with_summary,
     get_queries_for_thread,
     get_responses_for_thread,
+    delete_thread,
+    update_thread_title,
+    get_thread_by_id,
 )
 from src.server.utils.message_deduplicator import deduplicate_agent_messages
 
@@ -93,6 +98,7 @@ async def list_workspace_threads_endpoint(
                 thread_index=thread["thread_index"],
                 current_status=thread["current_status"],
                 msg_type=thread.get("msg_type"),
+                title=thread.get("title"),
                 created_at=thread["created_at"],
                 updated_at=thread["updated_at"]
             )
@@ -142,6 +148,7 @@ async def list_user_threads_endpoint(
                 thread_index=thread["thread_index"],
                 current_status=thread["current_status"],
                 msg_type=thread.get("msg_type"),
+                title=thread.get("title"),
                 first_query_content=thread.get("first_query_content"),
                 created_at=thread["created_at"],
                 updated_at=thread["updated_at"],
@@ -161,6 +168,105 @@ async def list_user_threads_endpoint(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to list user threads: {str(e)}",
+        )
+
+
+@threads_router.delete("/{thread_id}", response_model=ThreadDeleteResponse)
+async def delete_thread_endpoint(thread_id: str):
+    """
+    Delete a thread and all its queries/responses.
+
+    This permanently deletes the thread and all associated data (queries, responses, usage records)
+    due to CASCADE constraints.
+
+    Args:
+        thread_id: Thread ID to delete
+
+    Returns:
+        ThreadDeleteResponse with deletion status
+
+    Raises:
+        404: Thread not found
+        500: Database error during deletion
+    """
+    try:
+        logger.info(f"Deleting thread thread_id={thread_id}")
+
+        # Check if thread exists first
+        thread = await get_thread_by_id(thread_id)
+        if not thread:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Thread not found: {thread_id}"
+            )
+
+        # Delete the thread (CASCADE handles queries, responses, usage)
+        await delete_thread(thread_id)
+
+        logger.info(f"Successfully deleted thread thread_id={thread_id}")
+        return ThreadDeleteResponse(
+            success=True,
+            thread_id=thread_id,
+            message="Thread deleted successfully"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error deleting thread {thread_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete thread: {str(e)}"
+        )
+
+
+@threads_router.patch("/{thread_id}", response_model=WorkspaceThreadListItem)
+async def update_thread_endpoint(thread_id: str, request: ThreadUpdateRequest):
+    """
+    Update thread properties (currently only title).
+
+    Args:
+        thread_id: Thread ID to update
+        request: ThreadUpdateRequest with fields to update
+
+    Returns:
+        Updated WorkspaceThreadListItem
+
+    Raises:
+        404: Thread not found
+        500: Database error during update
+    """
+    try:
+        logger.info(f"Updating thread thread_id={thread_id} with title={request.title}")
+
+        # Update the thread title
+        updated_thread = await update_thread_title(thread_id, request.title)
+
+        if not updated_thread:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Thread not found: {thread_id}"
+            )
+
+        logger.info(f"Successfully updated thread thread_id={thread_id}")
+        return WorkspaceThreadListItem(
+            thread_id=str(updated_thread["thread_id"]),
+            workspace_id=str(updated_thread["workspace_id"]),
+            thread_index=updated_thread["thread_index"],
+            current_status=updated_thread["current_status"],
+            msg_type=updated_thread.get("msg_type"),
+            title=updated_thread.get("title"),
+            created_at=updated_thread["created_at"],
+            updated_at=updated_thread["updated_at"],
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error updating thread {thread_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update thread: {str(e)}"
         )
 
 
