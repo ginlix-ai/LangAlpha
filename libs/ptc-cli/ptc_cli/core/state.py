@@ -193,6 +193,7 @@ class SessionState:
         persist_session: bool = True,
         plan_mode: bool = False,
         llm_model: str | None = None,
+        flash_mode: bool = False,
     ) -> None:
         """Initialize session state.
 
@@ -202,12 +203,14 @@ class SessionState:
             persist_session: Whether to persist sandbox sessions
             plan_mode: Whether to inject plan mode reminder
             llm_model: LLM model name from models.json (e.g., 'minimax-m2.1')
+            flash_mode: Whether to use Flash Agent (no sandbox)
         """
         self.auto_approve = auto_approve
         self.no_splash = no_splash
         self.persist_session = persist_session
         self.plan_mode = plan_mode  # If True, inject plan mode reminder
         self.llm_model = llm_model  # Per-session LLM model override
+        self.flash_mode = flash_mode  # If True, use Flash Agent without sandbox
         self.reusing_sandbox = False  # Set to True when reconnecting to existing sandbox
         self.thread_id = str(uuid.uuid4())
 

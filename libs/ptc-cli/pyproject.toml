@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-ptc-agent = "ptc_cli:cli_main"
+ptc-agent = "ptc_cli:run_cli"
 
 [dependency-groups]
 dev = [

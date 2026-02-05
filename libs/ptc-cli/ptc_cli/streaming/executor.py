@@ -320,44 +320,48 @@ async def execute_task(
     )
     esc_watcher.start()
 
+    # Check if we're in flash mode
+    flash_mode = getattr(session_state, "flash_mode", False)
+
     # Expand @file mentions by fetching from the live sandbox via backend API.
-    # This keeps UX consistent across CLI/web and avoids direct Daytona access.
-    try:
-        from ptc_cli.input import parse_file_mentions
+    # Skip in flash mode (no sandbox available).
+    if not flash_mode:
+        try:
+            from ptc_cli.input import parse_file_mentions
 
-        _text, mention_paths = parse_file_mentions(user_input)
-        if mention_paths:
-            max_total_bytes = 500_000
-            max_files = 10
-            included_blocks: list[str] = []
-            total_bytes = 0
+            _text, mention_paths = parse_file_mentions(user_input)
+            if mention_paths:
+                max_total_bytes = 500_000
+                max_files = 10
+                included_blocks: list[str] = []
+                total_bytes = 0
 
-            for p in mention_paths[:max_files]:
-                try:
-                    data = await client.read_workspace_file(path=p, offset=0, limit=20000)
-                    content = str(data.get("content") or "")
-                except Exception:
-                    content = ""
+                for p in mention_paths[:max_files]:
+                    try:
+                        data = await client.read_workspace_file(path=p, offset=0, limit=20000)
+                        content = str(data.get("content") or "")
+                    except Exception:
+                        content = ""
 
-                if not content:
-                    included_blocks.append(f"--- BEGIN FILE: {p} ---\n<could not read file>\n--- END FILE: {p} ---")
-                    continue
+                    if not content:
+                        included_blocks.append(f"--- BEGIN FILE: {p} ---\n<could not read file>\n--- END FILE: {p} ---")
+                        continue
 
-                encoded_len = len(content.encode("utf-8"))
-                if total_bytes + encoded_len > max_total_bytes:
-                    included_blocks.append(
-                        f"--- BEGIN FILE: {p} ---\n<truncated: file mention budget exceeded>\n--- END FILE: {p} ---"
-                    )
-                    break
+                    encoded_len = len(content.encode("utf-8"))
+                    if total_bytes + encoded_len > max_total_bytes:
+                        included_blocks.append(
+                            f"--- BEGIN FILE: {p} ---\n<truncated: file mention budget exceeded>\n--- END FILE: {p} ---"
+                        )
+                        break
 
-                included_blocks.append(f"--- BEGIN FILE: {p} ---\n{content}\n--- END FILE: {p} ---")
-                total_bytes += encoded_len
+                    included_blocks.append(f"--- BEGIN FILE: {p} ---\n{content}\n--- END FILE: {p} ---")
+                    total_bytes += encoded_len
 
-            if included_blocks:
-                user_input = user_input + "\n\n" + "\n\n".join(included_blocks)
-    except Exception:
-        # Non-fatal: continue without expansion.
-        pass
+                if included_blocks:
+                    user_input = user_input + "\n\n" + "\n\n".join(included_blocks)
+        except Exception:
+            # Non-fatal: continue without expansion.
+            pass
 
     try:
         # Build optional kwargs for stream_chat
@@ -372,6 +376,7 @@ async def execute_task(
             hitl_response=hitl_response,
             plan_mode=getattr(session_state, "plan_mode", False),
             llm_model=getattr(session_state, "llm_model", None),
+            agent_mode="flash" if flash_mode else None,
             **stream_kwargs,
         ):
             # Track thread_id from events
@@ -494,18 +499,20 @@ async def execute_task(
         state.flush_text(final=True)
 
         # Refresh file cache for autocomplete (stream ended).
-        try:
-            files = await client.list_workspace_files(include_system=False)
-            session_state.sandbox_files = files
-            completer = getattr(session_state, "sandbox_completer", None)
-            if completer is not None and hasattr(completer, "set_files"):
-                try:
-                    completer.set_files(files)
-                except Exception:
-                    pass
-        except Exception:
-            # Non-fatal; autocomplete can be refreshed via /files.
-            pass
+        # Skip in flash mode (no sandbox).
+        if not flash_mode:
+            try:
+                files = await client.list_workspace_files(include_system=False)
+                session_state.sandbox_files = files
+                completer = getattr(session_state, "sandbox_completer", None)
+                if completer is not None and hasattr(completer, "set_files"):
+                    try:
+                        completer.set_files(files)
+                    except Exception:
+                        pass
+            except Exception:
+                # Non-fatal; autocomplete can be refreshed via /files.
+                pass
 
         # Save final state for reconnection
         if client.last_event_id > 0:
@@ -515,7 +522,8 @@ async def execute_task(
                 {"query": user_input[:100], "workspace_id": client.workspace_id},
             )
 
-        _maybe_start_status_stream(client, session_state)
+        if not flash_mode:
+            _maybe_start_status_stream(client, session_state)
 
     except asyncio.CancelledError:
         # ESC interrupt

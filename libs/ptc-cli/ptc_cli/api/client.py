@@ -370,6 +370,7 @@ class SSEStreamClient:
         hitl_response: Optional[Dict[str, Any]] = None,
         plan_mode: bool = False,
         llm_model: Optional[str] = None,
+        agent_mode: Optional[str] = None,
         **kwargs,
     ) -> AsyncGenerator[tuple[str, Dict[str, Any]], None]:
         """
@@ -381,20 +382,33 @@ class SSEStreamClient:
             hitl_response: HITL interrupt response (for resume)
             plan_mode: Whether to enable plan mode (agent submits plan for approval)
             llm_model: LLM model name from models.json (e.g., 'minimax-m2.1')
+            agent_mode: Agent mode ('flash' for Flash Agent, None for default)
             **kwargs: Additional request parameters
 
         Yields:
             Tuples of (event_type, event_data)
         """
         url = urljoin(self.base_url, "/api/v1/chat/stream")
-        workspace_id = self._require_workspace()
+
+        # Only require workspace for non-flash mode
+        if agent_mode != "flash":
+            workspace_id = self._require_workspace()
+        else:
+            workspace_id = None
 
         request_body = {
-            "workspace_id": workspace_id,
             "thread_id": thread_id or self.thread_id or "__default__",
             "messages": [{"role": "user", "content": message}] if message else [],
             "plan_mode": plan_mode,
         }
+
+        # Add workspace_id only if not flash mode
+        if workspace_id:
+            request_body["workspace_id"] = workspace_id
+
+        # Add agent_mode if specified
+        if agent_mode:
+            request_body["agent_mode"] = agent_mode
 
         # Add LLM model if specified
         if llm_model:

@@ -55,7 +55,9 @@ async def _ensure_workspace_running(client: "SSEStreamClient", workspace_id: str
         workspace = await client.get_workspace(workspace_id)
         if not workspace:
             return False
-        if workspace.get("status") != "running":
+        status = workspace.get("status")
+        # "flash" workspaces have no sandbox - skip start
+        if status not in ("running", "flash"):
             await client.start_workspace(workspace_id)
         return True
     except Exception:
@@ -318,6 +320,16 @@ async def handle_command(
         show_help()
 
     elif cmd_lower in ("/new", "/clear"):
+        # Guard sandbox command in flash mode
+        if getattr(session_state, "flash_mode", False):
+            # In flash mode, just reset the thread
+            session_state.reset_thread()
+            client.thread_id = session_state.thread_id
+            console.print("[green]Started new conversation.[/green]")
+            console.print(f"[dim]Thread: {client.thread_id}[/dim]")
+            console.print()
+            return "handled"
+
         if cmd_lower == "/clear":
             console.print("[dim]/clear is deprecated; use /new[/dim]")
 
@@ -373,6 +385,12 @@ async def handle_command(
         console.print()
 
     elif cmd_lower == "/refresh":
+        # Guard sandbox command in flash mode
+        if getattr(session_state, "flash_mode", False):
+            console.print("[yellow]This command is not available in Flash mode (no sandbox)[/yellow]")
+            console.print()
+            return "handled"
+
         console.print()
         try:
             data = await client.refresh_workspace()
@@ -396,6 +414,12 @@ async def handle_command(
         console.print()
 
     elif cmd_lower == "/files" or cmd_lower.startswith("/files "):
+        # Guard sandbox command in flash mode
+        if getattr(session_state, "flash_mode", False):
+            console.print("[yellow]This command is not available in Flash mode (no sandbox)[/yellow]")
+            console.print()
+            return "handled"
+
         console.print()
         parts = cmd.split()
         show_all = len(parts) >= 2 and parts[1].lower() == "all"
@@ -410,18 +434,36 @@ async def handle_command(
         console.print()
 
     elif cmd_lower == "/view" or cmd_lower.startswith("/view "):
+        # Guard sandbox command in flash mode
+        if getattr(session_state, "flash_mode", False):
+            console.print("[yellow]This command is not available in Flash mode (no sandbox)[/yellow]")
+            console.print()
+            return "handled"
+
         console.print()
         path = cmd[5:].strip() if cmd_lower.startswith("/view ") else ""
         await _handle_view_command(client, path)
         console.print()
 
     elif cmd_lower == "/copy" or cmd_lower.startswith("/copy "):
+        # Guard sandbox command in flash mode
+        if getattr(session_state, "flash_mode", False):
+            console.print("[yellow]This command is not available in Flash mode (no sandbox)[/yellow]")
+            console.print()
+            return "handled"
+
         console.print()
         path = cmd[5:].strip() if cmd_lower.startswith("/copy ") else ""
         await _handle_copy_command(client, path)
         console.print()
 
     elif cmd_lower == "/download" or cmd_lower.startswith("/download "):
+        # Guard sandbox command in flash mode
+        if getattr(session_state, "flash_mode", False):
+            console.print("[yellow]This command is not available in Flash mode (no sandbox)[/yellow]")
+            console.print()
+            return "handled"
+
         console.print()
         rest = cmd[9:].strip() if cmd_lower.startswith("/download") else ""
         parts = rest.split(maxsplit=1) if rest else []
@@ -482,6 +524,12 @@ async def handle_command(
         console.print()
 
     elif cmd_lower.startswith("/workspace") or cmd_lower == "/workspaces":
+        # Guard sandbox command in flash mode
+        if getattr(session_state, "flash_mode", False):
+            console.print("[yellow]This command is not available in Flash mode (no sandbox)[/yellow]")
+            console.print()
+            return "handled"
+
         parts = cmd_lower.split()
 
         # Shortcut: /workspace stop (stop current workspace)
@@ -759,7 +807,9 @@ async def handle_command(
                 console.print(f"[red]Workspace not found: {workspace_id}[/red]")
                 console.print()
                 return "handled"
-            if ws.get("status") != "running":
+            status = ws.get("status")
+            # "flash" workspaces have no sandbox - skip start
+            if status not in ("running", "flash"):
                 await client.start_workspace(workspace_id)
         except Exception as e:
             console.print(f"[yellow]Could not start workspace: {e}[/yellow]")
@@ -796,6 +846,12 @@ async def handle_command(
                 console.print("[dim]Start a task first, then use ESC to soft-interrupt.[/dim]")
 
     elif cmd_lower == "/onboarding":
+        # Guard sandbox command in flash mode
+        if getattr(session_state, "flash_mode", False):
+            console.print("[yellow]This command is not available in Flash mode (no sandbox)[/yellow]")
+            console.print()
+            return "handled"
+
         # Start user onboarding flow with user-profile skill
         console.print()
 

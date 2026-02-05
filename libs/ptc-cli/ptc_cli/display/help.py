@@ -12,6 +12,7 @@ def show_help() -> None:
 
 [bold]Usage:[/bold]
   ptc-agent                     Start interactive session
+  ptc-agent --flash             Flash mode (no sandbox, external tools only)
   ptc-agent --agent NAME        Use named agent with separate memory
   ptc-agent --model NAME        Use specific LLM model
   ptc-agent --plan-mode         Enable plan mode (agent submits plan first)

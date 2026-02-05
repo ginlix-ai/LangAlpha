@@ -190,13 +190,18 @@ def parse_args() -> argparse.Namespace:
         "--model",
         help="LLM model name from models.json (e.g., 'minimax-m2.1', 'claude-sonnet-4-5')",
     )
+    parser.add_argument(
+        "--flash",
+        action="store_true",
+        help="Use Flash Agent: fast responses without sandbox (no code execution)",
+    )
 
     return parser.parse_args()
 
 
-async def simple_cli(
+async def chat_loop(
     client: "SSEStreamClient",
-    workspace_id: str,
+    workspace_id: str | None,
     assistant_id: str | None,
     session_state: "SessionState",
     *,
@@ -206,7 +211,7 @@ async def simple_cli(
 
     Args:
         client: SSE stream client for API communication
-        workspace_id: Active workspace ID
+        workspace_id: Active workspace ID (None in flash mode)
         assistant_id: Agent identifier for session storage
         session_state: Session state with settings
         no_splash: If True, skip displaying the startup splash screen
@@ -221,8 +226,11 @@ async def simple_cli(
         console.print(PTC_AGENT_ASCII, style=f"bold {COLORS['primary']}")
         console.print()
 
-    # Display workspace info
-    console.print(f"[yellow]Workspace: {workspace_id}[/yellow]")
+    # Display mode-specific info
+    if session_state.flash_mode:
+        console.print("[bold cyan]Flash Mode[/bold cyan] [dim](no sandbox, external tools only)[/dim]")
+    else:
+        console.print(f"[yellow]Workspace: {workspace_id}[/yellow]")
     console.print(f"[dim]Server: {client.base_url}[/dim]")
     console.print()
 
@@ -249,17 +257,22 @@ async def simple_cli(
     # Create prompt session and token tracker
     from ptc_cli.input.completers import SandboxFileCompleter
 
-    sandbox_completer = SandboxFileCompleter()
-    try:
-        files = await client.list_workspace_files(include_system=False)
-        sandbox_completer.set_files(files)
-    except Exception:
-        # Non-fatal: autocomplete will populate after first /files or file ops.
-        pass
+    sandbox_completer = None
+    files: list[str] = []
+
+    # Skip file completer setup in flash mode (no sandbox)
+    if not session_state.flash_mode:
+        sandbox_completer = SandboxFileCompleter()
+        try:
+            files = await client.list_workspace_files(include_system=False)
+            sandbox_completer.set_files(files)
+        except Exception:
+            # Non-fatal: autocomplete will populate after first /files or file ops.
+            pass
 
     # Store for streaming updates (artifact events) and /files refresh.
     session_state.sandbox_completer = sandbox_completer
-    session_state.sandbox_files = files if 'files' in locals() else []
+    session_state.sandbox_files = files
 
     prompt_session = create_prompt_session(assistant_id, session_state, sandbox_completer, {})
     token_tracker = TokenTracker()
@@ -355,6 +368,7 @@ async def main(
     """
     from rich.progress import Progress, SpinnerColumn, TextColumn
 
+    from ptc_cli.api.client import SSEStreamClient
     from ptc_cli.agent import create_api_session
     from ptc_cli.core import console
 
@@ -363,39 +377,52 @@ async def main(
     try:
         console.print()
 
-        with Progress(
-            SpinnerColumn(spinner_name="dots"),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-            transient=True,
-        ) as progress:
-            task = progress.add_task("Connecting to server...", total=None)
-
-            def update_step(step: str) -> None:
-                progress.update(task, description=step)
-
-            client, workspace_id, reusing = await create_api_session(
-                agent_name=assistant_id,
-                server_url=server_url,
-                workspace_id=workspace_id,
-                persist_session=session_state.persist_session,
-                on_progress=update_step,
+        # Flash mode: skip workspace creation entirely
+        if session_state.flash_mode:
+            console.print("[bold cyan]Starting Flash Mode...[/bold cyan]")
+            client = SSEStreamClient(base_url=server_url, user_id=assistant_id)
+            await chat_loop(
+                client,
+                None,  # No workspace in flash mode
+                assistant_id,
+                session_state,
+                no_splash=session_state.no_splash,
             )
-            session_state.reusing_workspace = reusing
-
-        if reusing:
-            console.print("[green]Reconnected to workspace[/green]")
         else:
-            console.print("[green]Workspace created[/green]")
-        console.print()
+            # Full mode with workspace creation
+            with Progress(
+                SpinnerColumn(spinner_name="dots"),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+                transient=True,
+            ) as progress:
+                task = progress.add_task("Connecting to server...", total=None)
 
-        await simple_cli(
-            client,
-            workspace_id,
-            assistant_id,
-            session_state,
-            no_splash=session_state.no_splash,
-        )
+                def update_step(step: str) -> None:
+                    progress.update(task, description=step)
+
+                client, workspace_id, reusing = await create_api_session(
+                    agent_name=assistant_id,
+                    server_url=server_url,
+                    workspace_id=workspace_id,
+                    persist_session=session_state.persist_session,
+                    on_progress=update_step,
+                )
+                session_state.reusing_workspace = reusing
+
+            if reusing:
+                console.print("[green]Reconnected to workspace[/green]")
+            else:
+                console.print("[green]Workspace created[/green]")
+            console.print()
+
+            await chat_loop(
+                client,
+                workspace_id,
+                assistant_id,
+                session_state,
+                no_splash=session_state.no_splash,
+            )
 
     except asyncio.CancelledError as e:
         raise KeyboardInterrupt from e
@@ -446,7 +473,7 @@ async def run_reconnect_mode(
             console.print(f"\n[red]Reconnection failed: {e}[/red]")
 
 
-def cli_main() -> None:
+def run_cli() -> None:
     """Entry point for console script."""
     # Check dependencies first
     check_cli_dependencies()
@@ -532,9 +559,10 @@ def cli_main() -> None:
             session_state = SessionState(
                 auto_approve=args.auto_approve,
                 no_splash=args.no_splash,
-                persist_session=not args.new_workspace,
+                persist_session=not args.new_workspace and not args.flash,
                 plan_mode=args.plan_mode,
                 llm_model=args.model,
+                flash_mode=args.flash,
             )
             session_state.log_file_path = str(log_path)
 
@@ -552,4 +580,4 @@ def cli_main() -> None:
 
 
 if __name__ == "__main__":
-    cli_main()
+    run_cli()

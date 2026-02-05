@@ -1,6 +1,6 @@
 """PTC Agent CLI - Interactive command-line interface for the PTC Agent."""
 
-from ptc_cli.main import cli_main
+from ptc_cli.main import run_cli
 
-__all__ = ["cli_main"]
+__all__ = ["run_cli"]
 __version__ = "0.1.0"
