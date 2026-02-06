@@ -14,6 +14,8 @@ Endpoints:
 import logging
 
 from fastapi import APIRouter
+from fastapi import File, UploadFile
+from src.ptc_agent.utils.storage.r2_uploader import upload_bytes, get_public_url
 
 from src.server.database.user import (
     create_user as db_create_user,
@@ -230,3 +232,58 @@ async def update_preferences(
 
     logger.info(f"Updated preferences for user {user_id}")
     return UserPreferencesResponse.model_validate(preferences)
+
+@router.post("/me/avatar", response_model=dict)
+@handle_api_exceptions("upload avatar", logger)
+async def upload_avatar(
+    user_id: CurrentUserId,
+    file: UploadFile = File(...),
+):
+    """
+    Upload user avatar image.
+
+    Accepts image file, uploads to R2 storage, and updates user's avatar_url.
+
+    Args:
+        user_id: User ID from authentication header
+        file: Image file to upload
+
+    Returns:
+        {"avatar_url": "https://..."}
+
+    Raises:
+        400: Invalid file type or upload failed
+        404: User not found
+    """
+    # Verify user exists
+    user = await db_get_user(user_id)
+    if not user:
+        raise_not_found("User")
+
+    # Validate file type
+    allowed_types = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+    if file.content_type not in allowed_types:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail=f"Invalid file type: {file.content_type}")
+
+    # Read file content
+    content = await file.read()
+
+    # Generate R2 key: avatars/{user_id}.{ext}
+    ext = file.filename.split(".")[-1] if file.filename and "." in file.filename else "png"
+    key = f"avatars/{user_id}.{ext}"
+
+    # Upload to R2
+    success = upload_bytes(key, content, content_type=file.content_type)
+    if not success:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail="Failed to upload avatar")
+
+    # Get public URL
+    avatar_url = get_public_url(key)
+
+    # Update user's avatar_url
+    await db_update_user(user_id=user_id, avatar_url=avatar_url)
+
+    logger.info(f"Uploaded avatar for user {user_id}: {avatar_url}")
+    return {"avatar_url": avatar_url}
