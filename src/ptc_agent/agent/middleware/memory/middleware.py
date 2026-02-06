@@ -1,61 +1,102 @@
-"""Memory Middleware - 在 LLM 调用前注入记忆，调用后保存记忆。"""
+"""记忆中间件 - 自动在 Agent 对话中注入/保存记忆。"""
 
 import logging
-from typing import Any, Optional
-from langchain_core.messages import HumanMessage, AIMessage
-from langchain.agents.middleware import AgentMiddleware
-from ptc_agent.agent.middleware.memory.store import ConversationMemoryStore
+from typing import Any
+
+from langchain_core.messages import AnyMessage, HumanMessage, RemoveMessage
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
+from langgraph.runtime import Runtime
+from typing_extensions import override
+
+from langchain.agents.middleware.types import AgentMiddleware, AgentState
+
+from .store import ConversationMemoryStore
 
 logger = logging.getLogger(__name__)
 
 
 class MemoryMiddleware(AgentMiddleware):
-    def __init__(self, user_id: str = "default", search_limit: int = 5):
+    def __init__(self, user_id="default", search_limit=5, min_message_length=10):
         self.store = ConversationMemoryStore(user_id=user_id)
         self.search_limit = search_limit
+        self.min_message_length = min_message_length
+        self._last_user_message = ""
 
-    async def abefore_model(self, state: dict, runtime: Any, **kwargs) -> Optional[dict]:
-        user_text = self._extract_last_user_text(state)
-        if not user_text:
+    @override
+    async def abefore_model(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+        messages: list[AnyMessage] = state.get("messages", [])
+        if not messages:
             return None
+        user_text = self._extract_last_user_text(messages)
+        if not user_text or len(user_text) < self.min_message_length:
+            return None
+        self._last_user_message = user_text
         memories = self.store.search(user_text, limit=self.search_limit)
         if not memories:
             return None
-        context = self.store.format_for_prompt(memories)
-        memory_msg = HumanMessage(content=f"{context}\n\n(The above is recalled context from previous conversations. Now responding to the user's current message.)")
-        messages = list(state.get("messages", []))
-        messages.insert(0, memory_msg)
-        return {"messages": messages}
+        memory_text = self.store.format_for_prompt(memories)
+        logger.info(f"[Memory] Injecting {len(memories)} memories ({len(memory_text)} chars) into context")
+        memory_msg = HumanMessage(
+            content=(
+                "[System Note: The following context was recalled from "
+                "earlier parts of this conversation that may have been "
+                "summarized. Use this information to maintain continuity.]\n\n"
+                f"{memory_text}"
+            ),
+        )
+        return {
+            "messages": [
+                RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                memory_msg,
+                *messages,
+            ],
+        }
 
-    async def aafter_model(self, state: dict, runtime: Any, **kwargs) -> Optional[dict]:
-        user_text = self._extract_last_user_text(state)
-        ai_text = self._extract_last_ai_text(state)
-        if user_text and ai_text:
-            self.store.save(user_text, ai_text)
+    @override
+    def before_model(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
         return None
 
-    def _extract_last_user_text(self, state: dict) -> Optional[str]:
-        for msg in reversed(state.get("messages", [])):
-            if isinstance(msg, HumanMessage):
-                return self._get_text_content(msg)
-            if isinstance(msg, dict) and msg.get("role") == "user":
-                return self._get_text_content(msg)
+    @override
+    async def aafter_model(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+        if not self._last_user_message:
+            return None
+        messages: list[AnyMessage] = state.get("messages", [])
+        if not messages:
+            return None
+        assistant_text = self._extract_last_ai_text(messages)
+        if not assistant_text:
+            return None
+        user_msg = self._last_user_message
+        self._last_user_message = ""
+        self.store.save(user_message=user_msg, assistant_message=assistant_text)
         return None
 
-    def _extract_last_ai_text(self, state: dict) -> Optional[str]:
-        for msg in reversed(state.get("messages", [])):
-            if isinstance(msg, AIMessage):
-                return self._get_text_content(msg)
-            if isinstance(msg, dict) and msg.get("role") == "assistant":
-                return self._get_text_content(msg)
+    @override
+    def after_model(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
         return None
 
-    def _get_text_content(self, msg) -> Optional[str]:
-        content = msg.content if hasattr(msg, "content") else msg.get("content", "")
+    def _extract_last_user_text(self, messages):
+        for msg in reversed(messages):
+            if msg.type == "human":
+                return self._get_text_content(msg.content)
+        return ""
+
+    def _extract_last_ai_text(self, messages):
+        for msg in reversed(messages):
+            if msg.type == "ai":
+                return self._get_text_content(msg.content)
+        return ""
+
+    @staticmethod
+    def _get_text_content(content):
         if isinstance(content, str):
-            return content if content.strip() else None
+            return content
         if isinstance(content, list):
-            texts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
-            result = " ".join(texts).strip()
-            return result if result else None
-        return None
+            texts = []
+            for item in content:
+                if isinstance(item, str):
+                    texts.append(item)
+                elif isinstance(item, dict) and item.get("type") == "text":
+                    texts.append(item.get("text", ""))
+            return " ".join(texts)
+        return str(content) if content else ""
