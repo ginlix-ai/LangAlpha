@@ -4,7 +4,11 @@ import { ArrowLeft } from 'lucide-react';
 import { ScrollArea } from '../../../components/ui/scroll-area';
 import ChatInput from './ChatInput';
 import MessageList from './MessageList';
+import FloatingCard from './FloatingCard';
+import FloatingCardIcon from './FloatingCardIcon';
+import TodoListCardContent from './TodoListCardContent';
 import { useChatMessages } from '../hooks/useChatMessages';
+import { useFloatingCards } from '../hooks/useFloatingCards';
 
 /**
  * ChatView Component
@@ -24,8 +28,22 @@ function ChatView({ workspaceId, threadId, onBack }) {
   const scrollAreaRef = useRef(null);
   const location = useLocation();
   const navigate = useNavigate();
-  const { messages, isLoading, isLoadingHistory, messageError, handleSendMessage, threadId: currentThreadId } = useChatMessages(workspaceId, threadId);
   const initialMessageSentRef = useRef(false);
+
+  // Floating cards management - extracted to custom hook for better encapsulation
+  // Must be called before useChatMessages since updateTodoListCard is passed to it
+  const {
+    floatingCards,
+    handleCardMinimize,
+    handleCardMaximize,
+    handleCardPositionChange,
+    handleBringToFront,
+    getMinimizedCards,
+    updateTodoListCard,
+  } = useFloatingCards();
+
+  // Chat messages management - receives updateTodoListCard from floating cards hook
+  const { messages, isLoading, isLoadingHistory, messageError, handleSendMessage, threadId: currentThreadId } = useChatMessages(workspaceId, threadId, updateTodoListCard);
 
   // Update URL when thread ID changes (e.g., when __default__ becomes actual thread ID)
   // This triggers a re-render with the new threadId, which will then load history
@@ -110,6 +128,7 @@ function ChatView({ workspaceId, threadId, onBack }) {
     }
   }, [messages]);
 
+
   // Early return if workspaceId or threadId is missing
   if (!workspaceId || !threadId) {
     return (
@@ -146,11 +165,23 @@ function ChatView({ workspaceId, threadId, onBack }) {
             </span>
           )}
         </div>
-        {messageError && (
-          <p className="text-xs" style={{ color: '#FF383C' }}>
-            {messageError}
-          </p>
-        )}
+        <div className="flex items-center gap-2">
+          {/* Floating card icons for minimized cards - sorted by minimize order */}
+          {getMinimizedCards().map(([cardId, card]) => (
+            <FloatingCardIcon
+              key={cardId}
+              id={cardId}
+              title={card.title || 'Card'}
+              onClick={() => handleCardMaximize(cardId)}
+              hasUnreadUpdate={card.hasUnreadUpdate || false}
+            />
+          ))}
+          {messageError && (
+            <p className="text-xs" style={{ color: '#FF383C' }}>
+              {messageError}
+            </p>
+          )}
+        </div>
       </div>
 
       {/* Messages Area - Fixed height, scrollable */}
@@ -172,6 +203,40 @@ function ChatView({ workspaceId, threadId, onBack }) {
       <div className="flex-shrink-0 p-4" style={{ borderTop: '1px solid rgba(255, 255, 255, 0.1)' }}>
         <ChatInput onSend={handleSendMessage} disabled={isLoading || isLoadingHistory || !workspaceId} />
       </div>
+
+      {/* Floating Cards */}
+      {Object.entries(floatingCards).map(([cardId, card]) => (
+        <FloatingCard
+          key={cardId}
+          id={cardId}
+          title={card.title || 'Card'}
+          isMinimized={card.isMinimized}
+          onMinimize={() => handleCardMinimize(cardId)}
+          onMaximize={() => handleCardMaximize(cardId)}
+          initialPosition={card.position}
+          onPositionChange={handleCardPositionChange}
+          zIndex={card.zIndex || 50}
+          onBringToFront={handleBringToFront}
+        >
+          {cardId === 'todo-list-card' && card.todoData ? (
+            <TodoListCardContent
+              todos={card.todoData.todos}
+              total={card.todoData.total}
+              completed={card.todoData.completed}
+              in_progress={card.todoData.in_progress}
+              pending={card.todoData.pending}
+            />
+          ) : (
+            <div className="text-sm" style={{ color: '#FFFFFF' }}>
+              <p className="mb-2">This is {card.title}.</p>
+              <p className="mb-2">You can drag this card by clicking and dragging the header.</p>
+              <p className="mb-2">Click anywhere on the card to bring it to the front.</p>
+              <p className="mb-2">Click the minimize button to minimize it to an icon in the top bar.</p>
+              <p>Click the bookmark icon in the top bar to restore it.</p>
+            </div>
+          )}
+        </FloatingCard>
+      ))}
     </div>
   );
 }

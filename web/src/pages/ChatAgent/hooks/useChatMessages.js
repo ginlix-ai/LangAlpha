@@ -37,7 +37,7 @@ import {
   handleHistoryTodoUpdate,
 } from './utils/historyEventHandlers';
 
-export function useChatMessages(workspaceId, initialThreadId = null) {
+export function useChatMessages(workspaceId, initialThreadId = null, updateTodoListCard = null) {
   // State
   const [messages, setMessages] = useState([]);
   const [threadId, setThreadId] = useState(() => {
@@ -64,6 +64,9 @@ export function useChatMessages(workspaceId, initialThreadId = null) {
 
   // Track if streaming is in progress to prevent history loading during streaming
   const isStreamingRef = useRef(false);
+
+  // Track if this is a new conversation (for todo list card management)
+  const isNewConversationRef = useRef(false);
 
   // Recently sent messages tracker
   const recentlySentTrackerRef = useRef(createRecentlySentTracker());
@@ -453,6 +456,16 @@ export function useChatMessages(workspaceId, initialThreadId = null) {
     const userMessage = createUserMessage(message);
     recentlySentTrackerRef.current.track(message.trim(), userMessage.timestamp, userMessage.id);
 
+    // Check if this is a new conversation
+    // Only consider it a new conversation if:
+    // 1. There are no messages at all, OR
+    // 2. We're starting a new thread (threadId is '__default__')
+    // This determines if we should overwrite the existing todo list card
+    // Note: We don't consider it a new conversation just because all messages are from history
+    // - the user might continue the conversation, and we want to keep the todo list card
+    const isNewConversation = messages.length === 0 || threadId === '__default__';
+    isNewConversationRef.current = isNewConversation;
+
     // Add user message after history messages
     setMessages((prev) => {
       const newMessages = appendMessage(prev, userMessage);
@@ -501,6 +514,8 @@ export function useChatMessages(workspaceId, initialThreadId = null) {
         contentOrderCounterRef,
         currentReasoningIdRef,
         currentToolCallIdRef,
+        updateTodoListCard,
+        isNewConversation: isNewConversationRef.current,
       };
 
       await sendChatMessageStream(

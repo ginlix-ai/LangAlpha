@@ -381,9 +381,9 @@ export function handleToolCallResult({ assistantMessageId, toolCallId, result, r
  * @returns {boolean} True if event was handled
  */
 export function handleTodoUpdate({ assistantMessageId, artifactType, artifactId, payload, refs, setMessages }) {
-  const { contentOrderCounterRef } = refs;
+  const { contentOrderCounterRef, updateTodoListCard, isNewConversation } = refs;
 
-  console.log('[handleTodoUpdate] Called with:', { assistantMessageId, artifactType, artifactId, payload });
+  console.log('[handleTodoUpdate] Called with:', { assistantMessageId, artifactType, artifactId, payload, isNewConversation });
 
   // Only handle todo_update artifacts
   if (artifactType !== 'todo_update' || !payload) {
@@ -393,6 +393,24 @@ export function handleTodoUpdate({ assistantMessageId, artifactType, artifactId,
 
   const { todos, total, completed, in_progress, pending } = payload;
   console.log('[handleTodoUpdate] Extracted data:', { todos, total, completed, in_progress, pending });
+
+  // Update floating card with todo list data (only during live streaming, not history)
+  // Do this before setMessages to ensure we have the latest data
+  // Always update the card if updateTodoListCard is available, even if todos array is empty
+  // This ensures the card persists and shows the latest state
+  if (updateTodoListCard) {
+    console.log('[handleTodoUpdate] Updating todo list card, isNewConversation:', isNewConversation, 'todos count:', todos?.length || 0);
+    updateTodoListCard(
+      {
+        todos: todos || [],
+        total: total || 0,
+        completed: completed || 0,
+        in_progress: in_progress || 0,
+        pending: pending || 0,
+      },
+      isNewConversation || false
+    );
+  }
 
   // Use artifactId as the base todoListId to track updates to the same logical todo list
   // But create a unique segmentId for each event to preserve chronological order
