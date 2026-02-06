@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { X } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { X, User } from 'lucide-react';
 import { Input } from '../../../components/ui/input';
-import { updateCurrentUser, getCurrentUser, updatePreferences, getPreferences } from '../utils/api';
+import { updateCurrentUser, getCurrentUser, updatePreferences, getPreferences,uploadAvatar } from '../utils/api';
 
 /**
  * UserConfigPanel Component
@@ -16,7 +16,11 @@ import { updateCurrentUser, getCurrentUser, updatePreferences, getPreferences } 
  */
 function UserConfigPanel({ isOpen, onClose }) {
   const [activeTab, setActiveTab] = useState('userInfo'); // 'userInfo' or 'preferences'
-  
+  // user avatar upload state
+  const [avatarUrl, setAvatarUrl] = useState(null);
+  const fileInputRef = useRef(null);
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+
   // User info state
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
@@ -118,6 +122,9 @@ function UserConfigPanel({ isOpen, onClose }) {
         setName(userData.user.name || '');
         setTimezone(userData.user.timezone || '');
         setLocale(userData.user.locale || '');
+        const url = userData.user.avatar_url;
+        const version = userData.user.updated_at;
+        setAvatarUrl(url ? `${url}?v=${version}` : null);
       }
     } catch (err) {
       console.error('Error loading user data:', err);
@@ -145,6 +152,26 @@ function UserConfigPanel({ isOpen, onClose }) {
       // Don't show error on load - preferences might not exist yet (404 is expected for new users)
     }
   };
+
+  /**
+   * Handles avatar file selection and upload
+   */
+  const handleAvatarChange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    setIsUploadingAvatar(true);
+    try {
+      const { avatar_url } = await uploadAvatar(file);
+      setAvatarUrl(`${avatar_url}?t=${Date.now()}`);
+    } catch (err) {
+      console.error('Failed to upload avatar:', err);
+      setError('Failed to upload avatar');
+    } finally {
+      setIsUploadingAvatar(false);
+    }
+  };
+
 
   /**
    * Handles user info form submission
@@ -313,6 +340,45 @@ function UserConfigPanel({ isOpen, onClose }) {
         {/* User Info Form */}
         {!isLoading && activeTab === 'userInfo' && (
           <form onSubmit={handleUserInfoSubmit} className="space-y-5">
+            {/* Avatar Upload */}
+            <div className="flex items-center gap-4 mb-6 pb-6" style={{ borderBottom: '1px solid var(--color-border-muted)' }}>
+              <div 
+                className="h-16 w-16 rounded-full flex items-center justify-center cursor-pointer transition-colors overflow-hidden"
+                style={{ backgroundColor: 'var(--color-accent-soft)' }}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                {avatarUrl ? (
+                  <img src={avatarUrl} alt="avatar" className="h-full w-full object-cover" />
+                ) : (
+                  <User className="h-8 w-8" style={{ color: 'var(--color-accent-primary)' }} />
+                )}
+              </div>
+              <div>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isUploadingAvatar}
+                  className="px-3 py-1.5 rounded-md text-sm font-medium transition-colors"
+                  style={{
+                    backgroundColor: 'var(--color-accent-soft)',
+                    color: 'var(--color-accent-primary)',
+                  }}
+                >
+                  {isUploadingAvatar ? 'Uploading...' : 'Change Avatar'}
+                </button>
+                <p className="text-xs mt-1" style={{ color: 'var(--color-text-tertiary)' }}>
+                  JPG, PNG, GIF or WebP. Max 10MB.
+                </p>
+              </div>
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleAvatarChange}
+                accept="image/png,image/jpeg,image/gif,image/webp"
+                style={{ display: 'none' }}
+              />
+            </div>
+
             {/* Email input */}
             <div>
               <label className="block text-sm font-medium mb-2" style={{ color: 'var(--color-text-primary)' }}>
