@@ -136,8 +136,8 @@ function FloatingCard({
       style={{
         left: `${position.x}px`,
         top: `${position.y}px`,
-        width: '320px',
-        maxWidth: '90vw',
+        width: '520px',
+        maxWidth: '125vw',
         backgroundColor: '#1B1D25',
         border: '1px solid rgba(255, 255, 255, 0.1)',
         cursor: isDragging ? 'grabbing' : 'default',
@@ -172,7 +172,7 @@ function FloatingCard({
       <div
         className="p-4 rounded-b-lg overflow-auto"
         style={{
-          maxHeight: '400px',
+          maxHeight: '520px',
           color: '#FFFFFF',
         }}
       >

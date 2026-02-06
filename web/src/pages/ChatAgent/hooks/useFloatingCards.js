@@ -66,6 +66,45 @@ export function useFloatingCards(initialCards = {}) {
   };
 
   /**
+   * Handle floating card toggle (minimize/maximize from bookmark icon)
+   * Toggles the card's minimized state
+   */
+  const handleCardToggle = (cardId) => {
+    setFloatingCards((prev) => {
+      const card = prev[cardId];
+      if (!card) return prev;
+      
+      if (card.isMinimized) {
+        // Currently minimized - maximize it
+        const newZIndex = maxZIndex + 1;
+        setMaxZIndex(newZIndex);
+        return {
+          ...prev,
+          [cardId]: {
+            ...card,
+            isMinimized: false,
+            minimizeOrder: null,
+            zIndex: newZIndex,
+            hasUnreadUpdate: false, // Clear unread update indicator when card is opened
+          },
+        };
+      } else {
+        // Currently maximized - minimize it
+        const currentMinimizeOrder = nextMinimizeOrder;
+        setNextMinimizeOrder((prev) => prev + 1);
+        return {
+          ...prev,
+          [cardId]: {
+            ...card,
+            isMinimized: true,
+            minimizeOrder: currentMinimizeOrder,
+          },
+        };
+      }
+    });
+  };
+
+  /**
    * Handle floating card position change
    * Updates the card's position when dragged
    */
@@ -82,6 +121,7 @@ export function useFloatingCards(initialCards = {}) {
   /**
    * Handle bringing card to front when interacted with
    * Increments z-index to bring the card on top of others
+   * Also clears unread update indicator when user interacts with the card
    */
   const handleBringToFront = (cardId) => {
     setFloatingCards((prev) => {
@@ -92,6 +132,7 @@ export function useFloatingCards(initialCards = {}) {
         [cardId]: {
           ...prev[cardId],
           zIndex: newZIndex,
+          hasUnreadUpdate: false, // Clear unread update indicator when user interacts with card
         },
       };
     });
@@ -110,6 +151,26 @@ export function useFloatingCards(initialCards = {}) {
         const orderB = cardB.minimizeOrder ?? Infinity;
         return orderA - orderB;
       });
+  };
+
+  /**
+   * Get all floating cards (for displaying bookmark icons)
+   * Returns array of [cardId, card] tuples
+   * Minimized cards are sorted by minimizeOrder, non-minimized cards come after
+   */
+  const getAllCards = () => {
+    const minimized = Object.entries(floatingCards)
+      .filter(([_, card]) => card.isMinimized)
+      .sort(([_, cardA], [__, cardB]) => {
+        const orderA = cardA.minimizeOrder ?? Infinity;
+        const orderB = cardB.minimizeOrder ?? Infinity;
+        return orderA - orderB;
+      });
+    
+    const notMinimized = Object.entries(floatingCards)
+      .filter(([_, card]) => !card.isMinimized);
+    
+    return [...minimized, ...notMinimized];
   };
 
   /**
@@ -169,7 +230,8 @@ export function useFloatingCards(initialCards = {}) {
             // This prevents FloatingCard from resetting position when todoData updates
             position: existingCard.position, // Preserve exact same object reference
             // Keep existing zIndex, minimize state
-            // Set hasUnreadUpdate to true if card is minimized (to show visual indicator)
+            // Set hasUnreadUpdate to true only if card is minimized (user can't see updates)
+            // If card is not minimized, user can see updates directly, so no need for green indicator
             hasUnreadUpdate: existingCard.isMinimized ? true : false,
           },
         };
@@ -194,6 +256,92 @@ export function useFloatingCards(initialCards = {}) {
     });
   };
 
+  /**
+   * Update or create subagent floating card
+   * Called when subagent status is detected/updated during live streaming
+   * @param {string} taskId - Task ID (e.g., "Task-1")
+   * @param {Object} subagentDataUpdate - Partial subagent data to merge { taskId, description, type, toolCalls, currentTool, status, messages }
+   */
+  const updateSubagentCard = (taskId, subagentDataUpdate) => {
+    const cardId = `subagent-${taskId}`;
+    
+    setFloatingCards((prev) => {
+      // Calculate default position closer to the center of the window
+      // Card width is ~520px, so center it horizontally with a small left margin.
+      const getDefaultPosition = () => {
+        // Use window.innerWidth if available, otherwise default to a reasonable value
+        const windowWidth = typeof window !== 'undefined' ? window.innerWidth : 1920;
+        // Center horizontally: windowWidth / 2 - cardWidth / 2 (~260px)
+        // Offset vertically based on number of existing subagent cards
+        const existingSubagentCards = Object.keys(prev).filter(id => id.startsWith('subagent-'));
+        const verticalOffset = existingSubagentCards.length * 350; // 350px spacing between cards
+        const centeredX = (windowWidth / 1.25) - 260;
+        return {
+          x: Math.max(80, centeredX), // Ensure some margin from the left edge
+          y: 80 + verticalOffset,
+        };
+      };
+
+      // If card exists, merge the update with existing data
+      // This ensures the card persists even after streaming ends
+      // IMPORTANT: Preserve existing position object reference to prevent position reset
+      if (prev[cardId]) {
+        const existingCard = prev[cardId];
+        const existingSubagentData = existingCard.subagentData || {};
+        return {
+          ...prev,
+          [cardId]: {
+            ...existingCard,
+            // Merge subagent data (preserve existing messages, update other fields)
+            subagentData: {
+              ...existingSubagentData,
+              ...subagentDataUpdate,
+              // If messages are provided, use them; otherwise keep existing
+              messages: subagentDataUpdate.messages !== undefined 
+                ? subagentDataUpdate.messages 
+                : existingSubagentData.messages || [],
+            },
+            // Keep existing position object reference (don't create new object)
+            // This prevents FloatingCard from resetting position when subagentData updates
+            position: existingCard.position, // Preserve exact same object reference
+            // Keep existing zIndex, minimize state
+            // Set hasUnreadUpdate to true only if card is minimized (user can't see updates)
+            // If card is not minimized, user can see updates directly, so no need for green indicator
+            hasUnreadUpdate: existingCard.isMinimized ? true : false,
+          },
+        };
+      } else {
+        // Create new subagent card (first time subagent is detected)
+        // Use default position on the right side
+        const newZIndex = maxZIndex + 1;
+        setMaxZIndex(newZIndex);
+        return {
+          ...prev,
+          [cardId]: {
+            // Use a human-friendly title for subagent cards.
+            // If a custom title is ever provided, prefer it; otherwise default to "Subagent".
+            title: subagentDataUpdate.title || 'Subagent',
+            isMinimized: false,
+            position: getDefaultPosition(),
+            zIndex: newZIndex,
+            minimizeOrder: null,
+            hasUnreadUpdate: false,
+            subagentData: {
+              taskId: taskId,
+              description: '',
+              type: 'general-purpose',
+              toolCalls: 0,
+              currentTool: '',
+              status: 'active',
+              messages: [],
+              ...subagentDataUpdate,
+            },
+          },
+        };
+      }
+    });
+  };
+
   return {
     // State
     floatingCards,
@@ -201,11 +349,14 @@ export function useFloatingCards(initialCards = {}) {
     // Handlers
     handleCardMinimize,
     handleCardMaximize,
+    handleCardToggle,
     handleCardPositionChange,
     handleBringToFront,
     
     // Helpers
     getMinimizedCards,
+    getAllCards,
     updateTodoListCard,
+    updateSubagentCard,
   };
 }

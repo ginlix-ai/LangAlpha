@@ -26,6 +26,11 @@ import {
   handleToolCalls,
   handleToolCallResult,
   handleTodoUpdate,
+  handleSubagentStatus,
+  isSubagentEvent,
+  handleSubagentMessageChunk,
+  handleSubagentToolCalls,
+  handleSubagentToolCallResult,
 } from './utils/streamEventHandlers';
 import {
   handleHistoryUserMessage,
@@ -35,9 +40,10 @@ import {
   handleHistoryToolCalls,
   handleHistoryToolCallResult,
   handleHistoryTodoUpdate,
+  isSubagentHistoryEvent,
 } from './utils/historyEventHandlers';
 
-export function useChatMessages(workspaceId, initialThreadId = null, updateTodoListCard = null) {
+export function useChatMessages(workspaceId, initialThreadId = null, updateTodoListCard = null, updateSubagentCard = null) {
   // State
   const [messages, setMessages] = useState([]);
   const [threadId, setThreadId] = useState(() => {
@@ -70,6 +76,14 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
 
   // Recently sent messages tracker
   const recentlySentTrackerRef = useRef(createRecentlySentTracker());
+
+  // Track active subagent tasks and map agent IDs to task IDs
+  const activeSubagentTasksRef = useRef(new Map()); // Map<taskId, taskInfo>
+  const agentToTaskMapRef = useRef(new Map()); // Map<agentId, taskId> - maps "tools:..." to taskId
+
+  // Track subagent history loaded from replay so it can be shown lazily
+  // Structure: { [taskId]: { taskId, description, type, messages, status, toolCalls, currentTool } }
+  const subagentHistoryRef = useRef({});
 
   // Update thread ID in localStorage whenever it changes
   useEffect(() => {
@@ -138,6 +152,12 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
       let currentActivePairIndex = null;
       let currentActivePairState = null;
 
+      // Track subagent events by task ID for this history load
+      // Map<taskId, { messages: Array, events: Array, description?: string, type?: string }>
+      const subagentHistoryByTaskId = new Map();
+      // Use a fresh mapping for this history replay, seeded from the live ref
+      const agentToTaskMap = new Map(agentToTaskMapRef.current); // Map<agentId, taskId>
+
       try {
         await replayThreadHistory(threadIdToUse, (event) => {
         const eventType = event.event;
@@ -145,12 +165,98 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
         const hasRole = event.role !== undefined;
         const hasPairIndex = event.pair_index !== undefined;
         
+        // Check if this is a subagent event - filter it out from main chat view
+        const isSubagent = isSubagentHistoryEvent(event);
+        
         // Update current active pair when we see an event with pair_index
         if (hasPairIndex) {
           const pairIndex = event.pair_index;
           currentActivePairIndex = pairIndex;
           currentActivePairState = pairStateByPair.get(pairIndex);
           console.log('[History] Updated active pair to:', pairIndex, 'counter:', currentActivePairState?.contentOrderCounter);
+        }
+
+        // Handle subagent_status events - build agent-to-task mapping
+        if (eventType === 'subagent_status') {
+          const activeTasks = event.active_tasks || [];
+          const completedTasks = event.completed_tasks || [];
+          
+          // Build agent-to-task mapping from active and completed tasks
+          [...activeTasks, ...completedTasks].forEach((task) => {
+            if (task && task.id && task.agent) {
+              agentToTaskMap.set(task.agent, task.id);
+              agentToTaskMapRef.current.set(task.agent, task.id);
+              console.log('[History] Mapped agent to task:', {
+                agent: task.agent,
+                taskId: task.id,
+              });
+              
+              // Initialize subagent history storage for this task
+              if (!subagentHistoryByTaskId.has(task.id)) {
+                subagentHistoryByTaskId.set(task.id, {
+                  messages: [],
+                  events: [],
+                  description: task.description || '',
+                  type: task.type || 'general-purpose',
+                });
+              }
+            }
+          });
+          
+          // Don't process subagent_status in main chat view
+          return;
+        }
+
+        // Handle subagent events - store them separately, don't process in main chat
+        if (isSubagent) {
+          // Get task ID from agent mapping
+          let taskId = null;
+          if (event.agent && agentToTaskMap.has(event.agent)) {
+            taskId = agentToTaskMap.get(event.agent);
+          }
+
+          // Fallback: if we only have a single known subagent task in this thread,
+          // assume all subagent events belong to that task. This matches the current
+          // architecture where one background subagent task is active per pair.
+          if (!taskId && subagentHistoryByTaskId.size === 1) {
+            const [onlyTaskId] = Array.from(subagentHistoryByTaskId.keys());
+            taskId = onlyTaskId;
+            console.log('[History] Using single-task fallback for subagent event:', {
+              taskId,
+              eventType,
+              agent: event.agent,
+            });
+          }
+          
+          if (taskId) {
+            // Initialize subagent history storage if needed
+            if (!subagentHistoryByTaskId.has(taskId)) {
+              subagentHistoryByTaskId.set(taskId, {
+                messages: [],
+                events: [],
+              });
+            }
+            
+            const subagentHistory = subagentHistoryByTaskId.get(taskId);
+            // Store the event for later processing
+            subagentHistory.events.push(event);
+            
+            console.log('[History] Stored subagent event:', {
+              taskId,
+              eventType,
+              agent: event.agent,
+              totalEvents: subagentHistory.events.length,
+            });
+          } else {
+            console.warn('[History] Subagent event without task ID mapping:', {
+              eventType,
+              agent: event.agent,
+              availableAgents: Array.from(agentToTaskMap.keys()),
+            });
+          }
+          
+          // Don't process subagent events in main chat view
+          return;
         }
 
         // Handle user_message events from history
@@ -314,6 +420,25 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
             return;
           }
 
+          // Extract task IDs from 'task' tool calls and initialize storage
+          // Note: Agent-to-task mapping will come from subagent_status events
+          if (event.tool_calls) {
+            event.tool_calls.forEach((toolCall) => {
+              if (toolCall.name === 'task' && toolCall.id) {
+                const taskId = toolCall.id;
+                // Initialize subagent history storage for this task
+                if (!subagentHistoryByTaskId.has(taskId)) {
+                  subagentHistoryByTaskId.set(taskId, {
+                    messages: [],
+                    events: [],
+                    description: toolCall.args?.description || '',
+                    type: toolCall.args?.subagent_type || 'general-purpose',
+                  });
+                }
+              }
+            });
+          }
+
           handleHistoryToolCalls({
             assistantMessageId: currentAssistantMessageId,
             toolCalls: event.tool_calls,
@@ -384,6 +509,118 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
       });
 
         console.log('[History] Replay completed');
+        
+        // Process stored subagent events and build their messages
+        // NOTE: During history replay we DO NOT open floating cards automatically.
+        // We only build per-task message history here; cards are created lazily
+        // when the user clicks \"Open subagent details\" in the main chat view.
+        if (subagentHistoryByTaskId.size > 0) {
+          console.log('[History] Processing subagent history for', subagentHistoryByTaskId.size, 'tasks');
+          
+          // Process each subagent's events
+          for (const [taskId, subagentHistory] of subagentHistoryByTaskId.entries()) {
+            // Create temporary refs structure for processing
+            const tempSubagentStateRefs = {
+              [taskId]: {
+                contentOrderCounterRef: { current: 0 },
+                currentReasoningIdRef: { current: null },
+                currentToolCallIdRef: { current: null },
+                messages: [],
+              },
+            };
+            
+            const tempRefs = {
+              subagentStateRefs: tempSubagentStateRefs,
+            };
+
+            // History-specific no-op updater: prevents floating cards from being
+            // created during history load while still letting handlers build
+            // the in-memory message structures in tempSubagentStateRefs.
+            const historyUpdateSubagentCard = () => {};
+            
+            // Process each event in chronological order
+            console.log('[History] Processing', subagentHistory.events.length, 'events for task:', taskId);
+            for (let i = 0; i < subagentHistory.events.length; i++) {
+              const event = subagentHistory.events[i];
+              const eventType = event.event;
+              const contentType = event.content_type;
+              // Use a consistent message ID for all events from the same subagent
+              // In history, subagent events might not have consistent IDs, so we use taskId-based ID
+              const assistantMessageId = event.id || `subagent-${taskId}-msg`;
+              
+              console.log('[History] Processing subagent event', i + 1, 'of', subagentHistory.events.length, ':', {
+                taskId,
+                eventType,
+                contentType,
+                hasContent: !!event.content,
+                hasToolCalls: !!event.tool_calls,
+                toolCallId: event.tool_call_id,
+              });
+              
+              if (eventType === 'message_chunk' && event.role === 'assistant') {
+                const result = handleSubagentMessageChunk({
+                  taskId,
+                  assistantMessageId,
+                  contentType,
+                  content: event.content,
+                  finishReason: event.finish_reason,
+                  refs: tempRefs,
+                  updateSubagentCard: historyUpdateSubagentCard,
+                });
+                console.log('[History] handleSubagentMessageChunk result:', result);
+              } else if (eventType === 'tool_calls' && event.tool_calls) {
+                const result = handleSubagentToolCalls({
+                  taskId,
+                  assistantMessageId,
+                  toolCalls: event.tool_calls,
+                  refs: tempRefs,
+                  updateSubagentCard: historyUpdateSubagentCard,
+                });
+                console.log('[History] handleSubagentToolCalls result:', result);
+              } else if (eventType === 'tool_call_result') {
+                const result = handleSubagentToolCallResult({
+                  taskId,
+                  assistantMessageId,
+                  toolCallId: event.tool_call_id,
+                  result: {
+                    content: event.content,
+                    content_type: event.content_type,
+                    tool_call_id: event.tool_call_id,
+                  },
+                  refs: tempRefs,
+                  updateSubagentCard: historyUpdateSubagentCard,
+                });
+                console.log('[History] handleSubagentToolCallResult result:', result);
+              } else {
+                console.warn('[History] Unhandled subagent event type:', eventType);
+              }
+            }
+            
+            // Get final messages from temp refs
+            const finalMessages = tempSubagentStateRefs[taskId]?.messages || [];
+
+            // Get task metadata from stored history
+            const taskMetadata = subagentHistoryByTaskId.get(taskId);
+
+            // Store history in ref so it can be used when the user explicitly
+            // opens the subagent card from the main chat view. We do NOT
+            // create the floating card here.
+            if (!subagentHistoryRef.current) {
+              subagentHistoryRef.current = {};
+            }
+            subagentHistoryRef.current[taskId] = {
+              taskId,
+              description: taskMetadata?.description || '',
+              type: taskMetadata?.type || 'general-purpose',
+              messages: finalMessages,
+              status: 'completed', // History events are always completed
+              toolCalls: 0,
+              currentTool: '',
+            };
+
+            console.log('[History] Stored subagent history for task:', taskId, 'with', finalMessages.length, 'messages');
+          }
+        }
       } catch (replayError) {
         // Handle 404 gracefully - it's expected for brand new threads that haven't been fully initialized yet
         if (replayError.message && replayError.message.includes('404')) {
@@ -510,12 +747,39 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
         }));
 
       // Prepare refs for event handlers
+      const subagentStateRefs = {}; // Will be populated as subagents are detected
       const refs = {
         contentOrderCounterRef,
         currentReasoningIdRef,
         currentToolCallIdRef,
         updateTodoListCard,
         isNewConversation: isNewConversationRef.current,
+        subagentStateRefs,
+        updateSubagentCard: updateSubagentCard || (() => {}),
+      };
+
+      // Helper to get taskId from agent ID or use most recent active task
+      const getTaskIdFromEvent = (event) => {
+        if (!event.agent) return null;
+        
+        // Check if we have a mapping for this agent ID
+        const agentId = event.agent;
+        if (agentToTaskMapRef.current.has(agentId)) {
+          return agentToTaskMapRef.current.get(agentId);
+        }
+        
+        // If only one active task, use it
+        const activeTasks = Array.from(activeSubagentTasksRef.current.keys());
+        if (activeTasks.length === 1) {
+          const taskId = activeTasks[0];
+          // Cache the mapping
+          agentToTaskMapRef.current.set(agentId, taskId);
+          return taskId;
+        }
+        
+        // If multiple active tasks, try to match by checking recent events
+        // For now, return the first active task as fallback
+        return activeTasks[0] || null;
       };
 
       await sendChatMessageStream(
@@ -540,7 +804,135 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
             setStoredThreadId(workspaceId, event.thread_id);
           }
 
-          // Handle different event types
+          // Check if this is a subagent event - filter it out from main chat view
+          const isSubagent = isSubagentEvent(event);
+          
+          // Debug: Log subagent event detection
+          if (process.env.NODE_ENV === 'development' && isSubagent) {
+            console.log('[Stream] Subagent event detected:', {
+              eventType,
+              agent: event.agent,
+              id: event.id,
+              content_type: event.content_type,
+            });
+          }
+          
+          // Handle subagent_status events
+          if (eventType === 'subagent_status') {
+            const subagentStatus = {
+              active_tasks: event.active_tasks || [],
+              completed_tasks: event.completed_tasks || [],
+            };
+            
+            // Debug: Log subagent status events to help identify issues
+            if (process.env.NODE_ENV === 'development') {
+              console.log('[Stream] subagent_status event:', {
+                active_tasks_count: subagentStatus.active_tasks.length,
+                completed_tasks_count: subagentStatus.completed_tasks.length,
+                active_tasks: subagentStatus.active_tasks.map(t => ({ id: t?.id, hasId: !!t?.id })),
+                completed_tasks: subagentStatus.completed_tasks.map(t => ({ id: t?.id, hasId: !!t?.id })),
+              });
+            }
+            
+            // Update active tasks tracking
+            activeSubagentTasksRef.current.clear();
+            subagentStatus.active_tasks.forEach((task) => {
+              // Only track tasks with valid IDs
+              if (task && task.id) {
+                activeSubagentTasksRef.current.set(task.id, task);
+              } else if (process.env.NODE_ENV === 'development') {
+                console.warn('[Stream] Skipping task without ID in active_tasks:', task);
+              }
+            });
+            
+            // Handle subagent status
+            if (updateSubagentCard) {
+              handleSubagentStatus({
+                subagentStatus,
+                updateSubagentCard,
+              });
+            }
+            return; // Don't process subagent_status in main chat view
+          }
+
+          // Handle subagent message events (filter them out from main chat view)
+          if (isSubagent) {
+            const taskId = getTaskIdFromEvent(event);
+            if (taskId && updateSubagentCard) {
+              const subagentAssistantMessageId = event.id || `subagent-${Date.now()}`;
+              
+              if (eventType === 'message_chunk') {
+                const contentType = event.content_type || 'text';
+                handleSubagentMessageChunk({
+                  taskId,
+                  assistantMessageId: subagentAssistantMessageId,
+                  contentType,
+                  content: event.content,
+                  finishReason: event.finish_reason,
+                  refs,
+                  updateSubagentCard,
+                });
+              } else if (eventType === 'tool_calls') {
+                handleSubagentToolCalls({
+                  taskId,
+                  assistantMessageId: subagentAssistantMessageId,
+                  toolCalls: event.tool_calls,
+                  refs,
+                  updateSubagentCard,
+                });
+              } else if (eventType === 'tool_call_result') {
+                // Extract tool_call_id from event
+                const toolCallId = event.tool_call_id;
+                
+                if (process.env.NODE_ENV === 'development') {
+                  console.log('[Stream] Subagent tool_call_result event:', {
+                    taskId,
+                    assistantMessageId: subagentAssistantMessageId,
+                    toolCallId,
+                    eventId: event.id,
+                    hasContent: !!event.content,
+                  });
+                }
+                
+                handleSubagentToolCallResult({
+                  taskId,
+                  assistantMessageId: subagentAssistantMessageId,
+                  toolCallId: toolCallId,
+                  result: {
+                    content: event.content,
+                    content_type: event.content_type,
+                    tool_call_id: toolCallId,
+                  },
+                  refs,
+                  updateSubagentCard,
+                });
+              } else if (eventType === 'artifact') {
+                // Subagent artifact events (e.g., todo_update) - skip them
+                // They should be handled by the subagent's own message processing
+                // For now, we just filter them out to prevent duplication
+                if (process.env.NODE_ENV === 'development') {
+                  console.log('[Stream] Filtering out subagent artifact event:', {
+                    artifactType: event.artifact_type,
+                    taskId,
+                    agent: event.agent,
+                  });
+                }
+              }
+            }
+            return; // Don't process subagent events in main chat view
+          }
+
+          // Handle different event types (main agent only)
+          // Double-check that this is NOT a subagent event (safety check)
+          if (isSubagent) {
+            // This shouldn't happen if the code above is correct, but add safety check
+            console.warn('[Stream] Subagent event reached main agent handler - this should not happen:', {
+              eventType,
+              agent: event.agent,
+            });
+            return;
+          }
+          
           if (eventType === 'message_chunk') {
             const contentType = event.content_type || 'text';
 
@@ -601,7 +993,12 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
             // Filter out tool_call_chunks events
             return;
           } else if (eventType === 'artifact') {
-            // Handle artifact events (e.g., todo_update)
+            // Check if artifact is from subagent - if so, skip it (subagent artifacts are handled separately)
+            if (isSubagent) {
+              return; // Don't process subagent artifacts in main chat view
+            }
+            
+            // Handle artifact events (e.g., todo_update) - main agent only
             const artifactType = event.artifact_type;
             console.log('[Stream] Received artifact event:', { artifactType, artifactId: event.artifact_id, payload: event.payload });
             if (artifactType === 'todo_update') {
@@ -676,5 +1073,7 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
     isLoadingHistory,
     messageError,
     handleSendMessage,
+    // Expose subagent history for lazy loading in floating cards
+    getSubagentHistory: (taskId) => subagentHistoryRef.current?.[taskId] || null,
   };
 }

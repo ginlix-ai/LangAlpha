@@ -7,6 +7,7 @@ import MessageList from './MessageList';
 import FloatingCard from './FloatingCard';
 import FloatingCardIcon from './FloatingCardIcon';
 import TodoListCardContent from './TodoListCardContent';
+import SubagentCardContent from './SubagentCardContent';
 import { useChatMessages } from '../hooks/useChatMessages';
 import { useFloatingCards } from '../hooks/useFloatingCards';
 
@@ -31,19 +32,30 @@ function ChatView({ workspaceId, threadId, onBack }) {
   const initialMessageSentRef = useRef(false);
 
   // Floating cards management - extracted to custom hook for better encapsulation
-  // Must be called before useChatMessages since updateTodoListCard is passed to it
+  // Must be called before useChatMessages since updateTodoListCard and updateSubagentCard are passed to it
   const {
     floatingCards,
     handleCardMinimize,
     handleCardMaximize,
+    handleCardToggle,
     handleCardPositionChange,
     handleBringToFront,
     getMinimizedCards,
+    getAllCards,
     updateTodoListCard,
+    updateSubagentCard,
   } = useFloatingCards();
 
-  // Chat messages management - receives updateTodoListCard from floating cards hook
-  const { messages, isLoading, isLoadingHistory, messageError, handleSendMessage, threadId: currentThreadId } = useChatMessages(workspaceId, threadId, updateTodoListCard);
+  // Chat messages management - receives updateTodoListCard and updateSubagentCard from floating cards hook
+  const { 
+    messages, 
+    isLoading, 
+    isLoadingHistory, 
+    messageError, 
+    handleSendMessage, 
+    threadId: currentThreadId,
+    getSubagentHistory,
+  } = useChatMessages(workspaceId, threadId, updateTodoListCard, updateSubagentCard);
 
   // Update URL when thread ID changes (e.g., when __default__ becomes actual thread ID)
   // This triggers a re-render with the new threadId, which will then load history
@@ -166,13 +178,13 @@ function ChatView({ workspaceId, threadId, onBack }) {
           )}
         </div>
         <div className="flex items-center gap-2">
-          {/* Floating card icons for minimized cards - sorted by minimize order */}
-          {getMinimizedCards().map(([cardId, card]) => (
+          {/* Floating card icons for all cards - always visible */}
+          {getAllCards().map(([cardId, card]) => (
             <FloatingCardIcon
               key={cardId}
               id={cardId}
               title={card.title || 'Card'}
-              onClick={() => handleCardMaximize(cardId)}
+              onClick={() => handleCardToggle(cardId)}
               hasUnreadUpdate={card.hasUnreadUpdate || false}
             />
           ))}
@@ -194,7 +206,45 @@ function ChatView({ workspaceId, threadId, onBack }) {
       >
         <ScrollArea ref={scrollAreaRef} className="h-full w-full">
           <div className="px-6 py-4">
-            <MessageList messages={messages} />
+            <MessageList 
+              messages={messages} 
+              onOpenSubagentTask={(subagentInfo) => {
+                console.log('[ChatView] onOpenSubagentTask called with:', subagentInfo);
+                const { subagentId, description, type, status } = subagentInfo;
+
+                if (!updateSubagentCard) {
+                  console.error('[ChatView] updateSubagentCard is not defined!');
+                  return;
+                }
+
+                // Try to load history for this subagent (if available)
+                const history = getSubagentHistory
+                  ? getSubagentHistory(subagentId)
+                  : null;
+
+                const finalDescription = history?.description || description || '';
+                const finalType = history?.type || type || 'general-purpose';
+                const finalStatus = history?.status || status || 'unknown';
+                const finalMessages = history?.messages || [];
+
+                console.log('[ChatView] Opening subagent card with history:', {
+                  subagentId,
+                  hasHistory: !!history,
+                  messagesCount: finalMessages.length,
+                });
+
+                updateSubagentCard(subagentId, {
+                  taskId: subagentId,
+                  description: finalDescription,
+                  type: finalType,
+                  status: finalStatus,
+                  toolCalls: 0,
+                  currentTool: '',
+                  messages: finalMessages,
+                  isHistory: !!history,
+                });
+              }}
+            />
           </div>
         </ScrollArea>
       </div>
@@ -225,6 +275,16 @@ function ChatView({ workspaceId, threadId, onBack }) {
               completed={card.todoData.completed}
               in_progress={card.todoData.in_progress}
               pending={card.todoData.pending}
+            />
+          ) : cardId.startsWith('subagent-') && card.subagentData ? (
+            <SubagentCardContent
+              taskId={card.subagentData.taskId}
+              description={card.subagentData.description}
+              type={card.subagentData.type}
+              toolCalls={card.subagentData.toolCalls}
+              currentTool={card.subagentData.currentTool}
+              messages={card.subagentData.messages || []}
+              isHistory={card.subagentData.isHistory || false}
             />
           ) : (
             <div className="text-sm" style={{ color: '#FFFFFF' }}>
