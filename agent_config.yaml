@@ -6,8 +6,8 @@
 
 llm:
   # Model name from src/llms/manifest/models.json
-  name: "gemini-3-pro"
-  flash: "gemini-3-flash"
+  name: "minimax-m2.1"
+  flash: "minimax-m2.1-stable"
 
 daytona:
   # Daytona sandbox configuration
