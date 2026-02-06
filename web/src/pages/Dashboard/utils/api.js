@@ -183,6 +183,19 @@ export async function updatePreferences(preferences, userId = DEFAULT_USER_ID) {
     return data;
 }
 
+export async function uploadAvatar(file, userId = DEFAULT_USER_ID) {
+  const formData = new FormData();
+  formData.append('file', file);
+  
+  const { data } = await api.post('/api/v1/users/me/avatar', formData, {
+    headers: {
+      ...headers(userId),
+      'Content-Type': 'multipart/form-data',
+    },
+  });
+  return data; // { avatar_url: "https://..." }
+}
+
 // --- Watchlist & Watchlist Items (CRUD) ---
 
 /**

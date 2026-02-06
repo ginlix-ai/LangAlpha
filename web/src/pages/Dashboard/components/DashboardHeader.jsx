@@ -1,13 +1,35 @@
-import React, { useState } from 'react';
 import { Input } from '../../../components/ui/input';
 import { Search, Bell, HelpCircle, User } from 'lucide-react';
 import UserConfigPanel from './UserConfigPanel';
+import React, { useState, useEffect } from 'react';
+import { getCurrentUser } from '../utils/api';
 
 const DashboardHeader = () => {
   const [isUserPanelOpen, setIsUserPanelOpen] = useState(false);
+  const [avatarUrl, setAvatarUrl] = useState(null);
 
-  const handleUserIconClick = () => {
-    setIsUserPanelOpen(true);
+  useEffect(() => {
+    const fetchUser = async () => {
+      try {
+        const data = await getCurrentUser();
+        const url = data?.user?.avatar_url;
+        const version = data?.user?.updated_at;
+        setAvatarUrl(url ? `${url}?v=${version}` : null);
+      } catch (err) {
+        console.error('Failed to fetch user:', err);
+      }
+    };
+    fetchUser();
+  }, []);
+
+  // Refresh avatar when panel closes (in case user uploaded new one)
+  const handlePanelClose = () => {
+    setIsUserPanelOpen(false);
+    getCurrentUser().then(data => {
+      const url = data?.user?.avatar_url;
+      const version = data?.user?.updated_at;
+      setAvatarUrl(url ? `${url}?v=${version}` : null);
+    }).catch(() => {});
   };
 
   return (
@@ -33,19 +55,22 @@ const DashboardHeader = () => {
           <Bell className="h-5 w-5 cursor-pointer transition-colors" style={{ color: 'var(--color-icon-muted)' }} />
           <HelpCircle className="h-5 w-5 cursor-pointer transition-colors" style={{ color: 'var(--color-icon-muted)' }} />
           <div 
-            className="h-7 w-7 rounded-full flex items-center justify-center cursor-pointer transition-colors hover:bg-primary/30" 
+            className="h-7 w-7 rounded-full flex items-center justify-center cursor-pointer transition-colors hover:bg-primary/30 overflow-hidden" 
             style={{ backgroundColor: 'var(--color-accent-soft)' }}
-            onClick={handleUserIconClick}
+            onClick={() => setIsUserPanelOpen(true)}
           >
-            <User className="h-4 w-4" style={{ color: 'var(--color-accent-primary)' }} />
+            {avatarUrl ? (
+              <img src={avatarUrl} alt="avatar" className="h-full w-full object-cover" onError={() => setAvatarUrl(null)} />
+            ) : (
+              <User className="h-4 w-4" style={{ color: 'var(--color-accent-primary)' }} />
+            )}
           </div>
         </div>
       </div>
       
-      {/* User Configuration Panel */}
       <UserConfigPanel
         isOpen={isUserPanelOpen}
-        onClose={() => setIsUserPanelOpen(false)}
+        onClose={handlePanelClose}
       />
     </>
   );
