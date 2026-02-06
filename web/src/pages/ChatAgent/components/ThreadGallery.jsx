@@ -1,11 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ArrowLeft, Loader2, Plus, Globe, Zap, ChevronDown, Send } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { Input } from '../../../components/ui/input';
 import ThreadCard from './ThreadCard';
-import { getWorkspaceThreads, getWorkspaces } from '../utils/api';
+import DeleteConfirmModal from './DeleteConfirmModal';
+import RenameThreadModal from './RenameThreadModal';
+import { getWorkspaceThreads, getWorkspaces, deleteThread, updateThreadTitle } from '../utils/api';
 import { DEFAULT_USER_ID } from '../utils/api';
 import { useThreadGalleryInput } from '../hooks/useThreadGalleryInput';
+import { removeStoredThreadId } from '../hooks/utils/threadStorage';
 
 /**
  * ThreadGallery Component
@@ -26,7 +29,14 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }) {
   const [workspaceName, setWorkspaceName] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [deleteModal, setDeleteModal] = useState({ isOpen: false, thread: null });
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState(null);
+  const [renameModal, setRenameModal] = useState({ isOpen: false, thread: null });
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [renameError, setRenameError] = useState(null);
   const navigate = useNavigate();
+  const { threadId: currentThreadId } = useParams();
   const loadingRef = useRef(false);
 
   // Chat input hook for creating new threads
@@ -93,6 +103,135 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }) {
     if (onThreadSelect) {
       onThreadSelect(workspaceId, thread.thread_id);
     }
+  };
+
+  /**
+   * Handles delete icon click - opens confirmation modal
+   * @param {Object} thread - The thread to delete
+   */
+  const handleDeleteClick = (thread) => {
+    setDeleteModal({ isOpen: true, thread });
+    setDeleteError(null);
+  };
+
+  /**
+   * Handles confirmed thread deletion
+   */
+  const handleConfirmDelete = async () => {
+    if (!deleteModal.thread) return;
+
+    const threadToDelete = deleteModal.thread;
+    const threadId = threadToDelete.thread_id;
+
+    if (!threadId) {
+      console.error('No thread ID found in thread object:', threadToDelete);
+      setDeleteError('Invalid thread. Please try again.');
+      return;
+    }
+
+    setIsDeleting(true);
+    setDeleteError(null);
+
+    try {
+      await deleteThread(threadId);
+
+      // Clean up localStorage: remove thread ID for deleted thread
+      if (workspaceId) {
+        // Check if the deleted thread is the currently stored thread for this workspace
+        const storedThreadId = localStorage.getItem(`workspace_thread_id_${workspaceId}`);
+        if (storedThreadId === threadId) {
+          removeStoredThreadId(workspaceId);
+        }
+      }
+
+      // Remove thread from list
+      setThreads((prev) =>
+        prev.filter((t) => t.thread_id !== threadId)
+      );
+
+      // If the deleted thread is currently active, navigate back to thread gallery
+      if (currentThreadId === threadId) {
+        navigate(`/chat/${workspaceId}`);
+      }
+
+      // Close modal
+      setDeleteModal({ isOpen: false, thread: null });
+    } catch (err) {
+      console.error('Error deleting thread:', err);
+      const errorMessage = err.response?.data?.detail || err.message || 'Failed to delete thread. Please try again.';
+      setDeleteError(errorMessage);
+      // Keep modal open so user can see the error
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  /**
+   * Handles canceling deletion
+   */
+  const handleCancelDelete = () => {
+    setDeleteModal({ isOpen: false, thread: null });
+    setDeleteError(null);
+  };
+
+  /**
+   * Handles rename icon click - opens rename modal
+   * @param {Object} thread - The thread to rename
+   */
+  const handleRenameClick = (thread) => {
+    setRenameModal({ isOpen: true, thread });
+    setRenameError(null);
+  };
+
+  /**
+   * Handles confirmed thread rename
+   * @param {string} newTitle - New thread title
+   */
+  const handleConfirmRename = async (newTitle) => {
+    if (!renameModal.thread) return;
+
+    const threadToRename = renameModal.thread;
+    const threadId = threadToRename.thread_id;
+
+    if (!threadId) {
+      console.error('No thread ID found in thread object:', threadToRename);
+      setRenameError('Invalid thread. Please try again.');
+      return;
+    }
+
+    setIsRenaming(true);
+    setRenameError(null);
+
+    try {
+      const updatedThread = await updateThreadTitle(threadId, newTitle);
+
+      // Update thread in list
+      setThreads((prev) =>
+        prev.map((t) =>
+          t.thread_id === threadId
+            ? { ...t, title: updatedThread.title, updated_at: updatedThread.updated_at }
+            : t
+        )
+      );
+
+      // Close modal
+      setRenameModal({ isOpen: false, thread: null });
+    } catch (err) {
+      console.error('Error renaming thread:', err);
+      const errorMessage = err.response?.data?.detail || err.message || 'Failed to rename thread. Please try again.';
+      setRenameError(errorMessage);
+      // Keep modal open so user can see the error
+    } finally {
+      setIsRenaming(false);
+    }
+  };
+
+  /**
+   * Handles canceling rename
+   */
+  const handleCancelRename = () => {
+    setRenameModal({ isOpen: false, thread: null });
+    setRenameError(null);
   };
 
   if (isLoading) {
@@ -172,6 +311,8 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }) {
                 key={thread.thread_id}
                 thread={thread}
                 onClick={() => handleThreadClick(thread)}
+                onDelete={handleDeleteClick}
+                onRename={handleRenameClick}
               />
             ))}
           </div>
@@ -249,6 +390,27 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }) {
           </div>
         </div>
       </div>
+
+      {/* Delete Confirmation Modal */}
+      <DeleteConfirmModal
+        isOpen={deleteModal.isOpen}
+        workspaceName={deleteModal.thread?.title || `Thread ${deleteModal.thread?.thread_index !== undefined ? deleteModal.thread.thread_index + 1 : ''}`}
+        onConfirm={handleConfirmDelete}
+        onCancel={handleCancelDelete}
+        isDeleting={isDeleting}
+        error={deleteError}
+        itemType="thread"
+      />
+
+      {/* Rename Thread Modal */}
+      <RenameThreadModal
+        isOpen={renameModal.isOpen}
+        currentTitle={renameModal.thread?.title || ''}
+        onConfirm={handleConfirmRename}
+        onCancel={handleCancelRename}
+        isRenaming={isRenaming}
+        error={renameError}
+      />
     </div>
   );
 }

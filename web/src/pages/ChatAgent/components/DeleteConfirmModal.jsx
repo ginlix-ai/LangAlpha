@@ -4,16 +4,19 @@ import { AlertTriangle } from 'lucide-react';
 /**
  * DeleteConfirmModal Component
  * 
- * Confirmation dialog for deleting a workspace.
+ * Confirmation dialog for deleting a workspace or thread.
  * 
  * @param {boolean} isOpen - Whether the modal is open
- * @param {string} workspaceName - Name of the workspace to delete
+ * @param {string} workspaceName - Name of the workspace/thread to delete
  * @param {Function} onConfirm - Callback when user confirms deletion
  * @param {Function} onCancel - Callback when user cancels
  * @param {boolean} isDeleting - Whether deletion is in progress
  * @param {string} error - Error message to display (optional)
+ * @param {string} itemType - Type of item being deleted ('workspace' or 'thread', defaults to 'workspace')
  */
-function DeleteConfirmModal({ isOpen, workspaceName, onConfirm, onCancel, isDeleting, error }) {
+function DeleteConfirmModal({ isOpen, workspaceName, onConfirm, onCancel, isDeleting, error, itemType = 'workspace' }) {
+  const itemLabel = itemType === 'thread' ? 'thread' : 'workspace';
+  const itemLabelCapitalized = itemType === 'thread' ? 'Thread' : 'Workspace';
   if (!isOpen) return null;
 
   return (
@@ -39,19 +42,19 @@ function DeleteConfirmModal({ isOpen, workspaceName, onConfirm, onCancel, isDele
             <AlertTriangle className="h-5 w-5" style={{ color: '#FF383C' }} />
           </div>
           <h2 className="text-xl font-semibold" style={{ color: '#FFFFFF' }}>
-            Delete Workspace
+            Delete {itemLabelCapitalized}
           </h2>
         </div>
 
         {/* Message */}
         <p className="text-sm mb-2" style={{ color: '#FFFFFF', opacity: 0.9 }}>
-          Are you sure you want to delete the workspace
+          Are you sure you want to delete the {itemLabel}
         </p>
         <p className="text-base font-medium mb-6" style={{ color: '#FFFFFF' }}>
           "{workspaceName}"?
         </p>
         <p className="text-xs mb-6" style={{ color: '#FF383C', opacity: 0.8 }}>
-          This action cannot be undone. All data in this workspace will be permanently deleted.
+          This action cannot be undone. All data in this {itemLabel} will be permanently deleted.
         </p>
 
         {/* Error message */}

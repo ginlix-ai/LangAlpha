@@ -57,11 +57,48 @@ export async function getWorkspaceThreads(workspaceId, userId = DEFAULT_USER_ID,
   return data;
 }
 
+/**
+ * Delete a thread
+ * @param {string} threadId - The thread ID to delete
+ * @param {string} userId - User ID (defaults to DEFAULT_USER_ID)
+ * @returns {Promise<Object>} Response with success, thread_id, and message
+ */
+export async function deleteThread(threadId, userId = DEFAULT_USER_ID) {
+  if (!threadId) throw new Error('Thread ID is required');
+  const { data } = await api.delete(`/api/v1/threads/${threadId}`, {
+    headers: headers(userId),
+  });
+  return data;
+}
+
+/**
+ * Update a thread's title
+ * @param {string} threadId - The thread ID to update
+ * @param {string} title - New thread title (max 255 chars, can be null to clear)
+ * @param {string} userId - User ID (defaults to DEFAULT_USER_ID)
+ * @returns {Promise<Object>} Updated thread object
+ */
+export async function updateThreadTitle(threadId, title, userId = DEFAULT_USER_ID) {
+  if (!threadId) throw new Error('Thread ID is required');
+  const { data } = await api.patch(`/api/v1/threads/${threadId}`, 
+    { title },
+    { headers: headers(userId) }
+  );
+  return data;
+}
+
 // --- Streaming (fetch + ReadableStream; axios not used) ---
 
 async function streamFetch(url, opts, onEvent) {
   const res = await fetch(`${baseURL}${url}`, opts);
-  if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+  if (!res.ok) {
+    // Handle 404 specifically for history replay (expected for new threads)
+    if (res.status === 404 && url.includes('/replay')) {
+      throw new Error(`HTTP error! status: ${res.status}`);
+    }
+    throw new Error(`HTTP error! status: ${res.status}`);
+  }
+  
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -81,15 +118,26 @@ async function streamFetch(url, opts, onEvent) {
     } else if (line.trim() === '') ev = {};
   };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-    lines.forEach(processLine);
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      lines.forEach(processLine);
+    }
+    // Process any remaining buffer
+    buffer.split('\n').forEach(processLine);
+  } catch (error) {
+    // Handle incomplete chunked encoding or other stream errors
+    if (error.name === 'TypeError' && error.message.includes('network')) {
+      console.warn('[api] Stream interrupted (network error):', error.message);
+      // Don't throw - allow the stream to complete gracefully
+    } else {
+      throw error;
+    }
   }
-  buffer.split('\n').forEach(processLine);
 }
 
 export async function replayThreadHistory(threadId, onEvent = () => {}) {
