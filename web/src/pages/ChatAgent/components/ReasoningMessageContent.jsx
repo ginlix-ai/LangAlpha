@@ -33,37 +33,59 @@ function ReasoningMessageContent({ reasoningContent, isReasoning, reasoningCompl
       {/* Reasoning indicator button */}
       <button
         onClick={handleToggle}
-        className="flex items-center gap-2 px-3 py-1.5 rounded-md transition-colors hover:bg-white/10"
+        className="transition-colors hover:bg-white/10"
         style={{
+          boxSizing: 'border-box',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          fontSize: '14px',
+          lineHeight: '20px',
+          color: 'var(--Labels-Secondary)',
+          padding: '4px 12px',
+          borderRadius: '6px',
           backgroundColor: isReasoning 
             ? 'rgba(97, 85, 245, 0.15)' 
-            : 'rgba(255, 255, 255, 0.05)',
-          border: '1px solid rgba(255, 255, 255, 0.1)',
+            : 'transparent',
+          border: isReasoning 
+            ? '1px solid rgba(255, 255, 255, 0.1)' 
+            : 'none',
+          width: '100%',
         }}
         title={isReasoning ? 'Reasoning in progress...' : 'View reasoning process'}
       >
         {/* Icon: Brain with loading spinner when active, static brain when complete */}
-        <div className="relative">
-          <Brain className="h-4 w-4" style={{ color: '#6155F5' }} />
+        <div className="relative flex-shrink-0">
+          <Brain className="h-4 w-4" style={{ color: 'var(--Labels-Secondary)' }} />
           {isReasoning && (
             <Loader2 
               className="h-3 w-3 absolute -top-0.5 -right-0.5 animate-spin" 
-              style={{ color: '#6155F5' }} 
+              style={{ color: 'var(--Labels-Secondary)' }} 
             />
           )}
         </div>
         
         {/* Label */}
-        <span className="text-xs" style={{ color: '#FFFFFF', opacity: 0.8 }}>
+        <span className="font-medium" style={{ color: 'inherit' }}>
           {isReasoning ? 'Reasoning...' : 'Reasoning'}
         </span>
         
         {/* Expand/collapse icon */}
-        {isExpanded ? (
-          <ChevronUp className="h-3 w-3" style={{ color: '#FFFFFF', opacity: 0.6 }} />
-        ) : (
-          <ChevronDown className="h-3 w-3" style={{ color: '#FFFFFF', opacity: 0.6 }} />
-        )}
+        <div
+          style={{
+            flexShrink: 0,
+            color: 'var(--Labels-Quaternary)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+          }}
+        >
+          {isExpanded ? (
+            <ChevronUp className="h-4 w-4" />
+          ) : (
+            <ChevronDown className="h-4 w-4" />
+          )}
+        </div>
       </button>
 
       {/* Reasoning content (shown when expanded) */}

@@ -1,10 +1,9 @@
-import React from 'react';
-import { Bot, User, Loader2 } from 'lucide-react';
-import TextMessageContent from './TextMessageContent';
+import { Bot, Loader2, User } from 'lucide-react';
 import ReasoningMessageContent from './ReasoningMessageContent';
-import ToolCallMessageContent from './ToolCallMessageContent';
-import TodoListMessageContent from './TodoListMessageContent';
 import SubagentTaskMessageContent from './SubagentTaskMessageContent';
+import TextMessageContent from './TextMessageContent';
+import TodoListMessageContent from './TodoListMessageContent';
+import ToolCallMessageContent from './ToolCallMessageContent';
 
 /**
  * MessageList Component
@@ -64,18 +63,16 @@ function MessageBubble({ message, onOpenSubagentTask }) {
 
       {/* Message bubble */}
       <div
-        className={`max-w-[80%] rounded-lg px-4 py-3 ${
-          isUser ? 'rounded-tr-none' : 'rounded-tl-none'
+        className={`${isUser ? 'max-w-[80%]' : 'w-full'} rounded-lg px-4 ${
+          isUser ? 'py-3 rounded-tr-none' : 'rounded-tl-none'
         }`}
         style={{
           backgroundColor: isUser
-            ? '#6155F5'
+            ? 'var(--color-gray-292929)'
             : message.error
             ? 'rgba(255, 56, 60, 0.1)'
-            : 'rgba(255, 255, 255, 0.05)',
-          border: isAssistant
-            ? '1px solid rgba(255, 255, 255, 0.1)'
-            : 'none',
+            : 'transparent',
+          border: 'none',
           color: '#FFFFFF',
         }}
       >

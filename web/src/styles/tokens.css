@@ -27,6 +27,11 @@
   --color-text-on-accent: #FFFFFF;
   --color-icon-muted: #78716C;
 
+  --color-gray-292929: #292929;
+
+  --Labels-Secondary: rgba(255, 255, 255, 0.5);
+  --Labels-Quaternary: rgba(255, 255, 255, 0.4);
+
   --color-accent-primary: #6155F5;
   --color-accent-soft: rgba(97, 85, 245, 0.2);
   --color-accent-disabled: rgba(97, 85, 245, 0.5);

@@ -1,7 +1,6 @@
-import React, { useState } from 'react';
+import { ChevronDown, Globe, Plus, Send, Zap } from 'lucide-react';
+import { useState } from 'react';
 import { Input } from '../../../components/ui/input';
-import { Button } from '../../../components/ui/button';
-import { Plus, Globe, Zap, ChevronDown, Send } from 'lucide-react';
 
 const ChatInput = ({ onSend, disabled = false }) => {
   const [message, setMessage] = useState('');
@@ -27,7 +26,7 @@ const ChatInput = ({ onSend, disabled = false }) => {
     <div 
       className="flex items-center gap-2 p-3 rounded-lg"
       style={{ 
-        backgroundColor: 'rgba(10, 10, 10, 0.65)',
+        backgroundColor: 'var(--color-gray-292929)',
         border: '1.5px solid hsl(var(--primary))',
       }}
     >
