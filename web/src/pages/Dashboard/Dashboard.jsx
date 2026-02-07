@@ -64,8 +64,23 @@ const RESEARCH_ITEMS = [
 // Resets on page refresh (module reload)
 let onboardingCheckedThisSession = false;
 
-// Module-level cache for popular items (survives navigation, clears on page refresh)
+// Module-level caches (survive navigation, clear on page refresh)
 let popularCache = null; // { items, hasMore, offset }
+let newsCache = null;    // { items }
+
+function formatRelativeTime(timestamp) {
+  if (!timestamp) return '';
+  const now = new Date();
+  const then = new Date(timestamp);
+  const diffMs = now - then;
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return `${diffMin} min ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr} hr${diffHr > 1 ? 's' : ''} ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay} day${diffDay > 1 ? 's' : ''} ago`;
+}
 
 function Dashboard() {
   const { toast } = useToast();
@@ -83,6 +98,32 @@ function Dashboard() {
   const [popularHasMore, setPopularHasMore] = useState(() => popularCache?.hasMore || false);
   const [popularOffset, setPopularOffset] = useState(() => popularCache?.offset || 0);
   const POPULAR_PAGE_SIZE = 10;
+
+  const [newsItems, setNewsItems] = useState(() => newsCache?.items || NEWS_ITEMS);
+  const [newsLoading, setNewsLoading] = useState(!newsCache);
+
+  const fetchNews = useCallback(async () => {
+    setNewsLoading(true);
+    try {
+      const data = await getInfoFlowResults('market', 50, 0);
+      if (data.results && data.results.length > 0) {
+        const mapped = data.results.map((r) => ({
+          indexNumber: r.indexNumber,
+          title: r.title,
+          time: formatRelativeTime(r.event_timestamp),
+          isHot: !!(r.tags && r.tags.length > 0),
+        }));
+        setNewsItems(mapped);
+        newsCache = { items: mapped };
+      } else {
+        setNewsItems(NEWS_ITEMS);
+      }
+    } catch {
+      setNewsItems(NEWS_ITEMS);
+    } finally {
+      setNewsLoading(false);
+    }
+  }, []);
 
   const fetchPopular = useCallback(async (offset = 0, append = false) => {
     if (!append) setPopularLoading(true);
@@ -124,7 +165,8 @@ function Dashboard() {
 
   useEffect(() => {
     if (!popularCache) fetchPopular(0, false);
-  }, [fetchPopular]);
+    if (!newsCache) fetchNews();
+  }, [fetchPopular, fetchNews]);
 
   const fetchIndices = useCallback(async () => {
     setIndicesLoading(true);
@@ -615,7 +657,7 @@ function Dashboard() {
                 <IndexMovementCard indices={indices} loading={indicesLoading} />
                 <PopularCard items={popularItems} loading={popularLoading} hasMore={popularHasMore} onLoadMore={loadMorePopular} />
                 <div className="w-full grid grid-cols-2 gap-4 flex-1 min-h-0 overflow-hidden">
-                  <TopNewsCard items={NEWS_ITEMS} />
+                  <TopNewsCard items={newsItems} loading={newsLoading} />
                   <TopResearchCard items={RESEARCH_ITEMS} />
                 </div>
                 <ChatInputCard />

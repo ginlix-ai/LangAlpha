@@ -11,6 +11,7 @@ Endpoints:
 
 import logging
 import os
+import time as _time
 from typing import Optional
 
 import httpx
@@ -21,6 +22,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/infoflow", tags=["InfoFlow"])
 
 VALID_CATEGORIES = {"hot_topic", "market", "industry"}
+
+# In-memory TTL cache for the 180-item external API fetch.
+# Shared across category requests so only one external call is made.
+_results_cache_data: list | None = None
+_results_cache_ts: float = 0.0
+_CACHE_TTL: float = 300.0  # 5 minutes
 
 
 def _get_config():
@@ -80,16 +87,22 @@ async def get_infoflow_results(
                 "has_more": (offset + limit) < ext_total,
             }
 
-        # With category filter: single large fetch, then filter in memory
-        fetch_size = 180
-        params = {"limit": fetch_size, "offset": 0, "display_locale": "en-US"}
+        # With category filter: use cached results or fetch once
+        global _results_cache_data, _results_cache_ts
+        now = _time.time()
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, params=params, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-
-        all_results = data.get("results", [])
+        if _results_cache_data is not None and (now - _results_cache_ts) < _CACHE_TTL:
+            all_results = _results_cache_data
+        else:
+            fetch_size = 180
+            params = {"limit": fetch_size, "offset": 0, "display_locale": "en-US"}
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(url, params=params, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+            all_results = data.get("results", [])
+            _results_cache_data = all_results
+            _results_cache_ts = now
         filtered = [r for r in all_results if r.get("category") == category]
 
         total = len(filtered)

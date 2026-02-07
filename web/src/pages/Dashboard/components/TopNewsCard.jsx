@@ -1,12 +1,20 @@
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Menu, Sparkles } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
 import { ScrollArea } from '../../../components/ui/scroll-area';
 
 /**
- * Top News list card. Data via props: items = [{ title, time, isHot }].
+ * Top News list card. Data via props: items = [{ indexNumber, title, time, isHot }].
  */
-function TopNewsCard({ items = [] }) {
+function TopNewsCard({ items = [], loading = false }) {
+  const navigate = useNavigate();
+
+  const handleItemClick = (item) => {
+    if (item.indexNumber) {
+      navigate(`/detail/${item.indexNumber}`);
+    }
+  };
   return (
     <Card className="fin-card flex flex-col h-full min-h-0 overflow-hidden">
       <CardHeader
@@ -18,7 +26,7 @@ function TopNewsCard({ items = [] }) {
             className="dashboard-title-font text-base font-semibold"
             style={{ color: 'var(--color-text-primary)', letterSpacing: '0.15px' }}
           >
-            Top News
+            Market
           </CardTitle>
           <Menu
             className="h-4 w-4 cursor-pointer transition-colors"
@@ -32,11 +40,25 @@ function TopNewsCard({ items = [] }) {
       >
         <ScrollArea className="w-full flex-1 min-h-0">
           <div className="space-y-0">
-            {items.map((item, idx) => (
+            {loading
+              ? Array.from({ length: 6 }).map((_, idx) => (
+                  <div
+                    key={idx}
+                    className="flex items-center py-3 animate-pulse"
+                    style={{ borderBottom: '1px solid var(--color-border-subtle)' }}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="h-4 rounded" style={{ backgroundColor: 'var(--color-border-default)', width: `${60 + (idx % 3) * 15}%` }} />
+                    </div>
+                    <div className="h-3 rounded flex-shrink-0 ml-2.5" style={{ backgroundColor: 'var(--color-border-default)', width: '60px' }} />
+                  </div>
+                ))
+              : items.map((item, idx) => (
               <div
-                key={idx}
+                key={item.indexNumber || idx}
                 className="flex items-center py-3 cursor-pointer transition-colors"
                 style={{ borderBottom: '1px solid var(--color-border-subtle)' }}
+                onClick={() => handleItemClick(item)}
               >
                 {item.isHot ? (
                   <>
