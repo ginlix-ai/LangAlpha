@@ -249,12 +249,25 @@ TOOL_ICONS = {
     "WebSearch": "🌐",
     "WebFetch": "🌍",
     "http_request": "🌍",
-    "task": "🤖",
+    "Task": "🤖",
     "Wait": "⏳",
     "TaskOutput": "📤",
     "TodoWrite": "📋",
     "SubmitPlan": "📋",
 }
+
+
+def _is_subagent_event(agent: str) -> bool:
+    """Check if an SSE event is from a subagent (should be hidden from CLI).
+
+    Main agent events have ``agent="model:{uuid}"``.
+    Tool node events have ``agent="tools"`` (no UUID).
+    Subagent events have ``agent="{subagent_type}:{uuid}"`` where type is
+    neither "model" nor "tools".
+    """
+    if not agent or ":" not in agent:
+        return False
+    return not agent.startswith("model:") and not agent.startswith("tools:")
 
 
 async def execute_task(
@@ -808,7 +821,7 @@ async def reconnect_to_workflow(
 def _handle_message_chunk(data: dict, state: StreamingState) -> None:
     """Handle message_chunk event."""
     agent = str(data.get("agent", ""))
-    if "tools:" in agent:
+    if _is_subagent_event(agent):
         # Hide subagent/tool-node streaming output in the CLI.
         return
 
@@ -843,7 +856,7 @@ def _handle_tool_calls(data: dict, state: StreamingState, todo_state: dict[str, 
     Todo list updates are rendered from the `TodoWrite` tool args.
     """
     agent = str(data.get("agent", ""))
-    if "tools:" in agent:
+    if _is_subagent_event(agent):
         # Hide subagent/tool-node tool call displays in the CLI.
         return
 
@@ -888,7 +901,7 @@ def _handle_tool_result(
 ) -> None:
     """Handle tool_call_result event."""
     agent = str(data.get("agent", ""))
-    if "tools:" in agent:
+    if _is_subagent_event(agent):
         # Hide subagent/tool-node tool results in the CLI.
         return
 
@@ -912,14 +925,14 @@ def _handle_tool_result(
         console.print()
         return
 
-    if tool_name in ("task", "Wait", "TaskOutput") and status == "success" and content:
+    if tool_name in ("Task", "Wait", "TaskOutput") and status == "success" and content:
         state.flush_text(final=True)
         if state.spinner_active:
             state.stop_spinner()
 
         icon = TOOL_ICONS.get(tool_name, "🔧")
         title = {
-            "task": "Subagent result",
+            "Task": "Subagent result",
             "Wait": "Subagent results",
             "TaskOutput": "Task output",
         }.get(tool_name, f"{tool_name} result")
