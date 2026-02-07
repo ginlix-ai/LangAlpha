@@ -44,6 +44,8 @@ function ChatView({ workspaceId, threadId, onBack }) {
     getAllCards,
     updateTodoListCard,
     updateSubagentCard,
+    inactivateAllSubagents,
+    minimizeInactiveSubagents,
   } = useFloatingCards();
 
   // Chat messages management - receives updateTodoListCard and updateSubagentCard from floating cards hook
@@ -55,7 +57,7 @@ function ChatView({ workspaceId, threadId, onBack }) {
     handleSendMessage, 
     threadId: currentThreadId,
     getSubagentHistory,
-  } = useChatMessages(workspaceId, threadId, updateTodoListCard, updateSubagentCard);
+  } = useChatMessages(workspaceId, threadId, updateTodoListCard, updateSubagentCard, inactivateAllSubagents, minimizeInactiveSubagents);
 
   // Update URL when thread ID changes (e.g., when __default__ becomes actual thread ID)
   // This triggers a re-render with the new threadId, which will then load history
@@ -179,15 +181,24 @@ function ChatView({ workspaceId, threadId, onBack }) {
         </div>
         <div className="flex items-center gap-2">
           {/* Floating card icons for all cards - always visible */}
-          {getAllCards().map(([cardId, card]) => (
-            <FloatingCardIcon
-              key={cardId}
-              id={cardId}
-              title={card.title || 'Card'}
-              onClick={() => handleCardToggle(cardId)}
-              hasUnreadUpdate={card.hasUnreadUpdate || false}
-            />
-          ))}
+          {getAllCards().map(([cardId, card]) => {
+            // Check if this is a subagent card and get its isActive status
+            const isSubagentCard = cardId.startsWith('subagent-');
+            const isActive = isSubagentCard && card.subagentData
+              ? card.subagentData.isActive !== false // Default to true if not set
+              : true; // Non-subagent cards are always considered active
+            
+            return (
+              <FloatingCardIcon
+                key={cardId}
+                id={cardId}
+                title={card.title || 'Card'}
+                onClick={() => handleCardToggle(cardId)}
+                hasUnreadUpdate={card.hasUnreadUpdate || false}
+                isActive={isActive}
+              />
+            );
+          })}
           {messageError && (
             <p className="text-xs" style={{ color: '#FF383C' }}>
               {messageError}
@@ -217,6 +228,17 @@ function ChatView({ workspaceId, threadId, onBack }) {
                   return;
                 }
 
+                // Check if card already exists and is minimized
+                const cardId = `subagent-${subagentId}`;
+                const existingCard = floatingCards[cardId];
+                const isMinimized = existingCard?.isMinimized || false;
+
+                // If card exists and is minimized, maximize it first
+                if (existingCard && isMinimized) {
+                  console.log('[ChatView] Card is minimized, maximizing it');
+                  handleCardMaximize(cardId);
+                }
+
                 // Try to load history for this subagent (if available)
                 const history = getSubagentHistory
                   ? getSubagentHistory(subagentId)
@@ -242,6 +264,7 @@ function ChatView({ workspaceId, threadId, onBack }) {
                   currentTool: '',
                   messages: finalMessages,
                   isHistory: !!history,
+                  isActive: !history, // Mark as inactive if loading from history to prevent duplicate card creation
                 });
               }}
             />
@@ -283,6 +306,7 @@ function ChatView({ workspaceId, threadId, onBack }) {
               type={card.subagentData.type}
               toolCalls={card.subagentData.toolCalls}
               currentTool={card.subagentData.currentTool}
+              status={card.subagentData.status || 'active'}
               messages={card.subagentData.messages || []}
               isHistory={card.subagentData.isHistory || false}
             />

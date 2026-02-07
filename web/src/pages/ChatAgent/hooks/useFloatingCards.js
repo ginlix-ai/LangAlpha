@@ -183,61 +183,46 @@ export function useFloatingCards(initialCards = {}) {
     const cardId = 'todo-list-card';
     
     setFloatingCards((prev) => {
-      // Calculate default position on the right side of the window
-      // Card width is 320px, so position it with some margin from the right edge
+      // Calculate default position - same as subagent cards
+      // Card width is ~520px (same as subagent cards), so center it horizontally
       const getDefaultPosition = () => {
         // Use window.innerWidth if available, otherwise default to a reasonable value
         const windowWidth = typeof window !== 'undefined' ? window.innerWidth : 1920;
-        // Position on the right side: window width - card width (320px) - margin (20px)
+        // Center horizontally: windowWidth / 1.25 - 260 (same calculation as subagent cards)
+        const centeredX = (windowWidth / 1.25) - 260;
         return {
-          x: Math.max(100, windowWidth - 340), // Ensure at least 100px from left edge
-          y: 100,
+          x: Math.max(80, centeredX), // Ensure some margin from the left edge
+          y: 80, // Same vertical position as first subagent card
         };
       };
 
-      // If new conversation (new thread), remove existing todo card first, then create new one
-      if (isNewConversation && prev[cardId]) {
-        const { [cardId]: removed, ...rest } = prev;
-        // Create new card for new conversation with default right-side position
-        const newZIndex = maxZIndex + 1;
-        setMaxZIndex(newZIndex);
-        return {
-          ...rest,
-          [cardId]: {
-            title: 'Todo List',
-            isMinimized: false,
-            position: getDefaultPosition(),
-            zIndex: newZIndex,
-            minimizeOrder: null,
-            hasUnreadUpdate: false,
-            todoData: todoData,
-          },
-        };
-      }
-
-      // If card exists, always update it (never remove it)
+      // If card exists, ALWAYS merge the update with existing data (same pattern as subagent cards)
       // This ensures the card persists even after streaming ends
-      // IMPORTANT: Preserve existing position object reference to prevent position reset
+      // IMPORTANT: Preserve existing position object reference and all state to prevent reconstruction
+      // During live streaming updates, we should NEVER remove/recreate the card, only update its data
       if (prev[cardId]) {
         const existingCard = prev[cardId];
         return {
           ...prev,
           [cardId]: {
-            ...existingCard,
+            ...existingCard, // Preserve all existing state (isMinimized, zIndex, minimizeOrder, position, etc.)
             // Update content with new todo data
             todoData: todoData,
             // Keep existing position object reference (don't create new object)
             // This prevents FloatingCard from resetting position when todoData updates
             position: existingCard.position, // Preserve exact same object reference
-            // Keep existing zIndex, minimize state
+            // Keep existing zIndex, minimize state, minimizeOrder - all preserved via ...existingCard
             // Set hasUnreadUpdate to true only if card is minimized (user can't see updates)
             // If card is not minimized, user can see updates directly, so no need for green indicator
+            // No auto-open: isMinimized state is preserved, so card stays minimized if it was minimized
             hasUnreadUpdate: existingCard.isMinimized ? true : false,
           },
         };
       } else {
         // Create new todo list card (first time todo list is detected)
-        // Use default position on the right side
+        // Use default position (same as subagent cards)
+        // Note: isNewConversation is only used to determine if we should create a new card,
+        // but if card already exists, we always preserve its state (handled above)
         const newZIndex = maxZIndex + 1;
         setMaxZIndex(newZIndex);
         return {
@@ -272,9 +257,15 @@ export function useFloatingCards(initialCards = {}) {
         // Use window.innerWidth if available, otherwise default to a reasonable value
         const windowWidth = typeof window !== 'undefined' ? window.innerWidth : 1920;
         // Center horizontally: windowWidth / 2 - cardWidth / 2 (~260px)
-        // Offset vertically based on number of existing subagent cards
-        const existingSubagentCards = Object.keys(prev).filter(id => id.startsWith('subagent-'));
-        const verticalOffset = existingSubagentCards.length * 350; // 350px spacing between cards
+        // Offset vertically based on number of existing ACTIVE subagent cards only
+        // This ensures new cards stack properly on top of active cards, ignoring inactive ones
+        const activeSubagentCards = Object.keys(prev).filter(id => {
+          if (!id.startsWith('subagent-')) return false;
+          const card = prev[id];
+          // Only count active cards (isActive !== false)
+          return card?.subagentData?.isActive !== false;
+        });
+        const verticalOffset = activeSubagentCards.length * 120; // 120px spacing between cards (reduced from 350px)
         const centeredX = (windowWidth / 1.25) - 260;
         return {
           x: Math.max(80, centeredX), // Ensure some margin from the left edge
@@ -282,17 +273,32 @@ export function useFloatingCards(initialCards = {}) {
         };
       };
 
-      // If card exists, merge the update with existing data
-      // This ensures the card persists even after streaming ends
-      // IMPORTANT: Preserve existing position object reference to prevent position reset
+      // If card exists, check if it's inactive
       if (prev[cardId]) {
         const existingCard = prev[cardId];
         const existingSubagentData = existingCard.subagentData || {};
+        const isCurrentlyInactive = existingSubagentData.isActive === false;
+        const isBeingReactivated = subagentDataUpdate.isActive === true;
+        
+        // If card is inactive and not being reactivated, skip the update entirely
+        // This prevents inactive cards from receiving updates when new subagents with the same task ID are created
+        if (isCurrentlyInactive && !isBeingReactivated) {
+          if (process.env.NODE_ENV === 'development') {
+            console.log('[updateSubagentCard] Skipping update to inactive card:', {
+              taskId,
+              cardId,
+              reason: 'Card is inactive and not being reactivated',
+            });
+          }
+          return prev; // Return previous state unchanged
+        }
         return {
           ...prev,
           [cardId]: {
             ...existingCard,
-            // Merge subagent data (preserve existing messages, update other fields)
+            // Merge subagent data (preserve existing messages, currentTool, and status, update other fields)
+            // IMPORTANT: Order matters - we spread existingSubagentData first, then subagentDataUpdate,
+            // then override specific fields to ensure proper preservation logic
             subagentData: {
               ...existingSubagentData,
               ...subagentDataUpdate,
@@ -300,18 +306,96 @@ export function useFloatingCards(initialCards = {}) {
               messages: subagentDataUpdate.messages !== undefined 
                 ? subagentDataUpdate.messages 
                 : existingSubagentData.messages || [],
+              // If currentTool is explicitly provided (including empty string), use it
+              // Empty string means "clear currentTool", undefined means "preserve existing"
+              // This allows explicit clearing when tool calls fail or complete
+              currentTool: subagentDataUpdate.currentTool !== undefined
+                ? subagentDataUpdate.currentTool // Use provided value (even if empty string)
+                : existingSubagentData.currentTool || '', // Preserve only if not explicitly provided
+              // Status handling: if explicitly provided, use it; otherwise preserve existing
+              // This ensures 'completed' status from handleSubagentStatus is not overwritten
+              // IMPORTANT: Once a task is 'completed', it should stay 'completed' unless explicitly changed
+              status: (() => {
+                const newStatus = subagentDataUpdate.status;
+                const existingStatus = existingSubagentData.status;
+                
+                if (newStatus !== undefined) {
+                  // Explicit status update (e.g., 'completed' from subagent_status)
+                  if (process.env.NODE_ENV === 'development') {
+                    console.log('[updateSubagentCard] Status update:', {
+                      taskId,
+                      newStatus,
+                      previousStatus: existingStatus,
+                      willUpdate: newStatus !== existingStatus,
+                    });
+                  }
+                  return newStatus;
+                }
+                
+                // Preserve existing status - if it's 'completed', keep it 'completed'
+                // Only default to 'active' if status was never set
+                const preservedStatus = existingStatus || 'active';
+                if (process.env.NODE_ENV === 'development' && existingStatus === 'completed') {
+                  console.log('[updateSubagentCard] Preserving completed status:', {
+                    taskId,
+                    preservedStatus,
+                  });
+                }
+                return preservedStatus;
+              })(),
+              // isActive handling: if explicitly provided, use it; otherwise preserve existing
+              // Default to true for new cards, but preserve existing value for updates
+              // IMPORTANT: If loading from history, always mark as inactive to prevent duplicate card creation
+              isActive: subagentDataUpdate.isHistory 
+                ? false // Force inactive if loading from history
+                : (subagentDataUpdate.isActive !== undefined
+                  ? subagentDataUpdate.isActive
+                  : existingSubagentData.isActive !== undefined
+                    ? existingSubagentData.isActive
+                    : true) // Default to active if not set
             },
             // Keep existing position object reference (don't create new object)
             // This prevents FloatingCard from resetting position when subagentData updates
             position: existingCard.position, // Preserve exact same object reference
             // Keep existing zIndex, minimize state
-            // Set hasUnreadUpdate to true only if card is minimized (user can't see updates)
+            // Set hasUnreadUpdate to true only if card is minimized AND active (user can't see updates)
+            // Inactive cards should never show unread updates, even if minimized
             // If card is not minimized, user can see updates directly, so no need for green indicator
-            hasUnreadUpdate: existingCard.isMinimized ? true : false,
+            hasUnreadUpdate: (() => {
+              // Determine if card will be active after this update
+              const willBeActive = subagentDataUpdate.isActive !== undefined
+                ? subagentDataUpdate.isActive
+                : existingSubagentData.isActive !== false; // Default to true if not set
+              // Only show unread update if card is minimized AND will be active
+              return existingCard.isMinimized && willBeActive;
+            })(),
           },
         };
       } else {
         // Create new subagent card (first time subagent is detected)
+        // IMPORTANT: Don't create new cards for completed/inactive tasks from live streaming
+        // Completed tasks from live streaming should only update existing cards (e.g., from history)
+        // New cards should only be created for:
+        // 1. Active tasks in live streaming (isActive !== false and not from history)
+        // 2. Cards explicitly opened from history by user (isHistory: true)
+        const isCompletedFromLiveStream = subagentDataUpdate.isActive === false && subagentDataUpdate.isHistory !== true;
+        
+        if (isCompletedFromLiveStream) {
+          // Don't create a new card for completed tasks from live streaming
+          // These should only update existing cards (e.g., cards opened from history)
+          // If no card exists, it means this task is from history and hasn't been opened yet
+          if (process.env.NODE_ENV === 'development') {
+            console.log('[updateSubagentCard] Skipping creation of new card for completed task from live streaming:', {
+              taskId,
+              cardId,
+              reason: 'Completed tasks from live streaming should only update existing cards, not create new ones',
+              isActive: subagentDataUpdate.isActive,
+              isHistory: subagentDataUpdate.isHistory,
+            });
+          }
+          return prev; // Return previous state unchanged (don't create card)
+        }
+        
         // Use default position on the right side
         const newZIndex = maxZIndex + 1;
         setMaxZIndex(newZIndex);
@@ -335,10 +419,99 @@ export function useFloatingCards(initialCards = {}) {
               status: 'active',
               messages: [],
               ...subagentDataUpdate,
+              // Force isActive to false if loading from history, regardless of what was provided
+              // This prevents duplicate floating card creation when user calls subagent in the future
+              isActive: subagentDataUpdate.isHistory ? false : (subagentDataUpdate.isActive !== undefined ? subagentDataUpdate.isActive : true),
             },
           },
         };
       }
+    });
+  };
+
+  /**
+   * Inactivate all subagent cards
+   * Called at the end of streaming to mark all subagents as inactive
+   * This prevents task ID collisions when new subagents are created with the same IDs
+   * Also forcefully sets status to 'completed' and clears currentTool when subagent becomes inactive
+   */
+  const inactivateAllSubagents = () => {
+    setFloatingCards((prev) => {
+      const updated = { ...prev };
+      let hasChanges = false;
+
+      Object.keys(updated).forEach((cardId) => {
+        if (cardId.startsWith('subagent-') && updated[cardId]?.subagentData) {
+          const card = updated[cardId];
+          if (card.subagentData.isActive !== false) {
+            updated[cardId] = {
+              ...card,
+              subagentData: {
+                ...card.subagentData,
+                isActive: false,
+                status: 'completed', // Forcefully set status to 'completed' when subagent becomes inactive
+                currentTool: '', // Clear currentTool when subagent becomes inactive
+              },
+            };
+            hasChanges = true;
+            if (process.env.NODE_ENV === 'development') {
+              console.log('[inactivateAllSubagents] Marking subagent as inactive, setting status to completed, and clearing currentTool:', {
+                taskId: card.subagentData.taskId,
+                cardId,
+                previousStatus: card.subagentData.status,
+                previousCurrentTool: card.subagentData.currentTool,
+              });
+            }
+          }
+        }
+      });
+
+      return hasChanges ? updated : prev;
+    });
+  };
+
+  /**
+   * Minimize all inactive subagent cards
+   * Called at the end of streaming to minimize inactive cards
+   * This keeps the UI clean by hiding cards from previous conversations
+   */
+  const minimizeInactiveSubagents = () => {
+    setFloatingCards((prev) => {
+      const updated = { ...prev };
+      let hasChanges = false;
+      let currentMinimizeOrder = 0;
+
+      // Find the highest minimize order to continue from
+      Object.values(updated).forEach((card) => {
+        if (card.minimizeOrder !== null && card.minimizeOrder > currentMinimizeOrder) {
+          currentMinimizeOrder = card.minimizeOrder;
+        }
+      });
+
+      Object.keys(updated).forEach((cardId) => {
+        if (cardId.startsWith('subagent-') && updated[cardId]?.subagentData) {
+          const card = updated[cardId];
+          // Only minimize if card is inactive and not already minimized
+          if (card.subagentData.isActive === false && !card.isMinimized) {
+            currentMinimizeOrder++;
+            updated[cardId] = {
+              ...card,
+              isMinimized: true,
+              minimizeOrder: currentMinimizeOrder,
+            };
+            hasChanges = true;
+            if (process.env.NODE_ENV === 'development') {
+              console.log('[minimizeInactiveSubagents] Minimizing inactive subagent:', {
+                taskId: card.subagentData.taskId,
+                cardId,
+                minimizeOrder: currentMinimizeOrder,
+              });
+            }
+          }
+        }
+      });
+
+      return hasChanges ? updated : prev;
     });
   };
 
@@ -356,6 +529,8 @@ export function useFloatingCards(initialCards = {}) {
     // Helpers
     getMinimizedCards,
     getAllCards,
+    inactivateAllSubagents,
+    minimizeInactiveSubagents,
     updateTodoListCard,
     updateSubagentCard,
   };

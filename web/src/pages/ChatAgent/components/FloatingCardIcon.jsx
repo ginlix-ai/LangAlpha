@@ -8,16 +8,26 @@ import { Bookmark } from 'lucide-react';
  * Always visible regardless of card's minimized state.
  * Clicking the icon will toggle the card's minimized/maximized state.
  * Shows a green color when there's an unread update.
+ * Shows a grey color when the subagent card is inactive.
  * 
  * @param {Object} props
  * @param {string} props.id - Unique identifier for the card
  * @param {string} props.title - Title/name of the card to display
  * @param {Function} props.onClick - Callback when icon is clicked to toggle card state
  * @param {boolean} props.hasUnreadUpdate - Whether the card has an unread update (shows green color)
+ * @param {boolean} props.isActive - Whether the subagent card is active (shows grey if false)
  */
-function FloatingCardIcon({ id, title, onClick, hasUnreadUpdate = false }) {
-  // Use green color if there's an unread update, otherwise use purple
-  const iconColor = hasUnreadUpdate ? '#0FEDBE' : '#6155F5';
+function FloatingCardIcon({ id, title, onClick, hasUnreadUpdate = false, isActive = true }) {
+  // Determine icon color based on state:
+  // 1. Green if there's an unread update
+  // 2. Grey if inactive (for subagent cards)
+  // 3. Purple otherwise (default)
+  let iconColor = '#6155F5'; // Default purple
+  if (hasUnreadUpdate) {
+    iconColor = '#0FEDBE'; // Green for unread updates
+  } else if (isActive === false) {
+    iconColor = '#808080'; // Grey for inactive subagents
+  }
   
   return (
     <button
