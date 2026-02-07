@@ -1,6 +1,6 @@
 """Background subagent execution middleware.
 
-This middleware intercepts 'task' tool calls and spawns them in the background,
+This middleware intercepts 'Task' tool calls and spawns them in the background,
 allowing the main agent to continue working without blocking.
 """
 
@@ -57,7 +57,7 @@ def _truncate_description(description: str, max_sentences: int = 2) -> str:
 class BackgroundSubagentMiddleware(AgentMiddleware):
     """Middleware that enables background subagent execution.
 
-    This middleware intercepts 'task' tool calls and:
+    This middleware intercepts 'Task' tool calls and:
     1. Spawns the subagent execution in a background asyncio task
     2. Returns an immediate pseudo-result to the main agent
     3. Tracks pending tasks in a registry
@@ -124,7 +124,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
     ) -> ToolMessage | Command:
         """Intercept task tool calls and spawn in background.
 
-        For 'task' tool calls, this:
+        For 'Task' tool calls, this:
         1. Spawns the subagent execution as a background asyncio task
         2. Returns an immediate pseudo-result
         3. Stores the task in the registry for later result collection
@@ -135,8 +135,8 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         tool_call = request.tool_call
         tool_name = tool_call.get("name", "")
 
-        # Only intercept 'task' tool calls when enabled
-        if not self.enabled or tool_name != "task":
+        # Only intercept 'Task' tool calls when enabled
+        if not self.enabled or tool_name != "Task":
             return await handler(request)
 
         # Extract task details
@@ -242,7 +242,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         return ToolMessage(
             content=pseudo_result,
             tool_call_id=tool_call_id,
-            name="task",
+            name="Task",
         )
 
     def after_agent(self, state: AgentState, runtime: Any) -> dict[str, Any] | None:

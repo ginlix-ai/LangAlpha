@@ -13,10 +13,8 @@ import structlog
 from langchain.agents import create_agent
 
 from ptc_agent.agent.backends import DaytonaBackend
-from deepagents.middleware import (
-    SkillsMiddleware,
-    SubAgentMiddleware,
-)
+from deepagents.middleware import SkillsMiddleware
+from ptc_agent.agent.middleware import SubAgentMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 
