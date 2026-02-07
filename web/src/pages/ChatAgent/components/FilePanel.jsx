@@ -46,6 +46,15 @@ function FilePanel({ workspaceId, onClose, targetFile, onTargetFileHandled }) {
     fetchFiles();
   }, [fetchFiles]);
 
+  // Cleanup blob URL on unmount to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      if (fileMime === 'image' && fileContent) {
+        URL.revokeObjectURL(fileContent);
+      }
+    };
+  }, [fileContent, fileMime]);
+
   // Auto-open file when targetFile prop changes (from chat tool call click)
   useEffect(() => {
     if (targetFile) {
@@ -61,6 +70,10 @@ function FilePanel({ workspaceId, onClose, targetFile, onTargetFileHandled }) {
     if (['pdf', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'xlsx', 'docx', 'zip'].includes(ext)) {
       // For images, show inline via blob URL
       if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) {
+        // Revoke previous blob URL before loading new image
+        if (fileMime === 'image' && fileContent) {
+          URL.revokeObjectURL(fileContent);
+        }
         setSelectedFile(filePath);
         setFileLoading(true);
         setFileMime('image');
@@ -103,6 +116,9 @@ function FilePanel({ workspaceId, onClose, targetFile, onTargetFileHandled }) {
   };
 
   const handleBack = () => {
+    if (fileMime === 'image' && fileContent) {
+      URL.revokeObjectURL(fileContent);
+    }
     setSelectedFile(null);
     setFileContent(null);
     setFileMime(null);
