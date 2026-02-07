@@ -419,6 +419,10 @@ export function handleHistoryToolCallResult({ assistantMessageId, toolCallId, re
       const toolCallProcesses = { ...(msg.toolCallProcesses || {}) };
       const subagentTasks = { ...(msg.subagentTasks || {}) };
 
+      // Detect if tool call failed by checking result content
+      const resultContent = result.content || '';
+      const isFailed = /failed|error|Error|ERROR|exception|Exception|failed:|error:/i.test(resultContent);
+
       if (toolCallProcesses[toolCallId]) {
         toolCallProcesses[toolCallId] = {
           ...toolCallProcesses[toolCallId],
@@ -429,6 +433,7 @@ export function handleHistoryToolCallResult({ assistantMessageId, toolCallId, re
           },
           isInProgress: false,
           isComplete: true,
+          isFailed: isFailed, // Track if tool call failed
         };
       } else {
         // Edge case: tool call process doesn't exist, create it
@@ -454,6 +459,7 @@ export function handleHistoryToolCallResult({ assistantMessageId, toolCallId, re
           },
           isInProgress: false,
           isComplete: true,
+          isFailed: isFailed, // Track if tool call failed
           order: currentOrder,
         };
 

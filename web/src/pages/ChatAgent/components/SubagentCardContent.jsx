@@ -16,6 +16,7 @@ import ToolCallMessageContent from './ToolCallMessageContent';
  * @param {string} props.type - Subagent type (e.g., "general-purpose")
  * @param {number} props.toolCalls - Number of tool calls made
  * @param {string} props.currentTool - Current tool being used
+ * @param {string} props.status - Task status ('active', 'completed', etc.)
  * @param {Object} props.messages - Subagent messages state (similar to main chat messages)
  * @param {boolean} props.isHistory - Whether this card is shown from history replay (hides status/header)
  */
@@ -25,15 +26,36 @@ function SubagentCardContent({
   type, 
   toolCalls = 0, 
   currentTool = '', 
+  status = 'active',
   messages = [],
   isHistory = false,
 }) {
+  // Debug: Log status changes
+  React.useEffect(() => {
+    if (process.env.NODE_ENV === 'development') {
+      console.log('[SubagentCardContent] Status update:', {
+        taskId,
+        status,
+        currentTool,
+        toolCalls,
+        messagesCount: messages.length,
+      });
+    }
+  }, [taskId, status, currentTool, toolCalls, messages.length]);
+
   /**
    * Get status icon based on current state
    */
   const getStatusIcon = () => {
     if (currentTool) {
       return <Loader2 className="h-4 w-4 animate-spin" style={{ color: '#6155F5' }} />;
+    }
+    if (status === 'active' && messages.length > 0) {
+      // Show spinner when actively producing content
+      return <Loader2 className="h-4 w-4 animate-spin" style={{ color: '#6155F5' }} />;
+    }
+    if (status === 'completed') {
+      return <CheckCircle2 className="h-4 w-4" style={{ color: '#0FEDBE' }} />;
     }
     return <Circle className="h-4 w-4" style={{ color: '#FFFFFF', opacity: 0.5 }} />;
   };
@@ -45,8 +67,18 @@ function SubagentCardContent({
     if (currentTool) {
       return `Running: ${currentTool}`;
     }
-    if (toolCalls > 0) {
-      return `Completed (${toolCalls} tool calls)`;
+    if (status === 'completed') {
+      if (toolCalls > 0) {
+        return `Completed (${toolCalls} tool calls)`;
+      }
+      return 'Completed';
+    }
+    if (status === 'active') {
+      if (messages.length > 0) {
+        // Subagent is actively producing content
+        return 'Running';
+      }
+      return 'Initializing';
     }
     return 'Initializing';
   };
@@ -131,6 +163,7 @@ function SubagentCardContent({
                               toolCallResult={toolCall.toolCallResult}
                               isInProgress={toolCall.isInProgress || false}
                               isComplete={toolCall.isComplete || false}
+                              isFailed={toolCall.isFailed || false}
                             />
                           );
                         }

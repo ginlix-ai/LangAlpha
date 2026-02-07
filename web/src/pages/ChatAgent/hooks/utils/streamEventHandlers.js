@@ -309,6 +309,12 @@ export function handleToolCallResult({ assistantMessageId, toolCallId, result, r
       if (msg.id !== assistantMessageId) return msg;
 
       const toolCallProcesses = { ...(msg.toolCallProcesses || {}) };
+      
+      // Detect if tool call failed by checking result content
+      // Common failure indicators: "failed", "error", "Error", "ERROR", "exception", etc.
+      const resultContent = result.content || '';
+      const isFailed = /failed|error|Error|ERROR|exception|Exception|failed:|error:/i.test(resultContent);
+      
       if (toolCallProcesses[toolCallId]) {
         toolCallProcesses[toolCallId] = {
           ...toolCallProcesses[toolCallId],
@@ -319,6 +325,7 @@ export function handleToolCallResult({ assistantMessageId, toolCallId, result, r
           },
           isInProgress: false,
           isComplete: true,
+          isFailed: isFailed, // Track if tool call failed
         };
       } else {
         // Edge case: tool call process doesn't exist, create it
@@ -334,6 +341,10 @@ export function handleToolCallResult({ assistantMessageId, toolCallId, result, r
           },
         ];
 
+        // Detect if tool call failed by checking result content
+        const resultContent = result.content || '';
+        const isFailed = /failed|error|Error|ERROR|exception|Exception|failed:|error:/i.test(resultContent);
+        
         toolCallProcesses[toolCallId] = {
           toolName: 'Unknown Tool',
           toolCall: null,
@@ -344,6 +355,7 @@ export function handleToolCallResult({ assistantMessageId, toolCallId, result, r
           },
           isInProgress: false,
           isComplete: true,
+          isFailed: isFailed, // Track if tool call failed
           order: currentOrder,
         };
 
@@ -501,7 +513,68 @@ export function handleSubagentStatus({ subagentStatus, updateSubagentCard }) {
     return false;
   }
 
+  // Handle both formats: completed_tasks can be an array of task objects OR an array of task ID strings
+  // Extract task IDs and create a map for quick lookup
+  const completedTaskIds = new Set();
+  const completedTaskMap = new Map(); // Map<taskId, taskObject> for tasks with full data
+  
+  completed_tasks.forEach((task) => {
+    let taskId = null;
+    let taskObj = null;
+    
+    // Handle both formats: task can be a string (task ID) or an object with an id property
+    if (typeof task === 'string') {
+      // Task is just a string ID
+      taskId = task;
+      taskObj = null; // No additional data available
+    } else if (task && typeof task === 'object' && task.id) {
+      // Task is an object with an id property
+      taskId = task.id;
+      taskObj = task;
+    } else {
+      // Invalid format
+      console.warn('[handleSubagentStatus] Invalid completed task format:', task);
+      return;
+    }
+    
+    if (taskId) {
+      completedTaskIds.add(taskId);
+      if (taskObj) {
+        completedTaskMap.set(taskId, taskObj);
+      }
+    }
+  });
+
+  // IMPORTANT: Process completed_tasks FIRST to ensure completed status takes precedence
+  // This prevents active_tasks from overwriting completed status
+  completedTaskIds.forEach((taskId) => {
+    const taskObj = completedTaskMap.get(taskId);
+    
+    if (process.env.NODE_ENV === 'development') {
+      console.log('[handleSubagentStatus] Marking task as completed:', {
+        taskId,
+        hasTaskObject: !!taskObj,
+        description: taskObj?.description,
+        toolCalls: taskObj?.tool_calls,
+      });
+    }
+    
+    // Update card with completed status and mark as inactive
+    // If we have task object data, use it; otherwise use defaults and preserve existing data
+    updateSubagentCard(taskId, {
+      taskId,
+      description: taskObj?.description || '', // Use task object data if available
+      type: taskObj?.type || 'general-purpose',
+      toolCalls: taskObj?.tool_calls || 0,
+      currentTool: '', // Clear currentTool when task is completed
+      status: 'completed', // Explicitly set status to 'completed'
+      isActive: false, // Mark as inactive when completed
+      // Don't set messages - preserve existing messages from previous updates
+    });
+  });
+
   // Update cards for all active tasks
+  // Note: Skip tasks that are in completed_tasks (shouldn't happen, but safety check)
   // Note: We don't set messages here - they will be preserved from previous updates
   // This ensures messages aren't lost when status updates
   active_tasks.forEach((task) => {
@@ -513,37 +586,35 @@ export function handleSubagentStatus({ subagentStatus, updateSubagentCard }) {
     }
     
     const taskId = task.id;
-    updateSubagentCard(taskId, {
-      taskId,
-      description: task.description || '',
-      type: task.type || 'general-purpose',
-      toolCalls: task.tool_calls || 0,
-      currentTool: task.current_tool || '',
-      status: 'active',
-      // Don't set messages - preserve existing messages from previous updates
-    });
-  });
-
-  // Update cards for completed tasks
-  // Note: We don't set messages here - they will be preserved from previous updates
-  completed_tasks.forEach((task) => {
-    // Only process tasks that have a valid ID
-    // Skip tasks without IDs to prevent creating unexpected cards
-    if (!task || !task.id) {
-      console.warn('[handleSubagentStatus] Skipping completed task without ID:', task);
+    
+    // Skip if this task is also in completed_tasks (shouldn't happen, but safety check)
+    if (completedTaskIds.has(taskId)) {
+      if (process.env.NODE_ENV === 'development') {
+        console.warn('[handleSubagentStatus] Task is in both active_tasks and completed_tasks, skipping active update:', taskId);
+      }
       return;
     }
     
-    const taskId = task.id;
-    updateSubagentCard(taskId, {
+    // Build update object - only include currentTool if it's explicitly provided and non-empty
+    // This prevents overwriting a valid currentTool with an empty string from status updates
+    const updateData = {
       taskId,
       description: task.description || '',
       type: task.type || 'general-purpose',
       toolCalls: task.tool_calls || 0,
-      currentTool: '',
-      status: 'completed',
+      status: 'active',
+      isActive: true, // Mark as active when task is in active_tasks
       // Don't set messages - preserve existing messages from previous updates
-    });
+    };
+    
+    // Only update currentTool if the status explicitly provides a non-empty value
+    // This preserves the currentTool set by handleSubagentToolCalls/handleSubagentToolCallResult
+    if (task.current_tool && task.current_tool.trim() !== '') {
+      updateData.currentTool = task.current_tool;
+    }
+    // If current_tool is empty, don't include it in the update - this preserves existing currentTool
+    
+    updateSubagentCard(taskId, updateData);
   });
 
   return true;
@@ -643,7 +714,12 @@ export function handleSubagentMessageChunk({
       };
 
       taskRefs.messages = updatedMessages;
-      updateSubagentCard(taskId, { messages: updatedMessages });
+      // Update card with messages only - don't update status here
+      // Status is managed by handleSubagentStatus to prevent overwriting 'completed' status
+      updateSubagentCard(taskId, { 
+        messages: updatedMessages,
+        // Don't set status - let handleSubagentStatus manage it
+      });
       return true;
     } else if (signalContent === 'complete') {
       if (currentReasoningIdRef.current) {
@@ -1007,6 +1083,7 @@ export function handleSubagentToolCallResult({ taskId, assistantMessageId, toolC
           },
           isInProgress: false,
           isComplete: true,
+          isFailed: /failed|error|Error|ERROR|exception|Exception|failed:|error:/i.test(result.content || ''), // Track if tool call failed
           order: currentOrder,
         },
       },
@@ -1024,6 +1101,10 @@ export function handleSubagentToolCallResult({ taskId, assistantMessageId, toolC
     const msg = updatedMessages[messageIndex];
     const toolCallProcesses = { ...(msg.toolCallProcesses || {}) };
     
+    // Detect if tool call failed by checking result content
+    const resultContent = result.content || '';
+    const isFailed = /failed|error|Error|ERROR|exception|Exception|failed:|error:/i.test(resultContent);
+    
     if (toolCallProcesses[toolCallId]) {
       toolCallProcesses[toolCallId] = {
         ...toolCallProcesses[toolCallId],
@@ -1034,6 +1115,7 @@ export function handleSubagentToolCallResult({ taskId, assistantMessageId, toolC
         },
         isInProgress: false,
         isComplete: true,
+        isFailed: isFailed, // Track if tool call failed
       };
     } else {
       // Edge case: message exists but tool call doesn't - add it
@@ -1057,6 +1139,7 @@ export function handleSubagentToolCallResult({ taskId, assistantMessageId, toolC
         },
         isInProgress: false,
         isComplete: true,
+        isFailed: isFailed, // Track if tool call failed
         order: currentOrder,
       };
       
@@ -1068,27 +1151,65 @@ export function handleSubagentToolCallResult({ taskId, assistantMessageId, toolC
 
   taskRefs.messages = updatedMessages;
   
-  // Update subagent card: clear currentTool when tool call completes
-  // But only if no other tool calls are in progress
-  // Check if there are any other in-progress tool calls
-  let hasInProgressTool = false;
-  let currentToolName = '';
+  // Detect if the tool call that just completed was a failure
+  // We need to check the tool call process that was just updated
+  let justCompletedToolFailed = false;
+  let justCompletedToolName = '';
+  
+  // Find the tool call that just completed (it should be in updatedMessages now)
   for (const msg of updatedMessages) {
     const toolCallProcesses = msg.toolCallProcesses || {};
-    for (const [tcId, tcProcess] of Object.entries(toolCallProcesses)) {
-      if (tcProcess.isInProgress && !tcProcess.isComplete) {
-        hasInProgressTool = true;
-        currentToolName = tcProcess.toolName || '';
-        break;
-      }
+    const completedToolCall = toolCallProcesses[toolCallId];
+    if (completedToolCall && completedToolCall.isComplete) {
+      // This is the tool call that just completed
+      justCompletedToolFailed = completedToolCall.isFailed || false;
+      justCompletedToolName = completedToolCall.toolName || '';
+      break;
     }
-    if (hasInProgressTool) break;
   }
   
-  // Update currentTool: use the in-progress tool if any, otherwise clear it
+  // Update subagent card: clear currentTool when tool call completes
+  // Priority:
+  // 1. If the tool that just completed failed, clear currentTool immediately (don't wait for subagent_status)
+  // 2. Otherwise, check if there are any other in-progress tool calls
+  let hasInProgressTool = false;
+  let currentToolName = '';
+  
+  if (!justCompletedToolFailed) {
+    // Only check for in-progress tools if the completed tool didn't fail
+    // If it failed, we want to clear currentTool immediately
+    for (const msg of updatedMessages) {
+      const toolCallProcesses = msg.toolCallProcesses || {};
+      for (const [tcId, tcProcess] of Object.entries(toolCallProcesses)) {
+        if (tcProcess.isInProgress && !tcProcess.isComplete) {
+          hasInProgressTool = true;
+          currentToolName = tcProcess.toolName || '';
+          break;
+        }
+      }
+      if (hasInProgressTool) break;
+    }
+  }
+  
+  // Determine final currentTool value:
+  // - If tool just failed, clear it immediately
+  // - If there's an in-progress tool, show it
+  // - Otherwise, clear it
+  const finalCurrentTool = justCompletedToolFailed ? '' : (hasInProgressTool ? currentToolName : '');
+  
+  if (process.env.NODE_ENV === 'development' && justCompletedToolFailed) {
+    console.log('[handleSubagentToolCallResult] Tool call failed, clearing currentTool immediately:', {
+      taskId,
+      toolCallId,
+      failedToolName: justCompletedToolName,
+      reason: 'Tool call failed, clearing currentTool without waiting for subagent_status',
+    });
+  }
+  
+  // Update currentTool: clear if tool failed, otherwise use in-progress tool if any
   updateSubagentCard(taskId, { 
     messages: updatedMessages,
-    currentTool: hasInProgressTool ? currentToolName : '', // Clear if no tools in progress
+    currentTool: finalCurrentTool, // Explicitly pass empty string to clear when failed or no tools in progress
   });
   return true;
 }

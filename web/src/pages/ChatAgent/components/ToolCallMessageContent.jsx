@@ -20,6 +20,7 @@ import { Wrench, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
  * @param {Object} props.toolCallResult - tool_call_result event data
  * @param {boolean} props.isInProgress - Whether tool call is currently in progress
  * @param {boolean} props.isComplete - Whether tool call has completed
+ * @param {boolean} props.isFailed - Whether tool call failed
  */
 function ToolCallMessageContent({ 
   toolCallId, 
@@ -27,7 +28,8 @@ function ToolCallMessageContent({
   toolCall, 
   toolCallResult, 
   isInProgress, 
-  isComplete 
+  isComplete,
+  isFailed = false
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -57,9 +59,12 @@ function ToolCallMessageContent({
         }}
         title={isInProgress ? 'Tool call in progress...' : 'View tool call details'}
       >
-        {/* Icon: Wrench with loading spinner when active, static wrench when complete */}
+        {/* Icon: Wrench with loading spinner when active, static wrench when complete/failed */}
         <div className="relative">
-          <Wrench className="h-4 w-4" style={{ color: '#6155F5' }} />
+          <Wrench 
+            className="h-4 w-4" 
+            style={{ color: isFailed ? '#FF383C' : '#6155F5' }} 
+          />
           {isInProgress && (
             <Loader2 
               className="h-3 w-3 absolute -top-0.5 -right-0.5 animate-spin" 
@@ -75,8 +80,14 @@ function ToolCallMessageContent({
         
         {/* Status indicator */}
         {isComplete && !isInProgress && (
-          <span className="text-xs" style={{ color: '#FFFFFF', opacity: 0.6 }}>
-            (complete)
+          <span 
+            className="text-xs" 
+            style={{ 
+              color: isFailed ? '#FF383C' : '#FFFFFF', 
+              opacity: isFailed ? 0.9 : 0.6 
+            }}
+          >
+            {isFailed ? '(failed)' : '(complete)'}
           </span>
         )}
         

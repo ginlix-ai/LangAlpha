@@ -246,6 +246,7 @@ function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesse
                 toolCallResult={toolCallProcess.toolCallResult}
                 isInProgress={toolCallProcess.isInProgress || false}
                 isComplete={toolCallProcess.isComplete || false}
+                isFailed={toolCallProcess.isFailed || false}
               />
             );
           }
