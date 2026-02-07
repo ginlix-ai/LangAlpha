@@ -16,6 +16,7 @@ import {
   listWatchlistItems,
   normalizeIndexSymbol,
   updatePortfolioHolding,
+  getInfoFlowResults,
 } from './utils/api';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useToast } from '@/components/ui/use-toast';
@@ -63,6 +64,9 @@ const RESEARCH_ITEMS = [
 // Resets on page refresh (module reload)
 let onboardingCheckedThisSession = false;
 
+// Module-level cache for popular items (survives navigation, clears on page refresh)
+let popularCache = null; // { items, hasMore, offset }
+
 function Dashboard() {
   const { toast } = useToast();
   
@@ -73,6 +77,54 @@ function Dashboard() {
     INDEX_SYMBOLS.map((s) => fallbackIndex(normalizeIndexSymbol(s)))
   );
   const [indicesLoading, setIndicesLoading] = useState(true);
+
+  const [popularItems, setPopularItems] = useState(() => popularCache?.items || POPULAR_ITEMS);
+  const [popularLoading, setPopularLoading] = useState(!popularCache);
+  const [popularHasMore, setPopularHasMore] = useState(() => popularCache?.hasMore || false);
+  const [popularOffset, setPopularOffset] = useState(() => popularCache?.offset || 0);
+  const POPULAR_PAGE_SIZE = 10;
+
+  const fetchPopular = useCallback(async (offset = 0, append = false) => {
+    if (!append) setPopularLoading(true);
+    try {
+      const data = await getInfoFlowResults('hot_topic', POPULAR_PAGE_SIZE, offset);
+      if (data.results && data.results.length > 0) {
+        const newItems = data.results.map((r) => ({
+          indexNumber: r.indexNumber,
+          title: r.title,
+          description: r.summary || '',
+          tags: r.tags || [],
+          event_timestamp: r.event_timestamp || '',
+          image: r.images?.[0]?.url || r.images?.[0] || null,
+        }));
+        const newOffset = offset + data.results.length;
+        setPopularItems((prev) => {
+          const updated = append ? [...prev, ...newItems] : newItems;
+          popularCache = { items: updated, hasMore: data.has_more, offset: newOffset };
+          return updated;
+        });
+        setPopularHasMore(data.has_more);
+        setPopularOffset(newOffset);
+      } else if (!append) {
+        setPopularItems(POPULAR_ITEMS);
+        setPopularHasMore(false);
+      }
+    } catch {
+      if (!append) setPopularItems(POPULAR_ITEMS);
+    } finally {
+      setPopularLoading(false);
+    }
+  }, []);
+
+  const loadMorePopular = useCallback(() => {
+    if (popularHasMore) {
+      fetchPopular(popularOffset, true);
+    }
+  }, [popularHasMore, popularOffset, fetchPopular]);
+
+  useEffect(() => {
+    if (!popularCache) fetchPopular(0, false);
+  }, [fetchPopular]);
 
   const fetchIndices = useCallback(async () => {
     setIndicesLoading(true);
@@ -561,7 +613,7 @@ function Dashboard() {
             <div className="grid grid-cols-[1fr_360px] gap-4 flex-1 min-h-0 h-full">
               <div className="w-full flex flex-col gap-4 h-full min-h-0 overflow-hidden">
                 <IndexMovementCard indices={indices} loading={indicesLoading} />
-                <PopularCard items={POPULAR_ITEMS} />
+                <PopularCard items={popularItems} loading={popularLoading} hasMore={popularHasMore} onLoadMore={loadMorePopular} />
                 <div className="w-full grid grid-cols-2 gap-4 flex-1 min-h-0 overflow-hidden">
                   <TopNewsCard items={NEWS_ITEMS} />
                   <TopResearchCard items={RESEARCH_ITEMS} />

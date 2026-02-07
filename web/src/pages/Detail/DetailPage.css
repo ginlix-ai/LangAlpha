@@ -1,0 +1,110 @@
+/* Detail page layout */
+.detail-page {
+  overflow-y: auto;
+  max-height: 100vh;
+  padding-bottom: 3rem;
+}
+
+/* Markdown content typography */
+.detail-content {
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--color-text-primary);
+  opacity: 0.92;
+}
+
+.detail-content h2 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--color-border-muted);
+  color: var(--color-text-primary);
+}
+
+.detail-content h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+  color: var(--color-text-primary);
+}
+
+.detail-content h4 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-top: 1.25rem;
+  margin-bottom: 0.4rem;
+  color: var(--color-text-primary);
+  opacity: 0.9;
+}
+
+.detail-content p {
+  margin-bottom: 1rem;
+  color: var(--color-text-primary);
+  opacity: 0.85;
+}
+
+.detail-content ul,
+.detail-content ol {
+  margin-bottom: 1rem;
+  padding-left: 1.5rem;
+}
+
+.detail-content li {
+  margin-bottom: 0.4rem;
+  color: var(--color-text-primary);
+  opacity: 0.85;
+}
+
+.detail-content strong {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.detail-content blockquote {
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  border-left: 3px solid var(--color-accent-primary);
+  background-color: var(--color-bg-card);
+  border-radius: 0 4px 4px 0;
+  color: var(--color-text-secondary);
+}
+
+.detail-content a {
+  color: var(--color-accent-primary);
+  text-decoration: none;
+}
+
+.detail-content a:hover {
+  text-decoration: underline;
+}
+
+.detail-content code {
+  font-size: 0.85em;
+  padding: 0.15em 0.4em;
+  border-radius: 3px;
+  background-color: var(--color-bg-tag);
+  color: var(--color-text-primary);
+}
+
+.detail-content pre {
+  margin: 1rem 0;
+  padding: 1rem;
+  border-radius: 6px;
+  background-color: var(--color-bg-card);
+  border: 1px solid var(--color-border-default);
+  overflow-x: auto;
+}
+
+.detail-content pre code {
+  padding: 0;
+  background: none;
+}
+
+.detail-content hr {
+  margin: 1.5rem 0;
+  border: none;
+  border-top: 1px solid var(--color-border-muted);
+}

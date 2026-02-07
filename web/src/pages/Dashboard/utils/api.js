@@ -345,3 +345,35 @@ export const getPortfolio = portfolioApi.listPortfolio;
 
 /** Add portfolio holding. Payload: symbol, instrument_type, quantity, average_cost?, ... */
 export const addPortfolioHolding = portfolioApi.addPortfolioHolding;
+
+// --- InfoFlow (content feed) ---
+
+/**
+ * Fetch InfoFlow results filtered by category.
+ * GET /api/v1/infoflow/results?category={cat}&limit={limit}&offset={offset}
+ */
+export async function getInfoFlowResults(category, limit = 10, offset = 0) {
+  try {
+    const params = { limit, offset };
+    if (category) params.category = category;
+    const { data } = await api.get('/api/v1/infoflow/results', { params });
+    return data || { results: [], total: 0, limit, offset, has_more: false };
+  } catch (e) {
+    console.error('[API] getInfoFlowResults failed:', e?.message);
+    return { results: [], total: 0, limit, offset, has_more: false };
+  }
+}
+
+/**
+ * Fetch InfoFlow result detail by indexNumber.
+ * GET /api/v1/infoflow/results/{indexNumber}
+ */
+export async function getInfoFlowDetail(indexNumber) {
+  try {
+    const { data } = await api.get(`/api/v1/infoflow/results/${encodeURIComponent(indexNumber)}`);
+    return data;
+  } catch (e) {
+    console.error('[API] getInfoFlowDetail failed:', e?.message);
+    return null;
+  }
+}
