@@ -1,5 +1,5 @@
 .stock-header {
-  padding: 20px 30px;
+  padding: 12px 20px;
   background-color: #0f1422;
   border-bottom: 1px solid #1a1f35;
   flex-shrink: 0;
@@ -9,7 +9,7 @@
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
 
 .stock-title {
@@ -19,7 +19,7 @@
 }
 
 .stock-symbol {
-  font-size: 24px;
+  font-size: 20px;
   font-weight: 600;
   color: #ffffff;
 }
@@ -42,14 +42,14 @@
 }
 
 .stock-price {
-  font-size: 36px;
+  font-size: 28px;
   font-weight: 600;
   color: #10b981;
-  margin-bottom: 5px;
+  margin-bottom: 4px;
 }
 
 .stock-change {
-  font-size: 18px;
+  font-size: 14px;
   font-weight: 500;
 }
 
@@ -64,8 +64,8 @@
 .stock-metrics {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  gap: 15px;
-  padding-top: 15px;
+  gap: 10px;
+  padding-top: 10px;
   border-top: 1px solid #1a1f35;
 }
 
@@ -82,7 +82,7 @@
 }
 
 .metric-value {
-  font-size: 16px;
+  font-size: 14px;
   color: #ffffff;
   font-weight: 500;
 }

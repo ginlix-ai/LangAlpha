@@ -3,14 +3,45 @@ import './TradingCenter.css';
 import TopBar from './components/TopBar';
 import StockHeader from './components/StockHeader';
 import TradingChart from './components/TradingChart';
+import TradingChatInput from './components/TradingChatInput';
 import TradingPanel from './components/TradingPanel';
 import { fetchRealTimePrice, fetchStockInfo } from './utils/api';
+import { useTradingChat } from './hooks/useTradingChat';
+import { deleteFlashWorkspaces } from './utils/api';
 
 function TradingCenter() {
   const [selectedStock, setSelectedStock] = useState('MSFT');
+  const [selectedStockDisplay, setSelectedStockDisplay] = useState(null);
   const [stockInfo, setStockInfo] = useState(null);
   const [realTimePrice, setRealTimePrice] = useState(null);
+  const [chartMeta, setChartMeta] = useState(null);
   const chartRef = useRef();
+
+  // Trading chat hook for flash mode conversations
+  const { messages, isLoading, error, handleSendMessage } = useTradingChat();
+
+  // Cleanup: Delete flash workspaces when component unmounts (navigation away or refresh)
+  useEffect(() => {
+    return () => {
+      // Delete all flash workspaces on unmount
+      deleteFlashWorkspaces('test_user_001').catch((err) => {
+        console.warn('[TradingCenter] Error deleting flash workspaces on unmount:', err);
+      });
+    };
+  }, []);
+
+  const handleStockSearch = (symbol, searchResult) => {
+    setSelectedStock(symbol);
+    setSelectedStockDisplay(
+      searchResult
+        ? {
+            name: searchResult.name || searchResult.symbol,
+            exchange: searchResult.exchangeShortName || searchResult.stockExchange || '',
+          }
+        : null
+    );
+    setChartMeta(null);
+  };
 
   // Fetch stock info and real-time price when selected stock changes
   useEffect(() => {
@@ -71,27 +102,39 @@ function TradingCenter() {
         URL.revokeObjectURL(url);
       }
     } catch (error) {
-      console.error('截图失败:', error);
+      console.error('Chart capture failed:', error);
     }
   };
 
   return (
     <div className="trading-center-container">
-      <TopBar onStockSearch={setSelectedStock} />
+      <TopBar onStockSearch={handleStockSearch} />
       <div className="trading-content-wrapper">
         <div className="trading-left-panel">
           <StockHeader
             symbol={selectedStock}
             stockInfo={stockInfo}
             realTimePrice={realTimePrice}
+            chartMeta={chartMeta}
+            displayOverride={selectedStockDisplay}
           />
           <TradingChart
             ref={chartRef}
             symbol={selectedStock}
             onCapture={handleCaptureChart}
+            onStockMeta={setChartMeta}
           />
         </div>
-        <TradingPanel symbol={selectedStock} realTimePrice={realTimePrice} />
+        <div className="trading-right-panel">
+          <div className="trading-right-panel-inner">
+            <TradingChatInput onSend={handleSendMessage} isLoading={isLoading} />
+            <TradingPanel
+              messages={messages}
+              isLoading={isLoading}
+              error={error}
+            />
+          </div>
+        </div>
       </div>
     </div>
   );

@@ -153,14 +153,20 @@ export async function sendChatMessageStream(
   planMode = false,
   onEvent = () => {},
   userId = DEFAULT_USER_ID,
-  additionalContext = null
+  additionalContext = null,
+  agentMode = 'ptc',
+  locale = 'en-US',
+  timezone = 'America/New_York'
 ) {
   const messages = [...messageHistory, { role: 'user', content: message }];
   const body = {
     workspace_id: workspaceId,
     thread_id: threadId,
     messages,
+    agent_mode: agentMode,
     plan_mode: planMode,
+    locale,
+    timezone,
   };
   if (additionalContext) {
     body.additional_context = additionalContext;
@@ -169,7 +175,11 @@ export async function sendChatMessageStream(
     '/api/v1/chat/stream',
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...headers(userId) },
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream',
+        ...headers(userId),
+      },
       body: JSON.stringify(body),
     },
     onEvent

@@ -46,13 +46,18 @@ function WorkspaceGallery({ onWorkspaceSelect }) {
 
   /**
    * Fetches all workspaces from the API
+   * Filters out '__flash__' workspaces (created by TradingCenter)
    */
   const loadWorkspaces = async () => {
     try {
       setIsLoading(true);
       setError(null);
       const data = await getWorkspaces();
-      setWorkspaces(data.workspaces || []);
+      // Filter out '__flash__' workspaces
+      const filteredWorkspaces = (data.workspaces || []).filter(
+        (ws) => ws.name !== '__flash__'
+      );
+      setWorkspaces(filteredWorkspaces);
     } catch (err) {
       console.error('Error loading workspaces:', err);
       setError('Failed to load workspaces. Please refresh the page.');

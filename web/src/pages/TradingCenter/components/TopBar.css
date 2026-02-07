@@ -20,21 +20,94 @@
   color: #ffffff;
 }
 
+.trading-search-wrapper {
+  position: relative;
+}
+
 .trading-search-form {
   display: flex;
+  align-items: center;
+  position: relative;
+}
+
+.trading-search-icon {
+  position: absolute;
+  left: 12px;
+  color: #6b7280;
+  pointer-events: none;
 }
 
 .trading-search-input {
-  width: 300px;
+  width: 320px;
   height: 40px;
   background-color: #1a1f35;
   border: 1px solid #2a2f45;
   border-radius: 8px;
-  padding: 0 15px;
+  padding: 0 15px 0 40px;
   color: #ffffff;
   font-size: 14px;
   outline: none;
   transition: all 0.3s;
+}
+
+.trading-search-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  width: 100%;
+  min-width: 280px;
+  max-height: 320px;
+  overflow-y: auto;
+  background-color: #1a1f35;
+  border: 1px solid #2a2f45;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 100;
+}
+
+.trading-search-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  background: none;
+  color: #ffffff;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.trading-search-dropdown-item:hover {
+  background-color: #252b3b;
+}
+
+.trading-search-dropdown-symbol {
+  font-weight: 600;
+  color: #e5e7eb;
+  min-width: 56px;
+}
+
+.trading-search-dropdown-name {
+  color: #9ca3af;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trading-search-dropdown-loading,
+.trading-search-dropdown-empty {
+  padding: 14px;
+  color: #9ca3af;
+  cursor: default;
+}
+
+.trading-search-dropdown-loading:hover,
+.trading-search-dropdown-empty:hover {
+  background-color: transparent;
 }
 
 .trading-search-input:focus {

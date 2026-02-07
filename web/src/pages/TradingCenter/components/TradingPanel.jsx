@@ -1,184 +1,212 @@
-import React, { useState } from 'react';
+import React, { useRef, useEffect } from 'react';
+import { Bot, User, Loader2 } from 'lucide-react';
+import TextMessageContent from '../../ChatAgent/components/TextMessageContent';
+import ReasoningMessageContent from '../../ChatAgent/components/ReasoningMessageContent';
 import './TradingPanel.css';
 
-const TradingPanel = ({ symbol, realTimePrice }) => {
-  const [orderType, setOrderType] = useState('Market Price');
-  const [quantity, setQuantity] = useState(100);
-  const [timeInForce, setTimeInForce] = useState('Day');
-  const [stopPriceEnabled, setStopPriceEnabled] = useState(true);
-  const [stopPrice, setStopPrice] = useState(400.00);
-  const [isBuy, setIsBuy] = useState(true);
+/**
+ * TradingPanel Component
+ * 
+ * Displays chat messages in the right panel of TradingCenter.
+ * Reuses ChatAgent message components for consistent rendering.
+ * 
+ * @param {Object} props
+ * @param {Array} props.messages - Array of chat messages
+ * @param {boolean} props.isLoading - Whether a message is currently loading
+ * @param {string} props.error - Error message if any
+ */
+const TradingPanel = ({ messages = [], isLoading = false, error = null }) => {
+  const messagesEndRef = useRef(null);
+  const messagesContainerRef = useRef(null);
 
-  const currentPrice = realTimePrice?.price || 0;
-  const estimatedTotal = (currentPrice * quantity).toFixed(2);
-  const estimatedLoss = stopPriceEnabled
-    ? ((currentPrice - stopPrice) * quantity).toFixed(2)
-    : '0.00';
+  // Auto-scroll to bottom when messages change or when streaming
+  useEffect(() => {
+    const scrollToBottom = () => {
+      if (messagesContainerRef.current) {
+        messagesContainerRef.current.scrollTo({
+          top: messagesContainerRef.current.scrollHeight,
+          behavior: 'smooth',
+        });
+      }
+    };
 
-  const quickQuantities = [10, 50, 100, 500];
+    // Scroll when messages change
+    if (messages.length > 0) {
+      // Use setTimeout to ensure DOM has updated
+      const timeoutId = setTimeout(scrollToBottom, 100);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [messages]);
+
+  // Also scroll when a message is streaming (content updates)
+  useEffect(() => {
+    const hasStreamingMessage = messages.some((msg) => msg.isStreaming);
+    if (hasStreamingMessage && messagesContainerRef.current) {
+      const timeoutId = setTimeout(() => {
+        if (messagesContainerRef.current) {
+          messagesContainerRef.current.scrollTo({
+            top: messagesContainerRef.current.scrollHeight,
+            behavior: 'smooth',
+          });
+        }
+      }, 50);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [messages]);
 
   return (
     <div className="trading-panel">
-      <div className="trading-panel-header">
-        <h2>Trade</h2>
-        <button type="button" className="panel-menu-btn">☰</button>
-      </div>
-
-      <div className="trading-tabs">
-        <button
-          type="button"
-          className={`trading-tab ${isBuy ? 'active' : ''}`}
-          onClick={() => setIsBuy(true)}
-        >
-          Buy
-        </button>
-        <button
-          type="button"
-          className={`trading-tab ${!isBuy ? 'active' : ''}`}
-          onClick={() => setIsBuy(false)}
-        >
-          Sell
-        </button>
-      </div>
-
-      <div className="trading-form">
-        <div className="form-group">
-          <label>Order Type</label>
-          <select
-            value={orderType}
-            onChange={(e) => setOrderType(e.target.value)}
-            className="form-select"
-          >
-            <option>Market Price</option>
-            <option>Limit Price</option>
-            <option>Stop Loss</option>
-          </select>
+      {/* Chat Messages Section */}
+      <div className="trading-chat-messages">
+        <div className="trading-chat-messages-header">
+          <h3>Chat</h3>
         </div>
-
-        <div className="form-group">
-          <label>Quantity (Shares)</label>
-          <div className="quantity-input-wrapper">
-            <input
-              type="number"
-              value={quantity}
-              onChange={(e) => setQuantity(parseInt(e.target.value, 10) || 0)}
-              className="form-input"
-            />
-            <div className="quantity-arrows">
-              <button type="button" onClick={() => setQuantity(q => q + 1)}>▲</button>
-              <button type="button" onClick={() => setQuantity(q => Math.max(0, q - 1))}>▼</button>
+        <div 
+          ref={messagesContainerRef}
+          className="trading-chat-messages-content"
+        >
+          {messages.length === 0 ? (
+            <div className="trading-chat-empty-state">
+              <Bot className="trading-chat-empty-icon" />
+              <p className="trading-chat-empty-text">Start a conversation by typing a message above</p>
             </div>
-          </div>
-          <div className="quick-quantities">
-            {quickQuantities.map(qty => (
-              <button
-                key={qty}
-                type="button"
-                className={`quick-qty-btn ${quantity === qty ? 'active' : ''}`}
-                onClick={() => setQuantity(qty)}
-              >
-                {qty}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="form-group">
-          <label>Time-in-Force</label>
-          <select
-            value={timeInForce}
-            onChange={(e) => setTimeInForce(e.target.value)}
-            className="form-select"
-          >
-            <option>Day</option>
-            <option>GTC</option>
-            <option>IOC</option>
-            <option>FOK</option>
-          </select>
-        </div>
-
-        <div className="form-group">
-          <div className="stop-price-header">
-            <label>Stop Price</label>
-            <label className="toggle-switch">
-              <input
-                type="checkbox"
-                checked={stopPriceEnabled}
-                onChange={(e) => setStopPriceEnabled(e.target.checked)}
-              />
-              <span className="slider"></span>
-            </label>
-          </div>
-          {stopPriceEnabled && (
-            <>
-              <div className="stop-price-input-wrapper">
-                <span className="currency-symbol">$</span>
-                <input
-                  type="number"
-                  value={stopPrice}
-                  onChange={(e) => setStopPrice(parseFloat(e.target.value) || 0)}
-                  className="form-input"
-                  step="0.01"
-                />
-                <div className="quantity-arrows">
-                  <button type="button" onClick={() => setStopPrice(p => p + 0.01)}>▲</button>
-                  <button type="button" onClick={() => setStopPrice(p => Math.max(0, p - 0.01))}>▼</button>
+          ) : (
+            <div className="trading-chat-messages-list">
+              {messages.map((message) => (
+                <TradingMessageBubble key={message.id} message={message} />
+              ))}
+              {error && (
+                <div className="trading-chat-error">
+                  <span>Error: {error}</span>
                 </div>
-              </div>
-              <div className="estimated-loss">
-                Est. Loss: <span className="loss-amount">${estimatedLoss}</span>
-              </div>
-            </>
+              )}
+              <div ref={messagesEndRef} />
+            </div>
           )}
-        </div>
-
-        <div className="financial-summary">
-          <div className="summary-item">
-            <span>Buying Power</span>
-            <span>$122,912.50</span>
-          </div>
-          <div className="summary-item">
-            <span>Transaction Fees</span>
-            <span>$4.00</span>
-          </div>
-          <div className="summary-item total">
-            <span>Estimated Total</span>
-            <span>${estimatedTotal}</span>
-          </div>
-        </div>
-
-        <button type="button" className={`trade-button ${isBuy ? 'buy' : 'sell'}`}>
-          {isBuy ? 'Buy' : 'Sell'} {symbol}
-        </button>
-
-        <button type="button" className="disclaimer-link">Disclaimer &gt;</button>
-      </div>
-
-      <div className="time-sales">
-        <div className="time-sales-header">
-          <h3>Time &amp; Sales</h3>
-          <button type="button" className="panel-menu-btn">☰</button>
-        </div>
-        <div className="time-sales-content">
-          <div className="time-sales-item">
-            <span className="time">16:59:32</span>
-            <span className="price">420.56</span>
-            <span className="volume">25</span>
-          </div>
-          <div className="time-sales-item">
-            <span className="time">16:59:30</span>
-            <span className="price">420.55</span>
-            <span className="volume">100</span>
-          </div>
-          <div className="time-sales-item">
-            <span className="time">16:59:28</span>
-            <span className="price">420.60</span>
-            <span className="volume">50</span>
-          </div>
         </div>
       </div>
     </div>
   );
 };
+
+/**
+ * TradingMessageBubble Component
+ * Renders a single message bubble
+ */
+function TradingMessageBubble({ message }) {
+  const isUser = message.role === 'user';
+  const isAssistant = message.role === 'assistant';
+
+  return (
+    <div className={`trading-message-bubble ${isUser ? 'trading-message-user' : 'trading-message-assistant'}`}>
+      {isAssistant && (
+        <div className="trading-message-avatar">
+          <Bot className="trading-message-avatar-icon" />
+        </div>
+      )}
+      <div className={`trading-message-content ${message.error ? 'trading-message-error' : ''}`}>
+        {message.error ? (
+          <div className="trading-message-error-text">
+            <strong>Error:</strong> {message.error}
+          </div>
+        ) : (
+          <>
+            {message.contentSegments && message.contentSegments.length > 0 ? (
+              <TradingMessageContentSegments
+                segments={message.contentSegments}
+                reasoningProcesses={message.reasoningProcesses || {}}
+                isStreaming={message.isStreaming}
+                hasError={message.error}
+              />
+            ) : (
+              <>
+                <TextMessageContent
+                  content={message.content || ''}
+                  isStreaming={message.isStreaming}
+                  hasError={message.error}
+                />
+                {message.isStreaming && (
+                  <Loader2 className="trading-message-streaming-icon" />
+                )}
+              </>
+            )}
+          </>
+        )}
+      </div>
+      {isUser && (
+        <div className="trading-message-avatar">
+          <User className="trading-message-avatar-icon" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * TradingMessageContentSegments Component
+ * Renders content segments in chronological order
+ */
+function TradingMessageContentSegments({ segments, reasoningProcesses, isStreaming, hasError }) {
+  const sortedSegments = [...segments].sort((a, b) => a.order - b.order);
+  
+  // Group consecutive text segments
+  const groupedSegments = [];
+  let currentTextGroup = null;
+  
+  for (const segment of sortedSegments) {
+    if (segment.type === 'text') {
+      if (currentTextGroup) {
+        currentTextGroup.content += segment.content;
+        currentTextGroup.lastOrder = segment.order;
+      } else {
+        currentTextGroup = {
+          type: 'text',
+          content: segment.content,
+          order: segment.order,
+          lastOrder: segment.order,
+        };
+        groupedSegments.push(currentTextGroup);
+      }
+    } else {
+      currentTextGroup = null;
+      groupedSegments.push(segment);
+    }
+  }
+  
+  return (
+    <div className="trading-message-segments">
+      {groupedSegments.map((segment, index) => {
+        if (segment.type === 'text') {
+          const isLastSegment = index === groupedSegments.length - 1;
+          return (
+            <div key={`text-${segment.order}-${index}`}>
+              <TextMessageContent
+                content={segment.content}
+                isStreaming={isStreaming && isLastSegment}
+                hasError={hasError}
+              />
+            </div>
+          );
+        } else if (segment.type === 'reasoning') {
+          const reasoningProcess = reasoningProcesses[segment.reasoningId];
+          if (reasoningProcess) {
+            return (
+              <ReasoningMessageContent
+                key={`reasoning-${segment.reasoningId}`}
+                reasoningContent={reasoningProcess.content || ''}
+                isReasoning={reasoningProcess.isReasoning || false}
+                reasoningComplete={reasoningProcess.reasoningComplete || false}
+              />
+            );
+          }
+        }
+        return null;
+      })}
+      {isStreaming && (
+        <Loader2 className="trading-message-streaming-icon" />
+      )}
+    </div>
+  );
+}
 
 export default TradingPanel;

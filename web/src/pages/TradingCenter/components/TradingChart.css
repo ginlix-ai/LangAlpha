@@ -4,9 +4,13 @@
   flex-direction: column;
   background-color: #0f1422;
   position: relative;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: visible;
   min-height: 0;
+}
+
+/* Capture wheel over chart so K-line pan/zoom doesn't scroll the page */
+.chart-wheel-capture {
+  overflow: hidden;
 }
 
 .trading-chart-mock-warning {
@@ -26,11 +30,12 @@
 }
 
 .chart-header {
-  padding: 15px 30px;
+  padding: 10px 20px;
   display: flex;
   justify-content: space-between;
   align-items: center;
   border-bottom: 1px solid #1a1f35;
+  flex-shrink: 0;
 }
 
 .chart-info {
@@ -69,10 +74,11 @@
 }
 
 .chart-tools {
-  padding: 10px 30px;
+  padding: 8px 20px;
   display: flex;
-  gap: 10px;
+  gap: 8px;
   border-bottom: 1px solid #1a1f35;
+  flex-shrink: 0;
 }
 
 .chart-tool-btn {
@@ -101,33 +107,35 @@
   display: flex;
   flex-direction: column;
   position: relative;
-  min-height: 600px;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .chart-wrapper {
   flex: 1;
   position: relative;
-  min-height: 500px;
+  min-height: 0;
   width: 100%;
 }
 
 .rsi-container {
-  height: 180px;
+  height: 120px;
+  flex-shrink: 0;
   border-top: 1px solid #1a1f35;
-  padding: 15px 30px;
+  padding: 8px 20px;
   display: flex;
   flex-direction: column;
 }
 
 .rsi-label {
-  font-size: 14px;
+  font-size: 12px;
   color: #8b8fa3;
-  margin-bottom: 10px;
+  margin-bottom: 6px;
 }
 
 .rsi-chart-wrapper {
   flex: 1;
-  min-height: 120px;
+  min-height: 80px;
 }
 
 .chart-loading,
@@ -160,4 +168,15 @@
 .chart-error-title {
   font-weight: 600;
   margin-bottom: 10px;
+}
+
+/* Hide TradingView branding watermark */
+.chart-wrapper a[href*="tradingview.com"],
+.rsi-chart-wrapper a[href*="tradingview.com"],
+.tv-lightweight-charts__watermark,
+a[href*="tradingview.com"] {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
 }

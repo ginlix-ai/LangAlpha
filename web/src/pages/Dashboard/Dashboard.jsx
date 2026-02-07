@@ -21,6 +21,8 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useToast } from '@/components/ui/use-toast';
 import { getWorkspaces, createWorkspace } from '../ChatAgent/utils/api';
+import { useNavigate } from 'react-router-dom';
+import { findOrCreateDefaultWorkspace } from './utils/workspace';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../components/ui/dialog';
 import DashboardHeader from './components/DashboardHeader';
 import ConfirmDialog from './components/ConfirmDialog';
@@ -85,9 +87,11 @@ function formatRelativeTime(timestamp) {
 
 function Dashboard() {
   const { toast } = useToast();
+  const navigate = useNavigate();
   
   // Onboarding check state
   const [showOnboardingDialog, setShowOnboardingDialog] = useState(false);
+  const [isCreatingWorkspace, setIsCreatingWorkspace] = useState(false);
   
   const [indices, setIndices] = useState(() =>
     INDEX_SYMBOLS.map((s) => fallbackIndex(normalizeIndexSymbol(s)))
@@ -665,11 +669,39 @@ function Dashboard() {
             </button>
             <button
               type="button"
-              onClick={() => setShowOnboardingDialog(false)}
-              className="px-4 py-2 rounded-md text-sm font-medium transition-colors hover:opacity-90"
+              onClick={async () => {
+                setShowOnboardingDialog(false);
+                setIsCreatingWorkspace(true);
+                try {
+                  // Find or create "Stealth Agent" workspace
+                  const workspaceId = await findOrCreateDefaultWorkspace(
+                    () => {}, // onCreating - already showing loading state
+                    () => {}  // onCreated
+                  );
+                  
+                  // Navigate to ChatAgent with onboarding flag
+                  navigate(`/chat/${workspaceId}/__default__`, {
+                    state: {
+                      isOnboarding: true,
+                    },
+                  });
+                } catch (error) {
+                  console.error('Error setting up onboarding:', error);
+                  toast({
+                    variant: 'destructive',
+                    title: 'Error',
+                    description: 'Failed to set up onboarding. Please try again.',
+                  });
+                  setShowOnboardingDialog(true); // Re-open dialog on error
+                } finally {
+                  setIsCreatingWorkspace(false);
+                }
+              }}
+              disabled={isCreatingWorkspace}
+              className="px-4 py-2 rounded-md text-sm font-medium transition-colors hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
               style={{ backgroundColor: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}
             >
-              Proceed
+              {isCreatingWorkspace ? 'Setting up...' : 'Proceed'}
             </button>
           </div>
         </DialogContent>

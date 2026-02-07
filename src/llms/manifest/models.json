@@ -558,6 +558,16 @@
       }
     }
   },
+  "minimax-m2.1-stable": {
+    "model_id": "minimax-m2.1-stable",
+    "provider": "minimax",
+    "parameters": {
+      "thinking": {
+        "type": "enabled",
+        "budget_tokens": 10000
+      }
+    }
+  },
   "doubao-seed-code-responses": {
     "model_id": "doubao-seed-code-preview-251028",
     "provider": "volcengine",

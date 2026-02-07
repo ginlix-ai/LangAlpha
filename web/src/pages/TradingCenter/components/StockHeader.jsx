@@ -1,32 +1,41 @@
 import React from 'react';
 import './StockHeader.css';
 
-const StockHeader = ({ symbol, stockInfo, realTimePrice }) => {
+const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta, displayOverride }) => {
   const formatNumber = (num) => {
-    if (!num && num !== 0) return 'N/A';
+    if (num == null || (num !== 0 && !num)) return '—';
     if (num >= 1e12) return (num / 1e12).toFixed(2) + 'T';
     if (num >= 1e9) return (num / 1e9).toFixed(2) + 'B';
     if (num >= 1e6) return (num / 1e6).toFixed(2) + 'M';
     if (num >= 1e3) return (num / 1e3).toFixed(2) + 'K';
-    return num.toFixed(2);
+    return Number(num).toFixed(2);
   };
 
-  const price = realTimePrice?.price || stockInfo?.Price || 0;
-  const change = realTimePrice?.change || 0;
-  const changePercent = realTimePrice?.changePercent || '0.00%';
+  const price = realTimePrice?.price ?? stockInfo?.Price ?? 0;
+  const change = realTimePrice?.change ?? 0;
+  const changePercent = realTimePrice?.changePercent ?? '0.00%';
   const isPositive = change >= 0;
 
-  const open = realTimePrice?.open || stockInfo?.Open || null;
-  const high = realTimePrice?.high || stockInfo?.High || null;
-  const low = realTimePrice?.low || stockInfo?.Low || null;
+  const open = realTimePrice?.open ?? stockInfo?.Open ?? null;
+  const high = realTimePrice?.high ?? stockInfo?.High ?? null;
+  const low = realTimePrice?.low ?? stockInfo?.Low ?? null;
+  const fiftyTwoWeekHigh = chartMeta?.fiftyTwoWeekHigh ?? stockInfo?.['52WeekHigh'] ?? null;
+  const fiftyTwoWeekLow = chartMeta?.fiftyTwoWeekLow ?? stockInfo?.['52WeekLow'] ?? null;
+  const averageVolume = stockInfo?.AverageVolume ?? null;
+  const volume = stockInfo?.Volume ?? null;
+  const dayRange = (high != null && low != null) ? (Number(high) - Number(low)) : null;
+  const changePct = realTimePrice?.changePercent != null ? realTimePrice.changePercent : null;
+
+  const displayName = displayOverride?.name ?? stockInfo?.Name ?? `${symbol} Corp`;
+  const displayExchange = displayOverride?.exchange ?? stockInfo?.Exchange ?? 'NASDAQ';
 
   return (
     <div className="stock-header">
       <div className="stock-header-top">
         <div className="stock-title">
           <span className="stock-symbol">{symbol}</span>
-          <span className="stock-name">{stockInfo?.Name || `${symbol} Corp`}</span>
-          <span className="stock-exchange">{stockInfo?.Exchange || 'NASDAQ'}</span>
+          <span className="stock-name">{displayName}</span>
+          <span className="stock-exchange">{displayExchange}</span>
         </div>
         <div className="stock-price-section">
           <div className="stock-price">{price.toFixed(2)}</div>
@@ -40,55 +49,55 @@ const StockHeader = ({ symbol, stockInfo, realTimePrice }) => {
         <div className="metric-item">
           <span className="metric-label">Open</span>
           <span className="metric-value">
-            {open !== null && open !== undefined ? open.toFixed(2) : 'N/A'}
+            {open != null ? Number(open).toFixed(2) : '—'}
           </span>
         </div>
         <div className="metric-item">
           <span className="metric-label">Low</span>
           <span className="metric-value">
-            {low !== null && low !== undefined ? low.toFixed(2) : 'N/A'}
+            {low != null ? Number(low).toFixed(2) : '—'}
           </span>
         </div>
         <div className="metric-item">
           <span className="metric-label">High</span>
           <span className="metric-value">
-            {high !== null && high !== undefined ? high.toFixed(2) : 'N/A'}
+            {high != null ? Number(high).toFixed(2) : '—'}
           </span>
         </div>
         <div className="metric-item">
           <span className="metric-label">52 wk high</span>
           <span className="metric-value">
-            {stockInfo?.['52WeekHigh'] ? parseFloat(stockInfo['52WeekHigh']).toFixed(2) : 'N/A'}
+            {fiftyTwoWeekHigh != null ? Number(fiftyTwoWeekHigh).toFixed(2) : '—'}
           </span>
         </div>
         <div className="metric-item">
           <span className="metric-label">52 wk low</span>
           <span className="metric-value">
-            {stockInfo?.['52WeekLow'] ? parseFloat(stockInfo['52WeekLow']).toFixed(2) : 'N/A'}
+            {fiftyTwoWeekLow != null ? Number(fiftyTwoWeekLow).toFixed(2) : '—'}
           </span>
         </div>
         <div className="metric-item">
           <span className="metric-label">Avg Vol (3M)</span>
           <span className="metric-value">
-            {stockInfo?.AverageVolume ? formatNumber(parseFloat(stockInfo.AverageVolume)) : 'N/A'}
+            {averageVolume != null ? formatNumber(Number(averageVolume)) : '—'}
           </span>
         </div>
         <div className="metric-item">
-          <span className="metric-label">Shares Outstanding</span>
+          <span className="metric-label">Volume</span>
           <span className="metric-value">
-            {stockInfo?.SharesOutstanding ? formatNumber(parseFloat(stockInfo.SharesOutstanding)) : 'N/A'}
+            {volume != null ? formatNumber(Number(volume)) : (averageVolume != null ? formatNumber(Number(averageVolume)) : '—')}
           </span>
         </div>
         <div className="metric-item">
-          <span className="metric-label">Mkt Cap</span>
+          <span className="metric-label">Day Range</span>
           <span className="metric-value">
-            {stockInfo?.MarketCapitalization ? formatNumber(parseFloat(stockInfo.MarketCapitalization)) : 'N/A'}
+            {dayRange != null ? Number(dayRange).toFixed(2) : '—'}
           </span>
         </div>
         <div className="metric-item">
-          <span className="metric-label">Div Yield</span>
-          <span className="metric-value">
-            {stockInfo?.DividendYield ? (parseFloat(stockInfo.DividendYield) * 100).toFixed(2) + '%' : 'N/A'}
+          <span className="metric-label">Change %</span>
+          <span className={`metric-value ${(parseFloat(changePct) || 0) >= 0 ? 'positive' : 'negative'}`}>
+            {changePct != null && changePct !== '' ? (parseFloat(changePct) >= 0 ? '+' : '') + changePct : '—'}
           </span>
         </div>
         <div className="metric-item view-all">

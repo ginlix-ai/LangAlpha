@@ -1,5 +1,6 @@
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 /**
  * TextMessageContent Component
@@ -20,6 +21,7 @@ function TextMessageContent({ content, isStreaming, hasError }) {
   return (
     <div className="text-sm break-words prose prose-invert prose-sm max-w-none">
       <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
         components={{
           // Customize paragraph styling
           p: ({ node, ...props }) => (
@@ -121,6 +123,59 @@ function TextMessageContent({ content, isStreaming, hasError }) {
           // Customize horizontal rule
           hr: ({ node, ...props }) => (
             <hr className="my-3 border-0" style={{ borderTop: '1px solid rgba(255, 255, 255, 0.1)' }} {...props} />
+          ),
+          // Customize table styling
+          table: ({ node, ...props }) => (
+            <div className="overflow-x-auto my-3">
+              <table
+                className="border-collapse w-full text-sm"
+                style={{
+                  border: '1px solid rgba(255, 255, 255, 0.2)',
+                }}
+                {...props}
+              />
+            </div>
+          ),
+          thead: ({ node, ...props }) => (
+            <thead
+              style={{
+                backgroundColor: 'rgba(97, 85, 245, 0.2)',
+              }}
+              {...props}
+            />
+          ),
+          tbody: ({ node, ...props }) => (
+            <tbody {...props} />
+          ),
+          tr: ({ node, ...props }) => (
+            <tr
+              className="border-b"
+              style={{
+                borderColor: 'rgba(255, 255, 255, 0.1)',
+              }}
+              {...props}
+            />
+          ),
+          th: ({ node, ...props }) => (
+            <th
+              className="px-4 py-2 text-left font-semibold"
+              style={{
+                color: '#FFFFFF',
+                borderRight: '1px solid rgba(255, 255, 255, 0.1)',
+              }}
+              {...props}
+            />
+          ),
+          td: ({ node, ...props }) => (
+            <td
+              className="px-4 py-2"
+              style={{
+                color: '#FFFFFF',
+                opacity: 0.9,
+                borderRight: '1px solid rgba(255, 255, 255, 0.1)',
+              }}
+              {...props}
+            />
           ),
         }}
       >

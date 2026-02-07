@@ -1,13 +1,67 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Search } from 'lucide-react';
+import { searchStocks } from '../utils/api';
 import './TopBar.css';
 
 const TopBar = ({ onStockSearch }) => {
   const [searchValue, setSearchValue] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [showDropdown, setShowDropdown] = useState(false);
+  const dropdownRef = useRef(null);
 
-  const handleSearch = (e) => {
+  // Same API and debounce as Dashboard Add Watchlist: GET /api/v1/market-data/search/stocks
+  useEffect(() => {
+    const query = searchValue.trim();
+    if (!query || query.length < 1) {
+      setSearchResults([]);
+      setSearchLoading(false);
+      setShowDropdown(false);
+      return;
+    }
+
+    const timeoutId = setTimeout(async () => {
+      setSearchLoading(true);
+      setShowDropdown(true);
+      try {
+        const result = await searchStocks(query, 50);
+        setSearchResults(result.results || []);
+      } catch (error) {
+        console.error('Stock search failed:', error);
+        setSearchResults([]);
+      } finally {
+        setSearchLoading(false);
+      }
+    }, 300);
+
+    return () => clearTimeout(timeoutId);
+  }, [searchValue]);
+
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setShowDropdown(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleSelectStock = (stock) => {
+    if (stock?.symbol) {
+      const symbol = stock.symbol.trim().toUpperCase();
+      onStockSearch(symbol, stock);
+      setSearchValue(symbol);
+      setShowDropdown(false);
+    }
+  };
+
+  const handleSubmit = (e) => {
     e.preventDefault();
-    if (searchValue.trim()) {
-      onStockSearch(searchValue.trim().toUpperCase());
+    const q = searchValue.trim();
+    if (q) {
+      onStockSearch(q.toUpperCase(), null);
+      setShowDropdown(false);
     }
   };
 
@@ -15,15 +69,45 @@ const TopBar = ({ onStockSearch }) => {
     <div className="trading-top-bar">
       <div className="trading-top-bar-left">
         <h1 className="trading-top-bar-title">Trade</h1>
-        <form onSubmit={handleSearch} className="trading-search-form">
-          <input
-            type="text"
-            placeholder="Search"
-            value={searchValue}
-            onChange={(e) => setSearchValue(e.target.value)}
-            className="trading-search-input"
-          />
-        </form>
+        <div className="trading-search-wrapper" ref={dropdownRef}>
+          <form onSubmit={handleSubmit} className="trading-search-form">
+            <Search className="trading-search-icon" size={18} />
+            <input
+              type="text"
+              placeholder="Search by symbol or company name..."
+              value={searchValue}
+              onChange={(e) => setSearchValue(e.target.value)}
+              onFocus={() => searchValue.trim() && setShowDropdown(true)}
+              className="trading-search-input"
+              autoComplete="off"
+            />
+          </form>
+          {showDropdown && searchValue.trim() && (
+            <div className="trading-search-dropdown">
+              {searchLoading ? (
+                <div className="trading-search-dropdown-item trading-search-dropdown-loading">
+                  Searching...
+                </div>
+              ) : searchResults.length === 0 ? (
+                <div className="trading-search-dropdown-item trading-search-dropdown-empty">
+                  No results found
+                </div>
+              ) : (
+                searchResults.slice(0, 12).map((stock, index) => (
+                  <button
+                    key={`${stock.symbol}-${index}`}
+                    type="button"
+                    className="trading-search-dropdown-item"
+                    onClick={() => handleSelectStock(stock)}
+                  >
+                    <span className="trading-search-dropdown-symbol">{stock.symbol}</span>
+                    <span className="trading-search-dropdown-name">{stock.name || stock.symbol}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
       </div>
       <div className="trading-top-bar-right">
         <div className="trading-top-bar-icon">
