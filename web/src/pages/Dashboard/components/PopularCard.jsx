@@ -83,24 +83,10 @@ function PopularCard({ items = [], loading = false, hasMore = false, onLoadMore 
                     borderRadius: '8px',
                     boxSizing: 'border-box',
                     width: '220px',
-                    position: 'relative',
                   }}
                   onClick={() => handleCardClick(item)}
                 >
-                  {/* Background image */}
-                  {item.image && (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        inset: 0,
-                        backgroundImage: `url(${item.image})`,
-                        backgroundSize: 'cover',
-                        backgroundPosition: 'center',
-                        opacity: 0.75,
-                      }}
-                    />
-                  )}
-                  <CardContent className="p-3" style={{ position: 'relative', backgroundColor: item.image ? 'rgba(0,0,0,0.2)' : 'var(--color-bg-card)' }}>
+                  <CardContent className="p-3" style={{ backgroundColor: 'var(--color-bg-card)' }}>
                     <div className="flex flex-col gap-2">
                       <div className="flex items-center gap-2 min-w-0">
                         <div className="w-4 h-4 flex items-center justify-center flex-shrink-0">
@@ -130,22 +116,22 @@ function PopularCard({ items = [], loading = false, hasMore = false, onLoadMore 
                         <div className="flex items-center gap-2 flex-wrap" style={{ paddingTop: '4px' }}>
                           {/* Time */}
                           {item.event_timestamp && (
-                            <div className="flex items-center gap-1 px-2 py-0.5 rounded-md flex-shrink-0" style={{ backgroundColor: 'rgba(0,0,0,0.3)' }}>
-                              <Clock className="w-3 h-3" style={{ color: 'var(--color-text-primary)', opacity: 0.65 }} />
-                              <span className="text-xs" style={{ color: 'var(--color-text-primary)', opacity: 0.65 }}>{formatRelativeTime(item.event_timestamp)}</span>
+                            <div className="flex items-center gap-1 px-2 py-0.5 rounded-md flex-shrink-0" style={{ backgroundColor: 'var(--color-bg-input, rgba(255,255,255,0.06))' }}>
+                              <Clock className="w-3 h-3" style={{ color: 'var(--color-text-secondary)' }} />
+                              <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{formatRelativeTime(item.event_timestamp)}</span>
                             </div>
                           )}
                           {item.duration && !item.event_timestamp && (
-                            <div className="flex items-center gap-1 px-2 py-0.5 rounded-md flex-shrink-0" style={{ backgroundColor: 'rgba(0,0,0,0.3)' }}>
-                              <Clock className="w-3 h-3" style={{ color: 'var(--color-text-primary)', opacity: 0.65 }} />
-                              <span className="text-xs" style={{ color: 'var(--color-text-primary)', opacity: 0.65 }}>{item.duration}</span>
+                            <div className="flex items-center gap-1 px-2 py-0.5 rounded-md flex-shrink-0" style={{ backgroundColor: 'var(--color-bg-input, rgba(255,255,255,0.06))' }}>
+                              <Clock className="w-3 h-3" style={{ color: 'var(--color-text-secondary)' }} />
+                              <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{item.duration}</span>
                             </div>
                           )}
                           {/* Tags */}
                           {item.tags && item.tags.length > 0 && item.tags.slice(0, 2).map((tag, i) => (
-                            <div key={i} className="flex items-center gap-1 px-2 py-0.5 rounded-md flex-shrink-0" style={{ backgroundColor: 'rgba(0,0,0,0.3)' }}>
-                              <Tag className="w-3 h-3" style={{ color: 'var(--color-text-primary)', opacity: 0.65 }} />
-                              <span className="text-xs" style={{ color: 'var(--color-text-primary)', opacity: 0.65 }}>{tag}</span>
+                            <div key={i} className="flex items-center gap-1 px-2 py-0.5 rounded-md flex-shrink-0" style={{ backgroundColor: 'var(--color-bg-input, rgba(255,255,255,0.06))' }}>
+                              <Tag className="w-3 h-3" style={{ color: 'var(--color-text-secondary)' }} />
+                              <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{tag}</span>
                             </div>
                           ))}
                         </div>
