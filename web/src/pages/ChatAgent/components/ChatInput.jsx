@@ -26,7 +26,7 @@ const ChatInput = ({ onSend, disabled = false }) => {
     <div 
       className="flex items-center gap-2 p-3 rounded-lg"
       style={{ 
-        backgroundColor: 'var(--color-gray-292929)',
+        backgroundColor: 'var(--color-bg-card)',
         border: '1.5px solid hsl(var(--primary))',
       }}
     >

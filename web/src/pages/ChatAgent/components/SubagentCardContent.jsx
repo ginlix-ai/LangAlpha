@@ -1,7 +1,7 @@
+import { Bot, CheckCircle2, Circle, Loader2 } from 'lucide-react';
 import React from 'react';
-import { Bot, Loader2, CheckCircle2, Circle } from 'lucide-react';
-import TextMessageContent from './TextMessageContent';
 import ReasoningMessageContent from './ReasoningMessageContent';
+import TextMessageContent from './TextMessageContent';
 import ToolCallMessageContent from './ToolCallMessageContent';
 
 /**
@@ -48,16 +48,16 @@ function SubagentCardContent({
    */
   const getStatusIcon = () => {
     if (currentTool) {
-      return <Loader2 className="h-4 w-4 animate-spin" style={{ color: '#6155F5' }} />;
+      return <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ color: 'rgba(255, 255, 255, 0.4)' }} />;
     }
     if (status === 'active' && messages.length > 0) {
       // Show spinner when actively producing content
-      return <Loader2 className="h-4 w-4 animate-spin" style={{ color: '#6155F5' }} />;
+      return <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ color: 'rgba(255, 255, 255, 0.4)' }} />;
     }
     if (status === 'completed') {
-      return <CheckCircle2 className="h-4 w-4" style={{ color: '#0FEDBE' }} />;
+      return <CheckCircle2 className="h-3.5 w-3.5" style={{ color: 'rgba(255, 255, 255, 0.4)' }} />;
     }
-    return <Circle className="h-4 w-4" style={{ color: '#FFFFFF', opacity: 0.5 }} />;
+    return <Circle className="h-3.5 w-3.5" style={{ color: 'rgba(255, 255, 255, 0.3)' }} />;
   };
 
   /**
@@ -84,30 +84,25 @@ function SubagentCardContent({
   };
 
   return (
-    <div className="space-y-3">
-      {/* Header with task info (hidden for history cards to avoid showing internal IDs) */}
-      {!isHistory && (
-        <div className="flex items-center gap-2 pb-2" style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.1)' }}>
-          <Bot className="h-4 w-4" style={{ color: '#6155F5' }} />
-          <span className="text-sm font-semibold" style={{ color: '#FFFFFF' }}>
-            {taskId}
-          </span>
-          <span className="text-xs ml-auto" style={{ color: '#FFFFFF', opacity: 0.6 }}>
-            {type}
-          </span>
-        </div>
-      )}
-
+    <div className="space-y-2.5 w-full overflow-hidden">
       {/* Task description */}
       {description && (
-        <div className="text-xs" style={{ color: '#FFFFFF', opacity: 0.8 }}>
+        <div
+          className="text-sm leading-relaxed break-words w-full"
+          style={{
+            color: 'rgba(255, 255, 255, 0.8)',
+            wordBreak: 'break-word',
+            overflowWrap: 'break-word',
+            whiteSpace: 'normal'
+          }}
+        >
           {description}
         </div>
       )}
 
       {/* Status indicator (hidden for history cards where status is less relevant) */}
       {!isHistory && (
-        <div className="flex items-center gap-2 text-xs" style={{ color: '#FFFFFF', opacity: 0.7 }}>
+        <div className="flex items-center gap-1.5 text-xs" style={{ color: 'rgba(255, 255, 255, 0.5)' }}>
           {getStatusIcon()}
           <span>{getStatusText()}</span>
         </div>
@@ -115,7 +110,7 @@ function SubagentCardContent({
 
       {/* Messages content */}
       {messages.length > 0 && (
-        <div className="space-y-2 max-h-64 overflow-y-auto" style={{ borderTop: '1px solid rgba(255, 255, 255, 0.1)', paddingTop: '8px' }}>
+        <div className="space-y-2 overflow-y-auto" style={{ borderTop: '0.5px solid rgba(255, 255, 255, 0.04)', paddingTop: '8px' }}>
           {messages.map((msg) => {
             // Render message based on type
             if (msg.role === 'assistant') {

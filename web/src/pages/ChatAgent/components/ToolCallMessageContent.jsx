@@ -86,7 +86,7 @@ function ToolCallMessageContent({
         </div>
         
         {/* Tool name label */}
-        <span className="font-medium" style={{ color: 'inherit' }}>
+        <span style={{ color: 'inherit' }}>
           {displayName}
         </span>
         
@@ -135,7 +135,7 @@ function ToolCallMessageContent({
           {/* Tool Call (complete call data) */}
           {toolCall && (
             <div>
-              <p className="text-xs font-semibold mb-2" style={{ color: '#FFFFFF', opacity: 0.8 }}>
+              <p className="text-xs  mb-2" style={{ color: '#FFFFFF', opacity: 0.8 }}>
                 Tool Call:
               </p>
               <div
@@ -147,11 +147,11 @@ function ToolCallMessageContent({
                 }}
               >
                 <div className="mb-1">
-                  <span className="font-semibold">Name:</span> {toolCall.name}
+                  <span className="">Name:</span> {toolCall.name}
                 </div>
                 {toolCall.args && (
                   <div className="mt-2">
-                    <span className="font-semibold">Arguments:</span>
+                    <span className="">Arguments:</span>
                     <pre className="mt-1 font-mono text-xs whitespace-pre-wrap break-words">
                       {JSON.stringify(toolCall.args, null, 2)}
                     </pre>
@@ -159,7 +159,7 @@ function ToolCallMessageContent({
                 )}
                 {toolCall.id && (
                   <div className="mt-2 text-xs" style={{ opacity: 0.7 }}>
-                    <span className="font-semibold">ID:</span> {toolCall.id}
+                    <span className="">ID:</span> {toolCall.id}
                   </div>
                 )}
               </div>
@@ -169,7 +169,7 @@ function ToolCallMessageContent({
           {/* Tool Call Result */}
           {toolCallResult && (
             <div>
-              <p className="text-xs font-semibold mb-2" style={{ color: '#FFFFFF', opacity: 0.8 }}>
+              <p className="text-xs  mb-2" style={{ color: '#FFFFFF', opacity: 0.8 }}>
                 Result:
               </p>
               <div

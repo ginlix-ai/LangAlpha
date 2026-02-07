@@ -66,7 +66,7 @@ function ReasoningMessageContent({ reasoningContent, isReasoning, reasoningCompl
         </div>
         
         {/* Label */}
-        <span className="font-medium" style={{ color: 'inherit' }}>
+        <span style={{ color: 'inherit' }}>
           {isReasoning ? 'Reasoning...' : 'Reasoning'}
         </span>
         

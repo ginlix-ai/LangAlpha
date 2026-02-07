@@ -63,9 +63,9 @@ function MessageBubble({ message, onOpenSubagentTask }) {
 
       {/* Message bubble */}
       <div
-        className={`${isUser ? 'max-w-[80%]' : 'w-full'} rounded-lg px-4 ${
-          isUser ? 'py-3 rounded-tr-none' : 'rounded-tl-none'
-        }`}
+        className={`${isUser ? 'max-w-[80%]' : 'w-full min-w-0'} rounded-lg px-4 ${
+          isUser ? 'py-3 rounded-tr-none' : 'pb-3 rounded-tl-none'
+        } overflow-hidden`}
         style={{
           backgroundColor: isUser
             ? 'var(--color-gray-292929)'

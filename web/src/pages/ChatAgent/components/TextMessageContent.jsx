@@ -19,37 +19,37 @@ function TextMessageContent({ content, isStreaming, hasError }) {
   }
 
   return (
-    <div className="text-sm break-words prose prose-invert prose-sm max-w-none">
+    <div className="text-base leading-[1.5] break-words max-w-none overflow-hidden" style={{ color: '#FFFFFF' }}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
           // Customize paragraph styling
           p: ({ node, ...props }) => (
-            <p className="mb-2 last:mb-0" style={{ color: '#FFFFFF' }} {...props} />
+            <p className="my-[1px] py-[3px] whitespace-pre-wrap break-words first:mt-0 last:mb-0" style={{ color: '#FFFFFF' }} {...props} />
           ),
           // Customize heading styling
           h1: ({ node, ...props }) => (
-            <h1 className="text-lg font-bold mt-4 mb-2 first:mt-0" style={{ color: '#FFFFFF' }} {...props} />
+            <h1 className="py-[3px] font-semibold first:mt-0" style={{ color: '#FFFFFF', fontSize: '1.5em', lineHeight: '1.3', marginTop: '1.4em', marginBottom: '1px' }} {...props} />
           ),
           h2: ({ node, ...props }) => (
-            <h2 className="text-base font-bold mt-3 mb-2 first:mt-0" style={{ color: '#FFFFFF' }} {...props} />
+            <h2 className="py-[3px] font-semibold first:mt-0" style={{ color: '#FFFFFF', fontSize: '1.5em', lineHeight: '1.3', marginTop: '1.4em', marginBottom: '1px' }} {...props} />
           ),
           h3: ({ node, ...props }) => (
-            <h3 className="text-sm font-bold mt-2 mb-1 first:mt-0" style={{ color: '#FFFFFF' }} {...props} />
+            <h3 className="py-[3px] font-semibold first:mt-0" style={{ color: '#FFFFFF', fontSize: '1.25em', lineHeight: '1.3', marginTop: '1em', marginBottom: '1px' }} {...props} />
           ),
           // Customize list styling
           ul: ({ node, ...props }) => (
-            <ul className="list-disc list-inside mb-2 ml-4 space-y-1" style={{ color: '#FFFFFF' }} {...props} />
+            <ul className="list-disc ml-6 my-2" style={{ color: '#FFFFFF' }} {...props} />
           ),
           ol: ({ node, ...props }) => (
-            <ol className="list-decimal list-inside mb-2 ml-4 space-y-1" style={{ color: '#FFFFFF' }} {...props} />
+            <ol className="list-decimal ml-6 my-2" style={{ color: '#FFFFFF' }} {...props} />
           ),
           li: ({ node, ...props }) => (
-            <li className="text-sm" style={{ color: '#FFFFFF' }} {...props} />
+            <li className="ps-[2px] break-words" style={{ color: '#FFFFFF' }} {...props} />
           ),
           // Customize strong (bold) styling
           strong: ({ node, ...props }) => (
-            <strong className="font-semibold" style={{ color: '#FFFFFF' }} {...props} />
+            <strong className="font-[600]" style={{ color: '#FFFFFF' }} {...props} />
           ),
           // Customize emphasis (italic) styling
           em: ({ node, ...props }) => (
@@ -63,14 +63,14 @@ function TextMessageContent({ content, isStreaming, hasError }) {
             const isBlock = /language-/.test(className || '');
 
             if (!isBlock) {
-              // Inline code styling
+              // Inline code styling - 无背景无边框
               return (
                 <code
-                  className="px-1.5 py-0.5 rounded text-xs font-mono"
+                  className="font-mono"
                   style={{
-                    backgroundColor: 'rgba(97, 85, 245, 0.2)',
-                    color: '#6155F5',
-                    border: '1px solid rgba(97, 85, 245, 0.3)',
+                    color: '#abb2bf',
+                    fontSize: '0.875rem',
+                    lineHeight: '1.25rem',
                   }}
                   {...props}
                 >
@@ -79,14 +79,14 @@ function TextMessageContent({ content, isStreaming, hasError }) {
               );
             }
 
-            // Block code styling
+            // Block code - 不加额外样式，由 pre 容器控制
             return (
               <code
-                className="block p-3 rounded text-xs font-mono overflow-x-auto"
+                className="font-mono"
                 style={{
-                  backgroundColor: 'rgba(0, 0, 0, 0.3)',
-                  color: '#FFFFFF',
-                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  color: '#abb2bf',
+                  fontSize: '0.875rem',
+                  lineHeight: '1.25rem',
                 }}
                 {...props}
               >
@@ -94,9 +94,22 @@ function TextMessageContent({ content, isStreaming, hasError }) {
               </code>
             );
           },
-          // Customize pre (code block) styling
+          // Customize pre (code block) styling - 圆角卡片容器，自适应内容宽度
           pre: ({ node, ...props }) => (
-            <pre className="mb-2 overflow-x-auto" {...props} />
+            <div className="py-[4px]">
+              <pre
+                className="rounded-lg overflow-x-auto inline-block"
+                style={{
+                  backgroundColor: '#282c34',
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  padding: '1rem',
+                  maxWidth: '100%',
+                  minWidth: 0,
+                  margin: 0,
+                }}
+                {...props}
+              />
+            </div>
           ),
           // Customize blockquote styling
           blockquote: ({ node, ...props }) => (
@@ -124,55 +137,50 @@ function TextMessageContent({ content, isStreaming, hasError }) {
           hr: ({ node, ...props }) => (
             <hr className="my-3 border-0" style={{ borderTop: '1px solid rgba(255, 255, 255, 0.1)' }} {...props} />
           ),
-          // Customize table styling
+          // Customize table styling - 自适应内容宽度
           table: ({ node, ...props }) => (
-            <div className="overflow-x-auto my-3">
-              <table
-                className="border-collapse w-full text-sm"
-                style={{
-                  border: '1px solid rgba(255, 255, 255, 0.2)',
-                }}
-                {...props}
-              />
+            <div className="pt-[8px] pb-[18px]">
+              <div className="overflow-x-auto inline-block border rounded-lg" style={{ borderColor: 'rgba(255, 255, 255, 0.1)', maxWidth: '100%' }}>
+                <table
+                  className="m-0 table-auto border-collapse"
+                  {...props}
+                />
+              </div>
             </div>
           ),
           thead: ({ node, ...props }) => (
-            <thead
-              style={{
-                backgroundColor: 'rgba(97, 85, 245, 0.2)',
-              }}
-              {...props}
-            />
+            <thead {...props} />
           ),
           tbody: ({ node, ...props }) => (
             <tbody {...props} />
           ),
           tr: ({ node, ...props }) => (
-            <tr
-              className="border-b"
-              style={{
-                borderColor: 'rgba(255, 255, 255, 0.1)',
-              }}
-              {...props}
-            />
+            <tr {...props} />
           ),
           th: ({ node, ...props }) => (
             <th
-              className="px-4 py-2 text-left font-semibold"
+              className="text-left align-top first:border-s-0 last:border-e-0"
               style={{
+                backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+                borderLeft: '1px solid rgba(255, 255, 255, 0.1)',
                 color: '#FFFFFF',
-                borderRight: '1px solid rgba(255, 255, 255, 0.1)',
+                fontSize: '0.875rem',
+                fontWeight: 500,
+                padding: '7px 9px',
               }}
               {...props}
             />
           ),
           td: ({ node, ...props }) => (
             <td
-              className="px-4 py-2"
+              className="text-left first:border-s-0 last:border-e-0"
               style={{
+                borderTop: '1px solid rgba(255, 255, 255, 0.1)',
+                borderLeft: '1px solid rgba(255, 255, 255, 0.1)',
                 color: '#FFFFFF',
-                opacity: 0.9,
-                borderRight: '1px solid rgba(255, 255, 255, 0.1)',
+                fontSize: '0.875rem',
+                padding: '8px 14px',
               }}
               {...props}
             />

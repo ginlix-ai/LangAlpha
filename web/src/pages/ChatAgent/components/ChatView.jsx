@@ -1,15 +1,17 @@
-import React, { useEffect, useRef } from 'react';
+import { ArrowLeft, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
 import { ScrollArea } from '../../../components/ui/scroll-area';
-import ChatInput from './ChatInput';
-import MessageList from './MessageList';
-import FloatingCard from './FloatingCard';
-import FloatingCardIcon from './FloatingCardIcon';
-import TodoListCardContent from './TodoListCardContent';
-import SubagentCardContent from './SubagentCardContent';
+import { cn } from '../../../lib/utils';
 import { useChatMessages } from '../hooks/useChatMessages';
 import { useFloatingCards } from '../hooks/useFloatingCards';
+import AgentPanel from './AgentPanel';
+import ChatInput from './ChatInput';
+import FloatingCard from './FloatingCard';
+import FloatingCardIcon from './FloatingCardIcon';
+import MessageList from './MessageList';
+import TodoDrawer from './TodoDrawer';
+import TodoListCardContent from './TodoListCardContent';
 
 /**
  * ChatView Component
@@ -49,15 +51,69 @@ function ChatView({ workspaceId, threadId, onBack }) {
   } = useFloatingCards();
 
   // Chat messages management - receives updateTodoListCard and updateSubagentCard from floating cards hook
-  const { 
-    messages, 
-    isLoading, 
-    isLoadingHistory, 
-    messageError, 
-    handleSendMessage, 
+  const {
+    messages,
+    isLoading,
+    isLoadingHistory,
+    messageError,
+    handleSendMessage,
     threadId: currentThreadId,
     getSubagentHistory,
   } = useChatMessages(workspaceId, threadId, updateTodoListCard, updateSubagentCard, inactivateAllSubagents, minimizeInactiveSubagents);
+
+  // 新增：分屏相关状态
+  const [selectedAgentId, setSelectedAgentId] = useState(null);
+  const [isAgentPanelVisible, setIsAgentPanelVisible] = useState(true);
+
+  // 从 floatingCards 中提取 subagent agents
+  const subagentAgents = useMemo(() => {
+    const agents = Object.entries(floatingCards)
+      .filter(([cardId, card]) => {
+        // 只提取 subagent 类型的卡片
+        return cardId.startsWith('subagent-') && card.subagentData;
+      })
+      .map(([cardId, card], index) => {
+        const subagentData = card.subagentData || {};
+        return {
+          id: cardId,
+          taskId: subagentData.taskId || cardId,
+          name: card.title || `Agent ${index + 1}`,
+          number: String(index + 1).padStart(2, '0'),
+          type: subagentData.type || 'general',
+          status: subagentData.status || 'active',
+          description: subagentData.description || '',
+          toolCalls: subagentData.toolCalls || 0,
+          currentTool: subagentData.currentTool || '',
+          messages: subagentData.messages || [],
+        };
+      });
+
+    console.log('[ChatView] Extracted subagent agents:', agents);
+    return agents;
+  }, [floatingCards]);
+
+  // 自动选中第一个 agent（如果还没选中的话）
+  useEffect(() => {
+    if (subagentAgents.length > 0 && !selectedAgentId) {
+      console.log('[ChatView] Auto-selecting first agent:', subagentAgents[0].id);
+      setSelectedAgentId(subagentAgents[0].id);
+    }
+    // 如果选中的 agent 不存在了，重新选中第一个
+    if (selectedAgentId && !subagentAgents.find(a => a.id === selectedAgentId)) {
+      console.log('[ChatView] Selected agent no longer exists, selecting first');
+      setSelectedAgentId(subagentAgents.length > 0 ? subagentAgents[0].id : null);
+    }
+  }, [subagentAgents, selectedAgentId]);
+
+  // 当有新 agent 创建时，自动切换到它
+  useEffect(() => {
+    const latestAgent = subagentAgents[subagentAgents.length - 1];
+    if (latestAgent && latestAgent.id !== selectedAgentId) {
+      console.log('[ChatView] New agent detected, switching to:', latestAgent.id);
+      setSelectedAgentId(latestAgent.id);
+      setIsAgentPanelVisible(true); // 自动显示面板
+    }
+  }, [subagentAgents.length]); // 只在数量变化时触发
 
   // Update URL when thread ID changes (e.g., when __default__ becomes actual thread ID)
   // This triggers a re-render with the new threadId, which will then load history
@@ -155,172 +211,188 @@ function ChatView({ workspaceId, threadId, onBack }) {
   }
 
   return (
-    <div className="chat-agent-container" style={{ backgroundColor: '#1B1D25' }}>
-      {/* Header */}
+    <div className="flex h-screen w-full overflow-hidden bg-[#0D0E12]">
+      {/* 左侧：聊天面板 */}
       <div
-        className="flex items-center justify-between px-6 py-4 flex-shrink-0"
-        style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.1)' }}
+        className={cn(
+          "flex flex-col",
+          "bg-[#0D0E12] min-w-0 overflow-hidden",
+          // 如果右侧面板显示，左侧占 2 份；否则占满
+          isAgentPanelVisible ? "flex-[2]" : "flex-1"
+        )}
       >
-        <div className="flex items-center gap-4">
-          <button
-            onClick={onBack}
-            className="p-2 rounded-md transition-colors hover:bg-white/10"
-            style={{ color: '#FFFFFF' }}
-            title="Back to threads"
-          >
-            <ArrowLeft className="h-5 w-5" />
-          </button>
-          <h1 className="text-lg font-semibold" style={{ color: '#FFFFFF' }}>
-            Chat Agent
-          </h1>
-          {isLoadingHistory && (
-            <span className="text-xs" style={{ color: '#FFFFFF', opacity: 0.5 }}>
-              Loading history...
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          {/* Floating card icons for all cards - always visible */}
-          {getAllCards().map(([cardId, card]) => {
-            // Check if this is a subagent card and get its isActive status
-            const isSubagentCard = cardId.startsWith('subagent-');
-            const isActive = isSubagentCard && card.subagentData
-              ? card.subagentData.isActive !== false // Default to true if not set
-              : true; // Non-subagent cards are always considered active
-            
-            return (
-              <FloatingCardIcon
-                key={cardId}
-                id={cardId}
-                title={card.title || 'Card'}
-                onClick={() => handleCardToggle(cardId)}
-                hasUnreadUpdate={card.hasUnreadUpdate || false}
-                isActive={isActive}
-              />
-            );
-          })}
-          {messageError && (
-            <p className="text-xs" style={{ color: '#FF383C' }}>
-              {messageError}
-            </p>
-          )}
-        </div>
-      </div>
-
-      {/* Messages Area - Fixed height, scrollable */}
-      <div 
-        className="flex-1 overflow-hidden"
-        style={{ 
-          minHeight: 0,
-          height: 0, // Force flex-1 to work properly
-        }}
-      >
-        <ScrollArea ref={scrollAreaRef} className="h-full w-full">
-          <div className="px-6 py-4">
-            <MessageList 
-              messages={messages} 
-              onOpenSubagentTask={(subagentInfo) => {
-                console.log('[ChatView] onOpenSubagentTask called with:', subagentInfo);
-                const { subagentId, description, type, status } = subagentInfo;
-
-                if (!updateSubagentCard) {
-                  console.error('[ChatView] updateSubagentCard is not defined!');
-                  return;
-                }
-
-                // Check if card already exists and is minimized
-                const cardId = `subagent-${subagentId}`;
-                const existingCard = floatingCards[cardId];
-                const isMinimized = existingCard?.isMinimized || false;
-
-                // If card exists and is minimized, maximize it first
-                if (existingCard && isMinimized) {
-                  console.log('[ChatView] Card is minimized, maximizing it');
-                  handleCardMaximize(cardId);
-                }
-
-                // Try to load history for this subagent (if available)
-                const history = getSubagentHistory
-                  ? getSubagentHistory(subagentId)
-                  : null;
-
-                const finalDescription = history?.description || description || '';
-                const finalType = history?.type || type || 'general-purpose';
-                const finalStatus = history?.status || status || 'unknown';
-                const finalMessages = history?.messages || [];
-
-                console.log('[ChatView] Opening subagent card with history:', {
-                  subagentId,
-                  hasHistory: !!history,
-                  messagesCount: finalMessages.length,
-                });
-
-                updateSubagentCard(subagentId, {
-                  taskId: subagentId,
-                  description: finalDescription,
-                  type: finalType,
-                  status: finalStatus,
-                  toolCalls: 0,
-                  currentTool: '',
-                  messages: finalMessages,
-                  isHistory: !!history,
-                  isActive: !history, // Mark as inactive if loading from history to prevent duplicate card creation
-                });
-              }}
-            />
+        {/* 顶部栏 */}
+        <div className="flex items-center justify-between p-4 min-w-0 flex-shrink-0">
+          <div className="flex items-center gap-4 min-w-0 flex-shrink">
+            <button
+              onClick={onBack}
+              className="p-2 rounded-md transition-colors hover:bg-white/10 flex-shrink-0"
+              style={{ color: '#FFFFFF' }}
+              title="Back to threads"
+            >
+              <ArrowLeft className="h-5 w-5" />
+            </button>
+            <h1 className="text-lg font-semibold whitespace-nowrap" style={{ color: '#FFFFFF' }}>
+              Chat Agent
+            </h1>
+            {isLoadingHistory && (
+              <span className="text-xs whitespace-nowrap" style={{ color: '#FFFFFF', opacity: 0.5 }}>
+                Loading history...
+              </span>
+            )}
           </div>
-        </ScrollArea>
-      </div>
 
-      {/* Input Area */}
-      <div className="flex-shrink-0 p-4" style={{ borderTop: '1px solid rgba(255, 255, 255, 0.1)' }}>
-        <ChatInput onSend={handleSendMessage} disabled={isLoading || isLoadingHistory || !workspaceId} />
-      </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {/* Floating card icons for non-subagent cards */}
+            {getAllCards()
+              .filter(([cardId]) => !cardId.startsWith('subagent-'))
+              .map(([cardId, card]) => (
+                <FloatingCardIcon
+                  key={cardId}
+                  id={cardId}
+                  title={card.title || 'Card'}
+                  onClick={() => handleCardToggle(cardId)}
+                  hasUnreadUpdate={card.hasUnreadUpdate || false}
+                  isActive={true}
+                />
+              ))}
 
-      {/* Floating Cards */}
-      {Object.entries(floatingCards).map(([cardId, card]) => (
-        <FloatingCard
-          key={cardId}
-          id={cardId}
-          title={card.title || 'Card'}
-          isMinimized={card.isMinimized}
-          onMinimize={() => handleCardMinimize(cardId)}
-          onMaximize={() => handleCardMaximize(cardId)}
-          initialPosition={card.position}
-          onPositionChange={handleCardPositionChange}
-          zIndex={card.zIndex || 50}
-          onBringToFront={handleBringToFront}
+            {/* 新增：收起/展开按钮 - 常驻 */}
+            <button
+              onClick={() => setIsAgentPanelVisible(!isAgentPanelVisible)}
+              className="p-2 rounded-lg hover:bg-white/10 transition-colors text-white/70 hover:text-white"
+              title={isAgentPanelVisible ? "Hide agent panel" : "Show agent panel"}
+            >
+              {isAgentPanelVisible ? (
+                <ChevronRight className="h-4 w-4" />
+              ) : (
+                <ChevronLeft className="h-4 w-4" />
+              )}
+            </button>
+
+            {messageError && (
+              <p className="text-xs" style={{ color: '#FF383C' }}>
+                {messageError}
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* 消息列表区域 */}
+        <div
+          className="flex-1 overflow-hidden"
+          style={{
+            minHeight: 0,
+            height: 0, // Force flex-1 to work properly
+          }}
         >
-          {cardId === 'todo-list-card' && card.todoData ? (
-            <TodoListCardContent
-              todos={card.todoData.todos}
-              total={card.todoData.total}
-              completed={card.todoData.completed}
-              in_progress={card.todoData.in_progress}
-              pending={card.todoData.pending}
-            />
-          ) : cardId.startsWith('subagent-') && card.subagentData ? (
-            <SubagentCardContent
-              taskId={card.subagentData.taskId}
-              description={card.subagentData.description}
-              type={card.subagentData.type}
-              toolCalls={card.subagentData.toolCalls}
-              currentTool={card.subagentData.currentTool}
-              status={card.subagentData.status || 'active'}
-              messages={card.subagentData.messages || []}
-              isHistory={card.subagentData.isHistory || false}
-            />
-          ) : (
-            <div className="text-sm" style={{ color: '#FFFFFF' }}>
-              <p className="mb-2">This is {card.title}.</p>
-              <p className="mb-2">You can drag this card by clicking and dragging the header.</p>
-              <p className="mb-2">Click anywhere on the card to bring it to the front.</p>
-              <p className="mb-2">Click the minimize button to minimize it to an icon in the top bar.</p>
-              <p>Click the bookmark icon in the top bar to restore it.</p>
+          <ScrollArea ref={scrollAreaRef} className="h-full w-full">
+            <div className="px-6 py-4">
+              <MessageList
+                messages={messages}
+                onOpenSubagentTask={(subagentInfo) => {
+                  console.log('[ChatView] onOpenSubagentTask called with:', subagentInfo);
+                  const { subagentId, description, type, status } = subagentInfo;
+
+                  if (!updateSubagentCard) {
+                    console.error('[ChatView] updateSubagentCard is not defined!');
+                    return;
+                  }
+
+                  // Try to load history for this subagent (if available)
+                  const history = getSubagentHistory
+                    ? getSubagentHistory(subagentId)
+                    : null;
+
+                  const finalDescription = history?.description || description || '';
+                  const finalType = history?.type || type || 'general-purpose';
+                  const finalStatus = history?.status || status || 'unknown';
+                  const finalMessages = history?.messages || [];
+
+                  console.log('[ChatView] Opening subagent card with history:', {
+                    subagentId,
+                    hasHistory: !!history,
+                    messagesCount: finalMessages.length,
+                  });
+
+                  updateSubagentCard(subagentId, {
+                    taskId: subagentId,
+                    description: finalDescription,
+                    type: finalType,
+                    status: finalStatus,
+                    toolCalls: 0,
+                    currentTool: '',
+                    messages: finalMessages,
+                    isHistory: !!history,
+                    isActive: !history, // Mark as inactive if loading from history to prevent duplicate card creation
+                  });
+
+                  // 自动选中这个 agent 并显示面板
+                  const cardId = `subagent-${subagentId}`;
+                  setSelectedAgentId(cardId);
+                  setIsAgentPanelVisible(true);
+                }}
+              />
             </div>
-          )}
-        </FloatingCard>
-      ))}
+          </ScrollArea>
+        </div>
+
+        {/* 输入框区域 */}
+        <div className="p-4 space-y-3">
+          {/* Todo Drawer - 放在 input 上方 */}
+          <TodoDrawer todoData={floatingCards['todo-list-card']?.todoData} />
+
+          {/* Chat Input */}
+          <ChatInput onSend={handleSendMessage} disabled={isLoading || isLoadingHistory || !workspaceId} />
+        </div>
+      </div>
+
+      {/* 右侧：Agent 面板（新增） - 可随时调出 */}
+      {isAgentPanelVisible && (
+        <div className="flex-[3] flex flex-col min-w-0 overflow-hidden">
+          <AgentPanel
+            agents={subagentAgents}
+            selectedAgentId={selectedAgentId}
+            onSelectAgent={setSelectedAgentId}
+          />
+        </div>
+      )}
+
+      {/* 保留非 subagent 的 FloatingCard（排除 todo-list，因为它现在用 TodoDrawer 显示） */}
+      {Object.entries(floatingCards)
+        .filter(([cardId]) => !cardId.startsWith('subagent-') && cardId !== 'todo-list-card')
+        .map(([cardId, card]) => (
+          <FloatingCard
+            key={cardId}
+            id={cardId}
+            title={card.title || 'Card'}
+            isMinimized={card.isMinimized}
+            onMinimize={() => handleCardMinimize(cardId)}
+            onMaximize={() => handleCardMaximize(cardId)}
+            initialPosition={card.position}
+            onPositionChange={handleCardPositionChange}
+            zIndex={card.zIndex || 50}
+            onBringToFront={handleBringToFront}
+          >
+            {cardId === 'todo-list-card' && card.todoData ? (
+              <TodoListCardContent
+                todos={card.todoData.todos}
+                total={card.todoData.total}
+                completed={card.todoData.completed}
+                in_progress={card.todoData.in_progress}
+                pending={card.todoData.pending}
+              />
+            ) : (
+              <div className="text-sm" style={{ color: '#FFFFFF' }}>
+                <p className="mb-2">This is {card.title}.</p>
+                <p className="mb-2">You can drag this card by clicking and dragging the header.</p>
+                <p className="mb-2">Click anywhere on the card to bring it to the front.</p>
+                <p className="mb-2">Click the minimize button to minimize it to an icon in the top bar.</p>
+                <p>Click the bookmark icon in the top bar to restore it.</p>
+              </div>
+            )}
+          </FloatingCard>
+        ))}
     </div>
   );
 }
