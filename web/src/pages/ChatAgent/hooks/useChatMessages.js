@@ -43,7 +43,7 @@ import {
   isSubagentHistoryEvent,
 } from './utils/historyEventHandlers';
 
-export function useChatMessages(workspaceId, initialThreadId = null, updateTodoListCard = null, updateSubagentCard = null) {
+export function useChatMessages(workspaceId, initialThreadId = null, updateTodoListCard = null, updateSubagentCard = null, inactivateAllSubagents = null, minimizeInactiveSubagents = null) {
   // State
   const [messages, setMessages] = useState([]);
   const [threadId, setThreadId] = useState(() => {
@@ -80,6 +80,20 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
   // Track active subagent tasks and map agent IDs to task IDs
   const activeSubagentTasksRef = useRef(new Map()); // Map<taskId, taskInfo>
   const agentToTaskMapRef = useRef(new Map()); // Map<agentId, taskId> - maps "tools:..." to taskId
+  // Map tool call IDs (from task tool calls) to task IDs for routing subagent events
+  // Structure: Map<toolCallId, taskId> - e.g., "call_function_i7kk4eyz3gsk_1" -> "Task-1"
+  const toolCallIdToTaskIdMapRef = useRef(new Map()); // Map<toolCallId, taskId>
+  // Track pending task tool calls (received before subagent_status)
+  // Structure: Array<{toolCallId, timestamp}> - ordered list of task tool calls
+  const pendingTaskToolCallsRef = useRef([]); // Array<{toolCallId, timestamp}>
+  // Track the order of agent IDs as they first appear in subagent events
+  // This helps us match agent IDs to task IDs when multiple subagents run in parallel
+  // Structure: Array<agentId> - ordered list of agent IDs as they first appear
+  const agentIdOrderRef = useRef([]); // Array<agentId>
+  // Track which task IDs have been mapped to agent IDs
+  // This helps us assign unmapped agent IDs to unmapped tasks
+  // Structure: Set<taskId> - set of task IDs that have been mapped
+  const mappedTaskIdsRef = useRef(new Set()); // Set<taskId>
 
   // Track subagent history loaded from replay so it can be shown lazily
   // Structure: { [taskId]: { taskId, description, type, messages, status, toolCalls, currentTool } }
@@ -758,28 +772,143 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
         updateSubagentCard: updateSubagentCard || (() => {}),
       };
 
-      // Helper to get taskId from agent ID or use most recent active task
+      /**
+       * Helper to get taskId from event
+       * Routes subagent events to the correct task based on agent ID mapping
+       * 
+       * Strategy:
+       * 1. Check if we have a direct mapping from agent ID to task ID
+       * 2. If not, try to infer from tool_call_id (for tool_call_result events)
+       * 3. If still not found and only one active task, use it (single-task fallback)
+       * 4. Otherwise, return null (event will be skipped)
+       * 
+       * @param {Object} event - The subagent event
+       * @returns {string|null} - The task ID or null if cannot be determined
+       */
       const getTaskIdFromEvent = (event) => {
-        if (!event.agent) return null;
-        
-        // Check if we have a mapping for this agent ID
-        const agentId = event.agent;
-        if (agentToTaskMapRef.current.has(agentId)) {
-          return agentToTaskMapRef.current.get(agentId);
+        if (!event.agent) {
+          if (process.env.NODE_ENV === 'development') {
+            console.warn('[Stream] Subagent event without agent field:', event);
+          }
+          return null;
         }
         
-        // If only one active task, use it
-        const activeTasks = Array.from(activeSubagentTasksRef.current.keys());
-        if (activeTasks.length === 1) {
-          const taskId = activeTasks[0];
-          // Cache the mapping
-          agentToTaskMapRef.current.set(agentId, taskId);
+        const agentId = event.agent;
+        
+        // Strategy 1: Check if we have a direct mapping from agent ID to task ID
+        if (agentToTaskMapRef.current.has(agentId)) {
+          const taskId = agentToTaskMapRef.current.get(agentId);
+          // Ensure task is marked as mapped
+          mappedTaskIdsRef.current.add(taskId);
+          if (process.env.NODE_ENV === 'development') {
+            console.log('[Stream] Found task ID from agent mapping:', { agentId, taskId });
+          }
           return taskId;
         }
         
-        // If multiple active tasks, try to match by checking recent events
-        // For now, return the first active task as fallback
-        return activeTasks[0] || null;
+        // Strategy 2: For tool_call_result events, try to map via tool_call_id
+        // The tool_call_id from task tool calls maps to task IDs
+        if (event.tool_call_id && toolCallIdToTaskIdMapRef.current.has(event.tool_call_id)) {
+          const taskId = toolCallIdToTaskIdMapRef.current.get(event.tool_call_id);
+          // Cache the agent-to-task mapping for future events
+          agentToTaskMapRef.current.set(agentId, taskId);
+          // Mark task as mapped
+          mappedTaskIdsRef.current.add(taskId);
+          if (process.env.NODE_ENV === 'development') {
+            console.log('[Stream] Found task ID from tool_call_id mapping:', {
+              agentId,
+              toolCallId: event.tool_call_id,
+              taskId,
+            });
+          }
+          return taskId;
+        }
+        
+        // Strategy 3: Match agent ID to task ID
+        // When multiple subagents run in parallel, match unmapped agents to unmapped tasks
+        const activeTasks = Array.from(activeSubagentTasksRef.current.keys());
+        const agentIdOrder = agentIdOrderRef.current;
+        const mappedTaskIds = mappedTaskIdsRef.current;
+        
+        // If this is the first time we see this agent ID, add it to the order list
+        if (!agentIdOrder.includes(agentId)) {
+          agentIdOrder.push(agentId);
+          if (process.env.NODE_ENV === 'development') {
+            console.log('[Stream] Added agent ID to order list:', {
+              agentId,
+              order: agentIdOrder.length,
+              totalAgents: agentIdOrder.length,
+              totalTasks: activeTasks.length,
+              mappedTasks: Array.from(mappedTaskIds),
+            });
+          }
+        }
+        
+        // Find unmapped tasks (tasks that haven't been assigned to any agent yet)
+        const unmappedTasks = activeTasks.filter(taskId => !mappedTaskIds.has(taskId));
+        
+        // Strategy 3a: If we have unmapped tasks, assign this agent to the first unmapped task
+        // This handles cases where events arrive out of order
+        if (unmappedTasks.length > 0) {
+          const taskId = unmappedTasks[0]; // Assign to first unmapped task
+          // Cache the mapping for future events
+          agentToTaskMapRef.current.set(agentId, taskId);
+          mappedTaskIds.add(taskId); // Mark this task as mapped
+          if (process.env.NODE_ENV === 'development') {
+            console.log('[Stream] Matched agent to unmapped task:', {
+              agentId,
+              taskId,
+              unmappedTasksCount: unmappedTasks.length,
+              totalTasks: activeTasks.length,
+            });
+          }
+          return taskId;
+        }
+        
+        // Strategy 3b: Fallback to order-based matching if all tasks are mapped
+        // This handles edge cases where we need to remap
+        const agentIndex = agentIdOrder.indexOf(agentId);
+        if (agentIndex >= 0 && agentIndex < activeTasks.length) {
+          const taskId = activeTasks[agentIndex];
+          // Cache the mapping for future events
+          agentToTaskMapRef.current.set(agentId, taskId);
+          mappedTaskIds.add(taskId); // Mark this task as mapped
+          if (process.env.NODE_ENV === 'development') {
+            console.log('[Stream] Matched agent to task by order (fallback):', {
+              agentId,
+              agentIndex,
+              taskId,
+              totalAgents: agentIdOrder.length,
+              totalTasks: activeTasks.length,
+            });
+          }
+          return taskId;
+        }
+        
+        // Strategy 4: Single-task fallback (only if exactly one active task)
+        // This handles cases where mapping hasn't been established yet
+        if (activeTasks.length === 1) {
+          const taskId = activeTasks[0];
+          // Cache the mapping for future events
+          agentToTaskMapRef.current.set(agentId, taskId);
+          if (process.env.NODE_ENV === 'development') {
+            console.log('[Stream] Using single-task fallback for agent:', { agentId, taskId });
+          }
+          return taskId;
+        }
+        
+        // Strategy 5: Multiple active tasks but no mapping - cannot route event
+        if (process.env.NODE_ENV === 'development') {
+          console.warn('[Stream] Cannot route subagent event - no mapping found:', {
+            agentId,
+            activeTasks: activeTasks,
+            agentIndex,
+            agentIdOrder: agentIdOrder,
+            hasToolCallId: !!event.tool_call_id,
+            toolCallId: event.tool_call_id,
+          });
+        }
+        return null;
       };
 
       await sendChatMessageStream(
@@ -826,22 +955,95 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
             
             // Debug: Log subagent status events to help identify issues
             if (process.env.NODE_ENV === 'development') {
-              console.log('[Stream] subagent_status event:', {
+              console.log('[Stream] subagent_status event received:', {
                 active_tasks_count: subagentStatus.active_tasks.length,
                 completed_tasks_count: subagentStatus.completed_tasks.length,
-                active_tasks: subagentStatus.active_tasks.map(t => ({ id: t?.id, hasId: !!t?.id })),
-                completed_tasks: subagentStatus.completed_tasks.map(t => ({ id: t?.id, hasId: !!t?.id })),
+                active_tasks: subagentStatus.active_tasks.map(t => ({ 
+                  id: t?.id, 
+                  hasId: !!t?.id,
+                  description: t?.description?.substring(0, 50),
+                })),
+                completed_tasks: subagentStatus.completed_tasks.map(t => ({ 
+                  id: t?.id, 
+                  hasId: !!t?.id,
+                  description: t?.description?.substring(0, 50),
+                })),
               });
             }
             
-            // Update active tasks tracking
+            // Update active tasks tracking and build agent-to-task mapping
+            // When subagent_status is received, we know which tasks are active
+            // We'll map agent IDs to task IDs as we receive subagent events
             activeSubagentTasksRef.current.clear();
+            
+            // Build mapping from tool call IDs to task IDs
+            // Match pending task tool calls (in order) with tasks from subagent_status (in order)
+            const allTasks = [...subagentStatus.active_tasks, ...subagentStatus.completed_tasks];
+            const pendingCalls = pendingTaskToolCallsRef.current;
+            
+            if (pendingCalls.length > 0 && allTasks.length > 0) {
+              // Match tool calls to tasks by order (first tool call -> first task, etc.)
+              const minLength = Math.min(pendingCalls.length, allTasks.length);
+              for (let i = 0; i < minLength; i++) {
+                const toolCallId = pendingCalls[i].toolCallId;
+                const task = allTasks[i];
+                if (task && task.id) {
+                  toolCallIdToTaskIdMapRef.current.set(toolCallId, task.id);
+                  if (process.env.NODE_ENV === 'development') {
+                    console.log('[Stream] Mapped tool call ID to task ID:', {
+                      toolCallId,
+                      taskId: task.id,
+                      index: i,
+                    });
+                  }
+                }
+              }
+              // Clear pending calls after mapping
+              pendingTaskToolCallsRef.current = [];
+            }
+            
+            // Reset mapped task IDs when subagent_status is received
+            // This ensures we can remap agents to tasks for new batches
+            // Note: We keep agentIdOrder to preserve the order of agent appearances
+            mappedTaskIdsRef.current.clear();
+            if (process.env.NODE_ENV === 'development') {
+              console.log('[Stream] subagent_status received, reset mapped tasks:', {
+                agentOrder: agentIdOrderRef.current,
+                activeTasks: subagentStatus.active_tasks.map(t => t?.id),
+              });
+            }
+            
             subagentStatus.active_tasks.forEach((task) => {
               // Only track tasks with valid IDs
               if (task && task.id) {
                 activeSubagentTasksRef.current.set(task.id, task);
+                
+                // If task has an agent field, map it immediately
+                // Note: subagent_status events may not always have agent field
+                if (task.agent) {
+                  agentToTaskMapRef.current.set(task.agent, task.id);
+                  if (process.env.NODE_ENV === 'development') {
+                    console.log('[Stream] Mapped agent to task from subagent_status:', {
+                      agent: task.agent,
+                      taskId: task.id,
+                    });
+                  }
+                }
               } else if (process.env.NODE_ENV === 'development') {
                 console.warn('[Stream] Skipping task without ID in active_tasks:', task);
+              }
+            });
+            
+            // Also update mapping for completed tasks (they may still have events)
+            subagentStatus.completed_tasks.forEach((task) => {
+              if (task && task.id && task.agent) {
+                agentToTaskMapRef.current.set(task.agent, task.id);
+                if (process.env.NODE_ENV === 'development') {
+                  console.log('[Stream] Mapped agent to task from completed_tasks:', {
+                    agent: task.agent,
+                    taskId: task.id,
+                  });
+                }
               }
             });
             
@@ -857,8 +1059,82 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
 
           // Handle subagent message events (filter them out from main chat view)
           if (isSubagent) {
-            const taskId = getTaskIdFromEvent(event);
-            if (taskId && updateSubagentCard) {
+            let taskId = getTaskIdFromEvent(event);
+            
+            // Debug logging for routing
+            if (process.env.NODE_ENV === 'development') {
+              console.log('[Stream] Routing subagent event:', {
+                eventType,
+                agent: event.agent,
+                toolCallId: event.tool_call_id,
+                initialTaskId: taskId,
+                activeTasks: Array.from(activeSubagentTasksRef.current.keys()),
+                agentOrder: agentIdOrderRef.current,
+                agentToTaskMap: Array.from(agentToTaskMapRef.current.entries()),
+                toolCallToTaskMap: Array.from(toolCallIdToTaskIdMapRef.current.entries()),
+              });
+            }
+            
+            // If we couldn't determine taskId, try to build mapping from available info
+            if (!taskId && event.agent) {
+              const agentId = event.agent;
+              
+              // Strategy: If we have tool_call_id, try to find the corresponding task
+              if (event.tool_call_id && toolCallIdToTaskIdMapRef.current.has(event.tool_call_id)) {
+                const mappedTaskId = toolCallIdToTaskIdMapRef.current.get(event.tool_call_id);
+                // Cache the agent-to-task mapping for future events
+                agentToTaskMapRef.current.set(agentId, mappedTaskId);
+                taskId = mappedTaskId; // Use the mapped task ID
+                if (process.env.NODE_ENV === 'development') {
+                  console.log('[Stream] Built agent-to-task mapping from tool_call_id:', {
+                    agentId,
+                    toolCallId: event.tool_call_id,
+                    taskId: mappedTaskId,
+                  });
+                }
+              }
+            }
+            
+            // If we still don't have a taskId, log and skip this event
+            if (!taskId) {
+              if (process.env.NODE_ENV === 'development') {
+                console.warn('[Stream] Cannot route subagent event - no task ID found:', {
+                  agent: event.agent,
+                  eventType,
+                  toolCallId: event.tool_call_id,
+                  activeTasks: Array.from(activeSubagentTasksRef.current.keys()),
+                  pendingToolCalls: pendingTaskToolCallsRef.current.length,
+                  agentOrder: agentIdOrderRef.current,
+                  agentToTaskMap: Array.from(agentToTaskMapRef.current.entries()),
+                });
+              }
+              return; // Don't process in main chat view
+            }
+            
+            // Log successful routing
+            if (process.env.NODE_ENV === 'development') {
+              console.log('[Stream] Successfully routed subagent event to task:', {
+                agent: event.agent,
+                taskId,
+                eventType,
+              });
+            }
+            
+            // Process the event with the correct taskId
+            if (updateSubagentCard) {
+              // Build agent-to-task mapping if not already present
+              // This ensures future events from the same agent are routed correctly
+              if (!agentToTaskMapRef.current.has(event.agent)) {
+                agentToTaskMapRef.current.set(event.agent, taskId);
+                if (process.env.NODE_ENV === 'development') {
+                  console.log('[Stream] Built agent-to-task mapping from event:', {
+                    agent: event.agent,
+                    taskId,
+                    eventType,
+                  });
+                }
+              }
+              
               const subagentAssistantMessageId = event.id || `subagent-${Date.now()}`;
               
               if (eventType === 'message_chunk') {
@@ -1015,6 +1291,28 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
             }
             return;
           } else if (eventType === 'tool_calls') {
+            // Before handling tool calls, check if any are 'task' tool calls
+            // and track them for mapping to task IDs when subagent_status is received
+            if (event.tool_calls && Array.isArray(event.tool_calls)) {
+              event.tool_calls.forEach((toolCall) => {
+                if (toolCall.name === 'task' && toolCall.id) {
+                  // Track this tool call ID - it will be mapped to a task ID
+                  // when we receive the subagent_status event
+                  pendingTaskToolCallsRef.current.push({
+                    toolCallId: toolCall.id,
+                    timestamp: Date.now(),
+                  });
+                  if (process.env.NODE_ENV === 'development') {
+                    console.log('[Stream] Tracked task tool call for mapping:', {
+                      toolCallId: toolCall.id,
+                      description: toolCall.args?.description,
+                      pendingCount: pendingTaskToolCallsRef.current.length,
+                    });
+                  }
+                }
+              });
+            }
+            
             handleToolCalls({
               assistantMessageId,
               toolCalls: event.tool_calls,
@@ -1023,6 +1321,23 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
               setMessages,
             });
           } else if (eventType === 'tool_call_result') {
+            // Check if this is a tool_call_result for a 'task' tool call
+            // The tool_call_id maps to a task ID, and we can use this to build
+            // the agent-to-task mapping when we see the first subagent event
+            const toolCallId = event.tool_call_id;
+            if (toolCallId && !toolCallIdToTaskIdMapRef.current.has(toolCallId)) {
+              // Try to find the corresponding task ID from active tasks
+              // The task ID should match the tool call ID pattern or be in subagent_status
+              // For now, we'll wait for subagent_status to establish the mapping
+              // But we can store the tool call ID for later use
+              if (process.env.NODE_ENV === 'development') {
+                console.log('[Stream] Received tool_call_result for task tool:', {
+                  toolCallId,
+                  agent: event.agent,
+                });
+              }
+            }
+            
             handleToolCallResult({
               assistantMessageId,
               toolCallId: event.tool_call_id,
@@ -1063,6 +1378,24 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
           currentMessageRef.current = null;
           // Mark streaming as complete - this will allow history loading to proceed if thread ID changed
           isStreamingRef.current = false;
+          
+          // Inactivate all subagent cards at the end of streaming
+          // This prevents task ID collisions when new subagents are created with the same IDs
+          if (inactivateAllSubagents) {
+            inactivateAllSubagents();
+            if (process.env.NODE_ENV === 'development') {
+              console.log('[useChatMessages] Inactivated all subagents at end of streaming');
+            }
+          }
+          
+          // Minimize all inactive subagent cards at the end of streaming
+          // This keeps the UI clean by hiding cards from previous conversations
+          if (minimizeInactiveSubagents) {
+            minimizeInactiveSubagents();
+            if (process.env.NODE_ENV === 'development') {
+              console.log('[useChatMessages] Minimized all inactive subagents at end of streaming');
+            }
+          }
         }
       };
 
