@@ -42,6 +42,11 @@ services:
       DB_USER: ${DB_USER:-ptc_agent_prod}
       DB_NAME: ${DB_NAME:-ptc_agent_prod}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      MEMORY_DB_HOST: postgres
+      MEMORY_DB_PORT: "5432"
+      MEMORY_DB_NAME: ${DB_NAME:-ptc_agent_prod}
+      MEMORY_DB_USER: ${DB_USER:-ptc_agent_prod}
+      MEMORY_DB_PASSWORD: ${DB_PASSWORD}
     depends_on:
       postgres:
         condition: service_healthy
