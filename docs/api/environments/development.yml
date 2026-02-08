@@ -5,9 +5,9 @@ variables:
   - name: user_id
     value: agent
   - name: workspace_id
-    value: 3681c10f-26de-4c81-89a5-79665f8848fa
+    value: 8231679b-a771-4013-822c-c028b59cb26b
   - name: thread_id
-    value: d61e11be-4d6d-4177-b527-0327e81b8043
+    value: c6a1898b-345f-4910-9962-4910e47c60e9
   - name: response_id
     value: 4c683be9-e0eb-427d-9152-b0b6c3e65103
   - name: holding_id

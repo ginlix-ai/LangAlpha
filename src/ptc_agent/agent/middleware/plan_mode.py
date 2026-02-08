@@ -1,6 +1,6 @@
 """Plan Mode middleware for user-approved task execution.
 
-This middleware adds a `submit_plan` tool that requires user approval
+This middleware adds a `SubmitPlan` tool that requires user approval
 before the agent can proceed with execution. It enables a two-phase
 workflow: explore/plan, then execute after approval.
 """
@@ -22,9 +22,9 @@ except ImportError:
 
 
 class PlanModeMiddleware(AgentMiddleware):
-    """Middleware that adds submit_plan tool for plan approval workflow.
+    """Middleware that adds SubmitPlan tool for plan approval workflow.
 
-    When enabled, this middleware provides a `submit_plan` tool that the agent
+    When enabled, this middleware provides a `SubmitPlan` tool that the agent
     should call after exploring the codebase and before executing any write
     operations. The tool triggers a HITL interrupt for user approval.
 
@@ -42,9 +42,9 @@ class PlanModeMiddleware(AgentMiddleware):
         self._submit_plan_tool = self._create_submit_plan_tool()
 
     def _create_submit_plan_tool(self) -> BaseTool:
-        """Create the submit_plan tool."""
+        """Create the SubmitPlan tool."""
 
-        @tool
+        @tool("SubmitPlan")
         def submit_plan(
             description: str,
             tool_call_id: Annotated[str, InjectedToolCallId],
@@ -83,7 +83,7 @@ def format_plan_description(
     state: AgentState,
     runtime: Runtime[Any],
 ) -> str:
-    """Format the submit_plan tool call for the approval prompt.
+    """Format the SubmitPlan tool call for the approval prompt.
 
     This function is called by HumanInTheLoopMiddleware to generate
     the description shown to the user when approving/rejecting the plan.
@@ -105,10 +105,10 @@ def create_plan_mode_interrupt_config() -> dict[str, InterruptOnConfig]:
 
     Returns:
         Dictionary mapping tool names to their interrupt configurations.
-        Only includes 'submit_plan' which triggers approval.
+        Only includes 'SubmitPlan' which triggers approval.
     """
     return {
-        "submit_plan": InterruptOnConfig(
+        "SubmitPlan": InterruptOnConfig(
             allowed_decisions=["approve", "reject"],
             description=format_plan_description,
         )

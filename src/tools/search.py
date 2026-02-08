@@ -31,7 +31,7 @@ def get_web_search_tool(
             max_results=max_search_results,
             default_time_range=time_range,
         )
-        return create_logged_tool(serper_web_search, name="web_search")
+        return create_logged_tool(serper_web_search, name="WebSearch")
 
     elif SELECTED_SEARCH_ENGINE == SearchEngine.TAVILY.value:
         from src.tools.search_services.tavily import configure as configure_tavily
@@ -42,7 +42,7 @@ def get_web_search_tool(
             default_time_range=time_range,
             verbose=verbose,
         )
-        return create_logged_tool(tavily_web_search, name="web_search")
+        return create_logged_tool(tavily_web_search, name="WebSearch")
 
     elif SELECTED_SEARCH_ENGINE == SearchEngine.BOCHA.value:
         from src.tools.search_services.bocha import configure as configure_bocha
@@ -53,7 +53,7 @@ def get_web_search_tool(
             default_time_range=time_range,
             verbose=verbose,
         )
-        return create_logged_tool(bocha_web_search, name="web_search")
+        return create_logged_tool(bocha_web_search, name="WebSearch")
 
     else:
         raise ValueError(

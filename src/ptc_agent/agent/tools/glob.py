@@ -18,7 +18,7 @@ def create_glob_tool(sandbox: Any) -> BaseTool:
         Configured Glob tool function
     """
 
-    @tool
+    @tool("Glob")
     async def glob(pattern: str, path: str | None = None) -> str:
         """Find files matching a glob pattern.
 

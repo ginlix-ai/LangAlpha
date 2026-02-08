@@ -692,7 +692,7 @@ async def _astream_workflow(
                 "Before making any changes, you MUST:\n"
                 "1. Explore the codebase to understand the current state\n"
                 "2. Create a detailed plan describing what you intend to do\n"
-                "3. Call the `submit_plan` tool with your plan description\n"
+                "3. Call the `SubmitPlan` tool with your plan description\n"
                 "4. Wait for user approval before proceeding with execution\n"
                 "Do NOT execute any write operations until the plan is approved."
             )

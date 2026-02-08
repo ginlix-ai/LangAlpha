@@ -6,6 +6,7 @@ spawned by the BackgroundSubagentMiddleware.
 
 import asyncio
 import time
+import uuid as uuid_mod
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -64,6 +65,9 @@ class BackgroundTask:
     last_update_time: float = field(default_factory=time.time)
     """Timestamp of last metrics update."""
 
+    agent_id: str = ""
+    """Stable unique identity: '{subagent_type}:{uuid4}'."""
+
     @property
     def display_id(self) -> str:
         """Return Task-N format for display."""
@@ -95,6 +99,7 @@ class BackgroundTaskRegistry:
         """Initialize the registry."""
         self._tasks: dict[str, BackgroundTask] = {}
         self._task_by_number: dict[int, str] = {}  # task_number -> task_id mapping
+        self._ns_uuid_to_task_id: dict[str, str] = {}  # LangGraph namespace UUID -> task_id
         self._next_task_number: int = 1
         self._lock = asyncio.Lock()
         self._results: dict[str, Any] = {}
@@ -122,12 +127,14 @@ class BackgroundTaskRegistry:
             task_number = self._next_task_number
             self._next_task_number += 1
 
+            agent_id = f"{subagent_type}:{uuid_mod.uuid4()}"
             task = BackgroundTask(
                 task_id=task_id,
                 task_number=task_number,
                 description=description,
                 subagent_type=subagent_type,
                 asyncio_task=asyncio_task,
+                agent_id=agent_id,
             )
             self._tasks[task_id] = task
             self._task_by_number[task_number] = task_id
@@ -189,6 +196,39 @@ class BackgroundTaskRegistry:
             The BackgroundTask or None if not found
         """
         return self._tasks.get(task_id)
+
+    def register_namespace(self, checkpoint_ns: str, task_id: str) -> None:
+        """Register LangGraph namespace UUIDs for a background task.
+
+        Parses checkpoint_ns like "tools:uuid1|model:uuid2" and maps
+        each LangGraph task UUID to our task_id for streaming lookup.
+
+        Args:
+            checkpoint_ns: The checkpoint namespace string from LangGraph config
+            task_id: The background task identifier
+        """
+        for element in checkpoint_ns.split("|"):
+            parts = element.split(":", 1)
+            if len(parts) == 2:
+                ns_uuid = parts[1]
+                self._ns_uuid_to_task_id[ns_uuid] = task_id
+
+    def get_task_by_namespace(self, ns_element: str) -> BackgroundTask | None:
+        """Look up task from a namespace element like 'tools:uuid'.
+
+        Args:
+            ns_element: A single namespace element (e.g., "tools:4cd20fdc-...")
+
+        Returns:
+            The BackgroundTask or None if not found
+        """
+        parts = ns_element.split(":", 1)
+        if len(parts) == 2:
+            ns_uuid = parts[1]
+            task_id = self._ns_uuid_to_task_id.get(ns_uuid)
+            if task_id:
+                return self._tasks.get(task_id)
+        return None
 
     async def update_metrics(self, task_id: str, tool_name: str) -> None:
         """Update tool call metrics for a task.
@@ -472,6 +512,7 @@ class BackgroundTaskRegistry:
         """
         self._tasks.clear()
         self._task_by_number.clear()
+        self._ns_uuid_to_task_id.clear()
         self._next_task_number = 1
         self._results.clear()
         logger.debug("Cleared background task registry")

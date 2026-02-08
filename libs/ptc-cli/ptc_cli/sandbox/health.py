@@ -53,7 +53,7 @@ async def check_sandbox_health(session: "Session") -> bool:
 class EmptyResultTracker:
     """Tracks consecutive empty tool results for sandbox health detection."""
 
-    SENSITIVE_TOOLS = {"glob", "grep", "ls", "Glob", "Grep"}
+    SENSITIVE_TOOLS = {"ls", "Glob", "Grep"}
     THRESHOLD = 2
 
     def __init__(self) -> None:

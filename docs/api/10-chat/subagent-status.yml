@@ -40,7 +40,7 @@ docs: |
         "description": "Researching topic...",
         "type": "research",
         "tool_calls": 5,
-        "current_tool": "web_search"
+        "current_tool": "WebSearch"
       }
     ],
     "completed_tasks": ["task-0"],

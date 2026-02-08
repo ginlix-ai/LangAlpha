@@ -24,7 +24,7 @@ class BackgroundSubagentOrchestrator:
     1. First invocation: Agent runs normally, spawning background tasks
     2. After agent ends: Orchestrator waits for pending background tasks
     3. If tasks completed: Re-invoke agent with notification message
-    4. Agent calls task_output() to retrieve cached results
+    4. Agent calls TaskOutput() to retrieve cached results
 
     Usage:
         middleware = BackgroundSubagentMiddleware(timeout=60.0)
@@ -272,14 +272,14 @@ class BackgroundSubagentOrchestrator:
             notification_message = HumanMessage(content=notification)
             current_state = {**state_values, "messages": [*messages, notification_message]}
 
-            # NOTE: Do NOT clear registry here - agent needs to call task_output()
+            # NOTE: Do NOT clear registry here - agent needs to call TaskOutput()
             # to retrieve results in the next iteration.
 
     def _format_notification(self) -> str:
         """Format notification message for all completed background tasks.
 
         Returns:
-            Notification string prompting agent to call task_output()
+            Notification string prompting agent to call TaskOutput()
         """
         completed_tasks = [
             task for task in self.middleware.registry._tasks.values()
@@ -294,7 +294,7 @@ class BackgroundSubagentOrchestrator:
             tasks: List of BackgroundTask objects to include in notification
 
         Returns:
-            Notification string prompting agent to call task_output()
+            Notification string prompting agent to call TaskOutput()
         """
         if not tasks:
             return ""
@@ -307,14 +307,14 @@ class BackgroundSubagentOrchestrator:
             task = sorted_tasks[0]
             return (
                 f"Your background subagent task has completed: **{task.display_id}**.\n\n"
-                f"Call `task_output(task_number={task.task_number})` to see the result."
+                f"Call `TaskOutput(task_number={task.task_number})` to see the result."
             )
 
         task_list = ", ".join(f"**{t.display_id}**" for t in sorted_tasks)
         return (
             f"Your background subagent tasks have completed: {task_list}.\n\n"
-            f"Call `task_output()` to see all results, or "
-            f"`task_output(task_number=N)` for a specific task."
+            f"Call `TaskOutput()` to see all results, or "
+            f"`TaskOutput(task_number=N)` for a specific task."
         )
 
     def get_pending_tasks_status(self) -> dict[str, Any]:
@@ -382,7 +382,7 @@ class BackgroundSubagentOrchestrator:
         for task in unseen_tasks:
             task.result_seen = True
 
-        # NOTE: Do NOT clear registry here - agent needs to call task_output()
+        # NOTE: Do NOT clear registry here - agent needs to call TaskOutput()
         # to retrieve results. Registry is only cleared when session ends.
 
         return self._format_notification_for_tasks(unseen_tasks)

@@ -11,8 +11,8 @@ This skill provides 3 unified tools for managing user data:
 - `remove_user_data` - Delete user data
 
 The tools are hidden by default and will be available to you after loading the skill.
-To load the skill, use the `load_skill` tool with the skill name "user-profile".
-You should call the tools being loaded directly instead of using execute_code tool.
+To load the skill, use the `LoadSkill` tool with the skill name "user-profile".
+You should call the tools being loaded directly instead of using ExecuteCode tool.
 
 For first-time user setup, see [onboarding.md](./onboarding.md).
 

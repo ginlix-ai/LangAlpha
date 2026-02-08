@@ -2,12 +2,17 @@
 
 This middleware is injected into subagents to count their tool calls and
 report metrics back to the BackgroundTaskRegistry.
+
+It also emits a `subagent_identity` custom stream event on the first model
+call so the streaming handler can map LangGraph namespace UUIDs to our
+stable background task identities.
 """
 
 from collections.abc import Awaitable, Callable
 
 import structlog
 from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
@@ -24,6 +29,11 @@ class ToolCallCounterMiddleware(AgentMiddleware):
     This middleware is designed to be injected into subagents running in the
     background. It tracks how many tool calls each subagent makes and what
     tools are being used.
+
+    It also emits a ``subagent_identity`` custom stream event on the first
+    model call.  The streaming handler receives this event *with* the
+    LangGraph namespace tuple attached, which lets it register the mapping
+    from opaque ``tools:<uuid>`` namespace to our stable ``agent_id``.
 
     The middleware uses a contextvar (current_background_task_id) to identify
     which background task it belongs to. Contextvars properly propagate across
@@ -47,6 +57,44 @@ class ToolCallCounterMiddleware(AgentMiddleware):
         super().__init__()
         self.tools = []  # No additional tools
         self.registry = registry
+        self._emitted_identity: set[str] = set()  # task_ids that already emitted identity event
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        """Emit subagent_identity stream event on first model call.
+
+        This runs BEFORE the LLM generates any output, so the streaming
+        handler can register the namespace mapping before any message_chunk
+        or tool_call_chunks events arrive.
+
+        The custom event carries ``task_id``; the streaming infrastructure
+        automatically attaches the correct ``namespace_tuple`` so the handler
+        knows which LangGraph namespace UUID maps to which background task.
+        """
+        task_id = current_background_task_id.get()
+
+        if task_id and self.registry and task_id not in self._emitted_identity:
+            try:
+                from langgraph.config import get_stream_writer
+
+                writer = get_stream_writer()
+                writer({"type": "subagent_identity", "task_id": task_id})
+                self._emitted_identity.add(task_id)
+                logger.debug(
+                    "Emitted subagent_identity event",
+                    task_id=task_id,
+                )
+            except Exception as e:
+                logger.debug(
+                    "Failed to emit subagent_identity event",
+                    task_id=task_id,
+                    error=str(e),
+                )
+
+        return await handler(request)
 
     def wrap_tool_call(
         self,

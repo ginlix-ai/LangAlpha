@@ -7,7 +7,6 @@ from unittest.mock import Mock
 from typing import Any
 
 import pytest
-from rich.markdown import Markdown
 from rich.panel import Panel
 
 import ptc_cli.streaming.executor as executor_module
@@ -30,8 +29,8 @@ class FakeSSEClient:
 
 
 @pytest.mark.asyncio
-async def test_execute_task_hides_tools_message_chunks(session_state, monkeypatch):
-    """Chunks from `agent` containing `tools:` are not shown."""
+async def test_execute_task_hides_subagent_message_chunks(session_state, monkeypatch):
+    """Chunks from subagent (unified identity) are not shown."""
     mock_console = Mock()
     mock_status = Mock()
     mock_console.status.return_value = mock_status
@@ -50,16 +49,16 @@ async def test_execute_task_hides_tools_message_chunks(session_state, monkeypatc
                 "tool_calls",
                 {
                     "thread_id": "thread_1",
-                    "agent": "tools:subgraph",
-                    "tool_calls": [{"id": "c1", "name": "task", "args": {"x": 1}}],
+                    "agent": "general-purpose:02cd4745-f5f9-41b0-8a93-393d90e7ede0",
+                    "tool_calls": [{"id": "c1", "name": "Task", "args": {"x": 1}}],
                 },
             ),
             (
                 "message_chunk",
                 {
                     "thread_id": "thread_1",
-                    "agent": "tools:subgraph",
-                    "content": "SUBGRAPH SHOULD NOT DISPLAY",
+                    "agent": "general-purpose:02cd4745-f5f9-41b0-8a93-393d90e7ede0",
+                    "content": "SUBAGENT SHOULD NOT DISPLAY",
                     "content_type": "text",
                 },
             ),
@@ -67,7 +66,7 @@ async def test_execute_task_hides_tools_message_chunks(session_state, monkeypatc
                 "tool_call_result",
                 {
                     "thread_id": "thread_1",
-                    "agent": "tools:subgraph",
+                    "agent": "general-purpose:02cd4745-f5f9-41b0-8a93-393d90e7ede0",
                     "tool_call_id": "c1",
                     "status": "success",
                     "content": "SUBAGENT TOOL RESULT SHOULD NOT DISPLAY",
@@ -77,7 +76,7 @@ async def test_execute_task_hides_tools_message_chunks(session_state, monkeypatc
                 "message_chunk",
                 {
                     "thread_id": "thread_1",
-                    "agent": "ptc:main",
+                    "agent": "model:a1b2c3d4-e5f6-7890-abcd-ef1234567890",
                     "content": "FINAL REPORT",
                     "content_type": "text",
                     "finish_reason": "stop",
@@ -95,19 +94,21 @@ async def test_execute_task_hides_tools_message_chunks(session_state, monkeypatc
         session_state=session_state,
     )
 
-    markdown_calls = [
-        call
+    # StreamingState.append_text prints raw text strings, not Markdown objects
+    all_printed_text = " ".join(
+        str(call.args[0])
         for call in mock_console.print.call_args_list
-        if call.args and isinstance(call.args[0], Markdown)
-    ]
+        if call.args
+    )
 
-    assert any("FINAL REPORT" in call.args[0].markup for call in markdown_calls)
-    assert not any("SUBGRAPH SHOULD NOT DISPLAY" in call.args[0].markup for call in markdown_calls)
+    assert "FINAL REPORT" in all_printed_text
+    assert "SUBAGENT SHOULD NOT DISPLAY" not in all_printed_text
+    assert "SUBAGENT TOOL RESULT SHOULD NOT DISPLAY" not in all_printed_text
 
 
 @pytest.mark.asyncio
 async def test_execute_task_renders_background_task_panel(session_state, monkeypatch):
-    """Successful task/wait/task_output results are shown in a Panel."""
+    """Successful task/Wait/TaskOutput results are shown in a Panel."""
     mock_console = Mock()
     mock_status = Mock()
     mock_console.status.return_value = mock_status
@@ -126,15 +127,15 @@ async def test_execute_task_renders_background_task_panel(session_state, monkeyp
                 "tool_calls",
                 {
                     "thread_id": "thread_1",
-                    "agent": "ptc:main",
-                    "tool_calls": [{"id": "c1", "name": "task", "args": {}}],
+                    "agent": "model:a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                    "tool_calls": [{"id": "c1", "name": "Task", "args": {}}],
                 },
             ),
             (
                 "tool_call_result",
                 {
                     "thread_id": "thread_1",
-                    "agent": "ptc:main",
+                    "agent": "model:a1b2c3d4-e5f6-7890-abcd-ef1234567890",
                     "tool_call_id": "c1",
                     "status": "success",
                     "content": "hello from subagent",
@@ -159,8 +160,8 @@ async def test_execute_task_renders_background_task_panel(session_state, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_execute_task_renders_write_todos(session_state, monkeypatch):
-    """write_todos tool args trigger todo list rendering."""
+async def test_execute_task_renders_TodoWrite(session_state, monkeypatch):
+    """TodoWrite tool args trigger todo list rendering."""
     mock_console = Mock()
     mock_status = Mock()
     mock_console.status.return_value = mock_status
@@ -187,8 +188,8 @@ async def test_execute_task_renders_write_todos(session_state, monkeypatch):
                 "tool_calls",
                 {
                     "thread_id": "thread_1",
-                    "agent": "ptc:main",
-                    "tool_calls": [{"id": "t1", "name": "write_todos", "args": {"todos": todos}}],
+                    "agent": "model:a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                    "tool_calls": [{"id": "t1", "name": "TodoWrite", "args": {"todos": todos}}],
                 },
             ),
             ("done", {"thread_id": "thread_1"}),

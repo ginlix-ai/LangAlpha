@@ -383,7 +383,7 @@ class ToolCallProcessor:
             return True, metadata
 
         # Special handling for search tools
-        search_tools = ['web_search', 'web_fetch_tool', 'default_api.web_search', 'default_api.web_fetch_tool']
+        search_tools = ['WebSearch', 'WebFetch']
         if tool_name in search_tools:
             if 'failed to search' in content_lower or 'search error' in content_lower:
                 return True, metadata

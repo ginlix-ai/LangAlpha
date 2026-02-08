@@ -132,10 +132,10 @@ def create_wait_tool(middleware: BackgroundSubagentMiddleware) -> StructuredTool
         return output
 
     return StructuredTool.from_function(
-        name="wait",
+        name="Wait",
         description=(
             "Wait for background subagent(s) to complete and retrieve their results. "
-            "Use wait(task_number=1) for a specific task or wait() for all pending tasks. "
+            "Use Wait(task_number=1) for a specific task or Wait() for all pending tasks. "
             "You can also specify a custom timeout in seconds."
         ),
         coroutine=wait_for_subagents,
@@ -211,12 +211,12 @@ def create_task_output_tool(registry: BackgroundTaskRegistry) -> StructuredTool:
         return output
 
     return StructuredTool.from_function(
-        name="task_output",
+        name="TaskOutput",
         description=(
             "Get the output of background subagent tasks. Returns the result "
             "if the task is completed, or shows progress if still running. "
-            "Use task_output(task_number=1) for a specific task or "
-            "task_output() to see all tasks."
+            "Use TaskOutput(task_number=1) for a specific task or "
+            "TaskOutput() to see all tasks."
         ),
         coroutine=task_output,
     )

@@ -19,7 +19,7 @@ def create_grep_tool(sandbox: Any) -> BaseTool:
         Configured Grep tool function
     """
 
-    @tool
+    @tool("Grep")
     async def grep(
         pattern: str,
         path: str | None = None,

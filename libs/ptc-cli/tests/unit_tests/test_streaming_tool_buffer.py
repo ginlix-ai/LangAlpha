@@ -19,7 +19,7 @@ class TestToolCallChunkBuffer:
         buffer = ToolCallChunkBuffer()
 
         chunk = {
-            "name": "read_file",
+            "name": "Read",
             "id": "tool_1",
             "args": {"file_path": "/path/to/file.txt"},
         }
@@ -27,7 +27,7 @@ class TestToolCallChunkBuffer:
         result = buffer.add_chunk(chunk)
 
         assert result is not None
-        assert result["name"] == "read_file"
+        assert result["name"] == "Read"
         assert result["id"] == "tool_1"
         assert result["args"] == {"file_path": "/path/to/file.txt"}
 
@@ -37,7 +37,7 @@ class TestToolCallChunkBuffer:
 
         # First chunk - name and partial args
         chunk1 = {
-            "name": "read_file",
+            "name": "Read",
             "id": "tool_1",
             "args": '{"file',
         }
@@ -60,7 +60,7 @@ class TestToolCallChunkBuffer:
         result3 = buffer.add_chunk(chunk3)
 
         assert result3 is not None
-        assert result3["name"] == "read_file"
+        assert result3["name"] == "Read"
         assert result3["id"] == "tool_1"
         assert result3["args"] == {"file_path": "/path/to/file.txt"}
 
@@ -70,7 +70,7 @@ class TestToolCallChunkBuffer:
 
         # Use index instead of id
         chunk1 = {
-            "name": "read_file",
+            "name": "Read",
             "index": 0,
             "args": '{"file',
         }
@@ -84,7 +84,7 @@ class TestToolCallChunkBuffer:
         result2 = buffer.add_chunk(chunk2)
 
         assert result2 is not None
-        assert result2["name"] == "read_file"
+        assert result2["name"] == "Read"
         assert result2["args"] == {"file_path": "/test.txt"}
 
     def test_was_displayed_returns_false_initially_true_after_mark(self):
@@ -118,7 +118,7 @@ class TestToolCallChunkBuffer:
         buffer = ToolCallChunkBuffer()
 
         chunk = {
-            "name": "read_file",
+            "name": "Read",
             "id": "tool_1",
             "args": '{"invalid json',
         }
@@ -132,7 +132,7 @@ class TestToolCallChunkBuffer:
         buffer = ToolCallChunkBuffer()
 
         chunk = {
-            "name": "read_file",
+            "name": "Read",
             "id": "tool_1",
             "args": "",
         }
@@ -146,7 +146,7 @@ class TestToolCallChunkBuffer:
         buffer = ToolCallChunkBuffer()
 
         chunk = {
-            "name": "read_file",
+            "name": "Read",
             "id": "tool_1",
             "args": None,
         }
@@ -173,7 +173,7 @@ class TestToolCallChunkBuffer:
         buffer = ToolCallChunkBuffer()
 
         chunk = {
-            "name": "read_file",
+            "name": "Read",
             "id": "tool_1",
             "args": {"file_path": "/test.txt"},
         }
@@ -190,7 +190,7 @@ class TestToolCallChunkBuffer:
 
         # First tool call - chunk 1
         chunk1 = {
-            "name": "read_file",
+            "name": "Read",
             "id": "tool_1",
             "args": '{"file',
         }
@@ -198,7 +198,7 @@ class TestToolCallChunkBuffer:
 
         # Second tool call - chunk 1
         chunk2 = {
-            "name": "write_file",
+            "name": "Write",
             "id": "tool_2",
             "args": '{"file',
         }
@@ -212,7 +212,7 @@ class TestToolCallChunkBuffer:
         result1 = buffer.add_chunk(chunk3)
 
         assert result1 is not None
-        assert result1["name"] == "read_file"
+        assert result1["name"] == "Read"
         assert result1["id"] == "tool_1"
 
         # Complete second tool call
@@ -223,7 +223,7 @@ class TestToolCallChunkBuffer:
         result2 = buffer.add_chunk(chunk4)
 
         assert result2 is not None
-        assert result2["name"] == "write_file"
+        assert result2["name"] == "Write"
         assert result2["id"] == "tool_2"
 
     def test_duplicate_args_chunk_deduplication(self):
@@ -232,7 +232,7 @@ class TestToolCallChunkBuffer:
 
         # Sometimes streaming sends duplicate chunks
         chunk1 = {
-            "name": "read_file",
+            "name": "Read",
             "id": "tool_1",
             "args": '{"file',
         }
@@ -305,7 +305,7 @@ class TestToolCallChunkBuffer:
 
         # First chunk with name but no id
         chunk1 = {
-            "name": "read_file",
+            "name": "Read",
             "index": 0,
             "args": '{"file',
         }
@@ -321,7 +321,7 @@ class TestToolCallChunkBuffer:
 
         assert result is not None
         assert result["id"] == "tool_1"
-        assert result["name"] == "read_file"
+        assert result["name"] == "Read"
 
     def test_dict_args_override_string_args(self):
         """Test that dict args override accumulated string args."""
@@ -329,7 +329,7 @@ class TestToolCallChunkBuffer:
 
         # First chunk with string args
         chunk1 = {
-            "name": "read_file",
+            "name": "Read",
             "id": "tool_1",
             "args": '{"partial',
         }

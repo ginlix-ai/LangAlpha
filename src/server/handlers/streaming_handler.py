@@ -499,6 +499,21 @@ class WorkflowStreamHandler:
                     if isinstance(event_data, dict):
                         event_type = event_data.get("type")
 
+                        # Handle subagent identity registration
+                        # Emitted by ToolCallCounterMiddleware on first model call.
+                        # The namespace_tuple from the streaming infrastructure tells us
+                        # which LangGraph UUID corresponds to which background task.
+                        if event_type == "subagent_identity":
+                            task_id = event_data.get("task_id")
+                            if task_id and self._background_registry and agent_from_stream:
+                                ns_str = "|".join(str(ns) for ns in agent_from_stream)
+                                self._background_registry.register_namespace(ns_str, task_id)
+                                logger.debug(
+                                    f"[SUBAGENT_IDENTITY] Registered namespace mapping: "
+                                    f"{ns_str} -> task_id={task_id}"
+                                )
+                            continue
+
                         # Handle summarization lifecycle signals
                         if event_type == "summarization_signal":
                             signal_data = {
@@ -754,15 +769,24 @@ class WorkflowStreamHandler:
         )
 
     def _extract_agent_name(self, namespace_tuple: tuple, message_metadata: dict) -> str:
-        """Return the agent identifier as LangGraph emits it.
+        """Return the agent identifier, resolving to unified subagent identity when possible.
 
         Priority:
-        1. `namespace_tuple[-1]` (verbatim, includes UUID)
-        2. `checkpoint_ns` (verbatim)
-        3. `langgraph_node`
+        1. `namespace_tuple[-1]` resolved via registry to `agent_id` (e.g., "research:uuid4")
+        2. `namespace_tuple[-1]` (verbatim, includes UUID)
+        3. `checkpoint_ns` (verbatim)
+        4. `langgraph_node`
         """
         if namespace_tuple:
-            return str(namespace_tuple[-1])
+            raw_name = str(namespace_tuple[-1])
+
+            # Try to resolve to unified subagent identity via registry
+            if self._background_registry:
+                task = self._background_registry.get_task_by_namespace(raw_name)
+                if task and task.agent_id:
+                    return task.agent_id
+
+            return raw_name
 
         checkpoint_ns = message_metadata.get("checkpoint_ns")
         if checkpoint_ns:
@@ -825,6 +849,7 @@ class WorkflowStreamHandler:
             active_tasks = [
                 {
                     "id": task.display_id,
+                    "agent_id": task.agent_id,
                     "description": task.description[:100] if task.description else "",
                     "type": task.subagent_type,
                     "tool_calls": task.total_tool_calls,

@@ -28,7 +28,7 @@ def create_execute_code_tool(sandbox: Any, mcp_registry: Any) -> BaseTool:
         Configured execute_code tool function
     """
 
-    @tool
+    @tool("ExecuteCode")
     async def execute_code(code: str) -> str:
         """Execute Python code in the sandbox.
 

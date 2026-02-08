@@ -1,12 +1,12 @@
 # Tool Discovery
 
-You have access to MCP servers with specialized tools. Use the `execute_code` tool to run Python code that invokes these tools.
+You have access to MCP servers with specialized tools. Use the `ExecuteCode` tool to run Python code that invokes these tools.
 
 {{ tool_summary }}
 
 ## How to Use MCP Tools
 
-Import and use MCP tools in your execute_code calls:
+Import and use MCP tools in your ExecuteCode calls:
 
 ```python
 from tools.{server_name} import {tool_name}
@@ -24,9 +24,9 @@ Before using any MCP tool, discover its exact signature using this workflow:
 Find what's available before reading anything:
 
 ```python
-glob("tools/docs/{server_name}/*.md")    # List all tool docs for a server
-glob("tools/*.py")                        # List all MCP tool modules
-grep("{keyword}", path="tools/docs/")     # Search docs by keyword
+Glob("tools/docs/{server_name}/*.md")    # List all tool docs for a server
+Glob("tools/*.py")                        # List all MCP tool modules
+Grep("{keyword}", path="tools/docs/")     # Search docs by keyword
 ```
 
 ### Step 2: Read Documentation FIRST
@@ -34,7 +34,7 @@ grep("{keyword}", path="tools/docs/")     # Search docs by keyword
 **ALWAYS read the individual .md doc file first** - each tool has its own documentation:
 
 ```python
-read_file("tools/docs/{server_name}/{tool_name}.md")
+Read("tools/docs/{server_name}/{tool_name}.md")
 ```
 
 Tool doc files contain:
@@ -49,7 +49,7 @@ Only read the .py module if documentation is missing or incomplete:
 
 ```python
 # Use offset/limit to read specific sections, not the entire file
-read_file("tools/{server_name}.py", offset=50, limit=30)
+Read("tools/{server_name}.py", offset=50, limit=30)
 ```
 {% if include_examples | default(true) %}
 
@@ -57,11 +57,11 @@ read_file("tools/{server_name}.py", offset=50, limit=30)
 
 | Goal | Command |
 |------|---------|
-| List server's tools | `glob("tools/docs/{server_name}/*.md")` |
-| Read tool documentation | `read_file("tools/docs/{server_name}/{tool_name}.md")` |
-| Search all docs | `grep("{keyword}", path="tools/docs/")` |
-| Find tool in module | `grep("def {tool_name}", path="tools/{server_name}.py")` |
-| List saved results | `glob("results/*")` |
+| List server's tools | `Glob("tools/docs/{server_name}/*.md")` |
+| Read tool documentation | `Read("tools/docs/{server_name}/{tool_name}.md")` |
+| Search all docs | `Grep("{keyword}", path="tools/docs/")` |
+| Find tool in module | `Grep("def {tool_name}", path="tools/{server_name}.py")` |
+| List saved results | `Glob("results/*")` |
 {% endif %}
 {% if include_anti_patterns | default(true) %}
 
@@ -69,6 +69,6 @@ read_file("tools/{server_name}.py", offset=50, limit=30)
 
 - DON'T read entire .py files to find one tool's signature - read the .md doc instead
 - DON'T guess tool parameters without checking documentation first
-- DON'T use Bash find/grep when glob/grep tools exist
+- DON'T use Bash find/grep when Glob/Grep tools exist
 - DON'T read large files without offset/limit
 {% endif %}

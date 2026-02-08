@@ -129,11 +129,11 @@ class TestEmptyResultTracker:
         """Test non-sensitive tools don't increment count."""
         tracker = EmptyResultTracker()
 
-        result = tracker.record("read_file", "")
+        result = tracker.record("Read", "")
         assert result is False
         assert tracker._count == 0
 
-        result = tracker.record("write_file", "")
+        result = tracker.record("Write", "")
         assert result is False
         assert tracker._count == 0
 
@@ -142,12 +142,12 @@ class TestEmptyResultTracker:
         tracker = EmptyResultTracker()
 
         # First empty result - below threshold
-        result = tracker.record("glob", "")
+        result = tracker.record("Glob", "")
         assert result is False
         assert tracker._count == 1
 
         # Second empty result - at threshold
-        result = tracker.record("grep", "")
+        result = tracker.record("Grep", "")
         assert result is True
         assert tracker._count == 2
 
@@ -163,19 +163,19 @@ class TestEmptyResultTracker:
         """Test non-empty results reset count."""
         tracker = EmptyResultTracker()
 
-        tracker.record("glob", "")  # count = 1
+        tracker.record("Glob", "")  # count = 1
         assert tracker._count == 1
 
         # Non-empty result should reset
-        tracker.record("grep", "file1.txt\nfile2.txt")
+        tracker.record("Grep", "file1.txt\nfile2.txt")
         assert tracker._count == 0
 
     def test_reset_method(self):
         """Test reset method."""
         tracker = EmptyResultTracker()
 
-        tracker.record("glob", "")
-        tracker.record("grep", "")
+        tracker.record("Glob", "")
+        tracker.record("Grep", "")
         assert tracker._count == 2
 
         tracker.reset()
@@ -185,11 +185,11 @@ class TestEmptyResultTracker:
         """Test empty JSON results are considered empty."""
         tracker = EmptyResultTracker()
 
-        result = tracker.record("glob", "[]")
+        result = tracker.record("Glob", "[]")
         assert result is False
         assert tracker._count == 1
 
-        result = tracker.record("grep", "{}")
+        result = tracker.record("Grep", "{}")
         assert result is True
         assert tracker._count == 2
 
@@ -197,7 +197,7 @@ class TestEmptyResultTracker:
         """Test whitespace-only results are considered empty."""
         tracker = EmptyResultTracker()
 
-        result = tracker.record("glob", "   \n\t  ")
+        result = tracker.record("Glob", "   \n\t  ")
         assert result is False
         assert tracker._count == 1
 
@@ -205,18 +205,18 @@ class TestEmptyResultTracker:
         """Test None content is considered empty."""
         tracker = EmptyResultTracker()
 
-        result = tracker.record("glob", None)
+        result = tracker.record("Glob", None)
         assert result is False
         assert tracker._count == 1
 
     def test_sensitive_tools_case_variations(self):
-        """Test sensitive tools work with different case variations."""
+        """Test sensitive tools work with PascalCase."""
         tracker = EmptyResultTracker()
 
-        tracker.record("glob", "")  # lowercase
+        tracker.record("Glob", "")  # PascalCase
         assert tracker._count == 1
 
-        tracker.record("Glob", "")  # capitalized
+        tracker.record("Grep", "")  # PascalCase
         assert tracker._count == 2
 
         tracker.reset()

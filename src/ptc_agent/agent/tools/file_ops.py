@@ -66,7 +66,7 @@ def create_filesystem_tools(
     def _format_cat_n(lines: list[str], *, start_line_number: int) -> str:
         return "\n".join(f"{i:6}\t{line}" for i, line in enumerate(lines, start=start_line_number))
 
-    @tool
+    @tool("Read")
     async def read_file(file_path: str, offset: int | None = None, limit: int | None = None) -> str:
         """Read a file with line numbers (cat -n format). Also supports images (PNG, JPG, GIF, WebP), PDFs, and URLs.
 
@@ -130,7 +130,7 @@ def create_filesystem_tools(
             logger.exception(error_msg, file_path=file_path)
             return f"ERROR: {error_msg}"
 
-    @tool
+    @tool("Write")
     async def write_file(file_path: str, content: str) -> str:
         """Write content to a file. Overwrites existing."""
         try:
@@ -173,7 +173,7 @@ def create_filesystem_tools(
             logger.error(error_msg, file_path=file_path, error=str(e), exc_info=True)
             return f"ERROR: {error_msg}"
 
-    @tool
+    @tool("Edit")
     async def edit_file(file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
         """Replace exact string in a file. Must Read file first."""
         try:

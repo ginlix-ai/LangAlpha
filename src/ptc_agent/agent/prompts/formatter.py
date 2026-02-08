@@ -10,16 +10,16 @@ from typing import Any
 MCP_SECTION_TEMPLATE = """
 ================================================================================
 
-# MCP Tools (via execute_code)
+# MCP Tools (via ExecuteCode)
 
-You have access to MCP servers with specialized tools. Use the execute_code tool
+You have access to MCP servers with specialized tools. Use the ExecuteCode tool
 to run Python code that invokes these tools.
 
 {tool_summary}
 
 ## Using MCP Tools
 
-Import and use MCP tools in your execute_code calls:
+Import and use MCP tools in your ExecuteCode calls:
 
 ```python
 from tools.{{server_name}} import {{tool_name}}

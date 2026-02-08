@@ -20,7 +20,7 @@ http:
         "messages": [
           {
             "role": "user",
-            "content": "Hello, how can you help me?"
+            "content": "what did we discuess?"
           }
         ],
         "agent_mode": "ptc",

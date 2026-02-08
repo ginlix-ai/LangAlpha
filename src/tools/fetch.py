@@ -430,7 +430,7 @@ _decorated_impl = log_io(_web_fetch_tool_impl)
 
 web_fetch_tool = StructuredTool.from_function(
     coroutine=_decorated_impl,
-    name="web_fetch",
+    name="WebFetch",
     description="""Fetches content from a specified URL and processes it using an AI model.
 
 Takes a URL and a prompt as input. Fetches the URL content, converts HTML

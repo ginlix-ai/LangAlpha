@@ -883,7 +883,7 @@ async def handle_command(
                 "type": "skills",
                 "name": "user-profile",
                 "instruction": """Help the user with first time onboarding. referecen the skills/user-profile/onboarding.md for more details.
-                You should use load_skill tool to load the user-profile skill before calling any of the tools.
+                You should use LoadSkill tool to load the user-profile skill before calling any of the tools.
                 """
             }
         ]

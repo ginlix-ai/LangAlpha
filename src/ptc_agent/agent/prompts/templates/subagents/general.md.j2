@@ -9,16 +9,15 @@ Execute the delegated task using your available tools. You have full access to:
 
 <Available Tools>
 1. **Filesystem Tools** (built-in):
-   - ls() - List directory contents
-   - read_file(path) - Read file content
-   - write_file(path, content) - Write content to file
-   - edit_file(path, old_string, new_string) - Edit file with string replacement
-   - glob(pattern) - Find files matching pattern
-   - grep(pattern) - Search file contents
+   - Read(path) - Read file content
+   - Write(path, content) - Write content to file
+   - Edit(path, old_string, new_string) - Edit file with string replacement
+   - Glob(pattern) - Find files matching pattern (use `Glob("*")` to list directory)
+   - Grep(pattern) - Search file contents
 
-2. **bash** - Execute system commands
+2. **Bash** - Execute system commands
 
-3. **execute_code** - Run Python code with MCP tool access
+3. **ExecuteCode** - Run Python code with MCP tool access
 </Available Tools>
 
 <tool_discovery>
@@ -27,7 +26,7 @@ Execute the delegated task using your available tools. You have full access to:
 
 <Instructions>
 1. **Understand the task** - Break it down into clear steps
-2. **Choose appropriate tools** - Use filesystem tools for file ops, execute_code for MCP tools
+2. **Choose appropriate tools** - Use filesystem tools for file ops, ExecuteCode for MCP tools
 3. **Execute systematically** - Complete each step before moving to next
 4. **Handle errors gracefully** - Retry with different approaches if needed
 5. **Report results clearly** - Summarize what was accomplished
@@ -35,7 +34,7 @@ Execute the delegated task using your available tools. You have full access to:
 
 <Guidelines>
 - Prefer filesystem tools over Bash for file operations
-- Use execute_code for complex data processing or MCP tool calls
+- Use ExecuteCode for complex data processing or MCP tool calls
 - Maximum {{ max_iterations | default(15) }} tool call iterations
 {% if storage_enabled | default(false) %}
 

@@ -1,6 +1,6 @@
 """Dynamic skill loader middleware.
 
-This middleware provides a `load_skill` tool that dynamically makes skill tools
+This middleware provides a `LoadSkill` tool that dynamically makes skill tools
 available to the agent. Skills are pre-registered at agent creation, but the
 `wrap_model_call` hook filters tools before each model turn.
 
@@ -10,16 +10,16 @@ creation for ToolNode execution, but visibility is controlled per-turn.
 
 Architecture:
 - Tools from all skills are pre-registered with ToolNode at agent creation
-- The `load_skill` tool is intercepted by middleware to update state["loaded_skills"]
+- The `LoadSkill` tool is intercepted by middleware to update state["loaded_skills"]
 - Before each model call, `awrap_model_call` filters tools based on loaded skills
-- Result: Model only sees tools from loaded skills (+ load_skill itself)
+- Result: Model only sees tools from loaded skills (+ LoadSkill itself)
 
 Usage:
     from ptc_agent.agent.middleware.dynamic_skill_loader import DynamicSkillLoaderMiddleware
     from ptc_agent.agent.skills import SKILL_REGISTRY
 
     middleware = DynamicSkillLoaderMiddleware(skill_registry=SKILL_REGISTRY)
-    # middleware.tools contains [load_skill]
+    # middleware.tools contains [LoadSkill]
     # middleware.get_all_skill_tools() returns all skill tools for ToolNode
 """
 
@@ -51,8 +51,8 @@ class DynamicSkillLoaderMiddleware(AgentMiddleware):
     """Middleware that provides dynamic skill loading with tool filtering.
 
     This middleware:
-    1. Provides a `load_skill` tool for the agent to request skill capabilities
-    2. Intercepts `load_skill` calls to update state["loaded_skills"] via Command
+    1. Provides a `LoadSkill` tool for the agent to request skill capabilities
+    2. Intercepts `LoadSkill` calls to update state["loaded_skills"] via Command
     3. Filters tools in `awrap_model_call` based on state["loaded_skills"]
     4. Pre-registers all skill tools for ToolNode availability (but hidden until loaded)
 
@@ -61,11 +61,11 @@ class DynamicSkillLoaderMiddleware(AgentMiddleware):
 
     Attributes:
         skill_registry: Mapping of skill names to SkillDefinition objects
-        tools: List containing the load_skill tool
+        tools: List containing the LoadSkill tool
     """
 
     # Tool name to intercept
-    TOOL_NAME = "load_skill"
+    TOOL_NAME = "LoadSkill"
 
     # State schema for LangGraph
     state_schema = LoadedSkillsState
@@ -100,7 +100,7 @@ class DynamicSkillLoaderMiddleware(AgentMiddleware):
         )
 
     def _create_load_skill_tool(self) -> Any:
-        """Create the load_skill tool.
+        """Create the LoadSkill tool.
 
         The actual state update happens in awrap_tool_call, not in the tool itself.
         The tool just returns a simple acknowledgment.
@@ -109,7 +109,7 @@ class DynamicSkillLoaderMiddleware(AgentMiddleware):
             A LangChain tool for loading skills
         """
 
-        @tool
+        @tool("LoadSkill")
         def load_skill(skill_name: str) -> str:
             """Load special tools from a skill.
             This is designed to access some specialized tools that is currently hidden
