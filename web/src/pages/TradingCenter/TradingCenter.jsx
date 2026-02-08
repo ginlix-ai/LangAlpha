@@ -140,7 +140,7 @@ function TradingCenter() {
       try {
         setIsCreatingWorkspace(true);
 
-        // Find or create "Stealth Agent" workspace
+        // Find or create "LangAlpha" workspace
         const workspaceId = await findOrCreateDefaultWorkspace(
           () => {}, // onCreating - already showing loading state
           () => {}  // onCreated

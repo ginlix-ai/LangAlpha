@@ -5,6 +5,7 @@ import CreateWorkspaceModal from './CreateWorkspaceModal';
 import DeleteConfirmModal from './DeleteConfirmModal';
 import { getAuthUserId } from '@/api/client';
 import { getWorkspaces, createWorkspace, deleteWorkspace, DEFAULT_USER_ID } from '../utils/api';
+import { DEFAULT_WORKSPACE_NAME } from '../../Dashboard/utils/workspace';
 import { removeStoredThreadId } from '../hooks/useChatMessages';
 import '../../Dashboard/Dashboard.css';
 
@@ -95,12 +96,12 @@ function WorkspaceGallery({ onWorkspaceSelect }) {
 
   /**
    * Handles delete icon click - opens confirmation modal
-   * Prevents deletion of "Stealth Agent" workspace (default workspace)
+   * Prevents deletion of default workspace (LangAlpha)
    * @param {Object} workspace - The workspace to delete
    */
   const handleDeleteClick = (workspace) => {
-    // Prevent deletion of default "Stealth Agent" workspace
-    if (workspace.name === 'Stealth Agent') {
+    // Prevent deletion of default workspace
+    if (workspace.name === DEFAULT_WORKSPACE_NAME) {
       return;
     }
     setDeleteModal({ isOpen: true, workspace });
@@ -109,16 +110,16 @@ function WorkspaceGallery({ onWorkspaceSelect }) {
 
   /**
    * Handles confirmed workspace deletion
-   * Prevents deletion of "Stealth Agent" workspace (default workspace)
+   * Prevents deletion of default workspace (LangAlpha)
    */
   const handleConfirmDelete = async () => {
     if (!deleteModal.workspace) return;
 
     const workspaceToDelete = deleteModal.workspace;
     
-    // Prevent deletion of default "Stealth Agent" workspace
-    if (workspaceToDelete.name === 'Stealth Agent') {
-      setDeleteError('Cannot delete the default "Stealth Agent" workspace.');
+    // Prevent deletion of default workspace
+    if (workspaceToDelete.name === DEFAULT_WORKSPACE_NAME) {
+      setDeleteError(`Cannot delete the default "${DEFAULT_WORKSPACE_NAME}" workspace.`);
       return;
     }
     
@@ -351,7 +352,7 @@ function WorkspaceGallery({ onWorkspaceSelect }) {
                       </div>
                     </div>
                     {/* Three dots menu */}
-                    {workspace.name !== 'Stealth Agent' && (
+                    {workspace.name !== DEFAULT_WORKSPACE_NAME && (
                       <div className="absolute top-3 right-3 z-10 transition-opacity opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">
                         <button
                           onClick={(e) => {

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Info, Trash2 } from 'lucide-react';
+import { DEFAULT_WORKSPACE_NAME } from '../../Dashboard/utils/workspace';
 
 /**
  * WorkspaceCard Component
@@ -43,8 +44,8 @@ function WorkspaceCard({ workspace, onClick, onDelete }) {
     >
       {/* Action icons */}
       <div className="absolute top-3 right-3 flex items-center gap-1">
-        {/* Delete icon - Hide for "Stealth Agent" workspace (default workspace) */}
-        {onDelete && workspace.name !== 'Stealth Agent' && (
+        {/* Delete icon - Hide for default workspace (LangAlpha) */}
+        {onDelete && workspace.name !== DEFAULT_WORKSPACE_NAME && (
           <button
             onClick={handleDeleteClick}
             className="p-1.5 rounded-full transition-colors hover:bg-red-500/20"

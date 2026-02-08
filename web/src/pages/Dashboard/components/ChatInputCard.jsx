@@ -7,7 +7,7 @@ import { useChatInput } from '../hooks/useChatInput';
 
 /**
  * Chat input strip matching ChatAgent input bar.
- * When user sends a message, navigates to ChatAgent page with "Stealth Agent" workspace.
+ * When user sends a message, navigates to ChatAgent page with "LangAlpha" workspace.
  * Creates the workspace if it doesn't exist.
  */
 function ChatInputCard() {
@@ -55,7 +55,7 @@ function ChatInputCard() {
               Creating Workspace
             </DialogTitle>
             <DialogDescription style={{ color: 'var(--color-text-secondary)' }}>
-              Creating your default "Stealth Agent" workspace. Please wait...
+              Creating your default "LangAlpha" workspace. Please wait...
             </DialogDescription>
           </DialogHeader>
           <div className="flex items-center justify-center py-4">

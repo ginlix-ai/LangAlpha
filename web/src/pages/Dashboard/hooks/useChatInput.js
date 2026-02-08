@@ -20,7 +20,7 @@ export function useChatInput() {
 
   /**
    * Handles sending a message and navigating to the ChatAgent workspace
-   * Finds or creates the "Stealth Agent" workspace, then navigates with the message
+   * Finds or creates the "LangAlpha" workspace, then navigates with the message
    */
   const handleSend = async () => {
     if (!message.trim() || isLoading) {
@@ -29,7 +29,7 @@ export function useChatInput() {
 
     setIsLoading(true);
     try {
-      // Find or create "Stealth Agent" workspace
+      // Find or create "LangAlpha" workspace
       const workspaceId = await findOrCreateDefaultWorkspace(
         () => setShowCreatingDialog(true),
         () => setShowCreatingDialog(false)
