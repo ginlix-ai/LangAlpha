@@ -62,9 +62,9 @@ const RESEARCH_ITEMS = [
     { title: 'Retail Sales Slump Takes Toll on Market, Stocks Dip', time: '10 min ago' },
   ];
 
-// Module-level variable to track onboarding check across component mounts/unmounts
+// Module-level: user clicked Ignore on onboarding dialog this session
 // Resets on page refresh (module reload)
-let onboardingCheckedThisSession = false;
+let onboardingDismissedThisSession = false;
 
 // Module-level caches (survive navigation, clear on page refresh)
 let popularCache = null; // { items, hasMore, offset }
@@ -258,32 +258,25 @@ function Dashboard() {
   }, []);
 
   /**
-   * Check onboarding completion status on Dashboard load
-   * Only checks once per session (first load or refresh)
-   * Uses module-level variable to persist across component mounts/unmounts
+   * Check onboarding completion status on every Dashboard mount.
+   * Refetches so we pick up onboarding_completed after ChatAgent completes it.
+   * Only shows dialog if onboarding is incomplete AND user hasn't clicked Ignore this session.
    */
   useEffect(() => {
-    // Only check if we haven't checked yet in this session
-    if (onboardingCheckedThisSession) {
-      return;
-    }
-
     const checkOnboarding = async () => {
       try {
         const userData = await getCurrentUser(DEFAULT_USER_ID);
         const onboardingCompleted = userData?.user?.onboarding_completed;
         
-        // Mark as checked to prevent showing again in this session
-        onboardingCheckedThisSession = true;
-        
-        // Show dialog if onboarding is not completed
-        if (onboardingCompleted === false) {
+        if (onboardingCompleted === true) {
+          setShowOnboardingDialog(false);
+          return;
+        }
+        if (onboardingCompleted === false && !onboardingDismissedThisSession) {
           setShowOnboardingDialog(true);
         }
       } catch (error) {
-        // Silently fail - don't block user from using the app
         console.error('[Dashboard] Error checking onboarding status:', error);
-        onboardingCheckedThisSession = true; // Mark as checked even on error
       }
     };
 
@@ -565,7 +558,7 @@ function Dashboard() {
       
       const msg = e?.response?.data?.detail || e?.response?.data?.message || '';
       
-      if (msg.includes('数字字段溢出') || msg.includes('NumericValueOutOfRange')) {
+      if (msg.includes('NumericValueOutOfRange') || msg.includes('numeric overflow')) {
         toast({
           variant: 'destructive',
           title: 'Holding amount too large',
@@ -661,7 +654,10 @@ function Dashboard() {
           <div className="flex justify-end gap-2 pt-4">
             <button
               type="button"
-              onClick={() => setShowOnboardingDialog(false)}
+              onClick={() => {
+                onboardingDismissedThisSession = true;
+                setShowOnboardingDialog(false);
+              }}
               className="px-4 py-2 rounded-md text-sm font-medium transition-colors hover:bg-white/10"
               style={{ color: 'var(--color-text-primary)' }}
             >

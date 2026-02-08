@@ -2,6 +2,9 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { ArrowLeft, FolderOpen, Bot } from 'lucide-react';
 import { ScrollArea } from '../../../components/ui/scroll-area';
+import { useAuth } from '../../../contexts/AuthContext';
+import { updateCurrentUser } from '../../Dashboard/utils/api';
+import { DEFAULT_USER_ID } from '../utils/api';
 import { useChatMessages } from '../hooks/useChatMessages';
 import { useFloatingCards } from '../hooks/useFloatingCards';
 import FilePanel from './FilePanel';
@@ -33,6 +36,7 @@ function ChatView({ workspaceId, threadId, onBack }) {
   const scrollAreaRef = useRef(null);
   const location = useLocation();
   const navigate = useNavigate();
+  const { userId: authUserId, refreshUser } = useAuth();
   const initialMessageSentRef = useRef(false);
   const [filePanelTargetFile, setFilePanelTargetFile] = useState(null);
   const isDraggingRef = useRef(false);
@@ -63,6 +67,17 @@ function ChatView({ workspaceId, threadId, onBack }) {
     minimizeInactiveSubagents,
   } = useFloatingCards();
 
+  // Sync onboarding_completed via PUT when ChatAgent completes onboarding (risk_preference + stocks)
+  const handleOnboardingRelatedToolComplete = useCallback(async () => {
+    try {
+      const userId = authUserId || DEFAULT_USER_ID;
+      await updateCurrentUser({ onboarding_completed: true }, userId);
+      await refreshUser?.();
+    } catch (e) {
+      console.warn('[ChatView] Failed to sync onboarding_completed:', e);
+    }
+  }, [authUserId, refreshUser]);
+
   // Chat messages management - receives updateTodoListCard and updateSubagentCard from floating cards hook
   const {
     messages,
@@ -73,7 +88,7 @@ function ChatView({ workspaceId, threadId, onBack }) {
     threadId: currentThreadId,
     getSubagentHistory,
     resolveSubagentIdToAgentId,
-  } = useChatMessages(workspaceId, threadId, updateTodoListCard, updateSubagentCard, inactivateAllSubagents, minimizeInactiveSubagents);
+  } = useChatMessages(workspaceId, threadId, updateTodoListCard, updateSubagentCard, inactivateAllSubagents, minimizeInactiveSubagents, handleOnboardingRelatedToolComplete);
 
   // Ensure new active agents are visible (remove from hidden list)
   useEffect(() => {
@@ -140,8 +155,8 @@ function ChatView({ workspaceId, threadId, onBack }) {
   // Main agent (always first) - Director
   const mainAgent = {
     id: 'main',
-    name: 'Director', // Tab显示的名字
-    displayName: 'Director', // 详情页显示的名字
+    name: 'Director', // Tab display name
+    displayName: 'Director', // Detail page display name
     taskId: '',
     description: '',
     type: 'main',

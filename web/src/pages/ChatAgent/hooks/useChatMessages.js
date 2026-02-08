@@ -43,7 +43,31 @@ import {
   isSubagentHistoryEvent,
 } from './utils/historyEventHandlers';
 
-export function useChatMessages(workspaceId, initialThreadId = null, updateTodoListCard = null, updateSubagentCard = null, inactivateAllSubagents = null, minimizeInactiveSubagents = null) {
+/**
+ * Checks if a tool result indicates an onboarding-related success.
+ * Onboarding tools: update_user_data for risk_preference, watchlist_item, portfolio_holding.
+ * @param {string|object} resultContent - Raw result content (JSON string or parsed object)
+ * @returns {boolean}
+ */
+function isOnboardingRelatedToolSuccess(resultContent) {
+  if (resultContent == null) return false;
+  let parsed;
+  if (typeof resultContent === 'string') {
+    try {
+      parsed = JSON.parse(resultContent);
+    } catch {
+      return false;
+    }
+  } else if (typeof resultContent === 'object') {
+    parsed = resultContent;
+  } else {
+    return false;
+  }
+  if (!parsed || parsed.success !== true) return false;
+  return !!(parsed.risk_preference || parsed.watchlist_item || parsed.portfolio_holding);
+}
+
+export function useChatMessages(workspaceId, initialThreadId = null, updateTodoListCard = null, updateSubagentCard = null, inactivateAllSubagents = null, minimizeInactiveSubagents = null, onOnboardingRelatedToolComplete = null) {
   // State
   const [messages, setMessages] = useState([]);
   const [threadId, setThreadId] = useState(() => {
@@ -1343,6 +1367,11 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
               refs,
               setMessages,
             });
+
+            // When onboarding-related tools succeed, sync onboarding_completed via PUT
+            if (onOnboardingRelatedToolComplete && isOnboardingRelatedToolSuccess(event.content)) {
+              onOnboardingRelatedToolComplete();
+            }
           }
         },
         DEFAULT_USER_ID,
