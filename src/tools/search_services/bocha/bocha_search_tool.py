@@ -1,6 +1,6 @@
 """Bocha search tool for LangChain integration.
 
-Bocha (豆包) is a Chinese search API service optimized for Chinese language queries
+Bocha is a search API service optimized for Chinese language queries
 and Chinese market content.
 """
 

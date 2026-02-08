@@ -371,7 +371,7 @@ class ToolCallProcessor:
             return True, metadata
 
         # Explicit error prefixes
-        if content.startswith(('Error:', '错误:', 'Failed to', '无法')):
+        if content.startswith(('Error:', 'Failed to')):
             return True, metadata
 
         # Exception patterns

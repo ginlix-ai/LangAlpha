@@ -106,10 +106,9 @@ def validate_todo_list_dict(todos: List[Dict[str, Any]]) -> tuple[bool, List[str
 
     errors = []
 
-    # Valid status values in English and Chinese
+    # Valid status values
     valid_statuses = {
-        "pending", "in_progress", "completed",  # English
-        "待办", "进行中", "已完成"  # Chinese
+        "pending", "in_progress", "completed",
     }
 
     # Validate required fields and value formats

@@ -81,10 +81,10 @@ This is **required** before completing onboarding.
 ```
 
 ```python
-# Based on response
+# Based on response - use risk_tolerance: "low", "medium", or "high"
 update_user_data(
     entity="risk_preference",
-    data={"tolerance": "moderate"}  # or "conservative", "aggressive"
+    data={"risk_tolerance": "medium"}  # or "low", "high", "long_term_focus"
 )
 ```
 
@@ -109,7 +109,7 @@ Only ask if the user seems engaged and interested. Don't force these.
 ```python
 update_user_data(
     entity="investment_preference",
-    data={"style": "growth"}
+    data={"company_interest": "growth"}
 )
 ```
 
@@ -124,7 +124,7 @@ update_user_data(
 ```python
 update_user_data(
     entity="agent_preference",
-    data={"research_style": "quick", "detail_level": "intermediate"}
+    data={"output_style": "summary"}  # or "data", "deep_dive", "quick"
 )
 ```
 
@@ -213,7 +213,7 @@ Agent: [calls update_user_data(entity="portfolio_holding", data={"symbol": "AAPL
 
 User: Moderate I guess
 
-Agent: [calls update_user_data(entity="risk_preference", data={"tolerance": "moderate"})]
+Agent: [calls update_user_data(entity="risk_preference", data={"risk_tolerance": "medium"})]
 
        Got it! I've set your risk preference to moderate.
 
@@ -223,8 +223,9 @@ Agent: [calls update_user_data(entity="risk_preference", data={"tolerance": "mod
 
 User: Quick summaries, I don't have much time
 
-Agent: [calls update_user_data(entity="agent_preference", data={"research_style": "quick", "detail_level": "intermediate"})]
+Agent: [calls update_user_data(entity="agent_preference", data={"output_style": "quick"})]
        [calls update_user_data(entity="profile", data={"onboarding_completed": True})]
+       # Or: onboarding will auto-complete when risk_preference + at least one stock are set
 
        Perfect! Your profile is set up:
 

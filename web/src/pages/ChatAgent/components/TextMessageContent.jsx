@@ -63,7 +63,7 @@ function TextMessageContent({ content, isStreaming, hasError }) {
             const isBlock = /language-/.test(className || '');
 
             if (!isBlock) {
-              // Inline code styling - 无背景无边框
+              // Inline code styling - no background, no border
               return (
                 <code
                   className="font-mono"
@@ -79,7 +79,7 @@ function TextMessageContent({ content, isStreaming, hasError }) {
               );
             }
 
-            // Block code - 不加额外样式，由 pre 容器控制
+            // Block code - no extra styling, controlled by pre container
             return (
               <code
                 className="font-mono"
@@ -94,7 +94,7 @@ function TextMessageContent({ content, isStreaming, hasError }) {
               </code>
             );
           },
-          // Customize pre (code block) styling - 圆角卡片容器，自适应内容宽度
+          // Customize pre (code block) styling - rounded card container, auto content width
           pre: ({ node, ...props }) => (
             <div className="py-[4px]">
               <pre
@@ -137,7 +137,7 @@ function TextMessageContent({ content, isStreaming, hasError }) {
           hr: ({ node, ...props }) => (
             <hr className="my-3 border-0" style={{ borderTop: '1px solid rgba(255, 255, 255, 0.1)' }} {...props} />
           ),
-          // Customize table styling - 自适应内容宽度
+          // Customize table styling - auto content width
           table: ({ node, ...props }) => (
             <div className="pt-[8px] pb-[18px]">
               <div className="overflow-x-auto inline-block border rounded-lg" style={{ borderColor: 'rgba(255, 255, 255, 0.1)', maxWidth: '100%' }}>

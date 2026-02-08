@@ -190,7 +190,7 @@ class PlanStepResponse(BaseModel):
 class PlanResponse(BaseModel):
     """Represents the research plan."""
     title: str = Field(..., description="Plan title")
-    market_type: Optional[str] = Field(None, description="Market type (A股, 美股, etc.)")
+    market_type: Optional[str] = Field(None, description="Market type (e.g. US stocks, China A-shares)")
     locale: Optional[str] = Field(None, description="Locale (zh-CN, en-US, etc.)")
     steps: List[PlanStepResponse] = Field(default_factory=list, description="Plan steps")
 
@@ -240,23 +240,23 @@ class WorkflowStateResponse(BaseModel):
                 "thread_id": "3d4e5f6g-7h8i-9j0k-1l2m-3n4o5p6q7r8s",
                 "checkpoint_id": "1ef1234-...",
                 "messages": [
-                    {"role": "human", "content": "茅台股价分析"},
-                    {"role": "ai", "content": "我将为您分析茅台股价..."}
+                    {"role": "human", "content": "Analyze AAPL stock price"},
+                    {"role": "ai", "content": "I will analyze AAPL stock price for you..."}
                 ],
                 "plan": {
-                    "title": "茅台股价分析计划",
-                    "market_type": "A股",
+                    "title": "AAPL Stock Analysis Plan",
+                    "market_type": "US",
                     "steps": [
                         {
-                            "title": "获取茅台基本信息",
-                            "description": "获取公司基本面数据",
+                            "title": "Get AAPL basic info",
+                            "description": "Fetch company fundamentals",
                             "step_type": "DATA",
-                            "execution_res": "已完成"
+                            "execution_res": "completed"
                         }
                     ]
                 },
-                "final_report": "茅台股价分析报告...",
-                "research_topic": "茅台股价分析",
+                "final_report": "AAPL stock analysis report...",
+                "research_topic": "AAPL Stock Analysis",
                 "completed": True
             }
         }
@@ -366,7 +366,7 @@ class CheckpointResponse(BaseModel):
                 "pending_tasks": 0,
                 "completed": True,
                 "state_preview": {
-                    "research_topic": "茅台股价分析",
+                    "research_topic": "AAPL Stock Analysis",
                     "plan_iterations": 1,
                     "has_final_report": True,
                     "message_count": 5
@@ -402,7 +402,7 @@ class CheckpointHistoryResponse(BaseModel):
                         "next_nodes": [],
                         "pending_tasks": 0,
                         "completed": True,
-                        "state_preview": {"research_topic": "茅台股价分析"}
+                        "state_preview": {"research_topic": "AAPL Stock Analysis"}
                     }
                 ]
             }

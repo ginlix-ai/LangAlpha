@@ -49,7 +49,7 @@ function SubagentTaskMessageContent({
 
   return (
     <div className="mt-2">
-      {/* Subagent indicator button - 点击直接打开面板 */}
+      {/* Subagent indicator button - click to open panel */}
       <button
         onClick={handleOpen}
         className="flex items-start gap-3 px-3 py-2.5 rounded-md transition-colors hover:bg-white/10 w-full text-left"
