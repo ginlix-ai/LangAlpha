@@ -232,20 +232,20 @@ function Dashboard() {
   }, [fetchIndices]);
 
   /**
-   * Check and create "Stealth Agent" default workspace on Dashboard load
+   * Check and create "LangAlpha" default workspace on Dashboard load
    */
   useEffect(() => {
     const ensureDefaultWorkspace = async () => {
       try {
         const { workspaces } = await getWorkspaces(DEFAULT_USER_ID);
         const stealthAgentWorkspace = workspaces?.find(
-          (ws) => ws.name === 'Stealth Agent'
+          (ws) => ws.name === 'LangAlpha'
         );
         
         if (!stealthAgentWorkspace) {
           // Create default workspace if it doesn't exist
           await createWorkspace(
-            'Stealth Agent',
+            'LangAlpha',
             'system default workspace, cannot be deleted'
           );
         }
@@ -671,7 +671,7 @@ function Dashboard() {
                 setShowOnboardingDialog(false);
                 setIsCreatingWorkspace(true);
                 try {
-                  // Find or create "Stealth Agent" workspace
+                  // Find or create "LangAlpha" workspace
                   const workspaceId = await findOrCreateDefaultWorkspace(
                     () => {}, // onCreating - already showing loading state
                     () => {}  // onCreated
@@ -700,8 +700,8 @@ function Dashboard() {
               style={{ backgroundColor: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}
             >
               {isCreatingWorkspace ? 'Setting up...' : 'Proceed'}
-            </button>
-          </div>
+                    </button>
+                  </div>
         </DialogContent>
       </Dialog>
 
@@ -719,7 +719,7 @@ function Dashboard() {
                   <TopResearchCard items={researchItems} loading={researchLoading} />
                 </div>
                 <ChatInputCard />
-              </div>
+          </div>
 
               <div className="w-full flex flex-col gap-4 h-full min-h-0 overflow-hidden">
                 <WatchlistCard
@@ -754,8 +754,8 @@ function Dashboard() {
                   onAdd={handleAddPortfolio}
                   userId={DEFAULT_USER_ID}
                 />
-                    </div>
-            </div>
+                </div>
+                </div>
           </div>
         </div>
       </div>

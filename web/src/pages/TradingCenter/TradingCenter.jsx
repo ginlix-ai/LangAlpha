@@ -170,7 +170,7 @@ function TradingCenter() {
 
   return (
     <div className="trading-center-container">
-      <DashboardHeader title="Market View" onStockSearch={handleStockSearch} />
+      <DashboardHeader title="LangAlpha" onStockSearch={handleStockSearch} />
       <div className="trading-content-wrapper">
         <div className="trading-left-panel">
           <StockHeader
