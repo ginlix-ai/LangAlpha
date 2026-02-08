@@ -90,6 +90,16 @@ function ChatView({ workspaceId, threadId, onBack }) {
     resolveSubagentIdToAgentId,
   } = useChatMessages(workspaceId, threadId, updateTodoListCard, updateSubagentCard, inactivateAllSubagents, minimizeInactiveSubagents, handleOnboardingRelatedToolComplete);
 
+  // Open floating cards (agent) panel at the start of each backend response (streaming)
+  const prevLoadingRef = useRef(false);
+  useEffect(() => {
+    const wasLoading = prevLoadingRef.current;
+    prevLoadingRef.current = isLoading;
+    if (isLoading && !wasLoading) {
+      setRightPanelType('agent');
+    }
+  }, [isLoading]);
+
   // Ensure new active agents are visible (remove from hidden list)
   useEffect(() => {
     Object.entries(floatingCards).forEach(([cardId, card]) => {
@@ -155,8 +165,8 @@ function ChatView({ workspaceId, threadId, onBack }) {
   // Main agent (always first) - Director
   const mainAgent = {
     id: 'main',
-    name: 'Director', // Tab display name
-    displayName: 'Director', // Detail page display name
+    name: 'Finix AI', // Tab display name
+    displayName: 'Finix AI', // Detail page display name
     taskId: '',
     description: '',
     type: 'main',

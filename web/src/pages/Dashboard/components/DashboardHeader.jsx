@@ -6,7 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../../contexts/AuthContext';
 import './DashboardHeader.css';
 
-const DashboardHeader = ({ title = 'Main Page', onStockSearch }) => {
+const DashboardHeader = ({ title = 'Finix AI', onStockSearch }) => {
   const navigate = useNavigate();
   const { userId } = useAuth();
   const [isUserPanelOpen, setIsUserPanelOpen] = useState(false);

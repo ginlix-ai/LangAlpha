@@ -18,7 +18,7 @@ function TradingCenter() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
-  const [selectedStock, setSelectedStock] = useState('MSFT');
+  const [selectedStock, setSelectedStock] = useState('GOOGL');
   const [selectedStockDisplay, setSelectedStockDisplay] = useState(null);
   const [stockInfo, setStockInfo] = useState(null);
   const [realTimePrice, setRealTimePrice] = useState(null);
@@ -169,7 +169,7 @@ function TradingCenter() {
 
   return (
     <div className="trading-center-container">
-      <DashboardHeader title="Trade" onStockSearch={handleStockSearch} />
+      <DashboardHeader title="Market View" onStockSearch={handleStockSearch} />
       <div className="trading-content-wrapper">
         <div className="trading-left-panel">
           <StockHeader
