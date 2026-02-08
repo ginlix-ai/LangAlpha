@@ -3,10 +3,12 @@ import UserConfigPanel from './UserConfigPanel';
 import React, { useState, useEffect, useRef } from 'react';
 import { getCurrentUser, searchStocks } from '../utils/api';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../../../contexts/AuthContext';
 import './DashboardHeader.css';
 
 const DashboardHeader = ({ title = 'Main Page', onStockSearch }) => {
   const navigate = useNavigate();
+  const { userId } = useAuth();
   const [isUserPanelOpen, setIsUserPanelOpen] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState(null);
   const [showHelpPopover, setShowHelpPopover] = useState(false);
@@ -70,9 +72,10 @@ const DashboardHeader = ({ title = 'Main Page', onStockSearch }) => {
   }, []);
 
   useEffect(() => {
+    if (!userId) return;
     const fetchUser = async () => {
       try {
-        const data = await getCurrentUser();
+        const data = await getCurrentUser(userId);
         const url = data?.user?.avatar_url;
         const version = data?.user?.updated_at;
         setAvatarUrl(url ? `${url}?v=${version}` : null);
@@ -81,16 +84,17 @@ const DashboardHeader = ({ title = 'Main Page', onStockSearch }) => {
       }
     };
     fetchUser();
-  }, []);
+  }, [userId]);
 
-  // Refresh avatar when panel closes (in case user uploaded new one)
   const handlePanelClose = () => {
     setIsUserPanelOpen(false);
-    getCurrentUser().then(data => {
-      const url = data?.user?.avatar_url;
-      const version = data?.user?.updated_at;
-      setAvatarUrl(url ? `${url}?v=${version}` : null);
-    }).catch(() => {});
+    if (userId) {
+      getCurrentUser(userId).then(data => {
+        const url = data?.user?.avatar_url;
+        const version = data?.user?.updated_at;
+        setAvatarUrl(url ? `${url}?v=${version}` : null);
+      }).catch(() => {});
+    }
   };
 
   // Handle stock selection from dropdown
