@@ -1,5 +1,7 @@
 import { ChevronDown, ChevronUp, Loader2, Wrench } from 'lucide-react';
 import { useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 /**
  * File-related tool names that support opening in the file panel.
@@ -35,6 +37,7 @@ function getFilePathFromToolCall(toolCall) {
  * @param {boolean} props.isComplete - Whether tool call has completed
  * @param {boolean} props.isFailed - Whether tool call failed
  * @param {Function} props.onOpenFile - Callback to open a file in the file panel
+ * @param {Array} [props.mergedProcesses] - When set (main chat merged block), expanded view shows all tool calls + results in order
  */
 function ToolCallMessageContent({ 
   toolCallId, 
@@ -44,19 +47,24 @@ function ToolCallMessageContent({
   isInProgress, 
   isComplete,
   isFailed = false,
-  onOpenFile
+  onOpenFile,
+  mergedProcesses
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
 
+  // Resolve display data: single from props or last of merged
+  const processes = mergedProcesses && mergedProcesses.length > 0
+    ? mergedProcesses
+    : [{ toolName, toolCall, toolCallResult, isInProgress, isComplete, isFailed }];
+  const displayProcess = processes[processes.length - 1];
+  const displayName = displayProcess.toolName || displayProcess.toolCall?.name || 'Tool Call';
+  const isFileTool = FILE_TOOLS.includes(displayName);
+  const filePath = isFileTool ? getFilePathFromToolCall(displayProcess.toolCall) : null;
+
   // Don't render if there's no tool call data
-  if (!toolName && !toolCall) {
+  if (!displayName && !displayProcess.toolCall) {
     return null;
   }
-
-  // Determine display name and file path
-  const displayName = toolName || toolCall?.name || 'Tool Call';
-  const isFileTool = FILE_TOOLS.includes(displayName);
-  const filePath = isFileTool ? getFilePathFromToolCall(toolCall) : null;
 
   const handleToggle = () => {
     // For file tools with a valid path and onOpenFile callback, open in file panel
@@ -84,23 +92,23 @@ function ToolCallMessageContent({
           color: isFailed ? '#FF383C' : 'var(--Labels-Secondary)',
           padding: '4px 12px',
           borderRadius: '6px',
-          backgroundColor: isInProgress 
+          backgroundColor: displayProcess.isInProgress 
             ? 'rgba(97, 85, 245, 0.15)' 
             : 'transparent',
-          border: isInProgress 
+          border: displayProcess.isInProgress 
             ? '1px solid rgba(255, 255, 255, 0.1)' 
             : 'none',
           width: '100%',
         }}
-        title={isInProgress ? 'Tool call in progress...' : 'View tool call details'}
+        title={displayProcess.isInProgress ? 'Tool call in progress...' : 'View tool call details'}
       >
         {/* Icon: Wrench with loading spinner when active, static wrench when complete/failed */}
         <div className="relative flex-shrink-0">
           <Wrench 
             className="h-4 w-4" 
-            style={{ color: isFailed ? '#FF383C' : 'var(--Labels-Secondary)' }} 
+            style={{ color: displayProcess.isFailed ? '#FF383C' : 'var(--Labels-Secondary)' }} 
           />
-          {isInProgress && (
+          {displayProcess.isInProgress && (
             <Loader2 
               className="h-3 w-3 absolute -top-0.5 -right-0.5 animate-spin" 
               style={{ color: 'var(--Labels-Secondary)' }} 
@@ -114,7 +122,7 @@ function ToolCallMessageContent({
         </span>
         
         {/* Status indicator */}
-        {isComplete && !isInProgress && (
+        {displayProcess.isComplete && !displayProcess.isInProgress && (
           <span 
             className="text-xs" 
             style={{ 
@@ -122,7 +130,7 @@ function ToolCallMessageContent({
               opacity: 0.8
             }}
           >
-            {isFailed ? '(failed)' : '(complete)'}
+            {displayProcess.isFailed ? '(failed)' : '(complete)'}
           </span>
         )}
         
@@ -144,74 +152,79 @@ function ToolCallMessageContent({
         </div>
       </button>
 
-      {/* Tool call details (shown when expanded) */}
+      {/* Tool call details (shown when expanded): only result content, rendered as markdown; when merged, show each result in order */}
       {isExpanded && (
-        <div
-          className="mt-2 space-y-3"
-          style={{
-            backgroundColor: 'rgba(97, 85, 245, 0.1)',
-            border: '1px solid rgba(97, 85, 245, 0.2)',
-            borderRadius: '6px',
-            padding: '12px',
-          }}
-        >
-          {/* Tool Call (complete call data) */}
-          {toolCall && (
-            <div>
-              <p className="text-xs  mb-2" style={{ color: '#FFFFFF', opacity: 0.8 }}>
-                Tool Call:
-              </p>
-              <div
-                className="px-3 py-2 rounded text-xs"
-                style={{
-                  backgroundColor: 'rgba(0, 0, 0, 0.2)',
-                  color: '#FFFFFF',
-                  opacity: 0.9,
-                }}
-              >
-                <div className="mb-1">
-                  <span className="">Name:</span> {toolCall.name}
+        <div className="mt-2 space-y-3">
+          {processes.map((proc, idx) => {
+            if (!proc.toolCallResult) return null;
+            const content = typeof proc.toolCallResult.content === 'string'
+              ? proc.toolCallResult.content
+              : String(proc.toolCallResult.content ?? '');
+            const isError = content.trim().startsWith('ERROR');
+            const displayContent = content || 'No result content';
+            return (
+              <div key={idx} className="text-xs">
+                {processes.length > 1 && (
+                  <p className="mb-2" style={{ color: '#FFFFFF', opacity: 0.8 }}>
+                    Result ({idx + 1}/{processes.length}):
+                  </p>
+                )}
+                <div
+                  className="px-3 py-2 rounded markdown-body"
+                  style={{
+                    backgroundColor: isError ? 'rgba(255, 56, 60, 0.15)' : 'rgba(15, 237, 190, 0.08)',
+                    border: `1px solid ${isError ? 'rgba(255, 56, 60, 0.3)' : 'rgba(15, 237, 190, 0.25)'}`,
+                    color: '#FFFFFF',
+                    opacity: 0.9,
+                  }}
+                >
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      p: ({ node, ...props }) => (
+                        <p className="my-[1px] py-[3px] whitespace-pre-wrap break-words first:mt-0 last:mb-0" style={{ color: '#FFFFFF' }} {...props} />
+                      ),
+                      strong: ({ node, ...props }) => (
+                        <strong className="font-[600]" style={{ color: '#FFFFFF' }} {...props} />
+                      ),
+                      em: ({ node, ...props }) => (
+                        <em className="italic" style={{ color: '#FFFFFF' }} {...props} />
+                      ),
+                      code: ({ node, className, children, ...props }) => (
+                        <code className="font-mono" style={{ color: '#abb2bf', fontSize: 'inherit' }} {...props}>{children}</code>
+                      ),
+                      pre: ({ node, ...props }) => (
+                        <pre className="rounded overflow-x-auto my-1 py-1 px-2 whitespace-pre-wrap break-words" style={{ backgroundColor: 'rgba(0,0,0,0.2)', margin: 0 }} {...props} />
+                      ),
+                      ul: ({ node, ...props }) => <ul className="list-disc ml-4 my-1" style={{ color: '#FFFFFF' }} {...props} />,
+                      ol: ({ node, ...props }) => <ol className="list-decimal ml-4 my-1" style={{ color: '#FFFFFF' }} {...props} />,
+                      li: ({ node, ...props }) => <li className="break-words" style={{ color: '#FFFFFF' }} {...props} />,
+                      table: ({ node, ...props }) => (
+                        <div className="my-2 overflow-x-auto rounded" style={{ border: '1px solid rgba(255,255,255,0.2)' }}>
+                          <table className="w-full border-collapse text-left" style={{ minWidth: '100%' }} {...props} />
+                        </div>
+                      ),
+                      thead: ({ node, ...props }) => (
+                        <thead style={{ backgroundColor: 'rgba(0,0,0,0.25)' }} {...props} />
+                      ),
+                      tbody: ({ node, ...props }) => <tbody {...props} />,
+                      tr: ({ node, ...props }) => (
+                        <tr className="border-b border-white/10 last:border-b-0" {...props} />
+                      ),
+                      th: ({ node, ...props }) => (
+                        <th className="px-3 py-2 font-[600] whitespace-nowrap" style={{ color: '#FFFFFF', borderBottom: '1px solid rgba(255,255,255,0.2)' }} {...props} />
+                      ),
+                      td: ({ node, ...props }) => (
+                        <td className="px-3 py-2 break-words align-top" style={{ color: '#FFFFFF' }} {...props} />
+                      ),
+                    }}
+                  >
+                    {displayContent}
+                  </ReactMarkdown>
                 </div>
-                {toolCall.args && (
-                  <div className="mt-2">
-                    <span className="">Arguments:</span>
-                    <pre className="mt-1 font-mono text-xs whitespace-pre-wrap break-words">
-                      {JSON.stringify(toolCall.args, null, 2)}
-                    </pre>
-                  </div>
-                )}
-                {toolCall.id && (
-                  <div className="mt-2 text-xs" style={{ opacity: 0.7 }}>
-                    <span className="">ID:</span> {toolCall.id}
-                  </div>
-                )}
               </div>
-            </div>
-          )}
-
-          {/* Tool Call Result */}
-          {toolCallResult && (
-            <div>
-              <p className="text-xs  mb-2" style={{ color: '#FFFFFF', opacity: 0.8 }}>
-                Result:
-              </p>
-              <div
-                className="px-3 py-2 rounded text-xs whitespace-pre-wrap break-words"
-                style={{
-                  backgroundColor: toolCallResult.content?.includes('ERROR') 
-                    ? 'rgba(255, 56, 60, 0.15)' 
-                    : 'rgba(15, 237, 190, 0.15)',
-                  border: `1px solid ${toolCallResult.content?.includes('ERROR') 
-                    ? 'rgba(255, 56, 60, 0.3)' 
-                    : 'rgba(15, 237, 190, 0.3)'}`,
-                  color: '#FFFFFF',
-                  opacity: 0.9,
-                }}
-              >
-                {toolCallResult.content || 'No result content'}
-              </div>
-            </div>
-          )}
+            );
+          })}
         </div>
       )}
     </div>
