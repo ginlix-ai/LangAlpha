@@ -1,10 +1,11 @@
-import { Bot, Loader2, User } from 'lucide-react';
+import { Bot, User } from 'lucide-react';
 import logo from '../../../assets/img/logo.svg';
+import LogoLoading from '../../../components/LogoLoading';
 import ReasoningMessageContent from './ReasoningMessageContent';
 import SubagentTaskMessageContent from './SubagentTaskMessageContent';
 import TextMessageContent from './TextMessageContent';
-import ToolCallMessageContent from './ToolCallMessageContent';
 import TodoListMessageContent from './TodoListMessageContent';
+import ToolCallMessageContent from './ToolCallMessageContent';
 
 /**
  * MessageList Component
@@ -101,7 +102,9 @@ function MessageBubble({ message, onOpenSubagentTask, onOpenFile }) {
 
         {/* Streaming indicator */}
         {message.isStreaming && (
-          <Loader2 className="h-3 w-3 animate-spin mt-2" style={{ color: '#6155F5' }} />
+          <div className="mt-2 ml-2">
+            <LogoLoading size={20} color="#666666" />
+          </div>
         )}
       </div>
 

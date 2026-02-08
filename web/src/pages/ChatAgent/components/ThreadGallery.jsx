@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { ArrowLeft, Loader2, Folder, FileText } from 'lucide-react';
+import { ArrowLeft, Folder, FileText } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
+import LogoLoading from '../../../components/LogoLoading';
 import ThreadCard from './ThreadCard';
 import DeleteConfirmModal from './DeleteConfirmModal';
 import RenameThreadModal from './RenameThreadModal';
@@ -307,7 +308,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="flex flex-col items-center gap-4">
-          <Loader2 className="h-8 w-8 animate-spin" style={{ color: '#6155F5' }} />
+          <LogoLoading size={32} color="#6155F5" />
           <p className="text-sm" style={{ color: '#FFFFFF', opacity: 0.65 }}>
             Loading threads...
           </p>

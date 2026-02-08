@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from 'react';
-import { Bot, Loader2, User } from 'lucide-react';
+import { Bot, User } from 'lucide-react';
 import MessageList from '../../ChatAgent/components/MessageList';
 import './TradingPanel.css';
 

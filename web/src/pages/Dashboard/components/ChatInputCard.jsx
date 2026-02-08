@@ -1,9 +1,9 @@
 import React from 'react';
-import { Loader2 } from 'lucide-react';
 import { Card, CardContent } from '../../../components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../../components/ui/dialog';
 import ChatInput from '../../../components/ui/ChatInput';
 import { useChatInput } from '../hooks/useChatInput';
+import LogoLoading from '../../../components/LogoLoading';
 
 /**
  * Chat input strip matching ChatAgent input bar.
@@ -59,7 +59,7 @@ function ChatInputCard() {
             </DialogDescription>
           </DialogHeader>
           <div className="flex items-center justify-center py-4">
-            <Loader2 className="h-6 w-6 animate-spin" style={{ color: 'var(--color-accent-primary)' }} />
+            <LogoLoading size={24} color="var(--color-accent-primary)" />
           </div>
         </DialogContent>
       </Dialog>

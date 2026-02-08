@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, Loader2, Search, ArrowDownUp, MoreHorizontal } from 'lucide-react';
+import { Plus, Search, ArrowDownUp, MoreHorizontal } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
+import LogoLoading from '../../../components/LogoLoading';
 import CreateWorkspaceModal from './CreateWorkspaceModal';
 import DeleteConfirmModal from './DeleteConfirmModal';
 import { getAuthUserId } from '@/api/client';
@@ -191,7 +192,7 @@ function WorkspaceGallery({ onWorkspaceSelect }) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="flex flex-col items-center gap-4">
-          <Loader2 className="h-8 w-8 animate-spin" style={{ color: '#6155F5' }} />
+          <LogoLoading size={32} color="#6155F5" />
           <p className="text-sm" style={{ color: '#FFFFFF', opacity: 0.65 }}>
             Loading workspaces...
           </p>
