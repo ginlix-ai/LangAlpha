@@ -132,7 +132,7 @@ function MessageBubble({ message, onOpenSubagentTask, onOpenFile }) {
  * @param {Object} props.subagentTasks - Object mapping subagentId to subagent task data
  * @param {boolean} props.isStreaming - Whether the message is currently streaming
  * @param {boolean} props.hasError - Whether the message has an error
- * @param {boolean} props.textOnly - If true, only render text segments (for main chat view)
+ * @param {boolean} props.textOnly - If true, render text, reasoning, and tool_call segments (for main chat view); todo_list and subagent_task stay in floating cards only
  */
 function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesses, todoListProcesses, subagentTasks, isStreaming, hasError, onOpenSubagentTask, onOpenFile, textOnly = false }) {
   const sortedSegments = [...segments].sort((a, b) => a.order - b.order);
@@ -180,10 +180,47 @@ function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesse
     }
   }
 
-  // When textOnly, filter to only text segments for main chat view
-  const segmentsToRender = textOnly
-    ? groupedSegments.filter((s) => s.type === 'text')
-    : groupedSegments;
+  // When textOnly (main chat view): show text, reasoning, tool_call (excluding TodoWrite); collapse to one reasoning + one tool_call before each text, with merged content (append new to old)
+  let segmentsToRender;
+  if (textOnly) {
+    const filtered = groupedSegments.filter((s) => {
+      if (s.type === 'text' || s.type === 'reasoning') return true;
+      if (s.type === 'tool_call') {
+        const toolName = toolCallProcesses[s.toolCallId]?.toolName;
+        return toolName !== 'TodoWrite';
+      }
+      return false;
+    });
+    const collapsed = [];
+    let reasoningAccum = [];
+    let toolCallAccum = [];
+    const pushMerged = () => {
+      if (reasoningAccum.length) {
+        const ids = reasoningAccum.map((s) => s.reasoningId);
+        collapsed.push({ type: 'reasoning', reasoningId: ids[ids.length - 1], mergedReasoningIds: ids });
+        reasoningAccum = [];
+      }
+      if (toolCallAccum.length) {
+        const ids = toolCallAccum.map((s) => s.toolCallId);
+        collapsed.push({ type: 'tool_call', toolCallId: ids[ids.length - 1], mergedToolCallIds: ids });
+        toolCallAccum = [];
+      }
+    };
+    for (const seg of filtered) {
+      if (seg.type === 'reasoning') {
+        reasoningAccum.push(seg);
+      } else if (seg.type === 'tool_call') {
+        toolCallAccum.push(seg);
+      } else if (seg.type === 'text') {
+        pushMerged();
+        collapsed.push(seg);
+      }
+    }
+    pushMerged();
+    segmentsToRender = collapsed;
+  } else {
+    segmentsToRender = groupedSegments;
+  }
 
   return (
     <div className="space-y-2">
@@ -202,38 +239,45 @@ function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesse
             </div>
           );
         } else if (segment.type === 'reasoning') {
-          // Render reasoning icon
-          const reasoningProcess = reasoningProcesses[segment.reasoningId];
-          if (reasoningProcess) {
-            return (
-              <ReasoningMessageContent
-                key={`reasoning-${segment.reasoningId}`}
-                reasoningContent={reasoningProcess.content || ''}
-                isReasoning={reasoningProcess.isReasoning || false}
-                reasoningComplete={reasoningProcess.reasoningComplete || false}
-              />
-            );
-          }
-          return null;
+          // Render reasoning icon (merged content when segment.mergedReasoningIds in main chat)
+          const ids = segment.mergedReasoningIds || [segment.reasoningId];
+          const processes = ids.map((id) => reasoningProcesses[id]).filter(Boolean);
+          if (processes.length === 0) return null;
+          const last = processes[processes.length - 1];
+          const mergedContent = processes.map((p) => p.content || '').join('\n\n').trim();
+          return (
+            <ReasoningMessageContent
+              key={`reasoning-${ids.join('-')}`}
+              reasoningContent={mergedContent}
+              isReasoning={last.isReasoning || false}
+              reasoningComplete={last.reasoningComplete || false}
+              reasoningTitle={last.reasoningTitle ?? undefined}
+            />
+          );
         } else if (segment.type === 'tool_call') {
-          // Render tool call icon
+          // Render tool call icon (skip TodoWrite; merged content when segment.mergedToolCallIds in main chat)
           const toolCallProcess = toolCallProcesses[segment.toolCallId];
-          if (toolCallProcess) {
-            return (
-              <ToolCallMessageContent
-                key={`tool-call-${segment.toolCallId}`}
-                toolCallId={segment.toolCallId}
-                toolName={toolCallProcess.toolName}
-                toolCall={toolCallProcess.toolCall}
-                toolCallResult={toolCallProcess.toolCallResult}
-                isInProgress={toolCallProcess.isInProgress || false}
-                isComplete={toolCallProcess.isComplete || false}
-                isFailed={toolCallProcess.isFailed || false}
-                onOpenFile={onOpenFile}
-              />
-            );
-          }
-          return null;
+          if (toolCallProcess?.toolName === 'TodoWrite') return null;
+          const ids = segment.mergedToolCallIds || [segment.toolCallId];
+          const mergedProcesses = ids
+            .map((id) => toolCallProcesses[id])
+            .filter((p) => p && p.toolName !== 'TodoWrite');
+          if (mergedProcesses.length === 0) return null;
+          const lastProcess = mergedProcesses[mergedProcesses.length - 1];
+          return (
+            <ToolCallMessageContent
+              key={`tool-call-${ids.join('-')}`}
+              toolCallId={segment.toolCallId}
+              toolName={lastProcess.toolName}
+              toolCall={lastProcess.toolCall}
+              toolCallResult={lastProcess.toolCallResult}
+              isInProgress={lastProcess.isInProgress || false}
+              isComplete={lastProcess.isComplete || false}
+              isFailed={lastProcess.isFailed || false}
+              onOpenFile={onOpenFile}
+              mergedProcesses={mergedProcesses.length > 1 ? mergedProcesses : undefined}
+            />
+          );
         } else if (segment.type === 'todo_list') {
           // Render todo list
           const todoListProcess = todoListProcesses[segment.todoListId];
