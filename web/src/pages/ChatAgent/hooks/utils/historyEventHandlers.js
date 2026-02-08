@@ -429,9 +429,9 @@ export function handleHistoryToolCallResult({ assistantMessageId, toolCallId, re
       const toolCallProcesses = { ...(msg.toolCallProcesses || {}) };
       const subagentTasks = { ...(msg.subagentTasks || {}) };
 
-      // Detect if tool call failed by checking result content
+      // Tool call failed only if content starts with "ERROR" (backend convention)
       const resultContent = result.content || '';
-      const isFailed = /failed|error|Error|ERROR|exception|Exception|failed:|error:/i.test(resultContent);
+      const isFailed = typeof resultContent === 'string' && resultContent.trim().startsWith('ERROR');
 
       if (toolCallProcesses[toolCallId]) {
         toolCallProcesses[toolCallId] = {

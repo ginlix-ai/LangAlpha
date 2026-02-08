@@ -169,6 +169,7 @@ function SubagentCardContent({
                             reasoningContent={normalizedReasoning}
                             isReasoning={reasoning.isReasoning || false}
                             reasoningComplete={reasoning.reasoningComplete || false}
+                            reasoningTitle={reasoning.reasoningTitle ?? undefined}
                           />
                         );
                       }

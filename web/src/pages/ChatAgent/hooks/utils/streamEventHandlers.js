@@ -4,6 +4,20 @@
  */
 
 /**
+ * Extracts the last markdown bold title (**...**) from reasoning content for the icon label.
+ * Used only during live streaming; history always shows "Reasoning".
+ * @param {string} content - Accumulated reasoning text
+ * @returns {string|null} Last **title** inner text or null
+ */
+function extractLastReasoningTitle(content) {
+  if (!content || typeof content !== 'string') return null;
+  const matches = content.matchAll(/\*\*([^*]+)\*\*/g);
+  let last = null;
+  for (const m of matches) last = m[1].trim();
+  return last || null;
+}
+
+/**
  * Handles reasoning signal events during streaming
  * @param {Object} params - Handler parameters
  * @param {string} params.assistantMessageId - ID of the assistant message being updated
@@ -54,7 +68,7 @@ export function handleReasoningSignal({ assistantMessageId, signalContent, refs,
     );
     return true;
   } else if (signalContent === 'complete') {
-    // Reasoning process has completed
+    // Reasoning process has completed - clear title so icon shows "Reasoning"
     if (currentReasoningIdRef.current) {
       const reasoningId = currentReasoningIdRef.current;
       setMessages((prev) =>
@@ -67,6 +81,7 @@ export function handleReasoningSignal({ assistantMessageId, signalContent, refs,
               ...reasoningProcesses[reasoningId],
               isReasoning: false,
               reasoningComplete: true,
+              reasoningTitle: null,
             };
           }
 
@@ -103,10 +118,13 @@ export function handleReasoningContent({ assistantMessageId, content, refs, setM
 
         const reasoningProcesses = { ...(msg.reasoningProcesses || {}) };
         if (reasoningProcesses[reasoningId]) {
+          const newContent = (reasoningProcesses[reasoningId].content || '') + content;
+          const reasoningTitle = extractLastReasoningTitle(newContent) ?? reasoningProcesses[reasoningId].reasoningTitle ?? null;
           reasoningProcesses[reasoningId] = {
             ...reasoningProcesses[reasoningId],
-            content: (reasoningProcesses[reasoningId].content || '') + content,
+            content: newContent,
             isReasoning: true,
+            reasoningTitle,
           };
         }
 
@@ -310,10 +328,9 @@ export function handleToolCallResult({ assistantMessageId, toolCallId, result, r
 
       const toolCallProcesses = { ...(msg.toolCallProcesses || {}) };
       
-      // Detect if tool call failed by checking result content
-      // Common failure indicators: "failed", "error", "Error", "ERROR", "exception", etc.
+      // Tool call failed only if content starts with "ERROR" (backend convention)
       const resultContent = result.content || '';
-      const isFailed = /failed|error|Error|ERROR|exception|Exception|failed:|error:/i.test(resultContent);
+      const isFailed = typeof resultContent === 'string' && resultContent.trim().startsWith('ERROR');
       
       if (toolCallProcesses[toolCallId]) {
         toolCallProcesses[toolCallId] = {
@@ -341,9 +358,9 @@ export function handleToolCallResult({ assistantMessageId, toolCallId, result, r
           },
         ];
 
-        // Detect if tool call failed by checking result content
-        const resultContent = result.content || '';
-        const isFailed = /failed|error|Error|ERROR|exception|Exception|failed:|error:/i.test(resultContent);
+        // Tool call failed only if content starts with "ERROR"
+        const resultContentForFail = result.content || '';
+        const isFailedEdge = typeof resultContentForFail === 'string' && resultContentForFail.trim().startsWith('ERROR');
         
         toolCallProcesses[toolCallId] = {
           toolName: 'Unknown Tool',
@@ -355,7 +372,7 @@ export function handleToolCallResult({ assistantMessageId, toolCallId, result, r
           },
           isInProgress: false,
           isComplete: true,
-          isFailed: isFailed, // Track if tool call failed
+          isFailed: isFailedEdge,
           order: currentOrder,
         };
 
@@ -766,6 +783,7 @@ export function handleSubagentMessageChunk({
               ...reasoningProcesses[reasoningId],
               isReasoning: false,
               reasoningComplete: true,
+              reasoningTitle: null,
             };
           }
           msg.reasoningProcesses = reasoningProcesses;
@@ -836,10 +854,12 @@ export function handleSubagentMessageChunk({
       });
     }
     
+    const reasoningTitle = extractLastReasoningTitle(newContent) ?? reasoningProcesses[reasoningId].reasoningTitle ?? null;
     reasoningProcesses[reasoningId] = {
       ...reasoningProcesses[reasoningId],
       content: newContent,
       isReasoning: true,
+      reasoningTitle,
     };
     
     msg.reasoningProcesses = reasoningProcesses;
@@ -1114,7 +1134,7 @@ export function handleSubagentToolCallResult({ taskId, assistantMessageId, toolC
           },
           isInProgress: false,
           isComplete: true,
-          isFailed: /failed|error|Error|ERROR|exception|Exception|failed:|error:/i.test(result.content || ''), // Track if tool call failed
+          isFailed: typeof result.content === 'string' && (result.content || '').trim().startsWith('ERROR'),
           order: currentOrder,
         },
       },
@@ -1132,9 +1152,9 @@ export function handleSubagentToolCallResult({ taskId, assistantMessageId, toolC
     const msg = updatedMessages[messageIndex];
     const toolCallProcesses = { ...(msg.toolCallProcesses || {}) };
     
-    // Detect if tool call failed by checking result content
+    // Tool call failed only if content starts with "ERROR"
     const resultContent = result.content || '';
-    const isFailed = /failed|error|Error|ERROR|exception|Exception|failed:|error:/i.test(resultContent);
+    const isFailed = typeof resultContent === 'string' && resultContent.trim().startsWith('ERROR');
     
     if (toolCallProcesses[toolCallId]) {
       toolCallProcesses[toolCallId] = {
@@ -1146,7 +1166,7 @@ export function handleSubagentToolCallResult({ taskId, assistantMessageId, toolC
         },
         isInProgress: false,
         isComplete: true,
-        isFailed: isFailed, // Track if tool call failed
+        isFailed,
       };
     } else {
       // Edge case: message exists but tool call doesn't - add it
@@ -1170,7 +1190,7 @@ export function handleSubagentToolCallResult({ taskId, assistantMessageId, toolC
         },
         isInProgress: false,
         isComplete: true,
-        isFailed: isFailed, // Track if tool call failed
+        isFailed,
         order: currentOrder,
       };
       
