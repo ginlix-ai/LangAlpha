@@ -27,6 +27,7 @@
     "react-router-dom": "^6.21.0",
     "react-syntax-highlighter": "^16.1.0",
     "recharts": "^3.7.0",
+    "rehype-raw": "^7.0.0",
     "remark-gfm": "^4.0.0",
     "tailwind-merge": "^3.4.0",
     "xlsx": "^0.18.5"
