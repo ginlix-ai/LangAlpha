@@ -1,5 +1,5 @@
-import { Send, Zap } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { Send, Loader2, Square, Zap } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
 import { Input } from './input';
 
 /**
@@ -32,10 +32,27 @@ const ChatInput = ({
   setPlanMode: setControlledPlanMode,
   // Extra buttons
   extraButtons,
+  // Stop button props
+  onStop,
+  isLoading = false,
 }) => {
   // Internal state for uncontrolled mode
   const [internalMessage, setInternalMessage] = useState('');
   const [internalPlanMode, setInternalPlanMode] = useState(false);
+
+  // Track whether stop has been requested to prevent repeated clicks
+  const [isStopping, setIsStopping] = useState(false);
+
+  // Reset isStopping when loading finishes
+  useEffect(() => {
+    if (!isLoading) setIsStopping(false);
+  }, [isLoading]);
+
+  const handleStop = useCallback(() => {
+    if (isStopping) return;
+    setIsStopping(true);
+    onStop?.();
+  }, [isStopping, onStop]);
 
   // Determine if controlled or uncontrolled
   const isControlled = controlledMessage !== undefined;
@@ -145,14 +162,30 @@ const ChatInput = ({
         <Zap className="h-4 w-4" />
         <span>Plan Mode</span>
       </button>
-      <button
-        className="w-8 h-9 rounded-md flex items-center justify-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        style={sendButtonStyle}
-        onClick={handleSend}
-        disabled={disabled || !message.trim()}
-      >
-        <Send className="h-4 w-4" />
-      </button>
+      {isLoading && onStop ? (
+        <button
+          className="w-8 h-9 rounded-md flex items-center justify-center transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+          style={{ backgroundColor: isStopping ? '#991b1b' : '#dc2626', color: '#FFFFFF' }}
+          onClick={handleStop}
+          disabled={isStopping}
+          title={isStopping ? 'Stopping...' : 'Stop'}
+        >
+          {isStopping ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Square className="h-3.5 w-3.5" fill="currentColor" />
+          )}
+        </button>
+      ) : (
+        <button
+          className="w-8 h-9 rounded-md flex items-center justify-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          style={sendButtonStyle}
+          onClick={handleSend}
+          disabled={disabled || !message.trim()}
+        >
+          <Send className="h-4 w-4" />
+        </button>
+      )}
     </div>
   );
 };
