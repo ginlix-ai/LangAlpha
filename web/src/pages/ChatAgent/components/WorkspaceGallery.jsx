@@ -7,6 +7,7 @@ import { getAuthUserId } from '@/api/client';
 import { getWorkspaces, createWorkspace, deleteWorkspace, DEFAULT_USER_ID } from '../utils/api';
 import { DEFAULT_WORKSPACE_NAME } from '../../Dashboard/utils/workspace';
 import { removeStoredThreadId } from '../hooks/useChatMessages';
+import { clearChatSession } from '../hooks/utils/chatSessionRestore';
 import '../../Dashboard/Dashboard.css';
 
 /**
@@ -34,6 +35,11 @@ function WorkspaceGallery({ onWorkspaceSelect, cache, prefetchThreads }) {
   const navigate = useNavigate();
   const { workspaceId: currentWorkspaceId } = useParams();
   const loadingRef = useRef(false);
+
+  // Clear saved chat session so tab-switching returns to workspace gallery
+  useEffect(() => {
+    clearChatSession();
+  }, []);
 
   // Load workspaces on mount, using cache for instant display on return navigation
   useEffect(() => {

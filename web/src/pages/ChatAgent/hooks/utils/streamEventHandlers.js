@@ -239,7 +239,7 @@ export function handleToolCalls({ assistantMessageId, toolCalls, finishReason, r
     const toolCallId = toolCall.id;
 
     if (toolCallId) {
-      if (!refs._toolCreatedAt[toolCallId]) {
+      if (!refs.isReconnect && !refs._toolCreatedAt[toolCallId]) {
         refs._toolCreatedAt[toolCallId] = Date.now();
       }
       setMessages((prev) =>
@@ -265,7 +265,7 @@ export function handleToolCalls({ assistantMessageId, toolCalls, finishReason, r
               toolCallResult: null,
               isInProgress: true,
               isComplete: false,
-              _createdAt: Date.now(),
+              _createdAt: refs.isReconnect ? 0 : Date.now(),
               order: currentOrder,
             };
           } else {

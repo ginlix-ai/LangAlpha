@@ -841,6 +841,7 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
       isNewConversation: false,
       subagentStateRefs,
       updateSubagentCard: updateSubagentCard || (() => {}),
+      isReconnect: true,
     };
 
     const processEvent = createStreamEventProcessor(assistantMessageId, refs, getTaskIdFromEvent);

@@ -1,4 +1,4 @@
-import { X, FileText, ArrowRight, Zap, Loader2 } from 'lucide-react';
+import { X, FileText, ArrowRight, Zap, Loader2, ExternalLink } from 'lucide-react';
 import { getDisplayName, getToolIcon, stripLineNumbers, parseTruncatedResult } from './toolDisplayConfig';
 import {
   StockPriceChart,
@@ -274,11 +274,11 @@ function ArtifactOrMarkdown({ artifact, content, toolName, toolCallProcess, onOp
     }
   }
 
-  // WebSearch: formatted display
+  // WebSearch: bubble card display
   if (toolName === 'WebSearch' || toolName === 'web_search') {
-    const formatted = formatWebSearchContent(toolCallProcess);
-    if (formatted) {
-      return <Markdown variant="panel" content={formatted} className="text-sm" />;
+    const parsed = parseWebSearchResults(toolCallProcess);
+    if (parsed) {
+      return <WebSearchCards data={parsed} />;
     }
   }
 
@@ -288,7 +288,7 @@ function ArtifactOrMarkdown({ artifact, content, toolName, toolCallProcess, onOp
   return <Markdown variant="panel" content={displayContent} className="text-sm" />;
 }
 
-function formatWebSearchContent(proc) {
+function parseWebSearchResults(proc) {
   const raw = proc.toolCallResult?.content;
   if (!raw) return null;
 
@@ -302,26 +302,126 @@ function formatWebSearchContent(proc) {
 
   const artifact = proc.toolCallResult?.artifact;
   const richResults = artifact?.results;
-  const lines = [];
 
-  if (artifact?.answer) {
-    lines.push(`> ${artifact.answer}`);
-    lines.push('');
-  }
+  return {
+    answer: artifact?.answer || artifact?.answer_box?.answer || artifact?.answer_box?.snippet || artifact?.knowledge_graph?.description || null,
+    query: artifact?.query || proc.toolCall?.args?.query || '',
+    results: results.map((item, i) => ({
+      title: item.title || 'Untitled',
+      url: item.url || '',
+      snippet: richResults?.[i]?.snippet || item.content || '',
+      date: item.date || '',
+      domain: (() => {
+        try { return new URL(item.url).hostname.replace(/^www\./, ''); } catch { return ''; }
+      })(),
+    })),
+  };
+}
 
-  results.forEach((item, i) => {
-    const title = item.title || 'Untitled';
-    const url = item.url || '';
-    const snippet = (richResults?.[i]?.snippet) || item.content || '';
-    const date = item.date || '';
+function WebSearchCards({ data }) {
+  const { answer, query, results } = data;
 
-    lines.push(`**${i + 1}. [${title}](${url})**`);
-    if (snippet) lines.push(snippet);
-    if (date) lines.push(`*${date}*`);
-    lines.push('');
-  });
+  return (
+    <div className="space-y-3">
+      {/* Answer box */}
+      {answer && (
+        <div
+          className="rounded-lg px-4 py-3"
+          style={{
+            backgroundColor: 'rgba(97, 85, 245, 0.08)',
+            border: '1px solid rgba(97, 85, 245, 0.2)',
+          }}
+        >
+          <p className="text-sm" style={{ color: 'rgba(255, 255, 255, 0.85)', lineHeight: 1.6 }}>
+            {answer}
+          </p>
+        </div>
+      )}
 
-  return lines.join('\n').trim() || null;
+      {/* Query label */}
+      {query && (
+        <div
+          className="text-xs font-medium uppercase tracking-wider px-1"
+          style={{ color: 'rgba(255, 255, 255, 0.35)' }}
+        >
+          {results.length} result{results.length !== 1 ? 's' : ''} for &ldquo;{query}&rdquo;
+        </div>
+      )}
+
+      {/* Result cards */}
+      {results.map((item, i) => (
+        <a
+          key={i}
+          href={item.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="block rounded-lg px-4 py-3 group"
+          style={{
+            backgroundColor: 'rgba(255, 255, 255, 0.03)',
+            border: '1px solid rgba(255, 255, 255, 0.06)',
+            textDecoration: 'none',
+            transition: 'border-color 0.15s, background-color 0.15s',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.borderColor = 'rgba(97, 85, 245, 0.4)';
+            e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.06)';
+            e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.03)';
+          }}
+        >
+          {/* Domain + external link icon */}
+          <div className="flex items-center justify-between mb-1.5">
+            <span
+              className="text-xs truncate"
+              style={{ color: 'rgba(255, 255, 255, 0.35)' }}
+            >
+              {item.domain}
+            </span>
+            <ExternalLink
+              className="h-3 w-3 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+              style={{ color: 'rgba(255, 255, 255, 0.35)' }}
+            />
+          </div>
+
+          {/* Title */}
+          <div
+            className="text-sm font-medium mb-1 leading-snug"
+            style={{ color: '#FFFFFF' }}
+          >
+            {item.title}
+          </div>
+
+          {/* Snippet */}
+          {item.snippet && (
+            <div
+              className="text-xs leading-relaxed"
+              style={{
+                color: 'rgba(255, 255, 255, 0.5)',
+                display: '-webkit-box',
+                WebkitLineClamp: 3,
+                WebkitBoxOrient: 'vertical',
+                overflow: 'hidden',
+              }}
+            >
+              {item.snippet}
+            </div>
+          )}
+
+          {/* Date */}
+          {item.date && (
+            <div
+              className="text-xs mt-1.5"
+              style={{ color: 'rgba(255, 255, 255, 0.25)' }}
+            >
+              {item.date}
+            </div>
+          )}
+        </a>
+      ))}
+    </div>
+  );
 }
 
 function TruncatedResultMessage({ filePath, preview, onOpenFile }) {
