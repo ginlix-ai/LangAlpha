@@ -39,7 +39,7 @@
 
 .login-page__card-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.875rem;
   margin-bottom: 1.75rem;
 }
