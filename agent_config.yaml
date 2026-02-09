@@ -45,7 +45,7 @@ mcp:
 
     # Fundamentals MCP server for financial statements, ratios, growth, and valuation.
     - name: "fundamentals"
-      enabled: true
+      enabled: false
       description: "Raw fundamental data for multi-year analysis"
       instruction: "Use for financial statements, ratios, growth metrics, and valuation data. Returns raw JSON for programmatic analysis and charting."
       tool_exposure_mode: "summary"
