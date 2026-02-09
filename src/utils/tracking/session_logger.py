@@ -73,8 +73,6 @@ class SessionLogger:
             from src.llms.result_logger import get_result_logger
             from src.llms import format_llm_content
             from src.server.models.workflow import serialize_state_snapshot
-            from src.config.agents import AGENT_LLM_MAP
-
             # Generate IDs for query-response pair
             result_logger = get_result_logger()
             query_id = str(uuid4())
@@ -210,7 +208,6 @@ class SessionLogger:
                     "metadata": {
                         "msg_type": msg_type,
                         "stock_code": stock_code,
-                        "agent_model_config": AGENT_LLM_MAP
                     }
                 }
             }

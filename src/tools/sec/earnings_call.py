@@ -71,8 +71,6 @@ async def fetch_matching_earnings_call(
         Tuple of (transcript_content, fiscal_year, fiscal_quarter, call_date) or None
     """
     try:
-        from src.tools.data_agent.implementations import fetch_earnings_transcript
-
         async with FMPClient() as client:
             dates = await client.get_earnings_call_dates(symbol)
 

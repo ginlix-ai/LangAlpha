@@ -24,7 +24,7 @@ from .decorators import log_io
 from .crawler.safe_wrapper import get_safe_crawler_sync, CrawlResult
 from .crawler.sitemap import get_sitemap_summary
 from src.llms import LLM, make_api_call, format_llm_content
-from src.config.agents import AGENT_LLM_MAP, AGENT_LLM_PRESETS
+from src.config.settings import load_agent_config
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +37,9 @@ EXTRACTION_TIMEOUT = 60.0  # seconds per model attempt
 
 
 def _get_extraction_model() -> str:
-    """Get the configured extraction model from agent config."""
-    return AGENT_LLM_MAP.get("web_fetch", "minimax-m2.1")
-
-
-def _get_fallback_model() -> str:
-    """Get the fallback extraction model from fallback preset."""
-    fallback_preset = AGENT_LLM_PRESETS.get("fallback", {})
-    return fallback_preset.get("web_fetch", "minimax-m2.1")
+    """Get the configured extraction model from agent_config.yaml (llm.flash)."""
+    config = load_agent_config()
+    return config.get("llm", {}).get("flash", "minimax-m2.1")
 
 
 def _get_cache_key(url: str) -> str:
@@ -135,54 +130,26 @@ async def _extract_with_llm(
 {markdown}
 """
 
-    # Try primary model with timeout, fallback on failure
-    fallback_model = _get_fallback_model()
-    models_to_try = [model] if model == fallback_model else [model, fallback_model]
+    llm = LLM(model).get_llm()
 
-    last_error = None
-    for i, current_model in enumerate(models_to_try):
-        try:
-            llm = LLM(current_model).get_llm()
+    # Disable streaming to prevent SSE events from extraction LLM
+    if hasattr(llm, 'streaming'):
+        llm.streaming = False
 
-            # Disable streaming to prevent SSE events from extraction LLM
-            if hasattr(llm, 'streaming'):
-                llm.streaming = False
+    # Apply timeout for extraction
+    result = await asyncio.wait_for(
+        make_api_call(
+            llm=llm,
+            system_prompt=EXTRACTION_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            disable_tracing=True,
+        ),
+        timeout=EXTRACTION_TIMEOUT,
+    )
 
-            # Apply timeout for extraction
-            result = await asyncio.wait_for(
-                make_api_call(
-                    llm=llm,
-                    system_prompt=EXTRACTION_SYSTEM_PROMPT,
-                    user_prompt=user_prompt,
-                    disable_tracing=True,
-                ),
-                timeout=EXTRACTION_TIMEOUT,
-            )
-
-            # Log if we used fallback
-            if i > 0:
-                logger.info(f"[WEB_FETCH] Extraction succeeded with fallback model: {current_model}")
-
-            # Normalize content: extract text only, discard reasoning
-            formatted = format_llm_content(result)
-            return formatted["text"]
-
-        except asyncio.TimeoutError:
-            last_error = f"Timeout after {EXTRACTION_TIMEOUT}s"
-            logger.warning(f"[WEB_FETCH] Model {current_model} timed out, trying fallback...")
-        except Exception as e:
-            last_error = str(e)
-            error_type = type(e).__name__
-            # Only fallback on connection/API errors, not on other errors
-            if any(keyword in error_type.lower() or keyword in str(e).lower()
-                   for keyword in ["timeout", "connection", "api", "network", "refused"]):
-                logger.warning(f"[WEB_FETCH] Model {current_model} failed ({error_type}), trying fallback...")
-            else:
-                # Non-retryable error, raise immediately
-                raise
-
-    # All models failed
-    raise Exception(f"Extraction failed after trying all models. Last error: {last_error}")
+    # Normalize content: extract text only, discard reasoning
+    formatted = format_llm_content(result)
+    return formatted["text"]
 
 
 async def _extract_with_chunking(
@@ -284,7 +251,7 @@ async def web_fetch(
     Args:
         url: The URL to fetch content from
         prompt: The prompt to run on the fetched content
-        model: LLM model to use for extraction (default: from agents.py config)
+        model: LLM model to use for extraction (default: from agent_config.yaml llm.flash)
         use_cache: Whether to use Redis cache (default: True)
         use_chunking: Enable chunking for very long content (default: False)
         include_sitemap: Include site structure for URL suggestions (default: True)
