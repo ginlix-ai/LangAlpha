@@ -1,12 +1,12 @@
+import React, { useRef, useEffect } from 'react';
 import { CheckCircle2, Circle, Loader2, X } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { ScrollArea } from '../../../components/ui/scroll-area';
+import AgentTabBar from './AgentTabBar';
+import SubagentCardContent from './SubagentCardContent';
+import { MessageContentSegments } from './MessageList';
 import iconFile from '../../../assets/img/icon-file.svg';
 import iconRobo from '../../../assets/img/icon-robo.svg';
-import { ScrollArea } from '../../../components/ui/scroll-area';
 import '../components/FilePanel.css';
-import AgentTabBar from './AgentTabBar';
-import { MessageContentSegments } from './MessageList';
-import SubagentCardContent from './SubagentCardContent';
 
 /**
  * AgentPanel Component
@@ -168,7 +168,7 @@ function AgentPanel({ agents, selectedAgentId, onSelectAgent, onClose, onRemoveA
             />
 
             <div className="flex-1 min-w-0">
-              <div className="text-md font-medium" style={{ color: '#FFFFFF' }}>
+              <div className="text-xs font-medium" style={{ color: '#FFFFFF' }}>
                 {isMainAgent ? (selectedAgent.displayName || selectedAgent.name) : 'Subagent'}
               </div>
 

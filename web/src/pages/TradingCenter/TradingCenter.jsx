@@ -14,7 +14,7 @@ import { useTradingChat } from './hooks/useTradingChat';
 import { deleteFlashWorkspaces } from './utils/api';
 import { findOrCreateDefaultWorkspace } from '../Dashboard/utils/workspace';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../components/ui/dialog';
-import LogoLoading from '../../components/LogoLoading';
+import { Loader2 } from 'lucide-react';
 
 function TradingCenter() {
   const navigate = useNavigate();
@@ -210,7 +210,7 @@ function TradingCenter() {
               </DialogDescription>
             </DialogHeader>
             <div className="flex items-center justify-center py-4">
-              <LogoLoading size={24} color="var(--color-accent-primary)" />
+              <Loader2 className="h-6 w-6 animate-spin" style={{ color: 'var(--color-accent-primary)' }} />
             </div>
           </DialogContent>
         </Dialog>

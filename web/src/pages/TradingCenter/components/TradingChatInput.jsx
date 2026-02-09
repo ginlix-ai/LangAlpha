@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
-import { Globe, Send, Zap } from 'lucide-react';
+import { Globe, Send, Zap, Loader2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
-import LogoLoading from '../../../components/LogoLoading';
 import './TradingChatInput.css';
 
 /**
@@ -76,7 +75,7 @@ function TradingChatInput({ onSend, isLoading = false }) {
               aria-label="Send"
             >
               {isLoading ? (
-                <LogoLoading size={16} color="white" />
+                <Loader2 className="trading-chat-send-icon spinning" />
               ) : (
                 <Send className="trading-chat-send-icon" />
               )}
