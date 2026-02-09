@@ -472,6 +472,40 @@ export function useFloatingCards(initialCards = {}) {
   };
 
   /**
+   * Complete all pending todos in the floating todo list card
+   * Called at the end of streaming to mark remaining in_progress/pending items as completed
+   * No-op if no todo card exists or all items are already completed
+   */
+  const completePendingTodos = () => {
+    setFloatingCards((prev) => {
+      const card = prev['todo-list-card'];
+      if (!card?.todoData?.todos) return prev;
+
+      const hasIncomplete = card.todoData.todos.some((t) => t.status !== 'completed');
+      if (!hasIncomplete) return prev;
+
+      const completedTodos = card.todoData.todos.map((t) => ({
+        ...t,
+        status: 'completed',
+      }));
+
+      return {
+        ...prev,
+        'todo-list-card': {
+          ...card,
+          todoData: {
+            ...card.todoData,
+            todos: completedTodos,
+            completed: card.todoData.total || completedTodos.length,
+            in_progress: 0,
+            pending: 0,
+          },
+        },
+      };
+    });
+  };
+
+  /**
    * Minimize all inactive subagent cards
    * Called at the end of streaming to minimize inactive cards
    * This keeps the UI clean by hiding cards from previous conversations
@@ -532,6 +566,7 @@ export function useFloatingCards(initialCards = {}) {
     getAllCards,
     inactivateAllSubagents,
     minimizeInactiveSubagents,
+    completePendingTodos,
     updateTodoListCard,
     updateSubagentCard,
   };

@@ -68,7 +68,7 @@ function isOnboardingRelatedToolSuccess(resultContent) {
   return !!(parsed.risk_preference || parsed.watchlist_item || parsed.portfolio_holding);
 }
 
-export function useChatMessages(workspaceId, initialThreadId = null, updateTodoListCard = null, updateSubagentCard = null, inactivateAllSubagents = null, minimizeInactiveSubagents = null, onOnboardingRelatedToolComplete = null, onFileArtifact = null, agentMode = 'ptc') {
+export function useChatMessages(workspaceId, initialThreadId = null, updateTodoListCard = null, updateSubagentCard = null, inactivateAllSubagents = null, minimizeInactiveSubagents = null, completePendingTodos = null, onOnboardingRelatedToolComplete = null, onFileArtifact = null, agentMode = 'ptc') {
   // State
   const [messages, setMessages] = useState([]);
   const [threadId, setThreadId] = useState(() => {
@@ -886,6 +886,35 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
       if (minimizeInactiveSubagents) {
         minimizeInactiveSubagents();
       }
+
+      // Auto-complete pending todos in floating card and inline message
+      if (completePendingTodos) {
+        completePendingTodos();
+      }
+      setMessages((prev) => {
+        const msg = prev.find((m) => m.id === assistantMessageId);
+        if (!msg?.todoListProcesses || Object.keys(msg.todoListProcesses).length === 0) return prev;
+        // Find the last todoListProcesses entry (highest order) and mark all todos completed
+        const entries = Object.entries(msg.todoListProcesses);
+        const lastEntry = entries.reduce((a, b) => ((a[1].order || 0) >= (b[1].order || 0) ? a : b));
+        const [lastKey, lastVal] = lastEntry;
+        const hasIncomplete = lastVal.todos?.some((t) => t.status !== 'completed');
+        if (!hasIncomplete) return prev;
+        const completedTodos = lastVal.todos.map((t) => ({ ...t, status: 'completed' }));
+        return prev.map((m) => m.id !== assistantMessageId ? m : {
+          ...m,
+          todoListProcesses: {
+            ...m.todoListProcesses,
+            [lastKey]: {
+              ...lastVal,
+              todos: completedTodos,
+              completed: lastVal.total || completedTodos.length,
+              in_progress: 0,
+              pending: 0,
+            },
+          },
+        });
+      });
     }
   };
 
@@ -1667,6 +1696,34 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
               console.log('[useChatMessages] Minimized all inactive subagents at end of streaming');
             }
           }
+
+          // Auto-complete pending todos in floating card and inline message
+          if (completePendingTodos) {
+            completePendingTodos();
+          }
+          setMessages((prev) => {
+            const msg = prev.find((m) => m.id === assistantMessageId);
+            if (!msg?.todoListProcesses || Object.keys(msg.todoListProcesses).length === 0) return prev;
+            const entries = Object.entries(msg.todoListProcesses);
+            const lastEntry = entries.reduce((a, b) => ((a[1].order || 0) >= (b[1].order || 0) ? a : b));
+            const [lastKey, lastVal] = lastEntry;
+            const hasIncomplete = lastVal.todos?.some((t) => t.status !== 'completed');
+            if (!hasIncomplete) return prev;
+            const completedTodos = lastVal.todos.map((t) => ({ ...t, status: 'completed' }));
+            return prev.map((m) => m.id !== assistantMessageId ? m : {
+              ...m,
+              todoListProcesses: {
+                ...m.todoListProcesses,
+                [lastKey]: {
+                  ...lastVal,
+                  todos: completedTodos,
+                  completed: lastVal.total || completedTodos.length,
+                  in_progress: 0,
+                  pending: 0,
+                },
+              },
+            });
+          });
         }
       };
 
@@ -1743,9 +1800,37 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
       if (minimizeInactiveSubagents) {
         minimizeInactiveSubagents();
       }
+
+      // Auto-complete pending todos in floating card and inline message
+      if (completePendingTodos) {
+        completePendingTodos();
+      }
+      setMessages((prev) => {
+        const msg = prev.find((m) => m.id === assistantMessageId);
+        if (!msg?.todoListProcesses || Object.keys(msg.todoListProcesses).length === 0) return prev;
+        const entries = Object.entries(msg.todoListProcesses);
+        const lastEntry = entries.reduce((a, b) => ((a[1].order || 0) >= (b[1].order || 0) ? a : b));
+        const [lastKey, lastVal] = lastEntry;
+        const hasIncomplete = lastVal.todos?.some((t) => t.status !== 'completed');
+        if (!hasIncomplete) return prev;
+        const completedTodos = lastVal.todos.map((t) => ({ ...t, status: 'completed' }));
+        return prev.map((m) => m.id !== assistantMessageId ? m : {
+          ...m,
+          todoListProcesses: {
+            ...m.todoListProcesses,
+            [lastKey]: {
+              ...lastVal,
+              todos: completedTodos,
+              completed: lastVal.total || completedTodos.length,
+              in_progress: 0,
+              pending: 0,
+            },
+          },
+        });
+      });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, threadId, updateTodoListCard, updateSubagentCard, inactivateAllSubagents, minimizeInactiveSubagents]);
+  }, [workspaceId, threadId, updateTodoListCard, updateSubagentCard, inactivateAllSubagents, minimizeInactiveSubagents, completePendingTodos]);
 
   const handleApproveInterrupt = useCallback(() => {
     if (!pendingInterrupt) return;

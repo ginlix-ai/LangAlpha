@@ -156,6 +156,7 @@ function ChatView({ workspaceId, threadId, onBack }) {
     updateSubagentCard,
     inactivateAllSubagents,
     minimizeInactiveSubagents,
+    completePendingTodos,
   } = useFloatingCards();
 
   // Sync onboarding_completed via PUT when ChatAgent completes onboarding (risk_preference + stocks)
@@ -194,7 +195,7 @@ function ChatView({ workspaceId, threadId, onBack }) {
     threadId: currentThreadId,
     getSubagentHistory,
     resolveSubagentIdToAgentId,
-  } = useChatMessages(workspaceId, threadId, updateTodoListCard, updateSubagentCard, inactivateAllSubagents, minimizeInactiveSubagents, handleOnboardingRelatedToolComplete, refreshFiles, agentMode);
+  } = useChatMessages(workspaceId, threadId, updateTodoListCard, updateSubagentCard, inactivateAllSubagents, minimizeInactiveSubagents, completePendingTodos, handleOnboardingRelatedToolComplete, refreshFiles, agentMode);
 
   // Ref to avoid stale closure in unmount cleanup
   const currentThreadIdRef = useRef(currentThreadId);
