@@ -43,3 +43,12 @@
 .dashboard-container ::-webkit-scrollbar-thumb:hover {
   background: var(--color-border-muted);
 }
+
+/* Hide scrollbar for Popular cards horizontal scroll */
+.popular-scroll-hide::-webkit-scrollbar {
+  display: none;
+}
+.popular-scroll-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

@@ -54,8 +54,7 @@ function PopularCard({ items = [], loading = false, hasMore = false, onLoadMore 
       </CardHeader>
       <CardContent className="px-5 pt-0 pb-0" style={{ paddingLeft: '20px', paddingRight: '20px', paddingBottom: '20px' }}>
         <div
-          className="flex gap-2.5 overflow-x-auto pb-1"
-          style={{ scrollbarWidth: 'thin' }}
+          className="flex gap-2.5 overflow-x-auto popular-scroll-hide"
           onScroll={handleScroll}
         >
           {loading
