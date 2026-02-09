@@ -187,6 +187,7 @@ export function handleHistoryReasoningSignal({ assistantMessageId, signalContent
             isReasoning: false, // History: already complete
             reasoningComplete: true,
             order: currentOrder,
+            _completedAt: 0,
           },
         };
 
@@ -211,6 +212,7 @@ export function handleHistoryReasoningSignal({ assistantMessageId, signalContent
               ...reasoningProcesses[reasoningId],
               isReasoning: false,
               reasoningComplete: true,
+              _completedAt: 0,
             };
           }
 
@@ -250,6 +252,7 @@ export function handleHistoryReasoningContent({ assistantMessageId, content, pai
             content: (reasoningProcesses[reasoningId].content || '') + content,
             isReasoning: false,
             reasoningComplete: true,
+            _completedAt: 0,
           };
         }
 

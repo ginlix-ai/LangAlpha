@@ -160,6 +160,7 @@ function MessageBubble({ message, onOpenSubagentTask, onOpenFile, onOpenDir, onT
  * @param {Function} props.onToolCallDetailClick - Callback to open detail panel for a tool call
  */
 const MIN_LIVE_EXPOSURE_MS = 5000; // minimum time a tool call stays in LiveActivity
+const FADE_MS = 500; // matches LiveActivity fade duration
 
 function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesses, todoListProcesses, subagentTasks, planApprovals = {}, isStreaming, hasError, isAssistant = false, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, textOnly = false }) {
   // Force re-render timer for recently-completed tool calls that need minimum exposure
@@ -279,14 +280,26 @@ function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesse
             isReasoning: true,
           };
         } else {
-          // Completed reasoning
-          currentCompleted.push({
-            type: 'reasoning',
-            id: seg.reasoningId,
-            reasoningTitle: proc.reasoningTitle || null,
-            content: proc.content || '',
-            reasoningComplete: proc.reasoningComplete,
-          });
+          const completedAt = proc._completedAt;
+          const completedAge = completedAt ? now - completedAt : Infinity;
+          if (completedAge < MIN_LIVE_EXPOSURE_MS + FADE_MS) {
+            // Still visible in LiveActivity hold/fade — treat as live for ordering
+            flushBeforeLive();
+            // Schedule re-render when hold+fade period expires
+            const expiry = completedAt + MIN_LIVE_EXPOSURE_MS + FADE_MS;
+            if (nextExpiryRef.current === null || expiry < nextExpiryRef.current) {
+              nextExpiryRef.current = expiry;
+            }
+          } else {
+            // Completed reasoning — move to accordion
+            currentCompleted.push({
+              type: 'reasoning',
+              id: seg.reasoningId,
+              reasoningTitle: proc.reasoningTitle || null,
+              content: proc.content || '',
+              reasoningComplete: proc.reasoningComplete,
+            });
+          }
         }
       } else if (seg.type === 'tool_call') {
         const proc = toolCallProcesses[seg.toolCallId];
