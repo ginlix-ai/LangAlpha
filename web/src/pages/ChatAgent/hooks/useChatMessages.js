@@ -813,10 +813,10 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
    * Reconnects to an in-progress workflow stream after page refresh.
    * Creates an assistant message placeholder and processes live SSE events.
    */
-  const reconnectToStream = async (lastEventId = null) => {
+  const reconnectToStream = async () => {
     if (!threadId || threadId === '__default__') return;
 
-    console.log('[Reconnect] Starting reconnection for thread:', threadId, 'lastEventId:', lastEventId);
+    console.log('[Reconnect] Starting reconnection for thread:', threadId);
     setIsLoading(true);
     setIsReconnecting(true);
     isStreamingRef.current = true;
@@ -828,7 +828,23 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
     currentToolCallIdRef.current = null;
 
     const assistantMessage = createAssistantMessage(assistantMessageId);
-    setMessages((prev) => appendMessage(prev, assistantMessage));
+    // Replace trailing empty history assistant message (created by history replay for the
+    // in-progress pair) to avoid a duplicate bubble. If the last message is a non-empty
+    // history assistant or something else, just append normally.
+    setMessages((prev) => {
+      if (prev.length > 0) {
+        const lastMsg = prev[prev.length - 1];
+        if (
+          lastMsg.role === 'assistant' &&
+          lastMsg.isHistory &&
+          (!lastMsg.contentSegments || lastMsg.contentSegments.length === 0) &&
+          !lastMsg.content
+        ) {
+          return [...prev.slice(0, -1), assistantMessage];
+        }
+      }
+      return appendMessage(prev, assistantMessage);
+    });
     currentMessageRef.current = assistantMessageId;
 
     // Prepare refs for event handlers
@@ -847,7 +863,8 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
     const processEvent = createStreamEventProcessor(assistantMessageId, refs, getTaskIdFromEvent);
 
     try {
-      await reconnectToWorkflowStream(threadId, lastEventId, processEvent);
+      // No lastEventId — backend replays all buffered events for the current pair
+      await reconnectToWorkflowStream(threadId, null, processEvent);
 
       // Mark message as complete
       setMessages((prev) =>
@@ -958,7 +975,7 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
 
       if (status.can_reconnect) {
         console.log('[Reconnect] Workflow status:', status.status, 'can_reconnect:', status.can_reconnect);
-        await reconnectToStream(lastEventIdRef.current);
+        await reconnectToStream();
       }
     };
 

@@ -82,7 +82,7 @@ export function handleReasoningSignal({ assistantMessageId, signalContent, refs,
               isReasoning: false,
               reasoningComplete: true,
               reasoningTitle: null,
-              _completedAt: Date.now(),
+              _completedAt: refs.isReconnect ? 0 : Date.now(),
             };
           }
 
@@ -776,7 +776,7 @@ export function handleSubagentMessageChunk({
               isReasoning: false,
               reasoningComplete: true,
               reasoningTitle: null,
-              _completedAt: Date.now(),
+              _completedAt: refs.isReconnect ? 0 : Date.now(),
             };
           }
           msg.reasoningProcesses = reasoningProcesses;
