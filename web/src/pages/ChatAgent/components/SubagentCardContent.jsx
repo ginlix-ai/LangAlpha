@@ -39,16 +39,17 @@ function normalizeSubagentText(content) {
  * @param {boolean} props.isHistory - Whether this card is shown from history replay (hides status/header)
  * @param {Function} props.onOpenFile - Callback when user opens a file from a tool call
  */
-function SubagentCardContent({ 
-  taskId, 
-  description, 
-  type, 
-  toolCalls = 0, 
-  currentTool = '', 
+function SubagentCardContent({
+  taskId,
+  description,
+  type,
+  toolCalls = 0,
+  currentTool = '',
   status = 'active',
   messages = [],
   isHistory = false,
   onOpenFile,
+  onToolCallDetailClick,
 }) {
   // Debug: Log status changes
   React.useEffect(() => {
@@ -186,6 +187,7 @@ function SubagentCardContent({
                             isComplete={toolCall.isComplete || false}
                             isFailed={toolCall.isFailed || false}
                             onOpenFile={onOpenFile}
+                            onDetailClick={onToolCallDetailClick}
                           />
                         );
                       }

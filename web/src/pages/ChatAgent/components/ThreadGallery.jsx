@@ -4,10 +4,11 @@ import { useNavigate, useParams } from 'react-router-dom';
 import ThreadCard from './ThreadCard';
 import DeleteConfirmModal from './DeleteConfirmModal';
 import RenameThreadModal from './RenameThreadModal';
-import ChatInput from './ChatInput';
+import ChatInputWithMentions from './ChatInputWithMentions';
 import FilePanel from './FilePanel';
 import { getAuthUserId } from '@/api/client';
 import { getWorkspaceThreads, getWorkspaces, deleteThread, updateThreadTitle, listWorkspaceFiles } from '../utils/api';
+import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
 import { DEFAULT_USER_ID } from '../utils/api';
 import { removeStoredThreadId } from '../hooks/utils/threadStorage';
 import iconComputer from '../../../assets/img/icon-computer.svg';
@@ -41,8 +42,18 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }) {
   const [isSendingMessage, setIsSendingMessage] = useState(false);
   const [showFilePanel, setShowFilePanel] = useState(false);
   const [filePanelWidth, setFilePanelWidth] = useState(420);
+  const [filePanelTargetFile, setFilePanelTargetFile] = useState(null);
   const [files, setFiles] = useState([]);
   const isDraggingRef = useRef(false);
+
+  // Shared workspace files for the FilePanel
+  const {
+    files: panelFiles,
+    loading: panelFilesLoading,
+    error: panelFilesError,
+    refresh: refreshPanelFiles,
+  } = useWorkspaceFiles(workspaceId);
+
   const navigate = useNavigate();
   const { threadId: currentThreadId } = useParams();
   const loadingRef = useRef(false);
@@ -75,7 +86,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }) {
       const [workspacesData, threadsData, filesData] = await Promise.all([
         getWorkspaces(userId).catch(() => ({ workspaces: [] })),
         getWorkspaceThreads(workspaceId, userId),
-        listWorkspaceFiles(workspaceId, 'results').catch(() => ({ files: [] })),
+        listWorkspaceFiles(workspaceId, '.').catch(() => ({ files: [] })),
       ]);
 
       // Find workspace name
@@ -87,8 +98,21 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }) {
       // Set threads
       setThreads(threadsData.threads || []);
 
-      // Set files
-      setFiles(filesData.files || []);
+      // Set files — sorted: root first, then results/, data/, other
+      const dirPriority = (fp) => {
+        if (!fp.includes('/')) return 0; // root
+        const dir = fp.slice(0, fp.indexOf('/'));
+        if (dir === 'results') return 1;
+        if (dir === 'data') return 2;
+        return 3;
+      };
+      const sortedFiles = (filesData.files || []).slice().sort((a, b) => {
+        const pa = dirPriority(a);
+        const pb = dirPriority(b);
+        if (pa !== pb) return pa - pb;
+        return a.localeCompare(b);
+      });
+      setFiles(sortedFiles);
     } catch (err) {
       console.error('Error loading threads:', err);
       setError('Failed to load threads. Please refresh the page.');
@@ -386,9 +410,10 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }) {
 
             {/* Chat Input */}
             <div className="w-full">
-              <ChatInput
+              <ChatInputWithMentions
                 onSend={handleSendMessage}
                 disabled={isSendingMessage || !workspaceId}
+                files={panelFiles}
               />
             </div>
 
@@ -411,13 +436,22 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }) {
                     {showFilePanel ? 'Close' : 'View all'}
                   </div>
                 </div>
-                {/* Show first two file names */}
+                {/* Show first two file names — clicking a name opens that file directly */}
                 {files.length > 0 && (
-                  <div className="flex flex-col gap-2">
+                  <div className="flex flex-col gap-0.5">
                     {files.slice(0, 2).map((filePath, index) => {
                       const fileName = filePath.split('/').pop();
                       return (
-                        <div key={index} className="flex items-center gap-2 text-[13px]" style={{ color: '#FFFFFF', opacity: 0.7 }}>
+                        <div
+                          key={index}
+                          className="flex items-center gap-2 text-[13px] rounded-md px-1 py-1 -mx-1 transition-colors hover:bg-white/5"
+                          style={{ color: '#FFFFFF', opacity: 0.7 }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setFilePanelTargetFile(filePath);
+                            setShowFilePanel(true);
+                          }}
+                        >
                           <FileText className="h-3.5 w-3.5 flex-shrink-0" />
                           <span className="truncate">{fileName}</span>
                         </div>
@@ -476,6 +510,12 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }) {
             <FilePanel
               workspaceId={workspaceId}
               onClose={() => setShowFilePanel(false)}
+              targetFile={filePanelTargetFile}
+              onTargetFileHandled={() => setFilePanelTargetFile(null)}
+              files={panelFiles}
+              filesLoading={panelFilesLoading}
+              filesError={panelFilesError}
+              onRefreshFiles={refreshPanelFiles}
             />
           </div>
         </>

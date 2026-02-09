@@ -1,6 +1,11 @@
+import { useState, useEffect, useRef } from 'react';
 import { Bot, Loader2, User } from 'lucide-react';
 import logo from '../../../assets/img/logo.svg';
+import ActivityAccordion from './ActivityAccordion';
+import { extractFilePaths, FileMentionCards } from './FileCard';
+import LiveActivity from './LiveActivity';
 import ReasoningMessageContent from './ReasoningMessageContent';
+import PlanApprovalCard from './PlanApprovalCard';
 import SubagentTaskMessageContent from './SubagentTaskMessageContent';
 import TextMessageContent from './TextMessageContent';
 import ToolCallMessageContent from './ToolCallMessageContent';
@@ -8,14 +13,14 @@ import TodoListMessageContent from './TodoListMessageContent';
 
 /**
  * MessageList Component
- * 
+ *
  * Displays the chat message history with support for:
  * - Empty state when no messages exist
  * - User and assistant message bubbles
  * - Streaming indicators
  * - Error state styling
  */
-function MessageList({ messages, onOpenSubagentTask, onOpenFile }) {
+function MessageList({ messages, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick }) {
   // Empty state - show when no messages exist
   if (messages.length === 0) {
     return (
@@ -32,7 +37,17 @@ function MessageList({ messages, onOpenSubagentTask, onOpenFile }) {
   return (
     <div className="space-y-6">
       {messages.map((message) => (
-        <MessageBubble key={message.id} message={message} onOpenSubagentTask={onOpenSubagentTask} onOpenFile={onOpenFile} />
+        <MessageBubble
+          key={message.id}
+          message={message}
+          onOpenSubagentTask={onOpenSubagentTask}
+          onOpenFile={onOpenFile}
+          onOpenDir={onOpenDir}
+          onToolCallDetailClick={onToolCallDetailClick}
+          onApprovePlan={onApprovePlan}
+          onRejectPlan={onRejectPlan}
+          onPlanDetailClick={onPlanDetailClick}
+        />
       ))}
     </div>
   );
@@ -40,11 +55,11 @@ function MessageList({ messages, onOpenSubagentTask, onOpenFile }) {
 
 /**
  * MessageBubble Component
- * 
+ *
  * Renders a single message bubble with appropriate styling
  * based on role (user/assistant) and state (streaming/error)
  */
-function MessageBubble({ message, onOpenSubagentTask, onOpenFile }) {
+function MessageBubble({ message, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick }) {
   const isUser = message.role === 'user';
   const isAssistant = message.role === 'assistant';
 
@@ -82,10 +97,17 @@ function MessageBubble({ message, onOpenSubagentTask, onOpenFile }) {
             toolCallProcesses={message.toolCallProcesses || {}}
             todoListProcesses={message.todoListProcesses || {}}
             subagentTasks={message.subagentTasks || {}}
+            planApprovals={message.planApprovals || {}}
             isStreaming={message.isStreaming}
             hasError={message.error}
+            isAssistant={isAssistant}
             onOpenSubagentTask={onOpenSubagentTask}
             onOpenFile={onOpenFile}
+            onOpenDir={onOpenDir}
+            onToolCallDetailClick={onToolCallDetailClick}
+            onApprovePlan={onApprovePlan}
+            onRejectPlan={onRejectPlan}
+            onPlanDetailClick={onPlanDetailClick}
             textOnly={true}
           />
         ) : (
@@ -122,7 +144,9 @@ function MessageBubble({ message, onOpenSubagentTask, onOpenFile }) {
  * MessageContentSegments Component
  *
  * Renders content segments in chronological order.
- * Handles interleaving of text, reasoning, and tool call content based on when they occurred.
+ * In textOnly mode (main chat): groups completed reasoning + tool calls into
+ * ActivityAccordion episodes separated by text, with a LiveActivity section
+ * for actively streaming items.
  *
  * @param {Object} props
  * @param {Array} props.segments - Array of content segments sorted by order
@@ -132,9 +156,34 @@ function MessageBubble({ message, onOpenSubagentTask, onOpenFile }) {
  * @param {Object} props.subagentTasks - Object mapping subagentId to subagent task data
  * @param {boolean} props.isStreaming - Whether the message is currently streaming
  * @param {boolean} props.hasError - Whether the message has an error
- * @param {boolean} props.textOnly - If true, render text, reasoning, and tool_call segments (for main chat view); todo_list and subagent_task stay in floating cards only
+ * @param {boolean} props.textOnly - If true, render text, reasoning, and tool_call segments (for main chat view)
+ * @param {Function} props.onToolCallDetailClick - Callback to open detail panel for a tool call
  */
-function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesses, todoListProcesses, subagentTasks, isStreaming, hasError, onOpenSubagentTask, onOpenFile, textOnly = false }) {
+const MIN_LIVE_EXPOSURE_MS = 5000; // minimum time a tool call stays in LiveActivity
+
+function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesses, todoListProcesses, subagentTasks, planApprovals = {}, isStreaming, hasError, isAssistant = false, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, textOnly = false }) {
+  // Force re-render timer for recently-completed tool calls that need minimum exposure
+  const [, setTick] = useState(0);
+  const expiryTimerRef = useRef(null);
+  const nextExpiryRef = useRef(null);
+
+  useEffect(() => {
+    clearTimeout(expiryTimerRef.current);
+    expiryTimerRef.current = null;
+
+    if (nextExpiryRef.current !== null) {
+      const delay = Math.max(0, nextExpiryRef.current - Date.now()) + 50;
+      expiryTimerRef.current = setTimeout(() => {
+        setTick((n) => n + 1);
+      }, delay);
+    }
+
+    return () => clearTimeout(expiryTimerRef.current);
+  });
+
+  // Reset for this render pass
+  nextExpiryRef.current = null;
+
   const sortedSegments = [...segments].sort((a, b) => a.order - b.order);
 
   // Group consecutive text segments together for better rendering
@@ -177,58 +226,209 @@ function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesse
       currentTextGroup = null;
       // Add subagent task segment
       groupedSegments.push(segment);
+    } else if (segment.type === 'plan_approval') {
+      currentTextGroup = null;
+      groupedSegments.push(segment);
     }
   }
 
-  // When textOnly (main chat view): show text, reasoning, tool_call (excluding TodoWrite); collapse to one reasoning + one tool_call before each text, with merged content (append new to old)
-  let segmentsToRender;
+  // textOnly mode: use ActivityAccordion + LiveActivity pattern
   if (textOnly) {
     const filtered = groupedSegments.filter((s) => {
       if (s.type === 'text' || s.type === 'reasoning') return true;
+      if (s.type === 'subagent_task') return true;
+      if (s.type === 'plan_approval') return true;
       if (s.type === 'tool_call') {
         const toolName = toolCallProcesses[s.toolCallId]?.toolName;
-        return toolName !== 'TodoWrite';
+        if (toolName === 'TodoWrite') return false;
+        if (toolName === 'task' || toolName === 'Task') return false;
+        if (toolName === 'SubmitPlan') return false;
+        return true;
       }
       return false;
     });
-    const collapsed = [];
-    let reasoningAccum = [];
-    let toolCallAccum = [];
-    const pushMerged = () => {
-      if (reasoningAccum.length) {
-        const ids = reasoningAccum.map((s) => s.reasoningId);
-        collapsed.push({ type: 'reasoning', reasoningId: ids[ids.length - 1], mergedReasoningIds: ids });
-        reasoningAccum = [];
+
+    // Build episodes split into before/after LiveActivity to preserve chronological order.
+    // Text arriving after in-progress or recently-completed tool calls renders below them.
+    const episodesBefore = [];
+    const episodesAfter = [];
+    let currentCompleted = [];
+    let activeReasoning = null;
+    const activeToolCalls = [];
+    let seenLiveItem = false;
+
+    const now = Date.now();
+
+    const flushBeforeLive = () => {
+      if (!seenLiveItem && currentCompleted.length > 0) {
+        episodesBefore.push({ completed: [...currentCompleted], text: null });
+        currentCompleted = [];
       }
-      if (toolCallAccum.length) {
-        const ids = toolCallAccum.map((s) => s.toolCallId);
-        collapsed.push({ type: 'tool_call', toolCallId: ids[ids.length - 1], mergedToolCallIds: ids });
-        toolCallAccum = [];
-      }
+      seenLiveItem = true;
     };
+
     for (const seg of filtered) {
       if (seg.type === 'reasoning') {
-        reasoningAccum.push(seg);
+        const proc = reasoningProcesses[seg.reasoningId];
+        if (!proc) continue;
+        if (proc.isReasoning) {
+          flushBeforeLive();
+          activeReasoning = {
+            content: proc.content || '',
+            title: proc.reasoningTitle || null,
+            isReasoning: true,
+          };
+        } else {
+          // Completed reasoning
+          currentCompleted.push({
+            type: 'reasoning',
+            id: seg.reasoningId,
+            reasoningTitle: proc.reasoningTitle || null,
+            content: proc.content || '',
+            reasoningComplete: proc.reasoningComplete,
+          });
+        }
       } else if (seg.type === 'tool_call') {
-        toolCallAccum.push(seg);
+        const proc = toolCallProcesses[seg.toolCallId];
+        if (!proc || proc.toolName === 'TodoWrite') continue;
+        if (proc.toolName === 'task' || proc.toolName === 'Task') continue;
+        if (proc.toolName === 'SubmitPlan') continue;
+
+        const createdAt = proc._createdAt;
+        const age = createdAt ? now - createdAt : Infinity;
+
+        if (proc.isInProgress) {
+          flushBeforeLive();
+          activeToolCalls.push({
+            ...proc,
+            id: seg.toolCallId,
+            toolCallId: seg.toolCallId,
+          });
+        } else if (age < MIN_LIVE_EXPOSURE_MS) {
+          flushBeforeLive();
+          activeToolCalls.push({
+            ...proc,
+            id: seg.toolCallId,
+            toolCallId: seg.toolCallId,
+            _recentlyCompleted: true,
+          });
+          // Schedule re-render for when minimum exposure expires
+          const expiry = createdAt + MIN_LIVE_EXPOSURE_MS;
+          if (nextExpiryRef.current === null || expiry < nextExpiryRef.current) {
+            nextExpiryRef.current = expiry;
+          }
+        } else {
+          // Completed tool call — move to accordion
+          currentCompleted.push({
+            type: 'tool_call',
+            id: seg.toolCallId,
+            toolCallId: seg.toolCallId,
+            ...proc,
+          });
+        }
+      } else if (seg.type === 'subagent_task') {
+        const target = seenLiveItem ? episodesAfter : episodesBefore;
+        target.push({ completed: [...currentCompleted], text: null, subagentTask: seg });
+        currentCompleted = [];
+      } else if (seg.type === 'plan_approval') {
+        const target = seenLiveItem ? episodesAfter : episodesBefore;
+        target.push({ completed: [...currentCompleted], text: null, planApproval: seg });
+        currentCompleted = [];
       } else if (seg.type === 'text') {
-        pushMerged();
-        collapsed.push(seg);
+        const target = seenLiveItem ? episodesAfter : episodesBefore;
+        target.push({ completed: [...currentCompleted], text: seg });
+        currentCompleted = [];
       }
     }
-    pushMerged();
-    segmentsToRender = collapsed;
-  } else {
-    segmentsToRender = groupedSegments;
+
+    // Remaining completed items (no text after them)
+    if (currentCompleted.length > 0) {
+      const target = seenLiveItem ? episodesAfter : episodesBefore;
+      target.push({ completed: currentCompleted, text: null });
+    }
+
+    // Extract file paths from all text content for assistant messages (only when done streaming)
+    const allEpisodes = [...episodesBefore, ...episodesAfter];
+    const detectedFiles = isAssistant && !isStreaming
+      ? extractFilePaths(allEpisodes.filter(ep => ep.text).map(ep => ep.text.content).join('\n'))
+      : [];
+
+    const renderEpisode = (episode, key, isLastText) => (
+      <div key={key}>
+        {episode.completed.length > 0 && (
+          <ActivityAccordion
+            completedItems={episode.completed}
+            onToolCallClick={onToolCallDetailClick}
+            onOpenFile={onOpenFile}
+          />
+        )}
+        {episode.subagentTask && (() => {
+          const task = subagentTasks[episode.subagentTask.subagentId];
+          if (!task) return null;
+          const toolCallProcess = toolCallProcesses[episode.subagentTask.subagentId] || null;
+          return (
+            <SubagentTaskMessageContent
+              subagentId={episode.subagentTask.subagentId}
+              description={task.description}
+              type={task.type}
+              status={task.status}
+              onOpen={onOpenSubagentTask}
+              onDetailOpen={onToolCallDetailClick}
+              toolCallProcess={toolCallProcess}
+            />
+          );
+        })()}
+        {episode.planApproval && (() => {
+          const pd = planApprovals[episode.planApproval.planApprovalId];
+          if (!pd) return null;
+          return (
+            <PlanApprovalCard
+              planData={pd}
+              onApprove={onApprovePlan}
+              onReject={onRejectPlan}
+              onDetailClick={() => onPlanDetailClick?.(pd)}
+            />
+          );
+        })()}
+        {episode.text && (
+          <TextMessageContent
+            content={episode.text.content}
+            isStreaming={isStreaming && isLastText && !activeReasoning && activeToolCalls.length === 0}
+            hasError={hasError}
+          />
+        )}
+      </div>
+    );
+
+    const hasLiveContent = !!(activeReasoning || activeToolCalls.length > 0);
+
+    return (
+      <div className="space-y-1">
+        {episodesBefore.map((episode, idx) =>
+          renderEpisode(episode, `ep-${idx}`, !hasLiveContent && episodesAfter.length === 0 && idx === episodesBefore.length - 1)
+        )}
+        <LiveActivity
+          activeReasoning={activeReasoning}
+          activeToolCalls={activeToolCalls}
+        />
+        {episodesAfter.map((episode, idx) =>
+          renderEpisode(episode, `ep-after-${idx}`, idx === episodesAfter.length - 1)
+        )}
+        {detectedFiles.length > 0 && (
+          <FileMentionCards filePaths={detectedFiles} onOpenFile={onOpenFile} onOpenDir={onOpenDir} />
+        )}
+      </div>
+    );
   }
 
+  // Non-textOnly mode (agent panel): render all segments individually
   return (
     <div className="space-y-2">
-      {segmentsToRender.map((segment, index) => {
+      {groupedSegments.map((segment, index) => {
         if (segment.type === 'text') {
           // Render text content
-          const isLastSegment = index === segmentsToRender.length - 1;
-          
+          const isLastSegment = index === groupedSegments.length - 1;
+
           return (
             <div key={`text-${segment.order}-${index}`}>
               <TextMessageContent
@@ -239,43 +439,33 @@ function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesse
             </div>
           );
         } else if (segment.type === 'reasoning') {
-          // Render reasoning icon (merged content when segment.mergedReasoningIds in main chat)
-          const ids = segment.mergedReasoningIds || [segment.reasoningId];
-          const processes = ids.map((id) => reasoningProcesses[id]).filter(Boolean);
-          if (processes.length === 0) return null;
-          const last = processes[processes.length - 1];
-          const mergedContent = processes.map((p) => p.content || '').join('\n\n').trim();
+          // Render reasoning
+          const proc = reasoningProcesses[segment.reasoningId];
+          if (!proc) return null;
           return (
             <ReasoningMessageContent
-              key={`reasoning-${ids.join('-')}`}
-              reasoningContent={mergedContent}
-              isReasoning={last.isReasoning || false}
-              reasoningComplete={last.reasoningComplete || false}
-              reasoningTitle={last.reasoningTitle ?? undefined}
+              key={`reasoning-${segment.reasoningId}`}
+              reasoningContent={proc.content || ''}
+              isReasoning={proc.isReasoning || false}
+              reasoningComplete={proc.reasoningComplete || false}
+              reasoningTitle={proc.reasoningTitle ?? undefined}
             />
           );
         } else if (segment.type === 'tool_call') {
-          // Render tool call icon (skip TodoWrite; merged content when segment.mergedToolCallIds in main chat)
-          const toolCallProcess = toolCallProcesses[segment.toolCallId];
-          if (toolCallProcess?.toolName === 'TodoWrite') return null;
-          const ids = segment.mergedToolCallIds || [segment.toolCallId];
-          const mergedProcesses = ids
-            .map((id) => toolCallProcesses[id])
-            .filter((p) => p && p.toolName !== 'TodoWrite');
-          if (mergedProcesses.length === 0) return null;
-          const lastProcess = mergedProcesses[mergedProcesses.length - 1];
+          // Render tool call
+          const proc = toolCallProcesses[segment.toolCallId];
+          if (!proc || proc.toolName === 'TodoWrite' || proc.toolName === 'SubmitPlan') return null;
           return (
             <ToolCallMessageContent
-              key={`tool-call-${ids.join('-')}`}
+              key={`tool-call-${segment.toolCallId}`}
               toolCallId={segment.toolCallId}
-              toolName={lastProcess.toolName}
-              toolCall={lastProcess.toolCall}
-              toolCallResult={lastProcess.toolCallResult}
-              isInProgress={lastProcess.isInProgress || false}
-              isComplete={lastProcess.isComplete || false}
-              isFailed={lastProcess.isFailed || false}
+              toolName={proc.toolName}
+              toolCall={proc.toolCall}
+              toolCallResult={proc.toolCallResult}
+              isInProgress={proc.isInProgress || false}
+              isComplete={proc.isComplete || false}
+              isFailed={proc.isFailed || false}
               onOpenFile={onOpenFile}
-              mergedProcesses={mergedProcesses.length > 1 ? mergedProcesses : undefined}
             />
           );
         } else if (segment.type === 'todo_list') {
@@ -305,6 +495,20 @@ function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesse
                 type={task.type}
                 status={task.status}
                 onOpen={onOpenSubagentTask}
+              />
+            );
+          }
+          return null;
+        } else if (segment.type === 'plan_approval') {
+          const pd = planApprovals[segment.planApprovalId];
+          if (pd) {
+            return (
+              <PlanApprovalCard
+                key={`plan-${segment.planApprovalId}`}
+                planData={pd}
+                onApprove={onApprovePlan}
+                onReject={onRejectPlan}
+                onDetailClick={() => onPlanDetailClick?.(pd)}
               />
             );
           }

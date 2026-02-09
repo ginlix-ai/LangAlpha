@@ -2,6 +2,7 @@ import { ChartCandlestick, LayoutDashboard, MessageSquareText } from 'lucide-rea
 import React from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import logo from '../../assets/img/logo.svg';
+import { getChatSession } from '../../pages/ChatAgent/hooks/utils/chatSessionRestore';
 import './Sidebar.css';
 
 function Sidebar() {
@@ -27,6 +28,13 @@ function Sidebar() {
   ];
 
   const handleItemClick = (path) => {
+    if (path === '/chat') {
+      const session = getChatSession();
+      if (session) {
+        navigate(`/chat/${session.workspaceId}/${session.threadId}`);
+        return;
+      }
+    }
     navigate(path);
   };
 

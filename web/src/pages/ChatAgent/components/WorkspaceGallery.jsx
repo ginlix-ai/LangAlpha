@@ -86,8 +86,8 @@ function WorkspaceGallery({ onWorkspaceSelect }) {
       );
       // Add new workspace to the list
       setWorkspaces((prev) => [newWorkspace, ...prev]);
-      // Automatically navigate to the new workspace
-      onWorkspaceSelect(newWorkspace.workspace_id);
+      // Return workspace so modal can use workspace_id for file uploads
+      return newWorkspace;
     } catch (err) {
       console.error('Error creating workspace:', err);
       throw err; // Let modal handle the error display
@@ -379,6 +379,7 @@ function WorkspaceGallery({ onWorkspaceSelect }) {
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         onCreate={handleCreateWorkspace}
+        onComplete={(wsId) => onWorkspaceSelect(wsId)}
       />
 
       {/* Delete Confirmation Modal */}
