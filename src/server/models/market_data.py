@@ -196,6 +196,44 @@ class BatchIntradayResponse(BaseModel):
         }
 
 
+class CompanyOverviewResponse(BaseModel):
+    """Response for company overview endpoint."""
+    symbol: str = Field(..., description="Stock ticker symbol")
+    name: Optional[str] = Field(None, description="Company name")
+    quote: Optional[Dict[str, Any]] = Field(None, description="Real-time quote data")
+    performance: Optional[Dict[str, Any]] = Field(None, description="Price performance by period")
+    analystRatings: Optional[Dict[str, Any]] = Field(None, description="Analyst rating distribution")
+    quarterlyFundamentals: Optional[List[Dict[str, Any]]] = Field(None, description="Quarterly revenue/income data")
+    earningsSurprises: Optional[List[Dict[str, Any]]] = Field(None, description="EPS actual vs estimate")
+    cashFlow: Optional[List[Dict[str, Any]]] = Field(None, description="Quarterly cash flow data")
+    revenueByProduct: Optional[Dict[str, Any]] = Field(None, description="Revenue breakdown by product")
+    revenueByGeo: Optional[Dict[str, Any]] = Field(None, description="Revenue breakdown by geography")
+
+
+class PriceTargetSummary(BaseModel):
+    """Price target summary from analyst consensus."""
+    targetHigh: Optional[float] = Field(None, description="Highest price target")
+    targetLow: Optional[float] = Field(None, description="Lowest price target")
+    targetConsensus: Optional[float] = Field(None, description="Consensus (average) price target")
+    targetMedian: Optional[float] = Field(None, description="Median price target")
+
+
+class AnalystGrade(BaseModel):
+    """Single analyst grade change record."""
+    date: str = Field(..., description="Date of grade change (YYYY-MM-DD)")
+    company: str = Field("", description="Grading company/institution name")
+    previousGrade: Optional[str] = Field(None, description="Previous grade")
+    newGrade: Optional[str] = Field(None, description="New grade")
+    action: Optional[str] = Field(None, description="Action (upgrade, downgrade, maintained, etc.)")
+
+
+class AnalystDataResponse(BaseModel):
+    """Response for analyst data endpoint."""
+    symbol: str = Field(..., description="Stock ticker symbol")
+    priceTargets: Optional[PriceTargetSummary] = Field(None, description="Price target summary")
+    grades: List[AnalystGrade] = Field(default_factory=list, description="Recent analyst grade changes")
+
+
 class StockSearchResult(BaseModel):
     """Single stock search result."""
     symbol: str = Field(..., description="Stock ticker symbol (e.g., AAPL)")

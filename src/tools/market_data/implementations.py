@@ -899,6 +899,194 @@ Error retrieving price data: {str(e)}"""
         return content, {"type": "stock_prices", "symbol": symbol, "error": str(e)}
 
 
+async def fetch_company_overview_data(symbol: str) -> Dict[str, Any]:
+    """
+    Fetch company overview data and return structured artifact dict.
+
+    Shared by both the agent tool and the REST API endpoint.
+
+    Args:
+        symbol: Stock ticker symbol (e.g., "AAPL", "600519.SS", "0700.HK")
+
+    Returns:
+        Dict with structured data for charts (same shape as agent artifact)
+    """
+    fmp_client = await get_fmp_client()
+
+    profile_data = await fmp_client.get_profile(symbol)
+    if not profile_data:
+        return {"type": "company_overview", "symbol": symbol}
+
+    profile = profile_data[0]
+    company_name = profile.get("companyName", symbol)
+
+    # === PARALLEL DATA FETCH ===
+    (
+        income_stmt_result,
+        earnings_calendar_result,
+        price_change_result,
+        key_metrics_result,
+        ratios_result,
+        price_target_consensus_result,
+        grades_summary_result,
+        product_data_result,
+        geo_data_result,
+        quote_result,
+        cash_flow_result,
+    ) = await asyncio.gather(
+        fmp_client.get_income_statement(symbol, period="quarter", limit=8),
+        fmp_client.get_historical_earnings_calendar(symbol, limit=10),
+        fmp_client.get_stock_price_change(symbol),
+        fmp_client.get_key_metrics_ttm(symbol),
+        fmp_client.get_ratios_ttm(symbol),
+        fmp_client.get_price_target_consensus(symbol),
+        fmp_client.get_grades_summary(symbol),
+        fmp_client.get_revenue_product_segmentation(
+            symbol, period="quarter", structure="flat"
+        ),
+        fmp_client.get_revenue_geographic_segmentation(
+            symbol, period="quarter", structure="flat"
+        ),
+        fmp_client.get_quote(symbol),
+        fmp_client.get_cash_flow(symbol, period="quarter", limit=8),
+        return_exceptions=True,
+    )
+
+    income_stmt = _safe_result(income_stmt_result, [])
+    earnings_calendar = _safe_result(earnings_calendar_result, [])
+    price_change_data = _safe_result(price_change_result, [])
+    quote_data = _safe_result(quote_result, [])
+    grades_summary_data = _safe_result(grades_summary_result, [])
+    product_data = _safe_result(product_data_result, [])
+    geo_data = _safe_result(geo_data_result, [])
+    cash_flow_data = _safe_result(cash_flow_result, [])
+
+    fiscal_period_lookup = _build_fiscal_period_lookup(income_stmt)
+
+    # Build artifact
+    artifact: Dict[str, Any] = {
+        "type": "company_overview",
+        "symbol": symbol,
+        "name": company_name,
+    }
+
+    # Quote data
+    if quote_data and len(quote_data) > 0:
+        quote = quote_data[0]
+        artifact["quote"] = {
+            "price": quote.get("price"),
+            "change": quote.get("change"),
+            "changePct": quote.get("changesPercentage"),
+            "dayHigh": quote.get("dayHigh"),
+            "dayLow": quote.get("dayLow"),
+            "yearHigh": quote.get("yearHigh"),
+            "yearLow": quote.get("yearLow"),
+            "open": quote.get("open"),
+            "previousClose": quote.get("previousClose"),
+            "volume": quote.get("volume"),
+            "avgVolume": quote.get("avgVolume"),
+            "marketCap": quote.get("marketCap"),
+            "pe": quote.get("pe"),
+            "eps": quote.get("eps"),
+        }
+
+    # Performance data
+    if price_change_data:
+        changes = price_change_data[0]
+        artifact["performance"] = {
+            k: changes.get(k)
+            for k in ["1D", "5D", "1M", "3M", "6M", "ytd", "1Y", "3Y", "5Y"]
+            if changes.get(k) is not None
+        }
+
+    # Analyst ratings
+    if grades_summary_data:
+        gs = grades_summary_data[0]
+        artifact["analystRatings"] = {
+            "strongBuy": gs.get("strongBuy", 0),
+            "buy": gs.get("buy", 0),
+            "hold": gs.get("hold", 0),
+            "sell": gs.get("sell", 0),
+            "strongSell": gs.get("strongSell", 0),
+            "consensus": gs.get("consensus", "N/A"),
+        }
+
+    # Revenue by product
+    has_product_data = False
+    if product_data and len(product_data) > 0:
+        latest_product_record = product_data[0]
+        if latest_product_record and isinstance(latest_product_record, dict):
+            fiscal_date = list(latest_product_record.keys())[0]
+            product_revenues = latest_product_record[fiscal_date]
+            if product_revenues and isinstance(product_revenues, dict) and len(product_revenues) > 0:
+                has_product_data = True
+                artifact["revenueByProduct"] = product_revenues
+
+    # Revenue by geography
+    has_geo_data = False
+    if geo_data and len(geo_data) > 0:
+        latest_geo_record = geo_data[0]
+        if latest_geo_record and isinstance(latest_geo_record, dict):
+            geo_date = list(latest_geo_record.keys())[0]
+            geo_revenues = latest_geo_record[geo_date]
+            if geo_revenues and isinstance(geo_revenues, dict) and len(geo_revenues) > 0:
+                has_geo_data = True
+                artifact["revenueByGeo"] = geo_revenues
+
+    # Quarterly fundamentals from income statement (oldest-first for charting)
+    if income_stmt:
+        artifact["quarterlyFundamentals"] = [
+            {
+                "period": fiscal_period_lookup.get(stmt.get("date"), stmt.get("date", "")),
+                "date": stmt.get("date"),
+                "revenue": stmt.get("revenue"),
+                "netIncome": stmt.get("netIncome"),
+                "grossProfit": stmt.get("grossProfit"),
+                "operatingIncome": stmt.get("operatingIncome"),
+                "ebitda": stmt.get("ebitda"),
+                "epsDiluted": stmt.get("epsdiluted"),
+                "grossMargin": stmt.get("grossProfitRatio"),
+                "operatingMargin": stmt.get("operatingIncomeRatio"),
+                "netMargin": stmt.get("netIncomeRatio"),
+            }
+            for stmt in reversed(income_stmt)
+        ]
+
+    # Earnings surprises (reported only, oldest-first)
+    reported_for_artifact = [
+        e for e in earnings_calendar if e.get("eps") is not None
+    ]
+    if reported_for_artifact:
+        artifact["earningsSurprises"] = [
+            {
+                "period": fiscal_period_lookup.get(
+                    e.get("fiscalDateEnding"), e.get("date", "")
+                ),
+                "date": e.get("date"),
+                "epsActual": e.get("eps"),
+                "epsEstimate": e.get("epsEstimated"),
+                "revenueActual": e.get("revenue"),
+                "revenueEstimate": e.get("revenueEstimated"),
+            }
+            for e in reversed(reported_for_artifact)
+        ]
+
+    # Cash flow (oldest-first for charting)
+    if cash_flow_data:
+        artifact["cashFlow"] = [
+            {
+                "period": fiscal_period_lookup.get(cf.get("date"), cf.get("date", "")),
+                "date": cf.get("date"),
+                "operatingCashFlow": cf.get("operatingCashFlow"),
+                "capitalExpenditure": cf.get("capitalExpenditure"),
+                "freeCashFlow": cf.get("freeCashFlow"),
+            }
+            for cf in reversed(cash_flow_data)
+        ]
+
+    return artifact
+
+
 async def fetch_company_overview(
     symbol: str,
 ) -> Tuple[str, Dict[str, Any]]:
