@@ -81,6 +81,18 @@ def _create_content_preview(
     return head_sample + truncation_notice + tail_sample
 
 
+def _detect_extension(content_str: str) -> str:
+    """Detect file extension based on content.
+
+    Returns '.json' if content looks like JSON (starts with '{' or '['),
+    otherwise returns '.md'.
+    """
+    stripped = content_str.lstrip()
+    if stripped and stripped[0] in ("{", "["):
+        return ".json"
+    return ".md"
+
+
 class LargeResultEvictionMiddleware(AgentMiddleware):
     """Middleware for evicting large tool results to filesystem.
 
@@ -93,14 +105,14 @@ class LargeResultEvictionMiddleware(AgentMiddleware):
     Args:
         backend: Backend for file storage (must implement BackendProtocol).
         tool_token_limit_before_evict: Token limit before evicting a tool result.
-            Default is 20000 tokens (~80000 characters).
+            Default is 40000 tokens (~160000 characters).
     """
 
     def __init__(
         self,
         *,
         backend: BackendProtocol,
-        tool_token_limit_before_evict: int = 20000,
+        tool_token_limit_before_evict: int = 40000,
     ) -> None:
         """Initialize the large result eviction middleware.
 
@@ -154,7 +166,7 @@ class LargeResultEvictionMiddleware(AgentMiddleware):
 
         # Write content to filesystem
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
-        file_path = f"/large_tool_results/{sanitized_id}"
+        file_path = f"/large_tool_results/{sanitized_id}{_detect_extension(content_str)}"
         result = self.backend.write(file_path, content_str)
         if result.error:
             return message, None
@@ -209,7 +221,7 @@ class LargeResultEvictionMiddleware(AgentMiddleware):
 
         # Write content to filesystem using async method
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
-        file_path = f"/large_tool_results/{sanitized_id}"
+        file_path = f"/large_tool_results/{sanitized_id}{_detect_extension(content_str)}"
         result = await self.backend.awrite(file_path, content_str)
         if result.error:
             return message, None

@@ -24,7 +24,6 @@ Usage:
 """
 
 from .formatter import (
-    build_mcp_section,
     format_subagent_summary,
     format_tool_summary,
 )
@@ -37,11 +36,8 @@ from .loader import (
 
 __all__ = [
     "PromptLoader",
-    "build_mcp_section",
     "format_subagent_summary",
-    # Formatter
     "format_tool_summary",
-    # Loader
     "get_loader",
     "init_loader",
     "reset_loader",

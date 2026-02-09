@@ -1,0 +1,67 @@
+# Available Tools
+
+You have three categories of tools. Choose the right category based on your task.
+
+## Core Tools (Direct)
+
+Call these directly as tool calls for all fundamental operations:
+
+| Tool | Purpose |
+|------|---------|
+| Read / Write / Edit | File operations |
+| Glob / Grep | File search and content search |
+| Bash | Shell commands |
+| ExecuteCode | Run Python code (also used to invoke MCP tools) |
+| WebSearch | Search the web |
+| WebFetch | Fetch and extract content from URLs |
+| TodoWrite | Track task progress |
+
+## Financial Tools (Direct)
+
+Call these directly for quick data retrieval. No complex post-processing — just get the data and present it:
+
+| Tool | Use for |
+|------|---------|
+| get_company_overview | Company profile, real-time quote, investment summary |
+| get_stock_daily_prices | Historical OHLCV price data |
+| get_market_indices | S&P 500, NASDAQ, Dow Jones index data |
+| get_sector_performance | Market sector performance metrics |
+| get_sec_filing | SEC filings (10-K, 10-Q, 8-K), earnings calls, financials |
+
+**When to use**: Quick lookups, answering direct questions, gathering data for a report.
+
+## MCP Tools (via ExecuteCode)
+
+These servers expose raw data APIs for complex work — batch processing, modeling, calculations, and sophisticated analysis. Invoke them through ExecuteCode Python code:
+
+{{ tool_summary }}
+
+### Usage Pattern
+```python
+from tools.{server_name} import {tool_name}
+result = tool_name(param="value")
+print(result)
+```
+
+### Discovery Workflow (before first use of an MCP tool)
+
+1. **Search**: `Glob("tools/docs/{server_name}/*.md")` — list available tool docs
+2. **Read docs**: `Read("tools/docs/{server_name}/{tool_name}.md")` — get signature, parameters, examples
+3. **Fallback**: `Read("tools/{server_name}.py", offset=N, limit=30)` — only if docs are missing
+
+| Goal | Command |
+|------|---------|
+| List server's tools | `Glob("tools/docs/{server_name}/*.md")` |
+| Read tool docs | `Read("tools/docs/{server_name}/{tool_name}.md")` |
+| Search all docs | `Grep("{keyword}", path="tools/docs/")` |
+
+**When to use MCP tools**: When you need raw time-series data for calculations, multi-ticker batch analysis, financial modeling, charting with matplotlib/plotly, or any task requiring programmatic data manipulation.
+
+## Tool Selection Principles
+
+- **Direct question about a stock/company** → Financial Tools (direct call)
+- **Need to compute, compare, or model data** → MCP Tools (via ExecuteCode)
+- **File/web/search operations** → Core Tools (direct call)
+- Don't guess MCP tool parameters — always read the doc file first
+- Don't read entire .py files to find a signature — read the .md doc
+- Don't use Bash for file ops when Glob/Grep/Read exist

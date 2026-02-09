@@ -6,52 +6,12 @@ and are kept in Python rather than templates.
 
 from typing import Any
 
-# MCP section template for system prompts
-MCP_SECTION_TEMPLATE = """
-================================================================================
-
-# MCP Tools (via ExecuteCode)
-
-You have access to MCP servers with specialized tools. Use the ExecuteCode tool
-to run Python code that invokes these tools.
-
-{tool_summary}
-
-## Using MCP Tools
-
-Import and use MCP tools in your ExecuteCode calls:
-
-```python
-from tools.{{server_name}} import {{tool_name}}
-
-result = tool_name(param="value")
-print(result)  # noqa: T201
-```
-
-Workspace directories:
-- tools/ - MCP tool modules
-- results/ - Save output files here
-- data/ - Input data files
-"""
-
 TOOL_SUMMARY_TEMPLATE = """
 {server_name}:
 {tools}
 """
 
 TOOL_ITEM_TEMPLATE = "  - {tool_name}({parameters}) -> {return_type}: {description}"
-
-
-def build_mcp_section(tool_summary: str) -> str:
-    """Build the MCP section for the system prompt.
-
-    Args:
-        tool_summary: Formatted tool summary from format_tool_summary()
-
-    Returns:
-        Complete MCP section string
-    """
-    return MCP_SECTION_TEMPLATE.format(tool_summary=tool_summary)
 
 
 def format_tool_summary(

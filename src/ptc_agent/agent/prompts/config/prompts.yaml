@@ -26,7 +26,7 @@ system:
   description: Main system prompt for task coordination and sub-agent delegation
   template: system.md.j2
   components:
-    - tool_discovery
+    - tool_guide
     - workspace_paths
     - output_guidelines
     - citation_rules
@@ -50,13 +50,10 @@ subagents:
 
 # Component template metadata
 components:
-  tool_discovery:
-    description: Tool discovery, MCP usage, and search-first principle guidance
+  tool_guide:
+    description: Unified 3-tier tool reference (Core, Financial, MCP)
     required_vars:
       - tool_summary
-    optional_vars:
-      - include_examples
-      - include_anti_patterns
 
   image_upload:
     description: Image auto-upload instructions

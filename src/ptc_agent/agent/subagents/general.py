@@ -48,19 +48,16 @@ def get_general_subagent_config(
             for server_name, tools in tools_by_server.items():
                 tools_dict[server_name] = [tool.to_dict() for tool in tools]
 
-            mcp_tool_summary = f"""
-<MCP Tools>
-The following MCP tools are available via execute_code:
+            # Build server_configs matching the main agent pattern
+            server_configs = {}
+            if hasattr(mcp_registry, "config") and hasattr(mcp_registry.config, "mcp"):
+                server_configs = {
+                    s.name: s for s in mcp_registry.config.mcp.servers if s.enabled
+                }
 
-{format_tool_summary(tools_dict, mode=tool_exposure_mode)}
-
-Import and use MCP tools in your execute_code calls:
-```python
-from tools.{{server_name}} import {{tool_name}}
-result = tool_name(param="value")
-```
-</MCP Tools>
-"""
+            mcp_tool_summary = format_tool_summary(
+                tools_dict, mode=tool_exposure_mode, server_configs=server_configs
+            )
 
     # Render instructions using template loader (date auto-injected from session)
     loader = get_loader()
