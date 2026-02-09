@@ -1,0 +1,32 @@
+/**
+ * Waves background - wavy lines grid, mouse/touch only (no noise).
+ *
+ * CUSTOMIZE (set on .login-page in LoginPage.css):
+ *
+ *   --login-waves-bg            Background behind the lines
+ *   --login-waves-stroke        Stroke color of the lines
+ *   --login-waves-stroke-width  Line thickness (default 2px; e.g. 1px, 3px)
+ */
+.waves-bg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--login-waves-bg, var(--color-bg-page, #f7f7f7));
+}
+
+.waves-bg__svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.waves-bg__line {
+  fill: none;
+  stroke: var(--login-waves-stroke, #171717);
+  stroke-width: var(--login-waves-stroke-width, 2px);
+}

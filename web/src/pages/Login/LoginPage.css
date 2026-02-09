@@ -1,0 +1,199 @@
+/*
+ * Login page - full viewport, centered card, wavy lines background.
+ *
+ * TO CHANGE WAVE COLORS: edit the two variables below inside .login-page
+ *
+ *   --login-waves-bg:     background color behind the lines
+ *   --login-waves-stroke: color of the wavy lines
+ */
+.login-page {
+  --login-waves-bg: #161416;
+  --login-waves-stroke: rgba(226, 212, 233, 0.08);
+
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  overflow: hidden;
+}
+
+.login-page__card {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 22rem;
+  padding: 2.25rem 2rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.0);
+  background-color: rgba(26, 24, 28, 0.0);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow:
+    0 0 20px rgba(255, 255, 255, 0.04),
+    0 0 40px rgba(255, 255, 255, 0.02),
+    0 4px 24px rgba(0, 0, 0, 0.15);
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+.login-page__card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  margin-bottom: 1.75rem;
+}
+
+.login-page__logo-icon {
+  width: 2.75rem;
+  height: 2.75rem;
+  flex-shrink: 0;
+  color: var(--color-text-primary);
+  opacity: 0.9;
+}
+
+.login-page__title {
+  font-family: 'Golos Text', 'Inter', system-ui, sans-serif;
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.25;
+  margin: 0;
+  color: var(--color-text-primary);
+}
+
+.login-page__subtitle {
+  font-size: 0.875rem;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  margin: 0.25rem 0 0 0;
+  color: var(--color-text-secondary);
+}
+
+.login-page__tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 1.5rem;
+  padding: 0.25rem;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 0.625rem;
+}
+
+.login-page__tab {
+  flex: 1;
+  padding: 0.5625rem 0.875rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  background: none;
+  border: none;
+  border-radius: 0.5rem;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.login-page__tab:hover {
+  color: var(--color-text-primary);
+}
+
+.login-page__tab[data-active='true'] {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: var(--color-text-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.login-page__form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.login-page__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.login-page__label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--color-text-secondary);
+}
+
+.login-page__input {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  font-size: 1rem;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  line-height: 1.4;
+  border-radius: 0.625rem;
+  background-color: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--color-text-primary);
+  transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.login-page__input::placeholder {
+  color: var(--color-text-tertiary);
+  opacity: 0.8;
+}
+
+.login-page__input:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.login-page__input:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.25);
+  background-color: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.06);
+}
+
+.login-page__error {
+  padding: 0.75rem 1rem;
+  border-radius: 0.625rem;
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.4;
+  background-color: var(--color-loss-soft);
+  border: 1px solid var(--color-border-loss);
+  color: var(--color-loss);
+}
+
+.login-page__submit {
+  width: 100%;
+  padding: 0.75rem 1.25rem;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+  border-radius: 999px;
+  border: none;
+  background: rgba(15, 15, 18, 0.9);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+  transition: transform 0.15s ease, box-shadow 0.2s ease, filter 0.2s ease;
+}
+
+.login-page__submit:hover:not(:disabled) {
+  filter: brightness(1.03);
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5);
+}
+
+.login-page__submit:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.35);
+}
+
+.login-page__submit:disabled {
+  background: rgba(40, 40, 45, 0.7);
+  cursor: not-allowed;
+  opacity: 0.9;
+  box-shadow: none;
+  transform: none;
+}
