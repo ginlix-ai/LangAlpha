@@ -62,6 +62,7 @@ let onboardingDismissedThisSession = false;
 let popularCache = null; // { items, hasMore, offset }
 let newsCache = null;    // { items }
 let researchCache = null; // { items }
+let indicesCache = null; // [ index objects ]
 
 function formatRelativeTime(timestamp) {
   if (!timestamp) return '';
@@ -86,9 +87,9 @@ function Dashboard() {
   const [isCreatingWorkspace, setIsCreatingWorkspace] = useState(false);
   
   const [indices, setIndices] = useState(() =>
-    INDEX_SYMBOLS.map((s) => fallbackIndex(normalizeIndexSymbol(s)))
+    indicesCache || INDEX_SYMBOLS.map((s) => fallbackIndex(normalizeIndexSymbol(s)))
   );
-  const [indicesLoading, setIndicesLoading] = useState(true);
+  const [indicesLoading, setIndicesLoading] = useState(!indicesCache);
 
   const [popularItems, setPopularItems] = useState(() => popularCache?.items || POPULAR_ITEMS);
   const [popularLoading, setPopularLoading] = useState(!popularCache);
@@ -193,14 +194,16 @@ function Dashboard() {
   }, [fetchPopular, fetchNews, fetchResearch]);
 
   const fetchIndices = useCallback(async () => {
-    setIndicesLoading(true);
+    if (!indicesCache) setIndicesLoading(true);
     try {
-      // API doesn't require from/to params - just call with symbols
       const { indices: next } = await getIndices(INDEX_SYMBOLS);
       setIndices(next);
+      indicesCache = next;
     } catch (error) {
       console.error('[Dashboard] Error fetching indices:', error?.message);
-      setIndices(INDEX_SYMBOLS.map((s) => fallbackIndex(normalizeIndexSymbol(s))));
+      if (!indicesCache) {
+        setIndices(INDEX_SYMBOLS.map((s) => fallbackIndex(normalizeIndexSymbol(s))));
+      }
     } finally {
       setIndicesLoading(false);
     }

@@ -9,6 +9,9 @@ import {
   listWatchlistItems,
 } from '../utils/api';
 
+// Module-level cache (survives navigation, clears on page refresh)
+let watchlistCache = null; // { rows, watchlistId }
+
 /**
  * Shared hook for watchlist data fetching and CRUD operations.
  * Used by both Dashboard and TradingCenter sidebar.
@@ -16,13 +19,13 @@ import {
 export function useWatchlistData() {
   const { toast } = useToast();
 
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState(() => watchlistCache?.rows || []);
+  const [loading, setLoading] = useState(!watchlistCache);
   const [modalOpen, setModalOpen] = useState(false);
-  const [currentWatchlistId, setCurrentWatchlistId] = useState(null);
+  const [currentWatchlistId, setCurrentWatchlistId] = useState(() => watchlistCache?.watchlistId || null);
 
   const fetchWatchlist = useCallback(async () => {
-    setLoading(true);
+    if (!watchlistCache) setLoading(true);
     try {
       const { watchlists } = await listWatchlists(DEFAULT_USER_ID);
       const firstWatchlist = watchlists?.[0];
@@ -49,8 +52,9 @@ export function useWatchlistData() {
           })
         : [];
       setRows(combined);
+      watchlistCache = { rows: combined, watchlistId };
     } catch {
-      setRows([]);
+      if (!watchlistCache) setRows([]);
     } finally {
       setLoading(false);
     }
@@ -76,6 +80,7 @@ export function useWatchlistData() {
 
         await addWatchlistItem(itemData, targetWatchlistId, userId || DEFAULT_USER_ID);
         setModalOpen(false);
+        watchlistCache = null;
         fetchWatchlist();
 
         toast({
@@ -117,6 +122,7 @@ export function useWatchlistData() {
         }
 
         await deleteWatchlistItem(itemId, watchlistId, DEFAULT_USER_ID);
+        watchlistCache = null;
         fetchWatchlist();
       } catch (e) {
         console.error('Delete watchlist item failed:', e?.response?.status, e?.response?.data, e?.message);

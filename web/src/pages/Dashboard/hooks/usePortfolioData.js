@@ -9,6 +9,9 @@ import {
   updatePortfolioHolding,
 } from '../utils/api';
 
+// Module-level cache (survives navigation, clears on page refresh)
+let portfolioCache = null; // { rows, hasRealHoldings }
+
 /**
  * Shared hook for portfolio data fetching and CRUD operations.
  * Used by both Dashboard and TradingCenter sidebar.
@@ -16,15 +19,15 @@ import {
 export function usePortfolioData() {
   const { toast } = useToast();
 
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [hasRealHoldings, setHasRealHoldings] = useState(false);
+  const [rows, setRows] = useState(() => portfolioCache?.rows || []);
+  const [loading, setLoading] = useState(!portfolioCache);
+  const [hasRealHoldings, setHasRealHoldings] = useState(() => portfolioCache?.hasRealHoldings || false);
   const [modalOpen, setModalOpen] = useState(false);
   const [editRow, setEditRow] = useState(null);
   const [editForm, setEditForm] = useState({ quantity: '', averageCost: '', notes: '' });
 
   const fetchPortfolio = useCallback(async () => {
-    setLoading(true);
+    if (!portfolioCache) setLoading(true);
     try {
       const { holdings } = await getPortfolio(DEFAULT_USER_ID);
       const symbols = holdings?.length
@@ -56,14 +59,18 @@ export function usePortfolioData() {
           };
         });
         setRows(combined);
+        portfolioCache = { rows: combined, hasRealHoldings: true };
       } else {
         setHasRealHoldings(false);
         setRows([]);
+        portfolioCache = { rows: [], hasRealHoldings: false };
       }
     } catch (error) {
       console.error('[usePortfolioData] Error fetching portfolio:', error);
-      setHasRealHoldings(false);
-      setRows([]);
+      if (!portfolioCache) {
+        setHasRealHoldings(false);
+        setRows([]);
+      }
     } finally {
       setLoading(false);
     }
@@ -82,6 +89,7 @@ export function usePortfolioData() {
       try {
         await addPortfolioHolding(payload, userId || DEFAULT_USER_ID);
         setModalOpen(false);
+        portfolioCache = null;
         fetchPortfolio();
 
         toast({
@@ -121,6 +129,7 @@ export function usePortfolioData() {
         onConfirm: async () => {
           try {
             await deletePortfolioHolding(holdingId, DEFAULT_USER_ID);
+            portfolioCache = null;
             fetchPortfolio();
           } catch (e) {
             console.error('Delete portfolio holding failed:', e?.response?.status, e?.response?.data, e?.message);
@@ -156,6 +165,7 @@ export function usePortfolioData() {
         DEFAULT_USER_ID
       );
       setEditRow(null);
+      portfolioCache = null;
       fetchPortfolio();
     } catch (e) {
       console.error('Update portfolio holding failed:', e?.response?.status, e?.response?.data, e?.message);
