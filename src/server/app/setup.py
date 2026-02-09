@@ -31,6 +31,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 
 from src.config.logging_config import configure_logging
 from src.config.settings import (
@@ -263,7 +264,10 @@ class RequestIDMiddleware:
 
         await self.app(scope, receive, send_wrapper)
 
-# Register request ID middleware first (will be executed after CORS)
+# Register GZip compression middleware (compresses JSON responses >= 1KB)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# Register request ID middleware (will be executed after CORS)
 # Note: In FastAPI, middleware is executed in reverse order (last added = first executed)
 # So we add RequestIDMiddleware first, then CORS, so CORS executes first
 app.add_middleware(RequestIDMiddleware)
