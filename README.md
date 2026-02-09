@@ -1,6 +1,6 @@
-# PTC Agent
+# LangAlpha
 
-A Plan-Think-Code AI agent system with workspace-based sandbox execution.
+**LangAlpha** is a Plan-Think-Code (PTC) AI agent dedicated to finance analysis: workspace-based sandbox execution, optional web UI (chat, dashboard, trading), and MCP integrations. Run locally or deploy with Docker.
 
 ## Quick Start
 
@@ -9,67 +9,46 @@ A Plan-Think-Code AI agent system with workspace-based sandbox execution.
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/) package manager
 - Docker (for PostgreSQL and Redis)
-- Node.js (for MCP servers)
+- Node.js 16+ (optional, for web UI and MCP servers)
 
 ### 1. Setup Environment
 
 ```bash
 # Clone and enter the project
-git clone https://github.com/ginlix-ai/stealth-agent.git
-cd stealth-agent
+git clone <your-repo-url>
+cd LangAlpha
 
 # Create virtual environment and install dependencies
 uv sync
 
-# Install browser dependencies for web crawling
-crawl4ai-setup
-
-# Activate the virtual environment
+# Optional: browser dependencies for web crawling
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+crawl4ai-setup
 ```
 
 ### 2. Configure Environment Variables
 
-Create a `.env` file with the required keys:
+Copy `.env.example` to `.env` and set at least:
 
-```bash
-# LLM Provider (choose one or more)
-ANTHROPIC_API_KEY=your-key
-OPENAI_API_KEY=your-key
-
-# Daytona Sandbox (required)
-DAYTONA_API_KEY=your-key
-
-# Database type (required for persistence)
-DB_TYPE=postgres
-MEMORY_DB_TYPE=postgres
-
-# PostgreSQL connection (optional - defaults work with make setup-db)
-# DB_HOST=localhost
-# DB_PORT=5432
-# DB_NAME=postgres
-# DB_USER=postgres
-# DB_PASSWORD=postgres
-
-# Redis (optional - defaults work with make setup-db)
-# REDIS_URL=redis://localhost:6379/0
-```
+- **LLM:** `ANTHROPIC_API_KEY` and/or `OPENAI_API_KEY`
+- **Sandbox:** `DAYTONA_API_KEY`
+- **Database:** `DB_TYPE=postgres`, `MEMORY_DB_TYPE=postgres`, and `DB_*` / `REDIS_URL` (defaults work with `make setup-db`)
 
 ### 3. Start Database Services
-
-Start PostgreSQL and Redis containers:
 
 ```bash
 make setup-db
 ```
 
-### 4. Run the Server
+Starts PostgreSQL and Redis in Docker and sets up DB tables.
+
+### 4. Run the Backend
 
 ```bash
 uv run server.py
 ```
 
-The API server will be available at `http://localhost:8000`.
+API: **http://localhost:8000** (docs: http://localhost:8000/docs)
 
 ### 5. Use the Agent
 
@@ -79,7 +58,15 @@ The API server will be available at `http://localhost:8000`.
 ptc-agent
 ```
 
-**Option B: API Requests**
+**Option B: Web UI**
+
+```bash
+cd web && npm install && npm run dev
+```
+
+Open **http://localhost:5173** (Chat Agent, Dashboard, Trading Center).
+
+**Option C: API Requests**
 
 ```bash
 # Create a workspace
@@ -100,13 +87,13 @@ curl -N -X POST "http://localhost:8000/api/v1/chat/stream" \
 
 ## Documentation
 
-See the [API Reference](docs/api/README.md) for complete API documentation:
-
-- [Chat API](docs/api/chat.md) - Streaming chat with SSE
-- [Workspaces API](docs/api/workspaces.md) - Workspace CRUD and thread management
-- [Workflow API](docs/api/workflow.md) - Workflow state and checkpoints
-- [Data Models](docs/api/models.md) - Request/response schemas
-- [Cache API](docs/api/cache.md) - Cache management
+- **[Local Deployment Guide](docs/LOCAL_DEPLOYMENT.md)** – Full local setup, Docker Compose, troubleshooting
+- **[API Reference](docs/api/README.md)** – API documentation:
+  - [Chat API](docs/api/chat.md) – Streaming chat with SSE
+  - [Workspaces API](docs/api/workspaces.md) – Workspace CRUD and thread management
+  - [Workflow API](docs/api/workflow.md) – Workflow state and checkpoints
+  - [Data Models](docs/api/models.md) – Request/response schemas
+  - [Cache API](docs/api/cache.md) – Cache management
 
 ## Project Structure
 
@@ -130,11 +117,13 @@ See the [API Reference](docs/api/README.md) for complete API documentation:
 │   └── ptc-cli/          # Interactive CLI application
 │
 ├── mcp_servers/          # MCP server implementations
-│   ├── yfinance_mcp_server.py
+│   ├── price_data_mcp_server.py
 │   └── tickertick_mcp_server.py
 │
+├── web/                  # React frontend (Vite, Ant Design)
 ├── scripts/              # Setup and utility scripts
 ├── docs/                 # Documentation
+│   ├── LOCAL_DEPLOYMENT.md
 │   └── api/              # API reference documentation
 │
 ├── server.py             # Server entrypoint
