@@ -1,0 +1,83 @@
+.company-overview-panel {
+  width: 380px;
+  flex-shrink: 0;
+  height: 100%;
+  background: #0f1422;
+  border-right: 1px solid #1a1f35;
+  overflow-y: auto;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+.company-overview-panel::-webkit-scrollbar {
+  width: 5px;
+}
+
+.company-overview-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.company-overview-panel::-webkit-scrollbar-thumb {
+  background: rgba(139, 143, 163, 0.25);
+  border-radius: 3px;
+}
+
+.company-overview-panel::-webkit-scrollbar-thumb:hover {
+  background: rgba(139, 143, 163, 0.4);
+}
+
+.company-overview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.company-overview-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #8b8fa3;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.company-overview-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: rgba(139, 143, 163, 0.1);
+  border-radius: 6px;
+  color: #8b8fa3;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.company-overview-close:hover {
+  background: rgba(139, 143, 163, 0.2);
+  color: #fff;
+}
+
+.company-overview-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  color: #8b8fa3;
+  font-size: 13px;
+  gap: 8px;
+}
+
+.company-overview-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  color: #ef4444;
+  font-size: 13px;
+  text-align: center;
+  padding: 0 20px;
+}

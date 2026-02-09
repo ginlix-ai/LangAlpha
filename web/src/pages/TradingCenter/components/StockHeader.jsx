@@ -1,7 +1,8 @@
 import React from 'react';
+import { Info } from 'lucide-react';
 import './StockHeader.css';
 
-const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta, displayOverride }) => {
+const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta, displayOverride, onToggleOverview }) => {
   const formatNumber = (num) => {
     if (num == null || (num !== 0 && !num)) return '—';
     if (num >= 1e12) return (num / 1e12).toFixed(2) + 'T';
@@ -32,10 +33,16 @@ const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta, displayOverr
   return (
     <div className="stock-header">
       <div className="stock-header-top">
-        <div className="stock-title">
-          <span className="stock-symbol">{symbol}</span>
-          <span className="stock-name">{displayName}</span>
-          <span className="stock-exchange">{displayExchange}</span>
+        <div>
+          <div className="stock-title">
+            <span className="stock-symbol">{symbol}</span>
+            <span className="stock-name">{displayName}</span>
+            <span className="stock-exchange">{displayExchange}</span>
+          </div>
+          <button className="stock-overview-toggle" onClick={onToggleOverview}>
+            <Info size={13} />
+            Company Overview
+          </button>
         </div>
         <div className="stock-price-section">
           <div className="stock-price">{price.toFixed(2)}</div>

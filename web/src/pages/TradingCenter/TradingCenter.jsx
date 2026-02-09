@@ -7,14 +7,16 @@ import StockHeader from './components/StockHeader';
 import TradingChart from './components/TradingChart';
 import TradingChatInput from './components/TradingChatInput';
 import TradingPanel from './components/TradingPanel';
+import TradingSidebarPanel from './components/TradingSidebarPanel';
 import { getAuthUserId } from '@/api/client';
 import { DEFAULT_USER_ID } from '@/api/client';
-import { fetchStockQuote } from './utils/api';
+import { fetchStockQuote, fetchCompanyOverview, fetchAnalystData } from './utils/api';
 import { useTradingChat } from './hooks/useTradingChat';
 import { deleteFlashWorkspaces } from './utils/api';
 import { findOrCreateDefaultWorkspace } from '../Dashboard/utils/workspace';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../components/ui/dialog';
 import { Loader2, ArrowLeft } from 'lucide-react';
+import CompanyOverviewPanel from './components/CompanyOverviewPanel';
 
 function TradingCenter() {
   const navigate = useNavigate();
@@ -30,6 +32,10 @@ function TradingCenter() {
   const [chartImage, setChartImage] = useState(null);       // base64 data URL
   const [chartImageDesc, setChartImageDesc] = useState(null); // text description for LLM
   const [isCreatingWorkspace, setIsCreatingWorkspace] = useState(false);
+  const [showOverview, setShowOverview] = useState(false);
+  const [overviewData, setOverviewData] = useState(null);
+  const [overviewLoading, setOverviewLoading] = useState(false);
+  const [overlayData, setOverlayData] = useState(null);
 
   const userId = getAuthUserId() || DEFAULT_USER_ID;
   const { messages, isLoading, error, handleSendMessage: handleFastModeSend } = useTradingChat(userId);
@@ -78,6 +84,7 @@ function TradingCenter() {
         : null
     );
     setChartMeta(null);
+    setShowOverview(false);
   }, []);
 
   // Consolidated fetch: stockInfo + realTimePrice from a single API call
@@ -124,6 +131,42 @@ function TradingCenter() {
       abortController.abort();
       clearInterval(priceInterval);
     };
+  }, [selectedStock]);
+
+  // Fetch company overview data (lifted from CompanyOverviewPanel)
+  useEffect(() => {
+    if (!selectedStock) return;
+    const ac = new AbortController();
+    setOverviewLoading(true);
+    fetchCompanyOverview(selectedStock, { signal: ac.signal })
+      .then((result) => {
+        setOverviewData(result);
+      })
+      .catch((err) => {
+        if (err?.name === 'CanceledError' || err?.name === 'AbortError') return;
+        console.error('Error fetching company overview:', err);
+        setOverviewData(null);
+      })
+      .finally(() => setOverviewLoading(false));
+    return () => ac.abort();
+  }, [selectedStock]);
+
+  // Fetch analyst data (price targets + grades) for chart overlays
+  useEffect(() => {
+    if (!selectedStock) return;
+    const ac = new AbortController();
+    fetchAnalystData(selectedStock, { signal: ac.signal })
+      .then((analyst) => {
+        setOverlayData(analyst ? {
+          priceTargets: analyst.priceTargets || null,
+          grades: analyst.grades || [],
+        } : null);
+      })
+      .catch((err) => {
+        if (err?.name === 'CanceledError' || err?.name === 'AbortError') return;
+        setOverlayData(null);
+      });
+    return () => ac.abort();
   }, [selectedStock]);
 
   const handleCaptureChart = useCallback(async () => {
@@ -226,6 +269,13 @@ function TradingCenter() {
     setChartImageDesc(null);
   }, [handleFastModeSend, navigate, toast, chartImageDesc]);
 
+  const handleSidebarSymbolClick = useCallback((symbol) => {
+    setSelectedStock(symbol);
+    setSelectedStockDisplay(null);
+    setChartMeta(null);
+    setShowOverview(false);
+  }, []);
+
   const handleIntervalChange = useCallback((interval) => {
     setSelectedInterval(interval);
   }, []);
@@ -245,16 +295,36 @@ function TradingCenter() {
             realTimePrice={realTimePrice}
             chartMeta={chartMeta}
             displayOverride={selectedStockDisplay}
+            onToggleOverview={() => setShowOverview(v => !v)}
           />
-          <TradingChart
-            ref={chartRef}
-            symbol={selectedStock}
-            interval={selectedInterval}
-            onIntervalChange={handleIntervalChange}
-            onCapture={handleCaptureChart}
-            onStockMeta={handleStockMeta}
-          />
+          <div className="trading-chart-area">
+            {showOverview && (
+              <CompanyOverviewPanel
+                symbol={selectedStock}
+                visible={showOverview}
+                onClose={() => setShowOverview(false)}
+                data={overviewData}
+                loading={overviewLoading}
+              />
+            )}
+            <TradingChart
+              ref={chartRef}
+              symbol={selectedStock}
+              interval={selectedInterval}
+              onIntervalChange={handleIntervalChange}
+              onCapture={handleCaptureChart}
+              onStockMeta={handleStockMeta}
+              quoteData={overviewData?.quote || null}
+              earningsData={overviewData?.earningsSurprises || null}
+              overlayData={overlayData}
+              stockMeta={chartMeta}
+            />
+          </div>
         </div>
+        <TradingSidebarPanel
+          activeSymbol={selectedStock}
+          onSymbolClick={handleSidebarSymbolClick}
+        />
         <div className="trading-right-panel">
           <div className="trading-right-panel-inner">
             <TradingChatInput

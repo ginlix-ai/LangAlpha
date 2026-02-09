@@ -1,0 +1,303 @@
+.trading-sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background-color: #0f1422;
+  border-left: 1px solid hsl(var(--border-light));
+  overflow: hidden;
+}
+
+/* Collapsed sidebar — thin strip */
+.trading-sidebar--collapsed {
+  width: 36px;
+  align-items: center;
+  padding-top: 10px;
+}
+
+.trading-sidebar-expand-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.trading-sidebar-expand-btn:hover {
+  color: var(--color-text-primary);
+}
+
+/* Collapse button inside tab bar */
+.trading-sidebar-collapse-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.trading-sidebar-collapse-btn:hover {
+  color: var(--color-text-primary);
+}
+
+/* Tab toggle */
+.trading-sidebar-tabs {
+  display: flex;
+  padding: 0;
+  border-bottom: 1px solid hsl(var(--border-light));
+}
+
+.trading-sidebar-tab {
+  flex: 1;
+  padding: 10px 0;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: center;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: color 0.15s;
+  position: relative;
+}
+
+.trading-sidebar-tab:hover {
+  color: var(--color-text-primary);
+}
+
+.trading-sidebar-tab--active {
+  color: var(--color-text-primary);
+}
+
+.trading-sidebar-tab--active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: var(--color-accent-primary);
+}
+
+/* Section header with label + add button */
+.trading-sidebar-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px 6px;
+}
+
+.trading-sidebar-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--color-text-secondary);
+}
+
+.trading-sidebar-add-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  transition: color 0.15s;
+  padding: 0;
+}
+
+.trading-sidebar-add-btn:hover {
+  color: var(--color-accent-primary);
+}
+
+/* Scrollable list */
+.trading-sidebar-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 6px 0;
+}
+
+.trading-sidebar-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.trading-sidebar-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.trading-sidebar-list::-webkit-scrollbar-thumb {
+  background: var(--color-border-muted);
+  border-radius: 2px;
+}
+
+.trading-sidebar-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+/* Row */
+.trading-sidebar-row {
+  display: flex;
+  align-items: center;
+  padding: 10px 8px;
+  cursor: pointer;
+  transition: background 0.12s;
+  border-left: 2px solid transparent;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.trading-sidebar-row:last-child {
+  border-bottom: none;
+}
+
+.trading-sidebar-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.trading-sidebar-row--active {
+  border-left-color: var(--color-accent-primary);
+  background: rgba(97, 85, 245, 0.06);
+}
+
+.trading-sidebar-row-symbol {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  min-width: 56px;
+}
+
+.trading-sidebar-row-price {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--color-text-primary);
+  flex: 1;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.trading-sidebar-row-change {
+  font-size: 13px;
+  font-weight: 500;
+  min-width: 64px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  padding-left: 8px;
+}
+
+.trading-sidebar-row-change--positive {
+  color: var(--color-profit);
+}
+
+.trading-sidebar-row-change--negative {
+  color: var(--color-loss);
+}
+
+.trading-sidebar-row-change--neutral {
+  color: var(--color-text-secondary);
+}
+
+/* Delete button on row hover */
+.trading-sidebar-row-actions {
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 0.12s;
+  margin-left: 4px;
+}
+
+.trading-sidebar-row:hover .trading-sidebar-row-actions {
+  opacity: 1;
+}
+
+.trading-sidebar-row-delete {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0;
+  transition: color 0.12s, background 0.12s;
+}
+
+.trading-sidebar-row-delete:hover {
+  color: var(--color-loss);
+  background: var(--color-loss-soft);
+}
+
+/* Footer link */
+.trading-sidebar-footer {
+  padding: 8px 14px 12px;
+  text-align: right;
+}
+
+.trading-sidebar-footer-link {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-accent-primary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  transition: opacity 0.15s;
+}
+
+.trading-sidebar-footer-link:hover {
+  opacity: 0.8;
+}
+
+/* Empty state */
+.trading-sidebar-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  text-align: center;
+}
+
+.trading-sidebar-empty-text {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+/* Loading skeleton */
+.trading-sidebar-skeleton {
+  display: flex;
+  align-items: center;
+  padding: 11px 8px;
+  gap: 8px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.trading-sidebar-skeleton-bar {
+  height: 12px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  animation: sidebar-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes sidebar-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}

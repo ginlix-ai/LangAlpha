@@ -40,11 +40,11 @@ export async function searchStocks(query, limit = 50) {
  * @param {string} [toDate] - End date in YYYY-MM-DD format
  * @param {Object} [options] - Additional options
  * @param {AbortSignal} [options.signal] - AbortController signal for cancellation
- * @returns {Promise<{data: Array, isReal: boolean, error?: string}>} Chart data in lightweight-charts format
+ * @returns {Promise<{data: Array, error?: string, fiftyTwoWeekHigh?: number, fiftyTwoWeekLow?: number}>} Chart data in lightweight-charts format
  */
 export async function fetchStockData(symbol, interval = '1hour', fromDate, toDate, { signal } = {}) {
   if (!symbol || !symbol.trim()) {
-    return { data: [], isReal: false, error: 'Symbol is required' };
+    return { data: [], error: 'Symbol is required' };
   }
 
   const symbolUpper = symbol.trim().toUpperCase();
@@ -65,7 +65,7 @@ export async function fetchStockData(symbol, interval = '1hour', fromDate, toDat
     const dataPoints = data?.data || [];
 
     if (!Array.isArray(dataPoints) || dataPoints.length === 0) {
-      return { data: [], isReal: false, error: 'No data available' };
+      return { data: [], error: 'No data available' };
     }
 
     // Convert backend format to lightweight-charts format
@@ -85,7 +85,7 @@ export async function fetchStockData(symbol, interval = '1hour', fromDate, toDat
     ).sort((a, b) => a.time - b.time);
 
     if (chartData.length === 0) {
-      return { data: [], isReal: false, error: 'Data conversion failed' };
+      return { data: [], error: 'Data conversion failed' };
     }
 
     // Derive 52-week high/low from series for header display
@@ -100,21 +100,17 @@ export async function fetchStockData(symbol, interval = '1hour', fromDate, toDat
 
     return {
       data: chartData,
-      isReal: true,
       fiftyTwoWeekHigh,
       fiftyTwoWeekLow,
     };
   } catch (error) {
     // Don't treat abort as an error
     if (error?.name === 'CanceledError' || error?.name === 'AbortError') {
-      return { data: [], isReal: false, error: 'Request cancelled' };
+      return { data: [], error: 'Request cancelled' };
     }
     console.error('Error fetching stock data from backend:', error);
     const errorMsg = error?.response?.data?.detail || error?.message || 'Failed to fetch stock data';
-
-    // Return mock data as fallback
-    const mockData = generateMockData(symbolUpper);
-    return { data: mockData, isReal: false, error: errorMsg };
+    return { data: [], error: errorMsg };
   }
 }
 
@@ -357,42 +353,53 @@ export async function fetchStockQuote(symbol, { signal } = {}) {
   }
 }
 
+
 /**
- * Generate mock data for fallback when API fails
+ * Fetch company overview data (fundamentals, analyst ratings, earnings, revenue breakdown).
+ * Uses backend API endpoint: GET /api/v1/market-data/stocks/{symbol}/overview
+ *
  * @param {string} symbol - Stock symbol
- * @returns {Array} Mock chart data
+ * @param {Object} [options] - Additional options
+ * @param {AbortSignal} [options.signal] - AbortController signal for cancellation
+ * @returns {Promise<Object>} Company overview data
  */
-function generateMockData(symbol) {
-  const data = [];
-  const basePrice = 100 + Math.random() * 50;
-  let currentPrice = basePrice;
-  const today = new Date();
-
-  // Generate 90 days of mock data
-  for (let i = 90; i >= 0; i--) {
-    const date = new Date(today);
-    date.setDate(date.getDate() - i);
-    const timestamp = Math.floor(date.getTime() / 1000);
-
-    const change = (Math.random() - 0.5) * 4;
-    const open = currentPrice;
-    const close = open + change;
-    const high = Math.max(open, close) + Math.random() * 2;
-    const low = Math.min(open, close) - Math.random() * 2;
-
-    currentPrice = close;
-
-    data.push({
-      time: timestamp,
-      open: parseFloat(open.toFixed(2)),
-      high: parseFloat(high.toFixed(2)),
-      low: parseFloat(low.toFixed(2)),
-      close: parseFloat(close.toFixed(2)),
-      volume: Math.floor(Math.random() * 10000000) + 500000,
-    });
+export async function fetchCompanyOverview(symbol, { signal } = {}) {
+  if (!symbol || !symbol.trim()) {
+    throw new Error('Symbol is required');
   }
-
+  const { data } = await api.get(
+    `/api/v1/market-data/stocks/${encodeURIComponent(symbol.trim().toUpperCase())}/overview`,
+    { signal }
+  );
   return data;
+}
+
+/**
+ * Fetch analyst data (price targets + grades) for a stock symbol.
+ * Uses backend API endpoint: GET /api/v1/market-data/stocks/{symbol}/analyst-data
+ *
+ * @param {string} symbol - Stock symbol
+ * @param {Object} [options] - Additional options
+ * @param {AbortSignal} [options.signal] - AbortController signal for cancellation
+ * @returns {Promise<Object>} Analyst data with priceTargets and grades
+ */
+export async function fetchAnalystData(symbol, { signal } = {}) {
+  if (!symbol || !symbol.trim()) {
+    throw new Error('Symbol is required');
+  }
+  try {
+    const { data } = await api.get(
+      `/api/v1/market-data/stocks/${encodeURIComponent(symbol.trim().toUpperCase())}/analyst-data`,
+      { signal }
+    );
+    return data;
+  } catch (error) {
+    if (error?.name === 'CanceledError' || error?.name === 'AbortError') {
+      throw error;
+    }
+    console.error('Error fetching analyst data:', error);
+    return null;
+  }
 }
 
 // --- Flash Mode Chat Streaming ---

@@ -1,124 +1,31 @@
 import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback } from 'react';
-import { createChart, ColorType } from 'lightweight-charts';
+import { createChart, ColorType, CrosshairMode, PriceScaleMode, LineType } from 'lightweight-charts';
 import html2canvas from 'html2canvas';
 import './TradingChart.css';
 import { fetchStockData } from '../utils/api';
+import { calculateMA, calculateRSI } from '../utils/chartHelpers';
+import {
+  CHART_BG, CHART_TEXT, CHART_GRID,
+  INTERVALS, INITIAL_LOAD_DAYS, SCROLL_CHUNK_DAYS,
+  SCROLL_LOAD_THRESHOLD, RANGE_CHANGE_DEBOUNCE_MS,
+  MA_CONFIGS, DEFAULT_ENABLED_MA, RSI_PERIODS, BARS_PER_DAY,
+  OVERLAY_COLORS, OVERLAY_LABELS,
+} from '../utils/chartConstants';
+import CrosshairTooltip from './CrosshairTooltip';
+import { useChartAnnotations } from '../hooks/useChartAnnotations';
+import { useChartOverlays } from '../hooks/useChartOverlays';
 
-// --- O(n) Indicator Calculations ---
-
-/**
- * Sliding-window Simple Moving Average — O(n)
- */
-function calculateMA(data, period) {
-  if (data.length < period) return [];
-  const result = [];
-  let sum = 0;
-  for (let i = 0; i < period; i++) {
-    sum += data[i].close;
-  }
-  result.push({ time: data[period - 1].time, value: sum / period });
-  for (let i = period; i < data.length; i++) {
-    sum += data[i].close - data[i - period].close;
-    const value = sum / period;
-    if (!isNaN(value) && isFinite(value)) {
-      result.push({ time: data[i].time, value });
-    }
-  }
-  return result;
-}
-
-/**
- * Wilder's smoothed RSI — O(n), correct algorithm
- */
-function calculateRSI(data, period = 14) {
-  if (data.length < period + 1) return [];
-  const result = [];
-
-  // Calculate price changes
-  let avgGain = 0;
-  let avgLoss = 0;
-  for (let i = 1; i <= period; i++) {
-    const change = data[i].close - data[i - 1].close;
-    if (change > 0) avgGain += change;
-    else avgLoss += -change;
-  }
-  avgGain /= period;
-  avgLoss /= period;
-
-  // First RSI value
-  const firstRS = avgLoss === 0 ? 100 : avgGain / avgLoss;
-  const firstRSI = avgLoss === 0 ? 100 : 100 - 100 / (1 + firstRS);
-  result.push({ time: data[period].time, value: firstRSI });
-
-  // Wilder's exponential smoothing for subsequent values
-  for (let i = period + 1; i < data.length; i++) {
-    const change = data[i].close - data[i - 1].close;
-    const currentGain = change > 0 ? change : 0;
-    const currentLoss = change < 0 ? -change : 0;
-    avgGain = (avgGain * (period - 1) + currentGain) / period;
-    avgLoss = (avgLoss * (period - 1) + currentLoss) / period;
-    const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-    const rsi = avgLoss === 0 ? 100 : 100 - 100 / (1 + rs);
-    if (!isNaN(rsi) && isFinite(rsi)) {
-      result.push({ time: data[i].time, value: rsi });
-    }
-  }
-  return result;
-}
-
-// --- Chart theme constants ---
-const CHART_BG = '#0f1422';
-const CHART_TEXT = '#8b8fa3';
-const CHART_GRID = '#1a1f35';
-
-const INTERVALS = [
-  { key: '1min',  label: '1m'  },
-  { key: '5min',  label: '5m'  },
-  { key: '15min', label: '15m' },
-  { key: '30min', label: '30m' },
-  { key: '1hour', label: '1H'  },
-  { key: '4hour', label: '4H'  },
-  { key: '1day',  label: '1D'  },
-];
-
-// Days of history per interval for initial load
-const INITIAL_LOAD_DAYS = {
-  '1min': 7, '5min': 30, '15min': 60, '30min': 120,
-  '1hour': 180, '4hour': 365, '1day': 0,  // 0 = full history
-};
-
-// Days to prepend on scroll-left per interval
-const SCROLL_CHUNK_DAYS = {
-  '1min': 5, '5min': 20, '15min': 30, '30min': 60,
-  '1hour': 120, '4hour': 180, '1day': 365,
-};
-
-// Scroll-load: how close to left edge (in bars) before fetching more data
-const SCROLL_LOAD_THRESHOLD = 20;
-// Debounce delay for visible range changes (ms)
-const RANGE_CHANGE_DEBOUNCE_MS = 300;
-// Resize debounce delay (ms)
-const RESIZE_DEBOUNCE_MS = 150;
-
-// --- MA / RSI / Volume configuration ---
-const MA_CONFIGS = [
-  { period: 5,   color: '#22d3ee', label: 'MA5'   },  // cyan
-  { period: 10,  color: '#34d399', label: 'MA10'  },  // green
-  { period: 20,  color: '#fbbf24', label: 'MA20'  },  // yellow
-  { period: 50,  color: '#3b82f6', label: 'MA50'  },  // blue
-  { period: 100, color: '#a78bfa', label: 'MA100' },  // purple
-  { period: 200, color: '#f59e0b', label: 'MA200' },  // orange
-];
-const DEFAULT_ENABLED_MA = [20, 50];
-const RSI_PERIODS = [7, 14, 21];
-
-// Approximate trading bars per day per interval (6.5h session)
-const BARS_PER_DAY = {
-  '1min': 390, '5min': 78, '15min': 26, '30min': 13,
-  '1hour': 7, '4hour': 2, '1day': 1,
-};
-
-const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onIntervalChange, onCapture, onStockMeta }, ref) => {
+const TradingChart = React.memo(forwardRef(({
+  symbol,
+  interval = '1day',
+  onIntervalChange,
+  onCapture,
+  onStockMeta,
+  quoteData,
+  earningsData,
+  overlayData,
+  stockMeta,
+}, ref) => {
   const chartContainerRef = useRef();
   const rsiChartContainerRef = useRef();
   const chartRef = useRef();
@@ -127,17 +34,31 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
   const rsiSeriesRef = useRef();
   const volumeSeriesRef = useRef(null);
   const maSeriesRefs = useRef({});
+  const baselineSeriesRef = useRef(null);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [lastUpdateTime, setLastUpdateTime] = useState(null);
   const [rsiValue, setRsiValue] = useState(null);
-  const [isMockData, setIsMockData] = useState(false);
 
   // MA / RSI config state
   const [enabledMaPeriods, setEnabledMaPeriods] = useState(DEFAULT_ENABLED_MA);
   const [rsiPeriod, setRsiPeriod] = useState(14);
   const [maValues, setMaValues] = useState({});
+
+  // Chart feature toggles
+  const [priceScaleMode, setPriceScaleMode] = useState(PriceScaleMode.Normal);
+  const [magnetMode, setMagnetMode] = useState(false);
+  const [showBaseline, setShowBaseline] = useState(false);
+  const [annotationsVisible, setAnnotationsVisible] = useState(false);
+  const [overlayVisibility, setOverlayVisibility] = useState({
+    earnings: false,
+    grades: false,
+    priceTargets: false,
+  });
+
+  // Crosshair tooltip state
+  const [tooltipState, setTooltipState] = useState({ visible: false, x: 0, y: 0, data: null });
 
   // Refs for stable callbacks (avoid stale closures)
   const enabledMaPeriodsRef = useRef(DEFAULT_ENABLED_MA);
@@ -154,8 +75,32 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
   const rangeChangeTimerRef = useRef(null);
   const rangeUnsubRef = useRef(null);
 
+  // Chart data state for hooks
+  const [chartDataForHooks, setChartDataForHooks] = useState([]);
+
+  // --- Price lines via hook ---
+  const priceTargetsForAnnotations = overlayVisibility.priceTargets ? overlayData?.priceTargets : null;
+  useChartAnnotations(candlestickSeriesRef, stockMeta, quoteData, priceTargetsForAnnotations, annotationsVisible, symbol);
+
+  // --- Series markers via hook ---
+  useChartOverlays(candlestickSeriesRef, chartDataForHooks, earningsData, overlayData, overlayVisibility, symbol);
+
   useImperativeHandle(ref, () => ({
     captureChart: async () => {
+      // Use native takeScreenshot for main chart download
+      if (chartRef.current) {
+        try {
+          const canvas = chartRef.current.takeScreenshot();
+          if (canvas) {
+            return new Promise((resolve) => {
+              canvas.toBlob((blob) => resolve(blob), 'image/png');
+            });
+          }
+        } catch (err) {
+          console.warn('Native takeScreenshot failed, falling back to html2canvas:', err);
+        }
+      }
+      // Fallback to html2canvas
       if (!chartContainerRef.current) return null;
       try {
         const canvas = await html2canvas(chartContainerRef.current, {
@@ -172,6 +117,7 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
       }
     },
     captureChartAsDataUrl: async () => {
+      // Keep html2canvas for combined main+RSI for LLM context
       const container = chartContainerRef.current?.parentElement; // .charts-container
       if (!container) return null;
       try {
@@ -194,7 +140,6 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
       const lastTime = data[data.length - 1].time;
       const formatDate = (ts) => new Date(ts * 1000).toISOString().split('T')[0];
 
-      // Current indicator values
       const enabledMAs = enabledMaPeriodsRef.current;
       const maInfo = enabledMAs
         .filter((p) => maValues[p] != null)
@@ -219,6 +164,9 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
           close: lastCandle.close,
           volume: lastCandle.volume,
         },
+        annotationsVisible,
+        overlayVisibility,
+        priceScaleMode,
       };
     },
   }));
@@ -266,6 +214,9 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
       if (lastRsi != null) setRsiValue(lastRsi.toFixed(0));
       if (rsiChartRef.current) rsiChartRef.current.timeScale().fitContent();
     }
+
+    // Update chart data state for overlay hooks
+    setChartDataForHooks(data);
   }, []);
 
   // --- Scroll-based lazy loading ---
@@ -276,7 +227,7 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
     try {
       const oldest = new Date(oldestDateRef.current * 1000);
       const toDate = new Date(oldest);
-      toDate.setDate(toDate.getDate() - 1); // Day before current oldest
+      toDate.setDate(toDate.getDate() - 1);
       const fromDate = new Date(toDate);
       fromDate.setDate(fromDate.getDate() - SCROLL_CHUNK_DAYS[interval]);
 
@@ -287,7 +238,6 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
       const newData = result?.data;
 
       if (newData && Array.isArray(newData) && newData.length > 0) {
-        // Merge: deduplicate by timestamp, sort
         const existingMap = new Map(allDataRef.current.map((d) => [d.time, d]));
         newData.forEach((d) => {
           if (!existingMap.has(d.time)) existingMap.set(d.time, d);
@@ -312,7 +262,6 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
     fetchingRef.current = true;
     try {
       const deficit = period - currentLen;
-      // Convert bar deficit to calendar days (1.5x for weekends/holidays)
       const extraDays = Math.ceil((deficit / (BARS_PER_DAY[interval] || 1)) * 1.5);
 
       const oldest = new Date(oldestDateRef.current * 1000);
@@ -347,7 +296,6 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
   // --- Toggle handlers ---
   const handleToggleMa = useCallback((period) => {
     const isCurrentlyEnabled = enabledMaPeriodsRef.current.includes(period);
-    // If enabling and current data is insufficient, backfill older data
     if (!isCurrentlyEnabled && allDataRef.current.length < period) {
       backfillForMaPeriod(period);
     }
@@ -369,13 +317,20 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
         background: { type: ColorType.Solid, color: CHART_BG },
         textColor: CHART_TEXT,
       },
-      width: chartContainerRef.current.clientWidth,
-      height: chartContainerRef.current.clientHeight,
+      autoSize: true,
       grid: {
         vertLines: { color: CHART_GRID },
         horzLines: { color: CHART_GRID },
       },
-      crosshair: { mode: 1 },
+      watermark: {
+        visible: true,
+        text: symbol,
+        fontSize: 48,
+        color: 'rgba(139,143,163,0.08)',
+        horzAlign: 'center',
+        vertAlign: 'center',
+      },
+      crosshair: { mode: CrosshairMode.Normal },
       rightPriceScale: {
         borderColor: CHART_GRID,
         scaleMargins: { top: 0.1, bottom: 0.2 },
@@ -411,14 +366,62 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
       scaleMargins: { top: 0.8, bottom: 0 },
     });
 
-    // All MA line series
+    // All MA line series (curved)
     MA_CONFIGS.forEach(({ period, color }) => {
       maSeriesRefs.current[period] = chart.addLineSeries({
         color,
         lineWidth: 1.5,
+        lineType: LineType.Curved,
         title: '',
         lastValueVisible: false,
         priceLineVisible: false,
+      });
+    });
+
+    // Subscribe to crosshair move for tooltip
+    chart.subscribeCrosshairMove((param) => {
+      if (!param.time || !param.point) {
+        setTooltipState((prev) => prev.visible ? { visible: false, x: 0, y: 0, data: null } : prev);
+        return;
+      }
+      const candleData = param.seriesData.get(candlestickSeriesRef.current);
+      if (!candleData) {
+        setTooltipState((prev) => prev.visible ? { visible: false, x: 0, y: 0, data: null } : prev);
+        return;
+      }
+
+      // Gather MA values from crosshair
+      const maVals = {};
+      const enabled = enabledMaPeriodsRef.current;
+      MA_CONFIGS.forEach(({ period }) => {
+        if (!enabled.includes(period)) return;
+        const s = maSeriesRefs.current[period];
+        if (!s) return;
+        const val = param.seriesData.get(s);
+        if (val && val.value != null) maVals[period] = val.value;
+      });
+
+      // Gather RSI value
+      let rsiVal = null;
+      if (rsiSeriesRef.current) {
+        const rsiData = param.seriesData.get(rsiSeriesRef.current);
+        if (rsiData && rsiData.value != null) rsiVal = rsiData.value;
+      }
+
+      setTooltipState({
+        visible: true,
+        x: param.point.x,
+        y: param.point.y,
+        data: {
+          time: candleData.time ?? param.time,
+          open: candleData.open,
+          high: candleData.high,
+          low: candleData.low,
+          close: candleData.close,
+          volume: candleData.volume,
+          maValues: maVals,
+          rsiValue: rsiVal,
+        },
       });
     });
 
@@ -430,8 +433,7 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
           background: { type: ColorType.Solid, color: CHART_BG },
           textColor: CHART_TEXT,
         },
-        width: rsiChartContainerRef.current.clientWidth,
-        height: rsiChartContainerRef.current.clientHeight,
+        autoSize: true,
         grid: {
           vertLines: { color: CHART_GRID },
           horzLines: { color: CHART_GRID },
@@ -448,38 +450,18 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
         },
       });
       rsiChartRef.current = rsiChart;
-      rsiSeriesRef.current = rsiChart.addLineSeries({
-        color: '#667eea',
+      // RSI as area series with gradient
+      rsiSeriesRef.current = rsiChart.addAreaSeries({
+        lineColor: '#667eea',
+        topColor: 'rgba(102,126,234,0.3)',
+        bottomColor: 'rgba(102,126,234,0.02)',
         lineWidth: 2,
         priceFormat: { type: 'price', precision: 0, minMove: 1 },
       });
     }, 100);
 
-    // Debounced resize handler
-    let resizeTimer = null;
-    const handleResize = () => {
-      clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => {
-        if (chartContainerRef.current && chartRef.current) {
-          chartRef.current.applyOptions({
-            width: chartContainerRef.current.clientWidth,
-            height: chartContainerRef.current.clientHeight,
-          });
-        }
-        if (rsiChartContainerRef.current && rsiChartRef.current) {
-          rsiChartRef.current.applyOptions({
-            width: rsiChartContainerRef.current.clientWidth,
-            height: rsiChartContainerRef.current.clientHeight,
-          });
-        }
-      }, RESIZE_DEBOUNCE_MS);
-    };
-    window.addEventListener('resize', handleResize);
-
     return () => {
       clearTimeout(rsiTimeout);
-      clearTimeout(resizeTimer);
-      window.removeEventListener('resize', handleResize);
 
       // Unsubscribe scroll-load listener
       if (rangeUnsubRef.current) {
@@ -490,6 +472,7 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
 
       candlestickSeriesRef.current = null;
       volumeSeriesRef.current = null;
+      baselineSeriesRef.current = null;
       Object.keys(maSeriesRefs.current).forEach(k => { maSeriesRefs.current[k] = null; });
       rsiSeriesRef.current = null;
 
@@ -503,6 +486,102 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
       }
     };
   }, []); // Mount only
+
+  // --- Effect: Update watermark when symbol changes ---
+  useEffect(() => {
+    if (chartRef.current) {
+      chartRef.current.applyOptions({
+        watermark: {
+          visible: true,
+          text: symbol,
+          fontSize: 48,
+          color: 'rgba(139,143,163,0.08)',
+          horzAlign: 'center',
+          vertAlign: 'center',
+        },
+      });
+    }
+  }, [symbol]);
+
+  // --- Effect: Price scale mode ---
+  useEffect(() => {
+    if (chartRef.current) {
+      chartRef.current.priceScale('right').applyOptions({ mode: priceScaleMode });
+    }
+  }, [priceScaleMode]);
+
+  // --- Effect: Crosshair magnet mode ---
+  useEffect(() => {
+    if (chartRef.current) {
+      chartRef.current.applyOptions({
+        crosshair: { mode: magnetMode ? CrosshairMode.Magnet : CrosshairMode.Normal },
+      });
+    }
+  }, [magnetMode]);
+
+  // --- Effect: Baseline series toggle ---
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+
+    if (showBaseline) {
+      // Hide candlestick + volume, show baseline
+      if (candlestickSeriesRef.current) {
+        candlestickSeriesRef.current.applyOptions({ visible: false });
+      }
+      if (volumeSeriesRef.current) {
+        volumeSeriesRef.current.applyOptions({ visible: false });
+      }
+      // Hide MAs too
+      MA_CONFIGS.forEach(({ period }) => {
+        const s = maSeriesRefs.current[period];
+        if (s) s.applyOptions({ visible: false });
+      });
+
+      const prevClose = quoteData?.previousClose || quoteData?.open;
+      const basePrice = prevClose || (allDataRef.current.length > 0 ? allDataRef.current[0].open : 0);
+
+      if (!baselineSeriesRef.current) {
+        baselineSeriesRef.current = chart.addBaselineSeries({
+          baseValue: { type: 'price', price: basePrice },
+          topLineColor: '#10b981',
+          topFillColor1: 'rgba(16,185,129,0.2)',
+          topFillColor2: 'rgba(16,185,129,0.02)',
+          bottomLineColor: '#ef4444',
+          bottomFillColor1: 'rgba(239,68,68,0.02)',
+          bottomFillColor2: 'rgba(239,68,68,0.2)',
+          lineWidth: 2,
+        });
+      } else {
+        baselineSeriesRef.current.applyOptions({
+          baseValue: { type: 'price', price: basePrice },
+        });
+      }
+
+      // Set close-only data
+      const data = allDataRef.current;
+      if (data.length > 0) {
+        baselineSeriesRef.current.setData(data.map((d) => ({ time: d.time, value: d.close })));
+      }
+    } else {
+      // Show candlestick + volume + MAs, remove baseline
+      if (candlestickSeriesRef.current) {
+        candlestickSeriesRef.current.applyOptions({ visible: true });
+      }
+      if (volumeSeriesRef.current) {
+        volumeSeriesRef.current.applyOptions({ visible: true });
+      }
+      MA_CONFIGS.forEach(({ period }) => {
+        const s = maSeriesRefs.current[period];
+        if (s) s.applyOptions({ visible: true });
+      });
+
+      if (baselineSeriesRef.current) {
+        try { chart.removeSeries(baselineSeriesRef.current); } catch (_) { /* ok */ }
+        baselineSeriesRef.current = null;
+      }
+    }
+  }, [showBaseline, quoteData]);
 
   // --- Effect 2: Data loading (on symbol or interval change) ---
   useEffect(() => {
@@ -519,18 +598,31 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
       rangeUnsubRef.current = null;
     }
 
+    // Reset baseline on symbol/interval change
+    if (showBaseline) setShowBaseline(false);
+
+    // Clear stale chart data so previous interval/symbol doesn't linger under an error
+    const clearChartSeries = () => {
+      if (candlestickSeriesRef.current) candlestickSeriesRef.current.setData([]);
+      if (volumeSeriesRef.current) volumeSeriesRef.current.setData([]);
+      if (rsiSeriesRef.current) rsiSeriesRef.current.setData([]);
+      MA_CONFIGS.forEach(({ period }) => {
+        const s = maSeriesRefs.current[period];
+        if (s) s.setData([]);
+      });
+      setChartDataForHooks([]);
+    };
+
     const loadData = async () => {
       setLoading(true);
       setError(null);
-      setIsMockData(false);
 
       try {
-        // Compute date range based on interval, with overhead for the largest enabled MA
         const loadDays = INITIAL_LOAD_DAYS[interval];
         let fromDate, toDate;
         if (loadDays > 0) {
           const maxMaPeriod = Math.max(...enabledMaPeriodsRef.current, 0);
-          const overheadDays = Math.ceil((maxMaPeriod / (BARS_PER_DAY[interval] || 1)) * 1.5); // 1.5x for weekends/holidays
+          const overheadDays = Math.ceil((maxMaPeriod / (BARS_PER_DAY[interval] || 1)) * 1.5);
           const now = new Date();
           toDate = now.toISOString().split('T')[0];
           const from = new Date(now);
@@ -543,12 +635,6 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
         if (abortController.signal.aborted) return;
 
         const data = result?.data || [];
-        const isReal = result?.isReal !== false;
-
-        setIsMockData(!isReal);
-        if (!isReal) {
-          console.warn('[Mock Data] Displaying mock data. Reason:', result?.error || 'FMP API call failed');
-        }
 
         if (Array.isArray(data) && data.length > 0) {
           allDataRef.current = data;
@@ -579,14 +665,19 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
             rangeUnsubRef.current = unsubscribe;
           }
         } else {
-          setError('Stock data not found');
+          clearChartSeries();
+          const isIntraday = interval !== '1day';
+          const fallbackMsg = isIntraday
+            ? 'Intraday data not available — market may be closed. Try the 1D interval.'
+            : 'Stock data not found';
+          setError(result?.error || fallbackMsg);
           if (typeof onStockMeta === 'function') onStockMeta(null);
         }
       } catch (err) {
         if (abortController.signal.aborted) return;
         console.error('Failed to load stock data:', err);
+        clearChartSeries();
         setError('Failed to load data. Please check FMP API configuration.');
-        setIsMockData(true);
       } finally {
         if (!abortController.signal.aborted) {
           setLoading(false);
@@ -617,13 +708,47 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
     }
   }, [enabledMaPeriods, rsiPeriod, updateSeriesData]);
 
+  // --- Tool button handlers ---
+  const handleZoomIn = useCallback(() => {
+    if (!chartRef.current) return;
+    const ts = chartRef.current.timeScale();
+    const range = ts.getVisibleLogicalRange();
+    if (!range) return;
+    const center = (range.from + range.to) / 2;
+    const halfSpan = (range.to - range.from) / 4; // halve the range
+    ts.setVisibleLogicalRange({ from: center - halfSpan, to: center + halfSpan });
+  }, []);
+
+  const handleZoomOut = useCallback(() => {
+    if (!chartRef.current) return;
+    const ts = chartRef.current.timeScale();
+    const range = ts.getVisibleLogicalRange();
+    if (!range) return;
+    const center = (range.from + range.to) / 2;
+    const halfSpan = (range.to - range.from); // double the range
+    ts.setVisibleLogicalRange({ from: center - halfSpan, to: center + halfSpan });
+  }, []);
+
+  const handleScrollToRealTime = useCallback(() => {
+    if (chartRef.current) {
+      chartRef.current.timeScale().scrollToRealTime();
+    }
+  }, []);
+
+  const handleToggleAnnotations = useCallback(() => {
+    setAnnotationsVisible((prev) => !prev);
+  }, []);
+
+  const handleToggleOverlay = useCallback((key) => {
+    setOverlayVisibility((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+
+  const handleTogglePriceScale = useCallback((mode) => {
+    setPriceScaleMode((prev) => prev === mode ? PriceScaleMode.Normal : mode);
+  }, []);
+
   return (
     <div className="trading-chart-container">
-      {isMockData && (
-        <div className="trading-chart-mock-warning">
-          Currently displaying mock data (FMP API call failed). Please check if <code>VITE_FMP_API_KEY</code> in <code>.env</code> is set with a valid key and restart <code>npm run dev</code>.
-        </div>
-      )}
       <div className="chart-header">
         <div className="chart-info">
           <span className="chart-label">{interval === '1day' ? 'Daily' : INTERVALS.find(i => i.key === interval)?.label} Summary & Indicators</span>
@@ -688,12 +813,65 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
               </button>
             ))}
           </div>
+          <div className="indicator-toggles">
+            <span className="indicator-toggles-label">Overlay</span>
+            {Object.entries(OVERLAY_LABELS).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                className={`indicator-toggle-btn${overlayVisibility[key] ? ' indicator-toggle-active' : ''}`}
+                style={overlayVisibility[key] ? { color: OVERLAY_COLORS[key], borderColor: OVERLAY_COLORS[key] } : undefined}
+                onClick={() => handleToggleOverlay(key)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
         <div className="chart-tool-buttons">
-          <button type="button" className="chart-tool-btn">+</button>
-          <button type="button" className="chart-tool-btn">&minus;</button>
-          <button type="button" className="chart-tool-btn">&#9998;</button>
-          <button type="button" className="chart-tool-btn">T</button>
+          <button
+            type="button"
+            className={`chart-tool-btn${priceScaleMode === PriceScaleMode.Logarithmic ? ' chart-tool-btn-active' : ''}`}
+            onClick={() => handleTogglePriceScale(PriceScaleMode.Logarithmic)}
+            title="Log Scale"
+          >
+            Log
+          </button>
+          <button
+            type="button"
+            className={`chart-tool-btn${priceScaleMode === PriceScaleMode.Percentage ? ' chart-tool-btn-active' : ''}`}
+            onClick={() => handleTogglePriceScale(PriceScaleMode.Percentage)}
+            title="Percentage Scale"
+          >
+            %
+          </button>
+          <button
+            type="button"
+            className={`chart-tool-btn${magnetMode ? ' chart-tool-btn-active' : ''}`}
+            onClick={() => setMagnetMode((v) => !v)}
+            title="Magnet Mode"
+          >
+            M
+          </button>
+          <button
+            type="button"
+            className={`chart-tool-btn${showBaseline ? ' chart-tool-btn-active' : ''}`}
+            onClick={() => setShowBaseline((v) => !v)}
+            title="Baseline vs Previous Close"
+          >
+            B
+          </button>
+          <button type="button" className="chart-tool-btn" onClick={handleZoomIn} title="Zoom In">+</button>
+          <button type="button" className="chart-tool-btn" onClick={handleZoomOut} title="Zoom Out">&minus;</button>
+          <button
+            type="button"
+            className={`chart-tool-btn${annotationsVisible ? ' chart-tool-btn-active' : ''}`}
+            onClick={handleToggleAnnotations}
+            title="Toggle Annotations"
+          >
+            T
+          </button>
+          <button type="button" className="chart-tool-btn" onClick={handleScrollToRealTime} title="Scroll to Latest">&#8635;</button>
         </div>
       </div>
       <div
@@ -705,7 +883,17 @@ const TradingChart = React.memo(forwardRef(({ symbol, interval = '1day', onInter
         <div
           ref={chartContainerRef}
           className="chart-wrapper"
-        />
+        >
+          <CrosshairTooltip
+            visible={tooltipState.visible}
+            x={tooltipState.x}
+            y={tooltipState.y}
+            data={tooltipState.data}
+            enabledMaPeriods={enabledMaPeriods}
+            containerWidth={chartContainerRef.current?.clientWidth}
+            containerHeight={chartContainerRef.current?.clientHeight}
+          />
+        </div>
         <div className="rsi-container">
           <div className="rsi-label">RSI ({rsiPeriod}): {rsiValue ?? '\u2014'}</div>
           <div className="rsi-chart-wrapper" ref={rsiChartContainerRef}></div>

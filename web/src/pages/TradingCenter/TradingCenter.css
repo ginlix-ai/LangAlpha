@@ -25,6 +25,13 @@
   overflow: hidden;
 }
 
+.trading-chart-area {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .trading-right-panel {
   width: 400px;
   flex-shrink: 0;
