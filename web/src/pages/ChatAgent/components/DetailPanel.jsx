@@ -1,4 +1,4 @@
-import { X, FileText, ArrowRight, Zap } from 'lucide-react';
+import { X, FileText, ArrowRight, Zap, Loader2 } from 'lucide-react';
 import { getDisplayName, getToolIcon, stripLineNumbers, parseTruncatedResult } from './toolDisplayConfig';
 import {
   StockPriceChart,
@@ -72,7 +72,7 @@ function DetailPanel({ toolCallProcess, planData, onClose, onOpenFile, onOpenSub
 
   // Extract subagent info from Task tool args
   const subagentType = isTaskTool ? (toolCallProcess.toolCall?.args?.subagent_type || 'general-purpose') : '';
-  const subagentDescription = isTaskTool ? (toolCallProcess.toolCall?.args?.description || toolCallProcess.toolCall?.args?.prompt || '') : '';
+  const subagentDescription = isTaskTool ? (toolCallProcess.toolCall?.args?.description || '') : '';
   const subagentId = isTaskTool ? toolCallProcess.toolCall?.id : null;
 
   return (
@@ -131,6 +131,8 @@ function DetailPanel({ toolCallProcess, planData, onClose, onOpenFile, onOpenSub
             description={subagentDescription}
             type={subagentType}
             subagentId={subagentId}
+            subagentResult={toolCallProcess._subagentResult || null}
+            subagentStatus={toolCallProcess._subagentStatus || null}
             onOpenSubagentTask={onOpenSubagentTask}
           />
         ) : (
@@ -147,24 +149,74 @@ function DetailPanel({ toolCallProcess, planData, onClose, onOpenFile, onOpenSub
   );
 }
 
-function TaskToolContent({ content, description, type, subagentId, onOpenSubagentTask }) {
-  const displayContent = typeof content === 'string' ? content : content ? String(content) : 'No result content';
-
+function TaskToolContent({ description, type, subagentId, subagentResult, subagentStatus, onOpenSubagentTask }) {
   const handleGoToSubagent = () => {
     if (onOpenSubagentTask && subagentId) {
       onOpenSubagentTask({
         subagentId,
         description,
         type,
-        status: 'completed',
+        status: subagentStatus || 'completed',
       });
     }
   };
 
+  const isRunning = subagentStatus && subagentStatus !== 'completed';
+
   return (
     <div className="space-y-4">
-      {/* Markdown-rendered output */}
-      <Markdown variant="panel" content={displayContent} className="text-sm" />
+      {/* Instructions section */}
+      {description && (
+        <div>
+          <div
+            className="text-xs font-medium uppercase tracking-wider mb-2 px-1"
+            style={{ color: 'rgba(255, 255, 255, 0.4)' }}
+          >
+            Instructions
+          </div>
+          <div
+            className="rounded-lg px-3 py-3"
+            style={{ backgroundColor: 'rgba(255, 255, 255, 0.04)', border: '1px solid rgba(255, 255, 255, 0.06)' }}
+          >
+            <Markdown variant="panel" content={description} className="text-sm" />
+          </div>
+        </div>
+      )}
+
+      {/* Result section */}
+      <div>
+        <div
+          className="text-xs font-medium uppercase tracking-wider mb-2 px-1"
+          style={{ color: 'rgba(255, 255, 255, 0.4)' }}
+        >
+          Result
+        </div>
+        {subagentResult ? (
+          <div
+            className="rounded-lg px-3 py-3"
+            style={{ backgroundColor: 'rgba(255, 255, 255, 0.04)', border: '1px solid rgba(255, 255, 255, 0.06)' }}
+          >
+            <Markdown variant="panel" content={subagentResult} className="text-sm" />
+          </div>
+        ) : isRunning ? (
+          <div
+            className="flex items-center gap-2 px-3 py-3 rounded-lg"
+            style={{ backgroundColor: 'rgba(255, 255, 255, 0.04)', border: '1px solid rgba(255, 255, 255, 0.06)' }}
+          >
+            <Loader2 className="h-4 w-4 animate-spin" style={{ color: 'rgba(255, 255, 255, 0.4)' }} />
+            <span className="text-sm" style={{ color: 'rgba(255, 255, 255, 0.5)' }}>
+              Subagent is still running...
+            </span>
+          </div>
+        ) : (
+          <div
+            className="px-3 py-3 rounded-lg text-sm"
+            style={{ backgroundColor: 'rgba(255, 255, 255, 0.04)', border: '1px solid rgba(255, 255, 255, 0.06)', color: 'rgba(255, 255, 255, 0.5)' }}
+          >
+            No result available
+          </div>
+        )}
+      </div>
 
       {/* Footer link to subagent tab */}
       {onOpenSubagentTask && subagentId && (
@@ -173,7 +225,6 @@ function TaskToolContent({ content, description, type, subagentId, onOpenSubagen
           className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg transition-colors hover:brightness-110"
           style={{
             backgroundColor: 'rgba(97, 85, 245, 0.08)',
-            borderLeft: '3px solid #6155F5',
             border: '1px solid rgba(97, 85, 245, 0.2)',
           }}
         >

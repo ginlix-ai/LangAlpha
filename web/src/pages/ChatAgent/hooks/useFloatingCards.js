@@ -303,8 +303,8 @@ export function useFloatingCards(initialCards = {}) {
               ...existingSubagentData,
               ...subagentDataUpdate,
               // If messages are provided, use them; otherwise keep existing
-              messages: subagentDataUpdate.messages !== undefined 
-                ? subagentDataUpdate.messages 
+              messages: subagentDataUpdate.messages !== undefined
+                ? subagentDataUpdate.messages
                 : existingSubagentData.messages || [],
               // If currentTool is explicitly provided (including empty string), use it
               // Empty string means "clear currentTool", undefined means "preserve existing"

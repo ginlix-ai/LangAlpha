@@ -31,7 +31,11 @@ function Sidebar() {
     if (path === '/chat') {
       const session = getChatSession();
       if (session) {
-        navigate(`/chat/${session.workspaceId}/${session.threadId}`);
+        if (session.threadId) {
+          navigate(`/chat/${session.workspaceId}/${session.threadId}`);
+        } else {
+          navigate(`/chat/${session.workspaceId}`);
+        }
         return;
       }
     }

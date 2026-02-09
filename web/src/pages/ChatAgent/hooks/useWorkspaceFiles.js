@@ -15,7 +15,7 @@ export function useWorkspaceFiles(workspaceId) {
   const [error, setError] = useState(null);
   const debounceTimerRef = useRef(null);
 
-  const fetchFiles = useCallback(async () => {
+  const fetchFiles = useCallback(async (retryCount = 0) => {
     if (!workspaceId) return;
     setLoading(true);
     setError(null);
@@ -23,9 +23,17 @@ export function useWorkspaceFiles(workspaceId) {
       const data = await listWorkspaceFiles(workspaceId, '.');
       setFiles(data.files || []);
     } catch (err) {
+      const status = err?.response?.status;
+      // Retry on transient errors (503 = sandbox not available, 500 = stopping race)
+      if ((status === 503 || status === 500) && retryCount < 3) {
+        const delay = 1000 * (retryCount + 1); // 1s, 2s, 3s
+        console.log(`[useWorkspaceFiles] Sandbox not ready (${status}), retrying in ${delay}ms...`);
+        setTimeout(() => fetchFiles(retryCount + 1), delay);
+        return;
+      }
       console.error('[useWorkspaceFiles] Failed to list files:', err);
       setError(
-        err?.response?.status === 503
+        status === 503
           ? 'Sandbox not available'
           : 'Failed to load files'
       );

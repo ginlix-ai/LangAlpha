@@ -30,6 +30,14 @@ export async function deleteWorkspace(workspaceId) {
   await api.delete(`/api/v1/workspaces/${id}`);
 }
 
+export async function getWorkspace(workspaceId, userId = DEFAULT_USER_ID) {
+  if (!workspaceId) throw new Error('Workspace ID is required');
+  const { data } = await api.get(`/api/v1/workspaces/${workspaceId}`, {
+    headers: headers(userId),
+  });
+  return data;
+}
+
 // --- Conversations ---
 
 export async function getConversations(userId = DEFAULT_USER_ID, limit = 50, offset = 0) {

@@ -1,16 +1,17 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { ArrowLeft, Loader2, Folder, FileText } from 'lucide-react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import ThreadCard from './ThreadCard';
 import DeleteConfirmModal from './DeleteConfirmModal';
 import RenameThreadModal from './RenameThreadModal';
 import ChatInputWithMentions from './ChatInputWithMentions';
 import FilePanel from './FilePanel';
 import { getAuthUserId } from '@/api/client';
-import { getWorkspaceThreads, getWorkspaces, deleteThread, updateThreadTitle, listWorkspaceFiles } from '../utils/api';
+import { getWorkspaceThreads, getWorkspace, deleteThread, updateThreadTitle } from '../utils/api';
 import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
 import { DEFAULT_USER_ID } from '../utils/api';
 import { removeStoredThreadId } from '../hooks/utils/threadStorage';
+import { saveChatSession } from '../hooks/utils/chatSessionRestore';
 import iconComputer from '../../../assets/img/icon-computer.svg';
 import '../../Dashboard/Dashboard.css';
 
@@ -28,9 +29,12 @@ import '../../Dashboard/Dashboard.css';
  * @param {Function} onBack - Callback to navigate back to workspace gallery
  * @param {Function} onThreadSelect - Callback when a thread is selected (receives workspaceId and threadId)
  */
-function ThreadGallery({ workspaceId, onBack, onThreadSelect }) {
+function ThreadGallery({ workspaceId, onBack, onThreadSelect, cache }) {
+  const location = useLocation();
   const [threads, setThreads] = useState([]);
-  const [workspaceName, setWorkspaceName] = useState('');
+  const [workspaceName, setWorkspaceName] = useState(
+    location.state?.workspaceName || ''
+  );
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
   const [deleteModal, setDeleteModal] = useState({ isOpen: false, thread: null });
@@ -43,7 +47,8 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }) {
   const [showFilePanel, setShowFilePanel] = useState(false);
   const [filePanelWidth, setFilePanelWidth] = useState(420);
   const [filePanelTargetFile, setFilePanelTargetFile] = useState(null);
-  const [files, setFiles] = useState([]);
+  // Initialize files from cache for instant display on return navigation
+  const [files, setFiles] = useState(() => cache?.current?.[workspaceId]?.files || []);
   const isDraggingRef = useRef(false);
 
   // Shared workspace files for the FilePanel
@@ -58,15 +63,61 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }) {
   const { threadId: currentThreadId } = useParams();
   const loadingRef = useRef(false);
 
-  // Load workspace name and threads on mount
+  // Sort helper for file list display
+  const sortFiles = useCallback((fileList) => {
+    const dirPriority = (fp) => {
+      if (!fp.includes('/')) return 0;
+      const dir = fp.slice(0, fp.indexOf('/'));
+      if (dir === 'results') return 1;
+      if (dir === 'data') return 2;
+      return 3;
+    };
+    return [...fileList].sort((a, b) => {
+      const pa = dirPriority(a);
+      const pb = dirPriority(b);
+      if (pa !== pb) return pa - pb;
+      return a.localeCompare(b);
+    });
+  }, []);
+
+  // Derive sorted file list from hook data and save to cache
+  useEffect(() => {
+    if (panelFiles.length > 0) {
+      const sorted = sortFiles(panelFiles);
+      setFiles(sorted);
+      // Save to cache so files show instantly on return navigation
+      if (cache?.current?.[workspaceId]) {
+        cache.current[workspaceId].files = sorted;
+      }
+    }
+  }, [panelFiles, sortFiles, workspaceId, cache]);
+
+  // Save workspace-level session on unmount so tab switching restores to this workspace
+  useEffect(() => {
+    return () => {
+      if (workspaceId) {
+        saveChatSession({ workspaceId });
+      }
+    };
+  }, [workspaceId]);
+
+  // Load threads on mount, using cache for instant display on return navigation
   useEffect(() => {
     if (!workspaceId) return;
-    
+
     // Guard: Prevent duplicate calls
     if (loadingRef.current) {
       return;
     }
-    
+
+    // Show cached data instantly (stale-while-revalidate)
+    const cached = cache?.current?.[workspaceId];
+    if (cached?.threads) {
+      setThreads(cached.threads);
+      if (cached.workspaceName) setWorkspaceName(cached.workspaceName);
+      setIsLoading(false);
+    }
+
     loadingRef.current = true;
     loadData().finally(() => {
       loadingRef.current = false;
@@ -74,45 +125,45 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }) {
   }, [workspaceId]);
 
   /**
-   * Fetches workspace name and threads from the API
+   * Fetches threads (and workspace name if not yet known) from the API.
+   * File listing is handled separately by useWorkspaceFiles hook.
    */
   const loadData = async () => {
     try {
-      setIsLoading(true);
+      // Only show spinner if we have nothing cached
+      const hasCached = cache?.current?.[workspaceId]?.threads;
+      if (!hasCached) setIsLoading(true);
       setError(null);
 
-      // Load workspace name, threads, and files in parallel
       const userId = getAuthUserId() || DEFAULT_USER_ID;
-      const [workspacesData, threadsData, filesData] = await Promise.all([
-        getWorkspaces(userId).catch(() => ({ workspaces: [] })),
-        getWorkspaceThreads(workspaceId, userId),
-        listWorkspaceFiles(workspaceId, '.').catch(() => ({ files: [] })),
-      ]);
 
-      // Find workspace name
-      const workspace = workspacesData.workspaces?.find(
-        (ws) => ws.workspace_id === workspaceId
-      );
-      setWorkspaceName(workspace?.name || 'Workspace');
+      // If we don't have workspace name yet, fetch it in parallel with threads
+      const needsName = !workspaceName;
+      const promises = [getWorkspaceThreads(workspaceId, userId)];
+      if (needsName) {
+        promises.push(getWorkspace(workspaceId, userId).catch(() => null));
+      }
 
-      // Set threads
-      setThreads(threadsData.threads || []);
+      const [threadsData, workspaceData] = await Promise.all(promises);
 
-      // Set files — sorted: root first, then results/, data/, other
-      const dirPriority = (fp) => {
-        if (!fp.includes('/')) return 0; // root
-        const dir = fp.slice(0, fp.indexOf('/'));
-        if (dir === 'results') return 1;
-        if (dir === 'data') return 2;
-        return 3;
-      };
-      const sortedFiles = (filesData.files || []).slice().sort((a, b) => {
-        const pa = dirPriority(a);
-        const pb = dirPriority(b);
-        if (pa !== pb) return pa - pb;
-        return a.localeCompare(b);
-      });
-      setFiles(sortedFiles);
+      const freshThreads = threadsData.threads || [];
+      setThreads(freshThreads);
+
+      const freshName = workspaceData?.name || workspaceName || 'Workspace';
+      if (needsName && workspaceData?.name) {
+        setWorkspaceName(freshName);
+      }
+
+      // Update cache for stale-while-revalidate on return navigation
+      // Spread existing entry to preserve cached files
+      if (cache?.current) {
+        cache.current[workspaceId] = {
+          ...cache.current[workspaceId],
+          threads: freshThreads,
+          workspaceName: freshName,
+          fetchedAt: Date.now(),
+        };
+      }
     } catch (err) {
       console.error('Error loading threads:', err);
       setError('Failed to load threads. Please refresh the page.');

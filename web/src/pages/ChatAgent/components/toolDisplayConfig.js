@@ -1,7 +1,7 @@
 import {
   TrendingUp, Building2, BarChart3, PieChart, Search, Globe,
   FilePlus, FileText, FilePen, FolderSearch, Play, Wrench,
-  Newspaper, Brain, User, FileBarChart,
+  Newspaper, Brain, User, FileBarChart, Clock, ClipboardList,
 } from 'lucide-react';
 
 export const TOOL_DISPLAY_CONFIG = {
@@ -42,6 +42,9 @@ export const TOOL_DISPLAY_CONFIG = {
   Edit:                     { displayName: 'Edit',                 icon: FilePen },
   ExecuteCode:              { displayName: 'Execute Code',         icon: Play },
   think_tool:               { displayName: 'Thinking',             icon: Brain },
+  // Background subagent management
+  Wait:                     { displayName: 'Waiting for Subagent', icon: Clock },
+  TaskOutput:               { displayName: 'Task Output',          icon: ClipboardList },
 };
 
 export function getDisplayName(rawToolName) {
@@ -98,6 +101,10 @@ export function getInProgressText(rawToolName, toolCall) {
     }
     case 'ExecuteCode':
       return 'executing...';
+    case 'Wait':
+      return 'waiting for subagent...';
+    case 'TaskOutput':
+      return 'fetching task output...';
     default:
       return 'processing...';
   }

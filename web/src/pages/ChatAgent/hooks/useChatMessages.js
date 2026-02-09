@@ -206,6 +206,9 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
       let currentActivePairIndex = null;
       let currentActivePairState = null;
 
+      // Track pending HITL interrupt from history to resolve status on next user_message
+      let pendingHistoryInterrupt = null;
+
       // Track subagent events by task ID for this history load
       // Map<taskId, { messages: Array, events: Array, description?: string, type?: string }>
       const subagentHistoryByTaskId = new Map();
@@ -346,7 +349,29 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
         }
 
         // Handle user_message events from history
-        if (eventType === 'user_message' && event.content && hasPairIndex) {
+        // Note: event.content may be empty for HITL resume pairs (plan approval/rejection)
+        if (eventType === 'user_message' && hasPairIndex) {
+          // Resolve pending plan approval status based on this user message
+          if (pendingHistoryInterrupt) {
+            const hasContent = event.content && event.content.trim();
+            const resolvedStatus = hasContent ? 'rejected' : 'approved';
+            const { assistantMessageId: planMsgId, planApprovalId } = pendingHistoryInterrupt;
+
+            setMessages((prev) =>
+              updateMessage(prev, planMsgId, (msg) => ({
+                ...msg,
+                planApprovals: {
+                  ...(msg.planApprovals || {}),
+                  [planApprovalId]: {
+                    ...(msg.planApprovals?.[planApprovalId] || {}),
+                    status: resolvedStatus,
+                  },
+                },
+              }))
+            );
+            pendingHistoryInterrupt = null;
+          }
+
           const pairIndex = event.pair_index;
           const refs = {
             recentlySentTracker: recentlySentTrackerRef.current,
@@ -574,9 +599,46 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
           return;
         }
 
-        // Skip interrupt events during history replay - the plan was already
-        // approved or rejected in a previous session
+        // Handle interrupt events during history replay — inject plan_approval
+        // segment into the current assistant message. Status will be resolved
+        // when the next user_message arrives (empty = approved, has content = rejected).
         if (eventType === 'interrupt') {
+          const pairIndex = event.pair_index ?? currentActivePairIndex;
+          const interruptAssistantId = pairIndex != null ? assistantMessagesByPair.get(pairIndex) : null;
+          const pairState = pairIndex != null ? pairStateByPair.get(pairIndex) : null;
+
+          if (interruptAssistantId && pairState) {
+            const planApprovalId = event.interrupt_id || `plan-history-${Date.now()}`;
+            const description =
+              event.action_requests?.[0]?.description ||
+              event.action_requests?.[0]?.args?.plan ||
+              'No plan description provided.';
+            pairState.contentOrderCounter++;
+            const order = pairState.contentOrderCounter;
+
+            setMessages((prev) =>
+              updateMessage(prev, interruptAssistantId, (msg) => ({
+                ...msg,
+                contentSegments: [
+                  ...(msg.contentSegments || []),
+                  { type: 'plan_approval', planApprovalId, order },
+                ],
+                planApprovals: {
+                  ...(msg.planApprovals || {}),
+                  [planApprovalId]: {
+                    description,
+                    interruptId: event.interrupt_id,
+                    status: 'approved', // Default; resolved on next user_message
+                  },
+                },
+              }))
+            );
+
+            pendingHistoryInterrupt = {
+              assistantMessageId: interruptAssistantId,
+              planApprovalId,
+            };
+          }
           return;
         }
 
@@ -852,19 +914,21 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
 
     const loadAndMaybeReconnect = async () => {
       console.log('[History] Calling loadConversationHistory for thread:', threadId);
-      await loadConversationHistory();
+
+      // Run history load and workflow status check in parallel to save ~100-300ms
+      const [, status] = await Promise.all([
+        loadConversationHistory(),
+        getWorkflowStatus(threadId).catch((statusErr) => {
+          console.log('[Reconnect] Could not check workflow status:', statusErr.message);
+          return { can_reconnect: false };
+        }),
+      ]);
+
       if (cancelled) return;
 
-      // After history loads, check if the workflow is still running and reconnect
-      try {
-        const status = await getWorkflowStatus(threadId);
+      if (status.can_reconnect) {
         console.log('[Reconnect] Workflow status:', status.status, 'can_reconnect:', status.can_reconnect);
-        if (status.can_reconnect && !cancelled) {
-          await reconnectToStream(lastEventIdRef.current);
-        }
-      } catch (statusErr) {
-        // Not an error - workflow may not exist or be completed
-        console.log('[Reconnect] Could not check workflow status:', statusErr.message);
+        await reconnectToStream(lastEventIdRef.current);
       }
     };
 
@@ -1070,6 +1134,53 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
             displayIdToAgentIdMap: displayIdToAgentIdMapRef.current,
           });
         }
+
+        // Also update message-level subagentTasks status for completed tasks.
+        // The Task tool_call_result only means "task was launched", not "task finished".
+        // The real completion signal comes here via completed_tasks in subagent_status.
+        const resolvedCompletedAgentIds = new Set();
+        const agentIdToResult = new Map();
+        completedTasks.forEach((item) => {
+          if (typeof item === 'string') {
+            const aid = displayIdToAgentIdMapRef.current.get(item) || item;
+            resolvedCompletedAgentIds.add(aid);
+          } else if (item && typeof item === 'object') {
+            const aid = item.agent_id || item.agent || (item.id && displayIdToAgentIdMapRef.current.get(item.id));
+            if (aid) {
+              resolvedCompletedAgentIds.add(aid);
+              if (item.result) agentIdToResult.set(aid, item.result);
+            }
+          }
+        });
+
+        if (resolvedCompletedAgentIds.size > 0) {
+          // Build reverse map: agentId → toolCallId
+          const agentIdToToolCallId = new Map();
+          toolCallIdToTaskIdMapRef.current.forEach((agentId, toolCallId) => {
+            agentIdToToolCallId.set(agentId, toolCallId);
+          });
+
+          setMessages((prev) =>
+            prev.map((msg) => {
+              if (!msg.subagentTasks || Object.keys(msg.subagentTasks).length === 0) return msg;
+              let changed = false;
+              const updatedSubagentTasks = { ...msg.subagentTasks };
+              resolvedCompletedAgentIds.forEach((agentId) => {
+                const toolCallId = agentIdToToolCallId.get(agentId);
+                if (toolCallId && updatedSubagentTasks[toolCallId]) {
+                  const existing = updatedSubagentTasks[toolCallId];
+                  const result = agentIdToResult.get(agentId) || existing.result || null;
+                  if (existing.status !== 'completed' || (result && !existing.result)) {
+                    updatedSubagentTasks[toolCallId] = { ...existing, status: 'completed', result };
+                    changed = true;
+                  }
+                }
+              });
+              return changed ? { ...msg, subagentTasks: updatedSubagentTasks } : msg;
+            })
+          );
+        }
+
         return;
       }
 

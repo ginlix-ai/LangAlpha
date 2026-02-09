@@ -21,7 +21,7 @@ import '../../Dashboard/Dashboard.css';
  * 
  * @param {Function} onWorkspaceSelect - Callback when a workspace is selected (receives workspaceId)
  */
-function WorkspaceGallery({ onWorkspaceSelect }) {
+function WorkspaceGallery({ onWorkspaceSelect, cache, prefetchThreads }) {
   const [workspaces, setWorkspaces] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -35,13 +35,19 @@ function WorkspaceGallery({ onWorkspaceSelect }) {
   const { workspaceId: currentWorkspaceId } = useParams();
   const loadingRef = useRef(false);
 
-  // Load workspaces on mount
+  // Load workspaces on mount, using cache for instant display on return navigation
   useEffect(() => {
     // Guard: Prevent duplicate calls
     if (loadingRef.current) {
       return;
     }
-    
+
+    // Show cached data instantly (stale-while-revalidate)
+    if (cache?.current?.workspaces) {
+      setWorkspaces(cache.current.workspaces);
+      setIsLoading(false);
+    }
+
     loadingRef.current = true;
     loadWorkspaces().finally(() => {
       loadingRef.current = false;
@@ -54,7 +60,8 @@ function WorkspaceGallery({ onWorkspaceSelect }) {
    */
   const loadWorkspaces = async () => {
     try {
-      setIsLoading(true);
+      const hasCached = cache?.current?.workspaces;
+      if (!hasCached) setIsLoading(true);
       setError(null);
       const userId = getAuthUserId() || DEFAULT_USER_ID;
       const data = await getWorkspaces(userId);
@@ -63,6 +70,12 @@ function WorkspaceGallery({ onWorkspaceSelect }) {
         (ws) => ws.name !== '__flash__'
       );
       setWorkspaces(filteredWorkspaces);
+
+      // Update cache
+      if (cache?.current) {
+        cache.current.workspaces = filteredWorkspaces;
+        cache.current.fetchedAt = Date.now();
+      }
     } catch (err) {
       console.error('Error loading workspaces:', err);
       setError('Failed to load workspaces. Please refresh the page.');
@@ -326,9 +339,12 @@ function WorkspaceGallery({ onWorkspaceSelect }) {
             <div className="grid gap-3 md:grid-cols-2 md:gap-6 grid-cols-1 auto-rows-fr mb-3 md:mb-6">
               {filteredAndSortedWorkspaces.map((workspace) => (
                 <div key={workspace.workspace_id} className="h-full">
-                  <div className="relative group h-full">
+                  <div
+                    className="relative group h-full"
+                    onMouseEnter={() => prefetchThreads?.(workspace.workspace_id)}
+                  >
                     <div
-                      onClick={() => onWorkspaceSelect(workspace.workspace_id)}
+                      onClick={() => onWorkspaceSelect(workspace.workspace_id, workspace.name)}
                       className="relative flex cursor-pointer flex-col overflow-hidden rounded-xl py-4 pl-5 pr-4 transition-all ease-in-out hover:shadow-sm active:scale-[0.98] h-full w-full"
                       style={{
                         background: 'linear-gradient(to bottom, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01))',

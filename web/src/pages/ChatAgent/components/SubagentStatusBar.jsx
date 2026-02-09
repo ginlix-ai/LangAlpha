@@ -2,6 +2,7 @@ import React from 'react';
 import { CheckCircle2, Circle, Loader2 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import iconRoboSing from '../../../assets/img/icon-robo-sing.svg';
+import Markdown from './Markdown';
 import './AgentSidebar.css';
 
 /**
@@ -95,19 +96,18 @@ function SubagentStatusBar({ agent }) {
           </span>
         </div>
         {agent.description && (
-          <p
-            className="text-xs mt-0.5 truncate"
+          <div
+            className="mt-0.5"
             style={{
               color: 'rgba(255, 255, 255, 0.5)',
               display: '-webkit-box',
               WebkitLineClamp: 2,
               WebkitBoxOrient: 'vertical',
               overflow: 'hidden',
-              whiteSpace: 'normal',
             }}
           >
-            {agent.description}
-          </p>
+            <Markdown variant="compact" content={agent.description} className="text-xs" />
+          </div>
         )}
         <div className="flex items-center gap-1.5 mt-1">
           {getStatusIcon()}

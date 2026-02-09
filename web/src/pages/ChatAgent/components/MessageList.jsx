@@ -365,7 +365,13 @@ function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesse
         {episode.subagentTask && (() => {
           const task = subagentTasks[episode.subagentTask.subagentId];
           if (!task) return null;
-          const toolCallProcess = toolCallProcesses[episode.subagentTask.subagentId] || null;
+          const rawToolCallProcess = toolCallProcesses[episode.subagentTask.subagentId] || null;
+          // Augment with actual subagent result (from subagent_status completed_tasks)
+          const toolCallProcess = rawToolCallProcess ? {
+            ...rawToolCallProcess,
+            _subagentResult: task.result || null,
+            _subagentStatus: task.status || null,
+          } : null;
           return (
             <SubagentTaskMessageContent
               subagentId={episode.subagentTask.subagentId}

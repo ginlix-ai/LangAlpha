@@ -63,6 +63,8 @@ function ChatView({ workspaceId, threadId, onBack }) {
   const [hiddenAgentIds, setHiddenAgentIds] = useState(new Set());
   // Track whether the agent was soft-interrupted
   const [wasInterrupted, setWasInterrupted] = useState(false);
+  // Track intentional back navigation (skip session save on unmount)
+  const intentionalExitRef = useRef(false);
 
   // --- Scroll position memory for tab switching ---
   // Stores scrollTop per agentId so switching tabs preserves position
@@ -181,9 +183,15 @@ function ChatView({ workspaceId, threadId, onBack }) {
   const currentThreadIdRef = useRef(currentThreadId);
   currentThreadIdRef.current = currentThreadId;
 
-  // Save chat session on unmount for cross-tab restoration
+  // Save chat session on unmount for cross-tab restoration.
+  // If user clicked back, save workspace-level only (no threadId) so tab
+  // switching returns to the workspace page, not the conversation.
   useEffect(() => {
     return () => {
+      if (intentionalExitRef.current) {
+        saveChatSession({ workspaceId });
+        return;
+      }
       const container = getScrollContainer(scrollAreaRef);
       saveChatSession({
         workspaceId,
@@ -604,7 +612,7 @@ function ChatView({ workspaceId, threadId, onBack }) {
         <div className="flex items-center justify-between px-4 py-2 border-b border-white/10 min-w-0 flex-shrink-0">
           <div className="flex items-center gap-4 min-w-0 flex-shrink">
             <button
-              onClick={onBack}
+              onClick={() => { intentionalExitRef.current = true; onBack(); }}
               className="p-2 rounded-md transition-colors hover:bg-white/10 flex-shrink-0"
               style={{ color: '#FFFFFF' }}
               title="Back to threads"

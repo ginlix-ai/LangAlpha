@@ -49,9 +49,10 @@ export function handleHistoryUserMessage({
     return false;
   }
 
+  const messageContent = (event.content || '').trim();
+
   // Check if this message was recently sent (to avoid duplicates)
-  const messageContent = event.content.trim();
-  const isDuplicate = recentlySentTracker.isRecentlySent(messageContent);
+  const isDuplicate = messageContent && recentlySentTracker.isRecentlySent(messageContent);
 
   if (isDuplicate) {
     // Check if we're currently streaming a message
@@ -77,28 +78,30 @@ export function handleHistoryUserMessage({
       toolCallId: null,
     });
 
-    // Create user message
-    const currentUserMessageId = `history-user-${pairIndex}-${Date.now()}`;
-    const userMessage = {
-      id: currentUserMessageId,
-      role: 'user',
-      content: event.content,
-      contentType: 'text',
-      timestamp: event.timestamp ? new Date(event.timestamp) : new Date(),
-      isHistory: true,
-    };
+    // Create user message bubble (skip for empty content, e.g. HITL resume pairs)
+    if (messageContent) {
+      const currentUserMessageId = `history-user-${pairIndex}-${Date.now()}`;
+      const userMessage = {
+        id: currentUserMessageId,
+        role: 'user',
+        content: event.content,
+        contentType: 'text',
+        timestamp: event.timestamp ? new Date(event.timestamp) : new Date(),
+        isHistory: true,
+      };
 
-    setMessages((prev) => {
-      const insertIndex = newMessagesStartIndexRef.current;
-      const newMessages = [
-        ...prev.slice(0, insertIndex),
-        userMessage,
-        ...prev.slice(insertIndex),
-      ];
-      historyMessagesRef.current.add(currentUserMessageId);
-      newMessagesStartIndexRef.current = insertIndex + 1;
-      return newMessages;
-    });
+      setMessages((prev) => {
+        const insertIndex = newMessagesStartIndexRef.current;
+        const newMessages = [
+          ...prev.slice(0, insertIndex),
+          userMessage,
+          ...prev.slice(insertIndex),
+        ];
+        historyMessagesRef.current.add(currentUserMessageId);
+        newMessagesStartIndexRef.current = insertIndex + 1;
+        return newMessages;
+      });
+    }
   }
 
   // Always create assistant message placeholder for this pair
@@ -447,40 +450,9 @@ export function handleHistoryToolCallResult({ assistantMessageId, toolCallId, re
           isFailed: isFailed, // Track if tool call failed
         };
       } else {
-        // Edge case: tool call process doesn't exist, create it
-        pairState.contentOrderCounter++;
-        const currentOrder = pairState.contentOrderCounter;
-
-        const contentSegments = [
-          ...(msg.contentSegments || []),
-          {
-            type: 'tool_call',
-            toolCallId,
-            order: currentOrder,
-          },
-        ];
-
-        toolCallProcesses[toolCallId] = {
-          toolName: 'Unknown Tool',
-          toolCall: null,
-          toolCallResult: {
-            content: result.content,
-            content_type: result.content_type,
-            tool_call_id: result.tool_call_id,
-            artifact: result.artifact,
-          },
-          isInProgress: false,
-          isComplete: true,
-          isFailed: isFailed, // Track if tool call failed
-          order: currentOrder,
-        };
-
-        return {
-          ...msg,
-          contentSegments,
-          toolCallProcesses,
-          subagentTasks,
-        };
+        // Orphaned tool_call_result without matching tool_calls (e.g., SubmitPlan
+        // result in a HITL resume pair). Skip silently.
+        return msg;
       }
 
       // If this toolCallId is associated with a subagent task, mark it as completed

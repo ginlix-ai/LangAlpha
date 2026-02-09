@@ -29,13 +29,13 @@ function PlanApprovalCard({ planData, onApprove, onReject, onDetailClick }) {
       <div
         className="rounded-lg px-4 py-2.5 flex items-center gap-2 cursor-pointer transition-all hover:brightness-110"
         style={{
-          backgroundColor: '#1C2B26',
-          border: '1px solid rgba(45, 212, 150, 0.12)',
+          backgroundColor: '#252738',
+          border: '1px solid rgba(255, 255, 255, 0.06)',
         }}
         onClick={() => onDetailClick?.()}
       >
-        <Check className="h-4 w-4 flex-shrink-0" style={{ color: '#5CD6A8' }} />
-        <span className="text-sm" style={{ color: 'rgba(255, 255, 255, 0.7)' }}>
+        <Check className="h-4 w-4 flex-shrink-0" style={{ color: '#8B83F0' }} />
+        <span className="text-sm" style={{ color: 'rgba(255, 255, 255, 0.6)' }}>
           Plan approved
         </span>
         <ChevronRight
@@ -52,16 +52,16 @@ function PlanApprovalCard({ planData, onApprove, onReject, onDetailClick }) {
       <div
         className="rounded-lg px-4 py-2.5 flex items-center gap-2 cursor-pointer transition-all hover:brightness-110"
         style={{
-          backgroundColor: '#2A1F22',
-          border: '1px solid rgba(255, 100, 100, 0.10)',
+          backgroundColor: '#252738',
+          border: '1px solid rgba(255, 255, 255, 0.06)',
         }}
         onClick={() => onDetailClick?.()}
       >
-        <X className="h-4 w-4 flex-shrink-0" style={{ color: '#D48080' }} />
-        <span className="text-sm" style={{ color: 'rgba(255, 255, 255, 0.7)' }}>
+        <X className="h-4 w-4 flex-shrink-0" style={{ color: 'rgba(255, 255, 255, 0.45)' }} />
+        <span className="text-sm" style={{ color: 'rgba(255, 255, 255, 0.6)' }}>
           Plan rejected
         </span>
-        <span className="text-xs" style={{ color: 'rgba(255, 255, 255, 0.35)' }}>
+        <span className="text-xs" style={{ color: 'rgba(255, 255, 255, 0.3)' }}>
           — provide feedback below
         </span>
         <ChevronRight

@@ -1,5 +1,6 @@
 import { CheckCircle2, Circle, Loader2 } from 'lucide-react';
 import React from 'react';
+import Markdown from './Markdown';
 import ReasoningMessageContent from './ReasoningMessageContent';
 import TextMessageContent from './TextMessageContent';
 import ToolCallMessageContent from './ToolCallMessageContent';
@@ -7,8 +8,9 @@ import ToolCallMessageContent from './ToolCallMessageContent';
 /**
  * Normalize text content from backend for proper display in subagent cards.
  * - Unescape literal \n (backslash-n) if backend sends escaped strings
- * - Collapse single newlines (e.g. from chunk boundaries) to spaces to avoid unexpected line breaks
+ * - Collapse single newlines to spaces to avoid unexpected line breaks
  * - Preserve double newlines (paragraph breaks)
+ * - Preserve table blocks (lines starting with |) since GFM tables need single newlines
  */
 function normalizeSubagentText(content) {
   if (!content || typeof content !== 'string') return '';
@@ -16,9 +18,19 @@ function normalizeSubagentText(content) {
     .replace(/\\n/g, '\n')
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n');
-  return s
-    .split(/\n{2,}/)
-    .map((part) => part.replace(/\n/g, ' ').trim())
+
+  // Split into paragraph blocks (separated by double newlines)
+  const blocks = s.split(/\n{2,}/);
+  return blocks
+    .map((block) => {
+      const trimmed = block.trim();
+      // Preserve table blocks: if any line starts with |, keep newlines intact
+      if (trimmed.split('\n').some((line) => line.trimStart().startsWith('|'))) {
+        return trimmed;
+      }
+      // For normal text blocks, collapse single newlines to spaces
+      return trimmed.replace(/\n/g, ' ');
+    })
     .join('\n\n');
 }
 
@@ -30,7 +42,7 @@ function normalizeSubagentText(content) {
  * 
  * @param {Object} props
  * @param {string} props.taskId - Task ID (e.g., "Task-1")
- * @param {string} props.description - Task description
+ * @param {string} props.description - Task description/instructions for the subagent
  * @param {string} props.type - Subagent type (e.g., "general-purpose")
  * @param {number} props.toolCalls - Number of tool calls made
  * @param {string} props.currentTool - Current tool being used
@@ -106,18 +118,21 @@ function SubagentCardContent({
 
   return (
     <div className="space-y-2.5 w-full overflow-hidden">
-      {/* Task description */}
+      {/* Task instructions — full markdown rendering */}
       {description && (
         <div
-          className="text-sm leading-relaxed break-words w-full"
+          className="break-words w-full"
           style={{
             color: 'rgba(255, 255, 255, 0.8)',
             wordBreak: 'break-word',
             overflowWrap: 'break-word',
-            whiteSpace: 'normal',
           }}
         >
-          {normalizeSubagentText(description)}
+          <Markdown
+            variant="chat"
+            content={normalizeSubagentText(description)}
+            className="text-sm leading-relaxed"
+          />
         </div>
       )}
 

@@ -297,7 +297,7 @@ export function handleToolCalls({ assistantMessageId, toolCalls, finishReason, r
             subagentTasks[subagentId] = {
               ...(subagentTasks[subagentId] || {}),
               subagentId,
-              description: toolCall.args?.description || toolCall.args?.prompt || '',
+              description: toolCall.args?.description || '',
               type: toolCall.args?.subagent_type || 'general-purpose',
               status: 'running',
             };
@@ -313,9 +313,6 @@ export function handleToolCalls({ assistantMessageId, toolCalls, finishReason, r
       );
     }
   });
-
-  // Note: tool calls stay isInProgress: true until tool_call_result arrives
-  // (or until the minimum live exposure timer fires).
 
   return true;
 }
@@ -364,39 +361,19 @@ export function handleToolCallResult({ assistantMessageId, toolCallId, result, r
           isFailed,
         };
       } else {
-        // Edge case: tool call process doesn't exist, create it
-        contentOrderCounterRef.current++;
-        const currentOrder = contentOrderCounterRef.current;
-
-        const newSegments = [
-          ...(msg.contentSegments || []),
-          { type: 'tool_call', toolCallId, order: currentOrder },
-        ];
-
-        toolCallProcesses[toolCallId] = {
-          toolName: 'Unknown Tool',
-          toolCall: null,
-          toolCallResult: {
-            content: result.content,
-            content_type: result.content_type,
-            tool_call_id: result.tool_call_id,
-            artifact: result.artifact,
-          },
-          isInProgress: false,
-          isComplete: true,
-          isFailed,
-          order: currentOrder,
-        };
-
-        return { ...msg, contentSegments: newSegments, toolCallProcesses, subagentTasks };
+        // Orphaned tool_call_result without matching tool_calls (e.g., SubmitPlan
+        // result arriving in a HITL resume stream). Skip silently.
+        return msg;
       }
 
-      // If this toolCallId is associated with a subagent task, mark it as completed
+      // If this toolCallId is associated with a subagent task, store the tool call result
+      // but do NOT mark as 'completed' — the Task tool returns immediately ("Task-N started
+      // in background") while the actual subagent is still running. Real completion comes
+      // via subagent_status events with completed_tasks.
       if (subagentTasks[toolCallId]) {
         subagentTasks[toolCallId] = {
           ...subagentTasks[toolCallId],
-          status: 'completed',
-          result: result.content,
+          toolCallResult: result.content,
         };
       }
 

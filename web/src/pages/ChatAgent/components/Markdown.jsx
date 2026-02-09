@@ -310,10 +310,27 @@ const PANEL_COMPONENTS = {
   table: panelTable, thead: panelThead, tr: panelTr, th: panelTh, td: panelTd,
 };
 
+// Compact table components — reuse panel styles for consistency
+const compactTable = ({ node, ...props }) => (
+  <div className="my-1 overflow-x-auto rounded" style={{ border: '1px solid rgba(255,255,255,0.15)' }}>
+    <table className="w-full border-collapse text-left" style={{ minWidth: '100%', fontSize: '0.85em' }} {...props} />
+  </div>
+);
+const compactThead = ({ node, ...props }) => <thead style={{ backgroundColor: 'rgba(0,0,0,0.25)' }} {...props} />;
+const compactTr = ({ node, ...props }) => <tr className="border-b border-white/10 last:border-b-0" {...props} />;
+const compactTh = ({ node, ...props }) => (
+  <th className="px-2 py-1.5 whitespace-nowrap" style={{ color: '#FFFFFF', fontWeight: 600, borderBottom: '1px solid rgba(255,255,255,0.15)' }} {...props} />
+);
+const compactTd = ({ node, ...props }) => (
+  <td className="px-2 py-1.5 break-words align-top" style={{ color: '#FFFFFF' }} {...props} />
+);
+
 const COMPACT_COMPONENTS = {
   strong, em, del, ul, ol, li,
   p: compactP, h1: compactH1, h2: compactH2, h3: compactH3,
   code: compactCode, pre: compactPre,
+  a: panelA, blockquote: panelBlockquote, hr: panelHr,
+  table: compactTable, thead: compactThead, tr: compactTr, th: compactTh, td: compactTd,
 };
 
 const VARIANTS = {
