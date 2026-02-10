@@ -338,14 +338,16 @@ export async function triggerFileDownload(workspaceId, filePath) {
  * @param {string} threadId - The thread ID of the interrupted workflow
  * @param {Object} hitlResponse - The HITL response payload, e.g. { [interruptId]: { decisions: [{ type: "approve" }] } }
  * @param {Function} onEvent - Callback for each SSE event
+ * @param {boolean} planMode - Whether plan mode is active (to preserve SubmitPlan tool)
  * @param {string} userId - User ID (defaults to DEFAULT_USER_ID)
  */
-export async function sendHitlResponse(workspaceId, threadId, hitlResponse, onEvent = () => {}, userId = DEFAULT_USER_ID) {
+export async function sendHitlResponse(workspaceId, threadId, hitlResponse, onEvent = () => {}, planMode = false, userId = DEFAULT_USER_ID) {
   const body = {
     workspace_id: workspaceId,
     thread_id: threadId,
     messages: [],
     hitl_response: hitlResponse,
+    plan_mode: planMode,
   };
   await streamFetch(
     '/api/v1/chat/stream',

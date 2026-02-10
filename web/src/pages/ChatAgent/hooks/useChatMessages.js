@@ -26,6 +26,7 @@ import {
   handleTextContent,
   handleToolCalls,
   handleToolCallResult,
+  handleToolCallChunks,
   handleTodoUpdate,
   handleSubagentStatus,
   isSubagentEvent,
@@ -86,6 +87,9 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
   // When user clicks Reject on a plan, this stores the interruptId so the next message
   // sent via handleSendMessage is routed as rejection feedback via hitl_response.
   const [pendingRejection, setPendingRejection] = useState(null);
+
+  // Track current plan mode so HITL resume can forward it
+  const currentPlanModeRef = useRef(false);
 
   // Refs for streaming state
   const currentMessageRef = useRef(null);
@@ -1433,6 +1437,13 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
           }))
         );
       } else if (eventType === 'tool_call_chunks') {
+        if (!isSubagent) {
+          handleToolCallChunks({
+            assistantMessageId,
+            chunks: event.tool_call_chunks,
+            setMessages,
+          });
+        }
         return;
       } else if (eventType === 'artifact') {
         if (isSubagent) {
@@ -1548,6 +1559,7 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
           threadId: event.thread_id,
           assistantMessageId,
           planApprovalId,
+          planMode: currentPlanModeRef.current,
         });
 
         setIsLoading(false);
@@ -1569,9 +1581,12 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
       return;
     }
 
+    // Store planMode so HITL interrupt handler can access it
+    currentPlanModeRef.current = planMode;
+
     // Intercept: if a plan was rejected, route this message as rejection feedback
     if (pendingRejection) {
-      const { interruptId } = pendingRejection;
+      const { interruptId, planMode: rejectionPlanMode } = pendingRejection;
       setPendingRejection(null);
 
       // Show user message in chat
@@ -1585,7 +1600,7 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
           decisions: [{ type: 'reject', message: message.trim() }],
         },
       };
-      return resumeWithHitlResponse(hitlResponse);
+      return resumeWithHitlResponse(hitlResponse, rejectionPlanMode);
     }
 
     // Create and add user message
@@ -1748,7 +1763,7 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
    * Resumes an interrupted workflow with an HITL response (approve or reject).
    * Follows the same pattern as handleSendMessage but sends messages: [] with hitl_response.
    */
-  const resumeWithHitlResponse = useCallback(async (hitlResponse) => {
+  const resumeWithHitlResponse = useCallback(async (hitlResponse, planMode = false) => {
     setPendingInterrupt(null);
 
     // Create assistant message placeholder
@@ -1785,6 +1800,7 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
         threadId,
         hitlResponse,
         processEvent,
+        planMode,
         getAuthUserId() || DEFAULT_USER_ID
       );
 
@@ -1851,7 +1867,7 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
 
   const handleApproveInterrupt = useCallback(() => {
     if (!pendingInterrupt) return;
-    const { interruptId, assistantMessageId, planApprovalId } = pendingInterrupt;
+    const { interruptId, assistantMessageId, planApprovalId, planMode } = pendingInterrupt;
 
     // Update plan card status to "approved"
     setMessages((prev) =>
@@ -1870,12 +1886,12 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
     const hitlResponse = {
       [interruptId]: { decisions: [{ type: 'approve' }] },
     };
-    resumeWithHitlResponse(hitlResponse);
+    resumeWithHitlResponse(hitlResponse, planMode);
   }, [pendingInterrupt, resumeWithHitlResponse]);
 
   const handleRejectInterrupt = useCallback(() => {
     if (!pendingInterrupt) return;
-    const { interruptId, assistantMessageId, planApprovalId } = pendingInterrupt;
+    const { interruptId, assistantMessageId, planApprovalId, planMode } = pendingInterrupt;
 
     // Update plan card status to "rejected"
     setMessages((prev) =>
@@ -1891,8 +1907,8 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
       }))
     );
 
-    // Store interruptId so next handleSendMessage routes as rejection feedback
-    setPendingRejection({ interruptId });
+    // Store interruptId + planMode so next handleSendMessage routes as rejection feedback
+    setPendingRejection({ interruptId, planMode });
     setPendingInterrupt(null);
   }, [pendingInterrupt]);
 
