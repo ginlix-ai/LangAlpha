@@ -80,7 +80,10 @@ export async function fetchStockData(symbol, interval = '1hour', fromDate, toDat
     // Convert backend format to lightweight-charts format
     // Backend returns: { date: "YYYY-MM-DD HH:MM:SS", open, high, low, close, volume }
     const chartData = dataPoints.map((point) => {
-      const date = new Date(point.date);
+      // Parse as UTC so chart displays exchange time (FMP returns ET timestamps)
+      const date = point.date.includes(' ')
+        ? new Date(point.date.replace(' ', 'T') + 'Z')
+        : new Date(point.date);
       return {
         time: Math.floor(date.getTime() / 1000),
         open: parseFloat(point.open) || 0,
@@ -315,16 +318,30 @@ export async function fetchStockQuote(symbol, { signal } = {}) {
       return { stockInfo: fallbackInfo, realTimePrice: null };
     }
 
-    const first = points[0];
-    const last = points[points.length - 1];
-    const open = parseFloat(first?.open || 0);
-    const close = parseFloat(last?.close || 0);
-    const high = parseFloat(last?.high || close);
-    const low = parseFloat(last?.low || close);
-    const change = close - open;
-    const changePercent = open ? ((change / open) * 100).toFixed(2) + '%' : '0.00%';
-    const totalVolume = points.reduce((sum, p) => sum + (Number(p.volume) || 0), 0);
-    const avgVolume = points.length > 0 ? Math.round(totalVolume / points.length) : null;
+    // Sort ascending by date (FMP returns descending order)
+    points.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    // Extract the latest trading day's data for proper session OHLCV
+    const latestDate = points[points.length - 1].date.split(' ')[0];
+    const todayPoints = points.filter(p => p.date.startsWith(latestDate));
+
+    const sessionFirst = todayPoints[0];
+    const sessionLast = todayPoints[todayPoints.length - 1];
+    const open = parseFloat(sessionFirst?.open || 0);
+    const close = parseFloat(sessionLast?.close || 0);
+    const high = Math.max(...todayPoints.map(p => parseFloat(p.high) || 0));
+    const low = Math.min(...todayPoints.map(p => parseFloat(p.low) || Infinity));
+    const totalVolume = todayPoints.reduce((sum, p) => sum + (Number(p.volume) || 0), 0);
+
+    // Change vs previous day's close (not vs today's open)
+    const prevDayPoints = points.filter(p => !p.date.startsWith(latestDate));
+    const previousClose = prevDayPoints.length > 0
+      ? parseFloat(prevDayPoints[prevDayPoints.length - 1]?.close || 0)
+      : open;
+    const dayChange = close - previousClose;
+    const dayChangePercent = previousClose
+      ? ((dayChange / previousClose) * 100).toFixed(2) + '%'
+      : '0.00%';
 
     const stockInfo = {
       Symbol: symbolUpper,
@@ -332,11 +349,12 @@ export async function fetchStockQuote(symbol, { signal } = {}) {
       Exchange: 'NASDAQ',
       Price: close,
       Open: open,
-      High: parseFloat(Math.max(...points.map((p) => Number(p.high) || 0)) || 0),
-      Low: parseFloat(Math.min(...points.map((p) => Number(p.low) || 0)) || 0),
+      High: high,
+      Low: low,
+      Volume: totalVolume,
       '52WeekHigh': null,
       '52WeekLow': null,
-      AverageVolume: avgVolume,
+      AverageVolume: null,
       SharesOutstanding: null,
       MarketCapitalization: null,
       DividendYield: null,
@@ -348,8 +366,9 @@ export async function fetchStockQuote(symbol, { signal } = {}) {
       open: Math.round(open * 100) / 100,
       high: Math.round(high * 100) / 100,
       low: Math.round(low * 100) / 100,
-      change: Math.round(change * 100) / 100,
-      changePercent,
+      change: Math.round(dayChange * 100) / 100,
+      changePercent: dayChangePercent,
+      volume: totalVolume,
     };
 
     return { stockInfo, realTimePrice };
