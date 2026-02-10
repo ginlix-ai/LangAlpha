@@ -2,9 +2,18 @@
  * TradingCenter API utilities
  * All backend endpoints used by the TradingCenter page
  */
-import { api, headers } from '@/api/client';
+import { api } from '@/api/client';
+import { supabase } from '@/lib/supabase';
 
 const baseURL = api.defaults.baseURL;
+
+/** Get Bearer auth headers for raw fetch() calls (SSE streams). */
+async function getAuthHeaders() {
+  if (!supabase) return {};
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 /**
  * Search for stocks by keyword (symbol or company name).
@@ -414,28 +423,28 @@ async function streamFetch(url, opts, onEvent) {
   if (process.env.NODE_ENV === 'development') {
     console.log('[TradingCenter API] Starting stream fetch:', url);
   }
-  
+
   const res = await fetch(`${baseURL}${url}`, opts);
-  
+
   if (process.env.NODE_ENV === 'development') {
     console.log('[TradingCenter API] Response status:', res.status, 'Content-Type:', res.headers.get('content-type'));
   }
-  
+
   if (!res.ok) {
     const errorText = await res.text().catch(() => 'Unknown error');
     throw new Error(`HTTP error! status: ${res.status}, message: ${errorText}`);
   }
-  
+
   if (!res.body) {
     throw new Error('Response body is null - cannot read stream');
   }
-  
+
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let ev = {};
   let hasReceivedData = false;
-  
+
   const processLine = (line) => {
     if (line.startsWith('id: ')) ev.id = line.slice(4).trim();
     else if (line.startsWith('event: ')) ev.event = line.slice(7).trim();
@@ -455,7 +464,7 @@ async function streamFetch(url, opts, onEvent) {
   try {
     while (true) {
       const { done, value } = await reader.read();
-      
+
       if (done) {
         // Stream ended normally - decode any remaining buffer
         if (process.env.NODE_ENV === 'development') {
@@ -468,7 +477,7 @@ async function streamFetch(url, opts, onEvent) {
         }
         break;
       }
-      
+
       // Handle case where value might be null
       if (value) {
         buffer += decoder.decode(value, { stream: true });
@@ -481,9 +490,9 @@ async function streamFetch(url, opts, onEvent) {
     // Handle incomplete chunked encoding or other stream errors
     // Only log as warning if we've received some data (partial success)
     // Otherwise, it's a real error
-    const isNetworkError = error.name === 'TypeError' && 
+    const isNetworkError = error.name === 'TypeError' &&
       (error.message.includes('network') || error.message.includes('chunked') || error.message.includes('aborted'));
-    
+
     if (isNetworkError) {
       // Process any remaining buffer before exiting
       if (buffer) {
@@ -495,7 +504,7 @@ async function streamFetch(url, opts, onEvent) {
           // Ignore errors when processing final buffer
         }
       }
-      
+
       // Only warn if we received some data (partial stream is better than nothing)
       if (hasReceivedData) {
         console.warn('[TradingCenter API] Stream interrupted after receiving data:', error.message);
@@ -524,7 +533,6 @@ async function streamFetch(url, opts, onEvent) {
  * @param {string} message - User message content
  * @param {string} threadId - Thread ID (use '__default__' for new thread)
  * @param {Function} onEvent - Event handler callback
- * @param {string} userId - User ID (defaults to 'test_user_001')
  * @param {string} locale - Locale (defaults to 'en-US')
  * @param {string} timezone - Timezone (defaults to 'America/New_York')
  * @returns {Promise<void>}
@@ -533,7 +541,6 @@ export async function sendFlashChatMessage(
   message,
   threadId = '__default__',
   onEvent = () => {},
-  userId = 'test_user_001',
   locale = 'en-US',
   timezone = 'America/New_York',
   additionalContext = null
@@ -556,9 +563,10 @@ export async function sendFlashChatMessage(
       threadId,
       agentMode: 'flash',
       messageLength: message.length,
-      userId,
     });
   }
+
+  const authHeaders = await getAuthHeaders();
 
   try {
     await streamFetch(
@@ -568,7 +576,7 @@ export async function sendFlashChatMessage(
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'text/event-stream',
-          ...headers(userId),
+          ...authHeaders,
         },
         body: JSON.stringify(body),
       },
@@ -583,17 +591,14 @@ export async function sendFlashChatMessage(
 /**
  * Delete a thread
  * @param {string} threadId - Thread ID to delete
- * @param {string} userId - User ID (defaults to 'test_user_001')
  * @returns {Promise<void>}
  */
-export async function deleteTradingThread(threadId, userId = 'test_user_001') {
+export async function deleteTradingThread(threadId) {
   if (!threadId || threadId === '__default__') {
     return; // Don't delete default placeholder
   }
   try {
-    await api.delete(`/api/v1/threads/${threadId}`, {
-      headers: headers(userId),
-    });
+    await api.delete(`/api/v1/threads/${threadId}`);
   } catch (error) {
     // Silently fail - thread might already be deleted
     console.warn('[TradingCenter] Failed to delete thread:', threadId, error);
@@ -602,14 +607,11 @@ export async function deleteTradingThread(threadId, userId = 'test_user_001') {
 
 /**
  * List all workspaces for the user
- * @param {string} userId - User ID (defaults to 'test_user_001')
  * @returns {Promise<Array>} Array of workspace objects
  */
-export async function listWorkspaces(userId = 'test_user_001') {
+export async function listWorkspaces() {
   try {
-    const { data } = await api.get('/api/v1/workspaces', {
-      headers: headers(userId),
-    });
+    const { data } = await api.get('/api/v1/workspaces');
     return data?.workspaces || [];
   } catch (error) {
     console.warn('[TradingCenter] Failed to list workspaces:', error);
@@ -620,17 +622,14 @@ export async function listWorkspaces(userId = 'test_user_001') {
 /**
  * Delete a workspace
  * @param {string} workspaceId - Workspace ID to delete
- * @param {string} userId - User ID (defaults to 'test_user_001')
  * @returns {Promise<void>}
  */
-export async function deleteWorkspace(workspaceId, userId = 'test_user_001') {
+export async function deleteWorkspace(workspaceId) {
   if (!workspaceId) {
     return;
   }
   try {
-    await api.delete(`/api/v1/workspaces/${workspaceId}`, {
-      headers: headers(userId),
-    });
+    await api.delete(`/api/v1/workspaces/${workspaceId}`);
     if (process.env.NODE_ENV === 'development') {
       console.log('[TradingCenter] Deleted workspace:', workspaceId);
     }
@@ -642,14 +641,13 @@ export async function deleteWorkspace(workspaceId, userId = 'test_user_001') {
 
 /**
  * Delete all workspaces named "__flash__"
- * @param {string} userId - User ID (defaults to 'test_user_001')
  * @returns {Promise<void>}
  */
-export async function deleteFlashWorkspaces(userId = 'test_user_001') {
+export async function deleteFlashWorkspaces() {
   try {
-    const workspaces = await listWorkspaces(userId);
+    const workspaces = await listWorkspaces();
     const flashWorkspaces = workspaces.filter((ws) => ws.name === '__flash__');
-    
+
     if (flashWorkspaces.length === 0) {
       if (process.env.NODE_ENV === 'development') {
         console.log('[TradingCenter] No flash workspaces to delete');
@@ -663,7 +661,7 @@ export async function deleteFlashWorkspaces(userId = 'test_user_001') {
 
     // Delete all flash workspaces in parallel
     await Promise.all(
-      flashWorkspaces.map((ws) => deleteWorkspace(ws.workspace_id, userId))
+      flashWorkspaces.map((ws) => deleteWorkspace(ws.workspace_id))
     );
 
     if (process.env.NODE_ENV === 'development') {

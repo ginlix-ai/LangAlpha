@@ -4,7 +4,7 @@ import { ArrowLeft, FolderOpen, Bot, StopCircle, Zap } from 'lucide-react';
 import { ScrollArea } from '../../../components/ui/scroll-area';
 import { useAuth } from '../../../contexts/AuthContext';
 import { updateCurrentUser } from '../../Dashboard/utils/api';
-import { DEFAULT_USER_ID, softInterruptWorkflow, getWorkspace } from '../utils/api';
+import { softInterruptWorkflow, getWorkspace } from '../utils/api';
 import { useChatMessages } from '../hooks/useChatMessages';
 import { saveChatSession, getChatSession, clearChatSession } from '../hooks/utils/chatSessionRestore';
 import { useFloatingCards } from '../hooks/useFloatingCards';
@@ -42,7 +42,7 @@ function ChatView({ workspaceId, threadId, onBack }) {
   const subagentScrollAreaRef = useRef(null);
   const location = useLocation();
   const navigate = useNavigate();
-  const { userId: authUserId, refreshUser } = useAuth();
+  const { refreshUser } = useAuth();
   const initialMessageSentRef = useRef(false);
   // Determine agent mode: flash workspaces use flash mode, otherwise ptc
   const [agentMode, setAgentMode] = useState(location.state?.agentMode || 'ptc');
@@ -132,14 +132,13 @@ function ChatView({ workspaceId, threadId, onBack }) {
   useEffect(() => {
     if (location.state?.agentMode || !workspaceId) return;
     let cancelled = false;
-    const userId = authUserId || DEFAULT_USER_ID;
-    getWorkspace(workspaceId, userId).then((ws) => {
+    getWorkspace(workspaceId).then((ws) => {
       if (!cancelled && ws?.status === 'flash') {
         setAgentMode('flash');
       }
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [workspaceId, location.state?.agentMode, authUserId]);
+  }, [workspaceId, location.state?.agentMode]);
 
   // Floating cards management - extracted to custom hook for better encapsulation
   // Must be called before useChatMessages since updateTodoListCard and updateSubagentCard are passed to it
@@ -162,13 +161,12 @@ function ChatView({ workspaceId, threadId, onBack }) {
   // Sync onboarding_completed via PUT when ChatAgent completes onboarding (risk_preference + stocks)
   const handleOnboardingRelatedToolComplete = useCallback(async () => {
     try {
-      const userId = authUserId || DEFAULT_USER_ID;
-      await updateCurrentUser({ onboarding_completed: true }, userId);
+      await updateCurrentUser({ onboarding_completed: true });
       await refreshUser?.();
     } catch (e) {
       console.warn('[ChatView] Failed to sync onboarding_completed:', e);
     }
-  }, [authUserId, refreshUser]);
+  }, [refreshUser]);
 
   // Workspace files - shared between FilePanel and ChatInputWithMentions
   // Must be declared before useChatMessages so refreshFiles can be passed as onFileArtifact
@@ -243,13 +241,12 @@ function ChatView({ workspaceId, threadId, onBack }) {
     const tid = currentThreadId || threadId;
     if (!tid || tid === '__default__') return;
     try {
-      const userId = authUserId || DEFAULT_USER_ID;
-      await softInterruptWorkflow(tid, userId);
+      await softInterruptWorkflow(tid);
       setWasInterrupted(true);
     } catch (e) {
       console.warn('[ChatView] Failed to soft-interrupt workflow:', e);
     }
-  }, [currentThreadId, threadId, authUserId]);
+  }, [currentThreadId, threadId]);
 
   // Show sidebar at the start of each backend response (streaming)
   // Auto-refresh workspace files when agent finishes (isLoading transitions true→false)

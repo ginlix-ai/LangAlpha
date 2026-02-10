@@ -1,7 +1,6 @@
 import React, { useRef, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { getAuthUserId } from '@/api/client';
-import { getWorkspaceThreads, DEFAULT_USER_ID } from './utils/api';
+import { getWorkspaceThreads } from './utils/api';
 import WorkspaceGallery from './components/WorkspaceGallery';
 import ThreadGallery from './components/ThreadGallery';
 import ChatView from './components/ChatView';
@@ -77,8 +76,7 @@ function ChatAgent() {
   const prefetchThreads = useCallback(async (wsId) => {
     if (workspaceCacheRef.current[wsId]) return;
     try {
-      const userId = getAuthUserId() || DEFAULT_USER_ID;
-      const data = await getWorkspaceThreads(wsId, userId);
+      const data = await getWorkspaceThreads(wsId);
       workspaceCacheRef.current[wsId] = {
         threads: data.threads || [],
         fetchedAt: Date.now(),

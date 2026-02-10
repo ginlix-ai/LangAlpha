@@ -6,10 +6,8 @@ import DeleteConfirmModal from './DeleteConfirmModal';
 import RenameThreadModal from './RenameThreadModal';
 import ChatInputWithMentions from './ChatInputWithMentions';
 import FilePanel from './FilePanel';
-import { getAuthUserId } from '@/api/client';
 import { getWorkspaceThreads, getWorkspace, deleteThread, updateThreadTitle } from '../utils/api';
 import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
-import { DEFAULT_USER_ID } from '../utils/api';
 import { removeStoredThreadId } from '../hooks/utils/threadStorage';
 import { saveChatSession } from '../hooks/utils/chatSessionRestore';
 import iconComputer from '../../../assets/img/icon-computer.svg';
@@ -139,13 +137,11 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect, cache }) {
       if (!hasCached) setIsLoading(true);
       setError(null);
 
-      const userId = getAuthUserId() || DEFAULT_USER_ID;
-
       // If we don't have workspace name yet, fetch it in parallel with threads
       const needsName = !workspaceName;
-      const promises = [getWorkspaceThreads(workspaceId, userId)];
+      const promises = [getWorkspaceThreads(workspaceId)];
       if (needsName) {
-        promises.push(getWorkspace(workspaceId, userId).catch(() => null));
+        promises.push(getWorkspace(workspaceId).catch(() => null));
       }
 
       const [threadsData, workspaceData] = await Promise.all(promises);
@@ -219,8 +215,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect, cache }) {
     setDeleteError(null);
 
     try {
-      const userId = getAuthUserId() || DEFAULT_USER_ID;
-      await deleteThread(threadId, userId);
+      await deleteThread(threadId);
 
       // Clean up localStorage: remove thread ID for deleted thread
       if (workspaceId) {
@@ -290,8 +285,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect, cache }) {
     setRenameError(null);
 
     try {
-      const userId = getAuthUserId() || DEFAULT_USER_ID;
-      const updatedThread = await updateThreadTitle(threadId, newTitle, userId);
+      const updatedThread = await updateThreadTitle(threadId, newTitle);
 
       // Update thread in list
       setThreads((prev) =>

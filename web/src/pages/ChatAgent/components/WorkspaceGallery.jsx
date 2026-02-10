@@ -3,8 +3,7 @@ import { Plus, Loader2, Search, ArrowDownUp, MoreHorizontal, Zap } from 'lucide-
 import { useNavigate, useParams } from 'react-router-dom';
 import CreateWorkspaceModal from './CreateWorkspaceModal';
 import DeleteConfirmModal from './DeleteConfirmModal';
-import { getAuthUserId } from '@/api/client';
-import { getWorkspaces, createWorkspace, deleteWorkspace, DEFAULT_USER_ID } from '../utils/api';
+import { getWorkspaces, createWorkspace, deleteWorkspace } from '../utils/api';
 import { DEFAULT_WORKSPACE_NAME } from '../../Dashboard/utils/workspace';
 import { removeStoredThreadId } from '../hooks/useChatMessages';
 import { clearChatSession } from '../hooks/utils/chatSessionRestore';
@@ -69,8 +68,7 @@ function WorkspaceGallery({ onWorkspaceSelect, cache, prefetchThreads }) {
       const hasCached = cache?.current?.workspaces;
       if (!hasCached) setIsLoading(true);
       setError(null);
-      const userId = getAuthUserId() || DEFAULT_USER_ID;
-      const data = await getWorkspaces(userId);
+      const data = await getWorkspaces();
       // Filter out '__flash__' workspaces
       const filteredWorkspaces = (data.workspaces || []).filter(
         (ws) => ws.name !== '__flash__'
@@ -96,12 +94,10 @@ function WorkspaceGallery({ onWorkspaceSelect, cache, prefetchThreads }) {
    */
   const handleCreateWorkspace = async (workspaceData) => {
     try {
-      const userId = getAuthUserId() || DEFAULT_USER_ID;
       const newWorkspace = await createWorkspace(
         workspaceData.name,
         workspaceData.description,
-        {},
-        userId
+        {}
       );
       // Add new workspace to the list
       setWorkspaces((prev) => [newWorkspace, ...prev]);

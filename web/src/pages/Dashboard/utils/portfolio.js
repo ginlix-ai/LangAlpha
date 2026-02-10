@@ -2,26 +2,20 @@
  * Portfolio CRUD API.
  * GET /api/v1/users/me/portfolio, POST, PUT /:id, DELETE /:id
  */
-import { api, headers, DEFAULT_USER_ID } from '@/api/client';
+import { api } from '@/api/client';
 
-export async function listPortfolio(userId = DEFAULT_USER_ID) {
-  const { data } = await api.get('/api/v1/users/me/portfolio', {
-    headers: headers(userId),
-  });
+export async function listPortfolio() {
+  const { data } = await api.get('/api/v1/users/me/portfolio');
   return data;
 }
 
 /**
- * @param {object} data - { symbol, instrument_type, quantity, average_cost?, exchange?, currency?, account_name?, notes?, first_purchased_at? }
+ * @param {object} payload - { symbol, instrument_type, quantity, average_cost?, exchange?, currency?, account_name?, notes?, first_purchased_at? }
  */
-export async function addPortfolioHolding(data, userId = DEFAULT_USER_ID) {
+export async function addPortfolioHolding(payload) {
   try {
-    const { data: result } = await api.post(
-      '/api/v1/users/me/portfolio',
-      data,
-      { headers: { ...headers(userId), 'Content-Type': 'application/json' } }
-    );
-    return result;
+    const { data } = await api.post('/api/v1/users/me/portfolio', payload);
+    return data;
   } catch (e) {
     console.error(
       '[api] addPortfolioHolding failed:',
@@ -35,19 +29,16 @@ export async function addPortfolioHolding(data, userId = DEFAULT_USER_ID) {
 
 /**
  * @param {string} id - holding_id
- * @param {object} data - { quantity?, average_cost?, name?, currency?, notes?, first_purchased_at? }
+ * @param {object} payload - { quantity?, average_cost?, name?, currency?, notes?, first_purchased_at? }
  */
-export async function updatePortfolioHolding(id, data, userId = DEFAULT_USER_ID) {
-  const { data: result } = await api.put(
+export async function updatePortfolioHolding(id, payload) {
+  const { data } = await api.put(
     `/api/v1/users/me/portfolio/${encodeURIComponent(id)}`,
-    data,
-    { headers: headers(userId) }
+    payload
   );
-  return result;
+  return data;
 }
 
-export async function deletePortfolioHolding(id, userId = DEFAULT_USER_ID) {
-  await api.delete(`/api/v1/users/me/portfolio/${encodeURIComponent(id)}`, {
-    headers: headers(userId),
-  });
+export async function deletePortfolioHolding(id) {
+  await api.delete(`/api/v1/users/me/portfolio/${encodeURIComponent(id)}`);
 }

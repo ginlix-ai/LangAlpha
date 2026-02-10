@@ -12,7 +12,9 @@ import logging
 import time
 from typing import Optional, List
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
+
+from src.server.utils.api import CurrentUserId
 from fastapi.responses import Response, StreamingResponse
 
 from src.server.models.conversation import (
@@ -125,7 +127,7 @@ async def list_workspace_threads_endpoint(
 
 @conversations_router.get("", response_model=WorkspaceThreadsListResponse)
 async def list_user_threads_endpoint(
-    x_user_id: str = Header(..., alias="X-User-Id", description="User ID"),
+    x_user_id: CurrentUserId,
     limit: int = Query(20, ge=1, le=100, description="Max threads per page"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     sort_by: str = Query("updated_at", description="Sort field (created_at, updated_at)"),

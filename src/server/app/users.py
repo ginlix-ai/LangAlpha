@@ -4,24 +4,31 @@ User Management API Router.
 Provides REST endpoints for user profile and preferences management.
 
 Endpoints:
+- POST /api/v1/auth/sync - Sync Supabase user to backend (create/migrate)
 - POST /api/v1/users - Create new user
-- GET /api/v1/users/me - Get current user (by X-User-Id header)
+- GET /api/v1/users/me - Get current user (by Bearer token)
 - PUT /api/v1/users/me - Update current user profile
 - GET /api/v1/users/me/preferences - Get user preferences
 - PUT /api/v1/users/me/preferences - Update user preferences
 """
 
 import logging
+from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi import File, UploadFile
+from pydantic import BaseModel
 from src.ptc_agent.utils.storage.r2_uploader import upload_bytes, get_public_url
 
+from src.server.auth.jwt_bearer import verify_jwt_token
 from src.server.database.user import (
     create_user as db_create_user,
+    create_user_from_auth,
+    find_user_by_email,
     get_user as db_get_user,
     get_user_preferences as db_get_user_preferences,
     get_user_with_preferences,
+    migrate_user_id,
     update_user as db_update_user,
     upsert_user_preferences,
 )
@@ -38,10 +45,79 @@ from src.server.utils.api import CurrentUserId, handle_api_exceptions, raise_not
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/users", tags=["Users"])
+router = APIRouter(prefix="/api/v1", tags=["Users"])
+
+# ==================== Auth Sync ====================
 
 
-@router.post("", response_model=UserResponse, status_code=201)
+class AuthSyncRequest(BaseModel):
+    email: Optional[str] = None
+    name: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
+@router.post("/auth/sync", response_model=UserWithPreferencesResponse)
+@handle_api_exceptions("sync user", logger)
+async def sync_user(
+    body: AuthSyncRequest,
+    user_id: str = Depends(verify_jwt_token),
+):
+    """
+    Sync Supabase user to backend after OAuth/email login.
+
+    Called by frontend immediately after Supabase auth succeeds.
+    Uses its own JWT extraction (does not use CurrentUserId) so it
+    can handle first-time users who don't yet exist in the DB.
+
+    Logic:
+      1. user_id already exists -> return profile
+      2. email matches a legacy user -> migrate PK to UUID, return profile
+      3. No match -> create new user, return profile
+    """
+
+    # 1. Already exists by UUID?
+    existing = await db_get_user(user_id)
+    if existing:
+        result = await get_user_with_preferences(user_id)
+        if not result:
+            raise_not_found("User")
+        user_resp = UserResponse.model_validate(result["user"])
+        pref_resp = None
+        if result.get("preferences"):
+            pref_resp = UserPreferencesResponse.model_validate(result["preferences"])
+        return UserWithPreferencesResponse(user=user_resp, preferences=pref_resp)
+
+    # 2. Legacy email-based user?
+    if body.email:
+        legacy = await find_user_by_email(body.email)
+        if legacy:
+            migrated = await migrate_user_id(legacy["user_id"], user_id)
+            if migrated:
+                logger.info(f"Migrated legacy user {legacy['user_id']} -> {user_id}")
+                result = await get_user_with_preferences(user_id)
+                if not result:
+                    raise_not_found("User")
+                user_resp = UserResponse.model_validate(result["user"])
+                pref_resp = None
+                if result.get("preferences"):
+                    pref_resp = UserPreferencesResponse.model_validate(result["preferences"])
+                return UserWithPreferencesResponse(user=user_resp, preferences=pref_resp)
+
+    # 3. Brand-new user
+    user = await create_user_from_auth(
+        user_id=user_id,
+        email=body.email,
+        name=body.name,
+        avatar_url=body.avatar_url,
+    )
+    user_resp = UserResponse.model_validate(user)
+    return UserWithPreferencesResponse(user=user_resp, preferences=None)
+
+
+# ==================== User CRUD ====================
+
+
+@router.post("/users", response_model=UserResponse, status_code=201)
 @handle_api_exceptions("create user", logger, conflict_on_value_error=True)
 async def create_user(
     request: UserBase,
@@ -75,7 +151,7 @@ async def create_user(
     return UserResponse.model_validate(user)
 
 
-@router.get("/me", response_model=UserWithPreferencesResponse)
+@router.get("/users/me", response_model=UserWithPreferencesResponse)
 @handle_api_exceptions("get user", logger)
 async def get_current_user(user_id: CurrentUserId):
     """
@@ -108,7 +184,7 @@ async def get_current_user(user_id: CurrentUserId):
     )
 
 
-@router.put("/me", response_model=UserWithPreferencesResponse)
+@router.put("/users/me", response_model=UserWithPreferencesResponse)
 @handle_api_exceptions("update user", logger)
 async def update_current_user(
     request: UserUpdate,
@@ -163,7 +239,7 @@ async def update_current_user(
     )
 
 
-@router.get("/me/preferences", response_model=UserPreferencesResponse)
+@router.get("/users/me/preferences", response_model=UserPreferencesResponse)
 @handle_api_exceptions("get preferences", logger)
 async def get_preferences(user_id: CurrentUserId):
     """
@@ -190,7 +266,7 @@ async def get_preferences(user_id: CurrentUserId):
     return UserPreferencesResponse.model_validate(preferences)
 
 
-@router.put("/me/preferences", response_model=UserPreferencesResponse)
+@router.put("/users/me/preferences", response_model=UserPreferencesResponse)
 @handle_api_exceptions("update preferences", logger)
 async def update_preferences(
     request: UserPreferencesUpdate,
@@ -236,7 +312,7 @@ async def update_preferences(
     logger.info(f"Updated preferences for user {user_id}")
     return UserPreferencesResponse.model_validate(preferences)
 
-@router.post("/me/avatar", response_model=dict)
+@router.post("/users/me/avatar", response_model=dict)
 @handle_api_exceptions("upload avatar", logger)
 async def upload_avatar(
     user_id: CurrentUserId,

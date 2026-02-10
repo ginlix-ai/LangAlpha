@@ -185,7 +185,7 @@ class ChatRequest(BaseModel):
         "'flash' for lightweight, fast responses without sandbox",
     )
 
-    # Identity fields (user_id comes from X-User-Id header)
+    # Identity fields (user_id comes from Bearer token JWT sub claim)
     workspace_id: Optional[str] = Field(
         default=None,
         description="Workspace identifier - required for 'full' mode, optional for 'flash' mode",

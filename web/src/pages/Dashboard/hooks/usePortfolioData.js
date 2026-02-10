@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useToast } from '@/components/ui/use-toast';
 import {
-  DEFAULT_USER_ID,
   addPortfolioHolding,
   deletePortfolioHolding,
   getPortfolio,
@@ -29,7 +28,7 @@ export function usePortfolioData() {
   const fetchPortfolio = useCallback(async () => {
     if (!portfolioCache) setLoading(true);
     try {
-      const { holdings } = await getPortfolio(DEFAULT_USER_ID);
+      const { holdings } = await getPortfolio();
       const symbols = holdings?.length
         ? holdings.map((h) => String(h.symbol || '').trim().toUpperCase())
         : [];
@@ -85,9 +84,9 @@ export function usePortfolioData() {
   }, [fetchPortfolio]);
 
   const handleAdd = useCallback(
-    async (payload, userId) => {
+    async (payload) => {
       try {
-        await addPortfolioHolding(payload, userId || DEFAULT_USER_ID);
+        await addPortfolioHolding(payload);
         setModalOpen(false);
         portfolioCache = null;
         fetchPortfolio();
@@ -128,7 +127,7 @@ export function usePortfolioData() {
         message: 'Remove this holding from your portfolio?',
         onConfirm: async () => {
           try {
-            await deletePortfolioHolding(holdingId, DEFAULT_USER_ID);
+            await deletePortfolioHolding(holdingId);
             portfolioCache = null;
             fetchPortfolio();
           } catch (e) {
@@ -161,8 +160,7 @@ export function usePortfolioData() {
           quantity: q,
           average_cost: ac,
           notes: editForm.notes.trim() || undefined,
-        },
-        DEFAULT_USER_ID
+        }
       );
       setEditRow(null);
       portfolioCache = null;

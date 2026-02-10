@@ -1,21 +1,16 @@
 /**
  * Shared API client for backend REST calls.
- * All portfolio, watchlist, and watchlist-items modules use this.
- * X-User-Id is set from AuthContext via setAuthUserId when user is logged in.
+ * Bearer token is set automatically via setTokenGetter (called from AuthContext).
  */
 import axios from 'axios';
 
 const baseURL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
-export const DEFAULT_USER_ID = 'test_user_001';
 
-let _authUserId = null;
+/** Async function that returns the current access token (set by AuthContext). */
+let _getAccessToken = null;
 
-export function setAuthUserId(userId) {
-  _authUserId = userId;
-}
-
-export function getAuthUserId() {
-  return _authUserId;
+export function setTokenGetter(fn) {
+  _getAccessToken = fn;
 }
 
 export const api = axios.create({
@@ -23,13 +18,16 @@ export const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
-api.interceptors.request.use((config) => {
-  if (_authUserId) {
-    config.headers['X-User-Id'] = _authUserId;
+api.interceptors.request.use(async (config) => {
+  if (_getAccessToken) {
+    try {
+      const token = await _getAccessToken();
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
+    } catch {
+      /* proceed without auth */
+    }
   }
   return config;
 });
-
-export function headers(userId = DEFAULT_USER_ID) {
-  return { 'X-User-Id': userId ?? _authUserId ?? DEFAULT_USER_ID };
-}

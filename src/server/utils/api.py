@@ -9,24 +9,35 @@ import inspect
 import logging
 from typing import Annotated, Callable, Optional, TypeVar
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from src.server.auth.jwt_bearer import _AUTH_ENABLED, LOCAL_DEV_USER_ID, _decode_token
 
 # Type variable for generic return type preservation
 T = TypeVar("T")
 
+_optional_bearer = HTTPBearer(auto_error=False)
 
-def get_current_user_id(
-    x_user_id: str = Header(..., alias="X-User-Id", description="User ID from auth"),
+
+async def get_current_user_id(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer),
 ) -> str:
     """
-    FastAPI dependency to extract user ID from X-User-Id header.
+    FastAPI dependency to extract user ID.
 
-    Usage:
-        @router.get("/endpoint")
-        async def endpoint(user_id: CurrentUserId):
-            ...
+    When Supabase auth is disabled (``SUPABASE_URL`` unset), returns the
+    configured local user ID (``AUTH_USER_ID`` env var, default ``local-dev-user``).
+
+    When auth is enabled, requires a valid Bearer JWT (Supabase).
     """
-    return x_user_id
+    if not _AUTH_ENABLED:
+        return LOCAL_DEV_USER_ID
+
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Missing authentication")
+
+    return _decode_token(credentials.credentials)
 
 
 # Annotated type for cleaner endpoint signatures

@@ -1,7 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { X, ChevronLeft, ChevronRight, BarChart3 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { DEFAULT_USER_ID } from '@/api/client';
 import { useWatchlistData } from '../../Dashboard/hooks/useWatchlistData';
 import { usePortfolioData } from '../../Dashboard/hooks/usePortfolioData';
 import AddWatchlistItemDialog from '../../Dashboard/components/AddWatchlistItemDialog';
@@ -111,13 +110,11 @@ function TradingSidebarPanel({ activeSymbol, onSymbolClick }) {
           onClose={() => watchlist.setModalOpen(false)}
           onAdd={watchlist.handleAdd}
           watchlistId={watchlist.currentWatchlistId}
-          userId={DEFAULT_USER_ID}
         />
         <AddPortfolioHoldingDialog
           open={portfolio.modalOpen}
           onClose={() => portfolio.setModalOpen(false)}
           onAdd={portfolio.handleAdd}
-          userId={DEFAULT_USER_ID}
         />
       </div>
     );
@@ -212,13 +209,11 @@ function TradingSidebarPanel({ activeSymbol, onSymbolClick }) {
         onClose={() => watchlist.setModalOpen(false)}
         onAdd={watchlist.handleAdd}
         watchlistId={watchlist.currentWatchlistId}
-        userId={DEFAULT_USER_ID}
       />
       <AddPortfolioHoldingDialog
         open={portfolio.modalOpen}
         onClose={() => portfolio.setModalOpen(false)}
         onAdd={portfolio.handleAdd}
-        userId={DEFAULT_USER_ID}
       />
     </div>
   );

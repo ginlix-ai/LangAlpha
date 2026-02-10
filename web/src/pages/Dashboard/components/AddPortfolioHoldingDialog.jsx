@@ -14,7 +14,6 @@ function AddPortfolioHoldingDialog({
   open = false,
   onClose,
   onAdd,
-  userId,
 }) {
   const [page, setPage] = useState(1); // 1 = search, 2 = details
   const [searchQuery, setSearchQuery] = useState('');
@@ -126,7 +125,7 @@ function AddPortfolioHoldingDialog({
       first_purchased_at: new Date().toISOString(),
     };
 
-    onAdd(payload, userId);
+    onAdd(payload);
   };
 
   return (

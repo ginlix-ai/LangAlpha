@@ -12,7 +12,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { sendFlashChatMessage } from '../utils/api';
 
-const DEFAULT_USER_ID = 'test_user_001';
 
 /**
  * Creates a user message object
@@ -52,13 +51,12 @@ function appendMessage(messages, newMessage) {
 
 /**
  * Hook for managing TradingCenter flash mode chat
- * @param {string} userId - User ID (defaults to DEFAULT_USER_ID)
  * @returns {Object} Chat state and handlers
  */
 // Batch flush interval (ms) — SSE events are buffered and flushed at this rate
 const BATCH_FLUSH_INTERVAL_MS = 150;
 
-export function useTradingChat(userId = DEFAULT_USER_ID) {
+export function useTradingChat() {
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -485,7 +483,6 @@ export function useTradingChat(userId = DEFAULT_USER_ID) {
             );
           }
         },
-        userId,
         'en-US',
         'America/New_York',
         additionalContext

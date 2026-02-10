@@ -2,24 +2,30 @@
  * ChatAgent API utilities
  * All backend endpoints used by the ChatAgent page
  */
-import { api, headers, getAuthUserId, DEFAULT_USER_ID } from '@/api/client';
-
-export { DEFAULT_USER_ID };
+import { api } from '@/api/client';
+import { supabase } from '@/lib/supabase';
 
 const baseURL = api.defaults.baseURL;
 
+/** Get Bearer auth headers for raw fetch() calls (SSE streams). */
+async function getAuthHeaders() {
+  if (!supabase) return {};
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 // --- Workspaces ---
 
-export async function getWorkspaces(userId = DEFAULT_USER_ID, limit = 20, offset = 0) {
+export async function getWorkspaces(limit = 20, offset = 0) {
   const { data } = await api.get('/api/v1/workspaces', {
     params: { limit, offset },
-    headers: headers(userId),
   });
   return data;
 }
 
-export async function createWorkspace(name, description = '', config = {}, userId = DEFAULT_USER_ID) {
-  const { data } = await api.post('/api/v1/workspaces', { name, description, config }, { headers: headers(userId) });
+export async function createWorkspace(name, description = '', config = {}) {
+  const { data } = await api.post('/api/v1/workspaces', { name, description, config });
   return data;
 }
 
@@ -30,33 +36,27 @@ export async function deleteWorkspace(workspaceId) {
   await api.delete(`/api/v1/workspaces/${id}`);
 }
 
-export async function getWorkspace(workspaceId, userId = DEFAULT_USER_ID) {
+export async function getWorkspace(workspaceId) {
   if (!workspaceId) throw new Error('Workspace ID is required');
-  const { data } = await api.get(`/api/v1/workspaces/${workspaceId}`, {
-    headers: headers(userId),
-  });
+  const { data } = await api.get(`/api/v1/workspaces/${workspaceId}`);
   return data;
 }
 
 /**
  * Ensure the shared flash workspace exists for the current user.
  * Idempotent — safe to call on every app load.
- * @param {string} userId
  * @returns {Promise<Object>} Flash workspace record
  */
-export async function getFlashWorkspace(userId = DEFAULT_USER_ID) {
-  const { data } = await api.post('/api/v1/workspaces/flash', null, {
-    headers: headers(userId),
-  });
+export async function getFlashWorkspace() {
+  const { data } = await api.post('/api/v1/workspaces/flash');
   return data;
 }
 
 // --- Conversations ---
 
-export async function getConversations(userId = DEFAULT_USER_ID, limit = 50, offset = 0) {
+export async function getConversations(limit = 50, offset = 0) {
   const { data } = await api.get('/api/v1/conversations', {
     params: { limit, offset },
-    headers: headers(userId),
   });
   return data;
 }
@@ -64,16 +64,14 @@ export async function getConversations(userId = DEFAULT_USER_ID, limit = 50, off
 /**
  * Get all threads for a specific workspace
  * @param {string} workspaceId - The workspace ID
- * @param {string} userId - User ID (defaults to DEFAULT_USER_ID)
  * @param {number} limit - Maximum threads to return (default: 20)
  * @param {number} offset - Pagination offset (default: 0)
  * @returns {Promise<Object>} Response with threads array, total, limit, offset
  */
-export async function getWorkspaceThreads(workspaceId, userId = DEFAULT_USER_ID, limit = 20, offset = 0) {
+export async function getWorkspaceThreads(workspaceId, limit = 20, offset = 0) {
   if (!workspaceId) throw new Error('Workspace ID is required');
   const { data } = await api.get(`/api/v1/workspaces/${workspaceId}/threads`, {
     params: { limit, offset },
-    headers: headers(userId),
   });
   return data;
 }
@@ -81,14 +79,11 @@ export async function getWorkspaceThreads(workspaceId, userId = DEFAULT_USER_ID,
 /**
  * Delete a thread
  * @param {string} threadId - The thread ID to delete
- * @param {string} userId - User ID (defaults to DEFAULT_USER_ID)
  * @returns {Promise<Object>} Response with success, thread_id, and message
  */
-export async function deleteThread(threadId, userId = DEFAULT_USER_ID) {
+export async function deleteThread(threadId) {
   if (!threadId) throw new Error('Thread ID is required');
-  const { data } = await api.delete(`/api/v1/threads/${threadId}`, {
-    headers: headers(userId),
-  });
+  const { data } = await api.delete(`/api/v1/threads/${threadId}`);
   return data;
 }
 
@@ -96,15 +91,11 @@ export async function deleteThread(threadId, userId = DEFAULT_USER_ID) {
  * Update a thread's title
  * @param {string} threadId - The thread ID to update
  * @param {string} title - New thread title (max 255 chars, can be null to clear)
- * @param {string} userId - User ID (defaults to DEFAULT_USER_ID)
  * @returns {Promise<Object>} Updated thread object
  */
-export async function updateThreadTitle(threadId, title, userId = DEFAULT_USER_ID) {
+export async function updateThreadTitle(threadId, title) {
   if (!threadId) throw new Error('Thread ID is required');
-  const { data } = await api.patch(`/api/v1/threads/${threadId}`, 
-    { title },
-    { headers: headers(userId) }
-  );
+  const { data } = await api.patch(`/api/v1/threads/${threadId}`, { title });
   return data;
 }
 
@@ -119,7 +110,7 @@ async function streamFetch(url, opts, onEvent) {
     }
     throw new Error(`HTTP error! status: ${res.status}`);
   }
-  
+
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -174,7 +165,6 @@ export async function sendChatMessageStream(
   messageHistory = [],
   planMode = false,
   onEvent = () => {},
-  userId = DEFAULT_USER_ID,
   additionalContext = null,
   agentMode = 'ptc',
   locale = 'en-US',
@@ -193,6 +183,7 @@ export async function sendChatMessageStream(
   if (additionalContext) {
     body.additional_context = additionalContext;
   }
+  const authHeaders = await getAuthHeaders();
   await streamFetch(
     '/api/v1/chat/stream',
     {
@@ -200,7 +191,7 @@ export async function sendChatMessageStream(
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'text/event-stream',
-        ...headers(userId),
+        ...authHeaders,
       },
       body: JSON.stringify(body),
     },
@@ -228,9 +219,10 @@ export async function getWorkflowStatus(threadId) {
 export async function reconnectToWorkflowStream(threadId, lastEventId = null, onEvent = () => {}) {
   if (!threadId) throw new Error('Thread ID is required');
   const queryParam = lastEventId != null ? `?last_event_id=${lastEventId}` : '';
+  const authHeaders = await getAuthHeaders();
   await streamFetch(
     `/api/v1/chat/stream/${threadId}/reconnect${queryParam}`,
-    { method: 'GET' },
+    { method: 'GET', headers: { ...authHeaders } },
     onEvent
   );
 }
@@ -238,14 +230,11 @@ export async function reconnectToWorkflowStream(threadId, lastEventId = null, on
 /**
  * Soft-interrupt the workflow for a thread (pauses main agent, keeps subagents running)
  * @param {string} threadId - The thread ID to interrupt
- * @param {string} userId - User ID (defaults to DEFAULT_USER_ID)
  * @returns {Promise<Object>} Response data
  */
-export async function softInterruptWorkflow(threadId, userId = DEFAULT_USER_ID) {
+export async function softInterruptWorkflow(threadId) {
   if (!threadId) throw new Error('Thread ID is required');
-  const { data } = await api.post(`/api/v1/workflow/${threadId}/soft-interrupt`, null, {
-    headers: headers(userId),
-  });
+  const { data } = await api.post(`/api/v1/workflow/${threadId}/soft-interrupt`);
   return data;
 }
 
@@ -257,7 +246,6 @@ export async function softInterruptWorkflow(threadId, userId = DEFAULT_USER_ID) 
 export async function listWorkspaceFiles(workspaceId, dirPath = 'results') {
   const { data } = await api.get(`/api/v1/workspaces/${workspaceId}/files`, {
     params: { path: dirPath, include_system: false },
-    headers: headers(getAuthUserId() || DEFAULT_USER_ID),
   });
   return data; // { workspace_id, path, files: [...] }
 }
@@ -270,7 +258,6 @@ export async function listWorkspaceFiles(workspaceId, dirPath = 'results') {
 export async function readWorkspaceFile(workspaceId, filePath) {
   const { data } = await api.get(`/api/v1/workspaces/${workspaceId}/files/read`, {
     params: { path: filePath },
-    headers: headers(getAuthUserId() || DEFAULT_USER_ID),
   });
   return data; // { workspace_id, path, content, mime, truncated }
 }
@@ -284,7 +271,6 @@ export async function readWorkspaceFile(workspaceId, filePath) {
 export async function downloadWorkspaceFile(workspaceId, filePath) {
   const response = await api.get(`/api/v1/workspaces/${workspaceId}/files/download`, {
     params: { path: filePath },
-    headers: headers(getAuthUserId() || DEFAULT_USER_ID),
     responseType: 'blob',
   });
   return URL.createObjectURL(response.data);
@@ -299,7 +285,6 @@ export async function downloadWorkspaceFile(workspaceId, filePath) {
 export async function downloadWorkspaceFileAsArrayBuffer(workspaceId, filePath) {
   const response = await api.get(`/api/v1/workspaces/${workspaceId}/files/download`, {
     params: { path: filePath },
-    headers: headers(getAuthUserId() || DEFAULT_USER_ID),
     responseType: 'arraybuffer',
   });
   return response.data;
@@ -323,14 +308,6 @@ export async function triggerFileDownload(workspaceId, filePath) {
 }
 
 /**
- * Upload a file to workspace sandbox
- * @param {string} workspaceId
- * @param {File} file - Browser File object
- * @param {string|null} destPath - Destination path in sandbox (optional)
- * @param {Function|null} onProgress - Progress callback: (percent: number) => void
- * @returns {Promise<Object>} Upload response data
- */
-/**
  * Send an HITL (Human-in-the-Loop) resume response to continue an interrupted workflow.
  * Used after the agent triggers a plan-mode interrupt and the user approves or rejects.
  *
@@ -339,9 +316,8 @@ export async function triggerFileDownload(workspaceId, filePath) {
  * @param {Object} hitlResponse - The HITL response payload, e.g. { [interruptId]: { decisions: [{ type: "approve" }] } }
  * @param {Function} onEvent - Callback for each SSE event
  * @param {boolean} planMode - Whether plan mode is active (to preserve SubmitPlan tool)
- * @param {string} userId - User ID (defaults to DEFAULT_USER_ID)
  */
-export async function sendHitlResponse(workspaceId, threadId, hitlResponse, onEvent = () => {}, planMode = false, userId = DEFAULT_USER_ID) {
+export async function sendHitlResponse(workspaceId, threadId, hitlResponse, onEvent = () => {}, planMode = false) {
   const body = {
     workspace_id: workspaceId,
     thread_id: threadId,
@@ -349,6 +325,7 @@ export async function sendHitlResponse(workspaceId, threadId, hitlResponse, onEv
     hitl_response: hitlResponse,
     plan_mode: planMode,
   };
+  const authHeaders = await getAuthHeaders();
   await streamFetch(
     '/api/v1/chat/stream',
     {
@@ -356,7 +333,7 @@ export async function sendHitlResponse(workspaceId, threadId, hitlResponse, onEv
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'text/event-stream',
-        ...headers(userId),
+        ...authHeaders,
       },
       body: JSON.stringify(body),
     },
@@ -373,10 +350,7 @@ export async function uploadWorkspaceFile(workspaceId, file, destPath = null, on
     formData,
     {
       params,
-      headers: {
-        'Content-Type': 'multipart/form-data',
-        ...headers(getAuthUserId() || DEFAULT_USER_ID),
-      },
+      headers: { 'Content-Type': 'multipart/form-data' },
       onUploadProgress: onProgress
         ? (e) => onProgress(Math.round((e.loaded * 100) / (e.total || 1)))
         : undefined,

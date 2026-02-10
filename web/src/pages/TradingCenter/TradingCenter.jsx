@@ -8,8 +8,6 @@ import TradingChart from './components/TradingChart';
 import TradingChatInput from './components/TradingChatInput';
 import TradingPanel from './components/TradingPanel';
 import TradingSidebarPanel from './components/TradingSidebarPanel';
-import { getAuthUserId } from '@/api/client';
-import { DEFAULT_USER_ID } from '@/api/client';
 import { fetchStockQuote, fetchCompanyOverview, fetchAnalystData } from './utils/api';
 import { useTradingChat } from './hooks/useTradingChat';
 import { findOrCreateDefaultWorkspace } from '../Dashboard/utils/workspace';
@@ -36,8 +34,7 @@ function TradingCenter() {
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overlayData, setOverlayData] = useState(null);
 
-  const userId = getAuthUserId() || DEFAULT_USER_ID;
-  const { messages, isLoading, error, handleSendMessage: handleFastModeSend } = useTradingChat(userId);
+  const { messages, isLoading, error, handleSendMessage: handleFastModeSend } = useTradingChat();
 
   // Chat return path — captured from URL when navigating from chat DetailPanel
   const [chatReturnPath, setChatReturnPath] = useState(null);

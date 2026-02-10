@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useToast } from '@/components/ui/use-toast';
 import {
-  DEFAULT_USER_ID,
   addWatchlistItem,
   deleteWatchlistItem,
   getStockPrices,
@@ -27,12 +26,12 @@ export function useWatchlistData() {
   const fetchWatchlist = useCallback(async () => {
     if (!watchlistCache) setLoading(true);
     try {
-      const { watchlists } = await listWatchlists(DEFAULT_USER_ID);
+      const { watchlists } = await listWatchlists();
       const firstWatchlist = watchlists?.[0];
       const watchlistId = firstWatchlist?.watchlist_id || 'default';
       setCurrentWatchlistId(watchlistId);
 
-      const { items } = await listWatchlistItems(watchlistId, DEFAULT_USER_ID);
+      const { items } = await listWatchlistItems(watchlistId);
       const symbols = items?.length ? items.map((i) => i.symbol) : [];
       const prices = symbols.length > 0 ? await getStockPrices(symbols) : [];
       const bySym = Object.fromEntries((prices || []).map((p) => [p.symbol, p]));
@@ -69,16 +68,16 @@ export function useWatchlistData() {
   }, [fetchWatchlist]);
 
   const handleAdd = useCallback(
-    async (itemData, watchlistId, userId) => {
+    async (itemData, watchlistId) => {
       try {
         let targetWatchlistId = watchlistId || currentWatchlistId;
         if (!targetWatchlistId) {
-          const { watchlists } = await listWatchlists(DEFAULT_USER_ID);
+          const { watchlists } = await listWatchlists();
           targetWatchlistId = watchlists?.[0]?.watchlist_id || 'default';
           setCurrentWatchlistId(targetWatchlistId);
         }
 
-        await addWatchlistItem(itemData, targetWatchlistId, userId || DEFAULT_USER_ID);
+        await addWatchlistItem(itemData, targetWatchlistId);
         setModalOpen(false);
         watchlistCache = null;
         fetchWatchlist();
@@ -116,12 +115,12 @@ export function useWatchlistData() {
       try {
         let watchlistId = currentWatchlistId;
         if (!watchlistId) {
-          const { watchlists } = await listWatchlists(DEFAULT_USER_ID);
+          const { watchlists } = await listWatchlists();
           watchlistId = watchlists?.[0]?.watchlist_id || 'default';
           setCurrentWatchlistId(watchlistId);
         }
 
-        await deleteWatchlistItem(itemId, watchlistId, DEFAULT_USER_ID);
+        await deleteWatchlistItem(itemId, watchlistId);
         watchlistCache = null;
         fetchWatchlist();
       } catch (e) {

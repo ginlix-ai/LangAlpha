@@ -2,12 +2,10 @@
  * Dashboard API utilities
  * All backend endpoints used by the Dashboard page
  */
-import { api, headers, DEFAULT_USER_ID } from '@/api/client';
+import { api } from '@/api/client';
 import * as portfolioApi from './portfolio';
 import * as watchlistApi from './watchlist';
 import * as watchlistItemsApi from './watchlistItems';
-
-export { DEFAULT_USER_ID };
 
 const baseURL = api.defaults.baseURL;
 
@@ -23,10 +21,6 @@ function normalizeIndexSymbol(s) {
 
 function parseDataPoints(pts, norm) {
   if (!Array.isArray(pts) || !pts.length) {
-    // console.log(`[API] parseDataPoints - ${norm}: No data points`, {
-    //   isArray: Array.isArray(pts),
-    //   length: pts?.length,
-    // });
     return null;
   }
   const first = pts[0];
@@ -35,7 +29,7 @@ function parseDataPoints(pts, norm) {
   const close = Number(last?.close ?? 0);
   const change = close - open;
   const changePercent = open ? (change / open) * 100 : 0;
-  
+
   const result = {
     symbol: norm,
     name: INDEX_NAMES[norm] ?? norm,
@@ -44,17 +38,7 @@ function parseDataPoints(pts, norm) {
     changePercent: Math.round(changePercent * 100) / 100,
     isPositive: change >= 0,
   };
-  
-  // console.log(`[API] parseDataPoints - ${norm}:`, {
-  //   firstPoint: first,
-  //   lastPoint: last,
-  //   open,
-  //   close,
-  //   change,
-  //   changePercent,
-  //   result,
-  // });
-  
+
   return result;
 }
 
@@ -78,24 +62,24 @@ export async function getIndex(symbol, opts = {}) {
   const norm = normalizeIndexSymbol(String(symbol).trim());
   try {
     const { data } = await api.get(`/api/v1/market-data/intraday/indexes/${encodeURIComponent(norm)}`);
-    
+
     const pts = data?.data ?? [];
-    
+
     // Use the most recent data point (first item in array, as backend returns newest first)
     if (!Array.isArray(pts) || !pts.length) {
       throw new Error(`No intraday data for ${norm}`);
     }
-    
+
     // Most recent data point is the first one
     const mostRecent = pts[0];
     const oldest = pts[pts.length - 1];
-    
+
     // Calculate change from oldest to newest (most recent)
     const open = Number(oldest?.open ?? 0);
     const close = Number(mostRecent?.close ?? 0);
     const change = close - open;
     const changePercent = open ? (change / open) * 100 : 0;
-    
+
     const result = {
       symbol: norm,
       name: INDEX_NAMES[norm] ?? norm,
@@ -104,7 +88,7 @@ export async function getIndex(symbol, opts = {}) {
       changePercent: Math.round(changePercent * 100) / 100,
       isPositive: change >= 0,
     };
-    
+
     return result;
   } catch (e) {
     console.error(`[API] getIndex - ${norm}: Error:`, e?.message);
@@ -120,7 +104,7 @@ export async function getIndex(symbol, opts = {}) {
  */
 export async function getIndices(symbols = INDEX_SYMBOLS, opts = {}) {
   const list = symbols.map((s) => normalizeIndexSymbol(String(s).trim()));
-  
+
   // Make individual GET requests for each symbol (no query params per API docs)
   const promises = list.map(async (norm) => {
     try {
@@ -131,9 +115,9 @@ export async function getIndices(symbols = INDEX_SYMBOLS, opts = {}) {
       return { success: false, symbol: norm, error };
     }
   });
-  
+
   const results = await Promise.all(promises);
-  
+
   const indices = results.map((result) => {
     if (result.success) {
       return result.data;
@@ -141,9 +125,9 @@ export async function getIndices(symbols = INDEX_SYMBOLS, opts = {}) {
       return fallbackIndex(result.symbol);
     }
   });
-  
+
   const failed = results.filter((r) => !r.success).length;
-  
+
   return { indices, failedCount: failed };
 }
 
@@ -158,40 +142,37 @@ export async function fetchHello() {
 
 // --- Users ---
 
-export async function createUser(userData, userId = DEFAULT_USER_ID) {
-  const { data } = await api.post('/api/v1/users', userData, { headers: headers(userId) });
+export async function createUser(userData) {
+  const { data } = await api.post('/api/v1/users', userData);
   return data;
 }
 
-export async function getCurrentUser(userId = DEFAULT_USER_ID) {
-  const { data } = await api.get('/api/v1/users/me', { headers: headers(userId) });
+export async function getCurrentUser() {
+  const { data } = await api.get('/api/v1/users/me');
   return data;
 }
 
-export async function getPreferences(userId = DEFAULT_USER_ID) {
-  const { data } = await api.get('/api/v1/users/me/preferences', { headers: headers(userId) });
+export async function getPreferences() {
+  const { data } = await api.get('/api/v1/users/me/preferences');
   return data;
 }
 
-export async function updateCurrentUser(userData, userId = DEFAULT_USER_ID) {
-  const { data } = await api.put('/api/v1/users/me', userData, { headers: headers(userId) });
+export async function updateCurrentUser(userData) {
+  const { data } = await api.put('/api/v1/users/me', userData);
   return data;
 }
 
-export async function updatePreferences(preferences, userId = DEFAULT_USER_ID) {
-  const { data } = await api.put('/api/v1/users/me/preferences', preferences, { headers: headers(userId) });
+export async function updatePreferences(preferences) {
+  const { data } = await api.put('/api/v1/users/me/preferences', preferences);
     return data;
 }
 
-export async function uploadAvatar(file, userId = DEFAULT_USER_ID) {
+export async function uploadAvatar(file) {
   const formData = new FormData();
   formData.append('file', file);
-  
+
   const { data } = await api.post('/api/v1/users/me/avatar', formData, {
-    headers: {
-      ...headers(userId),
-      'Content-Type': 'multipart/form-data',
-    },
+    headers: { 'Content-Type': 'multipart/form-data' },
   });
   return data; // { avatar_url: "https://..." }
 }
@@ -213,7 +194,6 @@ export const deleteWatchlist = watchlistApi.deleteWatchlist;
  * List items in a specific watchlist
  * GET /api/v1/users/me/watchlists/:watchlist_id/items
  * @param {string} watchlistId - The watchlist ID (UUID or 'default')
- * @param {string} userId - The user ID
  * @returns {Promise<Object>} { items: [...], total: number }
  */
 export const listWatchlistItems = watchlistItemsApi.listWatchlistItems;
@@ -224,29 +204,27 @@ export const updateWatchlistItem = watchlistItemsApi.updateWatchlistItem;
  * @deprecated Use listWatchlists() and listWatchlistItems() instead
  * This function is kept for backward compatibility but should not be used
  */
-export async function getWatchlistItems(userId = DEFAULT_USER_ID) {
-  return watchlistItemsApi.listWatchlistItems('default', userId);
+export async function getWatchlistItems() {
+  return watchlistItemsApi.listWatchlistItems('default');
 }
 
 /**
  * Adds a stock to a watchlist with full details
  * @param {Object} itemData - Stock item data: { symbol, instrument_type, exchange, name, notes, alert_settings }
  * @param {string} watchlistId - The watchlist ID (UUID or 'default')
- * @param {string} userId - The user ID
  * @returns {Promise<Object>} Created watchlist item
  */
-export async function addWatchlistItem(itemData, watchlistId = 'default', userId = DEFAULT_USER_ID) {
-  return watchlistItemsApi.addWatchlistItem(watchlistId, itemData, userId);
+export async function addWatchlistItem(itemData, watchlistId = 'default') {
+  return watchlistItemsApi.addWatchlistItem(watchlistId, itemData);
 }
 
 /**
  * Deletes a watchlist item by ID
  * @param {string} itemId - The item ID to delete
  * @param {string} watchlistId - The watchlist ID (UUID or 'default')
- * @param {string} userId - The user ID
  */
-export async function deleteWatchlistItem(itemId, watchlistId = 'default', userId = DEFAULT_USER_ID) {
-  return watchlistItemsApi.deleteWatchlistItem(watchlistId, itemId, userId);
+export async function deleteWatchlistItem(itemId, watchlistId = 'default') {
+  return watchlistItemsApi.deleteWatchlistItem(watchlistId, itemId);
 }
 
 // --- Stock prices (batch, for watchlist) ---
@@ -307,20 +285,20 @@ export async function getStockPrices(symbols) {
       if (!Array.isArray(pts) || !pts.length) {
         return { symbol: sym, price: 0, change: 0, changePercent: 0, isPositive: true };
       }
-      
+
       // Backend returns data with most recent first (like indices endpoint)
       // Most recent data point is the first one (pts[0])
       // Oldest data point is the last one (pts[pts.length - 1])
       const mostRecent = pts[0];
       const oldest = pts[pts.length - 1];
-      
+
       // Use most recent close price as the current price
       const close = Number(mostRecent?.close ?? 0);
       // Calculate change from oldest open to most recent close
       const open = Number(oldest?.open ?? 0);
       const change = close - open;
       const pct = open ? (change / open) * 100 : 0;
-      
+
       return {
         symbol: sym,
         price: Math.round(close * 100) / 100,

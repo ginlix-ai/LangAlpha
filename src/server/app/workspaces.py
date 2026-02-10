@@ -17,8 +17,9 @@ Endpoints:
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
+from src.server.utils.api import CurrentUserId
 from src.server.database.workspace import (
     get_workspace as db_get_workspace,
     get_workspaces_for_user,
@@ -67,7 +68,7 @@ def _workspace_to_response(workspace: dict) -> WorkspaceResponse:
 @router.post("", response_model=WorkspaceResponse, status_code=201)
 async def create_workspace(
     request: WorkspaceCreate,
-    x_user_id: str = Header(..., alias="X-User-Id", description="User ID"),
+    x_user_id: CurrentUserId,
 ):
     """
     Create a new workspace with dedicated sandbox.
@@ -103,7 +104,7 @@ async def create_workspace(
 
 @router.post("/flash", response_model=WorkspaceResponse)
 async def get_flash_workspace(
-    x_user_id: str = Header(..., alias="X-User-Id", description="User ID"),
+    x_user_id: CurrentUserId,
 ):
     """
     Get or create the shared flash workspace for this user.
@@ -124,7 +125,7 @@ async def get_flash_workspace(
 
 @router.get("", response_model=WorkspaceListResponse)
 async def list_workspaces(
-    x_user_id: str = Header(..., alias="X-User-Id", description="User ID"),
+    x_user_id: CurrentUserId,
     limit: int = Query(20, ge=1, le=100, description="Maximum results"),
     offset: int = Query(0, ge=0, description="Number to skip"),
 ):
@@ -227,7 +228,7 @@ async def update_workspace(
 @router.post("/{workspace_id}/start", response_model=WorkspaceActionResponse)
 async def start_workspace(
     workspace_id: str,
-    x_user_id: str = Header(..., alias="X-User-Id", description="User ID"),
+    x_user_id: CurrentUserId,
 ):
     """
     Start a stopped workspace.
@@ -322,7 +323,7 @@ async def stop_workspace(workspace_id: str):
 @router.post("/{workspace_id}/refresh", response_model=WorkspaceRefreshResponse)
 async def refresh_workspace(
     workspace_id: str,
-    x_user_id: str = Header(..., alias="X-User-Id", description="User ID"),
+    x_user_id: CurrentUserId,
 ):
     """Refresh sandbox skills + tool modules.
 

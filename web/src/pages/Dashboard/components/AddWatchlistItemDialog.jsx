@@ -15,7 +15,6 @@ function AddWatchlistItemDialog({
   onClose,
   onAdd,
   watchlistId,
-  userId,
 }) {
   const [page, setPage] = useState(1); // 1 = search, 2 = details
   const [searchQuery, setSearchQuery] = useState('');
@@ -148,7 +147,7 @@ function AddWatchlistItemDialog({
       },
     };
 
-    onAdd(itemData, watchlistId, userId);
+    onAdd(itemData, watchlistId);
   };
 
   return (

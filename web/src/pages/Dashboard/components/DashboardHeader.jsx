@@ -8,7 +8,7 @@ import './DashboardHeader.css';
 
 const DashboardHeader = ({ title = 'LangAlpha', onStockSearch }) => {
   const navigate = useNavigate();
-  const { userId } = useAuth();
+  const { isLoggedIn } = useAuth();
   const [isUserPanelOpen, setIsUserPanelOpen] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState(null);
   const [showHelpPopover, setShowHelpPopover] = useState(false);
@@ -72,10 +72,10 @@ const DashboardHeader = ({ title = 'LangAlpha', onStockSearch }) => {
   }, []);
 
   useEffect(() => {
-    if (!userId) return;
+    if (!isLoggedIn) return;
     const fetchUser = async () => {
       try {
-        const data = await getCurrentUser(userId);
+        const data = await getCurrentUser();
         const url = data?.user?.avatar_url;
         const version = data?.user?.updated_at;
         setAvatarUrl(url ? `${url}?v=${version}` : null);
@@ -84,12 +84,12 @@ const DashboardHeader = ({ title = 'LangAlpha', onStockSearch }) => {
       }
     };
     fetchUser();
-  }, [userId]);
+  }, [isLoggedIn]);
 
   const handlePanelClose = () => {
     setIsUserPanelOpen(false);
-    if (userId) {
-      getCurrentUser(userId).then(data => {
+    if (isLoggedIn) {
+      getCurrentUser().then(data => {
         const url = data?.user?.avatar_url;
         const version = data?.user?.updated_at;
         setAvatarUrl(url ? `${url}?v=${version}` : null);

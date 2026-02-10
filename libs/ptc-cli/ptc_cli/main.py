@@ -142,8 +142,8 @@ def parse_args() -> argparse.Namespace:
     # Default interactive mode
     parser.add_argument(
         "--agent",
-        default="agent",
-        help="Agent identifier for session storage (default: agent).",
+        default=os.getenv("AUTH_USER_ID", "agent"),
+        help="Agent identifier for session storage (default: $AUTH_USER_ID or 'agent').",
     )
     parser.add_argument(
         "--server",

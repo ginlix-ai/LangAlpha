@@ -1,6 +1,4 @@
-import { getAuthUserId } from '@/api/client';
 import {
-  DEFAULT_USER_ID,
   INDEX_SYMBOLS,
   fallbackIndex,
   getCurrentUser,
@@ -231,7 +229,7 @@ function Dashboard() {
   useEffect(() => {
     const ensureDefaultWorkspace = async () => {
       try {
-        const { workspaces } = await getWorkspaces(DEFAULT_USER_ID);
+        const { workspaces } = await getWorkspaces();
         const stealthAgentWorkspace = workspaces?.find(
           (ws) => ws.name === 'LangAlpha'
         );
@@ -260,8 +258,7 @@ function Dashboard() {
   useEffect(() => {
     const checkOnboarding = async () => {
       try {
-        const userId = getAuthUserId() || DEFAULT_USER_ID;
-        const userData = await getCurrentUser(userId);
+        const userData = await getCurrentUser();
         const onboardingCompleted = userData?.user?.onboarding_completed;
         
         if (onboardingCompleted === true) {
@@ -403,7 +400,6 @@ function Dashboard() {
                   onClose={() => watchlist.setModalOpen(false)}
                   onAdd={watchlist.handleAdd}
                   watchlistId={watchlist.currentWatchlistId}
-                  userId={DEFAULT_USER_ID}
                 />
                 <PortfolioCard
                   rows={portfolio.rows}
@@ -422,7 +418,6 @@ function Dashboard() {
                   open={portfolio.modalOpen}
                   onClose={() => portfolio.setModalOpen(false)}
                   onAdd={portfolio.handleAdd}
-                  userId={DEFAULT_USER_ID}
                 />
                 </div>
                 </div>

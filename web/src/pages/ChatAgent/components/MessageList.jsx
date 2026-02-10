@@ -124,9 +124,10 @@ function MessageBubble({ message, onOpenSubagentTask, onOpenFile, onOpenDir, onT
         )}
 
         {/* Streaming indicator — hidden when dot-loader is already showing for pending chunks */}
-        {message.isStreaming && !Object.keys(message.pendingToolCallChunks || {}).length && (
-          <MorphLoading size="sm" className="mt-2" style={{ color: '#6155F5' }} />
-        )}
+        {message.isStreaming && !Object.keys(message.pendingToolCallChunks || {}).length && (() => {
+          const hasContent = message.contentSegments?.some(s => s.content?.trim()) || message.content?.trim();
+          return <MorphLoading size="sm" className={hasContent ? "mt-2" : "mt-4"} style={{ color: '#6155F5' }} />;
+        })()}
       </div>
 
       {/* User avatar - shown on the right */}

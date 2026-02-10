@@ -367,6 +367,7 @@ class RedisCacheClient:
             remaining_ttl = await self.client.ttl(key)
 
             # TTL of -1 means no expiry, -2 means key doesn't exist
+            soft_threshold = original_ttl * soft_ttl_ratio
             if remaining_ttl < 0:
                 # No expiry set or key vanished - consider fresh if we have data
                 needs_refresh = remaining_ttl == -2
@@ -374,7 +375,6 @@ class RedisCacheClient:
                 # Calculate soft threshold: refresh when we've consumed (1 - soft_ttl_ratio) of TTL
                 # Example: soft_ttl_ratio=0.6 means refresh when 40% of TTL has passed
                 # i.e., when remaining_ttl < 60% of original_ttl
-                soft_threshold = original_ttl * soft_ttl_ratio
                 needs_refresh = remaining_ttl < soft_threshold
 
             if needs_refresh:

@@ -92,6 +92,16 @@ async def lifespan(app: FastAPI):
             logger.error(f"Conversation DB: Failed to connect - {e}")
         raise
 
+    # Auto-provision local dev user when Supabase auth is disabled
+    from src.server.auth.jwt_bearer import _AUTH_ENABLED, LOCAL_DEV_USER_ID
+    if not _AUTH_ENABLED:
+        from src.server.database.user import create_user_from_auth
+        await create_user_from_auth(
+            user_id=LOCAL_DEV_USER_ID,
+            name="Local User",
+        )
+        logger.info(f"[auth] Local dev user provisioned: {LOCAL_DEV_USER_ID}")
+
     # Initialize Redis cache
     try:
         from src.utils.cache.redis_cache import init_cache

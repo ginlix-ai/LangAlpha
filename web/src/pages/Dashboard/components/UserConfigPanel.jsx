@@ -8,25 +8,17 @@ import ConfirmDialog from './ConfirmDialog';
 /**
  * UserConfigPanel Component
  *
- * Modal panel for:
- * - When not logged in (requireLogin): Login by email or Sign up (email + name). Cannot be closed.
- * - When logged in: User info (email read-only), preferences, and logout button.
+ * Modal panel for logged-in users: User info (email read-only), preferences, and logout button.
  *
  * @param {boolean} isOpen - Whether the panel is open
  * @param {Function} onClose - Callback to close the panel
- * @param {boolean} requireLogin - If true and not logged in, show login/signup and prevent closing
  */
-function UserConfigPanel({ isOpen, onClose, requireLogin = false }) {
-  const { userId, user: authUser, login, signup, logout, refreshUser } = useAuth();
-  const [mode, setMode] = useState('login'); // 'login' | 'signup'
+function UserConfigPanel({ isOpen, onClose }) {
+  const { user: authUser, logout, refreshUser } = useAuth();
   const [activeTab, setActiveTab] = useState('userInfo');
   const [avatarUrl, setAvatarUrl] = useState(null);
   const fileInputRef = useRef(null);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
-
-  const [loginEmail, setLoginEmail] = useState('');
-  const [signupEmail, setSignupEmail] = useState('');
-  const [signupName, setSignupName] = useState('');
 
   const [name, setName] = useState('');
   const [timezone, setTimezone] = useState('');
@@ -83,20 +75,17 @@ function UserConfigPanel({ isOpen, onClose, requireLogin = false }) {
     { value: 'ko-KR', label: 'Korean (Korea)' },
   ];
 
-  const isLoggedIn = !!userId;
-  const canClose = !requireLogin || isLoggedIn;
-
   useEffect(() => {
-    if (isOpen && isLoggedIn) {
+    if (isOpen) {
       setIsLoading(true);
       Promise.all([loadUserData(), loadPreferencesData()])
         .finally(() => setIsLoading(false));
     }
-  }, [isOpen, isLoggedIn, userId]);
+  }, [isOpen]);
 
   const loadUserData = async () => {
     try {
-      const userData = await getCurrentUser(userId);
+      const userData = await getCurrentUser();
       if (userData?.user) {
         setName(userData.user.name || '');
         setTimezone(userData.user.timezone || '');
@@ -112,7 +101,7 @@ function UserConfigPanel({ isOpen, onClose, requireLogin = false }) {
 
   const loadPreferencesData = async () => {
     try {
-      const preferencesData = await getPreferences(userId);
+      const preferencesData = await getPreferences();
       if (preferencesData) {
         setRiskTolerance(preferencesData.risk_preference?.risk_tolerance || '');
         setCompanyInterest(preferencesData.investment_preference?.company_interest || '');
@@ -123,53 +112,12 @@ function UserConfigPanel({ isOpen, onClose, requireLogin = false }) {
     } catch {}
   };
 
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    setIsSubmitting(true);
-    setError(null);
-    try {
-      await login(loginEmail);
-      setLoginEmail('');
-      if (!requireLogin) onClose();
-    } catch (err) {
-      const status = err?.response?.status;
-      if (status === 404) {
-        setError('No account found with this email. Please sign up.');
-      } else {
-        setError(err?.response?.data?.detail || err.message || 'Login failed');
-      }
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleSignup = async (e) => {
-    e.preventDefault();
-    setIsSubmitting(true);
-    setError(null);
-    try {
-      await signup(signupEmail, signupName);
-      setSignupEmail('');
-      setSignupName('');
-      if (!requireLogin) onClose();
-    } catch (err) {
-      const status = err?.response?.status;
-      if (status === 409) {
-        setError('An account with this email already exists. Please login.');
-      } else {
-        setError(err?.response?.data?.detail || err.message || 'Sign up failed');
-      }
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
   const handleAvatarChange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     setIsUploadingAvatar(true);
     try {
-      const { avatar_url } = await uploadAvatar(file, userId);
+      const { avatar_url } = await uploadAvatar(file);
       setAvatarUrl(`${avatar_url}?t=${Date.now()}`);
       refreshUser();
     } catch {
@@ -189,7 +137,7 @@ function UserConfigPanel({ isOpen, onClose, requireLogin = false }) {
       if (timezone) userData.timezone = timezone;
       if (locale) userData.locale = locale;
       if (Object.keys(userData).length > 0) {
-        await updateCurrentUser(userData, userId);
+        await updateCurrentUser(userData);
         refreshUser();
       }
       onClose();
@@ -214,8 +162,8 @@ function UserConfigPanel({ isOpen, onClose, requireLogin = false }) {
       if (Object.keys(investmentPrefs).length > 0) preferences.investment_preference = investmentPrefs;
       if (outputStyle) preferences.agent_preference = { output_style: outputStyle };
       if (Object.keys(preferences).length > 0) {
-        await updatePreferences(preferences, userId);
-        await updateCurrentUser({ onboarding_completed: true }, userId);
+        await updatePreferences(preferences);
+        await updateCurrentUser({ onboarding_completed: true });
         refreshUser();
       }
       onClose();
@@ -233,7 +181,6 @@ function UserConfigPanel({ isOpen, onClose, requireLogin = false }) {
   };
 
   const handleClose = () => {
-    if (!canClose) return;
     setError(null);
     onClose();
   };
@@ -245,7 +192,7 @@ function UserConfigPanel({ isOpen, onClose, requireLogin = false }) {
       <div
         className="fixed inset-0 z-50 flex items-center justify-center"
         style={{ backgroundColor: 'var(--color-bg-overlay-strong)' }}
-        onClick={canClose ? handleClose : undefined}
+        onClick={handleClose}
       >
         <div
           className="relative w-full max-w-2xl rounded-lg p-6"
@@ -257,146 +204,15 @@ function UserConfigPanel({ isOpen, onClose, requireLogin = false }) {
           }}
           onClick={(e) => e.stopPropagation()}
         >
-          {canClose && (
-            <button
-              onClick={handleClose}
-              className="absolute top-4 right-4 p-1 rounded-full transition-colors hover:bg-white/10"
-              style={{ color: 'var(--color-text-primary)' }}
-            >
-              <X className="h-5 w-5" />
-            </button>
-          )}
+          <button
+            onClick={handleClose}
+            className="absolute top-4 right-4 p-1 rounded-full transition-colors hover:bg-white/10"
+            style={{ color: 'var(--color-text-primary)' }}
+          >
+            <X className="h-5 w-5" />
+          </button>
 
-          {/* ----- Not logged in: Login / Sign up ----- */}
-          {!isLoggedIn && (
-            <>
-              <h2 className="text-xl font-semibold mb-6" style={{ color: 'var(--color-text-primary)' }}>
-                Welcome
-              </h2>
-              <div className="flex gap-2 mb-6 border-b" style={{ borderColor: 'var(--color-border-muted)' }}>
-                <button
-                  type="button"
-                  onClick={() => { setMode('login'); setError(null); }}
-                  className="px-4 py-2 text-sm font-medium"
-                  style={{
-                    color: mode === 'login' ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
-                    borderBottom: mode === 'login' ? '2px solid var(--color-accent-primary)' : '2px solid transparent',
-                  }}
-                >
-                  Login
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setMode('signup'); setError(null); }}
-                  className="px-4 py-2 text-sm font-medium"
-                  style={{
-                    color: mode === 'signup' ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
-                    borderBottom: mode === 'signup' ? '2px solid var(--color-accent-primary)' : '2px solid transparent',
-                  }}
-                >
-                  Sign up
-                </button>
-              </div>
-
-              {mode === 'login' && (
-                <form onSubmit={handleLogin} className="space-y-5">
-                  <div>
-                    <label className="block text-sm font-medium mb-2" style={{ color: 'var(--color-text-primary)' }}>Email</label>
-                    <Input
-                      type="email"
-                      value={loginEmail}
-                      onChange={(e) => setLoginEmail(e.target.value)}
-                      placeholder="Enter your email"
-                      className="w-full"
-                      style={{
-                        backgroundColor: 'var(--color-bg-card)',
-                        border: '1px solid var(--color-border-muted)',
-                        color: 'var(--color-text-primary)',
-                      }}
-                      disabled={isSubmitting}
-                      required
-                    />
-                  </div>
-                  {error && (
-                    <div className="p-3 rounded-md" style={{ backgroundColor: 'var(--color-loss-soft)', border: '1px solid var(--color-border-loss)' }}>
-                      <p className="text-sm" style={{ color: 'var(--color-loss)' }}>{error}</p>
-                    </div>
-                  )}
-                  <button
-                    type="submit"
-                    disabled={isSubmitting}
-                    className="w-full px-4 py-2 rounded-md text-sm font-medium"
-                    style={{
-                      backgroundColor: isSubmitting ? 'var(--color-accent-disabled)' : 'var(--color-accent-primary)',
-                      color: 'var(--color-text-on-accent)',
-                    }}
-                  >
-                    {isSubmitting ? 'Logging in...' : 'Login'}
-                  </button>
-                </form>
-              )}
-
-              {mode === 'signup' && (
-                <form onSubmit={handleSignup} className="space-y-5">
-                  <div>
-                    <label className="block text-sm font-medium mb-2" style={{ color: 'var(--color-text-primary)' }}>Email</label>
-                    <Input
-                      type="email"
-                      value={signupEmail}
-                      onChange={(e) => setSignupEmail(e.target.value)}
-                      placeholder="Enter your email"
-                      className="w-full"
-                      style={{
-                        backgroundColor: 'var(--color-bg-card)',
-                        border: '1px solid var(--color-border-muted)',
-                        color: 'var(--color-text-primary)',
-                      }}
-                      disabled={isSubmitting}
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-2" style={{ color: 'var(--color-text-primary)' }}>Name</label>
-                    <Input
-                      type="text"
-                      value={signupName}
-                      onChange={(e) => setSignupName(e.target.value)}
-                      placeholder="Enter your name"
-                      className="w-full"
-                      style={{
-                        backgroundColor: 'var(--color-bg-card)',
-                        border: '1px solid var(--color-border-muted)',
-                        color: 'var(--color-text-primary)',
-                      }}
-                      disabled={isSubmitting}
-                      required
-                    />
-                  </div>
-                  {error && (
-                    <div className="p-3 rounded-md" style={{ backgroundColor: 'var(--color-loss-soft)', border: '1px solid var(--color-border-loss)' }}>
-                      <p className="text-sm" style={{ color: 'var(--color-loss)' }}>{error}</p>
-                    </div>
-                  )}
-                  <button
-                    type="submit"
-                    disabled={isSubmitting}
-                    className="w-full px-4 py-2 rounded-md text-sm font-medium"
-                    style={{
-                      backgroundColor: isSubmitting ? 'var(--color-accent-disabled)' : 'var(--color-accent-primary)',
-                      color: 'var(--color-text-on-accent)',
-                    }}
-                  >
-                    {isSubmitting ? 'Creating account...' : 'Sign up'}
-                  </button>
-                </form>
-              )}
-            </>
-          )}
-
-          {/* ----- Logged in: User info + Preferences + Logout ----- */}
-          {isLoggedIn && (
-            <>
-              <h2 className="text-xl font-semibold mb-6" style={{ color: 'var(--color-text-primary)' }}>User Settings</h2>
+          <h2 className="text-xl font-semibold mb-6" style={{ color: 'var(--color-text-primary)' }}>User Settings</h2>
               <div className="flex gap-2 mb-6 border-b" style={{ borderColor: 'var(--color-border-muted)' }}>
                 <button
                   type="button"
@@ -457,7 +273,7 @@ function UserConfigPanel({ isOpen, onClose, requireLogin = false }) {
                     <label className="block text-sm font-medium mb-2" style={{ color: 'var(--color-text-primary)' }}>Email</label>
                     <Input
                       type="email"
-                      value={userId}
+                      value={authUser?.email || ''}
                       readOnly
                       disabled
                       className="w-full opacity-80"
@@ -688,8 +504,6 @@ function UserConfigPanel({ isOpen, onClose, requireLogin = false }) {
                   </div>
                 </form>
               )}
-            </>
-          )}
         </div>
       </div>
 

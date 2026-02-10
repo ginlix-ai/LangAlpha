@@ -21,7 +21,9 @@ from __future__ import annotations
 import mimetypes
 from typing import Any
 
-from fastapi import APIRouter, File, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+
+from src.server.utils.api import CurrentUserId
 from fastapi.responses import Response, StreamingResponse
 
 from src.server.database.workspace import get_workspace as db_get_workspace
@@ -163,7 +165,7 @@ def _requested_system_ok(path: str) -> bool:
 @router.get("/{workspace_id}/files")
 async def list_workspace_files(
     workspace_id: str,
-    x_user_id: str = Header(..., alias="X-User-Id", description="User ID"),
+    x_user_id: CurrentUserId,
     path: str = Query(".", description="Directory to list (virtual or absolute)."),
     include_system: bool = Query(
         False,
@@ -234,6 +236,7 @@ async def list_workspace_files(
 @router.get("/{workspace_id}/files/read")
 async def read_workspace_file(
     workspace_id: str,
+    x_user_id: CurrentUserId,
     path: str = Query(..., description="File path (virtual or absolute)."),
     offset: int = Query(0, ge=0, description="Line offset (0-based)."),
     limit: int = Query(
@@ -242,7 +245,6 @@ async def read_workspace_file(
         le=DEFAULT_READ_LIMIT_LINES,
         description="Max lines.",
     ),
-    x_user_id: str = Header(..., alias="X-User-Id", description="User ID"),
 ) -> dict[str, Any]:
     """Read a file from the workspace's live sandbox."""
 
@@ -308,8 +310,8 @@ async def read_workspace_file(
 @router.get("/{workspace_id}/files/download")
 async def download_workspace_file(
     workspace_id: str,
+    x_user_id: CurrentUserId,
     path: str = Query(..., description="File path (virtual or absolute)."),
-    x_user_id: str = Header(..., alias="X-User-Id", description="User ID"),
 ) -> Response:
     """Download raw bytes from the workspace's live sandbox."""
 
@@ -351,7 +353,7 @@ async def download_workspace_file(
 @router.post("/{workspace_id}/files/upload")
 async def upload_workspace_file(
     workspace_id: str,
-    x_user_id: str = Header(..., alias="X-User-Id", description="User ID"),
+    x_user_id: CurrentUserId,
     path: str | None = Query(
         None,
         description="Destination path (virtual or absolute). Defaults to filename.",

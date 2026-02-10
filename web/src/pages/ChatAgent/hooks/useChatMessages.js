@@ -14,8 +14,7 @@
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { getAuthUserId } from '@/api/client';
-import { sendChatMessageStream, replayThreadHistory, getWorkflowStatus, reconnectToWorkflowStream, sendHitlResponse, DEFAULT_USER_ID } from '../utils/api';
+import { sendChatMessageStream, replayThreadHistory, getWorkflowStatus, reconnectToWorkflowStream, sendHitlResponse } from '../utils/api';
 import { getStoredThreadId, setStoredThreadId } from './utils/threadStorage';
 export { removeStoredThreadId } from './utils/threadStorage';
 import { createUserMessage, createAssistantMessage, insertMessage, appendMessage, updateMessage } from './utils/messageHelpers';
@@ -1559,7 +1558,7 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
           threadId: event.thread_id,
           assistantMessageId,
           planApprovalId,
-          planMode: currentPlanModeRef.current,
+          planMode: event.action_requests?.some(r => r.name === 'SubmitPlan') || currentPlanModeRef.current,
         });
 
         setIsLoading(false);
@@ -1682,7 +1681,6 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
         messageHistory,
         planMode,
         processEvent,
-        getAuthUserId() || DEFAULT_USER_ID,
         additionalContext,
         agentMode
       );
@@ -1800,8 +1798,7 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
         threadId,
         hitlResponse,
         processEvent,
-        planMode,
-        getAuthUserId() || DEFAULT_USER_ID
+        planMode
       );
 
       // Mark message as complete

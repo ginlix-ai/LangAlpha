@@ -2,42 +2,33 @@
  * Watchlists CRUD API.
  * GET /api/v1/users/me/watchlists, POST, PUT /:id, DELETE /:id
  */
-import { api, headers, DEFAULT_USER_ID } from '@/api/client';
+import { api } from '@/api/client';
 
-export async function listWatchlists(userId = DEFAULT_USER_ID) {
-  const { data } = await api.get('/api/v1/users/me/watchlists', {
-    headers: headers(userId),
-  });
+export async function listWatchlists() {
+  const { data } = await api.get('/api/v1/users/me/watchlists');
   return data;
 }
 
 /**
- * @param {object} data - { name, description?, is_default?, display_order? }
+ * @param {object} payload - { name, description?, is_default?, display_order? }
  */
-export async function createWatchlist(data, userId = DEFAULT_USER_ID) {
-  const { data: result } = await api.post(
-    '/api/v1/users/me/watchlists',
-    data,
-    { headers: headers(userId) }
-  );
-  return result;
+export async function createWatchlist(payload) {
+  const { data } = await api.post('/api/v1/users/me/watchlists', payload);
+  return data;
 }
 
 /**
  * @param {string} id - watchlist_id
- * @param {object} data - { name?, description?, display_order? }
+ * @param {object} payload - { name?, description?, display_order? }
  */
-export async function updateWatchlist(id, data, userId = DEFAULT_USER_ID) {
-  const { data: result } = await api.put(
+export async function updateWatchlist(id, payload) {
+  const { data } = await api.put(
     `/api/v1/users/me/watchlists/${encodeURIComponent(id)}`,
-    data,
-    { headers: headers(userId) }
+    payload
   );
-  return result;
+  return data;
 }
 
-export async function deleteWatchlist(id, userId = DEFAULT_USER_ID) {
-  await api.delete(`/api/v1/users/me/watchlists/${encodeURIComponent(id)}`, {
-    headers: headers(userId),
-  });
+export async function deleteWatchlist(id) {
+  await api.delete(`/api/v1/users/me/watchlists/${encodeURIComponent(id)}`);
 }

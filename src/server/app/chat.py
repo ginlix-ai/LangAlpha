@@ -100,7 +100,7 @@ async def chat_stream(request: ChatRequest, user_id: CurrentUserId):
         request: ChatRequest with messages and configuration
             - workspace_id required for 'ptc' mode, optional for 'flash' mode
             - agent_mode: 'ptc' (default) or 'flash'
-        user_id: User ID from X-User-Id header
+        user_id: User ID from Bearer token
 
     Returns:
         StreamingResponse with SSE events
@@ -600,6 +600,9 @@ async def _astream_workflow(
         registry_store = BackgroundRegistryStore.get_instance()
         background_registry = await registry_store.get_or_create_registry(thread_id)
 
+        # Effective plan_mode: if resuming from HITL, plan mode must have been active
+        effective_plan_mode = request.plan_mode or bool(request.hitl_response)
+
         # Build graph with the workspace's session
         ptc_graph = await build_ptc_graph_with_session(
             session=session,
@@ -609,7 +612,7 @@ async def _astream_workflow(
             checkpointer=setup.checkpointer,
             background_registry=background_registry,
             user_id=user_id,
-            plan_mode=request.plan_mode,
+            plan_mode=effective_plan_mode,
         )
 
         if session.sandbox:
@@ -689,7 +692,7 @@ async def _astream_workflow(
         # =====================================================================
         # When plan_mode is enabled, inject a reminder for the agent to create
         # a plan and submit it for approval before executing any changes.
-        if request.plan_mode and not request.hitl_response:
+        if effective_plan_mode and not request.hitl_response:
             plan_mode_reminder = (
                 "\n\n[PLAN MODE ENABLED]\n"
                 "Before making any changes, you MUST:\n"
