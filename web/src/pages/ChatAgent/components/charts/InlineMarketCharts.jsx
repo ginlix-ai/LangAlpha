@@ -17,6 +17,7 @@ export const INLINE_CHART_TOOLS = new Set([
   'get_company_overview',
   'get_market_indices',
   'get_sector_performance',
+  'get_sec_filing',
 ]);
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -366,6 +367,178 @@ export function InlineSectorPerformanceCard({ artifact, onClick }) {
           </Bar>
         </BarChart>
       </ResponsiveContainer>
+    </div>
+  );
+}
+
+// ─── InlineSecFilingCard ───────────────────────────────────────────
+
+const ACCENT = '#6155F5';
+const MAX_INLINE_8K = 3;
+
+export function InlineSecFilingCard({ artifact, onClick }) {
+  if (!artifact || artifact.type !== 'sec_filing') return null;
+
+  if (artifact.filing_type === '8-K') {
+    return <Inline8KCard artifact={artifact} onClick={onClick} />;
+  }
+
+  return <InlineAnnualQuarterlyCard artifact={artifact} onClick={onClick} />;
+}
+
+function InlineAnnualQuarterlyCard({ artifact, onClick }) {
+  const { symbol, filing_type, filing_date, period_end, cik, sections_extracted, source_url, has_earnings_call, recent_8k_count } = artifact;
+
+  return (
+    <div
+      style={cardStyle}
+      onClick={onClick}
+      onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.15)')}
+      onMouseLeave={(e) => (e.currentTarget.style.borderColor = CARD_BORDER)}
+    >
+      {/* Header: symbol badge + filing type */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 700,
+            padding: '2px 6px',
+            borderRadius: 4,
+            backgroundColor: 'rgba(97, 85, 245, 0.15)',
+            color: ACCENT,
+          }}
+        >
+          {symbol}
+        </span>
+        <span style={{ fontWeight: 700, color: '#fff', fontSize: 14 }}>
+          {filing_type} Filing
+        </span>
+      </div>
+
+      {/* Metadata grid */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          gap: '2px 20px',
+          fontSize: 12,
+          color: TEXT_COLOR,
+        }}
+      >
+        {filing_date && <QuoteRow label="Filing Date" value={filing_date} />}
+        {period_end && <QuoteRow label="Period End" value={period_end} />}
+        {cik && <QuoteRow label="CIK" value={cik} />}
+        {sections_extracted != null && <QuoteRow label="Sections" value={String(sections_extracted)} />}
+        {has_earnings_call && <QuoteRow label="Earnings Call" value="Included" />}
+        {recent_8k_count != null && <QuoteRow label="Recent 8-Ks" value={String(recent_8k_count)} />}
+      </div>
+
+      {/* EDGAR link */}
+      {source_url && (
+        <div style={{ marginTop: 8 }}>
+          <a
+            href={source_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            style={{ fontSize: 11, color: ACCENT, textDecoration: 'none' }}
+          >
+            View on SEC EDGAR ↗
+          </a>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Inline8KCard({ artifact, onClick }) {
+  const { symbol, filing_count, filings = [] } = artifact;
+  const shown = filings.slice(0, MAX_INLINE_8K);
+  const remaining = filing_count - shown.length;
+
+  return (
+    <div
+      style={cardStyle}
+      onClick={onClick}
+      onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.15)')}
+      onMouseLeave={(e) => (e.currentTarget.style.borderColor = CARD_BORDER)}
+    >
+      {/* Header: symbol badge + title + count */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 700,
+            padding: '2px 6px',
+            borderRadius: 4,
+            backgroundColor: 'rgba(97, 85, 245, 0.15)',
+            color: ACCENT,
+          }}
+        >
+          {symbol}
+        </span>
+        <span style={{ fontWeight: 700, color: '#fff', fontSize: 14 }}>8-K Filings</span>
+        <span
+          style={{
+            fontSize: 11,
+            color: TEXT_COLOR,
+            backgroundColor: 'rgba(255,255,255,0.06)',
+            padding: '1px 6px',
+            borderRadius: 10,
+          }}
+        >
+          {filing_count}
+        </span>
+      </div>
+
+      {/* Compact filing list */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {shown.map((f, i) => (
+          <div
+            key={i}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              fontSize: 12,
+              padding: '3px 0',
+            }}
+          >
+            <span style={{ color: '#fff', fontWeight: 500, flexShrink: 0 }}>{f.filing_date}</span>
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', flex: 1, overflow: 'hidden' }}>
+              {(f.items || []).slice(0, 2).map((item, j) => (
+                <span
+                  key={j}
+                  style={{
+                    fontSize: 10,
+                    padding: '1px 6px',
+                    borderRadius: 10,
+                    backgroundColor: 'rgba(97, 85, 245, 0.12)',
+                    color: 'rgba(255,255,255,0.7)',
+                    border: '1px solid rgba(97, 85, 245, 0.2)',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {item}
+                </span>
+              ))}
+              {(f.items || []).length > 2 && (
+                <span style={{ fontSize: 10, color: TEXT_COLOR }}>+{f.items.length - 2}</span>
+              )}
+            </div>
+            {f.has_press_release && (
+              <span style={{ fontSize: 10, color: GREEN, flexShrink: 0 }}>PR</span>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* +N more */}
+      {remaining > 0 && (
+        <div style={{ marginTop: 4, fontSize: 11, color: TEXT_COLOR }}>
+          +{remaining} more filing{remaining > 1 ? 's' : ''}
+        </div>
+      )}
     </div>
   );
 }

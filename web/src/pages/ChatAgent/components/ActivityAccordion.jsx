@@ -8,6 +8,7 @@ import {
   InlineCompanyOverviewCard,
   InlineMarketIndicesCard,
   InlineSectorPerformanceCard,
+  InlineSecFilingCard,
 } from './charts/InlineMarketCharts';
 
 /** Tool names where clicking should open the file in the FilePanel */
@@ -35,6 +36,7 @@ const INLINE_CHART_MAP = {
   company_overview: InlineCompanyOverviewCard,
   market_indices: InlineMarketIndicesCard,
   sector_performance: InlineSectorPerformanceCard,
+  sec_filing: InlineSecFilingCard,
 };
 
 function ActivityAccordion({ completedItems, onToolCallClick, onOpenFile }) {

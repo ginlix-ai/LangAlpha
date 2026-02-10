@@ -6,6 +6,7 @@ import {
   MarketIndicesChart,
   SectorPerformanceChart,
 } from './charts/MarketDataCharts';
+import SecFilingViewer from './charts/SecFilingViewer';
 import Markdown from './Markdown';
 import iconRoboSing from '../../../assets/img/icon-robo-sing.svg';
 
@@ -122,7 +123,7 @@ function DetailPanel({ toolCallProcess, planData, onClose, onOpenFile, onOpenSub
 
       {/* Content */}
       <div
-        className="flex-1 overflow-y-auto px-4 py-4"
+        className={`flex-1 px-4 py-4 ${artifact?.type === 'sec_filing' ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'}`}
         style={{ minHeight: 0 }}
       >
         {isTaskTool ? (
@@ -247,20 +248,7 @@ function TaskToolContent({ description, type, subagentId, subagentResult, subage
 }
 
 function ArtifactOrMarkdown({ artifact, content, toolName, toolCallProcess, onOpenFile }) {
-  // Check for truncated results first
-  const rawContent = typeof content === 'string' ? content : content ? String(content) : '';
-  const truncated = parseTruncatedResult(rawContent);
-  if (truncated.isTruncated) {
-    return (
-      <TruncatedResultMessage
-        filePath={truncated.filePath}
-        preview={truncated.preview}
-        onOpenFile={onOpenFile}
-      />
-    );
-  }
-
-  // Route by artifact type
+  // Route by artifact type first (takes priority over truncation display)
   if (artifact?.type) {
     switch (artifact.type) {
       case 'stock_prices':
@@ -271,7 +259,22 @@ function ArtifactOrMarkdown({ artifact, content, toolName, toolCallProcess, onOp
         return <MarketIndicesChart data={artifact} />;
       case 'sector_performance':
         return <SectorPerformanceChart data={artifact} />;
+      case 'sec_filing':
+        return <SecFilingViewer data={artifact} />;
     }
+  }
+
+  // Check for truncated results
+  const rawContent = typeof content === 'string' ? content : content ? String(content) : '';
+  const truncated = parseTruncatedResult(rawContent);
+  if (truncated.isTruncated) {
+    return (
+      <TruncatedResultMessage
+        filePath={truncated.filePath}
+        preview={truncated.preview}
+        onOpenFile={onOpenFile}
+      />
+    );
   }
 
   // WebSearch: bubble card display
