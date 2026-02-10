@@ -4,6 +4,7 @@ import logo from '../../../assets/img/logo.svg';
 import MorphLoading from '@/components/ui/morph-loading';
 import ActivityAccordion from './ActivityAccordion';
 import { extractFilePaths, FileMentionCards } from './FileCard';
+import { useAuth } from '../../../contexts/AuthContext';
 import LiveActivity from './LiveActivity';
 import ReasoningMessageContent from './ReasoningMessageContent';
 import PlanApprovalCard from './PlanApprovalCard';
@@ -21,7 +22,7 @@ import TodoListMessageContent from './TodoListMessageContent';
  * - Streaming indicators
  * - Error state styling
  */
-function MessageList({ messages, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick }) {
+function MessageList({ messages, hideAvatar, compactToolCalls, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick }) {
   // Empty state - show when no messages exist
   if (messages.length === 0) {
     return (
@@ -41,6 +42,8 @@ function MessageList({ messages, onOpenSubagentTask, onOpenFile, onOpenDir, onTo
         <MessageBubble
           key={message.id}
           message={message}
+          hideAvatar={hideAvatar}
+          compactToolCalls={compactToolCalls}
           onOpenSubagentTask={onOpenSubagentTask}
           onOpenFile={onOpenFile}
           onOpenDir={onOpenDir}
@@ -60,7 +63,9 @@ function MessageList({ messages, onOpenSubagentTask, onOpenFile, onOpenDir, onTo
  * Renders a single message bubble with appropriate styling
  * based on role (user/assistant) and state (streaming/error)
  */
-function MessageBubble({ message, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick }) {
+function MessageBubble({ message, hideAvatar, compactToolCalls, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick }) {
+  const { user } = useAuth();
+  const avatarUrl = user?.avatar_url;
   const isUser = message.role === 'user';
   const isAssistant = message.role === 'assistant';
 
@@ -69,7 +74,7 @@ function MessageBubble({ message, onOpenSubagentTask, onOpenFile, onOpenDir, onT
       className={`flex gap-4 ${isUser ? 'justify-end' : 'justify-start'}`}
     >
       {/* Assistant avatar - shown on the left */}
-      {isAssistant && (
+      {isAssistant && !hideAvatar && (
         <div className="flex-shrink-0 mt-2 w-8 h-8 flex items-center justify-center">
           <img src={logo} alt="Assistant" className="w-8 h-8" />
         </div>
@@ -103,6 +108,7 @@ function MessageBubble({ message, onOpenSubagentTask, onOpenFile, onOpenDir, onT
             isStreaming={message.isStreaming}
             hasError={message.error}
             isAssistant={isAssistant}
+            compactToolCalls={compactToolCalls}
             onOpenSubagentTask={onOpenSubagentTask}
             onOpenFile={onOpenFile}
             onOpenDir={onOpenDir}
@@ -131,12 +137,16 @@ function MessageBubble({ message, onOpenSubagentTask, onOpenFile, onOpenDir, onT
       </div>
 
       {/* User avatar - shown on the right */}
-      {isUser && (
+      {isUser && !hideAvatar && (
         <div
-          className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center"
+          className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center overflow-hidden"
           style={{ backgroundColor: 'rgba(97, 85, 245, 0.2)' }}
         >
-          <User className="h-4 w-4" style={{ color: '#6155F5' }} />
+          {avatarUrl ? (
+            <img src={avatarUrl} alt="User" className="w-full h-full object-cover" />
+          ) : (
+            <User className="h-4 w-4" style={{ color: '#6155F5' }} />
+          )}
         </div>
       )}
     </div>
@@ -166,7 +176,7 @@ const MIN_LIVE_EXPOSURE_MS = 5000; // minimum time a tool call stays in LiveActi
 const MAX_IN_PROGRESS_MS = 15000; // max time a tool call can stay in-progress in live view before archiving
 const FADE_MS = 500; // matches LiveActivity fade duration
 
-function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesses, todoListProcesses, subagentTasks, planApprovals = {}, pendingToolCallChunks = {}, isStreaming, hasError, isAssistant = false, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, textOnly = false }) {
+function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesses, todoListProcesses, subagentTasks, planApprovals = {}, pendingToolCallChunks = {}, isStreaming, hasError, isAssistant = false, compactToolCalls = false, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, textOnly = false }) {
   // Force re-render timer for recently-completed tool calls that need minimum exposure
   const [, setTick] = useState(0);
   const expiryTimerRef = useRef(null);
@@ -378,13 +388,43 @@ function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesse
 
     const renderEpisode = (episode, key, isLastText) => (
       <div key={key}>
-        {episode.completed.length > 0 && (
+        {episode.completed.length > 0 && (compactToolCalls ? (
+          episode.completed.map((item) => {
+            if (item.type === 'tool_call') {
+              return (
+                <ToolCallMessageContent
+                  key={`tool-call-${item.toolCallId}`}
+                  toolCallId={item.toolCallId}
+                  toolName={item.toolName}
+                  toolCall={item.toolCall}
+                  toolCallResult={item.toolCallResult}
+                  isInProgress={item.isInProgress || false}
+                  isComplete={item.isComplete || false}
+                  isFailed={item.isFailed || false}
+                  onOpenFile={onOpenFile}
+                />
+              );
+            }
+            if (item.type === 'reasoning') {
+              return (
+                <ReasoningMessageContent
+                  key={`reasoning-${item.id}`}
+                  reasoningContent={item.content || ''}
+                  isReasoning={false}
+                  reasoningComplete={item.reasoningComplete || false}
+                  reasoningTitle={item.reasoningTitle ?? undefined}
+                />
+              );
+            }
+            return null;
+          })
+        ) : (
           <ActivityAccordion
             completedItems={episode.completed}
             onToolCallClick={onToolCallDetailClick}
             onOpenFile={onOpenFile}
           />
-        )}
+        ))}
         {episode.subagentTask && (() => {
           const task = subagentTasks[episode.subagentTask.subagentId];
           if (!task) return null;

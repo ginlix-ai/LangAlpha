@@ -107,6 +107,29 @@
   border-color: rgba(102, 126, 234, 0.35);
 }
 
+.metrics-discrepancy-hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  margin-left: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  color: #555b6e;
+  border: 1px solid #333a4a;
+  border-radius: 50%;
+  cursor: default;
+  vertical-align: middle;
+  line-height: 1;
+  position: relative;
+}
+
+.metrics-discrepancy-hint:hover {
+  color: #8b8fa3;
+  border-color: #4a5068;
+}
+
 .view-all {
   align-items: flex-end;
 }

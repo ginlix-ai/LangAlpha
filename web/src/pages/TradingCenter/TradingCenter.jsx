@@ -12,8 +12,19 @@ import { fetchStockQuote, fetchCompanyOverview, fetchAnalystData } from './utils
 import { useTradingChat } from './hooks/useTradingChat';
 import { findOrCreateDefaultWorkspace } from '../Dashboard/utils/workspace';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../components/ui/dialog';
-import { Loader2, ArrowLeft } from 'lucide-react';
+import { Loader2, ArrowLeft, RefreshCw } from 'lucide-react';
 import CompanyOverviewPanel from './components/CompanyOverviewPanel';
+
+const QUICK_QUERIES = [
+  'Analyze the technical setup of {symbol}',
+  'What are the key support and resistance levels for {symbol}?',
+  'Summarize the trend and momentum indicators for {symbol}',
+  'What signals are the moving averages showing for {symbol}?',
+  'Analyze the RSI and volume patterns for {symbol}',
+  'Identify any chart patterns forming on {symbol}',
+  'How is {symbol} performing relative to its 52-week range?',
+  "What's the MACD crossover status for {symbol}?",
+];
 
 function TradingCenter() {
   const navigate = useNavigate();
@@ -33,6 +44,30 @@ function TradingCenter() {
   const [overviewData, setOverviewData] = useState(null);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overlayData, setOverlayData] = useState(null);
+  const [prefillMessage, setPrefillMessage] = useState('');
+
+  const pickRandomQueries = useCallback((symbol) => {
+    const shuffled = [...QUICK_QUERIES].sort(() => Math.random() - 0.5);
+    return shuffled.slice(0, 2).map(q => q.replace('{symbol}', symbol));
+  }, []);
+
+  const [quickQueries, setQuickQueries] = useState(() => pickRandomQueries(selectedStock));
+
+  useEffect(() => {
+    setQuickQueries(pickRandomQueries(selectedStock));
+  }, [selectedStock, pickRandomQueries]);
+
+  const handleShuffleQueries = useCallback(() => {
+    setQuickQueries(pickRandomQueries(selectedStock));
+  }, [selectedStock, pickRandomQueries]);
+
+  // Resizable chat panel
+  const [chatPanelWidth, setChatPanelWidth] = useState(() =>
+    parseInt(localStorage.getItem('trading-chat-width')) || 400
+  );
+  const isDragging = useRef(false);
+  const dragStartX = useRef(0);
+  const dragStartWidth = useRef(0);
 
   const { messages, isLoading, error, handleSendMessage: handleFastModeSend } = useTradingChat();
 
@@ -264,6 +299,11 @@ function TradingCenter() {
     setShowOverview(false);
   }, []);
 
+  const handleQuickQuery = useCallback(async (queryText) => {
+    await handleCaptureChartForContext();
+    setPrefillMessage(queryText);
+  }, [handleCaptureChartForContext]);
+
   const handleIntervalChange = useCallback((interval) => {
     setSelectedInterval(interval);
   }, []);
@@ -271,6 +311,37 @@ function TradingCenter() {
   const handleStockMeta = useCallback((meta) => {
     setChartMeta(meta);
   }, []);
+
+  const handleDragStart = useCallback((e) => {
+    e.preventDefault();
+    isDragging.current = true;
+    dragStartX.current = e.clientX;
+    dragStartWidth.current = chatPanelWidth;
+    document.body.classList.add('col-resizing');
+  }, [chatPanelWidth]);
+
+  useEffect(() => {
+    const handleMouseMove = (e) => {
+      if (!isDragging.current) return;
+      const delta = dragStartX.current - e.clientX;
+      const newWidth = Math.min(700, Math.max(300, dragStartWidth.current + delta));
+      setChatPanelWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      if (!isDragging.current) return;
+      isDragging.current = false;
+      document.body.classList.remove('col-resizing');
+      localStorage.setItem('trading-chat-width', String(chatPanelWidth));
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [chatPanelWidth]);
 
   return (
     <div className="trading-center-container">
@@ -313,19 +384,34 @@ function TradingCenter() {
           activeSymbol={selectedStock}
           onSymbolClick={handleSidebarSymbolClick}
         />
-        <div className="trading-right-panel">
+        <div className="trading-resize-handle" onMouseDown={handleDragStart} />
+        <div className="trading-right-panel" style={{ width: chatPanelWidth }}>
           <div className="trading-right-panel-inner">
             <TradingPanel
               messages={messages}
               isLoading={isLoading}
               error={error}
             />
+            {messages.length === 0 && (
+              <div className="trading-quick-queries">
+                {quickQueries.map((q, i) => (
+                  <button key={i} className="trading-quick-query-card" onClick={() => handleQuickQuery(q)}>
+                    {q}
+                  </button>
+                ))}
+                <button className="trading-quick-query-shuffle" onClick={handleShuffleQueries} title="Show different suggestions">
+                  <RefreshCw size={13} />
+                </button>
+              </div>
+            )}
             <TradingChatInput
               onSend={handleSendMessage}
               isLoading={isLoading}
               onCaptureChart={handleCaptureChartForContext}
               chartImage={chartImage}
               onRemoveChartImage={() => { setChartImage(null); setChartImageDesc(null); }}
+              prefillMessage={prefillMessage}
+              onClearPrefill={() => setPrefillMessage('')}
             />
           </div>
         </div>

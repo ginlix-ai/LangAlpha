@@ -35,8 +35,8 @@
 }
 
 .trading-chat-input {
-  flex: 1;
-  min-width: 120px;
+  flex: 1 1 100%;
+  min-width: 0;
   min-height: 40px;
   height: 40px;
   padding: 8px 14px;

@@ -33,7 +33,6 @@
 }
 
 .trading-right-panel {
-  width: 400px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -42,6 +41,39 @@
   padding: 12px;
   box-sizing: border-box;
   overflow: hidden;
+}
+
+/* Resize drag handle between sidebar and chat panel */
+.trading-resize-handle {
+  width: 4px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+  position: relative;
+}
+
+.trading-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -2px;
+  right: -2px;
+  bottom: 0;
+}
+
+.trading-resize-handle:hover,
+.trading-resize-handle:active {
+  background: rgba(97, 85, 245, 0.5);
+}
+
+body.col-resizing {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+body.col-resizing * {
+  cursor: col-resize !important;
 }
 
 .trading-right-panel-inner {
@@ -83,6 +115,54 @@
   line-height: 1.5;
   margin: 0;
   max-width: 280px;
+}
+
+/* Quick-start bubble cards */
+.trading-quick-queries {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 4px 4px;
+}
+
+.trading-quick-query-card {
+  background: rgba(97, 85, 245, 0.08);
+  border: 1px solid rgba(97, 85, 245, 0.25);
+  border-radius: 10px;
+  padding: 10px 14px;
+  color: rgba(200, 196, 255, 0.9);
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.trading-quick-query-card:hover {
+  background: rgba(97, 85, 245, 0.18);
+  border-color: rgba(97, 85, 245, 0.45);
+}
+
+.trading-quick-query-shuffle {
+  align-self: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid rgba(97, 85, 245, 0.2);
+  background: rgba(97, 85, 245, 0.06);
+  color: rgba(200, 196, 255, 0.6);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.trading-quick-query-shuffle:hover {
+  background: rgba(97, 85, 245, 0.18);
+  border-color: rgba(97, 85, 245, 0.4);
+  color: rgba(200, 196, 255, 0.95);
 }
 
 /* Scrollbar styling consistent with Dashboard */

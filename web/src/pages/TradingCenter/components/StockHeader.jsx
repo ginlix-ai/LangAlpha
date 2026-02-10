@@ -54,7 +54,9 @@ const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta, displayOverr
 
       <div className="stock-metrics">
         <div className="metric-item">
-          <span className="metric-label">Open</span>
+          <span className="metric-label">Open
+            <span className="metrics-discrepancy-hint" title="Values are aggregated from intraday data and may differ slightly from daily figures shown on the chart.">!</span>
+          </span>
           <span className="metric-value">
             {open != null ? Number(open).toFixed(2) : '—'}
           </span>

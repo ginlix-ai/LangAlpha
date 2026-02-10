@@ -1,5 +1,6 @@
 import React, { useRef, useEffect } from 'react';
 import MessageList from '../../ChatAgent/components/MessageList';
+import LogoLoading from '../../../components/ui/logo-loading';
 import './TradingPanel.css';
 
 /**
@@ -63,21 +64,32 @@ const TradingPanel = ({ messages = [], isLoading = false, error = null }) => {
           overflowX: 'hidden',
         }}
       >
-        <div style={{ padding: '16px 24px', maxWidth: '100%' }}>
-          <MessageList 
-            messages={messages.map(msg => ({
-              ...msg,
-              error: error && msg.id === messages[messages.length - 1]?.id ? error : msg.error
-            }))} 
-            onOpenSubagentTask={() => {}}
-            onOpenFile={() => {}}
-          />
-          {error && messages.length === 0 && (
-            <div style={{ color: '#ef4444', padding: '12px', fontSize: '14px' }}>
-              Error: {error}
-            </div>
-          )}
-        </div>
+        {messages.length === 0 ? (
+          <div className="trading-chat-empty-state" style={{ height: '100%' }}>
+            <LogoLoading size={60} color="rgba(97, 85, 245, 0.5)" />
+            <p className="trading-chat-empty-text" style={{ marginTop: 16 }}>
+              Start a conversation by typing a message below
+            </p>
+            {error && (
+              <div style={{ color: '#ef4444', padding: '12px', fontSize: '14px' }}>
+                Error: {error}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div style={{ padding: '16px 24px', maxWidth: '100%' }}>
+            <MessageList
+              messages={messages.map(msg => ({
+                ...msg,
+                error: error && msg.id === messages[messages.length - 1]?.id ? error : msg.error
+              }))}
+              hideAvatar
+              compactToolCalls
+              onOpenSubagentTask={() => {}}
+              onOpenFile={() => {}}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

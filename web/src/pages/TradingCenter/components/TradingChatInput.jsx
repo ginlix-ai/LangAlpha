@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Camera, Globe, Send, Zap, Loader2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import './TradingChatInput.css';
@@ -11,10 +11,17 @@ import './TradingChatInput.css';
  * @param {Function} props.onSend - Callback when message is sent (message, mode)
  * @param {boolean} props.isLoading - Whether a message is currently loading
  */
-function TradingChatInput({ onSend, isLoading = false, onCaptureChart, chartImage, onRemoveChartImage }) {
+function TradingChatInput({ onSend, isLoading = false, onCaptureChart, chartImage, onRemoveChartImage, prefillMessage, onClearPrefill }) {
   const [message, setMessage] = useState('');
   const [planMode, setPlanMode] = useState(false);
   const [mode, setMode] = useState('fast'); // 'fast' or 'deep'
+
+  useEffect(() => {
+    if (prefillMessage) {
+      setMessage(prefillMessage);
+      onClearPrefill?.();
+    }
+  }, [prefillMessage, onClearPrefill]);
 
   const handleSend = () => {
     if (!message.trim() || isLoading) {
