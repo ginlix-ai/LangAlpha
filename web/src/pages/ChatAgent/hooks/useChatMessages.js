@@ -1558,7 +1558,7 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
           threadId: event.thread_id,
           assistantMessageId,
           planApprovalId,
-          planMode: currentPlanModeRef.current,
+          planMode: event.action_requests?.some(r => r.name === 'SubmitPlan') || currentPlanModeRef.current,
         });
 
         setIsLoading(false);
