@@ -5,7 +5,7 @@ import { setTokenGetter } from '../api/client';
 const AuthContext = createContext(null);
 
 const _SUPABASE_AUTH_ENABLED = !!import.meta.env.VITE_SUPABASE_URL;
-const _LOCAL_DEV_USER_ID = 'local-dev-user';
+const _LOCAL_DEV_USER_ID = import.meta.env.VITE_AUTH_USER_ID || 'local-dev-user';
 
 const baseURL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 

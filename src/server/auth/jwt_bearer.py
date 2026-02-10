@@ -17,7 +17,7 @@ from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 _AUTH_ENABLED = bool(os.getenv("SUPABASE_URL", ""))
-LOCAL_DEV_USER_ID = "local-dev-user"
+LOCAL_DEV_USER_ID = os.getenv("AUTH_USER_ID", "local-dev-user")
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 

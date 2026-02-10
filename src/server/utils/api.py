@@ -9,7 +9,7 @@ import inspect
 import logging
 from typing import Annotated, Callable, Optional, TypeVar
 
-from fastapi import Depends, Header, HTTPException, Request
+from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from src.server.auth.jwt_bearer import _AUTH_ENABLED, LOCAL_DEV_USER_ID, _decode_token
@@ -22,29 +22,22 @@ _optional_bearer = HTTPBearer(auto_error=False)
 
 async def get_current_user_id(
     credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer),
-    x_user_id: Optional[str] = Header(None, alias="X-User-Id"),
 ) -> str:
     """
     FastAPI dependency to extract user ID.
 
-    When Supabase auth is disabled (``SUPABASE_URL`` unset), returns a
-    static local-dev user ID immediately.
+    When Supabase auth is disabled (``SUPABASE_URL`` unset), returns the
+    configured local user ID (``AUTH_USER_ID`` env var, default ``local-dev-user``).
 
-    Otherwise checks for a Bearer JWT first (Supabase auth). Falls back to
-    the legacy X-User-Id header during the transition period.  Once all
-    clients send Bearer tokens the fallback can be removed.
+    When auth is enabled, requires a valid Bearer JWT (Supabase).
     """
     if not _AUTH_ENABLED:
         return LOCAL_DEV_USER_ID
 
-    if credentials is not None:
-        return _decode_token(credentials.credentials)
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Missing authentication")
 
-    # Fallback: legacy X-User-Id header
-    if x_user_id:
-        return x_user_id
-
-    raise HTTPException(status_code=401, detail="Missing authentication")
+    return _decode_token(credentials.credentials)
 
 
 # Annotated type for cleaner endpoint signatures

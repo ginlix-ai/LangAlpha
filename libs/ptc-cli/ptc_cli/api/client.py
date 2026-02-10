@@ -7,6 +7,7 @@ Adapted from tui/client.py for CLI context.
 """
 
 import json
+import os
 from typing import Any, AsyncGenerator, Dict, List, Optional
 from urllib.parse import urljoin
 
@@ -33,7 +34,7 @@ class SSEStreamClient:
     def __init__(
         self,
         base_url: str = DEFAULT_BASE_URL,
-        user_id: str = "cli_user",
+        user_id: str | None = None,
         timeout: float = DEFAULT_TIMEOUT,
     ):
         """
@@ -41,11 +42,11 @@ class SSEStreamClient:
 
         Args:
             base_url: Server base URL
-            user_id: User identifier for requests
+            user_id: User identifier for requests (defaults to AUTH_USER_ID env or "cli_user")
             timeout: Request timeout in seconds
         """
         self.base_url = base_url.rstrip("/")
-        self.user_id = user_id
+        self.user_id = user_id or os.getenv("AUTH_USER_ID", "cli_user")
         self.timeout = timeout
         self.client = httpx.AsyncClient(timeout=timeout)
 
