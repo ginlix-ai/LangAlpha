@@ -520,32 +520,19 @@ export function useTradingChat() {
       // Flush any remaining batched updates
       flushUpdates();
 
-      // Mark message as not streaming
-      setMessages((prev) =>
-        prev.map((msg) => {
-          if (msg.id !== assistantMessageId) return msg;
-          return {
-            ...msg,
-            isStreaming: false,
-          };
-        })
-      );
-      
-      // Only set error if we haven't received any events
-      // If we received events, the stream might have just been interrupted but we have partial data
-      if (!hasReceivedEvents) {
-        setError(err.message || 'Failed to send message');
-        setMessages((prev) =>
-          prev.map((msg) => {
-            if (msg.id !== assistantMessageId) return msg;
-            return {
-              ...msg,
-              error: err.message || 'Failed to send message',
-            };
-          })
-        );
+      // Handle rate limit (429) — show friendly message and remove empty assistant placeholder
+      if (err.status === 429) {
+        const info = err.rateLimitInfo || {};
+        const limitMsg = info.type === 'credit_limit'
+          ? `Daily credit limit reached (${info.used_credits}/${info.credit_limit} credits). Resets at midnight UTC.`
+          : info.type === 'burst_limit'
+            ? 'Too many concurrent requests. Please wait a moment.'
+            : info.message || 'Rate limit exceeded. Please try again later.';
+        setError(limitMsg);
+        // Remove the empty assistant placeholder — no content to show
+        setMessages((prev) => prev.filter((msg) => msg.id !== assistantMessageId));
       } else {
-        // We received some events, so mark as complete even if stream was interrupted
+        // Mark message as not streaming
         setMessages((prev) =>
           prev.map((msg) => {
             if (msg.id !== assistantMessageId) return msg;
@@ -555,8 +542,23 @@ export function useTradingChat() {
             };
           })
         );
-        if (process.env.NODE_ENV === 'development') {
-          console.warn('[TradingChat] Stream interrupted but received partial data, marking as complete');
+
+        // Only set error if we haven't received any events
+        if (!hasReceivedEvents) {
+          setError(err.message || 'Failed to send message');
+          setMessages((prev) =>
+            prev.map((msg) => {
+              if (msg.id !== assistantMessageId) return msg;
+              return {
+                ...msg,
+                error: err.message || 'Failed to send message',
+              };
+            })
+          );
+        } else {
+          if (process.env.NODE_ENV === 'development') {
+            console.warn('[TradingChat] Stream interrupted but received partial data, marking as complete');
+          }
         }
       }
     } finally {

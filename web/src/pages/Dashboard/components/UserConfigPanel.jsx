@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, User, LogOut } from 'lucide-react';
+import { X, User, LogOut, Eye, EyeOff, Trash2, HelpCircle } from 'lucide-react';
 import { Input } from '../../../components/ui/input';
-import { updateCurrentUser, getCurrentUser, updatePreferences, getPreferences, uploadAvatar, redeemCode, getUsageStatus } from '../utils/api';
+import { updateCurrentUser, getCurrentUser, updatePreferences, getPreferences, uploadAvatar, redeemCode, getUsageStatus, getAvailableModels, getUserApiKeys, updateUserApiKeys, deleteUserApiKey } from '../utils/api';
 import { useAuth } from '../../../contexts/AuthContext';
 import ConfirmDialog from './ConfirmDialog';
 
@@ -38,9 +38,22 @@ function UserConfigPanel({ isOpen, onClose }) {
 
   const [usage, setUsage] = useState(null);
 
+  // Model tab state
+  const [availableModels, setAvailableModels] = useState({});
+  const [preferredModel, setPreferredModel] = useState('');
+  const [preferredFlashModel, setPreferredFlashModel] = useState('');
+  const [byokEnabled, setByokEnabled] = useState(false);
+  const [byokProviders, setByokProviders] = useState([]);
+  const [keyInputs, setKeyInputs] = useState({});
+  const [visibleKeys, setVisibleKeys] = useState({});
+  const [deletingProvider, setDeletingProvider] = useState(null);
+  const [modelTabError, setModelTabError] = useState(null);
+  const [modelSaveSuccess, setModelSaveSuccess] = useState(false);
+
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [saveSuccess, setSaveSuccess] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
   const timezones = [
@@ -91,6 +104,13 @@ function UserConfigPanel({ isOpen, onClose }) {
     }
   }, [isOpen]);
 
+  // Load model tab data lazily when tab is selected
+  useEffect(() => {
+    if (isOpen && activeTab === 'model') {
+      loadModelTabData();
+    }
+  }, [isOpen, activeTab]);
+
   const loadUserData = async () => {
     try {
       const userData = await getCurrentUser();
@@ -130,6 +150,81 @@ function UserConfigPanel({ isOpen, onClose }) {
     }
   };
 
+  const loadModelTabData = async () => {
+    setModelTabError(null);
+    try {
+      const [modelsRes, keysRes, prefsRes] = await Promise.all([
+        getAvailableModels(),
+        getUserApiKeys(),
+        getPreferences(),
+      ]);
+      setAvailableModels(modelsRes?.models || {});
+      setByokEnabled(keysRes?.byok_enabled || false);
+      setByokProviders(keysRes?.providers || []);
+      setPreferredModel(prefsRes?.other_preference?.preferred_model || '');
+      setPreferredFlashModel(prefsRes?.other_preference?.preferred_flash_model || '');
+    } catch {
+      setModelTabError('Failed to load model settings');
+    }
+  };
+
+  const handleModelTabSave = async () => {
+    setModelTabError(null);
+    setModelSaveSuccess(false);
+    setIsSubmitting(true);
+    try {
+      // 1. Save model preferences
+      await updatePreferences({
+        other_preference: {
+          preferred_model: preferredModel || null,
+          preferred_flash_model: preferredFlashModel || null,
+        },
+      });
+
+      // 2. Save any pending API key inputs
+      const pendingKeys = Object.entries(keyInputs).filter(([, v]) => v?.trim());
+      for (const [provider, key] of pendingKeys) {
+        const result = await updateUserApiKeys({ api_keys: { [provider]: key.trim() } });
+        setByokProviders(result.providers);
+      }
+      if (pendingKeys.length > 0) {
+        setKeyInputs({});
+      }
+
+      setModelSaveSuccess(true);
+      setTimeout(() => setModelSaveSuccess(false), 3000);
+    } catch {
+      setModelTabError('Failed to save settings');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleByokToggle = async () => {
+    setModelTabError(null);
+    const newValue = !byokEnabled;
+    try {
+      const result = await updateUserApiKeys({ byok_enabled: newValue });
+      setByokEnabled(result.byok_enabled);
+      setByokProviders(result.providers);
+    } catch {
+      setModelTabError('Failed to toggle BYOK');
+    }
+  };
+
+  const handleDeleteProviderKey = async (provider) => {
+    setDeletingProvider(provider);
+    setModelTabError(null);
+    try {
+      const result = await deleteUserApiKey(provider);
+      setByokProviders(result.providers);
+    } catch {
+      setModelTabError(`Failed to delete ${provider} key`);
+    } finally {
+      setDeletingProvider(null);
+    }
+  };
+
   const handleAvatarChange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -149,6 +244,7 @@ function UserConfigPanel({ isOpen, onClose }) {
     e.preventDefault();
     setIsSubmitting(true);
     setError(null);
+    setSaveSuccess(false);
     try {
       const userData = {};
       if (name.trim()) userData.name = name.trim();
@@ -156,9 +252,9 @@ function UserConfigPanel({ isOpen, onClose }) {
       if (locale) userData.locale = locale;
       if (Object.keys(userData).length > 0) {
         await updateCurrentUser(userData);
-        refreshUser();
       }
-      onClose();
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err) {
       setError(err.message || 'Failed to update user information');
     } finally {
@@ -170,6 +266,7 @@ function UserConfigPanel({ isOpen, onClose }) {
     e.preventDefault();
     setIsSubmitting(true);
     setError(null);
+    setSaveSuccess(false);
     try {
       const preferences = {};
       if (riskTolerance) preferences.risk_preference = { risk_tolerance: riskTolerance };
@@ -182,9 +279,9 @@ function UserConfigPanel({ isOpen, onClose }) {
       if (Object.keys(preferences).length > 0) {
         await updatePreferences(preferences);
         await updateCurrentUser({ onboarding_completed: true });
-        refreshUser();
       }
-      onClose();
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err) {
       setError(err.message || 'Failed to update preferences');
     } finally {
@@ -224,8 +321,17 @@ function UserConfigPanel({ isOpen, onClose }) {
   ];
   const getPlanBadgeStyle = (rank) => PLAN_BADGE_COLORS[Math.min(rank, PLAN_BADGE_COLORS.length - 1)];
 
+  // Prevent Enter key in text inputs from submitting the enclosing <form>.
+  // Only the explicit submit button should trigger form submission.
+  const preventEnterSubmit = (e) => {
+    if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type !== 'submit') {
+      e.preventDefault();
+    }
+  };
+
   const handleClose = () => {
     setError(null);
+    setSaveSuccess(false);
     setRedeemError(null);
     setRedeemSuccess(null);
     onClose();
@@ -282,6 +388,17 @@ function UserConfigPanel({ isOpen, onClose }) {
                 >
                   Preferences
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('model')}
+                  className="px-4 py-2 text-sm font-medium"
+                  style={{
+                    color: activeTab === 'model' ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
+                    borderBottom: activeTab === 'model' ? '2px solid var(--color-accent-primary)' : '2px solid transparent',
+                  }}
+                >
+                  Model
+                </button>
               </div>
 
               {isLoading && (
@@ -291,7 +408,7 @@ function UserConfigPanel({ isOpen, onClose }) {
               )}
 
               {!isLoading && activeTab === 'userInfo' && (
-                <form onSubmit={handleUserInfoSubmit} className="space-y-5">
+                <form onSubmit={handleUserInfoSubmit} onKeyDown={preventEnterSubmit} className="space-y-5">
                   <div className="flex items-center gap-4 mb-6 pb-6" style={{ borderBottom: '1px solid var(--color-border-muted)' }}>
                     <div
                       className="h-16 w-16 rounded-full flex items-center justify-center cursor-pointer overflow-hidden"
@@ -411,7 +528,17 @@ function UserConfigPanel({ isOpen, onClose }) {
                         {/* Credits */}
                         <div>
                           <div className="flex items-center justify-between mb-1">
-                            <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>Daily Credits</span>
+                            <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+                              Daily Credits
+                              {usage.byok_enabled && (
+                                <span
+                                  className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium"
+                                  style={{ backgroundColor: 'rgba(34, 197, 94, 0.15)', color: '#22c55e', border: '1px solid rgba(34, 197, 94, 0.3)' }}
+                                >
+                                  BYOK
+                                </span>
+                              )}
+                            </span>
                             <span className="text-xs font-medium" style={{ color: 'var(--color-text-secondary)' }}>
                               {usage.credits.limit === -1
                                 ? 'Unlimited'
@@ -498,10 +625,13 @@ function UserConfigPanel({ isOpen, onClose }) {
                     >
                       <LogOut className="h-4 w-4" /> Logout
                     </button>
-                    <div className="flex gap-3">
+                    <div className="flex items-center gap-3">
+                      {saveSuccess && (
+                        <span className="text-xs" style={{ color: 'var(--color-success, #22c55e)' }}>Saved</span>
+                      )}
                       <button type="button" onClick={handleClose} disabled={isSubmitting}
                         className="px-4 py-2 rounded-md text-sm font-medium hover:bg-white/10" style={{ color: 'var(--color-text-primary)' }}>
-                        Cancel
+                        Close
                       </button>
                       <button type="submit" disabled={isSubmitting}
                         className="px-4 py-2 rounded-md text-sm font-medium"
@@ -510,7 +640,7 @@ function UserConfigPanel({ isOpen, onClose }) {
                           color: 'var(--color-text-on-accent)',
                         }}
                       >
-                        {isSubmitting ? 'Updating...' : 'Update'}
+                        {isSubmitting ? 'Saving...' : 'Save'}
                       </button>
                     </div>
                   </div>
@@ -518,7 +648,7 @@ function UserConfigPanel({ isOpen, onClose }) {
               )}
 
               {!isLoading && activeTab === 'preferences' && (
-                <form onSubmit={handlePreferencesSubmit} className="space-y-5">
+                <form onSubmit={handlePreferencesSubmit} onKeyDown={preventEnterSubmit} className="space-y-5">
                   <div>
                     <label className="block text-sm font-medium mb-2" style={{ color: 'var(--color-text-primary)' }}>Risk Tolerance</label>
                     <select
@@ -621,10 +751,13 @@ function UserConfigPanel({ isOpen, onClose }) {
                     </div>
                   )}
 
-                  <div className="flex gap-3 justify-end pt-4">
+                  <div className="flex items-center gap-3 justify-end pt-4">
+                    {saveSuccess && (
+                      <span className="text-xs" style={{ color: 'var(--color-success, #22c55e)' }}>Saved</span>
+                    )}
                     <button type="button" onClick={handleClose} disabled={isSubmitting}
                       className="px-4 py-2 rounded-md text-sm font-medium hover:bg-white/10" style={{ color: 'var(--color-text-primary)' }}>
-                      Cancel
+                      Close
                     </button>
                     <button type="submit" disabled={isSubmitting}
                       className="px-4 py-2 rounded-md text-sm font-medium"
@@ -633,10 +766,163 @@ function UserConfigPanel({ isOpen, onClose }) {
                         color: 'var(--color-text-on-accent)',
                       }}
                     >
-                      {isSubmitting ? 'Updating...' : 'Update'}
+                      {isSubmitting ? 'Saving...' : 'Save'}
                     </button>
                   </div>
                 </form>
+              )}
+
+              {!isLoading && activeTab === 'model' && (
+                <div className="space-y-6">
+                  {/* Section 1: Model Preferences */}
+                  <div>
+                    {[
+                      { label: 'Default Model', desc: 'Used for workspace conversations (code execution, sandbox).', value: preferredModel, setter: setPreferredModel },
+                      { label: 'Flash Model', desc: 'Used for quick queries without sandbox (web search, market data).', value: preferredFlashModel, setter: setPreferredFlashModel },
+                    ].map(({ label, desc, value, setter }) => (
+                      <div key={label} className="mb-4">
+                        <label className="block text-sm font-medium mb-1" style={{ color: 'var(--color-text-primary)' }}>{label}</label>
+                        <p className="text-xs mb-2" style={{ color: 'var(--color-text-tertiary)' }}>{desc}</p>
+                        <select
+                          value={value}
+                          onChange={(e) => setter(e.target.value)}
+                          className="w-full rounded-md px-3 py-2 text-sm"
+                          style={{
+                            backgroundColor: 'var(--color-bg-card)',
+                            border: '1px solid var(--color-border-muted)',
+                            color: 'var(--color-text-primary)',
+                          }}
+                          disabled={isSubmitting}
+                        >
+                          <option value="" style={{ backgroundColor: 'var(--color-bg-card)' }}>System default</option>
+                          {Object.entries(availableModels).map(([provider, models]) => (
+                            <optgroup key={provider} label={provider.charAt(0).toUpperCase() + provider.slice(1)} style={{ backgroundColor: 'var(--color-bg-card)' }}>
+                              {models.map((m) => (
+                                <option key={m} value={m} style={{ backgroundColor: 'var(--color-bg-card)' }}>{m}</option>
+                              ))}
+                            </optgroup>
+                          ))}
+                        </select>
+                      </div>
+                    ))}
+
+                  </div>
+
+                  {/* Section 2: BYOK */}
+                  <div style={{ borderTop: '1px solid var(--color-border-muted)', paddingTop: '16px' }}>
+                    <div className="flex items-center justify-between mb-2">
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <label className="block text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>Bring Your Own Key (BYOK)</label>
+                          <div className="relative group">
+                            <HelpCircle className="h-3.5 w-3.5 cursor-help" style={{ color: 'var(--color-text-tertiary)' }} />
+                            <div
+                              className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 rounded-lg text-xs leading-relaxed whitespace-normal hidden group-hover:block z-50"
+                              style={{
+                                width: '240px',
+                                backgroundColor: 'var(--color-bg-elevated)',
+                                border: '1px solid var(--color-border-elevated)',
+                                color: 'var(--color-text-secondary)',
+                                boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                              }}
+                            >
+                              Your API keys are stored using AES encryption and are never visible in plaintext. If you choose to delete a key, it is permanently removed from our records.
+                            </div>
+                          </div>
+                        </div>
+                        <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)' }}>
+                          Provide your own API keys to bypass credit limits.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleByokToggle}
+                        className="relative inline-flex h-6 w-11 items-center rounded-full transition-colors"
+                        style={{
+                          backgroundColor: byokEnabled ? 'var(--color-accent-primary)' : 'var(--color-border-muted)',
+                        }}
+                      >
+                        <span
+                          className="inline-block h-4 w-4 rounded-full bg-white transition-transform"
+                          style={{ transform: byokEnabled ? 'translateX(22px)' : 'translateX(4px)' }}
+                        />
+                      </button>
+                    </div>
+
+                    {byokEnabled && (
+                      <div className="space-y-3 mt-4">
+                        {byokProviders.map((prov) => (
+                          <div key={prov.provider} className="flex items-center gap-2">
+                            <span className="text-xs font-medium w-24 shrink-0" style={{ color: 'var(--color-text-secondary)' }}>
+                              {prov.display_name || prov.provider}
+                            </span>
+                            <div className="flex-1 relative">
+                              <input
+                                type={visibleKeys[prov.provider] ? 'text' : 'password'}
+                                value={keyInputs[prov.provider] || ''}
+                                onChange={(e) => setKeyInputs((prev) => ({ ...prev, [prov.provider]: e.target.value }))}
+                                placeholder={prov.has_key ? prov.masked_key : 'Enter API key...'}
+                                className="w-full rounded-md px-3 py-1.5 pr-8 text-sm"
+                                style={{
+                                  backgroundColor: 'var(--color-bg-card)',
+                                  border: '1px solid var(--color-border-muted)',
+                                  color: 'var(--color-text-primary)',
+                                }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setVisibleKeys((prev) => ({ ...prev, [prov.provider]: !prev[prov.provider] }))}
+                                className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5"
+                                style={{ color: 'var(--color-text-tertiary)' }}
+                              >
+                                {visibleKeys[prov.provider] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                              </button>
+                            </div>
+                            {prov.has_key && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteProviderKey(prov.provider)}
+                                disabled={deletingProvider === prov.provider}
+                                className="p-1.5 rounded-md shrink-0 transition-colors hover:bg-white/10"
+                                style={{ color: 'var(--color-loss)' }}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {modelTabError && (
+                    <div className="p-3 rounded-md" style={{ backgroundColor: 'var(--color-loss-soft)', border: '1px solid var(--color-border-loss)' }}>
+                      <p className="text-sm" style={{ color: 'var(--color-loss)' }}>{modelTabError}</p>
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-3 justify-end pt-4" style={{ borderTop: '1px solid var(--color-border-muted)', marginTop: '8px', paddingTop: '16px' }}>
+                    {modelSaveSuccess && (
+                      <span className="text-xs" style={{ color: 'var(--color-success, #22c55e)' }}>Saved</span>
+                    )}
+                    <button type="button" onClick={handleClose}
+                      className="px-4 py-2 rounded-md text-sm font-medium hover:bg-white/10" style={{ color: 'var(--color-text-primary)' }}>
+                      Close
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleModelTabSave}
+                      disabled={isSubmitting}
+                      className="px-4 py-2 rounded-md text-sm font-medium"
+                      style={{
+                        backgroundColor: isSubmitting ? 'var(--color-accent-disabled)' : 'var(--color-accent-primary)',
+                        color: 'var(--color-text-on-accent)',
+                      }}
+                    >
+                      {isSubmitting ? 'Saving...' : 'Save'}
+                    </button>
+                  </div>
+                </div>
               )}
         </div>
       </div>

@@ -79,15 +79,26 @@ const TradingPanel = ({ messages = [], isLoading = false, error = null }) => {
         ) : (
           <div style={{ padding: '16px 24px', maxWidth: '100%' }}>
             <MessageList
-              messages={messages.map(msg => ({
-                ...msg,
-                error: error && msg.id === messages[messages.length - 1]?.id ? error : msg.error
-              }))}
+              messages={messages}
               hideAvatar
               compactToolCalls
               onOpenSubagentTask={() => {}}
               onOpenFile={() => {}}
             />
+            {error && (
+              <div style={{
+                margin: '8px 0',
+                padding: '10px 14px',
+                borderRadius: '8px',
+                background: 'rgba(239, 68, 68, 0.08)',
+                border: '1px solid rgba(239, 68, 68, 0.2)',
+                color: '#ef4444',
+                fontSize: '13px',
+                lineHeight: '1.5',
+              }}>
+                {error}
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -450,6 +450,15 @@ async function streamFetch(url, opts, onEvent) {
   }
 
   if (!res.ok) {
+    // Handle 429 (rate limit) with structured detail
+    if (res.status === 429) {
+      let detail = {};
+      try { detail = await res.json(); } catch { /* ignore */ }
+      const err = new Error(detail?.detail?.message || 'Rate limit exceeded');
+      err.status = 429;
+      err.rateLimitInfo = detail?.detail || {};
+      throw err;
+    }
     const errorText = await res.text().catch(() => 'Unknown error');
     throw new Error(`HTTP error! status: ${res.status}, message: ${errorText}`);
   }
