@@ -13,7 +13,7 @@ load_dotenv()
 
 class ModelConfig:
     """Manages model configuration from JSON files."""
-    
+
     def __init__(self):
         # Load models.json for model parameters
         llm_config_path = Path(__file__).parent / "manifest" / "models.json"
@@ -24,15 +24,15 @@ class ModelConfig:
         manifest_path = Path(__file__).parent / "manifest" / "providers.json"
         with open(manifest_path, 'r') as f:
             self.manifest = json.load(f)
-    
+
     def get_model_config(self, model_id: str) -> Optional[Dict]:
         """Get model configuration from llm_config."""
         return self.llm_config.get(model_id)
-    
+
     def get_provider_info(self, provider: str) -> Dict:
         """Get provider configuration from manifest."""
         return self.manifest["provider_config"].get(provider, {})
-    
+
     def get_model_pricing(self, custom_model_name: str) -> Optional[Dict[str, Any]]:
         """Get pricing information for a specific model from manifest."""
         # Get model info from llm_config first
@@ -66,42 +66,54 @@ class ModelConfig:
                 return model
         return None
 
+    def get_byok_eligible_providers(self) -> list[str]:
+        """Return list of provider names that have byok_eligible=true in manifest."""
+        return [
+            name
+            for name, cfg in self.manifest.get("provider_config", {}).items()
+            if cfg.get("byok_eligible", False)
+        ]
+
 
 class LLM:
     """Factory class for creating LangChain LLM clients."""
-    
+
     # Class-level model config instance
     _model_config = None
-    
+
     @classmethod
     def get_model_config(cls) -> ModelConfig:
         """Get or create the model configuration singleton."""
         if cls._model_config is None:
             cls._model_config = ModelConfig()
         return cls._model_config
-    
-    def __init__(self, model: str, **override_params):
+
+    def __init__(self, model: str, api_key: str | None = None, **override_params):
         """
         Initializes the LLM factory.
 
         Args:
             model: The customized model name (key in llm_config.json).
+            api_key: Optional API key override (e.g. from BYOK).
             **override_params: Additional parameters to override defaults.
         """
         self.model_config = self.get_model_config()
-        
+
         # Get model configuration from models.json
         model_info = self.model_config.get_model_config(model)
         if not model_info:
             raise ValueError(f"Model {model} not found in models.json")
-        
+
         self.custom_model_name = model  # Store the custom name
         self.model = model_info["model_id"]  # Use model_id for API calls
         self.provider = model_info["provider"]
         self.parameters = model_info.get("parameters", {}).copy()
-        
+
         # Override with any provided parameters
         self.parameters.update(override_params)
+
+        # Store optional API key override (BYOK)
+        self.api_key_override = api_key
 
         # Get provider info from manifest
         self.provider_info = self.model_config.get_provider_info(self.provider)
@@ -137,36 +149,41 @@ class LLM:
             return self._get_gemini_llm()
         else:
             raise ValueError(f"Unsupported SDK: {self.sdk} for provider {self.provider}")
-    
+
+    def _resolve_api_key(self) -> str:
+        """Resolve API key: BYOK override > env var > local fallback."""
+        if self.api_key_override:
+            return self.api_key_override
+        if self.env_key:
+            key = os.getenv(self.env_key)
+            if not key:
+                raise ValueError(f"{self.env_key} environment variable is not set")
+            return key
+        return "lm-studio" if self.provider == "lm-studio" else "EMPTY"
+
+    def _resolve_base_url(self, param_name: str = "base_url") -> dict:
+        """Resolve base URL with HOST_IP substitution. Returns dict to merge into params."""
+        if not self.base_url:
+            return {}
+        url = self.base_url
+        if "{HOST_IP}" in url:
+            host_ip = os.getenv("HOST_IP")
+            if not host_ip:
+                raise ValueError(f"HOST_IP environment variable is not set for {self.provider}")
+            url = url.replace("{HOST_IP}", host_ip)
+        return {param_name: url}
+
     def _get_openai_llm(self):
         """Get OpenAI or OpenAI-compatible LLM."""
         params = {
             "model": self.model,
+            "api_key": self._resolve_api_key(),
             "stream_usage": True,
             "max_retries": 5,
-            "timeout": 600.0,  # 10 minutes - sufficient for long reasoning
+            "timeout": 600.0,
         }
+        params.update(self._resolve_base_url("base_url"))
 
-        # Set API key from provider configuration
-        if self.env_key:
-            params["api_key"] = os.getenv(self.env_key)
-            if not params["api_key"]:
-                raise ValueError(f"{self.env_key} environment variable is not set")
-        else:
-            # Special case for local providers without API key
-            params["api_key"] = "lm-studio" if self.provider == "lm-studio" else "EMPTY"
-
-        # Set base URL from provider configuration
-        if self.base_url:
-            # Handle HOST_IP replacement for local providers
-            if "{HOST_IP}" in self.base_url:
-                host_ip = os.getenv("HOST_IP")
-                if not host_ip:
-                    raise ValueError(f"HOST_IP environment variable is not set for {self.provider}")
-                params["base_url"] = self.base_url.replace("{HOST_IP}", host_ip)
-            else:
-                params["base_url"] = self.base_url
-        
         # Handle Response API if configured
         if self.use_response_api:
             params["output_version"] = "responses/v1"
@@ -177,38 +194,19 @@ class LLM:
 
         # Add all parameters from llm_config
         params.update(self.parameters)
-        
+
         return ChatOpenAI(**params)
 
     def _get_deepseek_llm(self):
         """Get DeepSeek or DeepSeek-compatible LLM."""
         params = {
             "model": self.model,
+            "api_key": self._resolve_api_key(),
             "stream_usage": True,
             "max_retries": 5,
-            "timeout": 600.0,  # 10 minutes - sufficient for long reasoning
+            "timeout": 600.0,
         }
-
-        # Set API key from provider configuration
-        if self.env_key:
-            params["api_key"] = os.getenv(self.env_key)
-            if not params["api_key"]:
-                raise ValueError(f"{self.env_key} environment variable is not set")
-        else:
-            # Special case for local providers without API key
-            params["api_key"] = "EMPTY"
-
-        # Set base URL from provider configuration (ChatDeepSeek uses api_base)
-        if self.base_url:
-            # Handle HOST_IP replacement for local providers
-            if "{HOST_IP}" in self.base_url:
-                host_ip = os.getenv("HOST_IP")
-                if not host_ip:
-                    raise ValueError(f"HOST_IP environment variable is not set for {self.provider}")
-                params["api_base"] = self.base_url.replace("{HOST_IP}", host_ip)
-            else:
-                params["api_base"] = self.base_url
-
+        params.update(self._resolve_base_url("api_base"))
 
         # Add all parameters from llm_config
         params.update(self.parameters)
@@ -219,31 +217,12 @@ class LLM:
         """Get QwQ or QwQ-compatible LLM (for Qwen models with reasoning support)."""
         params = {
             "model": self.model,
+            "api_key": self._resolve_api_key(),
             "stream_usage": True,
             "max_retries": 5,
-            "timeout": 600.0,  # 10 minutes - sufficient for long reasoning
+            "timeout": 600.0,
         }
-
-        # Set API key from provider configuration
-        if self.env_key:
-            params["api_key"] = os.getenv(self.env_key)
-            if not params["api_key"]:
-                raise ValueError(f"{self.env_key} environment variable is not set")
-        else:
-            # Special case for local providers without API key
-            params["api_key"] = "EMPTY"
-
-        # Set base URL from provider configuration (ChatQwQ uses api_base)
-        if self.base_url:
-            # Handle HOST_IP replacement for local providers
-            if "{HOST_IP}" in self.base_url:
-                host_ip = os.getenv("HOST_IP")
-                if not host_ip:
-                    raise ValueError(f"HOST_IP environment variable is not set for {self.provider}")
-                params["api_base"] = self.base_url.replace("{HOST_IP}", host_ip)
-            else:
-                params["api_base"] = self.base_url
-
+        params.update(self._resolve_base_url("api_base"))
 
         # Add all parameters from llm_config
         params.update(self.parameters)
@@ -254,9 +233,12 @@ class LLM:
         """Get Anthropic LLM."""
         from langchain_anthropic import ChatAnthropic
 
+        # Set API key: prefer BYOK override, then env var
+        api_key = self.api_key_override or (os.getenv(self.env_key) if self.env_key else None)
+
         params = {
             "model": self.model,
-            "api_key": os.getenv(self.env_key) if self.env_key else None,
+            "api_key": api_key,
             "max_retries": 5,
             "timeout": 600.0,  # 10 minutes - sufficient for long reasoning
         }
@@ -275,39 +257,44 @@ class LLM:
         params.update(filtered_params)
 
         return ChatAnthropic(**params)
-    
+
     def _get_gemini_llm(self):
         """Get Gemini LLM."""
         from langchain_google_genai import ChatGoogleGenerativeAI
+
+        # Set API key: prefer BYOK override, then env var
+        api_key = self.api_key_override or (os.getenv(self.env_key) if self.env_key else None)
+
         params = {
             "model": self.model,
-            "api_key": os.getenv(self.env_key) if self.env_key else None,
+            "api_key": api_key,
             "timeout": 600.0,  # 10 minutes - sufficient for long reasoning
         }
 
         if not params["api_key"]:
             raise ValueError(f"{self.env_key or 'GEMINI_API_KEY'} environment variable is not set")
-        
+
 
         # Add all parameters from llm_config
         params.update(self.parameters)
-        
+
         return ChatGoogleGenerativeAI(**params)
 
 
 # Backward compatibility functions
-def create_llm(model: str, **kwargs):
+def create_llm(model: str, api_key: str | None = None, **kwargs):
     """
     Convenience function for creating an LLM instance.
-    
+
     Args:
         model: The model name
+        api_key: Optional API key override (e.g. from BYOK)
         **kwargs: Additional parameters to override
-    
+
     Returns:
         A LangChain chat model instance
     """
-    return LLM(model, **kwargs).get_llm()
+    return LLM(model, api_key=api_key, **kwargs).get_llm()
 
 
 def get_llm_by_type(llm_type: str) -> BaseChatModel:
@@ -330,19 +317,19 @@ def get_llm_by_type(llm_type: str) -> BaseChatModel:
 
 def get_configured_llm_models() -> dict[str, list[str]]:
     """
-    Get all configured LLM models grouped by provider.
+    Get visible LLM models grouped by provider.
+
+    Only returns models with "visible": true in models.json.
 
     Returns:
-        Dictionary mapping provider to list of configured model names.
+        Dictionary mapping provider to list of visible model names.
     """
     try:
         config = ModelConfig()
         models: dict[str, list[str]] = {}
 
-        # Group all models by provider
-        for model_name in config.llm_config.keys():
-            model_info = config.get_model_config(model_name)
-            if model_info:
+        for model_name, model_info in config.llm_config.items():
+            if model_info and model_info.get("visible", False):
                 provider = model_info.get("provider", "unknown")
                 models.setdefault(provider, []).append(model_name)
 
@@ -352,7 +339,7 @@ def get_configured_llm_models() -> dict[str, list[str]]:
         # Log error and return empty dict to avoid breaking the application
         print(f"Warning: Failed to load LLM configuration: {e}")
         return {}
-    
+
 def should_enable_caching(model_name: str) -> bool:
     """
     Check if a model should enable Anthropic prompt caching.
@@ -374,12 +361,3 @@ def should_enable_caching(model_name: str) -> bool:
         return parameters.get("enable_caching", False)
     except Exception:
         return False
-
-
-## Important Note:
-# 1. The models.json file (src/llms/manifest/models.json) is used to store the detailed model configuration and name mapping.
-# 2. The providers.json file (src/llms/manifest/providers.json) is used:
-#    - to store the model pricing information and model parameters
-#    - to store the model parameters from the model providers.
-#    - to store the providers information including the SDK, base URL, environment key.
-# We assume all the configurations in models.json are valid and complete - always validate the configurations when adding new models.

@@ -69,7 +69,6 @@ from src.server.utils.skill_context import (
     build_skill_prefix_message,
 )
 from src.server.utils.image_context import parse_image_contexts, inject_image_context
-from src.server.utils.api import CurrentUserId
 from src.server.dependencies.usage_limits import ChatRateLimited
 from src.server.services.usage_limiter import UsageLimiter
 
@@ -89,8 +88,98 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/chat", tags=["Chat"])
 
 
+async def _resolve_byok_llm_client(user_id: str, model_name: str, byok_active: bool):
+    """
+    If BYOK is active, look up the user's key for the model's provider
+    and return a fresh LLM client.  Returns None if BYOK isn't applicable.
+
+    Uses a single combined query (get_byok_key_for_provider) instead of
+    separate is_byok_active + get_key_for_provider calls.
+    """
+    if not byok_active:
+        return None
+
+    from src.server.database.api_keys import get_byok_key_for_provider
+    from src.llms.llm import LLM as LLMFactory, create_llm
+
+    mc = LLMFactory.get_model_config()
+    model_info = mc.get_model_config(model_name)
+    if not model_info:
+        return None
+
+    provider = model_info["provider"]
+    user_key = await get_byok_key_for_provider(user_id, provider)
+    if not user_key:
+        return None
+
+    logger.info(f"[CHAT] Using BYOK key for provider={provider}")
+    return create_llm(model_name, api_key=user_key)
+
+
+# Maps agent mode → (config field on llm, preference key in other_preference)
+_MODE_MODEL_MAP = {
+    "ptc":   ("name",  "preferred_model"),
+    "flash": ("flash", "preferred_flash_model"),
+}
+
+
+async def _get_model_preference(user_id: str) -> dict:
+    """Return model preferences from other_preference (not agent_preference, which is dumped to agent context)."""
+    from src.server.database.user import get_user_preferences
+
+    prefs = await get_user_preferences(user_id)
+    if not prefs:
+        return {}
+    return prefs.get("other_preference") or {}
+
+
+async def _resolve_llm_config(
+    base_config,
+    user_id: str,
+    request_model: str | None,
+    byok_active: bool,
+    mode: str = "ptc",
+):
+    """
+    Resolve final LLM config with priority:
+    per-request model > user preferred model > default.
+    Then inject BYOK client if active.
+
+    Mode determines which config field and preference key to use
+    (see _MODE_MODEL_MAP). Easy to extend for new modes.
+    """
+    model_field, pref_key = _MODE_MODEL_MAP[mode]
+    config = base_config
+
+    if request_model:
+        config = config.model_copy(deep=True)
+        setattr(config.llm, model_field, request_model)
+        config.llm_client = None
+        logger.info(f"[CHAT] Using per-request LLM model: {request_model}")
+    else:
+        model_pref = await _get_model_preference(user_id)
+        preferred = model_pref.get(pref_key)
+        if preferred:
+            config = config.model_copy(deep=True)
+            setattr(config.llm, model_field, preferred)
+            config.llm_client = None
+            logger.info(f"[CHAT] Using {pref_key}: {preferred}")
+        else:
+            logger.info(f"[CHAT] No {pref_key} set, using system default: {getattr(config.llm, model_field, None) or config.llm.name}")
+
+    # BYOK injection — resolve the effective model from whichever field we just set
+    effective_model = getattr(config.llm, model_field, None) or config.llm.name
+    byok_client = await _resolve_byok_llm_client(user_id, effective_model, byok_active)
+    if byok_client:
+        if config is base_config:
+            config = config.model_copy(deep=True)
+        config.llm_client = byok_client
+
+    return config
+
+
 @router.post("/stream")
-async def chat_stream(request: ChatRequest, user_id: ChatRateLimited):
+async def chat_stream(request: ChatRequest, auth: ChatRateLimited):
     """
     Stream PTC agent responses as Server-Sent Events.
 
@@ -107,6 +196,10 @@ async def chat_stream(request: ChatRequest, user_id: ChatRateLimited):
     Returns:
         StreamingResponse with SSE events
     """
+    # Extract user_id and byok_active from auth result
+    user_id = auth.user_id
+    byok_active = auth.byok_active
+
     # Determine agent mode
     agent_mode = request.agent_mode or "ptc"
 
@@ -160,6 +253,7 @@ async def chat_stream(request: ChatRequest, user_id: ChatRateLimited):
                 thread_id=thread_id,
                 user_input=user_input,
                 user_id=user_id,
+                byok_active=byok_active,
             ),
             media_type="text/event-stream",
             headers={
@@ -176,6 +270,7 @@ async def chat_stream(request: ChatRequest, user_id: ChatRateLimited):
             user_input=user_input,
             user_id=user_id,
             workspace_id=workspace_id,
+            byok_active=byok_active,
         ),
         media_type="text/event-stream",
         headers={
@@ -191,6 +286,7 @@ async def _astream_flash_workflow(
     thread_id: str,
     user_input: str,
     user_id: str,
+    byok_active: bool = False,
 ):
     """
     Async generator that streams Flash agent workflow events.
@@ -272,17 +368,10 @@ async def _astream_flash_workflow(
         # Build Flash Agent Graph
         # =====================================================================
 
-        # Resolve LLM config for this request
-        config = setup.agent_config
-        if request.llm_model:
-            # Per-request LLM override takes precedence
-            config = config.model_copy(deep=True)
-            config.llm.flash = request.llm_model
-            logger.info(
-                f"[FLASH_CHAT] Using per-request LLM model: {request.llm_model}"
-            )
-        elif config.llm.flash:
-            logger.info(f"[FLASH_CHAT] Using flash-specific LLM: {config.llm.flash}")
+        # Resolve LLM config for this request (model override + preferred + BYOK)
+        config = await _resolve_llm_config(
+            setup.agent_config, user_id, request.llm_model, byok_active, mode="flash"
+        )
 
         # Build flash graph (no sandbox, no session)
         flash_graph = build_flash_graph(
@@ -437,6 +526,7 @@ async def _astream_workflow(
     user_input: str,
     user_id: str,
     workspace_id: str,
+    byok_active: bool = False,
 ):
     """
     Async generator that streams PTC agent workflow events.
@@ -573,13 +663,10 @@ async def _astream_workflow(
         # Session and Graph Setup
         # =====================================================================
 
-        # Resolve LLM config for this request
-        config = setup.agent_config
-        if request.llm_model:
-            config = config.model_copy(deep=True)
-            config.llm.name = request.llm_model
-            config.llm_client = None  # Force rebuild with new model
-            logger.info(f"[PTC_CHAT] Using per-request LLM model: {request.llm_model}")
+        # Resolve LLM config for this request (model override + preferred + BYOK)
+        config = await _resolve_llm_config(
+            setup.agent_config, user_id, request.llm_model, byok_active, mode="ptc"
+        )
 
         subagents = request.subagents_enabled or config.subagents_enabled
         sandbox_id = None

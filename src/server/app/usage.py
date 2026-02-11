@@ -40,12 +40,17 @@ async def get_usage_status(user_id: CurrentUserId):
             'rank': plan_info.rank,
         }
 
+    from src.server.database.api_keys import is_byok_active
+
+    byok_enabled = await is_byok_active(user_id)
+
     if not UsageLimiter.is_enabled():
         return {
             'limits_enabled': False,
             'plan': _plan_obj(svc.get_default_plan()),
             'credits': {'used': 0.0, 'limit': -1, 'remaining': -1},
             'workspaces': {'active': 0, 'limit': -1, 'remaining': -1},
+            'byok_enabled': byok_enabled,
         }
 
     plan = await UsageLimiter.get_user_plan(user_id)
@@ -71,6 +76,7 @@ async def get_usage_status(user_id: CurrentUserId):
             'limit': workspace_limit,
             'remaining': workspace_remaining,
         },
+        'byok_enabled': byok_enabled,
     }
 
 

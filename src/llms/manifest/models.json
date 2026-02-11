@@ -1,34 +1,4 @@
 {
-  "gpt-5": {
-    "model_id": "gpt-5",
-    "provider": "openai",
-    "parameters": {
-      "reasoning": {
-        "effort": "minimal",
-        "summary": "auto"
-      }
-    }
-  },
-  "gpt-5-high": {
-    "model_id": "gpt-5",
-    "provider": "openai",
-    "parameters": {
-      "reasoning": {
-        "effort": "high",
-        "summary": "auto"
-      }
-    }
-  },
-  "gpt-5-medium": {
-    "model_id": "gpt-5",
-    "provider": "openai",
-    "parameters": {
-      "reasoning": {
-        "effort": "medium",
-        "summary": "auto"
-      }
-    }
-  },
   "gpt-5-mini": {
     "model_id": "gpt-5-mini",
     "provider": "openai",
@@ -49,13 +19,6 @@
       }
     }
   },
-  "gpt-5-mini-medium-open": {
-    "model_id": "gpt-5-mini",
-    "provider": "openrouter",
-    "parameters": {
-      "reasoning_effort": "medium"
-    }
-  },
   "gpt-5-nano": {
     "model_id": "gpt-5-nano",
     "provider": "openai",
@@ -66,29 +29,12 @@
       }
     }
   },
-  "gpt-5-nano-open": {
-    "model_id": "gpt-5-nano",
-    "provider": "openrouter",
-    "parameters": {
-      "reasoning_effort": "minimal"
-    }
-  },
   "gpt-5-nano-medium": {
     "model_id": "gpt-5-nano",
     "provider": "openai",
     "parameters": {
       "reasoning": {
         "effort": "medium",
-        "summary": "auto"
-      }
-    }
-  },
-  "gpt-5.1-codex": {
-    "model_id": "gpt-5.1-codex",
-    "provider": "openai",
-    "parameters": {
-      "reasoning": {
-        "effort": "minimal",
         "summary": "auto"
       }
     }
@@ -143,85 +89,13 @@
       }
     }
   },
-  "gpt-4.1": {
-    "model_id": "gpt-4.1",
-    "provider": "openai",
-    "parameters": {
-      "temperature": 0,
-      "top_p": 1,
-      "presence_penalty": 0,
-      "frequency_penalty": 0
-    }
-  },
-  "gpt-4.1-mini": {
-    "model_id": "gpt-4.1-mini",
-    "provider": "openai",
-    "parameters": {
-      "temperature": 0,
-      "top_p": 1
-    }
-  },
-  "gpt-4.1-nano": {
-    "model_id": "gpt-4.1-nano",
-    "provider": "openai",
-    "parameters": {
-      "temperature": 0
-    }
-  },
-  "gpt-4o": {
-    "model_id": "gpt-4o",
-    "provider": "openai",
-    "parameters": {
-      "temperature": 0,
-      "top_p": 1
-    }
-  },
-  "gpt-4o-mini": {
-    "model_id": "gpt-4o-mini",
-    "provider": "openai",
-    "parameters": {
-      "temperature": 0
-    }
-  },
-  "o3": {
-    "model_id": "o3",
-    "provider": "openai",
-    "parameters": {
-      "reasoning": {
-        "effort": "low",
-        "summary": "auto"
-      },
-      "max_tokens": 16384
-    }
-  },
-  "o4-mini-open": {
-    "model_id": "o4-mini",
-    "provider": "openrouter",
-    "parameters": {
-      "reasoning_effort": "low"
-    }
-  },
-  "claude-opus-4-5-20251101": {
-    "model_id": "claude-opus-4-5-20251101",
-    "provider": "anthropic",
-    "parameters": {
-      "temperature": 0,
-      "max_tokens": 4096,
-      "top_p": 1,
-      "thinking": {
-        "type": "disabled"
-      },
-      "enable_caching": true
-    }
-  },
-  "claude-opus-4": {
-    "model_id": "claude-opus-4-20250522",
+  "claude-opus-4-6": {
+    "model_id": "claude-opus-4-6",
     "provider": "anthropic",
     "parameters": {
       "thinking": {
-        "type": "disabled"
-      },
-      "enable_caching": true
+        "type": "adaptive"
+      }
     }
   },
     "claude-sonnet-4-5": {
@@ -236,22 +110,10 @@
         "enable_caching": true
       }
     },
-  "claude-sonnet-4": {
-    "model_id": "claude-sonnet-4-20250522",
-    "provider": "anthropic",
-    "parameters": {
-      "temperature": 0,
-      "max_tokens": 4096,
-      "top_p": 1,
-      "thinking": {
-        "type": "disabled"
-      },
-      "enable_caching": true
-    }
-  },
   "gemini-2.5-pro": {
     "model_id": "gemini-2.5-pro",
     "provider": "gemini",
+    "visible": true,
     "parameters": {
       "thinking_budget": 0,
       "temperature": 0,
@@ -262,6 +124,7 @@
   "gemini-2.5-flash": {
     "model_id": "gemini-2.5-flash",
     "provider": "gemini",
+    "visible": true,
     "parameters": {
       "thinking_budget": 0,
       "temperature": 0
@@ -270,6 +133,7 @@
   "gemini-2.5-flash-lite": {
     "model_id": "gemini-2.5-flash-lite",
     "provider": "gemini",
+    "visible": true,
     "parameters": {
       "thinking_budget": 0,
       "temperature": 0,
@@ -280,22 +144,25 @@
   "gemini-3-pro": {
     "model_id": "gemini-3-pro-preview",
     "provider": "gemini",
+    "visible": true,
     "parameters": {
-      "include_thoughts": true, 
+      "include_thoughts": true,
       "thinking_level": "high"
     }
   },
   "gemini-3-flash": {
     "model_id": "gemini-3-flash-preview",
     "provider": "gemini",
+    "visible": true,
     "parameters": {
-      "include_thoughts": true, 
+      "include_thoughts": true,
       "thinking_level": "medium"
     }
   },
   "gemini-3-pro-image": {
     "model_id": "gemini-3-pro-image-preview",
-    "provider": "gemini"
+    "provider": "gemini",
+    "visible": true
   },
   "gpt-oss-120b": {
     "model_id": "gpt-oss-120b",
@@ -340,105 +207,13 @@
       "reasoning_effort": "medium"
     }
   },
-  "doubao-seed-thinking": {
-    "model_id": "doubao-seed-1-6-thinking-250615",
-    "provider": "volcengine",
-    "extra_body": {
-      "caching": {"type": "enabled"},
-      "thinking": {"type": "enabled"}
-    }
-  },
-  "reasoning-model": {
-    "model_id": "doubao-seed-1-6-thinking-250615",
-    "provider": "volcengine",
-    "extra_body": {
-      "caching": {"type": "enabled"},
-      "thinking": {"type": "enabled"}
-    }
-  },
-  "basic": {
-    "model_id": "doubao-seed-1.6-251015",
-    "provider": "volcengine",
-    "extra_body": {
-      "caching": {"type": "enabled"},
-      "thinking": {"type": "disabled"}
-    }
-  },
-  "reasoning": {
-    "model_id": "doubao-seed-1-6-thinking-250615",
-    "provider": "volcengine",
-    "extra_body": {
-      "caching": {"type": "enabled"},
-      "thinking": {"type": "enabled"}
-    }
-  },
-  "vision": {
-    "model_id": "doubao-seed-1-6-vision-250615",
-    "provider": "volcengine",
-    "extra_body": {
-      "caching": {"type": "enabled"},
-      "thinking": {"type": "enabled"}
-    }
-  },
-  "doubao_seed_1_6_thinking": {
-    "model_id": "doubao-seed-1-6-thinking-250715",
-    "provider": "volcengine",
-    "parameters": {
-      "store": true,
-      "max_tokens": 32000
-    },
-    "extra_body": {
-      "caching": {"type": "enabled"},
-      "thinking": {"type": "enabled"}
-    }
-  },
-  "doubao-seed-1.6-vision": {
-    "model_id": "doubao-seed-1-6-vision-250815",
-    "provider": "volcengine",
-    "parameters": {
-      "store": true,
-      "max_tokens": 32000
-    },
-    "extra_body": {
-      "caching": {"type": "enabled"},
-      "thinking": {"type": "enabled"}
-    }
-  },
-  "doubao-seed-1.6": {
-    "model_id": "doubao-seed-1-6-251015",
-    "provider": "volcengine",
-    "parameters": {
-      "store": true,
-      "max_tokens": 32000
-    },
-    "extra_body": {
-      "thinking": {"type": "enabled"},
-      "reasoning_effort": "medium",
-      "caching": {"type": "enabled"}
-    }
-  },
   "doubao-seed-1.8": {
     "model_id": "doubao-seed-1-8-251228",
     "provider": "volcengine",
     "parameters": {
       "store": true,
       "reasoning": {
-        "effort": "high"
-      }
-    },
-    "extra_body": {
-      "thinking": {"type": "enabled"},
-      "caching": {"type": "enabled"
-      }
-    }
-  },
-  "doubao-seed-1.8-non-think": {
-    "model_id": "doubao-seed-1-8-251228",
-    "provider": "volcengine",
-    "parameters": {
-      "store": true,
-      "reasoning": {
-        "effort": "minimal"
+        "effort": "medium"
       }
     },
     "extra_body": {
@@ -446,86 +221,11 @@
       "caching": {"type": "enabled"}
     }
   },
-  "doubao-seed-1.6-flash": {
-    "model_id": "doubao-seed-1-6-flash-250615",
-    "provider": "volcengine",
-    "parameters": {
-      "store": true,
-      "max_tokens": 1500
-    },
-    "extra_body": {
-      "caching": {"type": "enabled"},
-      "thinking": {"type": "disabled"}
-    }
-  },
-  "doubao-seed-translation": {
-    "model_id": "doubao-seed-translation",
-    "provider": "volcengine"
-  },
-  "kimi-k2-thinking": {
-    "model_id": "kimi-k2-thinking",
-    "provider": "moonshot"
-  },
-  "deepseek-v3.1": {
-    "model_id": "deepseek-v3-1-terminus",
-    "provider": "volcengine",
-    "parameters": {
-      "store": true
-    },
-    "extra_body": {
-      "caching": {"type": "enabled"},
-      "thinking": {"type": "enabled"}
-    }
-  },
   "deepseek-reasoner": {
     "model_id": "deepseek-reasoner",
     "provider": "deepseek",
     "parameters": {
       "temperature": 0
-    }
-  },
-  "tongyi-deepresearch-30b": {
-    "model_id": "alibaba/tongyi-deepresearch-30b-a3b",
-    "provider": "openrouter",
-    "parameters": {
-      "temperature": 0
-    }
-  },
-  "qwen3-coder": {
-    "model_id": "qwen/qwen3-coder",
-    "provider": "openrouter",
-    "parameters": {
-      "temperature": 0
-    }
-  },
-  "grok-4-fast": {
-    "model_id": "x-ai/grok-4-fast:free",
-    "provider": "openrouter",
-    "parameters": {
-      "temperature": 0,
-      "reasoning": {
-        "effort": "medium"
-      }
-    }
-  },
-  "grok-4-fast-low": {
-    "model_id": "x-ai/grok-4-fast:free",
-    "provider": "openrouter",
-    "parameters": {
-      "temperature": 0,
-      "reasoning": {
-        "effort": "low"
-      }
-    }
-  },
-  "grok-4-fast-high": {
-    "model_id": "x-ai/grok-4-fast:free",
-    "provider": "openrouter",
-    "parameters": {
-      "temperature": 0,
-      "reasoning": {
-        "effort": "high"
-      }
     }
   },
   "glm-4.7": {
@@ -568,44 +268,6 @@
       }
     }
   },
-  "doubao-seed-code-responses": {
-    "model_id": "doubao-seed-code-preview-251028",
-    "provider": "volcengine",
-    "parameters": {
-      "temperature": 0,
-      "max_tokens": 32000,
-      "store": true
-    },
-    "extra_body": {
-      "caching": {"type": "enabled"},
-      "thinking": {"type": "disabled"}
-    }
-  },
-  "doubao-seed-code": {
-    "model_id": "doubao-seed-code-preview-251028",
-    "provider": "doubao-anthropic",
-    "parameters": {
-      "temperature": 0,
-      "max_tokens": 32000,
-      "thinking": {
-        "type": "disabled"
-      }
-    }
-  },
-  "qwen3-vl-plus": {
-    "model_id": "qwen3-vl-plus",
-    "provider": "dashscope-sg",
-    "parameters":{
-      "enable_thinking": true
-    }
-  },
-  "qwen3-vl-flash": {
-    "model_id": "qwen3-vl-flash",
-    "provider": "dashscope-sg",
-    "parameters":{
-      "enable_thinking": true
-    }
-  },
   "qwen3-max": {
     "model_id": "qwen3-max",
     "provider": "dashscope"
@@ -617,54 +279,12 @@
       "enable_thinking": true
     }
   },
-  "qwen-plus-80b": {
-    "model_id": "qwen-plus-2025-09-11",
-    "provider": "dashscope",
-    "parameters":{
-      "enable_thinking": true
-    }
-  },
-  "qwen-plus": {
-    "model_id": "qwen-plus",
-    "provider": "dashscope",
-    "parameters":{
-      "enable_thinking": true
-    }
-  },
-  "qwen-flash": {
-    "model_id": "qwen-flash",
-    "provider": "dashscope",
-    "parameters":{
-      "enable_thinking": true
-    }
-  },
-  "qwen-flash-non-think": {
-    "model_id": "qwen-flash",
-    "provider": "dashscope",
-    "parameters":{
-      "enable_thinking": false
-    }
-  },
   "qwen3-max-anthropic": {
     "model_id": "qwen3-max",
     "provider": "dashscope-anthropic"
   },
   "qwen3-max-preview-anthropic": {
     "model_id": "qwen3-max-preview",
-    "provider": "dashscope-anthropic",
-    "extra_body": {
-      "enable_thinking": true
-    }
-  },
-  "qwen-plus-80b-anthropic": {
-    "model_id": "qwen-plus-2025-09-11",
-    "provider": "dashscope-anthropic",
-    "extra_body": {
-      "enable_thinking": true
-    }
-  },
-  "qwen-flash-anthropic": {
-    "model_id": "qwen-flash",
     "provider": "dashscope-anthropic",
     "extra_body": {
       "enable_thinking": true
@@ -689,37 +309,6 @@
     "provider": "dashscope",
     "parameters": {
       "dimensions": 1536
-    }
-  },
-  "claude-sonnet-4-5-proxy": {
-    "model_id": "claude-sonnet-4-5-20250929",
-    "provider": "anthropic-proxy",
-    "parameters": {
-      "max_tokens": 16000,
-      "thinking": {
-        "type": "enabled"
-      },
-      "enable_caching": true
-    }
-  },
-  "claude-opus-4-5-proxy": {
-    "model_id": "claude-opus-4-5-20251101",
-    "provider": "anthropic-proxy",
-    "parameters": {
-      "thinking": {
-        "type": "enabled"
-      },
-      "enable_caching": true
-    }
-  },
-  "claude-haiku-4-5-proxy": {
-    "model_id": "claude-haiku-4-5-20251001",
-    "provider": "anthropic-proxy",
-    "parameters": {
-      "thinking": {
-        "type": "enabled"
-      },
-      "enable_caching": true
     }
   },
   "kimi": {

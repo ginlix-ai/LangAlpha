@@ -100,9 +100,31 @@ async def run_migrations():
                         sql = migration_file.read_text()
 
                         try:
-                            # Split and execute statements separately
-                            # (psycopg3 doesn't support multiple statements in one execute)
-                            statements = [s.strip() for s in sql.split(';') if s.strip() and not s.strip().startswith('--')]
+                            # Split SQL into individual statements, respecting
+                            # parenthesized blocks (e.g. CREATE TABLE (...;)).
+                            # Only split on ';' at top-level (depth == 0).
+                            statements = []
+                            buf = []
+                            depth = 0
+                            for line in sql.splitlines():
+                                stripped = line.strip()
+                                if not stripped or stripped.startswith('--'):
+                                    continue
+                                depth += stripped.count('(') - stripped.count(')')
+                                if stripped.endswith(';') and depth <= 0:
+                                    buf.append(stripped[:-1])  # drop trailing ;
+                                    stmt = ' '.join(buf).strip()
+                                    if stmt:
+                                        statements.append(stmt)
+                                    buf = []
+                                    depth = 0
+                                else:
+                                    buf.append(stripped)
+                            # Catch trailing statement without semicolon
+                            trailing = ' '.join(buf).strip()
+                            if trailing:
+                                statements.append(trailing)
+
                             for stmt in statements:
                                 await cur.execute(stmt)
                             await cur.execute(

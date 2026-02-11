@@ -310,11 +310,14 @@ async def update_preferences(
     if not user:
         raise_not_found("User")
 
-    # Convert Pydantic models to dicts for JSONB storage
-    risk_pref = request.risk_preference.model_dump(exclude_none=True) if request.risk_preference else None
-    investment_pref = request.investment_preference.model_dump(exclude_none=True) if request.investment_preference else None
-    agent_pref = request.agent_preference.model_dump(exclude_none=True) if request.agent_preference else None
-    other_pref = request.other_preference.model_dump(exclude_none=True) if request.other_preference else None
+    # Convert Pydantic models to dicts for JSONB storage.
+    # Use exclude_unset=True (not exclude_none=True) so explicitly-sent null
+    # values are preserved — _split_updates_and_deletes uses None to signal
+    # key deletion from the JSONB column.
+    risk_pref = request.risk_preference.model_dump(exclude_unset=True) if request.risk_preference else None
+    investment_pref = request.investment_preference.model_dump(exclude_unset=True) if request.investment_preference else None
+    agent_pref = request.agent_preference.model_dump(exclude_unset=True) if request.agent_preference else None
+    other_pref = request.other_preference.model_dump(exclude_unset=True) if request.other_preference else None
 
     preferences = await upsert_user_preferences(
         user_id=user_id,

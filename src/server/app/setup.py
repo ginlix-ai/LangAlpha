@@ -335,6 +335,7 @@ from src.server.app.infoflow import router as infoflow_router
 from src.server.app.sec_proxy import router as sec_proxy_router
 from src.server.app.usage import router as usage_router
 from src.server.app.plans import router as plans_router
+from src.server.app.api_keys import router as api_keys_router
 
 # Include all routers
 app.include_router(chat_router)  # /api/v1/chat/* - Main chat endpoint
@@ -354,4 +355,5 @@ app.include_router(infoflow_router)  # /api/v1/infoflow/* - InfoFlow content fee
 app.include_router(sec_proxy_router)  # /api/v1/sec-proxy/* - SEC EDGAR document proxy
 app.include_router(usage_router)  # /api/v1/usage/* - Usage limits and code redemption
 app.include_router(plans_router)  # /api/v1/plans - Plan definitions (public)
+app.include_router(api_keys_router)  # /api/v1/users/me/api-keys + /api/v1/models - BYOK & model config
 app.include_router(health_router)  # /health - Health check
