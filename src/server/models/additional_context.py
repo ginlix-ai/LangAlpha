@@ -27,19 +27,19 @@ class SkillContext(AdditionalContextBase):
     )
 
 
-class ImageContext(AdditionalContextBase):
-    """Context providing an image (e.g., chart screenshot) to inject into the conversation."""
+class MultimodalContext(AdditionalContextBase):
+    """Context providing an image or PDF to inject into the conversation as native content blocks."""
 
     type: Literal["image"] = "image"
-    data: str = Field(..., description="Base64 data URL (data:image/...;base64,...)")
-    description: Optional[str] = Field(None, description="Optional caption for the image")
+    data: str = Field(..., description="Base64 data URL (data:image/...;base64,... or data:application/pdf;base64,...)")
+    description: Optional[str] = Field(None, description="Optional caption for the attachment")
 
 
 # Union type for all context types - discriminated by "type" field
 AdditionalContext = Annotated[
     Union[
         Annotated[SkillContext, Tag("skills")],
-        Annotated[ImageContext, Tag("image")],
+        Annotated[MultimodalContext, Tag("image")],
     ],
     Discriminator(lambda v: v.get("type") if isinstance(v, dict) else getattr(v, "type", None)),
 ]

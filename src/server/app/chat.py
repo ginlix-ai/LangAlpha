@@ -68,7 +68,7 @@ from src.server.utils.skill_context import (
     parse_skill_contexts,
     build_skill_prefix_message,
 )
-from src.server.utils.image_context import parse_image_contexts, inject_image_context
+from src.server.utils.multimodal_context import parse_multimodal_contexts, inject_multimodal_context
 from src.server.dependencies.usage_limits import ChatRateLimited
 from src.server.services.usage_limiter import UsageLimiter
 
@@ -392,17 +392,17 @@ async def _astream_flash_workflow(
                             content_items.append({"type": "text", "text": item.text})
                         elif item.type == "image" and item.image_url:
                             content_items.append(
-                                {"type": "image_url", "image_url": item.image_url}
+                                {"type": "image_url", "image_url": {"url": item.image_url}}
                             )
                 messages.append(
                     {"role": msg.role, "content": content_items or str(msg.content)}
                 )
 
-        # Image Context Injection
-        image_contexts = parse_image_contexts(request.additional_context)
-        if image_contexts:
-            messages = inject_image_context(messages, image_contexts)
-            logger.info(f"[FLASH_CHAT] Image context injected: {len(image_contexts)} image(s)")
+        # Multimodal Context Injection (images and PDFs)
+        multimodal_contexts = parse_multimodal_contexts(request.additional_context)
+        if multimodal_contexts:
+            messages = inject_multimodal_context(messages, multimodal_contexts)
+            logger.info(f"[FLASH_CHAT] Multimodal context injected: {len(multimodal_contexts)} attachment(s)")
 
         input_state = {"messages": messages}
 
@@ -728,7 +728,7 @@ async def _astream_workflow(
                             content_items.append({"type": "text", "text": item.text})
                         elif item.type == "image" and item.image_url:
                             content_items.append(
-                                {"type": "image_url", "image_url": item.image_url}
+                                {"type": "image_url", "image_url": {"url": item.image_url}}
                             )
                 messages.append(
                     {"role": msg.role, "content": content_items or str(msg.content)}
@@ -757,11 +757,11 @@ async def _astream_workflow(
                     f"[PTC_CHAT] Skill context injected: {[s.name for s in skill_contexts]}"
                 )
 
-        # Image Context Injection
-        image_contexts = parse_image_contexts(request.additional_context)
-        if image_contexts and not request.hitl_response:
-            messages = inject_image_context(messages, image_contexts)
-            logger.info(f"[PTC_CHAT] Image context injected: {len(image_contexts)} image(s)")
+        # Multimodal Context Injection (images and PDFs)
+        multimodal_contexts = parse_multimodal_contexts(request.additional_context)
+        if multimodal_contexts and not request.hitl_response:
+            messages = inject_multimodal_context(messages, multimodal_contexts)
+            logger.info(f"[PTC_CHAT] Multimodal context injected: {len(multimodal_contexts)} attachment(s)")
 
         # Build input state or resume command
         if request.hitl_response:
