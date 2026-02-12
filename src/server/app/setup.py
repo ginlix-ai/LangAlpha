@@ -327,6 +327,7 @@ from src.server.app.utilities import health_router
 from src.server.app.chat import router as chat_router  # Main chat endpoint (v1)
 from src.server.app.workspaces import router as workspaces_router
 from src.server.app.workspace_files import router as workspace_files_router
+from src.server.app.workspace_sandbox import router as workspace_sandbox_router
 from src.server.app.market_data import router as market_data_router
 from src.server.app.users import router as users_router
 from src.server.app.watchlist import router as watchlist_router
@@ -342,6 +343,7 @@ app.include_router(chat_router)  # /api/v1/chat/* - Main chat endpoint
 app.include_router(workflow_router)  # /api/v1/workflow/* - Workflow state management
 app.include_router(workspaces_router)  # /api/v1/workspaces/* - Workspace CRUD
 app.include_router(workspace_files_router)  # /api/v1/workspaces/{id}/files/* - Live file access
+app.include_router(workspace_sandbox_router)  # /api/v1/workspaces/{id}/sandbox/* - Sandbox stats & packages
 app.include_router(workspaces_threads_router)  # /api/v1/workspaces/{id}/threads|messages - Thread management
 app.include_router(conversations_router)  # /api/v1/conversations/* - User conversations + messages
 app.include_router(threads_router)  # /api/v1/threads/* - Thread utilities (replay)
