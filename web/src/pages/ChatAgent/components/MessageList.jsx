@@ -17,6 +17,7 @@ import { useAuth } from '../../../contexts/AuthContext';
 import LiveActivity from './LiveActivity';
 import ReasoningMessageContent from './ReasoningMessageContent';
 import PlanApprovalCard from './PlanApprovalCard';
+import UserQuestionCard from './UserQuestionCard';
 import SubagentTaskMessageContent from './SubagentTaskMessageContent';
 import TextMessageContent from './TextMessageContent';
 import ToolCallMessageContent from './ToolCallMessageContent';
@@ -148,7 +149,7 @@ function AttachmentCard({ attachment }) {
  * - Streaming indicators
  * - Error state styling
  */
-function MessageList({ messages, hideAvatar, compactToolCalls, isSubagentView, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick }) {
+function MessageList({ messages, hideAvatar, compactToolCalls, isSubagentView, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion }) {
   // Empty state - show when no messages exist (hidden in subagent view)
   if (messages.length === 0) {
     if (isSubagentView) return null;
@@ -179,6 +180,8 @@ function MessageList({ messages, hideAvatar, compactToolCalls, isSubagentView, o
           onApprovePlan={onApprovePlan}
           onRejectPlan={onRejectPlan}
           onPlanDetailClick={onPlanDetailClick}
+          onAnswerQuestion={onAnswerQuestion}
+          onSkipQuestion={onSkipQuestion}
         />
       ))}
     </div>
@@ -191,7 +194,7 @@ function MessageList({ messages, hideAvatar, compactToolCalls, isSubagentView, o
  * Renders a single message bubble with appropriate styling
  * based on role (user/assistant) and state (streaming/error)
  */
-function MessageBubble({ message, hideAvatar, compactToolCalls, isSubagentView, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick }) {
+function MessageBubble({ message, hideAvatar, compactToolCalls, isSubagentView, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion }) {
   const { user } = useAuth();
   const avatarUrl = user?.avatar_url;
   const isUser = message.role === 'user';
@@ -234,6 +237,7 @@ function MessageBubble({ message, hideAvatar, compactToolCalls, isSubagentView, 
               todoListProcesses={message.todoListProcesses || {}}
               subagentTasks={message.subagentTasks || {}}
               planApprovals={message.planApprovals || {}}
+              userQuestions={message.userQuestions || {}}
               pendingToolCallChunks={message.pendingToolCallChunks || {}}
               isStreaming={message.isStreaming}
               hasError={message.error}
@@ -247,6 +251,8 @@ function MessageBubble({ message, hideAvatar, compactToolCalls, isSubagentView, 
               onApprovePlan={onApprovePlan}
               onRejectPlan={onRejectPlan}
               onPlanDetailClick={onPlanDetailClick}
+              onAnswerQuestion={onAnswerQuestion}
+              onSkipQuestion={onSkipQuestion}
               textOnly={true}
             />
           ) : (
@@ -317,7 +323,7 @@ const MIN_LIVE_EXPOSURE_MS = 5000; // minimum time a tool call stays in LiveActi
 const MAX_IN_PROGRESS_MS = 15000; // max time a tool call can stay in-progress in live view before archiving
 const FADE_MS = 500; // matches LiveActivity fade duration
 
-function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesses, todoListProcesses, subagentTasks, planApprovals = {}, pendingToolCallChunks = {}, isStreaming, hasError, isAssistant = false, compactToolCalls = false, isSubagentView = false, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, textOnly = false }) {
+function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesses, todoListProcesses, subagentTasks, planApprovals = {}, userQuestions = {}, pendingToolCallChunks = {}, isStreaming, hasError, isAssistant = false, compactToolCalls = false, isSubagentView = false, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, textOnly = false }) {
   // Force re-render timer for recently-completed tool calls that need minimum exposure
   const [, setTick] = useState(0);
   const expiryTimerRef = useRef(null);
@@ -385,6 +391,9 @@ function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesse
     } else if (segment.type === 'plan_approval') {
       currentTextGroup = null;
       groupedSegments.push(segment);
+    } else if (segment.type === 'user_question') {
+      currentTextGroup = null;
+      groupedSegments.push(segment);
     }
   }
 
@@ -394,11 +403,12 @@ function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesse
       if (s.type === 'text' || s.type === 'reasoning') return true;
       if (s.type === 'subagent_task') return true;
       if (s.type === 'plan_approval') return true;
+      if (s.type === 'user_question') return true;
       if (s.type === 'tool_call') {
         const toolName = toolCallProcesses[s.toolCallId]?.toolName;
         if (toolName === 'TodoWrite') return false;
         if (toolName === 'task' || toolName === 'Task') return false;
-        if (toolName === 'SubmitPlan') return false;
+        if (toolName === 'SubmitPlan' || toolName === 'AskUserQuestion') return false;
         return true;
       }
       return false;
@@ -470,7 +480,7 @@ function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesse
         const proc = toolCallProcesses[seg.toolCallId];
         if (!proc || proc.toolName === 'TodoWrite') continue;
         if (proc.toolName === 'task' || proc.toolName === 'Task') continue;
-        if (proc.toolName === 'SubmitPlan') continue;
+        if (proc.toolName === 'SubmitPlan' || proc.toolName === 'AskUserQuestion') continue;
 
         const createdAt = proc._createdAt;
         const age = createdAt ? now - createdAt : Infinity;
@@ -526,6 +536,9 @@ function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesse
       } else if (seg.type === 'plan_approval') {
         flushActivity();
         renderBlocks.push({ type: 'plan_approval', key: `plan-${seg.planApprovalId}`, segment: seg });
+      } else if (seg.type === 'user_question') {
+        flushActivity();
+        renderBlocks.push({ type: 'user_question', key: `question-${seg.questionId}`, segment: seg });
       } else if (seg.type === 'text') {
         flushActivity();
         renderBlocks.push({ type: 'text', key: `text-${seg.order}`, segment: seg });
@@ -682,6 +695,19 @@ function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesse
             );
           }
 
+          if (block.type === 'user_question') {
+            const qd = userQuestions[block.segment.questionId];
+            if (!qd) return null;
+            return (
+              <UserQuestionCard
+                key={block.key}
+                questionData={qd}
+                onAnswer={onAnswerQuestion}
+                onSkip={onSkipQuestion}
+              />
+            );
+          }
+
           return null;
         })}
         {/* Standalone preparingToolCall when no activity blocks exist yet */}
@@ -732,7 +758,7 @@ function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesse
         } else if (segment.type === 'tool_call') {
           // Render tool call
           const proc = toolCallProcesses[segment.toolCallId];
-          if (!proc || proc.toolName === 'TodoWrite' || proc.toolName === 'SubmitPlan') return null;
+          if (!proc || proc.toolName === 'TodoWrite' || proc.toolName === 'SubmitPlan' || proc.toolName === 'AskUserQuestion') return null;
           return (
             <ToolCallMessageContent
               key={`tool-call-${segment.toolCallId}`}
@@ -787,6 +813,19 @@ function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesse
                 onApprove={onApprovePlan}
                 onReject={onRejectPlan}
                 onDetailClick={() => onPlanDetailClick?.(pd)}
+              />
+            );
+          }
+          return null;
+        } else if (segment.type === 'user_question') {
+          const qd = userQuestions[segment.questionId];
+          if (qd) {
+            return (
+              <UserQuestionCard
+                key={`question-${segment.questionId}`}
+                questionData={qd}
+                onAnswer={onAnswerQuestion}
+                onSkip={onSkipQuestion}
               />
             );
           }

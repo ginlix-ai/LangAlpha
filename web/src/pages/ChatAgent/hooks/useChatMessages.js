@@ -354,24 +354,44 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
         // Handle user_message events from history
         // Note: event.content may be empty for HITL resume pairs (plan approval/rejection)
         if (eventType === 'user_message' && hasPairIndex) {
-          // Resolve pending plan approval status based on this user message
+          // Resolve pending HITL interrupt status based on this user message
           if (pendingHistoryInterrupt) {
-            const hasContent = event.content && event.content.trim();
-            const resolvedStatus = hasContent ? 'rejected' : 'approved';
-            const { assistantMessageId: planMsgId, planApprovalId } = pendingHistoryInterrupt;
+            const { type: interruptType, assistantMessageId: intMsgId } = pendingHistoryInterrupt;
 
-            setMessages((prev) =>
-              updateMessage(prev, planMsgId, (msg) => ({
-                ...msg,
-                planApprovals: {
-                  ...(msg.planApprovals || {}),
-                  [planApprovalId]: {
-                    ...(msg.planApprovals?.[planApprovalId] || {}),
-                    status: resolvedStatus,
+            if (interruptType === 'ask_user_question') {
+              // User question: resolve as answered (answer already extracted from tool_call_result)
+              const { questionId, answer: extractedAnswer } = pendingHistoryInterrupt;
+              setMessages((prev) =>
+                updateMessage(prev, intMsgId, (msg) => ({
+                  ...msg,
+                  userQuestions: {
+                    ...(msg.userQuestions || {}),
+                    [questionId]: {
+                      ...(msg.userQuestions?.[questionId] || {}),
+                      status: extractedAnswer === '__skipped__' ? 'skipped' : 'answered',
+                      answer: extractedAnswer === '__skipped__' ? null : (extractedAnswer || null),
+                    },
                   },
-                },
-              }))
-            );
+                }))
+              );
+            } else {
+              // Plan approval: resolve based on whether user sent feedback text
+              const hasContent = event.content && event.content.trim();
+              const resolvedStatus = hasContent ? 'rejected' : 'approved';
+              const { planApprovalId } = pendingHistoryInterrupt;
+              setMessages((prev) =>
+                updateMessage(prev, intMsgId, (msg) => ({
+                  ...msg,
+                  planApprovals: {
+                    ...(msg.planApprovals || {}),
+                    [planApprovalId]: {
+                      ...(msg.planApprovals?.[planApprovalId] || {}),
+                      status: resolvedStatus,
+                    },
+                  },
+                }))
+              );
+            }
             pendingHistoryInterrupt = null;
           }
 
@@ -599,48 +619,98 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
             pairState,
             setMessages,
           });
+
+          // Check if this tool_call_result resolves a pending user question interrupt
+          if (pendingHistoryInterrupt?.type === 'ask_user_question' && typeof event.content === 'string') {
+            const content = event.content;
+            if (content.startsWith('User answered: ')) {
+              pendingHistoryInterrupt.answer = content.slice('User answered: '.length);
+            } else if (content.startsWith('User skipped the question')) {
+              pendingHistoryInterrupt.answer = '__skipped__';
+            }
+          }
           return;
         }
 
-        // Handle interrupt events during history replay — inject plan_approval
-        // segment into the current assistant message. Status will be resolved
-        // when the next user_message arrives (empty = approved, has content = rejected).
+        // Handle interrupt events during history replay
         if (eventType === 'interrupt') {
           const pairIndex = event.pair_index ?? currentActivePairIndex;
           const interruptAssistantId = pairIndex != null ? assistantMessagesByPair.get(pairIndex) : null;
           const pairState = pairIndex != null ? pairStateByPair.get(pairIndex) : null;
 
           if (interruptAssistantId && pairState) {
-            const planApprovalId = event.interrupt_id || `plan-history-${Date.now()}`;
-            const description =
-              event.action_requests?.[0]?.description ||
-              event.action_requests?.[0]?.args?.plan ||
-              'No plan description provided.';
-            pairState.contentOrderCounter++;
-            const order = pairState.contentOrderCounter;
+            const actionType = event.action_requests?.[0]?.type;
 
-            setMessages((prev) =>
-              updateMessage(prev, interruptAssistantId, (msg) => ({
-                ...msg,
-                contentSegments: [
-                  ...(msg.contentSegments || []),
-                  { type: 'plan_approval', planApprovalId, order },
-                ],
-                planApprovals: {
-                  ...(msg.planApprovals || {}),
-                  [planApprovalId]: {
-                    description,
-                    interruptId: event.interrupt_id,
-                    status: 'approved', // Default; resolved on next user_message
+            if (actionType === 'ask_user_question') {
+              // --- User question interrupt (history) ---
+              const questionId = event.interrupt_id || `question-history-${Date.now()}`;
+              const questionData = event.action_requests[0];
+              pairState.contentOrderCounter++;
+              const order = pairState.contentOrderCounter;
+
+              setMessages((prev) =>
+                updateMessage(prev, interruptAssistantId, (msg) => ({
+                  ...msg,
+                  contentSegments: [
+                    ...(msg.contentSegments || []),
+                    { type: 'user_question', questionId, order },
+                  ],
+                  userQuestions: {
+                    ...(msg.userQuestions || {}),
+                    [questionId]: {
+                      question: questionData.question,
+                      options: questionData.options || [],
+                      allow_multiple: questionData.allow_multiple || false,
+                      interruptId: event.interrupt_id,
+                      status: 'pending', // Default pending; resolved by tool_call_result or user_message
+                      answer: null,
+                    },
                   },
-                },
-              }))
-            );
+                }))
+              );
 
-            pendingHistoryInterrupt = {
-              assistantMessageId: interruptAssistantId,
-              planApprovalId,
-            };
+              pendingHistoryInterrupt = {
+                type: 'ask_user_question',
+                assistantMessageId: interruptAssistantId,
+                questionId,
+                interruptId: event.interrupt_id,
+                answer: null,
+              };
+            } else {
+              // --- Plan approval interrupt (existing) ---
+              const planApprovalId = event.interrupt_id || `plan-history-${Date.now()}`;
+              const description =
+                event.action_requests?.[0]?.description ||
+                event.action_requests?.[0]?.args?.plan ||
+                'No plan description provided.';
+              pairState.contentOrderCounter++;
+              const order = pairState.contentOrderCounter;
+
+              setMessages((prev) =>
+                updateMessage(prev, interruptAssistantId, (msg) => ({
+                  ...msg,
+                  contentSegments: [
+                    ...(msg.contentSegments || []),
+                    { type: 'plan_approval', planApprovalId, order },
+                  ],
+                  planApprovals: {
+                    ...(msg.planApprovals || {}),
+                    [planApprovalId]: {
+                      description,
+                      interruptId: event.interrupt_id,
+                      status: 'pending', // Default pending; resolved on next user_message
+                    },
+                  },
+                }))
+              );
+
+              pendingHistoryInterrupt = {
+                type: 'plan_approval',
+                assistantMessageId: interruptAssistantId,
+                planApprovalId,
+                interruptId: event.interrupt_id,
+              };
+            }
           }
           return;
         }
@@ -677,7 +747,33 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
       });
 
         console.log('[History] Replay completed');
-        
+
+        // If there's still a pending interrupt after replay (no subsequent user_message
+        // resolved it), this means the interrupt was never answered. Make it interactive
+        // so the user can respond.
+        if (pendingHistoryInterrupt) {
+          const { type: intType } = pendingHistoryInterrupt;
+          console.log('[History] Unresolved interrupt detected, making interactive:', intType);
+
+          if (intType === 'ask_user_question') {
+            setPendingInterrupt({
+              type: 'ask_user_question',
+              interruptId: pendingHistoryInterrupt.interruptId,
+              assistantMessageId: pendingHistoryInterrupt.assistantMessageId,
+              questionId: pendingHistoryInterrupt.questionId,
+            });
+          } else {
+            // plan_approval
+            setPendingInterrupt({
+              interruptId: pendingHistoryInterrupt.interruptId,
+              assistantMessageId: pendingHistoryInterrupt.assistantMessageId,
+              planApprovalId: pendingHistoryInterrupt.planApprovalId,
+              planMode: true,
+            });
+          }
+          pendingHistoryInterrupt = null;
+        }
+
         // Process stored subagent events and build their messages
         // NOTE: During history replay we DO NOT open floating cards automatically.
         // We only build per-task message history here; cards are created lazily
@@ -1522,44 +1618,80 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
           onOnboardingRelatedToolComplete();
         }
       } else if (eventType === 'interrupt') {
-        // HITL plan mode interrupt — agent is paused, waiting for user approval.
-        // Inject a plan_approval content segment into the assistant message so
-        // the plan card renders inline in the message list.
-        const planApprovalId = event.interrupt_id || `plan-${Date.now()}`;
-        const description =
-          event.action_requests?.[0]?.description ||
-          event.action_requests?.[0]?.args?.plan ||
-          'No plan description provided.';
+        const actionType = event.action_requests?.[0]?.type;
 
-        const order = refs.contentOrderCounterRef.current++;
+        if (actionType === 'ask_user_question') {
+          // --- User question interrupt ---
+          const questionId = event.interrupt_id || `question-${Date.now()}`;
+          const questionData = event.action_requests[0];
+          const order = refs.contentOrderCounterRef.current++;
 
-        setMessages((prev) =>
-          updateMessage(prev, assistantMessageId, (msg) => ({
-            ...msg,
-            contentSegments: [
-              ...(msg.contentSegments || []),
-              { type: 'plan_approval', planApprovalId, order },
-            ],
-            planApprovals: {
-              ...(msg.planApprovals || {}),
-              [planApprovalId]: {
-                description,
-                interruptId: event.interrupt_id,
-                status: 'pending',
+          setMessages((prev) =>
+            updateMessage(prev, assistantMessageId, (msg) => ({
+              ...msg,
+              contentSegments: [
+                ...(msg.contentSegments || []),
+                { type: 'user_question', questionId, order },
+              ],
+              userQuestions: {
+                ...(msg.userQuestions || {}),
+                [questionId]: {
+                  question: questionData.question,
+                  options: questionData.options || [],
+                  allow_multiple: questionData.allow_multiple || false,
+                  interruptId: event.interrupt_id,
+                  status: 'pending',
+                  answer: null,
+                },
               },
-            },
-            isStreaming: false,
-          }))
-        );
+              isStreaming: false,
+            }))
+          );
 
-        setPendingInterrupt({
-          interruptId: event.interrupt_id,
-          actionRequests: event.action_requests || [],
-          threadId: event.thread_id,
-          assistantMessageId,
-          planApprovalId,
-          planMode: event.action_requests?.some(r => r.name === 'SubmitPlan') || currentPlanModeRef.current,
-        });
+          setPendingInterrupt({
+            type: 'ask_user_question',
+            interruptId: event.interrupt_id,
+            assistantMessageId,
+            questionId,
+          });
+        } else {
+          // --- Plan approval interrupt (existing) ---
+          const planApprovalId = event.interrupt_id || `plan-${Date.now()}`;
+          const description =
+            event.action_requests?.[0]?.description ||
+            event.action_requests?.[0]?.args?.plan ||
+            'No plan description provided.';
+
+          const order = refs.contentOrderCounterRef.current++;
+
+          setMessages((prev) =>
+            updateMessage(prev, assistantMessageId, (msg) => ({
+              ...msg,
+              contentSegments: [
+                ...(msg.contentSegments || []),
+                { type: 'plan_approval', planApprovalId, order },
+              ],
+              planApprovals: {
+                ...(msg.planApprovals || {}),
+                [planApprovalId]: {
+                  description,
+                  interruptId: event.interrupt_id,
+                  status: 'pending',
+                },
+              },
+              isStreaming: false,
+            }))
+          );
+
+          setPendingInterrupt({
+            interruptId: event.interrupt_id,
+            actionRequests: event.action_requests || [],
+            threadId: event.thread_id,
+            assistantMessageId,
+            planApprovalId,
+            planMode: event.action_requests?.some(r => r.name === 'SubmitPlan') || currentPlanModeRef.current,
+          });
+        }
 
         setIsLoading(false);
         isStreamingRef.current = false;
@@ -1923,6 +2055,55 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
     setPendingInterrupt(null);
   }, [pendingInterrupt]);
 
+  const handleAnswerQuestion = useCallback((answer) => {
+    if (!pendingInterrupt || pendingInterrupt.type !== 'ask_user_question') return;
+    const { interruptId, assistantMessageId, questionId } = pendingInterrupt;
+
+    // Update card to answered
+    setMessages((prev) =>
+      updateMessage(prev, assistantMessageId, (msg) => ({
+        ...msg,
+        userQuestions: {
+          ...(msg.userQuestions || {}),
+          [questionId]: {
+            ...(msg.userQuestions?.[questionId] || {}),
+            status: 'answered',
+            answer,
+          },
+        },
+      }))
+    );
+
+    const hitlResponse = {
+      [interruptId]: { decisions: [{ type: 'approve', message: answer }] },
+    };
+    resumeWithHitlResponse(hitlResponse, false);
+  }, [pendingInterrupt, resumeWithHitlResponse]);
+
+  const handleSkipQuestion = useCallback(() => {
+    if (!pendingInterrupt || pendingInterrupt.type !== 'ask_user_question') return;
+    const { interruptId, assistantMessageId, questionId } = pendingInterrupt;
+
+    // Update card to skipped
+    setMessages((prev) =>
+      updateMessage(prev, assistantMessageId, (msg) => ({
+        ...msg,
+        userQuestions: {
+          ...(msg.userQuestions || {}),
+          [questionId]: {
+            ...(msg.userQuestions?.[questionId] || {}),
+            status: 'skipped',
+          },
+        },
+      }))
+    );
+
+    const hitlResponse = {
+      [interruptId]: { decisions: [{ type: 'reject' }] },
+    };
+    resumeWithHitlResponse(hitlResponse, false);
+  }, [pendingInterrupt, resumeWithHitlResponse]);
+
   return {
     messages,
     threadId,
@@ -1935,6 +2116,8 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
     pendingRejection,
     handleApproveInterrupt,
     handleRejectInterrupt,
+    handleAnswerQuestion,
+    handleSkipQuestion,
     // Resolve subagentId (e.g. toolCallId from segment) to stable agent_id for card operations.
     resolveSubagentIdToAgentId: (subagentId) =>
       toolCallIdToTaskIdMapRef.current.get(subagentId) || subagentId,

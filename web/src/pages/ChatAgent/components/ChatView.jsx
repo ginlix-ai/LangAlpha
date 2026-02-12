@@ -218,6 +218,8 @@ function ChatView({ workspaceId, threadId, onBack }) {
     pendingRejection,
     handleApproveInterrupt,
     handleRejectInterrupt,
+    handleAnswerQuestion,
+    handleSkipQuestion,
     threadId: currentThreadId,
     getSubagentHistory,
     resolveSubagentIdToAgentId,
@@ -781,6 +783,8 @@ function ChatView({ workspaceId, threadId, onBack }) {
                         onApprovePlan={handleApproveInterrupt}
                         onRejectPlan={handleRejectInterrupt}
                         onPlanDetailClick={handlePlanDetailClick}
+                        onAnswerQuestion={handleAnswerQuestion}
+                        onSkipQuestion={handleSkipQuestion}
                       />
                     </div>
                   </div>
