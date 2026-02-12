@@ -24,6 +24,7 @@ from src.server.auth.jwt_bearer import verify_jwt_token
 from src.server.database.user import (
     create_user as db_create_user,
     create_user_from_auth,
+    delete_user_preferences as db_delete_user_preferences,
     find_user_by_email,
     get_user as db_get_user,
     get_user_preferences as db_get_user_preferences,
@@ -331,6 +332,33 @@ async def update_preferences(
 
     logger.info(f"Updated preferences for user {user_id}")
     return UserPreferencesResponse.model_validate(preferences)
+
+@router.delete("/users/me/preferences", status_code=200)
+@handle_api_exceptions("delete preferences", logger)
+async def delete_preferences(user_id: CurrentUserId):
+    """
+    Delete all user preferences (reset to blank).
+
+    Used by the "Reset & Re-onboard" flow to clear all preference data
+    and reset onboarding_completed to false.
+
+    Args:
+        user_id: User ID from authentication header
+
+    Returns:
+        Confirmation message
+    """
+    # Verify user exists
+    user = await db_get_user(user_id)
+    if not user:
+        raise_not_found("User")
+
+    await db_delete_user_preferences(user_id)
+    await db_update_user(user_id=user_id, onboarding_completed=False)
+
+    logger.info(f"Cleared preferences and reset onboarding for user {user_id}")
+    return {"success": True, "message": "Preferences cleared"}
+
 
 @router.post("/users/me/avatar", response_model=dict)
 @handle_api_exceptions("upload avatar", logger)

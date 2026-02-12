@@ -460,6 +460,27 @@ async def upsert_user_preferences(
             return dict(result)
 
 
+async def delete_user_preferences(user_id: str) -> bool:
+    """
+    Delete all preferences for a user.
+
+    Args:
+        user_id: User ID
+
+    Returns:
+        True if a row was deleted, False if no preferences existed
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM user_preferences WHERE user_id = %s",
+                (user_id,),
+            )
+            deleted = cur.rowcount > 0
+            logger.info(f"[user_db] delete_user_preferences user_id={user_id} deleted={deleted}")
+            return deleted
+
+
 async def get_user_with_preferences(user_id: str) -> Optional[Dict[str, Any]]:
     """
     Get user with their preferences in a single query.
