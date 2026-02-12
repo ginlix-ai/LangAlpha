@@ -473,6 +473,47 @@ function ChatView({ workspaceId, threadId, onBack }) {
     setSidebarVisible(prev => !prev);
   }, []);
 
+  // Refresh subagent card with latest data from history or inline status.
+  // Ensures status/currentTool are accurate regardless of stale streaming data.
+  // agentId: stable agent_id (already resolved from toolCallId if needed)
+  // overrides: optional { description, type, status } from inline card click
+  const refreshSubagentCard = useCallback((agentId, overrides = {}) => {
+    if (!updateSubagentCard || !agentId) return;
+
+    const history = getSubagentHistory ? getSubagentHistory(agentId) : null;
+    const finalDescription = history?.description || overrides.description || '';
+    const finalType = history?.type || overrides.type || 'general-purpose';
+    const finalStatus = history?.status || overrides.status || 'completed';
+
+    const updateData = {
+      agentId,
+      taskId: agentId,
+      description: finalDescription,
+      type: finalType,
+      status: finalStatus,
+      toolCalls: 0,
+      currentTool: '',
+      isHistory: !!history,
+      // isActive: true bypasses the inactive-card guard so stale fields get cleared.
+      // For history cards this will be immediately overridden to false by the
+      // isHistory check inside updateSubagentCard.
+      isActive: !history,
+    };
+    if (history) {
+      updateData.messages = history.messages || [];
+    }
+
+    updateSubagentCard(agentId, updateData);
+  }, [updateSubagentCard, getSubagentHistory]);
+
+  // Handle sidebar agent selection — refresh card data, then switch tab
+  const handleSelectAgent = useCallback((agentId) => {
+    if (agentId !== 'main') {
+      refreshSubagentCard(agentId);
+    }
+    switchAgent(agentId);
+  }, [refreshSubagentCard, switchAgent]);
+
   // Open subagent task (navigate to subagent tab) - shared between MessageList and DetailPanel
   const handleOpenSubagentTask = useCallback((subagentInfo) => {
     const { subagentId, description, type, status } = subagentInfo;
@@ -486,34 +527,11 @@ function ChatView({ workspaceId, threadId, onBack }) {
       return;
     }
 
-    const history = getSubagentHistory ? getSubagentHistory(subagentId) : null;
-    const finalDescription = history?.description || description || '';
-    const finalType = history?.type || type || 'general-purpose';
-    const finalStatus = history?.status || status || 'unknown';
-
-    const updateData = {
-      agentId,
-      taskId: agentId,
-      description: finalDescription,
-      type: finalType,
-      status: finalStatus,
-      toolCalls: 0,
-      currentTool: '',
-      isHistory: !!history,
-      isActive: !history,
-    };
-    // Only set messages when history data is available. When history is null,
-    // the card already has live-streamed messages — omitting `messages` lets
-    // updateSubagentCard's preservation logic keep them intact.
-    if (history) {
-      updateData.messages = history.messages || [];
-    }
-
-    updateSubagentCard(agentId, updateData);
+    refreshSubagentCard(agentId, { description, type, status });
 
     switchAgent(agentId);
     setSidebarVisible(true);
-  }, [resolveSubagentIdToAgentId, updateSubagentCard, getSubagentHistory, switchAgent]);
+  }, [resolveSubagentIdToAgentId, updateSubagentCard, refreshSubagentCard, switchAgent]);
 
   // Handle removing an agent from sidebar (just hide from display, don't affect state)
   const handleRemoveAgent = useCallback((agentId) => {
@@ -735,7 +753,7 @@ function ChatView({ workspaceId, threadId, onBack }) {
             <AgentSidebar
               agents={agents}
               activeAgentId={activeAgentId}
-              onSelectAgent={switchAgent}
+              onSelectAgent={handleSelectAgent}
               onRemoveAgent={handleRemoveAgent}
             />
           )}
