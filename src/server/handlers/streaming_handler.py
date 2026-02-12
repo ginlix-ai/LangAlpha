@@ -565,11 +565,13 @@ class WorkflowStreamHandler:
 
                         # Handle token usage updates (for context window display)
                         if event_type == "token_usage":
+                            from src.config.settings import get_summarization_token_threshold
                             usage_data = {
                                 "thread_id": self.thread_id,
                                 "input_tokens": event_data.get("input_tokens", 0),
                                 "output_tokens": event_data.get("output_tokens", 0),
                                 "total_tokens": event_data.get("total_tokens", 0),
+                                "threshold": get_summarization_token_threshold(),
                             }
                             yield self._format_sse_event("token_usage", usage_data)
                             continue
