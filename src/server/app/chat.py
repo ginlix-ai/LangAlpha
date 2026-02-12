@@ -343,11 +343,25 @@ async def _astream_flash_workflow(
             thread_id=thread_id, workspace_id=workspace_id, user_id=user_id
         )
 
-        # Persist query start
+        # Persist query start (with attachment metadata for display in history)
+        query_metadata = {"msg_type": "flash"}
+        if request.additional_context:
+            multimodal_ctxs = parse_multimodal_contexts(request.additional_context)
+            if multimodal_ctxs:
+                att_meta = [
+                    {
+                        "name": ctx.description or "file",
+                        "type": "image" if not ctx.data.startswith("data:application/pdf") else "pdf",
+                        "size": len(ctx.data) * 3 // 4,  # approximate decoded size
+                    }
+                    for ctx in multimodal_ctxs
+                ]
+                query_metadata["attachments"] = att_meta
+
         await persistence_service.persist_query_start(
             content=user_input,
             query_type="initial",
-            metadata={"msg_type": "flash"},
+            metadata=query_metadata,
         )
 
         logger.info(f"[FLASH_CHAT] Database records created: workspace_id={workspace_id}")
@@ -596,6 +610,20 @@ async def _astream_workflow(
             "workspace_id": request.workspace_id,
             "msg_type": "ptc",
         }
+
+        # Extract attachment metadata for display in history
+        if request.additional_context and not request.hitl_response:
+            multimodal_ctxs = parse_multimodal_contexts(request.additional_context)
+            if multimodal_ctxs:
+                att_meta = [
+                    {
+                        "name": ctx.description or "file",
+                        "type": "image" if not ctx.data.startswith("data:application/pdf") else "pdf",
+                        "size": len(ctx.data) * 3 // 4,  # approximate decoded size
+                    }
+                    for ctx in multimodal_ctxs
+                ]
+                query_metadata["attachments"] = att_meta
 
         if request.hitl_response:
             # HITL resume payloads typically have empty user_input (CLI sends message="").

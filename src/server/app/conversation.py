@@ -439,6 +439,7 @@ async def replay_thread_endpoint(thread_id: str):
                     "pair_index": pair_index,
                     "content": q.get("content"),
                     "timestamp": q.get("timestamp"),
+                    "metadata": q.get("metadata"),
                 }
                 yield (
                     f"id: {seq}\n"
