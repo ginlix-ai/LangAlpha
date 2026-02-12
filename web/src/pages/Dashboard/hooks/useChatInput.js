@@ -53,13 +53,21 @@ export function useChatInput() {
 
     setIsLoading(true);
     try {
-      // Build additional context from attachments if present
+      // Build additional context and attachment metadata from attachments
       let additionalContext = null;
+      let attachmentMeta = null;
       if (attachments && attachments.length > 0) {
         additionalContext = attachments.map((a) => ({
           type: 'image',
           data: a.dataUrl,
           description: a.file.name,
+        }));
+        attachmentMeta = attachments.map((a) => ({
+          name: a.file.name,
+          type: a.type,
+          size: a.file.size,
+          preview: a.preview || null,
+          dataUrl: a.dataUrl,
         }));
       }
 
@@ -75,6 +83,7 @@ export function useChatInput() {
             agentMode: 'flash',
             workspaceStatus: 'flash',
             ...(additionalContext ? { additionalContext } : {}),
+            ...(attachmentMeta ? { attachmentMeta } : {}),
           },
         });
       } else {
@@ -92,6 +101,7 @@ export function useChatInput() {
             initialMessage: message.trim(),
             planMode: planMode,
             ...(additionalContext ? { additionalContext } : {}),
+            ...(attachmentMeta ? { attachmentMeta } : {}),
           },
         });
       }

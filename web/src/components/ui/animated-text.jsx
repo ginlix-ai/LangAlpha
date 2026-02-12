@@ -16,12 +16,13 @@ import { animate } from 'framer-motion';
  * @param {boolean} [options.enabled=true] - When false, returns `text` as-is (use for history)
  * @returns {string} The portion of `text` to display right now
  */
-export function useAnimatedText(text, { enabled = true } = {}) {
+export function useAnimatedText(text, { enabled = false } = {}) {
   const [displayText, setDisplayText] = useState('');
   const cursorRef = useRef(0);       // characters revealed so far
   const targetRef = useRef('');      // latest full text
   const animatingRef = useRef(false);
   const controlsRef = useRef(null);
+  const mountedRef = useRef(false);  // tracks first effect run
 
   const startChain = useCallback(() => {
     const from = cursorRef.current;
@@ -64,6 +65,17 @@ export function useAnimatedText(text, { enabled = true } = {}) {
 
   useEffect(() => {
     if (!enabled) {
+      setDisplayText(text);
+      cursorRef.current = text.length;
+      targetRef.current = text;
+      return;
+    }
+
+    // On first effect run, display whatever text already exists instantly.
+    // Only text arriving AFTER mount gets the typing animation.
+    // This prevents re-animation on tab switches, reconnects, and remounts.
+    if (!mountedRef.current) {
+      mountedRef.current = true;
       setDisplayText(text);
       cursorRef.current = text.length;
       targetRef.current = text;

@@ -16,6 +16,7 @@ export function createUserMessage(message, attachments = null) {
     content: message,
     contentType: 'text',
     timestamp: new Date(),
+    isStreaming: false,
   };
   if (attachments && attachments.length > 0) {
     msg.attachments = attachments;
@@ -37,46 +38,6 @@ export function createAssistantMessage(messageId = null) {
     contentType: 'text',
     timestamp: new Date(),
     isStreaming: true,
-    contentSegments: [],
-    reasoningProcesses: {},
-    toolCallProcesses: {},
-    todoListProcesses: {},
-  };
-}
-
-/**
- * Creates a history user message object
- * @param {string} pairIndex - The pair index from history
- * @param {string} content - The message content
- * @param {Date|string} timestamp - Optional timestamp
- * @returns {Object} History user message object
- */
-export function createHistoryUserMessage(pairIndex, content, timestamp = null) {
-  return {
-    id: `history-user-${pairIndex}-${Date.now()}`,
-    role: 'user',
-    content,
-    contentType: 'text',
-    timestamp: timestamp ? new Date(timestamp) : new Date(),
-    isHistory: true,
-  };
-}
-
-/**
- * Creates a history assistant message placeholder
- * @param {string} pairIndex - The pair index from history
- * @param {Date|string} timestamp - Optional timestamp
- * @returns {Object} History assistant message object
- */
-export function createHistoryAssistantMessage(pairIndex, timestamp = null) {
-  return {
-    id: `history-assistant-${pairIndex}-${Date.now()}`,
-    role: 'assistant',
-    content: '',
-    contentType: 'text',
-    timestamp: timestamp ? new Date(timestamp) : new Date(),
-    isStreaming: false,
-    isHistory: true,
     contentSegments: [],
     reasoningProcesses: {},
     toolCallProcesses: {},

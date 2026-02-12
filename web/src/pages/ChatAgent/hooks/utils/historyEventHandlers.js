@@ -87,6 +87,7 @@ export function handleHistoryUserMessage({
         content: event.content,
         contentType: 'text',
         timestamp: event.timestamp ? new Date(event.timestamp) : new Date(),
+        isStreaming: false,
         isHistory: true,
       };
 
