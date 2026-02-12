@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, User, LogOut, Eye, EyeOff, Trash2, HelpCircle } from 'lucide-react';
 import { Input } from '../../../components/ui/input';
-import { updateCurrentUser, getCurrentUser, updatePreferences, getPreferences, uploadAvatar, redeemCode, getUsageStatus, getAvailableModels, getUserApiKeys, updateUserApiKeys, deleteUserApiKey } from '../utils/api';
+import { updateCurrentUser, getCurrentUser, updatePreferences, getPreferences, clearPreferences, uploadAvatar, redeemCode, getUsageStatus, getAvailableModels, getUserApiKeys, updateUserApiKeys, deleteUserApiKey } from '../utils/api';
 import { useAuth } from '../../../contexts/AuthContext';
 import ConfirmDialog from './ConfirmDialog';
 
@@ -13,7 +13,7 @@ import ConfirmDialog from './ConfirmDialog';
  * @param {boolean} isOpen - Whether the panel is open
  * @param {Function} onClose - Callback to close the panel
  */
-function UserConfigPanel({ isOpen, onClose }) {
+function UserConfigPanel({ isOpen, onClose, onResetOnboarding }) {
   const { user: authUser, logout, refreshUser } = useAuth();
   const [activeTab, setActiveTab] = useState('userInfo');
   const [avatarUrl, setAvatarUrl] = useState(null);
@@ -55,6 +55,8 @@ function UserConfigPanel({ isOpen, onClose }) {
   const [error, setError] = useState(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
 
   const timezones = [
     { value: '', label: 'Select timezone...' },
@@ -293,6 +295,21 @@ function UserConfigPanel({ isOpen, onClose }) {
     logout();
     setShowLogoutConfirm(false);
     onClose();
+  };
+
+  const handleResetConfirm = async () => {
+    setIsResetting(true);
+    try {
+      await clearPreferences();
+      setShowResetConfirm(false);
+      onClose();
+      if (onResetOnboarding) onResetOnboarding();
+    } catch {
+      setError('Failed to reset preferences');
+      setShowResetConfirm(false);
+    } finally {
+      setIsResetting(false);
+    }
   };
 
   const handleRedeemCode = async () => {
@@ -751,23 +768,33 @@ function UserConfigPanel({ isOpen, onClose }) {
                     </div>
                   )}
 
-                  <div className="flex items-center gap-3 justify-end pt-4">
-                    {saveSuccess && (
-                      <span className="text-xs" style={{ color: 'var(--color-success, #22c55e)' }}>Saved</span>
-                    )}
-                    <button type="button" onClick={handleClose} disabled={isSubmitting}
-                      className="px-4 py-2 rounded-md text-sm font-medium hover:bg-white/10" style={{ color: 'var(--color-text-primary)' }}>
-                      Close
-                    </button>
-                    <button type="submit" disabled={isSubmitting}
-                      className="px-4 py-2 rounded-md text-sm font-medium"
-                      style={{
-                        backgroundColor: isSubmitting ? 'var(--color-accent-disabled)' : 'var(--color-accent-primary)',
-                        color: 'var(--color-text-on-accent)',
-                      }}
+                  <div className="flex gap-3 justify-between pt-4">
+                    <button
+                      type="button"
+                      onClick={() => setShowResetConfirm(true)}
+                      className="flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors"
+                      style={{ color: 'var(--color-loss)', backgroundColor: 'transparent', border: '1px solid var(--color-loss)' }}
                     >
-                      {isSubmitting ? 'Saving...' : 'Save'}
+                      <Trash2 className="h-4 w-4" /> Reset & Re-onboard
                     </button>
+                    <div className="flex items-center gap-3">
+                      {saveSuccess && (
+                        <span className="text-xs" style={{ color: 'var(--color-success, #22c55e)' }}>Saved</span>
+                      )}
+                      <button type="button" onClick={handleClose} disabled={isSubmitting}
+                        className="px-4 py-2 rounded-md text-sm font-medium hover:bg-white/10" style={{ color: 'var(--color-text-primary)' }}>
+                        Close
+                      </button>
+                      <button type="submit" disabled={isSubmitting}
+                        className="px-4 py-2 rounded-md text-sm font-medium"
+                        style={{
+                          backgroundColor: isSubmitting ? 'var(--color-accent-disabled)' : 'var(--color-accent-primary)',
+                          color: 'var(--color-text-on-accent)',
+                        }}
+                      >
+                        {isSubmitting ? 'Saving...' : 'Save'}
+                      </button>
+                    </div>
                   </div>
                 </form>
               )}
@@ -934,6 +961,15 @@ function UserConfigPanel({ isOpen, onClose }) {
         confirmLabel="Logout"
         onConfirm={handleLogoutConfirm}
         onOpenChange={setShowLogoutConfirm}
+      />
+
+      <ConfirmDialog
+        open={showResetConfirm}
+        title="Reset Preferences"
+        message="This will clear all your preferences (risk tolerance, investment style, agent settings) and restart the onboarding process. Are you sure?"
+        confirmLabel={isResetting ? 'Resetting...' : 'Reset & Re-onboard'}
+        onConfirm={handleResetConfirm}
+        onOpenChange={setShowResetConfirm}
       />
     </>
   );

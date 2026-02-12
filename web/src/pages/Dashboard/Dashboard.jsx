@@ -276,6 +276,28 @@ function Dashboard() {
     checkOnboarding();
   }, []);
 
+  const navigateToOnboarding = useCallback(async () => {
+    setIsCreatingWorkspace(true);
+    try {
+      const workspaceId = await findOrCreateDefaultWorkspace(
+        () => {},
+        () => {},
+      );
+      navigate(`/chat/${workspaceId}/__default__`, {
+        state: { isOnboarding: true },
+      });
+    } catch (error) {
+      console.error('Error setting up onboarding:', error);
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: 'Failed to set up onboarding. Please try again.',
+      });
+    } finally {
+      setIsCreatingWorkspace(false);
+    }
+  }, [navigate, toast]);
+
   const watchlist = useWatchlistData();
   const portfolio = usePortfolioData();
 
@@ -334,33 +356,9 @@ function Dashboard() {
             </button>
             <button
               type="button"
-              onClick={async () => {
+              onClick={() => {
                 setShowOnboardingDialog(false);
-                setIsCreatingWorkspace(true);
-                try {
-                  // Find or create "LangAlpha" workspace
-                  const workspaceId = await findOrCreateDefaultWorkspace(
-                    () => {}, // onCreating - already showing loading state
-                    () => {}  // onCreated
-                  );
-                  
-                  // Navigate to ChatAgent with onboarding flag
-                  navigate(`/chat/${workspaceId}/__default__`, {
-                    state: {
-                      isOnboarding: true,
-                    },
-                  });
-                } catch (error) {
-                  console.error('Error setting up onboarding:', error);
-                  toast({
-                    variant: 'destructive',
-                    title: 'Error',
-                    description: 'Failed to set up onboarding. Please try again.',
-                  });
-                  setShowOnboardingDialog(true); // Re-open dialog on error
-                } finally {
-                  setIsCreatingWorkspace(false);
-                }
+                navigateToOnboarding();
               }}
               disabled={isCreatingWorkspace}
               className="px-4 py-2 rounded-md text-sm font-medium transition-colors hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -372,7 +370,7 @@ function Dashboard() {
         </DialogContent>
       </Dialog>
 
-      <DashboardHeader />
+      <DashboardHeader onResetOnboarding={navigateToOnboarding} />
 
       <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
         <div className="w-full flex-1 min-h-0 flex justify-center">

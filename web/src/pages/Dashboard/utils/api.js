@@ -172,6 +172,11 @@ export async function updatePreferences(preferences) {
     return data;
 }
 
+export async function clearPreferences() {
+  const { data } = await api.delete('/api/v1/users/me/preferences');
+  return data;
+}
+
 export async function getUsageStatus() {
   const { data } = await api.get('/api/v1/usage');
   return data;
