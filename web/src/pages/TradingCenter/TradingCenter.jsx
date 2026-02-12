@@ -5,12 +5,13 @@ import './TradingCenter.css';
 import DashboardHeader from '../Dashboard/components/DashboardHeader';
 import StockHeader from './components/StockHeader';
 import TradingChart from './components/TradingChart';
-import TradingChatInput from './components/TradingChatInput';
+import ChatInput from '../../components/ui/chat-input';
 import TradingPanel from './components/TradingPanel';
 import TradingSidebarPanel from './components/TradingSidebarPanel';
 import { fetchStockQuote, fetchCompanyOverview, fetchAnalystData } from './utils/api';
 import { useTradingChat } from './hooks/useTradingChat';
 import { findOrCreateDefaultWorkspace } from '../Dashboard/utils/workspace';
+import { getWorkspaces } from '../ChatAgent/utils/api';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../components/ui/dialog';
 import { Loader2, ArrowLeft, RefreshCw } from 'lucide-react';
 import CompanyOverviewPanel from './components/CompanyOverviewPanel';
@@ -45,6 +46,9 @@ function TradingCenter() {
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overlayData, setOverlayData] = useState(null);
   const [prefillMessage, setPrefillMessage] = useState('');
+  const [mode, setMode] = useState('fast');
+  const [workspaces, setWorkspaces] = useState([]);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(null);
 
   const pickRandomQueries = useCallback((symbol) => {
     const shuffled = [...QUICK_QUERIES].sort(() => Math.random() - 0.5);
@@ -191,6 +195,22 @@ function TradingCenter() {
     return () => ac.abort();
   }, [selectedStock]);
 
+  // Fetch workspaces for the workspace selector (deep mode)
+  useEffect(() => {
+    let cancelled = false;
+    getWorkspaces(50, 0)
+      .then((data) => {
+        if (cancelled) return;
+        const list = (data.workspaces || []).filter((ws) => ws.status !== 'flash');
+        setWorkspaces(list);
+        if (list.length > 0 && !selectedWorkspaceId) {
+          setSelectedWorkspaceId(list[0].workspace_id);
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   const handleCaptureChart = useCallback(async () => {
     if (!chartRef.current) return;
     try {
@@ -251,30 +271,38 @@ function TradingCenter() {
     setChartImageDesc(parts.join('\n'));
   }, [selectedStock, selectedInterval, stockInfo, selectedStockDisplay, chartMeta, realTimePrice]);
 
-  const handleSendMessage = useCallback(async (message, mode, image) => {
-    // Build additional_context with image + description bundled together
-    const imageContext = image
-      ? [{ type: 'image', data: image, description: chartImageDesc || undefined }]
-      : null;
+  const handleSendMessage = useCallback(async (message, planMode, attachments = []) => {
+    // Build additional_context from chart image + file attachments
+    const contexts = [];
+    if (chartImage) {
+      contexts.push({ type: 'image', data: chartImage, description: chartImageDesc || undefined });
+    }
+    if (attachments && attachments.length > 0) {
+      attachments.forEach((a) => {
+        contexts.push({ type: 'image', data: a.dataUrl, description: a.file.name });
+      });
+    }
+    const imageContext = contexts.length > 0 ? contexts : null;
 
     if (mode === 'fast') {
       handleFastModeSend(message, imageContext);
     } else {
-      // Deep mode: navigate to ChatAgent with initial message
+      // Deep mode: use selected workspace or fall back to default
       try {
-        setIsCreatingWorkspace(true);
-
-        const workspaceId = await findOrCreateDefaultWorkspace(
-          () => {},
-          () => {}
-        );
-
-        setIsCreatingWorkspace(false);
+        let workspaceId = selectedWorkspaceId;
+        if (!workspaceId) {
+          setIsCreatingWorkspace(true);
+          workspaceId = await findOrCreateDefaultWorkspace(
+            () => {},
+            () => {}
+          );
+          setIsCreatingWorkspace(false);
+        }
 
         navigate(`/chat/${workspaceId}/__default__`, {
           state: {
             initialMessage: message,
-            planMode: false,
+            planMode: planMode || false,
             additionalContext: imageContext,
           },
         });
@@ -290,7 +318,7 @@ function TradingCenter() {
     }
     setChartImage(null);
     setChartImageDesc(null);
-  }, [handleFastModeSend, navigate, toast, chartImageDesc]);
+  }, [handleFastModeSend, navigate, toast, chartImage, chartImageDesc, mode, selectedWorkspaceId]);
 
   const handleSidebarSymbolClick = useCallback((symbol) => {
     setSelectedStock(symbol);
@@ -404,14 +432,20 @@ function TradingCenter() {
                 </button>
               </div>
             )}
-            <TradingChatInput
+            <ChatInput
               onSend={handleSendMessage}
               isLoading={isLoading}
+              mode={mode}
+              onModeChange={setMode}
+              workspaces={workspaces}
+              selectedWorkspaceId={selectedWorkspaceId}
+              onWorkspaceChange={setSelectedWorkspaceId}
               onCaptureChart={handleCaptureChartForContext}
               chartImage={chartImage}
               onRemoveChartImage={() => { setChartImage(null); setChartImageDesc(null); }}
               prefillMessage={prefillMessage}
               onClearPrefill={() => setPrefillMessage('')}
+              placeholder="What would you like to know?"
             />
           </div>
         </div>

@@ -1,14 +1,5 @@
-/* ====== ChatInputWithMentions ====== */
+/* ====== ChatInput — mention pills ====== */
 
-.mention-input-container {
-  background-color: rgba(0, 0, 0, 0.3);
-  border: 1.5px solid hsl(var(--primary));
-  border-radius: 8px;
-  padding: 8px 12px;
-  position: relative;
-}
-
-/* Mention pills row */
 .mention-pills {
   display: flex;
   flex-wrap: wrap;
@@ -56,35 +47,8 @@
   background-color: rgba(255, 255, 255, 0.1);
 }
 
-/* Textarea */
-.mention-textarea {
-  width: 100%;
-  background: transparent;
-  border: none;
-  color: #BBBBBB;
-  font-size: 14px;
-  line-height: 1.5;
-  resize: none;
-  outline: none;
-  min-height: 21px;
-  max-height: 120px;
-  overflow-y: auto;
-  font-family: inherit;
-}
-.mention-textarea::placeholder {
-  color: rgba(255, 255, 255, 0.35);
-}
+/* ====== Plan Mode toggle glow ====== */
 
-/* Bottom row: buttons */
-.mention-input-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 4px;
-  margin-top: 6px;
-}
-
-/* Plan Mode toggle */
 .plan-mode-toggle-active {
   animation: plan-mode-glow 2s ease-in-out infinite;
 }
@@ -99,6 +63,7 @@
 }
 
 /* ====== Autocomplete dropdown ====== */
+
 .mention-autocomplete {
   position: absolute;
   left: 0;
@@ -148,4 +113,36 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   margin-left: auto;
+}
+
+/* ====== Workspace dropdown ====== */
+
+.workspace-dropdown {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  margin-bottom: 4px;
+  background-color: #1e2029;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+  z-index: 100;
+  box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.4);
+}
+
+.workspace-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.85);
+  transition: background-color 0.1s;
+}
+.workspace-dropdown-item:hover,
+.workspace-dropdown-item.active {
+  background-color: rgba(97, 85, 245, 0.15);
 }

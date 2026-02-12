@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { ArrowLeft, FolderOpen, Bot, StopCircle, Zap, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, FolderOpen, Bot, StopCircle, ScrollText, AlertTriangle } from 'lucide-react';
 import { ScrollArea } from '../../../components/ui/scroll-area';
 import { useAuth } from '../../../contexts/AuthContext';
 import { updateCurrentUser } from '../../Dashboard/utils/api';
@@ -11,7 +11,8 @@ import { useFloatingCards } from '../hooks/useFloatingCards';
 import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
 import FilePanel from './FilePanel';
 import './FilePanel.css';
-import ChatInputWithMentions from './ChatInputWithMentions';
+import ChatInput from '../../../components/ui/chat-input';
+import { attachmentsToImageContexts } from '../utils/fileUpload';
 import DetailPanel from './DetailPanel';
 import FloatingCard from './FloatingCard';
 import FloatingCardIcon from './FloatingCardIcon';
@@ -169,7 +170,7 @@ function ChatView({ workspaceId, threadId, onBack }) {
     }
   }, [refreshUser]);
 
-  // Workspace files - shared between FilePanel and ChatInputWithMentions
+  // Workspace files - shared between FilePanel and ChatInput
   // Must be declared before useChatMessages so refreshFiles can be passed as onFileArtifact
   // Skip for flash mode — no sandbox
   const {
@@ -248,6 +249,24 @@ function ChatView({ workspaceId, threadId, onBack }) {
       console.warn('[ChatView] Failed to soft-interrupt workflow:', e);
     }
   }, [currentThreadId, threadId]);
+
+  // Wrapper: converts ChatInput's (message, planMode, attachments) into
+  // handleSendMessage(message, planMode, additionalContext, attachmentMeta)
+  const handleSendWithAttachments = useCallback((message, planMode, attachments = []) => {
+    let additionalContext = null;
+    let attachmentMeta = null;
+    if (attachments && attachments.length > 0) {
+      additionalContext = attachmentsToImageContexts(attachments);
+      attachmentMeta = attachments.map((a) => ({
+        name: a.file.name,
+        type: a.type,
+        size: a.file.size,
+        preview: a.preview || null,
+        dataUrl: a.dataUrl,
+      }));
+    }
+    handleSendMessage(message, planMode, additionalContext, attachmentMeta);
+  }, [handleSendMessage]);
 
   // Show sidebar at the start of each backend response (streaming)
   // Auto-refresh workspace files when agent finishes (isLoading transitions true→false)
@@ -535,8 +554,8 @@ function ChatView({ workspaceId, threadId, onBack }) {
         navigate(location.pathname, { replace: true, state: {} });
         // Small delay to ensure component is fully mounted
         setTimeout(() => {
-          const { initialMessage, planMode } = location.state;
-          handleSendMessage(initialMessage, planMode || false);
+          const { initialMessage, planMode, additionalContext } = location.state;
+          handleSendMessage(initialMessage, planMode || false, additionalContext || null);
         }, 100);
       } else if (!isLoadingHistory && !isLoading) {
         // Existing thread - wait for history to load, then send
@@ -546,8 +565,8 @@ function ChatView({ workspaceId, threadId, onBack }) {
         navigate(location.pathname, { replace: true, state: {} });
         // Small delay to ensure component is fully mounted
         setTimeout(() => {
-          const { initialMessage, planMode } = location.state;
-          handleSendMessage(initialMessage, planMode || false);
+          const { initialMessage, planMode, additionalContext } = location.state;
+          handleSendMessage(initialMessage, planMode || false, additionalContext || null);
         }, 100);
       }
     }
@@ -765,7 +784,7 @@ function ChatView({ workspaceId, threadId, onBack }) {
                         className="flex items-center gap-2 px-3 py-2 rounded-md text-sm"
                         style={{ backgroundColor: 'rgba(97, 85, 245, 0.08)', color: 'rgba(255, 255, 255, 0.75)', border: '1px solid rgba(97, 85, 245, 0.2)' }}
                       >
-                        <Zap className="h-4 w-4 flex-shrink-0" style={{ color: '#6155F5' }} />
+                        <ScrollText className="h-4 w-4 flex-shrink-0" style={{ color: '#6155F5' }} />
                         <span>Type your feedback to revise the plan, then send.</span>
                       </div>
                     )}
@@ -790,8 +809,8 @@ function ChatView({ workspaceId, threadId, onBack }) {
                         </div>
                       );
                     })()}
-                    <ChatInputWithMentions
-                      onSend={handleSendMessage}
+                    <ChatInput
+                      onSend={handleSendWithAttachments}
                       disabled={isLoading || isLoadingHistory || !workspaceId || !!pendingInterrupt}
                       onStop={handleSoftInterrupt}
                       isLoading={isLoading}

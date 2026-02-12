@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Bot, User } from 'lucide-react';
+import { Bot, User, FileText } from 'lucide-react';
 import logo from '../../../assets/img/logo.svg';
 import MorphLoading from '@/components/ui/morph-loading';
 import ActivityAccordion from './ActivityAccordion';
@@ -111,6 +111,36 @@ function MessageBubble({ message, hideAvatar, compactToolCalls, onOpenSubagentTa
           color: '#FFFFFF',
         }}
       >
+        {/* Attachment thumbnails for user messages */}
+        {isUser && message.attachments && message.attachments.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-2">
+            {message.attachments.map((att, idx) => {
+              const isImage = att.type?.startsWith('image/');
+              if (isImage && (att.preview || att.dataUrl)) {
+                return (
+                  <img
+                    key={idx}
+                    src={att.preview || att.dataUrl}
+                    alt={att.name}
+                    className="rounded-md object-cover"
+                    style={{ maxHeight: 80, maxWidth: 120 }}
+                  />
+                );
+              }
+              return (
+                <div
+                  key={idx}
+                  className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs"
+                  style={{ backgroundColor: 'rgba(97, 85, 245, 0.15)', color: 'rgba(255,255,255,0.85)' }}
+                >
+                  <FileText className="h-3.5 w-3.5" style={{ color: 'rgba(97, 85, 245, 0.8)' }} />
+                  <span className="truncate" style={{ maxWidth: 120 }}>{att.name}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         {/* Render content segments in chronological order */}
         {message.contentSegments && message.contentSegments.length > 0 ? (
           <MessageContentSegments

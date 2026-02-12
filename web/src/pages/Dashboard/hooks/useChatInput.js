@@ -1,51 +1,100 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useToast } from '../../../components/ui/use-toast';
 import { findOrCreateDefaultWorkspace } from '../utils/workspace';
+import { getFlashWorkspace, getWorkspaces } from '../../ChatAgent/utils/api';
 
 /**
  * Custom hook for handling chat input functionality
- * Manages message state, plan mode, loading state, and workspace creation dialog
- * Handles sending messages and navigating to ChatAgent workspace
- * 
+ * Manages mode (fast/deep), workspace selection, loading state, and workspace creation dialog
+ * Message and planMode are managed internally by ChatInput and passed via handleSend.
+ *
  * @returns {Object} Chat input state and handlers
  */
 export function useChatInput() {
-  const [message, setMessage] = useState('');
-  const [planMode, setPlanMode] = useState(false);
+  const [mode, setMode] = useState('fast'); // 'fast' or 'deep'
   const [isLoading, setIsLoading] = useState(false);
   const [showCreatingDialog, setShowCreatingDialog] = useState(false);
+  const [workspaces, setWorkspaces] = useState([]);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(null);
   const navigate = useNavigate();
   const { toast } = useToast();
 
+  // Fetch workspaces on mount for the workspace selector
+  useEffect(() => {
+    let cancelled = false;
+    getWorkspaces(50, 0)
+      .then((data) => {
+        if (cancelled) return;
+        const list = (data.workspaces || []).filter((ws) => ws.status !== 'flash');
+        setWorkspaces(list);
+        if (list.length > 0 && !selectedWorkspaceId) {
+          setSelectedWorkspaceId(list[0].workspace_id);
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   /**
    * Handles sending a message and navigating to the ChatAgent workspace
-   * Finds or creates the "LangAlpha" workspace, then navigates with the message
+   * Fast mode: uses flash workspace (agent_mode: flash)
+   * Deep mode: uses selected workspace or falls back to default LangAlpha workspace
+   *
+   * @param {string} message - The message text
+   * @param {boolean} planMode - Whether plan mode is enabled
+   * @param {Array} attachments - File attachments from ChatInput
    */
-  const handleSend = async () => {
-    if (!message.trim() || isLoading) {
+  const handleSend = async (message, planMode = false, attachments = []) => {
+    const hasContent = message.trim() || (attachments && attachments.length > 0);
+    if (!hasContent || isLoading) {
       return;
     }
 
     setIsLoading(true);
     try {
-      // Find or create "LangAlpha" workspace
-      const workspaceId = await findOrCreateDefaultWorkspace(
-        () => setShowCreatingDialog(true),
-        () => setShowCreatingDialog(false)
-      );
+      // Build additional context from attachments if present
+      let additionalContext = null;
+      if (attachments && attachments.length > 0) {
+        additionalContext = attachments.map((a) => ({
+          type: 'image',
+          data: a.dataUrl,
+          description: a.file.name,
+        }));
+      }
 
-      // Navigate to ChatAgent page with workspace, new thread, and message in state
-      // Use '__default__' as threadId to create a new thread
-      navigate(`/chat/${workspaceId}/__default__`, {
-        state: {
-          initialMessage: message.trim(),
-          planMode: planMode,
-        },
-      });
-      
-      // Clear input
-      setMessage('');
+      if (mode === 'fast') {
+        // Flash mode: get/create flash workspace and navigate
+        const flashWs = await getFlashWorkspace();
+        const workspaceId = flashWs.workspace_id;
+
+        navigate(`/chat/${workspaceId}/__default__`, {
+          state: {
+            initialMessage: message.trim(),
+            planMode: false,
+            agentMode: 'flash',
+            workspaceStatus: 'flash',
+            ...(additionalContext ? { additionalContext } : {}),
+          },
+        });
+      } else {
+        // Deep mode: use selected workspace or fall back to default
+        let workspaceId = selectedWorkspaceId;
+        if (!workspaceId) {
+          workspaceId = await findOrCreateDefaultWorkspace(
+            () => setShowCreatingDialog(true),
+            () => setShowCreatingDialog(false)
+          );
+        }
+
+        navigate(`/chat/${workspaceId}/__default__`, {
+          state: {
+            initialMessage: message.trim(),
+            planMode: planMode,
+            ...(additionalContext ? { additionalContext } : {}),
+          },
+        });
+      }
     } catch (error) {
       console.error('Error with workspace:', error);
       toast({
@@ -58,24 +107,14 @@ export function useChatInput() {
     }
   };
 
-  /**
-   * Handles key press events (Enter key to send)
-   */
-  const handleKeyPress = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
-
   return {
-    message,
-    setMessage,
-    planMode,
-    setPlanMode,
+    mode,
+    setMode,
     isLoading,
     showCreatingDialog,
     handleSend,
-    handleKeyPress,
+    workspaces,
+    selectedWorkspaceId,
+    setSelectedWorkspaceId,
   };
 }

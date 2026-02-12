@@ -4,7 +4,8 @@ import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import ThreadCard from './ThreadCard';
 import DeleteConfirmModal from './DeleteConfirmModal';
 import RenameThreadModal from './RenameThreadModal';
-import ChatInputWithMentions from './ChatInputWithMentions';
+import ChatInput from '../../../components/ui/chat-input';
+import { attachmentsToImageContexts } from '../utils/fileUpload';
 import FilePanel from './FilePanel';
 import { getWorkspaceThreads, getWorkspace, deleteThread, updateThreadTitle } from '../utils/api';
 import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
@@ -320,22 +321,27 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect, cache }) {
    * Handles sending a message from ChatInput
    * Creates a new thread and navigates to it with the message
    * @param {string} message - The message to send
-   * @param {boolean} planMode - Plan mode flag (not used, always false)
+   * @param {boolean} planMode - Plan mode flag
+   * @param {Array} attachments - File attachments from ChatInput
    */
-  const handleSendMessage = async (message, planMode = false) => {
-    if (!message.trim() || isSendingMessage || !workspaceId) {
+  const handleSendMessage = async (message, planMode = false, attachments = []) => {
+    if ((!message.trim() && (!attachments || attachments.length === 0)) || isSendingMessage || !workspaceId) {
       return;
     }
 
     setIsSendingMessage(true);
     try {
-      // Navigate to ChatAgent page with workspace, new thread, and message in state
-      // Use '__default__' as threadId to create a new thread
+      let additionalContext = null;
+      if (attachments && attachments.length > 0) {
+        additionalContext = attachmentsToImageContexts(attachments);
+      }
+
       navigate(`/chat/${workspaceId}/__default__`, {
         state: {
           initialMessage: message.trim(),
           planMode: planMode,
           ...(isFlash ? { agentMode: 'flash' } : {}),
+          ...(additionalContext ? { additionalContext } : {}),
         },
       });
     } catch (error) {
@@ -469,7 +475,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect, cache }) {
 
             {/* Chat Input */}
             <div className="w-full">
-              <ChatInputWithMentions
+              <ChatInput
                 onSend={handleSendMessage}
                 disabled={isSendingMessage || !workspaceId}
                 files={panelFiles}

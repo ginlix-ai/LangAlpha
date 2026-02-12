@@ -1,51 +1,38 @@
 import React from 'react';
 import { Loader2 } from 'lucide-react';
-import { Card, CardContent } from '../../../components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../../components/ui/dialog';
-import ChatInput from '../../../components/ui/ChatInput';
+import ChatInput from '../../../components/ui/chat-input';
 import { useChatInput } from '../hooks/useChatInput';
 
 /**
  * Chat input strip matching ChatAgent input bar.
- * When user sends a message, navigates to ChatAgent page with "LangAlpha" workspace.
+ * When user sends a message, navigates to ChatAgent page with selected workspace.
  * Creates the workspace if it doesn't exist.
  */
 function ChatInputCard() {
   const {
-    message,
-    setMessage,
-    planMode,
-    setPlanMode,
+    mode,
+    setMode,
     isLoading,
     showCreatingDialog,
     handleSend,
+    workspaces,
+    selectedWorkspaceId,
+    setSelectedWorkspaceId,
   } = useChatInput();
-
-  // Wrapper for onSend - useChatInput's handleSend uses internal state,
-  // but since we're using controlled mode, the state is already updated
-  // when onSend is called, so we can just call handleSend directly
-  const handleSendWrapper = () => {
-    handleSend();
-  };
 
   return (
     <>
-    <Card
-      className="fin-card flex-shrink-0"
-      style={{ borderColor: 'var(--color-accent-primary)', borderWidth: '1.5px' }}
-    >
-      <CardContent className="p-3">
-        <ChatInput
-          onSend={handleSendWrapper}
-          disabled={isLoading}
-          variant="dashboard"
-          message={message}
-          setMessage={setMessage}
-          planMode={planMode}
-          setPlanMode={setPlanMode}
-        />
-      </CardContent>
-    </Card>
+      <ChatInput
+        onSend={handleSend}
+        disabled={isLoading}
+        mode={mode}
+        onModeChange={setMode}
+        workspaces={workspaces}
+        selectedWorkspaceId={selectedWorkspaceId}
+        onWorkspaceChange={setSelectedWorkspaceId}
+        placeholder="What would you like to know?"
+      />
 
       {/* Creating Workspace Dialog */}
       <Dialog open={showCreatingDialog} onOpenChange={() => {}}>

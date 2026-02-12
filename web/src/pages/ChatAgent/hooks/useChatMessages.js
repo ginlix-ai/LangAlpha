@@ -1574,9 +1574,11 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
    * @param {string} message - The user's message
    * @param {boolean} planMode - Whether to use plan mode
    * @param {Array|null} additionalContext - Optional additional context for skill loading
+   * @param {Array|null} attachmentMeta - Optional attachment metadata for user message display
    */
-  const handleSendMessage = async (message, planMode = false, additionalContext = null) => {
-    if (!workspaceId || !message.trim() || isLoading) {
+  const handleSendMessage = async (message, planMode = false, additionalContext = null, attachmentMeta = null) => {
+    const hasContent = message.trim() || (additionalContext && additionalContext.length > 0);
+    if (!workspaceId || !hasContent || isLoading) {
       return;
     }
 
@@ -1603,7 +1605,7 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
     }
 
     // Create and add user message
-    const userMessage = createUserMessage(message);
+    const userMessage = createUserMessage(message, attachmentMeta);
     recentlySentTrackerRef.current.track(message.trim(), userMessage.timestamp, userMessage.id);
 
     // Check if this is a new conversation

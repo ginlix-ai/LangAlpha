@@ -6,16 +6,21 @@
 /**
  * Creates a user message object
  * @param {string} message - The message content
+ * @param {Array|null} attachments - Optional attachment metadata for display
  * @returns {Object} User message object
  */
-export function createUserMessage(message) {
-  return {
+export function createUserMessage(message, attachments = null) {
+  const msg = {
     id: `user-${Date.now()}`,
     role: 'user',
     content: message,
     contentType: 'text',
     timestamp: new Date(),
   };
+  if (attachments && attachments.length > 0) {
+    msg.attachments = attachments;
+  }
+  return msg;
 }
 
 /**
