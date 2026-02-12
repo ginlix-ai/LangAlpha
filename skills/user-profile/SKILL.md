@@ -171,6 +171,8 @@ Set agent behavior settings.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `output_style` | str | **Yes** | "summary", "data", "deep_dive", "quick" |
+| `enable_charts` | str | No | "always", "auto", "prefer_not", "never" |
+| `proactive_questions` | str | No | "always", "auto", "prefer_not", "never" |
 
 ```python
 # Quick summaries for busy user
@@ -183,6 +185,12 @@ update_user_data(
 update_user_data(
     entity="agent_preference",
     data={"output_style": "deep_dive"}
+)
+
+# Enable charts when useful, always ask clarifying questions
+update_user_data(
+    entity="agent_preference",
+    data={"enable_charts": "auto", "proactive_questions": "always"}
 )
 ```
 
@@ -371,14 +379,44 @@ remove_user_data(
 
 ---
 
+## Using AskUserQuestion
+
+**You MUST use the `AskUserQuestion` tool** instead of plain text whenever the user needs to choose from a known set of options. This gives users a structured UI with clickable buttons rather than requiring them to type.
+
+**Use AskUserQuestion for:**
+- Risk tolerance (Conservative / Moderate / Aggressive)
+- Investment style (Growth / Value / Income / Balanced)
+- Output style (Quick summaries / Balanced analysis / Thorough deep-dives)
+- Charts preference (Always / When useful / Prefer not to / Never)
+- Proactive questions preference (Always / When unclear / Prefer not to / Never)
+- Holding period (Short-term / Mid-term / Long-term / Flexible)
+- Any other question where the answer is one of a small fixed set of choices
+
+**Use normal conversation for:**
+- Open-ended input: stock symbols, share quantities, cost basis, account names, notes
+- Follow-up clarifications where the answer is free-form text
+
+**Correct — use the tool:**
+```
+Call AskUserQuestion(question="How comfortable are you with investment risk?", options=["Conservative", "Moderate", "Aggressive"])
+```
+
+**Incorrect — do NOT list options as plain text:**
+```
+"How comfortable are you with investment risk? Would you say:
+- Conservative
+- Moderate
+- Aggressive"
+```
+Never list options as plain text when `AskUserQuestion` can present them as selectable buttons.
+
+---
+
 ## Conversation Tips
 
 1. **Be conversational** - Don't ask all questions at once. Let the conversation flow naturally.
 
-2. **Provide context** - When asking about risk tolerance, explain what each level means:
-   - Conservative: Prefer stability, avoid volatile stocks
-   - Moderate: Balance between growth and stability
-   - Aggressive: Willing to accept high volatility for growth potential
+2. **Use AskUserQuestion for choices** - Whenever the user picks from predefined options, use the tool. Only use plain text for open-ended questions (stock names, quantities, notes).
 
 3. **Handle partial info** - If user mentions "I own some AAPL", ask follow-up:
    - "How many shares do you have?"

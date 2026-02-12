@@ -23,6 +23,11 @@ Follow this workflow for all task requests:
 - For comparisons or multi-faceted tasks, delegate to multiple parallel sub-agents
 - Each sub-agent should handle one specific aspect and return findings
 </task_workflow>
+{% if plan_mode | default(false) %}
+<plan_mode>
+{% include 'components/plan_mode.md.j2' %}
+</plan_mode>
+{% endif %}
 
 <workspace_paths>
 {% include 'components/workspace_paths.md.j2' %}
@@ -48,8 +53,12 @@ Follow this workflow for all task requests:
 {% include 'components/data_processing.md.j2' %}
 </data_processing>
 {% if storage_enabled | default(false) %}
-
 <image_upload>
 {% include 'components/image_upload.md.j2' %}
 </image_upload>
+{% endif %}
+{% if ask_user_enabled | default(false) %}
+<ask_user_guidelines>
+{% include 'components/ask_user_guidelines.md.j2' %}
+</ask_user_guidelines>
 {% endif %}

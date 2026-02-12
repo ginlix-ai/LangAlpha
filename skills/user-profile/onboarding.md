@@ -15,6 +15,12 @@ Onboarding helps users set up their investment profile so the agent can provide 
 - Investment preference (style, sectors)
 - Agent preference (research style, detail level)
 
+### Using AskUserQuestion
+
+For questions where the user picks from predefined options (risk tolerance, investment style,
+research preference), use the `AskUserQuestion` tool to present a structured UI. For open-ended
+questions (stock names, share counts, cost basis), use normal conversational messages.
+
 ---
 
 ## Conversation Flow
@@ -45,21 +51,15 @@ Ask about stocks in a natural way. Users might mention:
 - Both
 
 **If they own stocks:**
-```python
-# User: "I own 50 shares of AAPL at around $175"
-update_user_data(
-    entity="portfolio_holding",
-    data={"symbol": "AAPL", "quantity": 50, "average_cost": 175.0}
-)
+```
+User: "I own 50 shares of AAPL at around $175"
+→ Call update_user_data(entity="portfolio_holding", data={"symbol": "AAPL", "quantity": 50, "average_cost": 175.0})
 ```
 
 **If they're watching stocks:**
-```python
-# User: "I'm interested in NVDA"
-update_user_data(
-    entity="watchlist_item",
-    data={"symbol": "NVDA", "notes": "Interested in AI chip growth"}
-)
+```
+User: "I'm interested in NVDA"
+→ Call update_user_data(entity="watchlist_item", data={"symbol": "NVDA", "notes": "Interested in AI chip growth"})
 ```
 
 **Follow-up questions for holdings:**
@@ -74,18 +74,17 @@ update_user_data(
 This is **required** before completing onboarding.
 
 ```
-"How comfortable are you with investment risk? Would you say you're:
-- Conservative (prefer stability, avoid volatility)
-- Moderate (balance between growth and stability)
-- Aggressive (willing to accept volatility for growth)"
-```
-
-```python
-# Based on response - use risk_tolerance: "low", "medium", or "high"
-update_user_data(
-    entity="risk_preference",
-    data={"risk_tolerance": "medium"}  # or "low", "high", "long_term_focus"
+Call AskUserQuestion(
+    question="How comfortable are you with investment risk?",
+    options=["Conservative", "Moderate", "Aggressive"]
 )
+
+Mapping:
+  Conservative → risk_tolerance: "low"
+  Moderate     → risk_tolerance: "medium"
+  Aggressive   → risk_tolerance: "high"
+
+Then call update_user_data(entity="risk_preference", data={"risk_tolerance": "<mapped_value>"})
 ```
 
 **Optional follow-up:**
@@ -99,33 +98,59 @@ Only ask if the user seems engaged and interested. Don't force these.
 
 **Investment Style:**
 ```
-"Do you have a preferred investment style?
-- Growth (focus on companies with high growth potential)
-- Value (focus on undervalued companies)
-- Income (focus on dividend-paying stocks)
-- Balanced (mix of everything)"
-```
-
-```python
-update_user_data(
-    entity="investment_preference",
-    data={"company_interest": "growth"}
+Call AskUserQuestion(
+    question="Do you have a preferred investment style?",
+    options=["Growth", "Value", "Income", "Balanced"]
 )
+
+Then call update_user_data(entity="investment_preference", data={"company_interest": "<selected_value>"})
 ```
 
 **Agent Style:**
 ```
-"When I research stocks for you, do you prefer:
-- Quick summaries (just the key points)
-- Balanced analysis (moderate detail)
-- Thorough deep-dives (comprehensive data)"
+Call AskUserQuestion(
+    question="When I research stocks for you, how detailed should I be?",
+    options=["Quick summaries", "Balanced analysis", "Thorough deep-dives"]
+)
+
+Mapping:
+  Quick summaries    → output_style: "quick"
+  Balanced analysis  → output_style: "summary"
+  Thorough deep-dives → output_style: "deep_dive"
+
+Then call update_user_data(entity="agent_preference", data={"output_style": "<mapped_value>"})
 ```
 
-```python
-update_user_data(
-    entity="agent_preference",
-    data={"output_style": "summary"}  # or "data", "deep_dive", "quick"
+**Visualizations:**
+```
+Call AskUserQuestion(
+    question="How often should I include charts and visualizations in my analysis?",
+    options=["Always", "When useful", "Prefer not to", "Never"]
 )
+
+Mapping:
+  Always       → enable_charts: "always"
+  When useful  → enable_charts: "auto"
+  Prefer not to → enable_charts: "prefer_not"
+  Never        → enable_charts: "never"
+
+Then call update_user_data(entity="agent_preference", data={"enable_charts": "<mapped_value>"})
+```
+
+**Proactive Questions:**
+```
+Call AskUserQuestion(
+    question="Should I ask clarifying questions before starting work?",
+    options=["Always", "When unclear", "Prefer not to", "Never"]
+)
+
+Mapping:
+  Always        → proactive_questions: "always"
+  When unclear  → proactive_questions: "auto"
+  Prefer not to → proactive_questions: "prefer_not"
+  Never         → proactive_questions: "never"
+
+Then call update_user_data(entity="agent_preference", data={"proactive_questions": "<mapped_value>"})
 ```
 
 ---
@@ -138,12 +163,8 @@ Summarize what was set up and mark onboarding complete.
 1. At least one stock was added (watchlist or portfolio)
 2. Risk preference was set
 
-```python
-# Mark onboarding complete
-update_user_data(
-    entity="profile",
-    data={"onboarding_completed": True}
-)
+```
+Call update_user_data(entity="profile", data={"onboarding_completed": true})
 ```
 
 **Summary template:**
@@ -154,6 +175,8 @@ update_user_data(
 - Watchlist: NVDA
 - Risk preference: Moderate
 - Research style: Quick summaries
+- Charts: When useful
+- Proactive questions: Always
 
 Is there anything else you'd like to add or adjust?"
 ```
@@ -206,24 +229,27 @@ Agent: [calls update_user_data(entity="portfolio_holding", data={"symbol": "AAPL
        - AAPL to your portfolio (50 shares @ $175)
        - NVDA to your watchlist
 
-       Now, how comfortable are you with investment risk? Would you say:
-       - Conservative (prefer stability)
-       - Moderate (balance of growth and stability)
-       - Aggressive (willing to accept volatility for growth)
-
-User: Moderate I guess
+       [calls AskUserQuestion(question="How comfortable are you with investment risk?", options=["Conservative", "Moderate", "Aggressive"])]
+       → User selects "Moderate"
 
 Agent: [calls update_user_data(entity="risk_preference", data={"risk_tolerance": "medium"})]
 
        Got it! I've set your risk preference to moderate.
 
-       One more question - when I research stocks for you, do you prefer:
-       - Quick summaries (just the key points)
-       - Detailed analysis (comprehensive with all the data)
-
-User: Quick summaries, I don't have much time
+       [calls AskUserQuestion(question="When I research stocks for you, how detailed should I be?", options=["Quick summaries", "Balanced analysis", "Thorough deep-dives"])]
+       → User selects "Quick summaries"
 
 Agent: [calls update_user_data(entity="agent_preference", data={"output_style": "quick"})]
+
+       [calls AskUserQuestion(question="How often should I include charts and visualizations in my analysis?", options=["Always", "When useful", "Prefer not to", "Never"])]
+       → User selects "When useful"
+
+Agent: [calls update_user_data(entity="agent_preference", data={"enable_charts": "auto"})]
+
+       [calls AskUserQuestion(question="Should I ask clarifying questions before starting work?", options=["Always", "When unclear", "Prefer not to", "Never"])]
+       → User selects "Always"
+
+Agent: [calls update_user_data(entity="agent_preference", data={"proactive_questions": "always"})]
        [calls update_user_data(entity="profile", data={"onboarding_completed": True})]
        # Or: onboarding will auto-complete when risk_preference + at least one stock are set
 
@@ -233,6 +259,8 @@ Agent: [calls update_user_data(entity="agent_preference", data={"output_style": 
        - Watchlist: NVDA
        - Risk preference: Moderate
        - Research style: Quick summaries
+       - Charts: When useful
+       - Proactive questions: Always
 
        Is there anything else you'd like to add or adjust?
 ```

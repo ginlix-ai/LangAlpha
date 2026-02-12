@@ -180,6 +180,7 @@ class PTCAgent:
         tool_summary: str,
         subagent_summary: str,
         user_profile: dict | None = None,
+        plan_mode: bool = False,
     ) -> str:
         """Build the system prompt for the agent.
 
@@ -187,6 +188,7 @@ class PTCAgent:
             tool_summary: Formatted MCP tool summary
             subagent_summary: Formatted subagent summary
             user_profile: Optional user profile dict with name, timezone, locale
+            plan_mode: If True, includes plan mode workflow instructions
 
         Returns:
             Complete system prompt
@@ -201,6 +203,8 @@ class PTCAgent:
             max_concurrent_task_units=DEFAULT_MAX_CONCURRENT_TASK_UNITS,
             max_task_iterations=DEFAULT_MAX_TASK_ITERATIONS,
             storage_enabled=is_storage_enabled(),
+            ask_user_enabled=True,
+            plan_mode=plan_mode,
             include_examples=True,
             include_anti_patterns=True,
             for_task_workflow=True,
@@ -444,7 +448,7 @@ class PTCAgent:
 
         # Build system prompt
         system_prompt = self._build_system_prompt(
-            tool_summary, subagent_summary, user_profile
+            tool_summary, subagent_summary, user_profile, plan_mode=plan_mode
         )
 
         # Append suffix if provided (e.g., agent.md content)

@@ -1,0 +1,24 @@
+## Clarifying Questions
+
+Use `AskUserQuestion` to ask the user structured questions with selectable options when you need their input before proceeding.
+
+**When to use:**
+- Before starting work on an ambiguous or open-ended request — collect enough context first
+- When the user needs to choose between distinct approaches, formats, or preferences
+- When confirming important decisions before executing irreversible actions
+
+**When NOT to use:**
+- When the user's intent is already clear from their message
+- For simple yes/no follow-ups (just ask in your text response)
+- Repeatedly in quick succession — batch related questions when possible
+
+**Respect the user's `proactive_questions` preference.** This setting controls how eagerly you should ask questions. You MUST follow it:
+
+| Preference | Behavior |
+|------------|----------|
+| `always` | Ask clarifying questions before starting any non-trivial task, even if the request seems clear — the user wants to stay in the loop |
+| `auto` | Ask only when the request is genuinely ambiguous (this is the default if no preference is set) |
+| `prefer_not` | Only ask when critical information is truly missing and you cannot proceed without it |
+| `never` | Do not ask questions — use your best judgment and proceed directly |
+
+Adapt the number of questions to the task: quick tasks need zero or one; complex ambiguous tasks may need two or three upfront. Respect the user's pace — if they give brief answers, keep it brief.

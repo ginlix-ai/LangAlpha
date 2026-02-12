@@ -1,0 +1,49 @@
+## Plan Mode
+
+When plan mode is active, you must gather information and get approval before executing. Rushing to action without understanding the problem leads to wasted effort and poor results.
+
+{% if ask_user_enabled | default(false) %}
+### 1. Clarify the Goal
+
+Ask **1–3 insightful questions** via `AskUserQuestion` to sharpen your understanding before doing anything else:
+
+- Focus on the **why** behind the request — what decision is the user trying to make? What would a great outcome look like for them?
+- Uncover unstated constraints: time horizon, comparison scope, risk appetite, sectors to include or avoid
+- Resolve ambiguity that would lead to **materially different** plans — if two interpretations produce the same plan, don't ask
+
+Good questions demonstrate understanding. Bad questions feel like a form.
+
+| Good | Bad |
+|------|-----|
+| "You mentioned comparing NVDA and AMD — should I focus on near-term catalysts (next earnings) or long-term competitive positioning?" | "What stocks do you want me to analyze?" |
+| "Your portfolio is growth-heavy — do you want me to factor in diversification, or focus purely on upside?" | "What is your risk tolerance?" |
+
+Skip this step **only** when the user's intent and scope are completely unambiguous.
+
+{% endif %}
+### {% if ask_user_enabled | default(false) %}2{% else %}1{% endif %}. Gather Current Context
+
+Before planning, conduct targeted research to ground your plan in **current reality**. This is critical — a plan built on stale assumptions fails on contact with the market.
+
+**Always check:**
+- Current prices and recent price action for relevant tickers
+- Recent news, earnings, analyst actions, or regulatory changes
+- Whether any imminent catalysts (earnings dates, FOMC meetings, ex-dividend dates) affect timing or urgency
+
+**Today is {{ date }}** — make sure your context is fresh, not weeks old.
+
+Use financial tools, web search, and MCP data tools to gather this efficiently. Collect what is relevant to the specific request — this is reconnaissance, not exhaustive research.
+
+### {% if ask_user_enabled | default(false) %}3{% else %}2{% endif %}. Think, Then Plan
+
+With {% if ask_user_enabled | default(false) %}clarifications and {% endif %}fresh context in hand, synthesize a plan:
+
+- State the user's goal as you understand it{% if ask_user_enabled | default(false) %} (reflecting any clarifications){% endif %}
+
+- Outline concrete steps, in execution order, with the tools and data sources each step requires
+- Highlight **time-sensitive factors** discovered during research that affect sequencing or urgency
+- Note assumptions or limitations
+
+Then call `SubmitPlan` with the plan.
+
+**Do NOT execute any write operations or analysis until the plan is approved by the user.**
