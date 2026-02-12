@@ -352,7 +352,7 @@ async def _astream_flash_workflow(
                     {
                         "name": ctx.description or "file",
                         "type": "image" if not ctx.data.startswith("data:application/pdf") else "pdf",
-                        "size": len(ctx.data) * 3 // 4,  # approximate decoded size
+                        "size": len(ctx.data.split(",", 1)[1]) * 3 // 4 if "," in ctx.data else 0,
                     }
                     for ctx in multimodal_ctxs
                 ]
@@ -619,7 +619,7 @@ async def _astream_workflow(
                     {
                         "name": ctx.description or "file",
                         "type": "image" if not ctx.data.startswith("data:application/pdf") else "pdf",
-                        "size": len(ctx.data) * 3 // 4,  # approximate decoded size
+                        "size": len(ctx.data.split(",", 1)[1]) * 3 // 4 if "," in ctx.data else 0,
                     }
                     for ctx in multimodal_ctxs
                 ]
