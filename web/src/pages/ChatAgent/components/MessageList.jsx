@@ -22,6 +22,50 @@ import TextMessageContent from './TextMessageContent';
 import ToolCallMessageContent from './ToolCallMessageContent';
 import TodoListMessageContent from './TodoListMessageContent';
 
+/**
+ * Returns true if a line is markdown-structural (headings, lists, blockquotes,
+ * code fences, horizontal rules, or table rows) and should keep its newline.
+ */
+const MD_STRUCTURAL_RE =
+  /^(?:#|[*\-+] |\d+[.)] |>|```|---+|___+|\*\*\*+|\|)/;
+
+function isStructuralLine(line) {
+  return MD_STRUCTURAL_RE.test(line.trimStart());
+}
+
+/**
+ * Normalize text content from backend for proper display in subagent views.
+ * - Unescape literal \n (backslash-n) if backend sends escaped strings
+ * - Collapse single newlines to spaces ONLY between plain prose lines
+ * - Preserve newlines adjacent to markdown-structural lines (headings, lists, etc.)
+ * - Preserve double newlines (paragraph breaks)
+ */
+export function normalizeSubagentText(content) {
+  if (!content || typeof content !== 'string') return '';
+  const s = content
+    .replace(/\\n/g, '\n')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n');
+
+  const blocks = s.split(/\n{2,}/);
+  return blocks
+    .map((block) => {
+      const trimmed = block.trim();
+      const lines = trimmed.split('\n');
+      if (lines.length <= 1) return trimmed;
+
+      let result = lines[0];
+      for (let i = 1; i < lines.length; i++) {
+        const prevStructural = isStructuralLine(lines[i - 1]);
+        const curStructural = isStructuralLine(lines[i]);
+        result += prevStructural || curStructural ? '\n' : ' ';
+        result += lines[i];
+      }
+      return result;
+    })
+    .join('\n\n');
+}
+
 /** Map artifact type → inline artifact component */
 const INLINE_ARTIFACT_MAP = {
   stock_prices: InlineStockPriceCard,
@@ -104,9 +148,10 @@ function AttachmentCard({ attachment }) {
  * - Streaming indicators
  * - Error state styling
  */
-function MessageList({ messages, hideAvatar, compactToolCalls, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick }) {
-  // Empty state - show when no messages exist
+function MessageList({ messages, hideAvatar, compactToolCalls, isSubagentView, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick }) {
+  // Empty state - show when no messages exist (hidden in subagent view)
   if (messages.length === 0) {
+    if (isSubagentView) return null;
     return (
       <div className="flex flex-col items-center justify-center min-h-full py-12">
         <Bot className="h-12 w-12 mb-4" style={{ color: '#6155F5', opacity: 0.5 }} />
@@ -124,8 +169,9 @@ function MessageList({ messages, hideAvatar, compactToolCalls, onOpenSubagentTas
         <MessageBubble
           key={message.id}
           message={message}
-          hideAvatar={hideAvatar}
+          hideAvatar={isSubagentView || hideAvatar}
           compactToolCalls={compactToolCalls}
+          isSubagentView={isSubagentView}
           onOpenSubagentTask={onOpenSubagentTask}
           onOpenFile={onOpenFile}
           onOpenDir={onOpenDir}
@@ -145,7 +191,7 @@ function MessageList({ messages, hideAvatar, compactToolCalls, onOpenSubagentTas
  * Renders a single message bubble with appropriate styling
  * based on role (user/assistant) and state (streaming/error)
  */
-function MessageBubble({ message, hideAvatar, compactToolCalls, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick }) {
+function MessageBubble({ message, hideAvatar, compactToolCalls, isSubagentView, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick }) {
   const { user } = useAuth();
   const avatarUrl = user?.avatar_url;
   const isUser = message.role === 'user';
@@ -193,6 +239,7 @@ function MessageBubble({ message, hideAvatar, compactToolCalls, onOpenSubagentTa
               hasError={message.error}
               isAssistant={isAssistant}
               compactToolCalls={compactToolCalls}
+              isSubagentView={isSubagentView}
               onOpenSubagentTask={onOpenSubagentTask}
               onOpenFile={onOpenFile}
               onOpenDir={onOpenDir}
@@ -270,7 +317,7 @@ const MIN_LIVE_EXPOSURE_MS = 5000; // minimum time a tool call stays in LiveActi
 const MAX_IN_PROGRESS_MS = 15000; // max time a tool call can stay in-progress in live view before archiving
 const FADE_MS = 500; // matches LiveActivity fade duration
 
-function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesses, todoListProcesses, subagentTasks, planApprovals = {}, pendingToolCallChunks = {}, isStreaming, hasError, isAssistant = false, compactToolCalls = false, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, textOnly = false }) {
+function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesses, todoListProcesses, subagentTasks, planApprovals = {}, pendingToolCallChunks = {}, isStreaming, hasError, isAssistant = false, compactToolCalls = false, isSubagentView = false, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, textOnly = false }) {
   // Force re-render timer for recently-completed tool calls that need minimum exposure
   const [, setTick] = useState(0);
   const expiryTimerRef = useRef(null);
@@ -391,9 +438,11 @@ function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesse
       if (seg.type === 'reasoning') {
         const proc = reasoningProcesses[seg.reasoningId];
         if (!proc) continue;
+        const rawContent = proc.content || '';
+        const reasoningContent = isSubagentView ? normalizeSubagentText(rawContent) : rawContent;
         if (proc.isReasoning) {
           pendingLiveReasoning = {
-            content: proc.content || '',
+            content: reasoningContent,
             title: proc.reasoningTitle || null,
             isReasoning: true,
           };
@@ -412,7 +461,7 @@ function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesse
               type: 'reasoning',
               id: seg.reasoningId,
               reasoningTitle: proc.reasoningTitle || null,
-              content: proc.content || '',
+              content: reasoningContent,
               reasoningComplete: proc.reasoningComplete,
             });
           }
@@ -585,10 +634,11 @@ function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesse
           }
 
           if (block.type === 'text') {
+            const textContent = isSubagentView ? normalizeSubagentText(block.segment.content) : block.segment.content;
             return (
               <TextMessageContent
                 key={block.key}
-                content={block.segment.content}
+                content={textContent}
                 isStreaming={isStreaming && blockIdx === lastTextBlockIdx && !hasAnyTrulyInProgress}
                 hasError={hasError}
               />

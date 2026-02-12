@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { ArrowLeft, FolderOpen, Bot, StopCircle, ScrollText, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, FolderOpen, Bot, StopCircle, ScrollText, AlertTriangle, CheckCircle2, Circle, Loader2 } from 'lucide-react';
 import { ScrollArea } from '../../../components/ui/scroll-area';
 import { useAuth } from '../../../contexts/AuthContext';
 import { updateCurrentUser } from '../../Dashboard/utils/api';
@@ -14,16 +14,49 @@ import './FilePanel.css';
 import ChatInput from '../../../components/ui/chat-input';
 import { attachmentsToImageContexts } from '../utils/fileUpload';
 import DetailPanel from './DetailPanel';
-import FloatingCard from './FloatingCard';
-import FloatingCardIcon from './FloatingCardIcon';
-import MessageList from './MessageList';
-import TodoListCardContent from './TodoListCardContent';
+import MessageList, { normalizeSubagentText } from './MessageList';
+import Markdown from './Markdown';
 import AgentSidebar from './AgentSidebar';
 import SubagentStatusBar from './SubagentStatusBar';
-import SubagentCardContent from './SubagentCardContent';
 import TodoDrawer from './TodoDrawer';
 import { parseErrorMessage } from '../utils/parseErrorMessage';
 import '../../Dashboard/Dashboard.css';
+
+/**
+ * SubagentStatusIndicator — inline status line for subagent view.
+ */
+function SubagentStatusIndicator({ status, currentTool, toolCalls = 0, messagesCount = 0 }) {
+  const getIcon = () => {
+    if (currentTool) {
+      return <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ color: 'rgba(255, 255, 255, 0.4)' }} />;
+    }
+    if (status === 'active' && messagesCount > 0) {
+      return <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ color: 'rgba(255, 255, 255, 0.4)' }} />;
+    }
+    if (status === 'completed') {
+      return <CheckCircle2 className="h-3.5 w-3.5" style={{ color: 'rgba(255, 255, 255, 0.4)' }} />;
+    }
+    return <Circle className="h-3.5 w-3.5" style={{ color: 'rgba(255, 255, 255, 0.3)' }} />;
+  };
+
+  const getText = () => {
+    if (currentTool) return `Running: ${currentTool}`;
+    if (status === 'completed') {
+      return toolCalls > 0 ? `Completed (${toolCalls} tool calls)` : 'Completed';
+    }
+    if (status === 'active') {
+      return messagesCount > 0 ? 'Running' : 'Initializing';
+    }
+    return 'Initializing';
+  };
+
+  return (
+    <div className="flex items-center gap-1.5 text-xs" style={{ color: 'rgba(255, 255, 255, 0.5)' }}>
+      {getIcon()}
+      <span>{getText()}</span>
+    </div>
+  );
+}
 
 /**
  * ChatView Component
@@ -146,13 +179,6 @@ function ChatView({ workspaceId, threadId, onBack }) {
   // Must be called before useChatMessages since updateTodoListCard and updateSubagentCard are passed to it
   const {
     floatingCards,
-    handleCardMinimize,
-    handleCardMaximize,
-    handleCardToggle,
-    handleCardPositionChange,
-    handleBringToFront,
-    getMinimizedCards,
-    getAllCards,
     updateTodoListCard,
     updateSubagentCard,
     inactivateAllSubagents,
@@ -320,9 +346,8 @@ function ChatView({ workspaceId, threadId, onBack }) {
       messages: card.subagentData?.messages || [],
       isActive: card.subagentData?.isActive !== false,
       isMainAgent: false,
-      zIndex: card.zIndex || 0, // Use zIndex to determine creation order (newer = higher)
     }))
-    .sort((a, b) => (b.zIndex || 0) - (a.zIndex || 0)); // Newer first (higher zIndex)
+    .reverse(); // Newer first (Object.entries returns insertion order, so reverse = newest first)
 
   // Filter out hidden agents
   const visibleSubagentAgents = allSubagentAgents.filter(agent => !hiddenAgentIds.has(agent.id));
@@ -576,28 +601,35 @@ function ChatView({ workspaceId, threadId, onBack }) {
 
   // Smart auto-scroll: only scroll to bottom when user is already near the bottom
   const isNearBottomRef = useRef(true);
+  const isSubagentNearBottomRef = useRef(true);
 
   // Attach scroll listener to detect user scroll position
   // Re-attaches when activeAgentId changes (ScrollArea remounts on tab switch)
   useEffect(() => {
-    if (activeAgentId !== 'main') return;
-    if (!scrollAreaRef.current) return;
-    const scrollContainer = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]') ||
-                           scrollAreaRef.current.querySelector('.overflow-auto') ||
-                           scrollAreaRef.current;
+    const isMain = activeAgentId === 'main';
+    const ref = isMain ? scrollAreaRef : subagentScrollAreaRef;
+    const nearBottomRef = isMain ? isNearBottomRef : isSubagentNearBottomRef;
+
+    if (!ref.current) return;
+    const scrollContainer = ref.current.querySelector('[data-radix-scroll-area-viewport]') ||
+                           ref.current.querySelector('.overflow-auto') ||
+                           ref.current;
     if (!scrollContainer) return;
+
+    // Reset to near-bottom when switching tabs
+    nearBottomRef.current = true;
 
     const handleScroll = () => {
       const threshold = 120;
       const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
-      isNearBottomRef.current = scrollHeight - scrollTop - clientHeight < threshold;
+      nearBottomRef.current = scrollHeight - scrollTop - clientHeight < threshold;
     };
 
     scrollContainer.addEventListener('scroll', handleScroll, { passive: true });
     return () => scrollContainer.removeEventListener('scroll', handleScroll);
   }, [activeAgentId]);
 
-  // Auto-scroll to bottom when messages change, but only if user is near the bottom
+  // Auto-scroll main chat to bottom when messages change, but only if user is near the bottom
   useEffect(() => {
     if (!isNearBottomRef.current) return;
     if (!scrollAreaRef.current) return;
@@ -613,12 +645,14 @@ function ChatView({ workspaceId, threadId, onBack }) {
   }, [messages]);
 
   // Auto-scroll subagent view when active subagent's messages change
+  // Uses the same smart-scroll logic: only scroll if user is near the bottom
   // Skipped when restoring a saved scroll position after tab switch
   useEffect(() => {
     if (skipSubagentAutoScrollRef.current) {
       skipSubagentAutoScrollRef.current = false;
       return;
     }
+    if (!isSubagentNearBottomRef.current) return;
     if (!activeAgent || !subagentScrollAreaRef.current) return;
     const scrollContainer = subagentScrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]') ||
                            subagentScrollAreaRef.current.querySelector('.overflow-auto') ||
@@ -691,19 +725,6 @@ function ChatView({ workspaceId, threadId, onBack }) {
             >
               <Bot className="h-5 w-5" />
             </button>
-            {/* Floating card icons for non-agent and non-todolist cards */}
-            {getAllCards()
-              .filter(([cardId]) => !cardId.startsWith('subagent-') && cardId !== 'todo-list-card')
-              .map(([cardId, card]) => (
-                <FloatingCardIcon
-                  key={cardId}
-                  id={cardId}
-                  title={card.title || 'Card'}
-                  onClick={() => handleCardToggle(cardId)}
-                  hasUnreadUpdate={card.hasUnreadUpdate || false}
-                  isActive={true}
-                />
-              ))}
           </div>
         </div>
 
@@ -749,19 +770,36 @@ function ChatView({ workspaceId, threadId, onBack }) {
               ) : activeAgent ? (
                 <ScrollArea ref={subagentScrollAreaRef} className="h-full w-full">
                   <div className="px-6 py-4 flex justify-center">
-                    <div className="w-full max-w-3xl">
-                      <SubagentCardContent
-                        taskId={activeAgent.taskId}
-                        description={activeAgent.description}
-                        type={activeAgent.type}
-                        toolCalls={activeAgent.toolCalls}
-                        currentTool={activeAgent.currentTool}
+                    <div className="w-full max-w-3xl space-y-2.5">
+                      {/* Task description */}
+                      {activeAgent.description && (
+                        <div style={{ color: 'rgba(255, 255, 255, 0.8)' }}>
+                          <Markdown
+                            variant="chat"
+                            content={normalizeSubagentText(activeAgent.description)}
+                            className="text-sm leading-relaxed"
+                          />
+                        </div>
+                      )}
+                      {/* Status indicator */}
+                      <SubagentStatusIndicator
                         status={activeAgent.status}
-                        messages={activeAgent.messages}
-                        isHistory={false}
-                        onOpenFile={handleOpenFileFromChat}
-                        onToolCallDetailClick={handleToolCallDetailClick}
+                        currentTool={activeAgent.currentTool}
+                        toolCalls={activeAgent.toolCalls}
+                        messagesCount={activeAgent.messages?.length}
                       />
+                      {/* Messages — reuse MessageList */}
+                      {activeAgent.messages?.length > 0 && (
+                        <div style={{ borderTop: '0.5px solid rgba(255, 255, 255, 0.04)', paddingTop: '8px' }}>
+                          <MessageList
+                            messages={activeAgent.messages}
+                            isSubagentView={true}
+                            hideAvatar={true}
+                            onOpenFile={handleOpenFileFromChat}
+                            onToolCallDetailClick={handleToolCallDetailClick}
+                          />
+                        </div>
+                      )}
                     </div>
                   </div>
                 </ScrollArea>
@@ -866,41 +904,6 @@ function ChatView({ workspaceId, threadId, onBack }) {
         </>
       )}
 
-      {/* Floating Cards - Only for non-agent cards */}
-      {Object.entries(floatingCards)
-        .filter(([cardId]) => !cardId.startsWith('subagent-') && cardId !== 'todo-list-card')
-        .map(([cardId, card]) => (
-          <FloatingCard
-            key={cardId}
-            id={cardId}
-            title={card.title || 'Card'}
-            isMinimized={card.isMinimized}
-            onMinimize={() => handleCardMinimize(cardId)}
-            onMaximize={() => handleCardMaximize(cardId)}
-            initialPosition={card.position}
-            onPositionChange={handleCardPositionChange}
-            zIndex={card.zIndex || 50}
-            onBringToFront={handleBringToFront}
-          >
-            {cardId === 'todo-list-card' && card.todoData ? (
-              <TodoListCardContent
-                todos={card.todoData.todos}
-                total={card.todoData.total}
-                completed={card.todoData.completed}
-                in_progress={card.todoData.in_progress}
-                pending={card.todoData.pending}
-              />
-            ) : (
-              <div className="text-sm" style={{ color: '#FFFFFF' }}>
-                <p className="mb-2">This is {card.title}.</p>
-                <p className="mb-2">You can drag this card by clicking and dragging the header.</p>
-                <p className="mb-2">Click anywhere on the card to bring it to the front.</p>
-                <p className="mb-2">Click the minimize button to minimize it to an icon in the top bar.</p>
-                <p>Click the bookmark icon in the top bar to restore it.</p>
-              </div>
-            )}
-          </FloatingCard>
-        ))}
     </div>
   );
 }
