@@ -41,6 +41,7 @@ import {
   handleHistoryToolCalls,
   handleHistoryToolCallResult,
   handleHistoryTodoUpdate,
+  handleHistoryQueuedMessageInjected,
   isSubagentHistoryEvent,
 } from './utils/historyEventHandlers';
 
@@ -313,6 +314,19 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
             total: event.total_tokens || 0,
             threshold: event.threshold || prev?.threshold || 0,
           }));
+          return;
+        }
+
+        // Handle queued_message_injected events from streaming_chunks
+        if (eventType === 'queued_message_injected' && hasPairIndex) {
+          handleHistoryQueuedMessageInjected({
+            event,
+            pairIndex: event.pair_index,
+            assistantMessagesByPair,
+            pairStateByPair,
+            refs: { newMessagesStartIndexRef, historyMessagesRef },
+            setMessages,
+          });
           return;
         }
 
@@ -1244,6 +1258,12 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
    * @returns {Function} Event handler: (event) => void
    */
   const createStreamEventProcessor = (assistantMessageId, refs, getTaskIdFromEvent) => {
+    // Snapshot of the old assistant message's content order at the time the user
+    // sent a queued message.  Used to roll back any content that leaked into the
+    // old bubble due to stream-mode multiplexing (custom events can arrive after
+    // message chunks from the post-injection model call).
+    let queuedAtOrder = null;
+
     return (event) => {
       const eventType = event.event || 'message_chunk';
 
@@ -1274,6 +1294,101 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
           id: event.id,
           content_type: event.content_type,
         });
+      }
+
+      // Handle message_queued events (user sent a message while agent is streaming)
+      if (eventType === 'message_queued') {
+        // Record the content order counter so we can roll back leaked content
+        // when queued_message_injected arrives (see handler below).
+        queuedAtOrder = refs.contentOrderCounterRef.current;
+        return;
+      }
+
+      // Handle queued_message_injected custom events (middleware picked up the queued message)
+      if (eventType === 'queued_message_injected') {
+        const oldAssistantId = assistantMessageId;
+
+        // 1. Roll back old assistant message to the snapshot taken at message_queued
+        //    time, removing any content that leaked due to stream-mode multiplexing.
+        //    Then finalize it (isStreaming: false).
+        setMessages((prev) =>
+          prev.map((msg) => {
+            if (msg.id !== oldAssistantId) return msg;
+
+            // If no snapshot, just finalize
+            if (queuedAtOrder === null) {
+              return { ...msg, isStreaming: false };
+            }
+
+            // Keep only segments at or before the queue point
+            const keptSegments = (msg.contentSegments || []).filter(
+              (s) => s.order <= queuedAtOrder
+            );
+
+            // Rebuild plain-text content from kept text segments
+            const keptContent = keptSegments
+              .filter((s) => s.type === 'text')
+              .map((s) => s.content || '')
+              .join('');
+
+            // Collect IDs of kept processes so we can prune orphans
+            const keptReasoningIds = new Set(
+              keptSegments.filter((s) => s.type === 'reasoning').map((s) => s.reasoningId)
+            );
+            const keptToolCallIds = new Set(
+              keptSegments.filter((s) => s.type === 'tool_call').map((s) => s.toolCallId)
+            );
+            const keptTodoListIds = new Set(
+              keptSegments.filter((s) => s.type === 'todo_list').map((s) => s.todoListId)
+            );
+            const keptSubagentIds = new Set(
+              keptSegments.filter((s) => s.type === 'subagent_task').map((s) => s.subagentId)
+            );
+
+            const filterObj = (obj, keepSet) => {
+              if (!obj) return {};
+              const out = {};
+              for (const [id, val] of Object.entries(obj)) {
+                if (keepSet.has(id)) out[id] = val;
+              }
+              return out;
+            };
+
+            return {
+              ...msg,
+              contentSegments: keptSegments,
+              content: keptContent,
+              reasoningProcesses: filterObj(msg.reasoningProcesses, keptReasoningIds),
+              toolCallProcesses: filterObj(msg.toolCallProcesses, keptToolCallIds),
+              todoListProcesses: filterObj(msg.todoListProcesses, keptTodoListIds),
+              subagentTasks: filterObj(msg.subagentTasks, keptSubagentIds),
+              isStreaming: false,
+            };
+          })
+        );
+        queuedAtOrder = null;
+
+        // 2. Mark queued user messages as delivered
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.queued ? { ...msg, queued: false, queueDelivered: true } : msg
+          )
+        );
+
+        // 3. Create new assistant message placeholder
+        const newAssistantId = `assistant-${Date.now()}`;
+        const newAssistant = createAssistantMessage(newAssistantId);
+        setMessages((prev) => appendMessage(prev, newAssistant));
+
+        // 4. Switch closure & refs to new assistant message
+        assistantMessageId = newAssistantId;
+        currentMessageRef.current = newAssistantId;
+
+        // 5. Reset content counters
+        refs.contentOrderCounterRef.current = 0;
+        refs.currentReasoningIdRef.current = null;
+        refs.currentToolCallIdRef.current = null;
+        return;
       }
 
       // Handle token_usage events (for context window progress ring)
@@ -1770,6 +1885,54 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
   };
 
   /**
+   * Handles sending a message while the agent is already streaming.
+   * The backend will queue it for injection before the next LLM call.
+   */
+  const handleSendQueuedMessage = async (message, planMode = false, additionalContext = null, attachmentMeta = null) => {
+    // Show user message in chat with queued indicator
+    const userMessage = createUserMessage(message, attachmentMeta);
+    userMessage.queued = true;
+    recentlySentTrackerRef.current.track(message.trim(), userMessage.timestamp, userMessage.id);
+    setMessages((prev) => appendMessage(prev, userMessage));
+
+    try {
+      // Send to same endpoint — backend will auto-queue and return message_queued SSE
+      await sendChatMessageStream(
+        message,
+        workspaceId,
+        threadId,
+        [],
+        planMode,
+        (event) => {
+          const eventType = event.event || 'message_chunk';
+          if (eventType === 'message_queued') {
+            // Update the user message to reflect queued status
+            setMessages((prev) =>
+              updateMessage(prev, userMessage.id, (msg) => ({
+                ...msg,
+                queued: true,
+                queuePosition: event.position,
+              }))
+            );
+          }
+        },
+        additionalContext,
+        agentMode
+      );
+    } catch (err) {
+      console.error('Error queuing message:', err);
+      // Update user message to show queue failure
+      setMessages((prev) =>
+        updateMessage(prev, userMessage.id, (msg) => ({
+          ...msg,
+          queued: false,
+          queueError: err.message || 'Failed to queue message',
+        }))
+      );
+    }
+  };
+
+  /**
    * Handles sending a message and streaming the response
    *
    * @param {string} message - The user's message
@@ -1779,8 +1942,13 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
    */
   const handleSendMessage = async (message, planMode = false, additionalContext = null, attachmentMeta = null) => {
     const hasContent = message.trim() || (additionalContext && additionalContext.length > 0);
-    if (!workspaceId || !hasContent || isLoading) {
+    if (!workspaceId || !hasContent) {
       return;
+    }
+
+    // If agent is already streaming, send as queued message
+    if (isLoading) {
+      return handleSendQueuedMessage(message, planMode, additionalContext, attachmentMeta);
     }
 
     // Store planMode so HITL interrupt handler can access it

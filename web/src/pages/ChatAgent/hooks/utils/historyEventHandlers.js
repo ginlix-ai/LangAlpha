@@ -485,6 +485,84 @@ export function handleHistoryToolCallResult({ assistantMessageId, toolCallId, re
 }
 
 /**
+ * Handles queued_message_injected events in history replay.
+ * Creates user bubble(s) for each queued message, then a new assistant placeholder
+ * so subsequent events render in a fresh assistant bubble.
+ * @param {Object} params - Handler parameters
+ * @param {Object} params.event - The history event (contains messages array)
+ * @param {number} params.pairIndex - The pair index
+ * @param {Map} params.assistantMessagesByPair - Map of pair_index to assistant message ID
+ * @param {Map} params.pairStateByPair - Map of pair_index to pair state
+ * @param {Object} params.refs - Refs object with newMessagesStartIndexRef, historyMessagesRef
+ * @param {Function} params.setMessages - State setter for messages
+ */
+export function handleHistoryQueuedMessageInjected({
+  event,
+  pairIndex,
+  assistantMessagesByPair,
+  pairStateByPair,
+  refs,
+  setMessages,
+}) {
+  const { newMessagesStartIndexRef, historyMessagesRef } = refs;
+  const queuedMessages = event.messages || [];
+
+  // Create user message bubble(s) for each queued message
+  for (const qMsg of queuedMessages) {
+    if (!qMsg.content) continue;
+    const userMsgId = `history-queued-user-${pairIndex}-${Date.now()}`;
+    const userMessage = {
+      id: userMsgId,
+      role: 'user',
+      content: qMsg.content,
+      contentType: 'text',
+      timestamp: qMsg.timestamp ? new Date(qMsg.timestamp * 1000) : new Date(),
+      isStreaming: false,
+      isHistory: true,
+      queueDelivered: true,
+    };
+    setMessages((prev) => {
+      const idx = newMessagesStartIndexRef.current;
+      const next = [...prev.slice(0, idx), userMessage, ...prev.slice(idx)];
+      historyMessagesRef.current.add(userMsgId);
+      newMessagesStartIndexRef.current = idx + 1;
+      return next;
+    });
+  }
+
+  // Create new assistant message placeholder
+  const newAssistantId = `history-assistant-queued-${pairIndex}-${Date.now()}`;
+  assistantMessagesByPair.set(pairIndex, newAssistantId);
+
+  // Reset pair state for the new assistant message
+  pairStateByPair.set(pairIndex, {
+    contentOrderCounter: 0,
+    reasoningId: null,
+    toolCallId: null,
+  });
+
+  const assistantMessage = {
+    id: newAssistantId,
+    role: 'assistant',
+    content: '',
+    contentType: 'text',
+    timestamp: new Date(),
+    isStreaming: false,
+    isHistory: true,
+    contentSegments: [],
+    reasoningProcesses: {},
+    toolCallProcesses: {},
+  };
+  setMessages((prev) => {
+    const idx = newMessagesStartIndexRef.current;
+    const next = [...prev.slice(0, idx), assistantMessage, ...prev.slice(idx)];
+    historyMessagesRef.current.add(newAssistantId);
+    newMessagesStartIndexRef.current = idx + 1;
+    return next;
+  });
+}
+
+/**
  * Handles artifact events with artifact_type: "todo_update" in history replay
  * @param {Object} params - Handler parameters
  * @param {string} params.assistantMessageId - ID of the assistant message

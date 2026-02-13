@@ -900,7 +900,7 @@ function ChatView({ workspaceId, threadId, onBack }) {
                     })()}
                     <ChatInput
                       onSend={handleSendWithAttachments}
-                      disabled={isLoading || isLoadingHistory || !workspaceId || !!pendingInterrupt}
+                      disabled={isLoadingHistory || !workspaceId || !!pendingInterrupt}
                       onStop={handleSoftInterrupt}
                       isLoading={isLoading}
                       files={workspaceFiles}
