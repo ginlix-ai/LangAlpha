@@ -332,7 +332,7 @@ class SSEStreamClient:
         sort_order: str = "desc",
     ) -> Dict[str, Any]:
         """List conversations (threads) for the current user."""
-        url = urljoin(self.base_url, "/api/v1/conversations")
+        url = urljoin(self.base_url, "/api/v1/threads")
         response = await self.client.get(
             url,
             headers=self._make_headers(),
@@ -348,7 +348,7 @@ class SSEStreamClient:
 
     async def replay_thread(self, thread_id: str) -> AsyncGenerator[tuple[str, Dict[str, Any]], None]:
         """Replay a completed thread from persisted streaming chunks."""
-        url = urljoin(self.base_url, f"/api/v1/threads/{thread_id}/replay")
+        url = urljoin(self.base_url, f"/api/v1/threads/{thread_id}/messages/replay")
 
         async with self.client.stream(
             "GET",
@@ -389,7 +389,15 @@ class SSEStreamClient:
         Yields:
             Tuples of (event_type, event_data)
         """
-        url = urljoin(self.base_url, "/api/v1/chat/stream")
+        # Determine effective thread_id
+        effective_thread_id = thread_id or self.thread_id
+        is_new_thread = not effective_thread_id or effective_thread_id == "__default__"
+
+        # Build URL: /threads/{id}/messages for existing, /threads/messages for new
+        if is_new_thread:
+            url = urljoin(self.base_url, "/api/v1/threads/messages")
+        else:
+            url = urljoin(self.base_url, f"/api/v1/threads/{effective_thread_id}/messages")
 
         # Only require workspace for non-flash mode
         if agent_mode != "flash":
@@ -398,7 +406,6 @@ class SSEStreamClient:
             workspace_id = None
 
         request_body = {
-            "thread_id": thread_id or self.thread_id or "__default__",
             "messages": [{"role": "user", "content": message}] if message else [],
             "plan_mode": plan_mode,
         }
@@ -453,7 +460,7 @@ class SSEStreamClient:
         Yields:
             Tuples of (event_type, event_data)
         """
-        url = urljoin(self.base_url, f"/api/v1/chat/stream/{thread_id}/reconnect")
+        url = urljoin(self.base_url, f"/api/v1/threads/{thread_id}/messages/stream")
 
         params = {}
         if last_event_id is not None:
@@ -481,7 +488,7 @@ class SSEStreamClient:
         thread_id: str,
     ) -> AsyncGenerator[tuple[str, Dict[str, Any]], None]:
         """Stream subagent status updates for a thread."""
-        url = urljoin(self.base_url, f"/api/v1/chat/stream/{thread_id}/status")
+        url = urljoin(self.base_url, f"/api/v1/threads/{thread_id}/subagents")
 
         async with self.client.stream(
             "GET",
@@ -507,7 +514,7 @@ class SSEStreamClient:
         Returns:
             Cancellation confirmation dict
         """
-        url = urljoin(self.base_url, f"/api/v1/workflow/{thread_id}/cancel")
+        url = urljoin(self.base_url, f"/api/v1/threads/{thread_id}/cancel")
         response = await self.client.post(url)
         response.raise_for_status()
         return response.json()
@@ -527,7 +534,7 @@ class SSEStreamClient:
         Returns:
             Dict with status, can_resume, and background_tasks info
         """
-        url = urljoin(self.base_url, f"/api/v1/workflow/{thread_id}/soft-interrupt")
+        url = urljoin(self.base_url, f"/api/v1/threads/{thread_id}/interrupt")
         response = await self.client.post(url)
         response.raise_for_status()
         return response.json()
@@ -546,7 +553,7 @@ class SSEStreamClient:
         Returns:
             Dict with success, original_message_count, new_message_count, summary_length
         """
-        url = urljoin(self.base_url, f"/api/v1/workflow/{thread_id}/summarize")
+        url = urljoin(self.base_url, f"/api/v1/threads/{thread_id}/summarize")
         response = await self.client.post(url, params={"keep_messages": keep_messages})
         response.raise_for_status()
         return response.json()
@@ -561,7 +568,7 @@ class SSEStreamClient:
         Returns:
             Status dict with state, started_at, etc.
         """
-        url = urljoin(self.base_url, f"/api/v1/workflow/{thread_id}/status")
+        url = urljoin(self.base_url, f"/api/v1/threads/{thread_id}/status")
         response = await self.client.get(url)
         response.raise_for_status()
         return response.json()

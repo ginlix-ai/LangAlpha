@@ -27,7 +27,7 @@ async def test_list_conversations_sends_user_header():
         data = await client.list_conversations(limit=10)
         assert data["threads"][0]["thread_id"] == "t1"
         assert captured["headers"]["x-user-id"] == "u1"
-        assert captured["url"].startswith("http://test/api/v1/conversations")
+        assert captured["url"].startswith("http://test/api/v1/threads")
     finally:
         await client.close()
 
