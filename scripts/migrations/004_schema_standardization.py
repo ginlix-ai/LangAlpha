@@ -435,8 +435,18 @@ async def step5_convert_varchar_pks_to_uuid(cur):
         col_type = await get_column_type(cur, usages_table, usage_pk)
         if col_type and col_type == 'character varying':
             print(f"   Converting {usages_table}.{usage_pk} VARCHAR -> UUID")
+            # Drop default first; PostgreSQL cannot cast VARCHAR default to UUID automatically
+            try:
+                await cur.execute(
+                    f"ALTER TABLE {usages_table} ALTER COLUMN {usage_pk} DROP DEFAULT"
+                )
+            except Exception:
+                pass  # No default or already dropped
             await cur.execute(
                 f"ALTER TABLE {usages_table} ALTER COLUMN {usage_pk} TYPE UUID USING {usage_pk}::uuid"
+            )
+            await cur.execute(
+                f"ALTER TABLE {usages_table} ALTER COLUMN {usage_pk} SET DEFAULT gen_random_uuid()"
             )
             print(f"      Converted {usages_table}.{usage_pk}")
         else:
