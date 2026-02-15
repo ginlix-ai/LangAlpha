@@ -85,7 +85,7 @@ const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta, displayOverr
             {fiftyTwoWeekLow != null ? Number(fiftyTwoWeekLow).toFixed(2) : '—'}
           </span>
         </div>
-        <div className="metric-item">
+        <div className="metric-item metric-item--avg-vol">
           <span className="metric-label">Avg Vol (3M)</span>
           <span className="metric-value">
             {averageVolume != null ? formatNumber(Number(averageVolume)) : '—'}
@@ -108,9 +108,6 @@ const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta, displayOverr
           <span className={`metric-value ${(parseFloat(changePct) || 0) >= 0 ? 'positive' : 'negative'}`}>
             {changePct != null && changePct !== '' ? (parseFloat(changePct) >= 0 ? '+' : '') + changePct : '—'}
           </span>
-        </div>
-        <div className="metric-item view-all">
-          <span className="view-all-link">View all</span>
         </div>
       </div>
     </div>

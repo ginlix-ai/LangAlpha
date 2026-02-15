@@ -130,17 +130,91 @@
   border-color: #4a5068;
 }
 
-.view-all {
-  align-items: flex-end;
-}
+/* ----------------------------------------
+   MOBILE — Smaller, more compressed top half
+   ---------------------------------------- */
+@media (max-width: 767px) {
+  /* Keep price section clear of folded TradingSidebarPanel (48px strip on right) */
+  .stock-header {
+    padding: 8px 12px;
+    margin-right: 48px;
+  }
 
-.view-all-link {
-  font-size: 14px;
-  color: #667eea;
-  cursor: pointer;
-  text-decoration: none;
-}
+  .stock-header-top {
+    margin-bottom: 8px;
+    gap: 8px;
+  }
 
-.view-all-link:hover {
-  text-decoration: underline;
+  .stock-title {
+    gap: 6px;
+  }
+
+  .stock-symbol {
+    font-size: 16px;
+  }
+
+  .stock-name {
+    font-size: 13px;
+  }
+
+  .stock-exchange {
+    font-size: 11px;
+    padding: 2px 6px;
+  }
+
+  .stock-price-section {
+    flex-shrink: 0;
+  }
+
+  .stock-price {
+    font-size: 20px;
+    margin-bottom: 2px;
+  }
+
+  .stock-change {
+    font-size: 12px;
+  }
+
+  .stock-overview-toggle {
+    margin-top: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    gap: 4px;
+  }
+
+  .stock-overview-toggle svg {
+    width: 12px;
+    height: 12px;
+  }
+
+  /* Metrics grid — smaller font, more compressed */
+  .stock-metrics {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+    padding-top: 6px;
+  }
+
+  .metric-item {
+    gap: 2px;
+  }
+
+  .metric-label {
+    font-size: 9px;
+    letter-spacing: 0.3px;
+  }
+
+  .metric-value {
+    font-size: 11px;
+  }
+
+  .metrics-discrepancy-hint {
+    width: 11px;
+    height: 11px;
+    font-size: 8px;
+    margin-left: 2px;
+  }
+
+  .metric-item--avg-vol {
+    display: none;
+  }
 }

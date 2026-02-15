@@ -301,3 +301,100 @@
   0%, 100% { opacity: 0.4; }
   50% { opacity: 0.8; }
 }
+
+/* ----------------------------------------
+   MOBILE — Sidebar floats above content when expanded
+   Does not resize other components
+   Larger touch targets for icons and buttons
+   ---------------------------------------- */
+@media (max-width: 767px) {
+  .trading-sidebar:not(.trading-sidebar--collapsed) {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    height: 100%;
+    box-shadow: -4px 0 24px rgba(0, 0, 0, 0.4);
+    z-index: 1;
+  }
+
+  /* Collapsed strip — larger touch target */
+  .trading-sidebar--collapsed {
+    width: 48px;
+    padding-top: 12px;
+  }
+
+  .trading-sidebar-expand-btn {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 12px 0;
+    justify-content: center;
+  }
+
+  .trading-sidebar-expand-btn svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  /* Tab buttons — larger touch area */
+  .trading-sidebar-tab {
+    padding: 14px 0;
+    font-size: 14px;
+    min-height: 48px;
+  }
+
+  /* Collapse button */
+  .trading-sidebar-collapse-btn {
+    width: 44px;
+    min-height: 48px;
+  }
+
+  .trading-sidebar-collapse-btn svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  /* Add (+) button */
+  .trading-sidebar-add-btn {
+    width: 40px;
+    height: 40px;
+    font-size: 22px;
+    border-radius: 8px;
+  }
+
+  .trading-sidebar-section-header {
+    padding: 12px 14px 8px;
+  }
+
+  /* Row — larger tap area, always show delete on touch */
+  .trading-sidebar-row {
+    padding: 14px 12px;
+    min-height: 52px;
+  }
+
+  .trading-sidebar-row-actions {
+    opacity: 1;
+  }
+
+  .trading-sidebar-row-delete {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    flex-shrink: 0;
+  }
+
+  .trading-sidebar-row-delete svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  /* Footer link */
+  .trading-sidebar-footer-link {
+    padding: 12px 16px;
+    min-height: 44px;
+    font-size: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+  }
+}

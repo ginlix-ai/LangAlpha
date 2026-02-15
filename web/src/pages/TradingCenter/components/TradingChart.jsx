@@ -775,68 +775,8 @@ const TradingChart = React.memo(forwardRef(({
 
   return (
     <div className="trading-chart-container">
-      {/* ---- Single toolbar: intervals, toggles, indicator values, tool buttons, mode switcher ---- */}
+      {/* ---- Toolbar: indicator values, tool buttons, mode switcher ---- */}
       <div className="chart-tools">
-        <div className="chart-tools-left">
-          <div className="interval-selector">
-            {INTERVALS.map(({ key, label }) => (
-              <button
-                key={key}
-                type="button"
-                className={`interval-btn${interval === key ? ' interval-btn-active' : ''}`}
-                onClick={() => onIntervalChange?.(key)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          {!isTV && (
-            <>
-              <div className="indicator-toggles">
-                <span className="indicator-toggles-label">MA</span>
-                {MA_CONFIGS.map(({ period, color, label }) => (
-                  <button
-                    key={period}
-                    type="button"
-                    className={`indicator-toggle-btn${enabledMaPeriods.includes(period) ? ' indicator-toggle-active' : ''}`}
-                    style={enabledMaPeriods.includes(period) ? { color, borderColor: color } : undefined}
-                    onClick={() => handleToggleMa(period)}
-                  >
-                    {period}
-                  </button>
-                ))}
-              </div>
-              <div className="indicator-toggles">
-                <span className="indicator-toggles-label">RSI</span>
-                {RSI_PERIODS.map((p) => (
-                  <button
-                    key={p}
-                    type="button"
-                    className={`indicator-toggle-btn${rsiPeriod === p ? ' indicator-toggle-active' : ''}`}
-                    style={rsiPeriod === p ? { color: '#667eea', borderColor: '#667eea' } : undefined}
-                    onClick={() => handleChangeRsiPeriod(p)}
-                  >
-                    {p}
-                  </button>
-                ))}
-              </div>
-              <div className="indicator-toggles">
-                <span className="indicator-toggles-label">Overlay</span>
-                {Object.entries(OVERLAY_LABELS).map(([key, label]) => (
-                  <button
-                    key={key}
-                    type="button"
-                    className={`indicator-toggle-btn${overlayVisibility[key] ? ' indicator-toggle-active' : ''}`}
-                    style={overlayVisibility[key] ? { color: OVERLAY_COLORS[key], borderColor: OVERLAY_COLORS[key] } : undefined}
-                    onClick={() => handleToggleOverlay(key)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
         <div className="chart-tools-right">
           {!isTV && (
             <div className="chart-indicators">
@@ -918,6 +858,68 @@ const TradingChart = React.memo(forwardRef(({
             </div>
           </div>
         </div>
+      </div>
+
+      {/* ---- Interval + MA + RSI + Overlay: all on same row ---- */}
+      <div className="chart-tools-intervals">
+        <div className="interval-selector">
+          {INTERVALS.map(({ key, label }) => (
+            <button
+              key={key}
+              type="button"
+              className={`interval-btn${interval === key ? ' interval-btn-active' : ''}`}
+              onClick={() => onIntervalChange?.(key)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {!isTV && (
+          <>
+            <div className="indicator-toggles">
+              <span className="indicator-toggles-label">MA</span>
+              {MA_CONFIGS.map(({ period, color, label }) => (
+                <button
+                  key={period}
+                  type="button"
+                  className={`indicator-toggle-btn${enabledMaPeriods.includes(period) ? ' indicator-toggle-active' : ''}`}
+                  style={enabledMaPeriods.includes(period) ? { color, borderColor: color } : undefined}
+                  onClick={() => handleToggleMa(period)}
+                >
+                  {period}
+                </button>
+              ))}
+            </div>
+            <div className="indicator-toggles">
+              <span className="indicator-toggles-label">RSI</span>
+              {RSI_PERIODS.map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  className={`indicator-toggle-btn${rsiPeriod === p ? ' indicator-toggle-active' : ''}`}
+                  style={rsiPeriod === p ? { color: '#667eea', borderColor: '#667eea' } : undefined}
+                  onClick={() => handleChangeRsiPeriod(p)}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+            <div className="indicator-toggles">
+              <span className="indicator-toggles-label">Overlay</span>
+              {Object.entries(OVERLAY_LABELS).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  className={`indicator-toggle-btn${overlayVisibility[key] ? ' indicator-toggle-active' : ''}`}
+                  style={overlayVisibility[key] ? { color: OVERLAY_COLORS[key], borderColor: OVERLAY_COLORS[key] } : undefined}
+                  onClick={() => handleToggleOverlay(key)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
       </div>
 
       {/* ---- Charts area: shared flex container for both modes ---- */}

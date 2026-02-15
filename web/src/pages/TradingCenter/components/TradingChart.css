@@ -45,10 +45,29 @@
 .chart-tools {
   padding: 8px 20px;
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
+  gap: 8px;
   border-bottom: 1px solid #1a1f35;
   flex-shrink: 0;
+}
+
+/* Interval + MA + RSI + Overlay — all on same row below toolbar */
+.chart-tools-intervals {
+  padding: 6px 20px 8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid #1a1f35;
+  flex-shrink: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.chart-tools-intervals::-webkit-scrollbar {
+  display: none;
 }
 
 .chart-tools-left {
@@ -262,4 +281,15 @@ a[href*="tradingview.com"] {
   visibility: hidden !important;
   opacity: 0 !important;
   pointer-events: none !important;
+}
+
+/* Mobile — hide MA/RSI values and Light/Advanced switcher (Light mode only on mobile) */
+@media (max-width: 767px) {
+  .chart-indicators {
+    display: none;
+  }
+
+  .chart-mode-switcher {
+    display: none;
+  }
 }
