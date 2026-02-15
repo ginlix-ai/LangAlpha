@@ -439,11 +439,37 @@ function ChatInput({
     >
       {/* Main Container */}
       <div
-        className="flex flex-col items-stretch transition-all duration-200 relative z-10 rounded-2xl cursor-text border border-[hsl(var(--primary))] bg-[rgba(0,0,0,0.3)]"
+        className="chat-input-root flex flex-col items-stretch transition-all duration-200 relative z-10 rounded-2xl cursor-text border border-[hsl(var(--primary))] bg-[rgba(0,0,0,0.3)]"
         onClick={() => textareaRef.current?.focus()}
       >
-        <div className="flex flex-col px-3 pt-3 pb-2 gap-2">
+        <div className="chat-input-inner flex flex-col px-3 pt-3 pb-2 gap-2">
 
+          {/* Image row: on mobile kept outside scrollable so it's always fully visible */}
+          {(chartImage || attachedFiles.length > 0) && (
+            <div className="chat-input-image-row flex gap-3 overflow-x-auto pb-2 px-1 flex-shrink-0">
+              {chartImage && (
+                <div className="chat-input-chart-preview relative group flex-shrink-0 w-24 h-24 rounded-xl overflow-hidden border border-[rgba(255,255,255,0.1)] bg-[rgba(255,255,255,0.05)] animate-fade-in transition-all hover:border-[rgba(255,255,255,0.25)]">
+                  <img src={chartImage} alt="Chart" className="w-full h-full object-cover" />
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onRemoveChartImage?.(); }}
+                    className="chat-input-chart-remove absolute top-1 right-1 p-1 bg-black/50 hover:bg-black/70 rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              )}
+              {attachedFiles.map((file) => (
+                <FilePreviewCard
+                  key={file.id}
+                  file={file}
+                  onRemove={removeFile}
+                />
+              ))}
+            </div>
+          )}
+
+          <div className="chat-input-scrollable flex flex-col gap-2">
           {/* Mention pills */}
           {mentionedFiles.length > 0 && (
             <div className="mention-pills">
@@ -463,30 +489,6 @@ function ChatInput({
                   </div>
                 );
               })}
-            </div>
-          )}
-
-          {/* Chart image + File Preview Cards */}
-          {(chartImage || attachedFiles.length > 0) && (
-            <div className="flex gap-3 overflow-x-auto pb-2 px-1">
-              {chartImage && (
-                <div className="relative group flex-shrink-0 w-24 h-24 rounded-xl overflow-hidden border border-[rgba(255,255,255,0.1)] bg-[rgba(255,255,255,0.05)] animate-fade-in transition-all hover:border-[rgba(255,255,255,0.25)]">
-                  <img src={chartImage} alt="Chart" className="w-full h-full object-cover" />
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onRemoveChartImage?.(); }}
-                    className="absolute top-1 right-1 p-1 bg-black/50 hover:bg-black/70 rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </div>
-              )}
-              {attachedFiles.map((file) => (
-                <FilePreviewCard
-                  key={file.id}
-                  file={file}
-                  onRemove={removeFile}
-                />
-              ))}
             </div>
           )}
 
@@ -558,8 +560,10 @@ function ChatInput({
             />
           </div>
 
+          </div>
+
           {/* Action Bar */}
-          <div className="flex gap-2 w-full items-center">
+          <div className="flex gap-2 w-full items-center flex-shrink-0">
             {/* Left Tools */}
             <div className="relative flex-1 flex items-center shrink min-w-0 gap-1">
               {/* Attach Button */}

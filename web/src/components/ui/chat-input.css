@@ -146,3 +146,73 @@
 .workspace-dropdown-item.active {
   background-color: rgba(97, 85, 245, 0.15);
 }
+
+/* ====== Mobile — Bar size cap + scrollable query content ====== */
+@media (max-width: 767px) {
+  /* Cap overall bar height so it stays fully on screen */
+  .chat-input-root {
+    max-height: 20vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .chat-input-inner {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Image row always fully visible on mobile; never shrunk by growing query */
+  .chat-input-image-row {
+    flex-shrink: 0;
+  }
+
+  .chat-input-scrollable {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    /* Cap query (pills + text) height so it never overlaps the image row */
+    max-height: 35vh;
+  }
+
+  /* Limit textarea height so query content scrolls instead of pushing bar off screen */
+  .chat-input-root textarea {
+    max-height: 100px;
+    overflow-y: auto !important;
+  }
+
+  .chat-input-chart-preview {
+    width: 56px !important;
+    height: 56px !important;
+    min-width: 56px;
+    min-height: 56px;
+  }
+
+  .chat-input-chart-remove {
+    top: 2px !important;
+    right: 2px !important;
+    width: 24px !important;
+    height: 24px !important;
+    padding: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    opacity: 1 !important;
+    background: rgba(239, 68, 68, 0.9) !important;
+    border: 2px solid rgba(255, 255, 255, 0.9);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  }
+
+  .chat-input-chart-remove:hover {
+    background: rgba(239, 68, 68, 1) !important;
+  }
+
+  .chat-input-chart-remove svg {
+    width: 14px !important;
+    height: 14px !important;
+  }
+}
