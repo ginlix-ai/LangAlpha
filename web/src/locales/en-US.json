@@ -38,7 +38,7 @@
   "sidebar": {
     "dashboard": "Dashboard",
     "chatAgent": "Chat Agent",
-    "tradingCenter": "Trading Center",
+    "marketView": "Market View",
     "automations": "Automations"
   },
   "settings": {
@@ -364,7 +364,7 @@
     "profitMargins": "Profit Margins",
     "epsActualVsEstimate": "EPS: Actual vs Estimate",
     "cashFlowQuarterly": "Cash Flow (Quarterly)",
-    "openInTrading": "Open in Trading ↗",
+    "openInMarketView": "Open in Market View ↗",
     "revenue": "Revenue",
     "netIncome": "Net Income",
     "grossMargin": "Gross Margin",

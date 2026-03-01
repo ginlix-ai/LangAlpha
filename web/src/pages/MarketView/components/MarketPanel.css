@@ -1,6 +1,6 @@
-/* TradingPanel - Chat Messages Only */
+/* MarketPanel - Chat Messages Only */
 
-.trading-panel {
+.market-panel {
   width: 100%;
   background-color: transparent;
   display: flex;
@@ -12,34 +12,34 @@
 }
 
 /* Chat Messages Section */
-.trading-chat-messages {
+.market-chat-messages {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
 }
 
-.trading-chat-messages-header {
+.market-chat-messages-header {
   padding: 15px 20px;
   border-bottom: 1px solid var(--color-border-default);
   flex-shrink: 0;
 }
 
-.trading-chat-messages-header h3 {
+.market-chat-messages-header h3 {
   font-size: 16px;
   font-weight: 600;
   color: var(--color-text-primary);
   margin: 0;
 }
 
-.trading-chat-messages-content {
+.market-chat-messages-content {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding: 15px 20px;
 }
 
-.trading-chat-empty-state {
+.market-chat-empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -49,7 +49,7 @@
   min-height: 200px;
 }
 
-.trading-chat-empty-icon {
+.market-chat-empty-icon {
   width: 48px;
   height: 48px;
   color: var(--color-accent-primary);
@@ -57,20 +57,20 @@
   margin-bottom: 16px;
 }
 
-.trading-chat-empty-text {
+.market-chat-empty-text {
   font-size: 14px;
   color: var(--color-text-secondary);
   margin: 0;
 }
 
-.trading-chat-messages-list {
+.market-chat-messages-list {
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
 
-.trading-chat-loading,
-.trading-chat-error {
+.market-chat-loading,
+.market-chat-error {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -79,43 +79,43 @@
   font-size: 14px;
 }
 
-.trading-chat-loading {
+.market-chat-loading {
   color: var(--color-text-secondary);
   background-color: var(--color-accent-soft);
 }
 
-.trading-chat-loading-icon {
+.market-chat-loading-icon {
   width: 16px;
   height: 16px;
-  animation: trading-chat-spin 1s linear infinite;
+  animation: market-chat-spin 1s linear infinite;
 }
 
-.trading-chat-error {
+.market-chat-error {
   color: var(--color-loss);
   background-color: var(--color-loss-soft);
 }
 
-@keyframes trading-chat-spin {
+@keyframes market-chat-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
 
 /* Message Bubble Styles */
-.trading-message-bubble {
+.market-message-bubble {
   display: flex;
   gap: 12px;
   align-items: flex-start;
 }
 
-.trading-message-user {
+.market-message-user {
   flex-direction: row-reverse;
 }
 
-.trading-message-assistant {
+.market-message-assistant {
   flex-direction: row;
 }
 
-.trading-message-avatar {
+.market-message-avatar {
   flex-shrink: 0;
   width: 32px;
   height: 32px;
@@ -126,13 +126,13 @@
   justify-content: center;
 }
 
-.trading-message-avatar-icon {
+.market-message-avatar-icon {
   width: 16px;
   height: 16px;
   color: var(--color-accent-primary);
 }
 
-.trading-message-content {
+.market-message-content {
   flex: 1;
   max-width: calc(100% - 44px);
   padding: 12px 16px;
@@ -142,29 +142,29 @@
   color: var(--color-text-primary);
 }
 
-.trading-message-user .trading-message-content {
+.market-message-user .market-message-content {
   background-color: var(--color-accent-primary);
   border: none;
 }
 
-.trading-message-error {
+.market-message-error {
   background-color: var(--color-loss-soft);
   border-color: var(--color-border-loss);
 }
 
-.trading-message-error-text {
+.market-message-error-text {
   color: var(--color-loss);
   font-size: 14px;
   line-height: 1.5;
   margin: 0;
 }
 
-.trading-message-error-text strong {
+.market-message-error-text strong {
   color: var(--color-loss);
   font-weight: 600;
 }
 
-.trading-message-text {
+.market-message-text {
   font-size: 14px;
   line-height: 1.5;
   margin: 0;
@@ -172,16 +172,16 @@
   word-wrap: break-word;
 }
 
-.trading-message-segments {
+.market-message-segments {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.trading-message-streaming-icon {
+.market-message-streaming-icon {
   width: 12px;
   height: 12px;
   margin-top: 8px;
   color: var(--color-accent-primary);
-  animation: trading-chat-spin 1s linear infinite;
+  animation: market-chat-spin 1s linear infinite;
 }

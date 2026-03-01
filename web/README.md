@@ -46,7 +46,7 @@ src/
 │   ├── Login/              # OAuth login with animated background
 │   ├── Dashboard/          # Watchlist, portfolio, market overview
 │   ├── ChatAgent/          # Streaming chat with workspaces, threads, file panel
-│   ├── TradingCenter/      # Candlestick charts with AI chat sidebar
+│   ├── MarketView/         # Candlestick charts with AI chat sidebar
 │   ├── Automations/        # Scheduled agent task management
 │   └── Detail/             # Stock detail page
 ├── styles/                 # Global styles
@@ -65,7 +65,7 @@ src/
 | `/chat` | Chat Agent (workspace gallery) |
 | `/chat/:workspaceId` | Chat Agent (thread gallery) |
 | `/chat/:workspaceId/:threadId` | Chat Agent (conversation) |
-| `/trading` | Trading Center |
+| `/market` | Market View |
 | `/automations` | Automations |
 | `/detail/:indexNumber` | Stock Detail |
 
@@ -114,5 +114,5 @@ The sidebar provides four main sections:
 |------|-------|------|
 | LayoutDashboard | Dashboard | `/dashboard` |
 | MessageSquareText | Chat Agent | `/chat` |
-| ChartCandlestick | Trading Center | `/trading` |
+| ChartCandlestick | Market View | `/market` |
 | Timer | Automations | `/automations` |

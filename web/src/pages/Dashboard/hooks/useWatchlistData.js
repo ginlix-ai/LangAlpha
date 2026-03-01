@@ -13,7 +13,7 @@ let watchlistCache = null; // { rows, watchlistId }
 
 /**
  * Shared hook for watchlist data fetching and CRUD operations.
- * Used by both Dashboard and TradingCenter sidebar.
+ * Used by both Dashboard and MarketView sidebar.
  */
 export function useWatchlistData() {
   const { toast } = useToast();

@@ -38,7 +38,7 @@
   "sidebar": {
     "dashboard": "仪表盘",
     "chatAgent": "智能对话",
-    "tradingCenter": "交易中心",
+    "marketView": "行情中心",
     "automations": "自动化"
   },
   "settings": {
@@ -364,7 +364,7 @@
     "profitMargins": "利润率",
     "epsActualVsEstimate": "EPS：实际 vs 预期",
     "cashFlowQuarterly": "现金流（季度）",
-    "openInTrading": "在交易中心打开 ↗",
+    "openInMarketView": "在行情中心打开 ↗",
     "revenue": "营收",
     "netIncome": "净利润",
     "grossMargin": "毛利率",

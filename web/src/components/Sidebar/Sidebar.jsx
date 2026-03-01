@@ -29,9 +29,9 @@ function Sidebar() {
       label: t('sidebar.chatAgent'),
     },
     {
-      key: '/trading',
+      key: '/market',
       icon: ChartCandlestick,
-      label: t('sidebar.tradingCenter'),
+      label: t('sidebar.marketView'),
     },
     {
       key: '/automations',

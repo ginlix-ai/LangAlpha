@@ -112,7 +112,7 @@ const DashboardHeader = ({ title = 'LangAlpha', onStockSearch, onModifyPreferenc
       if (onStockSearch) {
         onStockSearch(symbol, stock);
       } else {
-        navigate(`/trading?symbol=${encodeURIComponent(symbol)}`);
+        navigate(`/market?symbol=${encodeURIComponent(symbol)}`);
       }
     }
   };
@@ -129,7 +129,7 @@ const DashboardHeader = ({ title = 'LangAlpha', onStockSearch, onModifyPreferenc
       if (onStockSearch) {
         onStockSearch(symbol, null);
       } else {
-        navigate(`/trading?symbol=${encodeURIComponent(symbol)}`);
+        navigate(`/market?symbol=${encodeURIComponent(symbol)}`);
       }
     }
   };

@@ -1,4 +1,4 @@
-.trading-center-container {
+.market-center-container {
   width: 100%;
   height: 100vh;
   max-height: 100vh;
@@ -8,14 +8,14 @@
   overflow: hidden;
 }
 
-.trading-content-wrapper {
+.market-content-wrapper {
   flex: 1;
   display: flex;
   min-height: 0;
   overflow: hidden;
 }
 
-.trading-left-panel {
+.market-left-panel {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -25,14 +25,14 @@
   overflow: hidden;
 }
 
-.trading-chart-area {
+.market-chart-area {
   flex: 1;
   display: flex;
   min-height: 0;
   overflow: hidden;
 }
 
-.trading-right-panel {
+.market-right-panel {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -44,7 +44,7 @@
 }
 
 /* Resize drag handle between sidebar and chat panel */
-.trading-resize-handle {
+.market-resize-handle {
   width: 4px;
   flex-shrink: 0;
   cursor: col-resize;
@@ -53,7 +53,7 @@
   position: relative;
 }
 
-.trading-resize-handle::after {
+.market-resize-handle::after {
   content: '';
   position: absolute;
   top: 0;
@@ -62,8 +62,8 @@
   bottom: 0;
 }
 
-.trading-resize-handle:hover,
-.trading-resize-handle:active {
+.market-resize-handle:hover,
+.market-resize-handle:active {
   background: rgba(97, 85, 245, 0.5);
 }
 
@@ -76,7 +76,7 @@ body.col-resizing * {
   cursor: col-resize !important;
 }
 
-.trading-right-panel-inner {
+.market-right-panel-inner {
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -85,7 +85,7 @@ body.col-resizing * {
 }
 
 /* Empty state area below chat input: placeholder and background when no messages */
-.trading-chat-empty {
+.market-chat-empty {
   flex: 1;
   min-height: 0;
   border-radius: 8px;
@@ -102,14 +102,14 @@ body.col-resizing * {
   text-align: center;
 }
 
-.trading-chat-empty-title {
+.market-chat-empty-title {
   font-size: 15px;
   font-weight: 600;
   color: var(--color-text-primary);
   margin: 0 0 8px 0;
 }
 
-.trading-chat-empty-hint {
+.market-chat-empty-hint {
   font-size: 13px;
   color: var(--color-text-secondary);
   line-height: 1.5;
@@ -118,14 +118,14 @@ body.col-resizing * {
 }
 
 /* Quick-start bubble cards */
-.trading-quick-queries {
+.market-quick-queries {
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 0 4px 4px;
 }
 
-.trading-quick-query-card {
+.market-quick-query-card {
   background: var(--color-accent-soft);
   border: 1px solid rgba(97, 85, 245, 0.25);
   border-radius: 10px;
@@ -139,12 +139,12 @@ body.col-resizing * {
   transition: background 0.15s, border-color 0.15s;
 }
 
-.trading-quick-query-card:hover {
+.market-quick-query-card:hover {
   background: rgba(97, 85, 245, 0.18);
   border-color: rgba(97, 85, 245, 0.45);
 }
 
-.trading-quick-query-shuffle {
+.market-quick-query-shuffle {
   align-self: center;
   display: flex;
   align-items: center;
@@ -159,27 +159,27 @@ body.col-resizing * {
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 
-.trading-quick-query-shuffle:hover {
+.market-quick-query-shuffle:hover {
   background: rgba(97, 85, 245, 0.18);
   border-color: rgba(97, 85, 245, 0.4);
   color: var(--color-text-primary);
 }
 
 /* Scrollbar styling consistent with Dashboard */
-.trading-center-container::-webkit-scrollbar {
+.market-center-container::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
-.trading-center-container::-webkit-scrollbar-track {
+.market-center-container::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.trading-center-container::-webkit-scrollbar-thumb {
+.market-center-container::-webkit-scrollbar-thumb {
   background: var(--color-border-muted);
   border-radius: 4px;
 }
 
-.trading-center-container::-webkit-scrollbar-thumb:hover {
+.market-center-container::-webkit-scrollbar-thumb:hover {
   background: var(--color-border-default);
 }

@@ -1,20 +1,20 @@
 import React, { useRef, useEffect } from 'react';
 import MessageList from '../../ChatAgent/components/MessageList';
 import LogoLoading from '../../../components/ui/logo-loading';
-import './TradingPanel.css';
+import './MarketPanel.css';
 
 /**
- * TradingPanel Component
- * 
- * Displays chat messages in the right panel of TradingCenter.
+ * MarketPanel Component
+ *
+ * Displays chat messages in the right panel of MarketView.
  * Reuses ChatAgent message components for consistent rendering.
- * 
+ *
  * @param {Object} props
  * @param {Array} props.messages - Array of chat messages
  * @param {boolean} props.isLoading - Whether a message is currently loading
  * @param {string} props.error - Error message if any
  */
-const TradingPanel = ({ messages = [], isLoading = false, error = null }) => {
+const MarketPanel = ({ messages = [], isLoading = false, error = null }) => {
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
 
@@ -54,7 +54,7 @@ const TradingPanel = ({ messages = [], isLoading = false, error = null }) => {
   }, [messages]);
 
   return (
-    <div className="trading-panel">
+    <div className="market-panel">
       <div 
         ref={messagesContainerRef}
         style={{ 
@@ -65,9 +65,9 @@ const TradingPanel = ({ messages = [], isLoading = false, error = null }) => {
         }}
       >
         {messages.length === 0 ? (
-          <div className="trading-chat-empty-state" style={{ height: '100%' }}>
+          <div className="market-chat-empty-state" style={{ height: '100%' }}>
             <LogoLoading size={60} color="var(--color-accent-overlay)" />
-            <p className="trading-chat-empty-text" style={{ marginTop: 16 }}>
+            <p className="market-chat-empty-text" style={{ marginTop: 16 }}>
               Start a conversation by typing a message below
             </p>
             {error && (
@@ -106,4 +106,4 @@ const TradingPanel = ({ messages = [], isLoading = false, error = null }) => {
   );
 };
 
-export default React.memo(TradingPanel);
+export default React.memo(MarketPanel);

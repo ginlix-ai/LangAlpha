@@ -1,5 +1,5 @@
 /**
- * Hook for managing TradingCenter flash mode chat
+ * Hook for managing MarketView flash mode chat
  * Simplified version of ChatAgent's useChatMessages for one-time flash mode conversations
  * 
  * Features:
@@ -54,13 +54,13 @@ function appendMessage(messages, newMessage) {
 }
 
 /**
- * Hook for managing TradingCenter flash mode chat
+ * Hook for managing MarketView flash mode chat
  * @returns {Object} Chat state and handlers
  */
 // Batch flush interval (ms) — SSE events are buffered and flushed at this rate
 const BATCH_FLUSH_INTERVAL_MS = 150;
 
-export function useTradingChat() {
+export function useMarketChat() {
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -428,7 +428,7 @@ export function useTradingChat() {
           const eventType = event.event || 'message_chunk';
           
           if (process.env.NODE_ENV === 'development') {
-            console.log('[TradingChat] Received event:', eventType, event);
+            console.log('[MarketChat] Received event:', eventType, event);
           }
 
           // Update thread_id if provided in the event
@@ -465,7 +465,7 @@ export function useTradingChat() {
           } else if (eventType === 'error') {
             hasReceivedError = true;
             const errorMessage = event.error || event.message || 'An error occurred';
-            console.error('[TradingChat] Server error event:', errorMessage, event);
+            console.error('[MarketChat] Server error event:', errorMessage, event);
 
             // Flush pending batched updates before setting error
             flushUpdates();
@@ -513,13 +513,13 @@ export function useTradingChat() {
       
       if (process.env.NODE_ENV === 'development') {
         if (hasReceivedError) {
-          console.log('[TradingChat] Stream completed with error');
+          console.log('[MarketChat] Stream completed with error');
         } else {
-          console.log('[TradingChat] Stream completed successfully');
+          console.log('[MarketChat] Stream completed successfully');
         }
       }
     } catch (err) {
-      console.error('[TradingChat] Error sending message:', err);
+      console.error('[MarketChat] Error sending message:', err);
 
       // Flush any remaining batched updates
       flushUpdates();
@@ -561,7 +561,7 @@ export function useTradingChat() {
           );
         } else {
           if (process.env.NODE_ENV === 'development') {
-            console.warn('[TradingChat] Stream interrupted but received partial data, marking as complete');
+            console.warn('[MarketChat] Stream interrupted but received partial data, marking as complete');
           }
         }
       }

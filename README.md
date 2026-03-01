@@ -42,7 +42,7 @@ In practice, you create a workspace per research goal ("Q2 rebalance", "data cen
 LangAlpha is built natively on **Gemini 3.1** and ships with two modes:
 
 - **PTC mode** uses **Gemini 3.1 Pro** for deep, multi-step investment research. Strong reasoning drives multi-step analysis where the agent plans its approach, thinks through financial data, and writes code for complex analysis. Long context lets it cross-reference SEC filings and research reports in a single pass, and native multimodal intelligence means it can interpret charts, financial PDFs, and visual data directly.
-- **Flash mode** uses **Gemini 3 Flash** for fast conversational responses: quick market lookups, chart-and-chat in TradingCenter, and lightweight Q&A without spinning up a full workspace.
+- **Flash mode** uses **Gemini 3 Flash** for fast conversational responses: quick market lookups, chart-and-chat in MarketView, and lightweight Q&A without spinning up a full workspace.
 
 ### Programmatic Tool Calling (PTC) and Workspace Architecture
 
@@ -164,7 +164,7 @@ API available at **http://localhost:8000** (interactive docs at `/docs`).
 cd web && npm install && npm run dev
 ```
 
-Open **http://localhost:5173** for the full workspace UI: Chat Agent, Dashboard, and Trading Center.
+Open **http://localhost:5173** for the full workspace UI: Chat Agent, Dashboard, and Market View.
 
 ### 6. Or use the CLI
 

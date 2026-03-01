@@ -6,7 +6,7 @@ import {
   PieChart, Pie, Cell, Legend, LabelList,
   LineChart, Line, ReferenceLine,
 } from 'recharts';
-import { fetchStockData } from '../../../TradingCenter/utils/api';
+import { fetchStockData } from '../../../MarketView/utils/api';
 import { useTheme } from '../../../../contexts/ThemeContext';
 import { useTranslation } from 'react-i18next';
 
@@ -63,7 +63,7 @@ const toChartTime = (dateStr) => {
   return dateStr; // daily date string, lightweight-charts handles it natively
 };
 
-// ─── Scroll-load config (mirrors TradingCenter/TradingChart.jsx) ────
+// ─── Scroll-load config (mirrors MarketView/MarketChart.jsx) ────
 
 const SCROLL_LOAD_THRESHOLD = 20;
 const RANGE_CHANGE_DEBOUNCE_MS = 300;
@@ -78,9 +78,9 @@ const INTERVAL_TO_API = {
   '1hour': '1hour', '4hour': '4hour', daily: '1day',
 };
 
-// ─── Open in Trading Center link ────────────────────────────────────
+// ─── Open in Market View link ────────────────────────────────────
 
-function OpenInTradingLink({ symbol }) {
+function OpenInMarketLink({ symbol }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const params = useParams();
@@ -89,11 +89,11 @@ function OpenInTradingLink({ symbol }) {
   const handleClick = (e) => {
     e.stopPropagation();
     const qs = new URLSearchParams({ symbol });
-    // Encode current chat route so TradingCenter can offer a "Return to Chat" button
+    // Encode current chat route so MarketView can offer a "Return to Chat" button
     if (params.workspaceId && params.threadId) {
       qs.set('returnTo', `/chat/${params.workspaceId}/${params.threadId}`);
     }
-    navigate(`/trading?${qs.toString()}`);
+    navigate(`/market?${qs.toString()}`);
   };
 
   return (
@@ -113,7 +113,7 @@ function OpenInTradingLink({ symbol }) {
       onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
       onMouseLeave={(e) => (e.currentTarget.style.opacity = '0.85')}
     >
-      {t('toolArtifact.openInTrading')} ↗
+      {t('toolArtifact.openInMarketView')} ↗
     </button>
   );
 }
@@ -359,7 +359,7 @@ export function StockPriceChart({ data }) {
             </span>
           </>
         )}
-        <OpenInTradingLink symbol={data.symbol} />
+        <OpenInMarketLink symbol={data.symbol} />
       </div>
       <div ref={containerRef} style={{ width: '100%', height: 360 }} />
       <StockStatsCard stats={data.stats} />
@@ -786,7 +786,7 @@ export function CompanyOverviewCard({ data }) {
               {name || symbol}
             </span>
             <span style={{ fontSize: 14, color: TEXT_COLOR }}>{symbol}</span>
-            <OpenInTradingLink symbol={symbol} />
+            <OpenInMarketLink symbol={symbol} />
           </div>
           <div className="flex items-baseline gap-3 mb-3">
             <span style={{ fontSize: 24, fontWeight: 700, color: 'var(--color-text-primary)' }}>
@@ -876,7 +876,7 @@ export function MarketIndicesChart({ data }) {
               padding: '10px 12px',
             }}
           >
-            {/* Header: name + price/change + trading link */}
+            {/* Header: name + price/change + market link */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
               <span style={{ color: 'var(--color-text-primary)', fontWeight: 600, fontSize: 13 }}>
                 {indexData.name || symbol}
@@ -892,7 +892,7 @@ export function MarketIndicesChart({ data }) {
                     {formatPct(changePct)}
                   </span>
                 )}
-                <OpenInTradingLink symbol={symbol} />
+                <OpenInMarketLink symbol={symbol} />
               </div>
             </div>
 

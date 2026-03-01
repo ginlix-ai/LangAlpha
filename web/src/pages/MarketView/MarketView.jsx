@@ -1,22 +1,22 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useToast } from '@/components/ui/use-toast';
-import './TradingCenter.css';
+import './MarketView.css';
 import DashboardHeader from '../Dashboard/components/DashboardHeader';
 import StockHeader from './components/StockHeader';
-import TradingChart from './components/TradingChart';
+import MarketChart from './components/MarketChart';
 import ChatInput from '../../components/ui/chat-input';
-import TradingPanel from './components/TradingPanel';
-import TradingSidebarPanel from './components/TradingSidebarPanel';
+import MarketPanel from './components/MarketPanel';
+import MarketSidebarPanel from './components/MarketSidebarPanel';
 import { fetchStockQuote, fetchCompanyOverview, fetchAnalystData } from './utils/api';
-import { useTradingChat } from './hooks/useTradingChat';
+import { useMarketChat } from './hooks/useMarketChat';
 import { getWorkspaces } from '../ChatAgent/utils/api';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
 import CompanyOverviewPanel from './components/CompanyOverviewPanel';
 import { MarketDataWSProvider, useMarketDataWSContext } from './contexts/MarketDataWSContext';
 
-// --- localStorage persistence helpers (shared key prefix with TradingChart) ---
-const STORAGE_PREFIX = 'trading-chart:';
+// --- localStorage persistence helpers (shared key prefix with MarketChart) ---
+const STORAGE_PREFIX = 'market-chart:';
 function loadPref(key, fallback) {
   try {
     const raw = localStorage.getItem(STORAGE_PREFIX + key);
@@ -38,7 +38,7 @@ const QUICK_QUERIES = [
   "What's the MACD crossover status for {symbol}?",
 ];
 
-function TradingCenterInner() {
+function MarketViewInner() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
@@ -82,13 +82,13 @@ function TradingCenterInner() {
 
   // Resizable chat panel
   const [chatPanelWidth, setChatPanelWidth] = useState(() =>
-    parseInt(localStorage.getItem('trading-chat-width')) || 400
+    parseInt(localStorage.getItem('market-chat-width')) || 400
   );
   const isDragging = useRef(false);
   const dragStartX = useRef(0);
   const dragStartWidth = useRef(0);
 
-  const { messages, isLoading, error, handleSendMessage: handleFastModeSend } = useTradingChat();
+  const { messages, isLoading, error, handleSendMessage: handleFastModeSend } = useMarketChat();
 
   // Chat return path — captured from URL when navigating from chat DetailPanel
   const [chatReturnPath, setChatReturnPath] = useState(null);
@@ -418,7 +418,7 @@ function TradingCenterInner() {
       if (!isDragging.current) return;
       isDragging.current = false;
       document.body.classList.remove('col-resizing');
-      localStorage.setItem('trading-chat-width', String(chatPanelWidth));
+      localStorage.setItem('market-chat-width', String(chatPanelWidth));
     };
 
     document.addEventListener('mousemove', handleMouseMove);
@@ -430,10 +430,10 @@ function TradingCenterInner() {
   }, [chatPanelWidth]);
 
   return (
-    <div className="trading-center-container">
+    <div className="market-center-container">
       <DashboardHeader title="LangAlpha" onStockSearch={handleStockSearch} />
-      <div className="trading-content-wrapper">
-        <div className="trading-left-panel">
+      <div className="market-content-wrapper">
+        <div className="market-left-panel">
           <StockHeader
             symbol={selectedStock}
             stockInfo={stockInfo}
@@ -444,7 +444,7 @@ function TradingCenterInner() {
             wsStatus={wsStatus}
             quoteData={overviewData?.quote || null}
           />
-          <div className="trading-chart-area">
+          <div className="market-chart-area">
             {showOverview && (
               <CompanyOverviewPanel
                 symbol={selectedStock}
@@ -454,7 +454,7 @@ function TradingCenterInner() {
                 loading={overviewLoading}
               />
             )}
-            <TradingChart
+            <MarketChart
               ref={chartRef}
               symbol={selectedStock}
               interval={selectedInterval}
@@ -469,26 +469,26 @@ function TradingCenterInner() {
             />
           </div>
         </div>
-        <TradingSidebarPanel
+        <MarketSidebarPanel
           activeSymbol={selectedStock}
           onSymbolClick={handleSidebarSymbolClick}
         />
-        <div className="trading-resize-handle" onMouseDown={handleDragStart} />
-        <div className="trading-right-panel" style={{ width: chatPanelWidth }}>
-          <div className="trading-right-panel-inner">
-            <TradingPanel
+        <div className="market-resize-handle" onMouseDown={handleDragStart} />
+        <div className="market-right-panel" style={{ width: chatPanelWidth }}>
+          <div className="market-right-panel-inner">
+            <MarketPanel
               messages={messages}
               isLoading={isLoading}
               error={error}
             />
             {messages.length === 0 && (
-              <div className="trading-quick-queries">
+              <div className="market-quick-queries">
                 {quickQueries.map((q, i) => (
-                  <button key={i} className="trading-quick-query-card" onClick={() => handleQuickQuery(q)}>
+                  <button key={i} className="market-quick-query-card" onClick={() => handleQuickQuery(q)}>
                     {q}
                   </button>
                 ))}
-                <button className="trading-quick-query-shuffle" onClick={handleShuffleQueries} title="Show different suggestions">
+                <button className="market-quick-query-shuffle" onClick={handleShuffleQueries} title="Show different suggestions">
                   <RefreshCw size={13} />
                 </button>
               </div>
@@ -552,12 +552,12 @@ function TradingCenterInner() {
   );
 }
 
-function TradingCenter() {
+function MarketView() {
   return (
     <MarketDataWSProvider>
-      <TradingCenterInner />
+      <MarketViewInner />
     </MarketDataWSProvider>
   );
 }
 
-export default TradingCenter;
+export default MarketView;

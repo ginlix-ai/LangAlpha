@@ -7,9 +7,9 @@ import { useMarketDataWSContext } from '../contexts/MarketDataWSContext';
 import AddWatchlistItemDialog from '../../Dashboard/components/AddWatchlistItemDialog';
 import AddPortfolioHoldingDialog from '../../Dashboard/components/AddPortfolioHoldingDialog';
 import ConfirmDialog from '../../Dashboard/components/ConfirmDialog';
-import './TradingSidebarPanel.css';
+import './MarketSidebarPanel.css';
 
-function TradingSidebarPanel({ activeSymbol, onSymbolClick }) {
+function MarketSidebarPanel({ activeSymbol, onSymbolClick }) {
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
   const [activeTab, setActiveTab] = useState('watchlist');
@@ -58,8 +58,8 @@ function TradingSidebarPanel({ activeSymbol, onSymbolClick }) {
   };
 
   const changeClass = (isPositive, val) => {
-    if (val == null || val === 0) return 'trading-sidebar-row-change--neutral';
-    return isPositive ? 'trading-sidebar-row-change--positive' : 'trading-sidebar-row-change--negative';
+    if (val == null || val === 0) return 'market-sidebar-row-change--neutral';
+    return isPositive ? 'market-sidebar-row-change--positive' : 'market-sidebar-row-change--negative';
   };
 
   const renderRows = (items, keyField, changeField, onDelete) => {
@@ -68,17 +68,17 @@ function TradingSidebarPanel({ activeSymbol, onSymbolClick }) {
       return (
         <div
           key={row[keyField]}
-          className={`trading-sidebar-row${isActive ? ' trading-sidebar-row--active' : ''}`}
+          className={`market-sidebar-row${isActive ? ' market-sidebar-row--active' : ''}`}
           onClick={() => onSymbolClick?.(row.symbol)}
         >
-          <span className="trading-sidebar-row-symbol">{row.symbol}</span>
-          <span className="trading-sidebar-row-price">{formatPrice(row.price)}</span>
-          <span className={`trading-sidebar-row-change ${changeClass(row.isPositive, row[changeField])}`}>
+          <span className="market-sidebar-row-symbol">{row.symbol}</span>
+          <span className="market-sidebar-row-price">{formatPrice(row.price)}</span>
+          <span className={`market-sidebar-row-change ${changeClass(row.isPositive, row[changeField])}`}>
             {formatChange(row[changeField])}
           </span>
-          <span className="trading-sidebar-row-actions">
+          <span className="market-sidebar-row-actions">
             <button
-              className="trading-sidebar-row-delete"
+              className="market-sidebar-row-delete"
               onClick={(e) => { e.stopPropagation(); onDelete(row[keyField]); }}
               title="Remove"
             >
@@ -92,10 +92,10 @@ function TradingSidebarPanel({ activeSymbol, onSymbolClick }) {
 
   const renderSkeletons = () =>
     Array.from({ length: 4 }).map((_, i) => (
-      <div key={i} className="trading-sidebar-skeleton">
-        <div className="trading-sidebar-skeleton-bar" style={{ width: 48 }} />
-        <div className="trading-sidebar-skeleton-bar" style={{ width: 54, marginLeft: 'auto' }} />
-        <div className="trading-sidebar-skeleton-bar" style={{ width: 52 }} />
+      <div key={i} className="market-sidebar-skeleton">
+        <div className="market-sidebar-skeleton-bar" style={{ width: 48 }} />
+        <div className="market-sidebar-skeleton-bar" style={{ width: 54, marginLeft: 'auto' }} />
+        <div className="market-sidebar-skeleton-bar" style={{ width: 52 }} />
       </div>
     ));
 
@@ -122,9 +122,9 @@ function TradingSidebarPanel({ activeSymbol, onSymbolClick }) {
   // Collapsed state — thin toggle strip
   if (!expanded) {
     return (
-      <div className="trading-sidebar trading-sidebar--collapsed">
+      <div className="market-sidebar market-sidebar--collapsed">
         <button
-          className="trading-sidebar-expand-btn"
+          className="market-sidebar-expand-btn"
           onClick={() => setExpanded(true)}
           title="Show Watchlist & Portfolio"
         >
@@ -149,7 +149,7 @@ function TradingSidebarPanel({ activeSymbol, onSymbolClick }) {
   }
 
   return (
-    <div className="trading-sidebar">
+    <div className="market-sidebar">
       <ConfirmDialog
         open={deleteConfirm.open}
         title={deleteConfirm.title}
@@ -160,21 +160,21 @@ function TradingSidebarPanel({ activeSymbol, onSymbolClick }) {
       />
 
       {/* Tab toggle */}
-      <div className="trading-sidebar-tabs">
+      <div className="market-sidebar-tabs">
         <button
-          className={`trading-sidebar-tab${activeTab === 'watchlist' ? ' trading-sidebar-tab--active' : ''}`}
+          className={`market-sidebar-tab${activeTab === 'watchlist' ? ' market-sidebar-tab--active' : ''}`}
           onClick={() => setActiveTab('watchlist')}
         >
           Watchlist
         </button>
         <button
-          className={`trading-sidebar-tab${activeTab === 'portfolio' ? ' trading-sidebar-tab--active' : ''}`}
+          className={`market-sidebar-tab${activeTab === 'portfolio' ? ' market-sidebar-tab--active' : ''}`}
           onClick={() => setActiveTab('portfolio')}
         >
           Portfolio
         </button>
         <button
-          className="trading-sidebar-collapse-btn"
+          className="market-sidebar-collapse-btn"
           onClick={() => setExpanded(false)}
           title="Collapse"
         >
@@ -183,13 +183,13 @@ function TradingSidebarPanel({ activeSymbol, onSymbolClick }) {
       </div>
 
       {/* Section header */}
-      <div className="trading-sidebar-section-header">
-        <span className="trading-sidebar-section-title">
+      <div className="market-sidebar-section-header">
+        <span className="market-sidebar-section-title">
           {isWatchlist ? 'WATCHLIST' : 'PORTFOLIO'}
-          {wsStatus === 'connected' && <span className="trading-sidebar-live-dot" title="Live prices" />}
+          {wsStatus === 'connected' && <span className="market-sidebar-live-dot" title="Live prices" />}
         </span>
         <button
-          className="trading-sidebar-add-btn"
+          className="market-sidebar-add-btn"
           onClick={() =>
             isWatchlist
               ? watchlist.setModalOpen(true)
@@ -202,13 +202,13 @@ function TradingSidebarPanel({ activeSymbol, onSymbolClick }) {
       </div>
 
       {/* List */}
-      <div className="trading-sidebar-list">
+      <div className="market-sidebar-list">
         {currentLoading
           ? renderSkeletons()
           : currentRows.length === 0
             ? (
-              <div className="trading-sidebar-empty">
-                <div className="trading-sidebar-empty-text">
+              <div className="market-sidebar-empty">
+                <div className="market-sidebar-empty-text">
                   {isWatchlist
                     ? 'No stocks in your watchlist yet. Click + to add one.'
                     : 'No holdings in your portfolio yet. Click + to add one.'}
@@ -222,9 +222,9 @@ function TradingSidebarPanel({ activeSymbol, onSymbolClick }) {
 
       {/* Footer */}
       {currentRows.length > 0 && !currentLoading && (
-        <div className="trading-sidebar-footer">
+        <div className="market-sidebar-footer">
           <button
-            className="trading-sidebar-footer-link"
+            className="market-sidebar-footer-link"
             onClick={() => navigate('/')}
           >
             View all
@@ -248,4 +248,4 @@ function TradingSidebarPanel({ activeSymbol, onSymbolClick }) {
   );
 }
 
-export default TradingSidebarPanel;
+export default MarketSidebarPanel;

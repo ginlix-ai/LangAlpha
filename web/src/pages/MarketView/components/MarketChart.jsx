@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback } from 'react';
 import { createChart, ColorType, CrosshairMode, PriceScaleMode, LineType } from 'lightweight-charts';
 import html2canvas from 'html2canvas';
-import './TradingChart.css';
+import './MarketChart.css';
 import { fetchStockData } from '../utils/api';
 import { calculateMA, calculateRSI, updateRSIIncremental } from '../utils/chartHelpers';
 import {
@@ -21,7 +21,7 @@ import { useChartOverlays } from '../hooks/useChartOverlays';
 import { SlidersHorizontal, Settings2, Maximize2, ChevronDown, Plus, Minus, RotateCcw } from 'lucide-react';
 
 // --- localStorage persistence helpers ---
-const STORAGE_PREFIX = 'trading-chart:';
+const STORAGE_PREFIX = 'market-chart:';
 
 function loadPref(key, fallback) {
   try {
@@ -45,7 +45,7 @@ function useClickOutside(ref, onClose) {
   }, [ref, onClose]);
 }
 
-const TradingChart = React.memo(forwardRef(({
+const MarketChart = React.memo(forwardRef(({
   symbol,
   interval = '1day',
   onIntervalChange,
@@ -1075,7 +1075,7 @@ const TradingChart = React.memo(forwardRef(({
   const isTV = chartMode === 'tradingview';
 
   return (
-    <div className="trading-chart-container">
+    <div className="market-chart-container">
       {/* ---- Toolbar: intervals, indicator dropdown, values, tools dropdown, mode switcher ---- */}
       <div className="chart-tools">
         <div className="chart-tools-left">
@@ -1349,6 +1349,6 @@ const TradingChart = React.memo(forwardRef(({
   );
 }));
 
-TradingChart.displayName = 'TradingChart';
+MarketChart.displayName = 'MarketChart';
 
-export default TradingChart;
+export default MarketChart;

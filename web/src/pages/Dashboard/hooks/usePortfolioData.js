@@ -13,7 +13,7 @@ let portfolioCache = null; // { rows, hasRealHoldings }
 
 /**
  * Shared hook for portfolio data fetching and CRUD operations.
- * Used by both Dashboard and TradingCenter sidebar.
+ * Used by both Dashboard and MarketView sidebar.
  */
 export function usePortfolioData() {
   const { toast } = useToast();

@@ -1,6 +1,6 @@
 /**
- * TradingCenter API utilities
- * All backend endpoints used by the TradingCenter page
+ * MarketView API utilities
+ * All backend endpoints used by the MarketView page
  */
 import { api } from '@/api/client';
 import { supabase } from '@/lib/supabase';
@@ -467,13 +467,13 @@ export async function fetchAnalystData(symbol, { signal } = {}) {
  */
 async function streamFetch(url, opts, onEvent) {
   if (process.env.NODE_ENV === 'development') {
-    console.log('[TradingCenter API] Starting stream fetch:', url);
+    console.log('[MarketView API] Starting stream fetch:', url);
   }
 
   const res = await fetch(`${baseURL}${url}`, opts);
 
   if (process.env.NODE_ENV === 'development') {
-    console.log('[TradingCenter API] Response status:', res.status, 'Content-Type:', res.headers.get('content-type'));
+    console.log('[MarketView API] Response status:', res.status, 'Content-Type:', res.headers.get('content-type'));
   }
 
   if (!res.ok) {
@@ -510,7 +510,7 @@ async function streamFetch(url, opts, onEvent) {
         if (ev.event) d.event = ev.event;
         onEvent(d);
       } catch (e) {
-        console.warn('[TradingCenter API] SSE parse error', e, line);
+        console.warn('[MarketView API] SSE parse error', e, line);
       }
       ev = {};
     } else if (line.trim() === '') ev = {};
@@ -523,7 +523,7 @@ async function streamFetch(url, opts, onEvent) {
       if (done) {
         // Stream ended normally - decode any remaining buffer
         if (process.env.NODE_ENV === 'development') {
-          console.log('[TradingCenter API] Stream ended normally, hasReceivedData:', hasReceivedData);
+          console.log('[MarketView API] Stream ended normally, hasReceivedData:', hasReceivedData);
         }
         if (buffer) {
           buffer += decoder.decode(new Uint8Array(), { stream: false });
@@ -562,11 +562,11 @@ async function streamFetch(url, opts, onEvent) {
 
       // Only warn if we received some data (partial stream is better than nothing)
       if (hasReceivedData) {
-        console.warn('[TradingCenter API] Stream interrupted after receiving data:', error.message);
+        console.warn('[MarketView API] Stream interrupted after receiving data:', error.message);
         // Don't throw - we got partial data which is better than nothing
       } else {
         // No data received - this is a real error
-        console.error('[TradingCenter API] Stream failed before receiving data:', error.message);
+        console.error('[MarketView API] Stream failed before receiving data:', error.message);
         throw error;
       }
     } else {
@@ -619,7 +619,7 @@ export async function sendFlashChatMessage(
     : `/api/v1/threads/${threadId}/messages`;
 
   if (process.env.NODE_ENV === 'development') {
-    console.log('[TradingCenter API] Sending flash chat message:', {
+    console.log('[MarketView API] Sending flash chat message:', {
       threadId,
       agentMode: 'flash',
       messageLength: message.length,
@@ -643,7 +643,7 @@ export async function sendFlashChatMessage(
       onEvent
     );
   } catch (error) {
-    console.error('[TradingCenter API] Error in sendFlashChatMessage:', error);
+    console.error('[MarketView API] Error in sendFlashChatMessage:', error);
     throw error;
   }
 }
@@ -653,7 +653,7 @@ export async function sendFlashChatMessage(
  * @param {string} threadId - Thread ID to delete
  * @returns {Promise<void>}
  */
-export async function deleteTradingThread(threadId) {
+export async function deleteMarketThread(threadId) {
   if (!threadId || threadId === '__default__') {
     return; // Don't delete default placeholder
   }
@@ -661,7 +661,7 @@ export async function deleteTradingThread(threadId) {
     await api.delete(`/api/v1/threads/${threadId}`);
   } catch (error) {
     // Silently fail - thread might already be deleted
-    console.warn('[TradingCenter] Failed to delete thread:', threadId, error);
+    console.warn('[MarketView] Failed to delete thread:', threadId, error);
   }
 }
 
@@ -674,7 +674,7 @@ export async function listWorkspaces() {
     const { data } = await api.get('/api/v1/workspaces');
     return data?.workspaces || [];
   } catch (error) {
-    console.warn('[TradingCenter] Failed to list workspaces:', error);
+    console.warn('[MarketView] Failed to list workspaces:', error);
     return [];
   }
 }
@@ -691,11 +691,11 @@ export async function deleteWorkspace(workspaceId) {
   try {
     await api.delete(`/api/v1/workspaces/${workspaceId}`);
     if (process.env.NODE_ENV === 'development') {
-      console.log('[TradingCenter] Deleted workspace:', workspaceId);
+      console.log('[MarketView] Deleted workspace:', workspaceId);
     }
   } catch (error) {
     // Silently fail - workspace might already be deleted
-    console.warn('[TradingCenter] Failed to delete workspace:', workspaceId, error);
+    console.warn('[MarketView] Failed to delete workspace:', workspaceId, error);
   }
 }
 
@@ -710,13 +710,13 @@ export async function deleteFlashWorkspaces() {
 
     if (flashWorkspaces.length === 0) {
       if (process.env.NODE_ENV === 'development') {
-        console.log('[TradingCenter] No flash workspaces to delete');
+        console.log('[MarketView] No flash workspaces to delete');
       }
       return;
     }
 
     if (process.env.NODE_ENV === 'development') {
-      console.log(`[TradingCenter] Found ${flashWorkspaces.length} flash workspace(s) to delete`);
+      console.log(`[MarketView] Found ${flashWorkspaces.length} flash workspace(s) to delete`);
     }
 
     // Delete all flash workspaces in parallel
@@ -725,9 +725,9 @@ export async function deleteFlashWorkspaces() {
     );
 
     if (process.env.NODE_ENV === 'development') {
-      console.log('[TradingCenter] Deleted all flash workspaces');
+      console.log('[MarketView] Deleted all flash workspaces');
     }
   } catch (error) {
-    console.warn('[TradingCenter] Error deleting flash workspaces:', error);
+    console.warn('[MarketView] Error deleting flash workspaces:', error);
   }
 }
