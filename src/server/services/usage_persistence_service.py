@@ -231,7 +231,8 @@ class UsagePersistenceService:
         msg_type: Optional[str] = None,
         deepthinking: bool = False,
         status: str = "completed",
-        conn: Optional[Any] = None
+        conn: Optional[Any] = None,
+        is_byok: bool = False
     ) -> bool:
         """
         Persist usage data to conversation_usage table.
@@ -285,6 +286,7 @@ class UsagePersistenceService:
                 "token_credits": float(self._token_credits),
                 "infrastructure_credits": float(self._infrastructure_credits),
                 "total_credits": float(total_credits),
+                "is_byok": is_byok,
                 "created_at": timestamp
             }
 

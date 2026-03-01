@@ -307,6 +307,9 @@ class ConversationPersistenceService:
                         # to enable clear separation in analytics/billing
                         deepthinking = metadata.get("deepthinking", False) if metadata else False
 
+                        # Extract BYOK flag from metadata
+                        is_byok = metadata.get("byok_active", False) if metadata else False
+
                         # Persist to conversation_usage table (status='interrupted')
                         # Override msg_type to 'interrupted' for interrupted workflows
                         usage_persisted = await usage_service.persist_usage(
@@ -315,7 +318,8 @@ class ConversationPersistenceService:
                             msg_type="interrupted",  # Always use 'interrupted' for interrupted workflows
                             deepthinking=deepthinking,
                             status="interrupted",
-                            conn=conn
+                            conn=conn,
+                            is_byok=is_byok
                         )
 
                         if usage_persisted:
@@ -491,6 +495,9 @@ class ConversationPersistenceService:
                         msg_type = metadata.get("msg_type") if metadata else None
                         deepthinking = metadata.get("deepthinking", False) if metadata else False
 
+                        # Extract BYOK flag from metadata
+                        is_byok = metadata.get("byok_active", False) if metadata else False
+
                         # Persist to conversation_usage table (status='completed')
                         await usage_service.persist_usage(
                             response_id=response_id,
@@ -498,7 +505,8 @@ class ConversationPersistenceService:
                             msg_type=msg_type,
                             deepthinking=deepthinking,
                             status="completed",
-                            conn=conn
+                            conn=conn,
+                            is_byok=is_byok
                         )
 
             self._persisted_completions.add(turn_index)
@@ -571,7 +579,7 @@ class ConversationPersistenceService:
                         conversation_response_id=response_id,
                         conversation_thread_id=self.thread_id,
                         turn_index=turn_index,
-                        status="cancelled",
+                        status="error",
                         interrupt_reason=None,
                         metadata=metadata,
                         warnings=None,
@@ -606,6 +614,9 @@ class ConversationPersistenceService:
                         msg_type = metadata.get("msg_type") if metadata else None
                         deepthinking = metadata.get("deepthinking", False) if metadata else False
 
+                        # Extract BYOK flag from metadata
+                        is_byok = metadata.get("byok_active", False) if metadata else False
+
                         # Persist to conversation_usage table (status='error')
                         usage_persisted = await usage_service.persist_usage(
                             response_id=response_id,
@@ -613,7 +624,8 @@ class ConversationPersistenceService:
                             msg_type=msg_type,
                             deepthinking=deepthinking,
                             status="error",
-                            conn=conn
+                            conn=conn,
+                            is_byok=is_byok
                         )
 
                         if usage_persisted:
@@ -691,7 +703,7 @@ class ConversationPersistenceService:
                         conversation_response_id=response_id,
                         conversation_thread_id=self.thread_id,
                         turn_index=turn_index,
-                        status="interrupted",
+                        status="cancelled",
                         interrupt_reason=None,
                         metadata=metadata,
                         warnings=None,
@@ -726,6 +738,9 @@ class ConversationPersistenceService:
                         msg_type = metadata.get("msg_type") if metadata else None
                         deepthinking = metadata.get("deepthinking", False) if metadata else False
 
+                        # Extract BYOK flag from metadata
+                        is_byok = metadata.get("byok_active", False) if metadata else False
+
                         # Persist to conversation_usage table (status='cancelled')
                         usage_persisted = await usage_service.persist_usage(
                             response_id=response_id,
@@ -733,7 +748,8 @@ class ConversationPersistenceService:
                             msg_type=msg_type,
                             deepthinking=deepthinking,
                             status="cancelled",
-                            conn=conn
+                            conn=conn,
+                            is_byok=is_byok
                         )
 
                         if usage_persisted:

@@ -590,6 +590,7 @@ async def setup_tables_async():
                             token_credits DECIMAL(10, 6) NOT NULL DEFAULT 0,
                             infrastructure_credits DECIMAL(10, 6) NOT NULL DEFAULT 0,
                             total_credits DECIMAL(10, 6) NOT NULL DEFAULT 0,
+                            is_byok BOOLEAN NOT NULL DEFAULT FALSE,
                             created_at TIMESTAMPTZ DEFAULT NOW()
                         );
                     """)

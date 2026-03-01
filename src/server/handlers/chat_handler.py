@@ -650,7 +650,7 @@ async def astream_flash_workflow(
 
                 if persistence_service:
                     await persistence_service.persist_completion(
-                        metadata={"msg_type": "flash"},
+                        metadata={"msg_type": "flash", "byok_active": byok_active},
                         execution_time=execution_time,
                         per_call_records=_per_call_records,
                         tool_usage=_tool_usage,
@@ -690,6 +690,7 @@ async def astream_flash_workflow(
                 "started_at": datetime.now().isoformat(),
                 "start_time": start_time,
                 "msg_type": "flash",
+                "byok_active": byok_active,
                 "handler": handler,
                 "token_callback": token_callback,
             },
@@ -735,6 +736,7 @@ async def astream_flash_workflow(
                     persistence_service=persistence_service,
                     start_time=start_time,
                     request=request,
+                    byok_active=byok_active,
                 ),
                 name=f"sse-disconnect-cleanup-{thread_id}",
             )
@@ -769,7 +771,7 @@ async def astream_flash_workflow(
                 await persistence_service.persist_error(
                     error_message=str(e),
                     execution_time=execution_time,
-                    metadata={"msg_type": "flash"},
+                    metadata={"msg_type": "flash", "byok_active": byok_active},
                     per_call_records=per_call_records,
                     tool_usage=tool_usage,
                     sse_events=sse_events,
@@ -813,6 +815,7 @@ async def _handle_sse_disconnect(
     persistence_service,
     start_time: float,
     request,
+    byok_active: bool = False,
 ):
     """Fire-and-forget cleanup when the SSE client disconnects.
 
@@ -840,6 +843,7 @@ async def _handle_sse_disconnect(
                     execution_time=time.time() - start_time,
                     metadata={
                         "workspace_id": request.workspace_id,
+                        "byok_active": byok_active,
                     },
                     per_call_records=_per_call_records,
                     tool_usage=_tool_usage,
@@ -1499,6 +1503,7 @@ async def astream_ptc_workflow(
                         "locale": request.locale,
                         "timezone": timezone_str,
                         "msg_type": "ptc",
+                        "byok_active": byok_active,
                     },
                     execution_time=execution_time,
                     per_call_records=_per_call_records,
@@ -1553,6 +1558,7 @@ async def astream_ptc_workflow(
                 "started_at": datetime.now().isoformat(),
                 "start_time": start_time,
                 "msg_type": "ptc",
+                "byok_active": byok_active,
                 "locale": request.locale,
                 "timezone": timezone_str,
                 "handler": handler,
@@ -1605,6 +1611,7 @@ async def astream_ptc_workflow(
                     persistence_service=persistence_service,
                     start_time=start_time,
                     request=request,
+                    byok_active=byok_active,
                 ),
                 name=f"sse-disconnect-cleanup-{thread_id}",
             )
@@ -1733,6 +1740,7 @@ async def astream_ptc_workflow(
                             metadata={
                                 "workspace_id": request.workspace_id,
                                 "msg_type": "ptc",
+                                "byok_active": byok_active,
                             },
                             per_call_records=_per_call_records,
                             tool_usage=_tool_usage,
@@ -1790,6 +1798,7 @@ async def astream_ptc_workflow(
                         metadata={
                             "workspace_id": request.workspace_id,
                             "msg_type": "ptc",
+                            "byok_active": byok_active,
                         },
                         per_call_records=_per_call_records,
                         tool_usage=_tool_usage,

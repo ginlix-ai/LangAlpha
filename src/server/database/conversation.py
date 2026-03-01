@@ -1511,6 +1511,7 @@ async def create_usage_record(
                 token_credits,
                 infrastructure_credits,
                 total_credits,
+                is_byok,
                 created_at
             ) VALUES (
                 %(conversation_usage_id)s,
@@ -1525,6 +1526,7 @@ async def create_usage_record(
                 %(token_credits)s,
                 %(infrastructure_credits)s,
                 %(total_credits)s,
+                %(is_byok)s,
                 %(created_at)s
             )
         """, {
@@ -1540,6 +1542,7 @@ async def create_usage_record(
             "token_credits": usage_data["token_credits"],
             "infrastructure_credits": usage_data["infrastructure_credits"],
             "total_credits": usage_data["total_credits"],
+            "is_byok": usage_data.get("is_byok", False),
             "created_at": usage_data["created_at"]
         })
 

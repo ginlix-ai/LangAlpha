@@ -749,6 +749,7 @@ class BackgroundTaskManager:
         workspace_id: str,
         user_id: str,
         timeout: float = 120.0,
+        is_byok: bool = False,
     ) -> None:
         """Collect subagent results for a specific turn's tasks.
 
@@ -803,6 +804,7 @@ class BackgroundTaskManager:
                 # Persist subagent token usage as separate rows
                 await self._persist_subagent_usage(
                     response_id, tasks, thread_id, workspace_id, user_id,
+                    is_byok=is_byok,
                 )
                 # Deferred cleanup: wait for per-task SSE streams to finish their
                 # final drain before clearing captured_events and Redis buffers.
@@ -866,6 +868,7 @@ class BackgroundTaskManager:
             collected_tasks = [t for t in tasks if t not in pending.values()]
             await self._persist_subagent_usage(
                 response_id, collected_tasks, thread_id, workspace_id, user_id,
+                is_byok=is_byok,
             )
             # Deferred cleanup: wait for per-task SSE streams to finish their
             # final drain before clearing captured_events and Redis buffers.
@@ -1006,7 +1009,8 @@ class BackgroundTaskManager:
                     persist_metadata = {
                         "msg_type": metadata.get("msg_type"),
                         "stock_code": metadata.get("stock_code"),
-                        "deepthinking": metadata.get("deepthinking", False)
+                        "deepthinking": metadata.get("deepthinking", False),
+                        "byok_active": metadata.get("byok_active", False)
                     }
 
                     await persistence_service.persist_interrupt(
@@ -1079,6 +1083,7 @@ class BackgroundTaskManager:
                                 tasks=tasks_to_collect,
                                 workspace_id=workspace_id,
                                 user_id=user_id,
+                                is_byok=metadata.get("byok_active", False),
                             ),
                             name=f"subagent-collector-{thread_id}-post-tail",
                         )
@@ -1149,7 +1154,8 @@ class BackgroundTaskManager:
                     "msg_type": metadata.get("msg_type"),
                     "stock_code": metadata.get("stock_code"),
                     "agent_llm_preset": metadata.get("agent_llm_preset", "default"),
-                    "deepthinking": metadata.get("deepthinking", False)
+                    "deepthinking": metadata.get("deepthinking", False),
+                    "byok_active": metadata.get("byok_active", False)
                 }
 
                 await persistence_service.persist_error(
@@ -1234,6 +1240,7 @@ class BackgroundTaskManager:
                     "stock_code": metadata.get("stock_code"),
                     "agent_llm_preset": metadata.get("agent_llm_preset", "default"),
                     "deepthinking": metadata.get("deepthinking", False),
+                    "byok_active": metadata.get("byok_active", False),
                     "soft_interrupted": True
                 }
 
@@ -1266,6 +1273,7 @@ class BackgroundTaskManager:
                             workspace_id=workspace_id,
                             user_id=user_id,
                             timeout=120.0,
+                            is_byok=metadata.get("byok_active", False),
                         ),
                         name=f"subagent-collector-{thread_id}",
                     )
@@ -1284,6 +1292,7 @@ class BackgroundTaskManager:
         workspace_id: str,
         user_id: str,
         timeout: float = 120.0,
+        is_byok: bool = False,
     ) -> None:
         """Wait for subagents incrementally, persist as each completes.
 
@@ -1362,6 +1371,7 @@ class BackgroundTaskManager:
                 # Persist subagent token usage as separate rows
                 await self._persist_subagent_usage(
                     response_id, all_tasks, thread_id, workspace_id, user_id,
+                    is_byok=is_byok,
                 )
                 await self._await_drain_and_cleanup_tasks(all_tasks, thread_id)
                 return
@@ -1432,6 +1442,7 @@ class BackgroundTaskManager:
             collected_tasks = [t for t in all_tasks if t not in pending.values()]
             await self._persist_subagent_usage(
                 response_id, collected_tasks, thread_id, workspace_id, user_id,
+                is_byok=is_byok,
             )
             await self._await_drain_and_cleanup_tasks(collected_tasks, thread_id)
 
@@ -1485,6 +1496,7 @@ class BackgroundTaskManager:
         thread_id: str,
         workspace_id: str,
         user_id: str,
+        is_byok: bool = False,
     ) -> None:
         """Persist each subagent's token usage as a separate row with msg_type='task'.
 
@@ -1528,6 +1540,7 @@ class BackgroundTaskManager:
                     response_id=response_id,
                     msg_type="task",
                     status="completed",
+                    is_byok=is_byok,
                 )
                 persisted_count += 1
 
@@ -1609,6 +1622,7 @@ class BackgroundTaskManager:
                     "stock_code": metadata.get("stock_code"),
                     "agent_llm_preset": metadata.get("agent_llm_preset", "default"),
                     "deepthinking": metadata.get("deepthinking", False),
+                    "byok_active": metadata.get("byok_active", False),
                     "cancelled_by_user": True
                 }
 
