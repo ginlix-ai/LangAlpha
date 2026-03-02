@@ -37,7 +37,7 @@ function PortfolioCard({
     <Card className="panel flex flex-col flex-1 min-h-0">
         <CardHeader className="px-3 py-4 flex-shrink-0">
           <div className="flex items-center justify-between w-full">
-            <CardTitle className="dashboard-title-font text-base font-semibold" style={{ color: 'var(--color-text-primary)', letterSpacing: '0.15px' }}>
+            <CardTitle className="title-font text-base font-semibold" style={{ color: 'var(--color-text-primary)', letterSpacing: '0.15px' }}>
               Portfolio
             </CardTitle>
             <button type="button" onClick={onHeaderAddClick} className="p-1.5 rounded-md transition-colors hover:bg-[var(--color-bg-hover)]" style={{ color: 'var(--color-text-primary)' }}>
@@ -49,7 +49,7 @@ function PortfolioCard({
       <Dialog open={!!editRow} onOpenChange={(open) => !open && onEditClose?.()}>
         <DialogContent className="sm:max-w-sm border" style={{ backgroundColor: 'var(--color-bg-elevated)', borderColor: 'var(--color-border-elevated)' }}>
           <DialogHeader>
-            <DialogTitle className="dashboard-title-font" style={{ color: 'var(--color-text-primary)' }}>Edit holding — {editRow?.symbol}</DialogTitle>
+            <DialogTitle className="title-font" style={{ color: 'var(--color-text-primary)' }}>Edit holding — {editRow?.symbol}</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3 py-2" onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); onEditSubmit?.(); } }}>
             <div>

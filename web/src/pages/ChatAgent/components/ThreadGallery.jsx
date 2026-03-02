@@ -16,7 +16,7 @@ import { saveChatSession } from '../hooks/utils/chatSessionRestore';
 import iconComputerLight from '../../../assets/img/icon-computer.svg';
 import iconComputerDark from '../../../assets/img/icon-computer-dark.svg';
 import { useTheme } from '../../../contexts/ThemeContext';
-import '../../Dashboard/Dashboard.css';
+import { motion, AnimatePresence } from 'framer-motion';
 
 /**
  * ThreadGallery Component
@@ -65,6 +65,8 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect, cache }) {
   // Initialize files from cache for instant display on return navigation
   const [files, setFiles] = useState(() => cache?.current?.[workspaceId]?.files || []);
   const isDraggingRef = useRef(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const DIVIDER_WIDTH = 4; // px – matches w-[4px] divider
   const chatInputRef = useRef(null);
   const handleAddContext = useCallback((ctx) => {
     chatInputRef.current?.addContext(ctx);
@@ -485,6 +487,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect, cache }) {
   const handleDividerMouseDown = useCallback((e) => {
     e.preventDefault();
     isDraggingRef.current = true;
+    setIsDragging(true);
     const startX = e.clientX;
     const startWidth = filePanelWidth;
 
@@ -497,6 +500,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect, cache }) {
 
     const onMouseUp = () => {
       isDraggingRef.current = false;
+      setIsDragging(false);
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
       document.body.style.cursor = '';
@@ -557,7 +561,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect, cache }) {
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Back Button - Fixed at top left */}
-        <div className="flex-shrink-0 px-6 py-4">
+        <div className="flex-shrink-0 px-6 py-4 enter-fade-up">
           <button
             onClick={onBack}
             className="p-2 rounded-md transition-colors"
@@ -575,7 +579,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect, cache }) {
           <div className="w-full max-w-[768px] mx-auto flex flex-col gap-8">
 
             {/* Workspace Header */}
-            <div className="w-full flex flex-col items-center mt-[8vh]">
+            <div className="w-full flex flex-col items-center mt-[8vh] enter-fade-up enter-fade-up-d1">
               <div
                 className="flex items-center justify-center transition-colors cursor-pointer"
                 onClick={!isFlash ? () => setShowSandboxPanel(true) : undefined}
@@ -587,7 +591,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect, cache }) {
                 )}
               </div>
               <h1
-                className="text-xl font-medium mt-3 text-center dashboard-title-font"
+                className="text-xl font-medium mt-3 text-center title-font"
                 style={{ color: 'var(--color-text-primary)' }}
               >
                 {workspaceName}
@@ -600,7 +604,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect, cache }) {
             </div>
 
             {/* Chat Input */}
-            <div className="w-full">
+            <div className="w-full enter-fade-up enter-fade-up-d2">
               <ChatInput
                 ref={chatInputRef}
                 onSend={handleSendMessage}
@@ -610,7 +614,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect, cache }) {
             </div>
 
             {/* Files Card — hidden for flash workspaces (no sandbox) */}
-            {!isFlash && <div className="w-full">
+            {!isFlash && <div className="w-full enter-fade-up enter-fade-up-d3">
               <div
                 className="flex-1 min-w-0 flex flex-col ps-[16px] pt-[12px] pb-[14px] pe-[20px] rounded-[12px] border cursor-pointer hover:bg-foreground/5 transition-colors"
                 style={{
@@ -660,7 +664,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect, cache }) {
             </div>}
 
             {/* Threads Section */}
-            <div className="w-full flex flex-col gap-4 pb-8">
+            <div className="w-full flex flex-col gap-4 pb-8 enter-fade-up enter-fade-up-d4">
               <div className="flex items-center justify-between">
                 <h2 className="text-base font-medium" style={{ color: 'var(--color-text-primary)' }}>
                   {t('thread.tasks')}
@@ -703,34 +707,42 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect, cache }) {
       </div>
 
       {/* Right Side: File Panel — hidden for flash workspaces */}
-      {showFilePanel && !isFlash && (
-        <>
-          <div
-            className="w-[4px] bg-transparent hover:bg-foreground/20 cursor-col-resize flex-shrink-0 transition-colors"
-            onMouseDown={handleDividerMouseDown}
-          />
-          <div className="flex-shrink-0" style={{ width: filePanelWidth }}>
-            <FilePanel
-              workspaceId={workspaceId}
-              onClose={() => setShowFilePanel(false)}
-              targetFile={filePanelTargetFile}
-              onTargetFileHandled={() => setFilePanelTargetFile(null)}
-              files={panelFiles}
-              filesLoading={panelFilesLoading}
-              filesError={panelFilesError}
-              onRefreshFiles={refreshPanelFiles}
-              onAddContext={handleAddContext}
-              showSystemFiles={showSystemFiles}
-              onToggleSystemFiles={() => {
-                setShowSystemFiles((v) => {
-                  localStorage.setItem('filePanel.showSystemFiles', String(!v));
-                  return !v;
-                });
-              }}
+      <AnimatePresence>
+        {showFilePanel && !isFlash && (
+          <motion.div
+            initial={{ width: 0, opacity: 0 }}
+            animate={{ width: filePanelWidth + DIVIDER_WIDTH, opacity: 1 }}
+            exit={{ width: 0, opacity: 0 }}
+            transition={{ duration: isDragging ? 0 : 0.25, ease: [0.22, 1, 0.36, 1] }}
+            className="flex flex-shrink-0 overflow-hidden"
+          >
+            <div
+              className="w-[4px] bg-transparent hover:bg-foreground/20 cursor-col-resize flex-shrink-0 transition-colors"
+              onMouseDown={handleDividerMouseDown}
             />
-          </div>
-        </>
-      )}
+            <div className="flex-shrink-0" style={{ width: filePanelWidth }}>
+              <FilePanel
+                workspaceId={workspaceId}
+                onClose={() => setShowFilePanel(false)}
+                targetFile={filePanelTargetFile}
+                onTargetFileHandled={() => setFilePanelTargetFile(null)}
+                files={panelFiles}
+                filesLoading={panelFilesLoading}
+                filesError={panelFilesError}
+                onRefreshFiles={refreshPanelFiles}
+                onAddContext={handleAddContext}
+                showSystemFiles={showSystemFiles}
+                onToggleSystemFiles={() => {
+                  setShowSystemFiles((v) => {
+                    localStorage.setItem('filePanel.showSystemFiles', String(!v));
+                    return !v;
+                  });
+                }}
+              />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Delete Confirmation Modal */}
       <DeleteConfirmModal

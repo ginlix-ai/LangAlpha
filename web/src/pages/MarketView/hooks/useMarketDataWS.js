@@ -76,7 +76,7 @@ export default function useMarketDataWS() {
     let symbol, open, high, low, close, volume, timestamp;
 
     if (msg.ev === 'AM' || msg.ev === 'A') {
-      // Raw Polygon-style aggregate
+      // Raw aggregate
       symbol = msg.sym;
       open = msg.o;
       high = msg.h;

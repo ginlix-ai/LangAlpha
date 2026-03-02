@@ -44,7 +44,7 @@ function PopularCard({ items = [], loading = false, hasMore = false, onLoadMore 
     >
       <CardHeader className="px-5 py-4" style={{ paddingLeft: '20px', paddingRight: '24px', paddingTop: '16px', paddingBottom: '16px' }}>
         <div className="flex items-center justify-between">
-          <CardTitle className="dashboard-title-font text-base font-semibold" style={{ color: 'var(--color-text-primary)', letterSpacing: '0.15px', lineHeight: '24px' }}>
+          <CardTitle className="title-font text-base font-semibold" style={{ color: 'var(--color-text-primary)', letterSpacing: '0.15px', lineHeight: '24px' }}>
             What's Popular
           </CardTitle>
           <Menu className="h-4 w-4 cursor-pointer transition-colors" style={{ color: 'var(--color-text-primary)' }} />

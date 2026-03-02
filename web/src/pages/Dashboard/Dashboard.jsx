@@ -342,7 +342,7 @@ function Dashboard() {
       <Dialog open={showOnboardingDialog} onOpenChange={setShowOnboardingDialog}>
         <DialogContent className="sm:max-w-md border" style={{ backgroundColor: 'var(--color-bg-elevated)', borderColor: 'var(--color-border-elevated)' }}>
           <DialogHeader>
-            <DialogTitle className="dashboard-title-font" style={{ color: 'var(--color-text-primary)' }}>
+            <DialogTitle className="title-font" style={{ color: 'var(--color-text-primary)' }}>
               {t('dashboard.prefIncomplete')}
             </DialogTitle>
             <DialogDescription style={{ color: 'var(--color-text-secondary)' }}>
@@ -381,7 +381,7 @@ function Dashboard() {
       <Dialog open={!!portfolio.editRow} onOpenChange={(open) => !open && portfolio.openEdit(null)}>
         <DialogContent className="sm:max-w-sm border" style={{ backgroundColor: 'var(--color-bg-elevated)', borderColor: 'var(--color-border-elevated)' }}>
           <DialogHeader>
-            <DialogTitle className="dashboard-title-font" style={{ color: 'var(--color-text-primary)' }}>Edit holding — {portfolio.editRow?.symbol}</DialogTitle>
+            <DialogTitle className="title-font" style={{ color: 'var(--color-text-primary)' }}>Edit holding — {portfolio.editRow?.symbol}</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3 py-2" onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); portfolio.handleUpdate?.(); } }}>
             <div>

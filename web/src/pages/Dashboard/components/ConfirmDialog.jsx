@@ -19,7 +19,7 @@ function ConfirmDialog({ open, title, message, confirmLabel, onConfirm, onOpenCh
         style={{ backgroundColor: 'var(--color-bg-elevated)', borderColor: 'var(--color-border-elevated)' }}
       >
         <DialogHeader>
-          <DialogTitle className="dashboard-title-font" style={{ color: 'var(--color-text-primary)' }}>
+          <DialogTitle className="title-font" style={{ color: 'var(--color-text-primary)' }}>
             {title}
           </DialogTitle>
           <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{message}</p>

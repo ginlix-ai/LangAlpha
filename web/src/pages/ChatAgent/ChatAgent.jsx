@@ -1,5 +1,6 @@
 import React, { useRef, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { motion, AnimatePresence } from 'framer-motion';
 import { getWorkspaceThreads } from './utils/api';
 import WorkspaceGallery from './components/WorkspaceGallery';
 import ThreadGallery from './components/ThreadGallery';
@@ -87,17 +88,21 @@ function ChatAgent() {
     }
   }, []);
 
-  // If both workspaceId and threadId are provided, show chat view
+  // Determine view key for AnimatePresence transitions
+  const viewKey = workspaceId && threadId
+    ? `chat-${workspaceId}`
+    : workspaceId
+      ? `threads-${workspaceId}`
+      : 'gallery';
+
+  let content;
   if (workspaceId && threadId) {
     const cachedWorkspaceName = workspaceCacheRef.current[workspaceId]?.workspaceName
       || location.state?.workspaceName
       || '';
-    return <ChatView key={workspaceId} workspaceId={workspaceId} threadId={threadId} onBack={handleBackToThreadGallery} workspaceName={cachedWorkspaceName} />;
-  }
-
-  // If only workspaceId is provided, show thread gallery
-  if (workspaceId) {
-    return (
+    content = <ChatView key={workspaceId} workspaceId={workspaceId} threadId={threadId} onBack={handleBackToThreadGallery} workspaceName={cachedWorkspaceName} />;
+  } else if (workspaceId) {
+    content = (
       <ThreadGallery
         workspaceId={workspaceId}
         onBack={handleBackToWorkspaceGallery}
@@ -105,15 +110,29 @@ function ChatAgent() {
         cache={workspaceCacheRef}
       />
     );
+  } else {
+    content = (
+      <WorkspaceGallery
+        onWorkspaceSelect={handleWorkspaceSelect}
+        cache={workspaceListCacheRef}
+        prefetchThreads={prefetchThreads}
+      />
+    );
   }
 
-  // Otherwise, show workspace gallery
   return (
-    <WorkspaceGallery
-      onWorkspaceSelect={handleWorkspaceSelect}
-      cache={workspaceListCacheRef}
-      prefetchThreads={prefetchThreads}
-    />
+    <AnimatePresence mode="wait">
+      <motion.div
+        key={viewKey}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.15, ease: [0.22, 1, 0.36, 1] }}
+        style={{ height: '100%' }}
+      >
+        {content}
+      </motion.div>
+    </AnimatePresence>
   );
 }
 

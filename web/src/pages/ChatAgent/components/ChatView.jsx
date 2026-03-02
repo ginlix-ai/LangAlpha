@@ -23,7 +23,7 @@ import { WorkspaceProvider } from '../contexts/WorkspaceContext';
 import SubagentStatusBar from './SubagentStatusBar';
 import TodoDrawer from './TodoDrawer';
 import { parseErrorMessage } from '../utils/parseErrorMessage';
-import '../../Dashboard/Dashboard.css';
+import { motion, AnimatePresence } from 'framer-motion';
 
 // Static main agent object — never changes, so defined once at module level
 const MAIN_AGENT = {
@@ -133,10 +133,12 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
   const [filePanelTargetFile, setFilePanelTargetFile] = useState(null);
   const [filePanelTargetDir, setFilePanelTargetDir] = useState(null);
   const isDraggingRef = useRef(false);
+  const [isDragging, setIsDragging] = useState(false);
 
   // Right panel management - can show 'file', 'detail', or null (closed)
   const [rightPanelType, setRightPanelType] = useState(null);
   const [rightPanelWidth, setRightPanelWidth] = useState(750);
+  const DIVIDER_WIDTH = 4; // px – matches .chat-split-divider
   // Active agent in main view (default: 'main')
   const [activeAgentId, setActiveAgentId] = useState('main');
   // Sidebar visibility
@@ -555,6 +557,7 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
   const handleDividerMouseDown = useCallback((e) => {
     e.preventDefault();
     isDraggingRef.current = true;
+    setIsDragging(true);
     const startX = e.clientX;
     const startWidth = rightPanelWidth;
 
@@ -567,6 +570,7 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
 
     const onMouseUp = () => {
       isDraggingRef.current = false;
+      setIsDragging(false);
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
       document.body.style.cursor = '';
@@ -974,7 +978,10 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
 
   return (
     <WorkspaceProvider workspaceId={workspaceId}>
-    <div
+    <motion.div
+      initial={{ y: 10 }}
+      animate={{ y: 0 }}
+      transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
       className="flex h-screen w-full overflow-hidden"
       style={{
         backgroundColor: 'var(--color-bg-page)',
@@ -995,7 +1002,7 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
             >
               <ArrowLeft className="h-5 w-5" />
             </button>
-            <h1 className="text-base font-semibold whitespace-nowrap dashboard-title-font truncate" style={{ color: 'var(--color-text-primary)' }}>
+            <h1 className="text-base font-semibold whitespace-nowrap title-font truncate" style={{ color: 'var(--color-text-primary)' }}>
               {workspaceName || t('thread.workspace')}
             </h1>
             {isLoadingHistory ? (
@@ -1037,14 +1044,24 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
         {/* Content area: Sidebar + Chat Window */}
         <div className="flex-1 flex overflow-hidden">
           {/* Agent Sidebar */}
-          {sidebarVisible && (
-            <AgentSidebar
-              agents={agents}
-              activeAgentId={activeAgentId}
-              onSelectAgent={handleSelectAgent}
-              onRemoveAgent={handleRemoveAgent}
-            />
-          )}
+          <AnimatePresence>
+            {sidebarVisible && (
+              <motion.div
+                initial={{ width: 0, opacity: 0 }}
+                animate={{ width: 'auto', opacity: 1 }}
+                exit={{ width: 0, opacity: 0 }}
+                transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+                style={{ overflow: 'hidden', flexShrink: 0 }}
+              >
+                <AgentSidebar
+                  agents={agents}
+                  activeAgentId={activeAgentId}
+                  onSelectAgent={handleSelectAgent}
+                  onRemoveAgent={handleRemoveAgent}
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* Chat Window */}
           <div className="flex-1 flex flex-col overflow-hidden min-w-0">
@@ -1240,52 +1257,60 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
       </div>
 
       {/* Right Side: Split Panel (File or Detail only) */}
-      {rightPanelType && (
-        <>
-          <div
-            className="chat-split-divider"
-            onMouseDown={handleDividerMouseDown}
-          />
-          <div className="flex-shrink-0" style={{ width: rightPanelWidth }}>
-            {rightPanelType === 'file' ? (
-              <FilePanel
-                workspaceId={workspaceId}
-                onClose={() => setRightPanelType(null)}
-                targetFile={filePanelTargetFile}
-                onTargetFileHandled={() => setFilePanelTargetFile(null)}
-                targetDirectory={filePanelTargetDir}
-                onTargetDirHandled={() => setFilePanelTargetDir(null)}
-                files={workspaceFiles}
-                filesLoading={filesLoading}
-                filesError={filesError}
-                onRefreshFiles={refreshFiles}
-                onAddContext={handleAddContext}
-                showSystemFiles={showSystemFiles}
-                onToggleSystemFiles={() => {
-                  setShowSystemFiles((v) => {
-                    localStorage.setItem('filePanel.showSystemFiles', String(!v));
-                    return !v;
-                  });
-                }}
-              />
-            ) : rightPanelType === 'detail' && (detailToolCall || detailPlanData) ? (
-              <DetailPanel
-                toolCallProcess={detailToolCall}
-                planData={detailPlanData}
-                onClose={() => {
-                  setRightPanelType(null);
-                  setDetailToolCall(null);
-                  setDetailPlanData(null);
-                }}
-                onOpenFile={handleOpenFileFromChat}
-                onOpenSubagentTask={handleOpenSubagentTask}
-              />
-            ) : null}
-          </div>
-        </>
-      )}
+      <AnimatePresence>
+        {rightPanelType && (
+          <motion.div
+            initial={{ width: 0, opacity: 0 }}
+            animate={{ width: rightPanelWidth + DIVIDER_WIDTH, opacity: 1 }}
+            exit={{ width: 0, opacity: 0 }}
+            transition={{ duration: isDragging ? 0 : 0.25, ease: [0.22, 1, 0.36, 1] }}
+            className="flex flex-shrink-0 overflow-hidden"
+          >
+            <div
+              className="chat-split-divider"
+              onMouseDown={handleDividerMouseDown}
+            />
+            <div className="flex-shrink-0" style={{ width: rightPanelWidth }}>
+              {rightPanelType === 'file' ? (
+                <FilePanel
+                  workspaceId={workspaceId}
+                  onClose={() => setRightPanelType(null)}
+                  targetFile={filePanelTargetFile}
+                  onTargetFileHandled={() => setFilePanelTargetFile(null)}
+                  targetDirectory={filePanelTargetDir}
+                  onTargetDirHandled={() => setFilePanelTargetDir(null)}
+                  files={workspaceFiles}
+                  filesLoading={filesLoading}
+                  filesError={filesError}
+                  onRefreshFiles={refreshFiles}
+                  onAddContext={handleAddContext}
+                  showSystemFiles={showSystemFiles}
+                  onToggleSystemFiles={() => {
+                    setShowSystemFiles((v) => {
+                      localStorage.setItem('filePanel.showSystemFiles', String(!v));
+                      return !v;
+                    });
+                  }}
+                />
+              ) : rightPanelType === 'detail' && (detailToolCall || detailPlanData) ? (
+                <DetailPanel
+                  toolCallProcess={detailToolCall}
+                  planData={detailPlanData}
+                  onClose={() => {
+                    setRightPanelType(null);
+                    setDetailToolCall(null);
+                    setDetailPlanData(null);
+                  }}
+                  onOpenFile={handleOpenFileFromChat}
+                  onOpenSubagentTask={handleOpenSubagentTask}
+                />
+              ) : null}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-    </div>
+    </motion.div>
     </WorkspaceProvider>
   );
 }

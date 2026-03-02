@@ -12,7 +12,6 @@ import MorphingPageDots from '../../../components/ui/morphing-page-dots';
 import { getWorkspaces, createWorkspace, deleteWorkspace, getFlashWorkspace, updateWorkspace, reorderWorkspaces } from '../utils/api';
 import { removeStoredThreadId } from '../hooks/useChatMessages';
 import { clearChatSession } from '../hooks/utils/chatSessionRestore';
-import '../../Dashboard/Dashboard.css';
 
 const PAGE_SIZE = 8;
 
@@ -177,12 +176,15 @@ function SortableReorderRow({ workspace }) {
 /**
  * Workspace card for the normal gallery grid (no DnD)
  */
-function WorkspaceCard({ workspace, onSelect, onTogglePin, onDelete, prefetchThreads }) {
+function WorkspaceCard({ workspace, onSelect, onTogglePin, onDelete, prefetchThreads, index }) {
   const { t, i18n } = useTranslation();
   const isFlash = workspace.status === 'flash';
 
   return (
-    <div className="h-40">
+    <div
+      className="h-40 enter-fade-up"
+      style={{ animationDelay: `${(index || 0) * 50}ms` }}
+    >
       <div
         className="relative group h-full"
         onMouseEnter={() => prefetchThreads?.(workspace.workspace_id)}
@@ -759,10 +761,11 @@ function WorkspaceGallery({ onWorkspaceSelect, cache, prefetchThreads }) {
           transition={slideTransition}
           className="grid gap-3 md:grid-cols-2 md:gap-6 grid-cols-1 mb-3 md:mb-6"
         >
-          {visibleWorkspaces.map((workspace) => (
+          {visibleWorkspaces.map((workspace, index) => (
             <WorkspaceCard
               key={workspace.workspace_id}
               workspace={workspace}
+              index={index}
               onSelect={onWorkspaceSelect}
               onTogglePin={handleTogglePin}
               onDelete={handleDeleteClick}
@@ -787,9 +790,9 @@ function WorkspaceGallery({ onWorkspaceSelect, cache, prefetchThreads }) {
       }}
     >
       {/* Header */}
-      <header className="flex w-full h-16 md:h-24 md:items-end mx-auto max-w-4xl flex-shrink-0 px-4 md:px-8">
+      <header className="flex w-full h-16 md:h-24 md:items-end mx-auto max-w-4xl flex-shrink-0 px-4 md:px-8 enter-fade-up">
         <div className="flex w-full items-center justify-between gap-4">
-          <h1 className="text-2xl font-semibold hidden md:block dashboard-title-font" style={{ color: 'var(--color-text-primary)' }}>
+          <h1 className="text-2xl font-semibold hidden md:block title-font" style={{ color: 'var(--color-text-primary)' }}>
             {t('workspace.workspaces')}
           </h1>
           <div></div>
@@ -811,12 +814,12 @@ function WorkspaceGallery({ onWorkspaceSelect, cache, prefetchThreads }) {
 
       {/* Main Content */}
       <main className="mx-auto mt-4 w-full flex-1 min-h-0 px-4 md:px-8 lg:mt-6 max-w-4xl flex flex-col pb-0">
-        <h1 className="text-xl font-semibold mb-4 md:hidden dashboard-title-font" style={{ color: 'var(--color-text-primary)' }}>
+        <h1 className="text-xl font-semibold mb-4 md:hidden title-font" style={{ color: 'var(--color-text-primary)' }}>
           {t('workspace.workspaces')}
         </h1>
 
         {hasWorkspaces && !isReorderMode && (
-        <div className="flex-shrink-0 flex flex-col gap-4 pb-4 md:pb-6 px-1">
+        <div className="flex-shrink-0 flex flex-col gap-4 pb-4 md:pb-6 px-1 enter-fade-up enter-fade-up-d1">
           {/* Search Bar */}
           <div className="w-full">
             <div

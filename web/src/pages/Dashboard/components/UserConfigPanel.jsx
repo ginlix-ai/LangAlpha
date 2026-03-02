@@ -1093,7 +1093,7 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
           style={{ backgroundColor: 'var(--color-bg-elevated)', borderColor: 'var(--color-border-elevated)' }}
         >
           <DialogHeader>
-            <DialogTitle className="dashboard-title-font flex items-center gap-2" style={{ color: 'var(--color-text-primary)' }}>
+            <DialogTitle className="title-font flex items-center gap-2" style={{ color: 'var(--color-text-primary)' }}>
               <Link2 className="h-5 w-5" style={{ color: 'var(--color-accent-primary)' }} />
               {t('settings.codexConnectTitle')}
             </DialogTitle>

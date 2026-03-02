@@ -8,6 +8,13 @@
   min-height: 0;
   min-width: 0;
   height: 100%;
+  /* Mask chart until layout stabilizes after page transition (autoSize ResizeObserver) */
+  animation: chart-reveal 0s 0.18s both;
+}
+
+@keyframes chart-reveal {
+  from { visibility: hidden; }
+  to   { visibility: visible; }
 }
 
 /* Capture wheel over chart so K-line pan/zoom doesn't scroll the page */
@@ -233,10 +240,32 @@
   z-index: 10;
 }
 
-.chart-loading-hint {
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  margin-top: 10px;
+.chart-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.chart-loading-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-border-muted) 0%,
+    var(--color-text-primary) 40%,
+    var(--color-border-muted) 80%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: chart-text-shimmer 2s ease-in-out infinite;
+  font-weight: 500;
+}
+
+@keyframes chart-text-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
 }
 
 .chart-error {

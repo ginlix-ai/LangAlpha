@@ -24,7 +24,7 @@ function WatchlistCard({
     <Card className="panel flex flex-col flex-1 min-h-0">
       <CardHeader className="px-3 py-4 flex-shrink-0">
         <div className="flex items-center justify-between w-full">
-          <CardTitle className="dashboard-title-font text-base font-semibold" style={{ color: 'var(--color-text-primary)', letterSpacing: '0.15px' }}>
+          <CardTitle className="title-font text-base font-semibold" style={{ color: 'var(--color-text-primary)', letterSpacing: '0.15px' }}>
             Watchlist
           </CardTitle>
           <button type="button" onClick={onHeaderAddClick} className="p-1.5 rounded-md transition-colors hover:bg-[var(--color-bg-hover)]" style={{ color: 'var(--color-text-primary)' }}>

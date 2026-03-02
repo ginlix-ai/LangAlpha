@@ -21,10 +21,7 @@ function EarningsItem({ item, index, isPast }) {
   const dateStr = formatDate(item.date);
 
   return (
-    <motion.div
-      initial={{ opacity: 0, x: -10 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ delay: index * 0.05 }}
+    <div
       className="group flex items-center justify-between p-3 rounded-xl border border-transparent transition-all cursor-pointer"
       style={{ backgroundColor: 'transparent', opacity: isPast ? 0.6 : 1 }}
       onMouseEnter={(e) => {
@@ -61,7 +58,7 @@ function EarningsItem({ item, index, isPast }) {
           {dateStr}
         </div>
       </div>
-    </motion.div>
+    </div>
   );
 }
 
@@ -233,11 +230,8 @@ function EarningsModal({ earnings, onClose }) {
                 className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3"
               >
                 {activeItems.map((item, i) => (
-                  <motion.div
+                  <div
                     key={item.symbol + item.date + i}
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: i * 0.03 }}
                     className="flex items-center gap-3 p-3 rounded-xl border transition-all"
                     style={{
                       backgroundColor: 'var(--color-bg-card)',
@@ -268,7 +262,7 @@ function EarningsModal({ earnings, onClose }) {
                         {item.companyName || item.symbol}
                       </div>
                     </div>
-                  </motion.div>
+                  </div>
                 ))}
               </motion.div>
             )}

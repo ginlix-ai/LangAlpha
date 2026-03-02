@@ -18,7 +18,6 @@ import {
   handleHistoryTodoUpdate,
 } from '../ChatAgent/hooks/utils/historyEventHandlers';
 import { getSharedThread, replaySharedThread, getSharedFiles, readSharedFile, downloadSharedFileAs } from './api';
-import '../../pages/Dashboard/Dashboard.css';
 
 function updateMessage(messages, messageId, updater) {
   return messages.map((m) => (m.id === messageId ? updater(m) : m));
@@ -411,7 +410,7 @@ export default function SharedChatView() {
             >
               <ArrowLeft className="h-5 w-5" />
             </Link>
-            <h1 className="text-base font-semibold whitespace-nowrap dashboard-title-font truncate" style={{ color: 'var(--color-text-primary)' }}>
+            <h1 className="text-base font-semibold whitespace-nowrap title-font truncate" style={{ color: 'var(--color-text-primary)' }}>
               {metadata.workspace_name || metadata.title || 'Shared Conversation'}
             </h1>
             {loading && (

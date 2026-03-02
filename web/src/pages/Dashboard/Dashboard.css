@@ -1,11 +1,7 @@
 /* ============================================
    Dashboard Page Styles
-   All classes use dashboard- prefix to avoid conflicts
+   Title font + entrance animations are in styles/animations.css
    ============================================ */
-
-.dashboard-title-font {
-  font-family: 'Playfair Display', serif;
-}
 
 .dashboard-container {
   width: 100%;
@@ -52,19 +48,6 @@
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum";
 }
-
-/* === Entrance animation === */
-@keyframes dashboard-fade-up {
-  from { opacity: 0; transform: translateY(16px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-.dashboard-enter { animation: dashboard-fade-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; }
-.dashboard-enter-d1 { animation-delay: 0ms; }
-.dashboard-enter-d2 { animation-delay: 80ms; }
-.dashboard-enter-d3 { animation-delay: 160ms; }
-.dashboard-enter-d4 { animation-delay: 240ms; }
-.dashboard-enter-d5 { animation-delay: 80ms; }
-.dashboard-enter-d6 { animation-delay: 160ms; }
 
 /* === Feed list row === */
 .dashboard-feed-row {

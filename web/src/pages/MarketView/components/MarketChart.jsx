@@ -1391,10 +1391,7 @@ const MarketChart = React.memo(forwardRef(({
           </div>
           {loading && (
             <div className="chart-loading">
-              <div>Loading...</div>
-              <div className="chart-loading-hint">
-                If there is no response for a long time, it may be due to API rate limiting. Please wait 1 second and refresh.
-              </div>
+              <div className="chart-loading-shimmer">Fetching real-time market data…</div>
             </div>
           )}
           {error && (

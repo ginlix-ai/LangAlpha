@@ -44,8 +44,8 @@ function WatchlistItem({ item, index, onDelete }) {
   return (
     <>
       <motion.div
-        initial={{ opacity: 0, x: -10 }}
-        animate={{ opacity: 1, x: 0 }}
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
         transition={{ delay: index * 0.05 }}
         className="flex items-center justify-between p-3 rounded-xl border border-transparent transition-all cursor-default"
         style={{ backgroundColor: 'transparent' }}
@@ -114,8 +114,8 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden }) {
   return (
     <>
       <motion.div
-        initial={{ opacity: 0, x: -10 }}
-        animate={{ opacity: 1, x: 0 }}
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
         transition={{ delay: index * 0.05 }}
         className="flex items-center justify-between p-3 rounded-xl border border-transparent transition-all cursor-default"
         style={{ backgroundColor: 'transparent' }}

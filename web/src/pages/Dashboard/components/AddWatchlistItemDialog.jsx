@@ -156,7 +156,7 @@ function AddWatchlistItemDialog({
         {page === 1 ? (
           <>
             <DialogHeader>
-              <DialogTitle className="dashboard-title-font" style={{ color: 'var(--color-text-primary)' }}>
+              <DialogTitle className="title-font" style={{ color: 'var(--color-text-primary)' }}>
                 Add Watchlist Item
               </DialogTitle>
             </DialogHeader>
@@ -216,7 +216,7 @@ function AddWatchlistItemDialog({
                 >
                   <ArrowLeft className="h-4 w-4" />
                 </button>
-                <DialogTitle className="dashboard-title-font" style={{ color: 'var(--color-text-primary)' }}>
+                <DialogTitle className="title-font" style={{ color: 'var(--color-text-primary)' }}>
                   Add Watchlist Item
                 </DialogTitle>
               </div>

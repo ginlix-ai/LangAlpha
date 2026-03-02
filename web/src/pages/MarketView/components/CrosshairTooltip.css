@@ -13,6 +13,11 @@
   backdrop-filter: blur(8px);
 }
 
+[data-theme="light"] .crosshair-tooltip {
+  background: rgba(255, 255, 255, 0.85);
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
 .crosshair-tooltip-date {
   font-size: 10px;
   color: var(--color-text-secondary);
