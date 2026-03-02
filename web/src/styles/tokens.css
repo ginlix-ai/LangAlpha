@@ -160,7 +160,7 @@
   --color-accent-soft: rgba(85, 72, 217, 0.10);
   --color-accent-disabled: rgba(85, 72, 217, 0.35);
   --color-accent-overlay: rgba(85, 72, 217, 0.25);
-  --color-accent-gradient: linear-gradient(135deg, #FDF8F0 0%, #F5EDE3 100%);
+  --color-accent-gradient: linear-gradient(135deg, #F0EDFF 0%, #E8E4FC 50%, #F5EDE3 100%);
 
   --color-slash-icon: rgb(109, 40, 217);
   --color-slash-pill-bg: rgba(109, 40, 217, 0.08);
@@ -275,6 +275,7 @@
     border: 1px solid hsl(var(--border-light));
     backdrop-filter: blur(10px);
     border-radius: 8px;
+    box-shadow: var(--shadow-card);
   }
 
   .fin-card {

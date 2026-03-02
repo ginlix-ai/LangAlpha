@@ -400,7 +400,38 @@ export async function disconnectCodexOAuth() {
   return data;
 }
 
-// --- InfoFlow (content feed) ---
+// --- News feed ---
+
+/**
+ * Fetch news articles from the native news endpoint.
+ * GET /api/v1/news?tickers=...&limit=...&cursor=...
+ * @param {{ tickers?: string[], limit?: number, cursor?: string }} opts
+ * @returns {Promise<{ results: Array, count: number, next_cursor: string|null }>}
+ */
+export async function getNews({ tickers, limit = 20, cursor } = {}) {
+  try {
+    const params = {};
+    if (tickers && tickers.length) params.tickers = tickers.join(',');
+    if (limit) params.limit = limit;
+    if (cursor) params.cursor = cursor;
+    const { data } = await api.get('/api/v1/news', { params });
+    return data || { results: [], count: 0, next_cursor: null };
+  } catch (e) {
+    console.error('[API] getNews failed:', e?.message);
+    return { results: [], count: 0, next_cursor: null };
+  }
+}
+
+/**
+ * Fetch a single news article by ID (full detail).
+ * GET /api/v1/news/:articleId
+ */
+export async function getNewsArticle(articleId) {
+  const { data } = await api.get(`/api/v1/news/${encodeURIComponent(articleId)}`);
+  return data;
+}
+
+// --- InfoFlow (content feed — kept for PopularCard) ---
 
 /**
  * Fetch InfoFlow results filtered by category.

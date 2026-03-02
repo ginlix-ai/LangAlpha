@@ -52,3 +52,115 @@
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
+
+/* === Monospace utility for financial data === */
+.dashboard-mono {
+  font-family: 'JetBrains Mono', 'Menlo', monospace;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* === Entrance animation === */
+@keyframes dashboard-fade-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.dashboard-enter { animation: dashboard-fade-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.dashboard-enter-d1 { animation-delay: 0ms; }
+.dashboard-enter-d2 { animation-delay: 80ms; }
+.dashboard-enter-d3 { animation-delay: 160ms; }
+.dashboard-enter-d4 { animation-delay: 240ms; }
+.dashboard-enter-d5 { animation-delay: 80ms; }
+.dashboard-enter-d6 { animation-delay: 160ms; }
+
+/* === Feed list row === */
+.dashboard-feed-row {
+  border-radius: 8px;
+  transition: background-color 0.15s ease;
+  margin: 0 -8px;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.dashboard-feed-row:hover {
+  background-color: var(--color-bg-hover);
+}
+
+/* === Table row hover === */
+.dashboard-table-row {
+  transition: background-color 0.15s ease;
+}
+.dashboard-table-row:hover {
+  background-color: var(--color-bg-hover);
+}
+
+/* === Popular item lift === */
+.dashboard-popular-item {
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease;
+}
+.dashboard-popular-item:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+/* === Source badge (publisher initial in colored square) === */
+.dashboard-source-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+
+/* === Index pill colored top accent === */
+.dashboard-index-pill {
+  position: relative;
+  overflow: hidden;
+}
+.dashboard-index-pill::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+}
+.dashboard-index-pill--up::before {
+  background: var(--color-profit);
+}
+.dashboard-index-pill--down::before {
+  background: var(--color-loss);
+}
+
+/* === Hot item left accent === */
+.dashboard-hot-accent {
+  position: relative;
+}
+.dashboard-hot-accent::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--color-accent-primary);
+}
+
+/* === Change cell colored bg === */
+.dashboard-change-up {
+  background: var(--color-profit-soft);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+.dashboard-change-down {
+  background: var(--color-loss-soft);
+  border-radius: 4px;
+  padding: 2px 6px;
+}

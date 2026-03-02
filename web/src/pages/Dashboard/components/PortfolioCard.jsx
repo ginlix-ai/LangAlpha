@@ -36,12 +36,14 @@ function PortfolioCard({
   return (
     <Card className="panel flex flex-col flex-1 min-h-0">
         <CardHeader className="px-3 py-4 flex-shrink-0">
-          <button type="button" onClick={onHeaderAddClick} className="flex items-center justify-between w-full text-left">
+          <div className="flex items-center justify-between w-full">
             <CardTitle className="dashboard-title-font text-base font-semibold" style={{ color: 'var(--color-text-primary)', letterSpacing: '0.15px' }}>
-            Add Portfolio Holding
+              Portfolio
             </CardTitle>
-            <Plus className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-primary)' }} />
-          </button>
+            <button type="button" onClick={onHeaderAddClick} className="p-1.5 rounded-md transition-colors hover:bg-[var(--color-bg-hover)]" style={{ color: 'var(--color-text-primary)' }}>
+              <Plus className="h-4 w-4" />
+            </button>
+          </div>
         </CardHeader>
 
       <Dialog open={!!editRow} onOpenChange={(open) => !open && onEditClose?.()}>
@@ -120,16 +122,20 @@ function PortfolioCard({
                     </tr>
                   ))
                 : rows.map((row) => (
-                    <tr key={row.user_portfolio_id ?? row.symbol} className="transition-colors" style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
+                    <tr key={row.user_portfolio_id ?? row.symbol} className="dashboard-table-row" style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
                       <td className="py-2.5 px-2 font-normal" style={{ color: 'var(--color-text-primary)' }}>{row.symbol}</td>
-                      <td className="py-2.5 px-2 font-normal tabular-nums" style={{ color: 'var(--color-text-primary)' }}>
+                      <td className="py-2.5 px-2 font-normal dashboard-mono" style={{ color: 'var(--color-text-primary)' }}>
                         {row.quantity != null ? Number(row.quantity).toLocaleString(undefined, { maximumFractionDigits: 4 }) : '—'}
                       </td>
-                      <td className="py-2.5 px-2 font-normal tabular-nums" style={{ color: 'var(--color-text-primary)' }}>
+                      <td className="py-2.5 px-2 font-normal dashboard-mono" style={{ color: 'var(--color-text-primary)' }}>
                         {Number(row.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
-                      <td className="py-2.5 px-2 font-normal tabular-nums" style={{ color: row.unrealizedPlPercent != null ? (row.isPositive ? 'var(--color-profit)' : 'var(--color-loss)') : 'var(--color-text-primary)' }}>
-                        {row.unrealizedPlPercent != null ? (row.isPositive ? '+' : '') + Number(row.unrealizedPlPercent).toFixed(2) + '%' : '—'}
+                      <td className="py-2.5 px-2 font-normal dashboard-mono">
+                        {row.unrealizedPlPercent != null ? (
+                          <span className={row.isPositive ? 'dashboard-change-up' : 'dashboard-change-down'} style={{ color: row.isPositive ? 'var(--color-profit)' : 'var(--color-loss)' }}>
+                            {(row.isPositive ? '+' : '') + Number(row.unrealizedPlPercent).toFixed(2) + '%'}
+                          </span>
+                        ) : '—'}
                       </td>
                       {hasRealHoldings && row.user_portfolio_id ? (
                         <td className="py-2.5 px-2 relative">

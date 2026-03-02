@@ -30,11 +30,9 @@ function PopularCard({ items = [], loading = false, hasMore = false, onLoadMore 
   const handleScroll = useCallback((e) => {
     if (!hasMore || !onLoadMore || loadingMore.current) return;
     const el = e.target;
-    // Trigger when scrolled within 100px of the right edge
     if (el.scrollLeft + el.clientWidth >= el.scrollWidth - 100) {
       loadingMore.current = true;
       onLoadMore();
-      // Reset after a short delay to allow new items to render
       setTimeout(() => { loadingMore.current = false; }, 1000);
     }
   }, [hasMore, onLoadMore]);
@@ -42,7 +40,7 @@ function PopularCard({ items = [], loading = false, hasMore = false, onLoadMore 
   return (
     <Card
       className="flex-shrink-0"
-      style={{ background: 'var(--color-accent-gradient)', border: 'none', boxShadow: 'none', borderRadius: '4px' }}
+      style={{ background: 'var(--color-accent-gradient)', border: '1px solid var(--color-bg-card-border)', boxShadow: 'var(--shadow-card)', borderRadius: '4px' }}
     >
       <CardHeader className="px-5 py-4" style={{ paddingLeft: '20px', paddingRight: '24px', paddingTop: '16px', paddingBottom: '16px' }}>
         <div className="flex items-center justify-between">
@@ -62,7 +60,7 @@ function PopularCard({ items = [], loading = false, hasMore = false, onLoadMore 
                 <Card
                   key={idx}
                   className="flex-shrink-0"
-                  style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-default)', borderRadius: '8px', width: '220px' }}
+                  style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-default)', borderRadius: '6px', width: '220px' }}
                 >
                   <CardContent className="p-3">
                     <div className="flex flex-col gap-2 animate-pulse">
@@ -76,10 +74,10 @@ function PopularCard({ items = [], loading = false, hasMore = false, onLoadMore 
             : items.map((item, idx) => (
                 <Card
                   key={item.indexNumber || idx}
-                  className="flex-shrink-0 cursor-pointer transition-all hover:opacity-90 overflow-hidden"
+                  className="flex-shrink-0 cursor-pointer dashboard-popular-item overflow-hidden"
                   style={{
                     border: '1px solid var(--color-border-default)',
-                    borderRadius: '8px',
+                    borderRadius: '6px',
                     boxSizing: 'border-box',
                     width: '220px',
                   }}
@@ -113,7 +111,6 @@ function PopularCard({ items = [], loading = false, hasMore = false, onLoadMore 
                           {item.description}
                         </p>
                         <div className="flex items-center gap-2 flex-wrap" style={{ paddingTop: '4px' }}>
-                          {/* Time */}
                           {item.event_timestamp && (
                             <div className="flex items-center gap-1 px-2 py-0.5 rounded-md flex-shrink-0" style={{ backgroundColor: 'var(--color-bg-input, rgba(255,255,255,0.06))' }}>
                               <Clock className="w-3 h-3" style={{ color: 'var(--color-text-secondary)' }} />
@@ -126,7 +123,6 @@ function PopularCard({ items = [], loading = false, hasMore = false, onLoadMore 
                               <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{item.duration}</span>
                             </div>
                           )}
-                          {/* Tags */}
                           {item.tags && item.tags.length > 0 && item.tags.slice(0, 2).map((tag, i) => (
                             <div key={i} className="flex items-center gap-1 px-2 py-0.5 rounded-md flex-shrink-0" style={{ backgroundColor: 'var(--color-bg-input, rgba(255,255,255,0.06))' }}>
                               <Tag className="w-3 h-3" style={{ color: 'var(--color-text-secondary)' }} />

@@ -23,12 +23,14 @@ function WatchlistCard({
   return (
     <Card className="panel flex flex-col flex-1 min-h-0">
       <CardHeader className="px-3 py-4 flex-shrink-0">
-        <button type="button" onClick={onHeaderAddClick} className="flex items-center justify-between w-full text-left">
+        <div className="flex items-center justify-between w-full">
           <CardTitle className="dashboard-title-font text-base font-semibold" style={{ color: 'var(--color-text-primary)', letterSpacing: '0.15px' }}>
-            Add Watchlist Item
+            Watchlist
           </CardTitle>
-          <Plus className="h-4 w-4 shrink-0" style={{ color: 'var(--color-text-primary)' }} />
-        </button>
+          <button type="button" onClick={onHeaderAddClick} className="p-1.5 rounded-md transition-colors hover:bg-[var(--color-bg-hover)]" style={{ color: 'var(--color-text-primary)' }}>
+            <Plus className="h-4 w-4" />
+          </button>
+        </div>
       </CardHeader>
       <CardContent className="px-2 pb-6 pt-0 flex-1 min-h-0">
         <ScrollArea className="h-full">
@@ -52,16 +54,18 @@ function WatchlistCard({
                     </tr>
                   ))
                 : rows.map((item) => (
-                    <tr key={item.watchlist_item_id ?? item.symbol} className="transition-colors" style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
+                    <tr key={item.watchlist_item_id ?? item.symbol} className="dashboard-table-row" style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
                       <td className="py-2.5 px-2 font-normal" style={{ color: 'var(--color-text-primary)' }}>{item.symbol}</td>
-                      <td className="py-2.5 px-2 font-normal tabular-nums" style={{ color: 'var(--color-text-primary)' }}>
+                      <td className="py-2.5 px-2 font-normal dashboard-mono" style={{ color: 'var(--color-text-primary)' }}>
                         {Number(item.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
-                      <td className="py-2.5 px-2 font-normal tabular-nums" style={{ color: item.isPositive ? 'var(--color-profit)' : 'var(--color-loss)' }}>
+                      <td className="py-2.5 px-2 font-normal dashboard-mono" style={{ color: item.isPositive ? 'var(--color-profit)' : 'var(--color-loss)' }}>
                         {(item.isPositive ? '+' : '') + Number(item.change).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
-                      <td className="py-2.5 px-2 font-normal tabular-nums" style={{ color: item.isPositive ? 'var(--color-profit)' : 'var(--color-loss)' }}>
-                        {(item.isPositive ? '+' : '') + Number(item.changePercent).toFixed(2) + '%'}
+                      <td className="py-2.5 px-2 font-normal dashboard-mono">
+                        <span className={item.isPositive ? 'dashboard-change-up' : 'dashboard-change-down'} style={{ color: item.isPositive ? 'var(--color-profit)' : 'var(--color-loss)' }}>
+                          {(item.isPositive ? '+' : '') + Number(item.changePercent).toFixed(2) + '%'}
+                        </span>
                       </td>
                       <td className="py-2.5 px-2 relative">
                         {item.watchlist_item_id ? (

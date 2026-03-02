@@ -5,6 +5,7 @@ import {
   getIndices,
   normalizeIndexSymbol,
   getInfoFlowResults,
+  getNews,
 } from './utils/api';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -124,13 +125,15 @@ function Dashboard() {
   const fetchNews = useCallback(async () => {
     setNewsLoading(true);
     try {
-      const data = await getInfoFlowResults('market', 50, 0);
+      const data = await getNews({ limit: 50 });
       if (data.results && data.results.length > 0) {
         const mapped = data.results.map((r) => ({
-          indexNumber: r.indexNumber,
+          id: r.id,
           title: r.title,
-          time: formatRelativeTime(r.event_timestamp),
-          isHot: !!(r.tags && r.tags.length > 0),
+          time: formatRelativeTime(r.published_at),
+          isHot: r.has_sentiment,
+          source: r.source?.name || '',
+          favicon: r.source?.favicon_url || null,
         }));
         setNewsItems(mapped);
         newsCache = { items: mapped };
@@ -141,29 +144,6 @@ function Dashboard() {
       setNewsItems(NEWS_ITEMS);
     } finally {
       setNewsLoading(false);
-    }
-  }, []);
-
-  const fetchResearch = useCallback(async () => {
-    setResearchLoading(true);
-    try {
-      const data = await getInfoFlowResults('industry', 50, 0);
-      if (data.results && data.results.length > 0) {
-        const mapped = data.results.map((r) => ({
-          indexNumber: r.indexNumber,
-          title: r.title,
-          time: formatRelativeTime(r.event_timestamp),
-          image: r.images?.[0]?.url || r.images?.[0] || null,
-        }));
-        setResearchItems(mapped);
-        researchCache = { items: mapped };
-      } else {
-        setResearchItems(RESEARCH_ITEMS);
-      }
-    } catch {
-      setResearchItems(RESEARCH_ITEMS);
-    } finally {
-      setResearchLoading(false);
     }
   }, []);
 
@@ -208,8 +188,7 @@ function Dashboard() {
   useEffect(() => {
     if (!popularCache) fetchPopular(0, false);
     if (!newsCache) fetchNews();
-    if (!researchCache) fetchResearch();
-  }, [fetchPopular, fetchNews, fetchResearch]);
+  }, [fetchPopular, fetchNews]);
 
   const fetchIndices = useCallback(async () => {
     if (!indicesCache) setIndicesLoading(true);
@@ -315,6 +294,54 @@ function Dashboard() {
   const watchlist = useWatchlistData();
   const portfolio = usePortfolioData();
 
+  const fetchWatchlistNews = useCallback(async () => {
+    setResearchLoading(true);
+    try {
+      // Collect tickers from watchlist + portfolio
+      const tickers = new Set();
+      if (watchlist.rows) watchlist.rows.forEach((r) => r.symbol && tickers.add(r.symbol));
+      if (portfolio.rows) portfolio.rows.forEach((r) => r.symbol && tickers.add(r.symbol));
+
+      const tickerList = [...tickers];
+      const tickerKey = [...tickers].sort().join(',');
+      const data = tickerList.length
+        ? await getNews({ tickers: tickerList, limit: 50 })
+        : await getNews({ limit: 50 });
+
+      if (data.results && data.results.length > 0) {
+        const mapped = data.results.map((r) => ({
+          id: r.id,
+          title: r.title,
+          time: formatRelativeTime(r.published_at),
+          image: r.image_url || null,
+          source: r.source?.name || '',
+          favicon: r.source?.favicon_url || null,
+        }));
+        setResearchItems(mapped);
+        researchCache = { items: mapped, tickerKey };
+      } else {
+        setResearchItems(RESEARCH_ITEMS);
+      }
+    } catch {
+      setResearchItems(RESEARCH_ITEMS);
+    } finally {
+      setResearchLoading(false);
+    }
+  }, [watchlist.rows, portfolio.rows]);
+
+  useEffect(() => {
+    // Build current ticker fingerprint to detect watchlist/portfolio changes
+    const tickers = new Set();
+    if (watchlist.rows) watchlist.rows.forEach((r) => r.symbol && tickers.add(r.symbol));
+    if (portfolio.rows) portfolio.rows.forEach((r) => r.symbol && tickers.add(r.symbol));
+    const tickerKey = [...tickers].sort().join(',');
+
+    if (researchCache?.tickerKey !== tickerKey) {
+      researchCache = null;
+    }
+    if (!researchCache) fetchWatchlistNews();
+  }, [fetchWatchlistNews, watchlist.rows, portfolio.rows]);
+
   const [deleteConfirm, setDeleteConfirm] = useState({
     open: false,
     title: '',
@@ -391,47 +418,57 @@ function Dashboard() {
           <div className="w-full lg:h-full min-h-0 max-w-[1400px] px-3 sm:px-6 py-4 flex flex-col">
             <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4 flex-1 min-h-0 lg:h-full">
               <div className="w-full flex flex-col gap-4 lg:h-full min-h-0 overflow-auto lg:overflow-hidden">
-                <IndexMovementCard indices={indices} loading={indicesLoading} />
-                <PopularCard items={popularItems} loading={popularLoading} hasMore={popularHasMore} onLoadMore={loadMorePopular} />
-                <div className="w-full grid grid-cols-1 sm:grid-cols-2 gap-4 flex-1 min-h-0 overflow-hidden">
+                <div className="dashboard-enter dashboard-enter-d1">
+                  <IndexMovementCard indices={indices} loading={indicesLoading} />
+                </div>
+                <div className="dashboard-enter dashboard-enter-d2">
+                  <PopularCard items={popularItems} loading={popularLoading} hasMore={popularHasMore} onLoadMore={loadMorePopular} />
+                </div>
+                <div className="dashboard-enter dashboard-enter-d3 w-full grid grid-cols-1 sm:grid-cols-2 gap-4 flex-1 min-h-0 overflow-hidden">
                   <TopNewsCard items={newsItems} loading={newsLoading} />
                   <TopResearchCard items={researchItems} loading={researchLoading} />
                 </div>
-                <ChatInputCard />
-          </div>
+                <div className="dashboard-enter dashboard-enter-d4">
+                  <ChatInputCard />
+                </div>
+              </div>
 
               <div className="w-full flex flex-col gap-4 h-full min-h-0 overflow-hidden">
-                <WatchlistCard
-                  rows={watchlist.rows}
-                  loading={watchlist.loading}
-                  onHeaderAddClick={() => watchlist.setModalOpen(true)}
-                  onDeleteItem={watchlist.handleDelete}
-                />
+                <div className="dashboard-enter dashboard-enter-d5 flex flex-col flex-1 min-h-0">
+                  <WatchlistCard
+                    rows={watchlist.rows}
+                    loading={watchlist.loading}
+                    onHeaderAddClick={() => watchlist.setModalOpen(true)}
+                    onDeleteItem={watchlist.handleDelete}
+                  />
+                </div>
                 <AddWatchlistItemDialog
                   open={watchlist.modalOpen}
                   onClose={() => watchlist.setModalOpen(false)}
                   onAdd={watchlist.handleAdd}
                   watchlistId={watchlist.currentWatchlistId}
                 />
-                <PortfolioCard
-                  rows={portfolio.rows}
-                  loading={portfolio.loading}
-                  hasRealHoldings={portfolio.hasRealHoldings}
-                  onHeaderAddClick={() => portfolio.setModalOpen(true)}
-                  editRow={portfolio.editRow}
-                  editForm={portfolio.editForm}
-                  onEditFormChange={portfolio.setEditForm}
-                  onEditSubmit={portfolio.handleUpdate}
-                  onEditClose={() => portfolio.openEdit(null)}
-                  onDeleteItem={handleDeletePortfolioItem}
-                  onEditItem={portfolio.openEdit}
-                />
+                <div className="dashboard-enter dashboard-enter-d6 flex flex-col flex-1 min-h-0">
+                  <PortfolioCard
+                    rows={portfolio.rows}
+                    loading={portfolio.loading}
+                    hasRealHoldings={portfolio.hasRealHoldings}
+                    onHeaderAddClick={() => portfolio.setModalOpen(true)}
+                    editRow={portfolio.editRow}
+                    editForm={portfolio.editForm}
+                    onEditFormChange={portfolio.setEditForm}
+                    onEditSubmit={portfolio.handleUpdate}
+                    onEditClose={() => portfolio.openEdit(null)}
+                    onDeleteItem={handleDeletePortfolioItem}
+                    onEditItem={portfolio.openEdit}
+                  />
+                </div>
                 <AddPortfolioHoldingDialog
                   open={portfolio.modalOpen}
                   onClose={() => portfolio.setModalOpen(false)}
                   onAdd={portfolio.handleAdd}
                 />
-                </div>
+              </div>
                 </div>
           </div>
         </div>

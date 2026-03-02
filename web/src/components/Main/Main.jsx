@@ -4,6 +4,7 @@ import Dashboard from '../../pages/Dashboard/Dashboard';
 import ChatAgent from '../../pages/ChatAgent/ChatAgent';
 import MarketView from '../../pages/MarketView/MarketView';
 import DetailPage from '../../pages/Detail/DetailPage';
+import NewsDetailPage from '../../pages/Detail/NewsDetailPage';
 import Automations from '../../pages/Automations/Automations';
 
 function Main() {
@@ -16,6 +17,7 @@ function Main() {
         <Route path="/chat/:workspaceId" element={<ChatAgent />} />
         <Route path="/market" element={<MarketView />} />
         <Route path="/automations" element={<Automations />} />
+        <Route path="/news/:id" element={<NewsDetailPage />} />
         <Route path="/detail/:indexNumber" element={<DetailPage />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
