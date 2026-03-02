@@ -39,8 +39,8 @@ const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta, displayOverr
   const open = realTimePrice?.open ?? stockInfo?.Open ?? null;
   const high = realTimePrice?.high ?? stockInfo?.High ?? null;
   const low = realTimePrice?.low ?? stockInfo?.Low ?? null;
-  const fiftyTwoWeekHigh = chartMeta?.fiftyTwoWeekHigh ?? stockInfo?.['52WeekHigh'] ?? null;
-  const fiftyTwoWeekLow = chartMeta?.fiftyTwoWeekLow ?? stockInfo?.['52WeekLow'] ?? null;
+  const fiftyTwoWeekHigh = quoteData?.yearHigh ?? stockInfo?.['52WeekHigh'] ?? null;
+  const fiftyTwoWeekLow = quoteData?.yearLow ?? stockInfo?.['52WeekLow'] ?? null;
   const averageVolume = quoteData?.avgVolume ?? stockInfo?.AverageVolume ?? null;
   const volume = stockInfo?.Volume ?? null;
   const dayRange = (high != null && low != null) ? (Number(high) - Number(low)) : null;
@@ -71,7 +71,21 @@ const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta, displayOverr
           <div className="stock-title">
             <span className="stock-symbol">{symbol}</span>
             <span className="stock-name">{displayName}</span>
-            <span className="stock-exchange">{displayExchange}</span>
+            {displayExchange && <span className="stock-exchange">{displayExchange}</span>}
+            <span className="stock-data-source stock-data-source--inline">
+              {isLive ? (
+                <>
+                  <span className="data-source-dot data-source-dot--live" />
+                  <span className="data-source-label">Live</span>
+                  {tickTime && <span className="data-source-time">{formatTickTime(tickTime)}</span>}
+                </>
+              ) : (
+                <>
+                  <span className="data-source-dot data-source-dot--delayed" />
+                  <span className="data-source-label">{getDelayedLabel(symbol)}</span>
+                </>
+              )}
+            </span>
           </div>
           <button className="stock-overview-toggle" onClick={onToggleOverview}>
             <Info size={13} />
@@ -82,20 +96,6 @@ const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta, displayOverr
           <div className="stock-price">{price.toFixed(2)}</div>
           <div className={`stock-change ${isPositive ? 'positive' : 'negative'}`}>
             {isPositive ? '+' : ''}{change.toFixed(2)} {isPositive ? '+' : ''}{changePercent}
-          </div>
-          <div className="stock-data-source">
-            {isLive ? (
-              <>
-                <span className="data-source-dot data-source-dot--live" />
-                <span className="data-source-label">Live</span>
-                {tickTime && <span className="data-source-time">{formatTickTime(tickTime)}</span>}
-              </>
-            ) : (
-              <>
-                <span className="data-source-dot data-source-dot--delayed" />
-                <span className="data-source-label">{getDelayedLabel(symbol)}</span>
-              </>
-            )}
           </div>
         </div>
       </div>

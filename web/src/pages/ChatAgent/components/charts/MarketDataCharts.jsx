@@ -288,7 +288,8 @@ export function StockPriceChart({ data }) {
     const chartData = initialOhlcv.map((d) => ({
       time: toChartTime(d.date),
       open: d.open, high: d.high, low: d.low, close: d.close, volume: d.volume || 0,
-    })).sort((a, b) => a.time - b.time);
+    })).sort((a, b) => a.time - b.time)
+      .filter((item, i, arr) => i === 0 || item.time !== arr[i - 1].time);
 
     allDataRef.current = chartData;
     oldestTimeRef.current = chartData[0]?.time;

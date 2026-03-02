@@ -293,9 +293,9 @@ function MarketViewInner() {
       parts.push(`Latest candle — O: ${c.open} H: ${c.high} L: ${c.low} C: ${c.close} Vol: ${c.volume?.toLocaleString()}`);
     }
 
-    if (chartMeta) {
-      if (chartMeta.fiftyTwoWeekHigh != null) parts.push(`52-week high: ${chartMeta.fiftyTwoWeekHigh}`);
-      if (chartMeta.fiftyTwoWeekLow != null) parts.push(`52-week low: ${chartMeta.fiftyTwoWeekLow}`);
+    if (overviewData?.quote) {
+      if (overviewData.quote.yearHigh != null) parts.push(`52-week high: ${overviewData.quote.yearHigh}`);
+      if (overviewData.quote.yearLow != null) parts.push(`52-week low: ${overviewData.quote.yearLow}`);
     }
 
     if (realTimePrice) {
@@ -303,7 +303,7 @@ function MarketViewInner() {
     }
 
     setChartImageDesc(parts.join('\n'));
-  }, [selectedStock, selectedInterval, stockInfo, selectedStockDisplay, chartMeta, realTimePrice]);
+  }, [selectedStock, selectedInterval, stockInfo, selectedStockDisplay, overviewData, realTimePrice]);
 
   const handleSendMessage = useCallback(async (message, planMode, attachments = []) => {
     // Build additional_context from chart image + file attachments

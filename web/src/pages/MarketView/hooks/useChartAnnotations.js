@@ -5,7 +5,7 @@ import { LineStyle } from 'lightweight-charts';
  * Manages horizontal price lines on the candlestick series.
  * Draws 52-week high/low, day high/low, previous close, and analyst price targets.
  */
-export function useChartAnnotations(candlestickSeriesRef, stockMeta, quoteData, priceTargets, annotationsVisible, symbol) {
+export function useChartAnnotations(candlestickSeriesRef, _stockMeta, quoteData, priceTargets, annotationsVisible, symbol) {
   const priceLinesRef = useRef([]);
 
   useEffect(() => {
@@ -36,10 +36,10 @@ export function useChartAnnotations(candlestickSeriesRef, stockMeta, quoteData, 
       lines.push(line);
     };
 
-    // 52-week high/low from stock meta
-    if (stockMeta) {
-      addLine(stockMeta.fiftyTwoWeekHigh, '52W High', 'rgba(16,185,129,0.5)', LineStyle.Dashed);
-      addLine(stockMeta.fiftyTwoWeekLow, '52W Low', 'rgba(239,68,68,0.5)', LineStyle.Dashed);
+    // 52-week high/low from quote data (real values from FMP quote API)
+    if (quoteData) {
+      addLine(quoteData.yearHigh, '52W High', 'rgba(16,185,129,0.5)', LineStyle.Dashed);
+      addLine(quoteData.yearLow, '52W Low', 'rgba(239,68,68,0.5)', LineStyle.Dashed);
     }
 
     // Day range + previous close from quote data
@@ -65,5 +65,5 @@ export function useChartAnnotations(candlestickSeriesRef, stockMeta, quoteData, 
         });
       }
     };
-  }, [candlestickSeriesRef, stockMeta, quoteData, priceTargets, annotationsVisible, symbol]);
+  }, [candlestickSeriesRef, quoteData, priceTargets, annotationsVisible, symbol]);
 }

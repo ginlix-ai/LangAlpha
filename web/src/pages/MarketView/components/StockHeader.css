@@ -61,13 +61,11 @@
   color: var(--color-loss);
 }
 
-/* Data source indicator (Live / Delayed) */
+/* Data source indicator (Live / Delayed) — inline next to ticker */
 .stock-data-source {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: flex-end;
   gap: 5px;
-  margin-top: 4px;
   font-size: 11px;
   color: var(--color-text-secondary);
 }

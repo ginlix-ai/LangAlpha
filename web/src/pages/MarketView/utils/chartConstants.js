@@ -103,10 +103,10 @@ export const MA_CONFIGS = [
 export const DEFAULT_ENABLED_MA = [20, 50];
 export const RSI_PERIODS = [7, 14, 21];
 
-// Approximate trading bars per day per interval (6.5h session)
+// Approximate trading bars per day per interval (extended hours: 4AM-8PM = 16h)
 export const BARS_PER_DAY = {
-  '1s': 23400, '1min': 390, '5min': 78, '15min': 26, '30min': 13,
-  '1hour': 7, '4hour': 2, '1day': 1,
+  '1s': 57600, '1min': 960, '5min': 192, '15min': 64, '30min': 32,
+  '1hour': 16, '4hour': 4, '1day': 1,
 };
 
 // Ideal visible bar count per interval for "auto normalize"

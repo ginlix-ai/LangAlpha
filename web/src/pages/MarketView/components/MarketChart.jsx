@@ -18,7 +18,7 @@ import CrosshairTooltip from './CrosshairTooltip';
 import TradingViewWidget from './TradingViewWidget';
 import { useChartAnnotations } from '../hooks/useChartAnnotations';
 import { useChartOverlays } from '../hooks/useChartOverlays';
-import { SlidersHorizontal, Settings2, Maximize2, ChevronDown, Plus, Minus, RotateCcw } from 'lucide-react';
+import { SlidersHorizontal, Settings2, Maximize2, Minimize2, ChevronDown, Plus, Minus, RotateCcw } from 'lucide-react';
 
 // --- localStorage persistence helpers ---
 const STORAGE_PREFIX = 'market-chart:';
@@ -898,13 +898,19 @@ const MarketChart = React.memo(forwardRef(({
 
         let fromDate, toDate;
         if (loadDays > 0) {
-          const maxMaPeriod = Math.max(...enabledMaPeriodsRef.current, 0);
-          const overheadDays = Math.ceil((maxMaPeriod / (BARS_PER_DAY[interval] || 1)) * 1.5);
           const now = new Date();
           toDate = now.toISOString().split('T')[0];
-          const from = new Date(now);
-          from.setDate(from.getDate() - loadDays - overheadDays);
-          fromDate = from.toISOString().split('T')[0];
+          if (interval === '1s') {
+            // For 1s: load only today — avoids fetching 50k+ bars from
+            // previous sessions. Users can scroll back for more history.
+            fromDate = toDate;
+          } else {
+            const maxMaPeriod = Math.max(...enabledMaPeriodsRef.current, 0);
+            const overheadDays = Math.ceil((maxMaPeriod / (BARS_PER_DAY[interval] || 1)) * 1.5);
+            const from = new Date(now);
+            from.setDate(from.getDate() - loadDays - overheadDays);
+            fromDate = from.toISOString().split('T')[0];
+          }
         }
 
         const result = await fetchStockData(symbol, interval, fromDate, toDate, { signal: abortController.signal });
@@ -933,9 +939,6 @@ const MarketChart = React.memo(forwardRef(({
           setLastUpdateTime(new Date());
           setError(null);
 
-          if (typeof onStockMeta === 'function' && result?.fiftyTwoWeekHigh != null && result?.fiftyTwoWeekLow != null) {
-            onStockMeta({ fiftyTwoWeekHigh: result.fiftyTwoWeekHigh, fiftyTwoWeekLow: result.fiftyTwoWeekLow });
-          }
 
           // Subscribe to visible range changes for scroll-based loading (debounced)
           if (chartRef.current) {
@@ -949,11 +952,16 @@ const MarketChart = React.memo(forwardRef(({
             });
             rangeUnsubRef.current = unsubscribe;
           }
+
+          // For 1s: prefetch previous session so scroll-left is seamless
+          if (interval === '1s') {
+            handleScrollLoadMore();
+          }
         } else {
           clearChartSeries();
           let fallbackMsg;
           if (interval === '1s') {
-            fallbackMsg = '1s interval is not available — this interval requires a data source that supports per-second bars.';
+            fallbackMsg = 'No 1s data yet — waiting for pre-market to open (4:00 AM ET).';
           } else if (interval !== '1day') {
             fallbackMsg = 'Intraday data not available — market may be closed. Try the 1D interval.';
           } else {
@@ -966,7 +974,7 @@ const MarketChart = React.memo(forwardRef(({
         if (abortController.signal.aborted) return;
         console.error('Failed to load stock data:', err);
         clearChartSeries();
-        setError('Failed to load data. Please check FMP API configuration.');
+        setError(err?.message || 'Failed to load data');
       } finally {
         if (!abortController.signal.aborted) {
           setLoading(false);
@@ -995,10 +1003,10 @@ const MarketChart = React.memo(forwardRef(({
         const now = new Date();
         const toDate = now.toISOString().split('T')[0];
 
-        // Delta-based: fetch only from last known bar's date onward
+        // Delta-based: fetch only from last known bar's time onward
         const lastBar = allDataRef.current?.[allDataRef.current.length - 1];
         const fromDate = lastBar
-          ? lastBar.date.split(' ')[0]
+          ? new Date(lastBar.time * 1000).toISOString().split('T')[0]
           : (() => { const d = new Date(now); d.setDate(d.getDate() - 3); return d.toISOString().split('T')[0]; })();
 
         const result = await fetchStockData(symbol, '1s', fromDate, toDate);
@@ -1007,12 +1015,14 @@ const MarketChart = React.memo(forwardRef(({
         const data = result?.data;
         if (Array.isArray(data) && data.length > 0) {
           if (lastBar) {
-            // Merge: append only genuinely new bars
-            const lastDate = allDataRef.current[allDataRef.current.length - 1].date;
-            const newBars = data.filter(b => b.date > lastDate);
-            const merged = [...allDataRef.current, ...newBars];
-            allDataRef.current = merged;
-            updateSeriesData(merged);
+            // Merge: append only genuinely new bars (compare by unix time)
+            const lastTime = allDataRef.current[allDataRef.current.length - 1].time;
+            const newBars = data.filter(b => b.time > lastTime);
+            if (newBars.length > 0) {
+              const merged = [...allDataRef.current, ...newBars];
+              allDataRef.current = merged;
+              updateSeriesData(merged);
+            }
           } else {
             allDataRef.current = data;
             updateSeriesData(data);
@@ -1082,9 +1092,14 @@ const MarketChart = React.memo(forwardRef(({
   }, []);
 
   const handleScrollToRealTime = useCallback(() => {
-    if (chartRef.current) {
-      chartRef.current.timeScale().scrollToRealTime();
-    }
+    if (!chartRef.current) return;
+    const ts = chartRef.current.timeScale();
+    const dataLen = allDataRef.current.length;
+    if (dataLen === 0) { ts.scrollToRealTime(); return; }
+    // Show ideal bar count anchored to the latest bar
+    const idealBars = AUTO_FIT_BARS[intervalRef.current] || 180;
+    const barsToShow = Math.min(idealBars, dataLen);
+    ts.setVisibleLogicalRange({ from: dataLen - barsToShow, to: dataLen });
   }, []);
 
   const handleAutoNormalize = useCallback(() => {
@@ -1093,9 +1108,18 @@ const MarketChart = React.memo(forwardRef(({
     const dataLen = allDataRef.current.length;
     if (dataLen === 0) return;
     const idealBars = AUTO_FIT_BARS[intervalRef.current] || 180;
-    const barsToShow = Math.min(idealBars, dataLen);
-    // Show the last N bars, anchored to the right edge
-    ts.setVisibleLogicalRange({ from: dataLen - barsToShow, to: dataLen });
+    const half = Math.min(idealBars, dataLen) / 2;
+    // Center on the midpoint of the currently visible range
+    const range = ts.getVisibleLogicalRange();
+    const center = range ? (range.from + range.to) / 2 : dataLen - half;
+    // Clamp so we don't scroll past data boundaries
+    const from = Math.max(0, center - half);
+    const to = Math.min(dataLen, from + half * 2);
+    ts.setVisibleLogicalRange({ from, to });
+  }, []);
+
+  const handleFitAll = useCallback(() => {
+    if (chartRef.current) chartRef.current.timeScale().fitContent();
   }, []);
 
   const handleToggleAnnotations = useCallback(() => {
@@ -1259,14 +1283,6 @@ const MarketChart = React.memo(forwardRef(({
                     <div className="dropdown-tool-grid">
                       <button
                         type="button"
-                        className={`chart-tool-btn${priceScaleMode === PriceScaleMode.Logarithmic ? ' chart-tool-btn-active' : ''}`}
-                        onClick={() => handleTogglePriceScale(PriceScaleMode.Logarithmic)}
-                        title="Log Scale"
-                      >
-                        Log
-                      </button>
-                      <button
-                        type="button"
                         className={`chart-tool-btn${priceScaleMode === PriceScaleMode.Percentage ? ' chart-tool-btn-active' : ''}`}
                         onClick={() => handleTogglePriceScale(PriceScaleMode.Percentage)}
                         title="Percentage Scale"
@@ -1297,16 +1313,25 @@ const MarketChart = React.memo(forwardRef(({
                       >
                         T
                       </button>
-                      <button type="button" className="chart-tool-btn" onClick={handleScrollToRealTime} title="Scroll to Latest"><RotateCcw size={14} /></button>
                     </div>
                   </div>
                 )}
               </div>
-              {/* Zoom +/- and Auto Fit — always visible */}
+              {/* Zoom, fit, and navigation — always visible */}
               <div className="chart-tool-buttons">
+                <button
+                  type="button"
+                  className={`chart-tool-btn${priceScaleMode === PriceScaleMode.Logarithmic ? ' chart-tool-btn-active' : ''}`}
+                  onClick={() => handleTogglePriceScale(PriceScaleMode.Logarithmic)}
+                  title="Log Scale"
+                >
+                  Log
+                </button>
                 <button type="button" className="chart-tool-btn" onClick={handleZoomIn} title="Zoom In"><Plus size={14} /></button>
                 <button type="button" className="chart-tool-btn" onClick={handleZoomOut} title="Zoom Out"><Minus size={14} /></button>
                 <button type="button" className="chart-tool-btn" onClick={handleAutoNormalize} title="Auto Fit"><Maximize2 size={14} /></button>
+                <button type="button" className="chart-tool-btn" onClick={handleFitAll} title="Fit All Data"><Minimize2 size={14} /></button>
+                <button type="button" className="chart-tool-btn" onClick={handleScrollToRealTime} title="Scroll to Latest"><RotateCcw size={14} /></button>
               </div>
             </>
           )}

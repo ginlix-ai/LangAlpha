@@ -125,26 +125,15 @@ export async function fetchStockData(symbol, interval = '1hour', fromDate, toDat
       };
     }).filter(item =>
       !isNaN(item.open) && !isNaN(item.high) && !isNaN(item.low) && !isNaN(item.close) && item.time > 0
-    ).sort((a, b) => a.time - b.time);
+    ).sort((a, b) => a.time - b.time)
+    .filter((item, i, arr) => i === 0 || item.time !== arr[i - 1].time);
 
     if (chartData.length === 0) {
       return { data: [], error: 'Data conversion failed' };
     }
 
-    // Derive 52-week high/low from series for header display
-    let fiftyTwoWeekHigh = null;
-    let fiftyTwoWeekLow = null;
-    if (chartData.length > 0) {
-      const highs = chartData.map((d) => d.high);
-      const lows = chartData.map((d) => d.low);
-      fiftyTwoWeekHigh = Math.max(...highs);
-      fiftyTwoWeekLow = Math.min(...lows);
-    }
-
     return {
       data: chartData,
-      fiftyTwoWeekHigh,
-      fiftyTwoWeekLow,
     };
   } catch (error) {
     // Don't treat abort as an error
