@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Bot, User, FileText, ImageIcon } from 'lucide-react';
+import { Bot, User, FileText, ImageIcon, Pencil, RefreshCw, RotateCcw, Copy, Check, Info } from 'lucide-react';
 import logoLight from '../../../assets/img/logo.svg';
 import logoDark from '../../../assets/img/logo-dark.svg';
 import { useTheme } from '../../../contexts/ThemeContext';
@@ -179,7 +179,7 @@ function NotificationDivider({ message, content }) {
  * - Streaming indicators
  * - Error state styling
  */
-function MessageList({ messages, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion }) {
+function MessageList({ messages, isLoading, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onEditMessage, onRegenerate, onRetry }) {
   // Empty state - show when no messages exist (hidden in subagent view)
   if (messages.length === 0) {
     if (isSubagentView) return null;
@@ -203,6 +203,7 @@ function MessageList({ messages, hideAvatar, compactToolCalls, isSubagentView, r
           <MessageBubble
             key={message.id}
             message={message}
+            isLoading={isLoading}
             hideAvatar={isSubagentView || hideAvatar}
             compactToolCalls={compactToolCalls}
             isSubagentView={isSubagentView}
@@ -221,6 +222,9 @@ function MessageList({ messages, hideAvatar, compactToolCalls, isSubagentView, r
             onRejectCreateWorkspace={onRejectCreateWorkspace}
             onApproveStartQuestion={onApproveStartQuestion}
             onRejectStartQuestion={onRejectStartQuestion}
+            onEditMessage={onEditMessage}
+            onRegenerate={onRegenerate}
+            onRetry={onRetry}
           />
         )
       )}
@@ -234,7 +238,7 @@ function MessageList({ messages, hideAvatar, compactToolCalls, isSubagentView, r
  * Renders a single message bubble with appropriate styling
  * based on role (user/assistant) and state (streaming/error)
  */
-function MessageBubble({ message, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion }) {
+function MessageBubble({ message, isLoading, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onEditMessage, onRegenerate, onRetry }) {
   const { user } = useAuth();
   const { theme } = useTheme();
   const logo = theme === 'light' ? logoDark : logoLight;
@@ -242,12 +246,72 @@ function MessageBubble({ message, hideAvatar, compactToolCalls, isSubagentView, 
   const isUser = message.role === 'user';
   const isAssistant = message.role === 'assistant';
   const isPendingDelivery = isUser && (message.isPending || message.queued);
-
   const hasAttachments = isUser && message.attachments && message.attachments.length > 0;
+
+  // Edit mode state
+  const [isEditing, setIsEditing] = useState(false);
+  const [editContent, setEditContent] = useState('');
+  const editTextareaRef = useRef(null);
+
+  // Copy state
+  const [copied, setCopied] = useState(false);
+
+  // Show action buttons only when not streaming, not in subagent view, not read-only, and not loading
+  const showActions = !message.isStreaming && !isSubagentView && !readOnly && !isLoading;
+
+  const resizeTextarea = () => {
+    const el = editTextareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = el.scrollHeight + 'px';
+  };
+
+  const handleStartEdit = () => {
+    setEditContent(message.content || '');
+    setIsEditing(true);
+    setTimeout(() => {
+      editTextareaRef.current?.focus();
+      resizeTextarea();
+    }, 0);
+  };
+
+  const handleCancelEdit = () => {
+    setIsEditing(false);
+    setEditContent('');
+  };
+
+  const handleSubmitEdit = () => {
+    const trimmed = editContent.trim();
+    if (trimmed && trimmed !== (message.content || '').trim()) {
+      onEditMessage?.(message.id, trimmed);
+    }
+    setIsEditing(false);
+    setEditContent('');
+  };
+
+  const handleEditKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmitEdit();
+    } else if (e.key === 'Escape') {
+      handleCancelEdit();
+    }
+  };
+
+  const handleCopy = () => {
+    // Collect all text content from segments
+    const text = message.contentSegments
+      ?.filter((s) => s.type === 'text')
+      .map((s) => s.content)
+      .join('') || message.content || '';
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   return (
     <div
-      className={`flex gap-4 ${isUser ? 'justify-end' : 'justify-start'}`}
+      className={`group flex gap-4 ${isUser ? 'justify-end' : 'justify-start'}`}
     >
       {/* Assistant avatar - shown on the left */}
       {isAssistant && !hideAvatar && (
@@ -258,6 +322,77 @@ function MessageBubble({ message, hideAvatar, compactToolCalls, isSubagentView, 
 
       {/* Message content column — bubble + standalone attachment cards */}
       <div className={`${isUser ? 'max-w-[80%] flex flex-col items-end gap-2' : 'w-full min-w-0'}`}>
+
+        {/* ===== EDIT MODE (user messages) ===== */}
+        {isEditing && isUser ? (
+          <div className="w-full flex flex-col gap-2">
+            {/* Attachment preview cards — above the edit textarea */}
+            {hasAttachments && (
+              <div className="flex gap-3 overflow-x-auto">
+                {message.attachments.map((att, idx) => (
+                  <AttachmentCard key={idx} attachment={att} />
+                ))}
+              </div>
+            )}
+
+            {/* Bordered textarea container */}
+            <div
+              className="rounded-xl px-4 py-3"
+              style={{
+                border: '2px solid var(--color-accent-primary, #6b7280)',
+                backgroundColor: 'transparent',
+                color: 'var(--color-text-primary)',
+              }}
+            >
+              <textarea
+                ref={editTextareaRef}
+                value={editContent}
+                onChange={(e) => {
+                  setEditContent(e.target.value);
+                  resizeTextarea();
+                }}
+                onKeyDown={handleEditKeyDown}
+                className="w-full bg-transparent text-sm resize-none outline-none leading-relaxed overflow-hidden"
+                style={{ color: 'var(--color-text-primary)' }}
+                rows={1}
+              />
+            </div>
+
+            {/* Info text + Cancel/Save row */}
+            <div className="flex items-center gap-3">
+              <div className="flex items-start gap-1.5 flex-1 min-w-0">
+                <Info className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" style={{ color: 'var(--color-text-tertiary)' }} />
+                <span className="text-xs leading-snug" style={{ color: 'var(--color-text-tertiary)' }}>
+                  This will branch from the current thread. Messages after this point will be replaced and cannot be recovered.
+                </span>
+              </div>
+              <div className="flex gap-2 flex-shrink-0">
+                <button
+                  onClick={handleCancelEdit}
+                  className="px-4 py-1.5 rounded-full text-sm font-medium transition-colors"
+                  style={{
+                    color: 'var(--color-text-primary)',
+                    border: '1px solid var(--color-border, #d1d5db)',
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSubmitEdit}
+                  className="px-4 py-1.5 rounded-full text-sm font-medium transition-colors"
+                  style={{
+                    color: 'var(--color-text-on-accent, #fff)',
+                    backgroundColor: 'var(--color-text-secondary)',
+                  }}
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : (
+        <>
+        {/* ===== NORMAL MODE ===== */}
         {/* Message bubble */}
         <div
           className={`rounded-lg ${
@@ -271,7 +406,6 @@ function MessageBubble({ message, hideAvatar, compactToolCalls, isSubagentView, 
             color: 'var(--color-text-primary)',
           }}
         >
-          {/* Pending delivery: user message queued but not yet confirmed by backend */}
           {isPendingDelivery ? (
             <TextShimmer
               as="span"
@@ -343,6 +477,57 @@ function MessageBubble({ message, hideAvatar, compactToolCalls, isSubagentView, 
             {message.attachments.map((att, idx) => (
               <AttachmentCard key={idx} attachment={att} />
             ))}
+          </div>
+        )}
+        </>
+        )}
+
+        {/* Message action buttons — visible on hover */}
+        {showActions && !isEditing && (
+          <div
+            className={`flex gap-1 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity ${
+              isUser ? 'justify-end' : 'justify-start'
+            }`}
+          >
+            {isUser && onEditMessage && (
+              <button
+                onClick={handleStartEdit}
+                className="p-1 rounded transition-colors hover:bg-[var(--color-bg-elevated)]"
+                title="Edit message"
+              >
+                <Pencil className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />
+              </button>
+            )}
+            {isAssistant && !message.error && onRegenerate && (
+              <button
+                onClick={() => onRegenerate(message.id)}
+                className="p-1 rounded transition-colors hover:bg-[var(--color-bg-elevated)]"
+                title="Regenerate response"
+              >
+                <RefreshCw className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />
+              </button>
+            )}
+            {isAssistant && (
+              <button
+                onClick={handleCopy}
+                className="p-1 rounded transition-colors hover:bg-[var(--color-bg-elevated)]"
+                title={copied ? 'Copied!' : 'Copy message'}
+              >
+                {copied
+                  ? <Check className="h-3.5 w-3.5" style={{ color: 'var(--color-gain)' }} />
+                  : <Copy className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />
+                }
+              </button>
+            )}
+            {isAssistant && message.error && onRetry && (
+              <button
+                onClick={onRetry}
+                className="p-1 rounded transition-colors hover:bg-[var(--color-bg-elevated)]"
+                title="Retry"
+              >
+                <RotateCcw className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />
+              </button>
+            )}
           </div>
         )}
       </div>

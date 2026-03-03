@@ -15,7 +15,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { sendChatMessageStream, replayThreadHistory, getWorkflowStatus, reconnectToWorkflowStream, sendHitlResponse, streamSubagentTaskEvents } from '../utils/api';
+import { sendChatMessageStream, replayThreadHistory, getWorkflowStatus, reconnectToWorkflowStream, sendHitlResponse, streamSubagentTaskEvents, fetchThreadTurns } from '../utils/api';
 import { getStoredThreadId, setStoredThreadId } from './utils/threadStorage';
 export { removeStoredThreadId } from './utils/threadStorage';
 import { createUserMessage, createAssistantMessage, createNotificationMessage, insertMessage, appendMessage, updateMessage } from './utils/messageHelpers';
@@ -3130,6 +3130,215 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
     setMessages((prev) => appendMessage(prev, createNotificationMessage(text, variant)));
   }, []);
 
+  // =====================================================================
+  // Edit / Regenerate / Retry handlers
+  // =====================================================================
+
+  /** Lazy-cached turn checkpoint data. Invalidated after each edit/regenerate. */
+  const turnCheckpointsRef = useRef(null);
+
+  /**
+   * Helper: get or fetch turn checkpoints for the current thread.
+   * Caches the result in turnCheckpointsRef until invalidated.
+   */
+  const getTurnCheckpoints = useCallback(async () => {
+    if (turnCheckpointsRef.current) return turnCheckpointsRef.current;
+    if (!threadId || threadId === '__default__') return null;
+    try {
+      const data = await fetchThreadTurns(threadId);
+      turnCheckpointsRef.current = data;
+      return data;
+    } catch (err) {
+      console.error('[useChatMessages] Failed to fetch turn checkpoints:', err);
+      return null;
+    }
+  }, [threadId]);
+
+  /**
+   * Helper: run a checkpoint-based stream (shared by edit, regenerate, retry).
+   * Sets up assistant placeholder, event processor, and handles the stream lifecycle.
+   */
+  const streamFromCheckpoint = useCallback(async (message, checkpointId, truncateIndex, forkFromTurn = null) => {
+    if (isLoading) return;
+
+    setIsLoading(true);
+    setMessageError(null);
+    setHasActiveSubagents(false);
+    completedTaskIdsRef.current.clear();
+    isStreamingRef.current = true;
+
+    // Truncate messages and add new user message (if editing) + assistant placeholder
+    const assistantMessageId = `assistant-${Date.now()}`;
+    contentOrderCounterRef.current = 0;
+    currentReasoningIdRef.current = null;
+    currentToolCallIdRef.current = null;
+
+    const assistantMessage = createAssistantMessage(assistantMessageId);
+    const userMessage = message ? createUserMessage(message) : null;
+
+    if (userMessage) {
+      recentlySentTrackerRef.current.track(message.trim(), userMessage.timestamp, userMessage.id);
+    }
+
+    setMessages((prev) => {
+      const truncated = prev.slice(0, truncateIndex);
+      const newMsgs = userMessage
+        ? [...truncated, userMessage, assistantMessage]
+        : [...truncated, assistantMessage];
+      newMessagesStartIndexRef.current = newMsgs.length;
+      return newMsgs;
+    });
+    currentMessageRef.current = assistantMessageId;
+
+    // Invalidate turn checkpoints cache (branch creates new checkpoints)
+    turnCheckpointsRef.current = null;
+
+    let wasDisconnected = false;
+    const wasInterruptedRef = { current: false };
+    try {
+      const refs = {
+        contentOrderCounterRef,
+        currentReasoningIdRef,
+        currentToolCallIdRef,
+        queuedAtOrderRef,
+        updateTodoListCard,
+        isNewConversation: false,
+        subagentStateRefs: subagentStateRefsRef.current,
+        updateSubagentCard: updateSubagentCard || (() => {}),
+      };
+      const processEvent = createStreamEventProcessor(assistantMessageId, refs, getTaskIdFromEvent, wasInterruptedRef);
+
+      const result = await sendChatMessageStream(
+        message || '',
+        workspaceId,
+        threadId,
+        [],
+        false,
+        processEvent,
+        null,
+        agentMode,
+        undefined, // locale
+        undefined, // timezone
+        checkpointId,
+        forkFromTurn
+      );
+
+      if (result?.disconnected) {
+        wasDisconnected = true;
+        attemptReconnectAfterDisconnect(assistantMessageId);
+        return;
+      }
+
+      const finalId = currentMessageRef.current || assistantMessageId;
+      setMessages((prev) =>
+        updateMessage(prev, finalId, (msg) => ({
+          ...msg,
+          isStreaming: false,
+        }))
+      );
+    } catch (err) {
+      console.error('[streamFromCheckpoint] Error:', err);
+      setMessageError(err.message || 'Failed to process request');
+      setMessages((prev) =>
+        updateMessage(prev, assistantMessageId, (msg) => ({
+          ...msg,
+          content: msg.content || 'Failed to process request. Please try again.',
+          isStreaming: false,
+          error: true,
+        }))
+      );
+    } finally {
+      if (!wasDisconnected && !wasInterruptedRef.current) {
+        const finalId = currentMessageRef.current || assistantMessageId;
+        setMessages((prev) =>
+          updateMessage(prev, finalId, (msg) => ({
+            ...msg,
+            isStreaming: false,
+          }))
+        );
+        cleanupAfterStreamEnd(finalId);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoading, workspaceId, threadId, agentMode]);
+
+  /**
+   * Edit a user message: truncate to before that message, send modified content
+   * from the checkpoint before the original message was added.
+   */
+  const handleEditMessage = useCallback(async (messageId, newContent) => {
+    if (!newContent?.trim()) return;
+
+    const msgIndex = messages.findIndex((m) => m.id === messageId);
+    if (msgIndex === -1) return;
+
+    // Count user messages up to and including this one to get turn_index
+    const userMsgsBefore = messages.slice(0, msgIndex + 1).filter((m) => m.role === 'user');
+    const turnIndex = userMsgsBefore.length - 1;
+
+    const turnsData = await getTurnCheckpoints();
+    if (!turnsData?.turns?.[turnIndex]) {
+      setMessageError('Unable to edit: checkpoint data unavailable');
+      return;
+    }
+
+    const checkpointId = turnsData.turns[turnIndex].edit_checkpoint_id;
+    if (!checkpointId) {
+      setMessageError('Unable to edit: this is the first message');
+      return;
+    }
+
+    await streamFromCheckpoint(newContent, checkpointId, msgIndex, turnIndex);
+  }, [messages, getTurnCheckpoints, streamFromCheckpoint]);
+
+  /**
+   * Regenerate an assistant response: truncate the assistant message,
+   * re-run from the checkpoint that has the user message but before AI response.
+   */
+  const handleRegenerate = useCallback(async (messageId) => {
+    const msgIndex = messages.findIndex((m) => m.id === messageId);
+    if (msgIndex === -1) return;
+
+    // Count user messages before this assistant message to get turn_index
+    const userMsgsBefore = messages.slice(0, msgIndex).filter((m) => m.role === 'user');
+    const turnIndex = userMsgsBefore.length - 1;
+
+    const turnsData = await getTurnCheckpoints();
+    if (!turnsData?.turns?.[turnIndex]) {
+      setMessageError('Unable to regenerate: checkpoint data unavailable');
+      return;
+    }
+
+    const checkpointId = turnsData.turns[turnIndex].regenerate_checkpoint_id;
+    // Truncate at the assistant message (keep everything before it, including user msg)
+    await streamFromCheckpoint(null, checkpointId, msgIndex, turnIndex);
+  }, [messages, getTurnCheckpoints, streamFromCheckpoint]);
+
+  /**
+   * Retry the last failed/errored turn from the latest checkpoint.
+   */
+  const handleRetry = useCallback(async () => {
+    const turnsData = await getTurnCheckpoints();
+    const checkpointId = turnsData?.retry_checkpoint_id;
+    if (!checkpointId) {
+      setMessageError('Unable to retry: no checkpoint available');
+      return;
+    }
+
+    if (!turnsData.turns?.length) {
+      setMessageError('Unable to retry: checkpoint data unavailable');
+      return;
+    }
+
+    // Find the last error message and truncate from there
+    const lastErrorIndex = messages.findLastIndex((m) => m.error);
+    const truncateIndex = lastErrorIndex !== -1 ? lastErrorIndex : messages.length;
+
+    // Retry overwrites the last turn
+    const forkFromTurn = turnsData.turns.length - 1;
+    await streamFromCheckpoint(null, checkpointId, truncateIndex, forkFromTurn);
+  }, [messages, getTurnCheckpoints, streamFromCheckpoint]);
+
   return {
     messages,
     threadId,
@@ -3155,6 +3364,9 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
     tokenUsage,
     isShared,
     insertNotification,
+    handleEditMessage,
+    handleRegenerate,
+    handleRetry,
     // Resolve subagentId (e.g. toolCallId from segment) to stable agent_id for card operations.
     resolveSubagentIdToAgentId: (subagentId) =>
       toolCallIdToTaskIdMapRef.current.get(subagentId) || subagentId,

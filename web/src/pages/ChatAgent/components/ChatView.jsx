@@ -298,6 +298,9 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
     threadId: currentThreadId,
     isShared: threadIsShared,
     insertNotification,
+    handleEditMessage,
+    handleRegenerate,
+    handleRetry,
     getSubagentHistory,
     resolveSubagentIdToAgentId,
   } = useChatMessages(workspaceId, threadId, updateTodoListCard, updateSubagentCard, inactivateAllSubagents, completePendingTodos, handleOnboardingRelatedToolComplete, refreshFiles, agentMode, clearSubagentCards, handleWorkspaceCreated);
@@ -1099,6 +1102,7 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
                     <div className="w-full max-w-3xl">
                       <MessageList
                         messages={messages}
+                        isLoading={isLoading}
                         onOpenFile={handleOpenFileFromChat}
                         onOpenDir={handleOpenDirFromChat}
                         onToolCallDetailClick={handleToolCallDetailClick}
@@ -1112,6 +1116,9 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
                         onRejectCreateWorkspace={handleRejectCreateWorkspace}
                         onApproveStartQuestion={handleApproveStartQuestion}
                         onRejectStartQuestion={handleRejectStartQuestion}
+                        onEditMessage={handleEditMessage}
+                        onRegenerate={handleRegenerate}
+                        onRetry={handleRetry}
                       />
                     </div>
                   </div>

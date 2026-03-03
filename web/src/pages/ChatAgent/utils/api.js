@@ -184,9 +184,14 @@ export async function sendChatMessageStream(
   additionalContext = null,
   agentMode = 'ptc',
   locale = 'en-US',
-  timezone = 'America/New_York'
+  timezone = 'America/New_York',
+  checkpointId = null,
+  forkFromTurn = null
 ) {
-  const messages = [...messageHistory, { role: 'user', content: message }];
+  // For checkpoint replay (regenerate/retry), send empty messages
+  const messages = checkpointId && !message
+    ? []
+    : [...messageHistory, { role: 'user', content: message }];
   const body = {
     workspace_id: workspaceId,
     messages,
@@ -197,6 +202,12 @@ export async function sendChatMessageStream(
   };
   if (additionalContext) {
     body.additional_context = additionalContext;
+  }
+  if (checkpointId) {
+    body.checkpoint_id = checkpointId;
+  }
+  if (forkFromTurn != null) {
+    body.fork_from_turn = forkFromTurn;
   }
   // Use /threads/{id}/messages for existing thread, /threads/messages for new
   const isNewThread = !threadId || threadId === '__default__';
@@ -245,6 +256,18 @@ export async function reconnectToWorkflowStream(threadId, lastEventId = null, on
     { method: 'GET', headers: { ...authHeaders } },
     onEvent
   );
+}
+
+/**
+ * Fetch turn-boundary checkpoint IDs for a thread.
+ * Used lazily (on-demand) when user clicks Edit or Regenerate on a message.
+ * @param {string} threadId - The thread ID
+ * @returns {Promise<{thread_id: string, turns: Array<{turn_index: number, edit_checkpoint_id: string|null, regenerate_checkpoint_id: string}>, retry_checkpoint_id: string|null}>}
+ */
+export async function fetchThreadTurns(threadId) {
+  if (!threadId) throw new Error('Thread ID is required');
+  const { data } = await api.get(`/api/v1/threads/${threadId}/turns`);
+  return data;
 }
 
 /**
