@@ -333,6 +333,8 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
     isLoadingHistory,
     isReconnecting,
     messageError,
+    returnedQueuedMessage,
+    clearReturnedQueuedMessage,
     handleSendMessage,
     pendingInterrupt,
     pendingRejection,
@@ -366,6 +368,14 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
     if (hasActiveSubagents) return t('chat.placeholderSubagentsRunning');
     return t('chat.placeholderDefault');
   }, [pendingRejection, wasInterrupted, isLoading, pendingInterrupt, hasActiveSubagents, t]);
+
+  // Restore queued message text to input when agent finishes without consuming it
+  useEffect(() => {
+    if (returnedQueuedMessage) {
+      chatInputRef.current?.setValue(returnedQueuedMessage);
+      clearReturnedQueuedMessage();
+    }
+  }, [returnedQueuedMessage, clearReturnedQueuedMessage]);
 
   // Ref to avoid stale closure in unmount cleanup
   const currentThreadIdRef = useRef(currentThreadId);

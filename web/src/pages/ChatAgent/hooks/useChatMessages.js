@@ -197,6 +197,8 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
   const [workspaceStarting, setWorkspaceStarting] = useState(false);  // Workspace is starting up (stopped/archived sandbox)
   const [isCompacting, setIsCompacting] = useState(false);  // Context compaction in progress (summarization/offload)
   const [messageError, setMessageError] = useState(null);
+  // Queued message returned by the server (agent finished before consuming it)
+  const [returnedQueuedMessage, setReturnedQueuedMessage] = useState(null);
   // HITL (Human-in-the-Loop) plan mode interrupt state
   const [pendingInterrupt, setPendingInterrupt] = useState(null);
   // When user clicks Reject on a plan, this stores the interruptId so the next message
@@ -2035,6 +2037,20 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
         return;
       }
 
+      // Handle queued_message_returned — agent finished before consuming the queued message.
+      // Remove the queued user message from chat and restore text to input box.
+      if (eventType === 'queued_message_returned') {
+        const returnedMessages = event.messages || [];
+        if (returnedMessages.length > 0) {
+          // Remove queued user messages from the chat
+          setMessages((prev) => prev.filter((msg) => !msg.queued));
+          // Restore the text to the input box via state
+          const combinedText = returnedMessages.map((m) => m.content).join('\n');
+          setReturnedQueuedMessage(combinedText);
+        }
+        return;
+      }
+
       // Handle unified context_window events (token_usage, summarize, offload)
       if (eventType === 'context_window') {
         if (isSubagent) {
@@ -3418,6 +3434,8 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
     isLoadingHistory,
     isReconnecting,
     messageError,
+    returnedQueuedMessage,
+    clearReturnedQueuedMessage: () => setReturnedQueuedMessage(null),
     handleSendMessage,
     pendingInterrupt,
     pendingRejection,

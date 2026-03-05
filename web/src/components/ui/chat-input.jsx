@@ -190,6 +190,10 @@ const ChatInput = forwardRef(function ChatInput({
       // Focus the textarea
       setTimeout(() => textareaRef.current?.focus(), 0);
     },
+    setValue(text) {
+      setMessage(text);
+      setTimeout(() => textareaRef.current?.focus(), 0);
+    },
   }), []);
 
   // Workspace dropdown
