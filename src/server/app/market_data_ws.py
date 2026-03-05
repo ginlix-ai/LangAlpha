@@ -16,7 +16,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timezone
+import time as _time
 from typing import Optional
 
 import websockets
@@ -27,6 +27,7 @@ from src.server.auth.ws_auth import authenticate_websocket
 from src.server.services.cache._ohlcv_envelope import _build_envelope, _parse_envelope
 from src.server.services.cache.intraday_cache_service import IntradayCacheKeyBuilder
 from src.utils.cache.redis_cache import get_cache_client
+from src.utils.market_hours import current_trading_date
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,39 @@ _WS_INTERVAL_TO_CACHE: dict[str, str] = {
 
 _WS_CACHE_TTL = 30  # seconds — longer TTL survives brief WS hiccups
 _WS_SOURCE = "ginlix-data"  # must match config.yaml provider name
+
+# ---------------------------------------------------------------------------
+# Throttled tick buffer — avoids flooding Redis with one write per tick
+# ---------------------------------------------------------------------------
+_FLUSH_INTERVAL = 2.0  # seconds between Redis writes per cache key
+_last_flush: dict[str, float] = {}  # cache_key → last flush time
+_pending_bars: dict[str, list[dict]] = {}  # cache_key → bars since last flush
+
+# Track completed backfills to avoid re-triggering after TTL expiry
+_backfill_done: dict[str, str] = {}  # cache_key → data_date
+_backfill_in_progress: set[str] = set()
+
+# Intervals where REST backfill is supported (ginlix-data supports both)
+_BACKFILL_INTERVALS = {"1min", "1s"}
+
+# Periodic cleanup of stale entries in module-level dicts
+_CLEANUP_INTERVAL = 60.0  # seconds between cleanup sweeps
+_last_cleanup: float = 0.0
+
+
+def _cleanup_stale_entries() -> None:
+    """Remove entries from _last_flush and _backfill_done for previous trading dates."""
+    global _last_cleanup
+    now = _time.monotonic()
+    if now - _last_cleanup < _CLEANUP_INTERVAL:
+        return
+    _last_cleanup = now
+
+    today = current_trading_date()
+    stale_keys = [k for k, v in _backfill_done.items() if v != today]
+    for k in stale_keys:
+        _backfill_done.pop(k, None)
+        _last_flush.pop(k, None)
 
 
 def _parse_ws_bar(raw_msg: str) -> Optional[dict]:
@@ -74,22 +108,20 @@ def _parse_ws_bar(raw_msg: str) -> Optional[dict]:
             l = d.get("low", d.get("l"))
             c = d.get("close", d.get("c"))
             v = d.get("volume", d.get("v"))
-            ts = d.get("timestamp", d.get("s", d.get("e")))
+            ts = d.get("time", d.get("timestamp", d.get("s", d.get("e"))))
 
     if not symbol or c is None or ts is None:
         return None
 
-    # Convert ms timestamp to ISO-8601 datetime string matching cache bar format
+    # Normalise timestamp to Unix milliseconds
     if isinstance(ts, (int, float)):
-        if ts > 1e12:
-            ts = ts / 1000  # ms → s
-        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+        ts_ms = int(ts) if ts > 1e12 else int(ts * 1000)
     else:
         return None
 
     return {
         "symbol": symbol.upper(),
-        "date": dt.strftime("%Y-%m-%d %H:%M:%S"),
+        "time": ts_ms,
         "open": float(o) if o is not None else 0.0,
         "high": float(h) if h is not None else 0.0,
         "low": float(l) if l is not None else 0.0,
@@ -98,50 +130,177 @@ def _parse_ws_bar(raw_msg: str) -> Optional[dict]:
     }
 
 
-async def _update_cache_from_tick(bar: dict, market: str, cache_interval: str) -> None:
-    """Append or update the last bar in the Redis OHLCV envelope."""
+def _cache_key_for(symbol: str, market: str, cache_interval: str) -> str:
+    if market == "index":
+        return IntradayCacheKeyBuilder.index_key(symbol, cache_interval, source=_WS_SOURCE)
+    return IntradayCacheKeyBuilder.stock_key(symbol, cache_interval, source=_WS_SOURCE)
+
+
+def _bar_fields(bar: dict) -> dict:
+    return {
+        "time": bar["time"],
+        "open": bar["open"],
+        "high": bar["high"],
+        "low": bar["low"],
+        "close": bar["close"],
+        "volume": bar["volume"],
+    }
+
+
+async def _backfill_from_rest(
+    cache_key: str, symbol: str, market: str, cache_interval: str,
+    user_id: Optional[str] = None,
+) -> None:
+    """Fetch historical bars via the REST data provider and merge into the WS cache.
+
+    Called once per cache key when the first WS tick arrives with no existing
+    cache.  Fetches today's data from the provider, merges with any bars
+    already accumulated from WS ticks, and writes the result back.
+    """
     try:
-        cache = get_cache_client()
-        symbol = bar["symbol"]
+        from src.data_client import get_market_data_provider
 
-        if market == "index":
-            cache_key = IntradayCacheKeyBuilder.index_key(
-                symbol, cache_interval, source=_WS_SOURCE,
-            )
-        else:
-            cache_key = IntradayCacheKeyBuilder.stock_key(
-                symbol, cache_interval, source=_WS_SOURCE,
-            )
+        provider = await get_market_data_provider()
+        is_index = market == "index"
 
-        raw = await cache.get(cache_key)
-        envelope = _parse_envelope(raw) if raw else None
+        data, _source, _truncated = await provider.get_intraday_with_source(
+            symbol=symbol,
+            interval=cache_interval,
+            from_date=None,
+            to_date=None,
+            is_index=is_index,
+            user_id=user_id,
+        )
+        if not data:
+            return
 
-        new_bar = {
-            "date": bar["date"],
-            "open": bar["open"],
-            "high": bar["high"],
-            "low": bar["low"],
-            "close": bar["close"],
-            "volume": bar["volume"],
-        }
+        from src.server.services.cache.intraday_cache_service import IntradayCacheService
 
-        if envelope and envelope.get("bars"):
-            bars = envelope["bars"]
-            if bars[-1]["date"] == new_bar["date"]:
-                # Same timestamp — update in place
-                bars[-1] = new_bar
-            elif new_bar["date"] > bars[-1]["date"]:
-                # Newer — append
-                bars.append(new_bar)
-            # else: out-of-order tick, ignore
-        else:
-            bars = [new_bar]
+        svc = IntradayCacheService.get_instance()
+        lock = svc._get_refresh_lock(cache_key)
 
-        phase = envelope.get("market_phase", "open") if envelope else "open"
-        new_envelope = _build_envelope(bars, phase, complete=False, stored_ttl=_WS_CACHE_TTL)
-        await cache.set(cache_key, new_envelope, ttl=_WS_CACHE_TTL)
+        async with lock:
+            # Re-read current WS cache (may have accumulated ticks since we started)
+            cache = get_cache_client()
+            raw = await cache.get(cache_key)
+            envelope = _parse_envelope(raw) if raw else None
+            ws_bars = envelope["bars"] if envelope and envelope.get("bars") else []
+
+            # Merge: REST as historical base, append only WS bars newer than REST's last bar
+            if ws_bars:
+                rest_watermark = data[-1].get("time", 0)
+                newer_ws = [b for b in ws_bars if b.get("time", 0) > rest_watermark]
+                merged = data + newer_ws
+            else:
+                merged = data
+
+            from src.utils.market_hours import current_market_phase
+            phase = current_market_phase()
+            new_envelope = _build_envelope(merged, phase, complete=False, stored_ttl=_WS_CACHE_TTL, truncated=False)
+            await cache.set(cache_key, new_envelope, ttl=_WS_CACHE_TTL)
+
+        _backfill_done[cache_key] = current_trading_date()
+        logger.info(
+            "WS backfill for %s: %d REST bars + %d WS bars → %d merged",
+            cache_key, len(data), len(ws_bars), len(merged),
+        )
+    except asyncio.CancelledError:
+        return
     except Exception:
-        logger.debug("WS cache update failed for %s", bar.get("symbol"), exc_info=True)
+        logger.warning("WS backfill failed for %s", cache_key, exc_info=True)
+    finally:
+        _backfill_in_progress.discard(cache_key)
+
+
+async def _flush_to_redis(cache_key: str, bars: list[dict]) -> None:
+    """Write buffered bars to Redis, merging with existing envelope.
+
+    Coordinates with ``IntradayCacheService._delta_refresh`` via a shared
+    per-key ``asyncio.Lock``.  If a delta refresh is in progress we skip
+    this write — the REST result is at least as current as the WS buffer,
+    and the ticks will be re-flushed on the next 2 s cycle.
+    """
+    try:
+        from src.server.services.cache.intraday_cache_service import IntradayCacheService
+
+        svc = IntradayCacheService.get_instance()
+        lock = svc._get_refresh_lock(cache_key)
+        if lock.locked():
+            logger.debug("WS flush skipped for %s: delta refresh in progress", cache_key)
+            return
+
+        async with lock:
+            cache = get_cache_client()
+            raw = await cache.get(cache_key)
+            envelope = _parse_envelope(raw) if raw else None
+
+            if envelope and envelope.get("bars"):
+                existing = envelope["bars"]
+                # Merge buffered bars into existing: update in-place or append
+                for new_bar in bars:
+                    if existing[-1]["time"] == new_bar["time"]:
+                        existing[-1] = new_bar
+                    elif new_bar["time"] > existing[-1]["time"]:
+                        existing.append(new_bar)
+                merged = existing
+            else:
+                merged = bars
+
+            phase = envelope.get("market_phase", "open") if envelope else "open"
+            new_envelope = _build_envelope(merged, phase, complete=False, stored_ttl=_WS_CACHE_TTL, truncated=False)
+            await cache.set(cache_key, new_envelope, ttl=_WS_CACHE_TTL)
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        logger.debug("WS cache flush failed for %s", cache_key, exc_info=True)
+
+
+def _buffer_tick(
+    bar: dict, market: str, cache_interval: str, user_id: Optional[str] = None,
+) -> None:
+    """Buffer a tick in memory; schedule a flush if throttle interval elapsed."""
+    _cleanup_stale_entries()
+    cache_key = _cache_key_for(bar["symbol"], market, cache_interval)
+    new_bar = _bar_fields(bar)
+
+    # Accumulate in pending buffer (update-in-place or append)
+    if cache_key not in _pending_bars:
+        _pending_bars[cache_key] = [new_bar]
+    else:
+        buf = _pending_bars[cache_key]
+        if buf[-1]["time"] == new_bar["time"]:
+            buf[-1] = new_bar
+        elif new_bar["time"] > buf[-1]["time"]:
+            buf.append(new_bar)
+
+    # Check if we should flush now
+    now = _time.monotonic()
+    last = _last_flush.get(cache_key, 0)
+    if now - last < _FLUSH_INTERVAL:
+        return  # throttled — will be flushed on next tick past the interval
+
+    _last_flush[cache_key] = now
+    bars_to_flush = _pending_bars.pop(cache_key, [])
+    if not bars_to_flush:
+        return
+
+    today = current_trading_date()
+    is_first_write = (
+        cache_key not in _backfill_in_progress
+        and _backfill_done.get(cache_key) != today
+    )
+
+    # Mark in-progress synchronously to prevent double-backfill from rapid ticks
+    if is_first_write and cache_interval in _BACKFILL_INTERVALS:
+        _backfill_in_progress.add(cache_key)
+
+    async def _do_flush():
+        await _flush_to_redis(cache_key, bars_to_flush)
+        # On first write (cache was empty), trigger REST backfill for supported intervals
+        if is_first_write and cache_interval in _BACKFILL_INTERVALS:
+            await _backfill_from_rest(cache_key, bar["symbol"], market, cache_interval, user_id)
+
+    asyncio.create_task(_do_flush())
 
 
 @router.get("/ws/v1/market-data/status")
@@ -152,11 +311,17 @@ async def market_data_ws_status():
 
 
 @router.websocket("/ws/v1/market-data/aggregates/{market}")
-async def ws_market_data_proxy(websocket: WebSocket, market: str, interval: str = "minute"):
+async def ws_market_data_proxy(
+    websocket: WebSocket, market: str, interval: str = "minute", tier: str = "realtime",
+):
     """Proxy frontend WS to ginlix-data aggregate stream."""
 
     if market not in _ALLOWED_MARKETS:
         await websocket.close(code=1008, reason=f"Invalid market: {market}")
+        return
+
+    if tier not in ("delayed", "realtime"):
+        await websocket.close(code=1008, reason=f"Invalid tier: {tier}")
         return
 
     # Authenticate before accepting
@@ -166,10 +331,10 @@ async def ws_market_data_proxy(websocket: WebSocket, market: str, interval: str 
         return  # ws_auth already closed the socket
 
     await websocket.accept()
-    logger.info("WS proxy opened: user=%s market=%s interval=%s", user_id, market, interval)
+    logger.info("WS proxy opened: user=%s market=%s interval=%s tier=%s", user_id, market, interval, tier)
 
     # Build backend URL
-    backend_url = f"{GINLIX_DATA_WS_URL}/ws/v1/data/aggregates/{market}?interval={interval}"
+    backend_url = f"{GINLIX_DATA_WS_URL}/ws/v1/data/aggregates/{market}?interval={interval}&tier={tier}"
     backend_headers = {"X-User-Id": user_id}
     if _INTERNAL_SERVICE_TOKEN:
         backend_headers["X-Service-Token"] = _INTERNAL_SERVICE_TOKEN
@@ -197,6 +362,7 @@ async def ws_market_data_proxy(websocket: WebSocket, market: str, interval: str 
                     logger.debug("client_to_backend closed: %s", exc)
 
             cache_interval = _WS_INTERVAL_TO_CACHE.get(interval)
+            connection_keys: set[str] = set()  # track cache keys owned by this connection
 
             async def backend_to_client():
                 """Forward messages from ginlix-data to the frontend client."""
@@ -208,17 +374,24 @@ async def ws_market_data_proxy(websocket: WebSocket, market: str, interval: str 
                             logger.debug("backend→client (#%d): %s", _msg_count, msg[:300] if isinstance(msg, str) else str(msg)[:300])
                         await websocket.send_text(msg)
 
-                        # Fire-and-forget cache update for cacheable intervals
+                        # Buffer tick for throttled cache write
                         if cache_interval:
                             bar = _parse_ws_bar(msg)
                             if bar:
-                                asyncio.create_task(
-                                    _update_cache_from_tick(bar, market, cache_interval)
-                                )
+                                key = _cache_key_for(bar["symbol"], market, cache_interval)
+                                connection_keys.add(key)
+                                _buffer_tick(bar, market, cache_interval, user_id)
                 except websockets.exceptions.ConnectionClosed:
                     pass  # Backend disconnected
                 except Exception as exc:
                     logger.debug("backend_to_client closed: %s", exc)
+
+            # Flush only this connection's buffered ticks when WS closes
+            async def _flush_remaining():
+                for key in list(connection_keys):
+                    bars = _pending_bars.pop(key, [])
+                    if bars:
+                        await _flush_to_redis(key, bars)
 
             # Run both directions concurrently; when either finishes, cancel the other
             done, pending = await asyncio.wait(
@@ -230,6 +403,9 @@ async def ws_market_data_proxy(websocket: WebSocket, market: str, interval: str 
             )
             for task in pending:
                 task.cancel()
+
+            # Flush remaining buffered bars
+            await _flush_remaining()
 
     except (websockets.exceptions.WebSocketException, OSError) as exc:
         logger.warning("Backend WS connection failed: %s", exc)

@@ -4,21 +4,19 @@ Pydantic models for market data endpoints.
 This module provides request and response models for FMP intraday data proxy endpoints.
 """
 
-from typing import Optional, List, Dict, Any, Literal
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field, field_validator
 
 
 # Supported intervals for intraday data
-STOCK_INTERVALS = ("1s", "1min", "5min", "15min", "30min", "1hour", "4hour")
-INDEX_INTERVALS = ("1s", "1min", "5min", "15min", "30min", "1hour", "4hour")
-
-StockInterval = Literal["1s", "1min", "5min", "15min", "30min", "1hour", "4hour"]
-IndexInterval = Literal["1s", "1min", "5min", "15min", "30min", "1hour", "4hour"]
+SUPPORTED_INTERVALS = ("1s", "1min", "5min", "15min", "30min", "1hour", "4hour")
+STOCK_INTERVALS = SUPPORTED_INTERVALS
+INDEX_INTERVALS = SUPPORTED_INTERVALS
 
 
 class IntradayDataPoint(BaseModel):
     """Single OHLCV data point for intraday chart data."""
-    date: str = Field(..., description="Timestamp in ISO format (YYYY-MM-DD HH:MM:SS)")
+    time: int = Field(..., description="Timestamp in Unix milliseconds")
     open: float = Field(..., description="Opening price")
     high: float = Field(..., description="High price")
     low: float = Field(..., description="Low price")
@@ -39,9 +37,10 @@ class CacheMetadata(BaseModel):
     cache_key: Optional[str] = Field(None, description="Cache key used")
     ttl_remaining: Optional[int] = Field(None, description="Remaining TTL in seconds")
     refreshed_in_background: bool = Field(False, description="Whether a background refresh was triggered")
-    watermark: Optional[str] = Field(None, description="Date field of last cached bar (delta-refresh boundary)")
+    watermark: Optional[int] = Field(None, description="Timestamp of last cached bar (Unix ms)")
     complete: Optional[bool] = Field(None, description="True when all bars are immutable (market closed / historical)")
     market_phase: Optional[str] = Field(None, description="Current market phase: pre, open, post, or closed")
+    truncated: Optional[bool] = Field(None, description="True when upstream fetch hit its bar limit")
 
 
 class IntradayResponse(BaseModel):
@@ -59,7 +58,7 @@ class IntradayResponse(BaseModel):
                 "interval": "1min",
                 "data": [
                     {
-                        "date": "2024-01-15 09:30:00",
+                        "time": 1705322400000,
                         "open": 185.50,
                         "high": 185.75,
                         "low": 185.25,
@@ -70,7 +69,7 @@ class IntradayResponse(BaseModel):
                 "count": 1,
                 "cache": {
                     "cached": True,
-                    "cache_key": "fmp:intraday:stock:symbol=AAPL:interval=1min",
+                    "cache_key": "ohlcv:stock:AAPL:1min",
                     "ttl_remaining": 45,
                     "refreshed_in_background": False
                 }
@@ -91,7 +90,7 @@ class DailyResponse(BaseModel):
                 "symbol": "AAPL",
                 "data": [
                     {
-                        "date": "2024-01-15",
+                        "time": 1705276800000,
                         "open": 185.50,
                         "high": 187.00,
                         "low": 184.25,
@@ -102,7 +101,7 @@ class DailyResponse(BaseModel):
                 "count": 1,
                 "cache": {
                     "cached": True,
-                    "cache_key": "fmp:daily:stock:symbol=AAPL",
+                    "cache_key": "ohlcv:stock:AAPL:day",
                     "ttl_remaining": 3200,
                     "refreshed_in_background": False
                 }
@@ -173,7 +172,7 @@ class BatchIntradayResponse(BaseModel):
                 "results": {
                     "AAPL": [
                         {
-                            "date": "2024-01-15 09:30:00",
+                            "time": 1705322400000,
                             "open": 185.50,
                             "high": 185.75,
                             "low": 185.25,
@@ -183,7 +182,7 @@ class BatchIntradayResponse(BaseModel):
                     ],
                     "MSFT": [
                         {
-                            "date": "2024-01-15 09:30:00",
+                            "time": 1705322400000,
                             "open": 375.00,
                             "high": 375.50,
                             "low": 374.80,
@@ -241,6 +240,38 @@ class AnalystDataResponse(BaseModel):
     symbol: str = Field(..., description="Stock ticker symbol")
     priceTargets: Optional[PriceTargetSummary] = Field(None, description="Price target summary")
     grades: List[AnalystGrade] = Field(default_factory=list, description="Recent analyst grade changes")
+
+
+class SnapshotData(BaseModel):
+    """Normalized snapshot data for a single ticker."""
+    symbol: str = Field(..., description="Ticker symbol")
+    name: Optional[str] = Field(None, description="Ticker name")
+    price: Optional[float] = Field(None, description="Current / last price")
+    change: Optional[float] = Field(None, description="Day change (absolute)")
+    change_percent: Optional[float] = Field(None, description="Day change %")
+    previous_close: Optional[float] = Field(None, description="Previous close price")
+    open: Optional[float] = Field(None, description="Day open")
+    high: Optional[float] = Field(None, description="Day high")
+    low: Optional[float] = Field(None, description="Day low")
+    volume: Optional[int] = Field(None, description="Day volume")
+    market_status: Optional[str] = Field(None, description="Per-ticker market phase")
+    early_trading_change_percent: Optional[float] = Field(None, description="Pre-market change %")
+    late_trading_change_percent: Optional[float] = Field(None, description="After-hours change %")
+
+
+class SnapshotResponse(BaseModel):
+    """Response for batch snapshot request."""
+    snapshots: List[SnapshotData] = Field(default_factory=list, description="Snapshot data per symbol")
+    count: int = Field(0, description="Number of snapshots returned")
+
+
+class MarketStatusResponse(BaseModel):
+    """Response for market status request."""
+    market: Optional[str] = Field(None, description="Market status (open / closed / extended-hours)")
+    afterHours: Optional[bool] = Field(None, description="Whether after-hours trading is active")
+    earlyHours: Optional[bool] = Field(None, description="Whether pre-market trading is active")
+    serverTime: Optional[str] = Field(None, description="Server time (ISO)")
+    exchanges: Optional[Dict[str, Any]] = Field(None, description="Per-exchange status")
 
 
 class StockSearchResult(BaseModel):

@@ -25,6 +25,9 @@ from src.server.models.market_data import (
     PriceTargetSummary,
     AnalystGrade,
     AnalystDataResponse,
+    SnapshotData,
+    SnapshotResponse,
+    MarketStatusResponse,
     STOCK_INTERVALS,
     INDEX_INTERVALS,
 )
@@ -45,10 +48,10 @@ router = APIRouter(
 
 
 def _convert_data_points(raw_data: list) -> list[IntradayDataPoint]:
-    """Convert raw FMP data to IntradayDataPoint models."""
+    """Convert raw OHLCV data to IntradayDataPoint models."""
     return [
         IntradayDataPoint(
-            date=point.get("date", ""),
+            time=point.get("time", 0),
             open=point.get("open", 0.0),
             high=point.get("high", 0.0),
             low=point.get("low", 0.0),
@@ -78,6 +81,7 @@ async def _get_daily(
             refreshed_in_background=result.background_refresh_triggered,
             watermark=result.watermark, complete=result.complete,
             market_phase=result.market_phase,
+            truncated=result.truncated,
         ),
     )
 
@@ -136,6 +140,7 @@ async def get_stock_intraday(
                 watermark=result.watermark,
                 complete=result.complete,
                 market_phase=result.market_phase,
+                truncated=result.truncated,
             ),
         )
 
@@ -308,6 +313,7 @@ async def get_index_intraday(
                 watermark=result.watermark,
                 complete=result.complete,
                 market_phase=result.market_phase,
+                truncated=result.truncated,
             ),
         )
 
@@ -389,6 +395,7 @@ async def get_batch_indexes_intraday(
     description="Search for stocks by symbol or company name using keywords.",
 )
 async def search_stocks(
+    user_id: CurrentUserId,
     query: str = Query(..., description="Search query (symbol or company name)", min_length=1),
     limit: int = Query(50, description="Maximum number of results to return", ge=1, le=100),
     exchange: list[str] = Query(default=[], description="Filter by exchange short names (e.g., NASDAQ, NYSE)"),
@@ -406,19 +413,28 @@ async def search_stocks(
     """
     if not query or not query.strip():
         raise HTTPException(status_code=422, detail="Query parameter is required and cannot be empty")
-    
+
     try:
-        # Create FMP client instance
+        from src.utils.cache.redis_cache import get_cache_client
+
+        cache = get_cache_client()
+        cache_key = f"fmp:search:{query.strip().lower()}:{limit}"
+
+        cached = await cache.get(cache_key)
+        if cached is not None:
+            results = [StockSearchResult(**r) for r in cached["results"]]
+            if exchange:
+                exchange_set = {e.upper() for e in exchange}
+                results = [r for r in results if r.exchangeShortName and r.exchangeShortName.upper() in exchange_set]
+            return StockSearchResponse(query=query.strip(), results=results, count=len(results))
+
         fmp_client = FMPClient()
-        
+
         try:
-            # Call FMP API search endpoint
             raw_results = await fmp_client.search_stocks(query=query.strip(), limit=limit)
-            
-            # Convert raw results to Pydantic models
+
             results = []
             for item in raw_results:
-                # Handle different response formats from FMP API
                 result = StockSearchResult(
                     symbol=item.get("symbol", ""),
                     name=item.get("name", ""),
@@ -428,24 +444,18 @@ async def search_stocks(
                 )
                 results.append(result)
 
-            # Filter by exchange if specified
+            # Cache unfiltered results
+            await cache.set(cache_key, {"results": [r.model_dump() for r in results]}, ttl=300)
+
             if exchange:
                 exchange_set = {e.upper() for e in exchange}
-                results = [
-                    r for r in results
-                    if r.exchangeShortName and r.exchangeShortName.upper() in exchange_set
-                ]
+                results = [r for r in results if r.exchangeShortName and r.exchangeShortName.upper() in exchange_set]
 
-            return StockSearchResponse(
-                query=query.strip(),
-                results=results,
-                count=len(results),
-            )
-            
+            return StockSearchResponse(query=query.strip(), results=results, count=len(results))
+
         finally:
-            # Always close the client
             await fmp_client.close()
-            
+
     except HTTPException:
         raise
     except Exception as e:
@@ -464,17 +474,27 @@ async def search_stocks(
     summary="Get company overview",
     description="Retrieve comprehensive company overview data including quote, performance, analyst ratings, financials, and revenue breakdown.",
 )
-async def get_company_overview(symbol: str) -> CompanyOverviewResponse:
+async def get_company_overview(symbol: str, user_id: CurrentUserId) -> CompanyOverviewResponse:
     """Get company overview data for a stock symbol."""
     if not symbol or not symbol.strip():
         raise HTTPException(status_code=422, detail="Symbol is required")
 
+    symbol_upper = symbol.strip().upper()
     try:
+        from src.utils.cache.redis_cache import get_cache_client
+
+        cache = get_cache_client()
+        cache_key = f"fmp:overview:{symbol_upper}"
+
+        cached = await cache.get(cache_key)
+        if cached is not None:
+            return CompanyOverviewResponse(**cached)
+
         from src.tools.market_data.implementations import fetch_company_overview_data
 
-        artifact = await fetch_company_overview_data(symbol.strip().upper())
+        artifact = await fetch_company_overview_data(symbol_upper)
 
-        return CompanyOverviewResponse(
+        response = CompanyOverviewResponse(
             symbol=artifact.get("symbol", symbol),
             name=artifact.get("name"),
             quote=artifact.get("quote"),
@@ -486,6 +506,8 @@ async def get_company_overview(symbol: str) -> CompanyOverviewResponse:
             revenueByProduct=artifact.get("revenueByProduct"),
             revenueByGeo=artifact.get("revenueByGeo"),
         )
+        await cache.set(cache_key, response.model_dump(), ttl=300)
+        return response
 
     except HTTPException:
         raise
@@ -507,6 +529,7 @@ async def get_company_overview(symbol: str) -> CompanyOverviewResponse:
 )
 async def get_analyst_data(
     symbol: str,
+    user_id: CurrentUserId,
     grade_limit: int = Query(50, description="Maximum number of grade records to return", ge=1, le=200),
 ) -> AnalystDataResponse:
     """Get analyst data for a stock symbol."""
@@ -516,10 +539,18 @@ async def get_analyst_data(
     symbol_upper = symbol.strip().upper()
 
     try:
+        from src.utils.cache.redis_cache import get_cache_client
+
+        cache = get_cache_client()
+        cache_key = f"fmp:analyst:{symbol_upper}"
+
+        cached = await cache.get(cache_key)
+        if cached is not None:
+            return AnalystDataResponse(**cached)
+
         fmp_client = FMPClient()
 
         try:
-            # Fetch price targets and grades in parallel
             import asyncio
             price_targets_raw, grades_raw = await asyncio.gather(
                 fmp_client.get_price_target_summary(symbol_upper),
@@ -527,7 +558,6 @@ async def get_analyst_data(
                 return_exceptions=True,
             )
 
-            # Process price targets
             price_targets = None
             if isinstance(price_targets_raw, list) and len(price_targets_raw) > 0:
                 pt = price_targets_raw[0]
@@ -540,7 +570,6 @@ async def get_analyst_data(
             elif isinstance(price_targets_raw, Exception):
                 logger.warning(f"Failed to fetch price targets for {symbol_upper}: {price_targets_raw}")
 
-            # Process grades
             grades = []
             if isinstance(grades_raw, list):
                 for g in grades_raw:
@@ -554,11 +583,13 @@ async def get_analyst_data(
             elif isinstance(grades_raw, Exception):
                 logger.warning(f"Failed to fetch grades for {symbol_upper}: {grades_raw}")
 
-            return AnalystDataResponse(
+            response = AnalystDataResponse(
                 symbol=symbol_upper,
                 priceTargets=price_targets,
                 grades=grades,
             )
+            await cache.set(cache_key, response.model_dump(), ttl=900)
+            return response
 
         finally:
             await fmp_client.close()
@@ -568,3 +599,157 @@ async def get_analyst_data(
     except Exception as e:
         logger.error(f"Error fetching analyst data for {symbol}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch analyst data: {str(e)}")
+
+
+# =============================================================================
+# Snapshot Endpoints
+# =============================================================================
+
+_SNAPSHOT_CACHE_TTL = 15  # seconds
+_MARKET_STATUS_CACHE_TTL = 30  # seconds
+
+
+@router.get(
+    "/snapshots/stocks",
+    response_model=SnapshotResponse,
+    summary="Get batch stock snapshots",
+    description="Retrieve real-time snapshot data for multiple stock symbols.",
+)
+async def get_stock_snapshots(
+    user_id: CurrentUserId,
+    symbols: str = Query(..., description="Comma-separated stock symbols (max 250)"),
+) -> SnapshotResponse:
+    """Get batch snapshots for stocks."""
+    return await _get_batch_snapshots(symbols, "stocks", "stocks", user_id)
+
+
+@router.get(
+    "/snapshots/indexes",
+    response_model=SnapshotResponse,
+    summary="Get batch index snapshots",
+    description="Retrieve real-time snapshot data for multiple index symbols.",
+)
+async def get_index_snapshots(
+    user_id: CurrentUserId,
+    symbols: str = Query(..., description="Comma-separated index symbols (e.g. GSPC,IXIC,DJI)"),
+) -> SnapshotResponse:
+    """Get batch snapshots for indexes."""
+    return await _get_batch_snapshots(symbols, "indices", "indexes", user_id)
+
+
+async def _get_batch_snapshots(
+    symbols: str, asset_type: str, cache_prefix: str, user_id: str,
+) -> SnapshotResponse:
+    """Shared implementation for batch stock/index snapshot endpoints."""
+    symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not symbol_list:
+        raise HTTPException(status_code=422, detail="At least one symbol is required")
+
+    try:
+        from src.utils.cache.redis_cache import get_cache_client
+        from src.data_client import get_market_data_provider
+
+        cache = get_cache_client()
+        cache_key = f"snapshot:{cache_prefix}:{','.join(sorted(symbol_list))}"
+
+        cached = await cache.get(cache_key)
+        if cached is not None:
+            snapshots = [SnapshotData(**s) for s in cached]
+            return SnapshotResponse(snapshots=snapshots, count=len(snapshots))
+
+        provider = await get_market_data_provider()
+        raw = await provider.get_snapshots(symbol_list, asset_type=asset_type, user_id=user_id)
+
+        snapshots = [SnapshotData(**item) for item in raw]
+        await cache.set(cache_key, [s.model_dump() for s in snapshots], ttl=_SNAPSHOT_CACHE_TTL)
+
+        return SnapshotResponse(snapshots=snapshots, count=len(snapshots))
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error fetching %s snapshots: %s", asset_type, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/snapshots/stocks/{symbol}",
+    response_model=SnapshotData,
+    summary="Get single stock snapshot",
+    description="Retrieve real-time snapshot data for a single stock symbol.",
+)
+async def get_single_stock_snapshot(symbol: str, user_id: CurrentUserId) -> SnapshotData:
+    """Get snapshot for a single stock."""
+    symbol = symbol.strip().upper()
+
+    try:
+        from src.utils.cache.redis_cache import get_cache_client
+        from src.data_client import get_market_data_provider
+
+        cache = get_cache_client()
+        cache_key = f"snapshot:stock:{symbol}"
+
+        cached = await cache.get(cache_key)
+        if cached is not None:
+            return SnapshotData(**cached)
+
+        provider = await get_market_data_provider()
+        raw = await provider.get_snapshots([symbol], asset_type="stocks", user_id=user_id)
+
+        if not raw:
+            raise HTTPException(status_code=404, detail="No snapshot data available for this symbol")
+        snap = SnapshotData(**raw[0])
+        await cache.set(cache_key, snap.model_dump(), ttl=_SNAPSHOT_CACHE_TTL)
+
+        return snap
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching snapshot for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Market Status Endpoint
+# =============================================================================
+
+
+@router.get(
+    "/market-status",
+    response_model=MarketStatusResponse,
+    summary="Get current market status",
+    description="Retrieve the current market status (open, closed, extended hours).",
+)
+async def get_market_status(user_id: CurrentUserId) -> MarketStatusResponse:
+    """Get current market status."""
+    try:
+        from src.utils.cache.redis_cache import get_cache_client
+        from src.data_client import get_market_data_provider
+
+        cache = get_cache_client()
+        cache_key = "market:status"
+
+        cached = await cache.get(cache_key)
+        if cached is not None:
+            return MarketStatusResponse(**cached)
+
+        provider = await get_market_data_provider()
+        raw = await provider.get_market_status(user_id=user_id)
+
+        response = MarketStatusResponse(
+            market=raw.get("market"),
+            afterHours=raw.get("afterHours"),
+            earlyHours=raw.get("earlyHours"),
+            serverTime=raw.get("serverTime"),
+            exchanges=raw.get("exchanges"),
+        )
+        await cache.set(cache_key, response.model_dump(), ttl=_MARKET_STATUS_CACHE_TTL)
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching market status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

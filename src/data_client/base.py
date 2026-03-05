@@ -8,7 +8,21 @@ News sources implement :class:`NewsDataSource` for the news feed layer.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Protocol
+
+
+@dataclass
+class FetchResult:
+    """Return type for data sources that can signal truncation.
+
+    Data sources may return this instead of a plain ``list[dict]`` to
+    indicate that the upstream response hit its bar limit and the result
+    is likely incomplete.
+    """
+
+    bars: list[dict[str, Any]]
+    truncated: bool = False
 
 
 class MarketDataSource(Protocol):
@@ -22,10 +36,12 @@ class MarketDataSource(Protocol):
         to_date: str | None = None,
         is_index: bool = False,
         user_id: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, Any]] | FetchResult:
         """Return intraday OHLCV bars.
 
-        Each dict has: ``{date, open, high, low, close, volume}``.
+        Each dict has: ``{time, open, high, low, close, volume}``
+        where ``time`` is Unix milliseconds (int).
+        May return a :class:`FetchResult` to signal truncation.
         *user_id* is forwarded to the upstream service for access-control.
         """
         ...
@@ -37,12 +53,30 @@ class MarketDataSource(Protocol):
         to_date: str | None = None,
         is_index: bool = False,
         user_id: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, Any]] | FetchResult:
         """Return daily OHLCV bars.
 
-        Each dict has: ``{date, open, high, low, close, volume}``.
+        Each dict has: ``{time, open, high, low, close, volume}``
+        where ``time`` is Unix milliseconds (int).
+        May return a :class:`FetchResult` to signal truncation.
         *user_id* is forwarded to the upstream service for access-control.
         """
+        ...
+
+    async def get_snapshots(
+        self,
+        symbols: list[str],
+        asset_type: str = "stocks",
+        user_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return real-time snapshot data for multiple symbols."""
+        ...
+
+    async def get_market_status(
+        self,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Return current market status."""
         ...
 
     async def close(self) -> None:
