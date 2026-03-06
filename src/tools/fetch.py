@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 import logging
 import os
+from contextvars import ContextVar
 from typing import Annotated, Optional
 
 from langchain_core.tools import StructuredTool
@@ -35,9 +36,17 @@ CACHE_PREFIX = "web_fetch"
 # Extraction model configuration
 EXTRACTION_TIMEOUT = 60.0  # seconds per model attempt
 
+# Per-request override for extraction model (set by chat handler from user preferences)
+fetch_model_override: ContextVar[str | None] = ContextVar("fetch_model_override", default=None)
+
 
 def _get_extraction_model() -> str:
-    """Get the configured extraction model from agent_config.yaml (llm.fetch > llm.flash > llm.name)."""
+    """Get the configured extraction model.
+    Priority: context override (user pref) > agent_config.yaml llm.fetch > llm.flash > llm.name.
+    """
+    override = fetch_model_override.get()
+    if override:
+        return override
     config = load_agent_config()
     llm = config.get("llm", {})
     return llm.get("fetch") or llm.get("flash") or llm.get("name", "")

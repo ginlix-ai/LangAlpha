@@ -531,7 +531,12 @@ class PTCAgent:
 
         # Custom SSE-enabled summarization emits 'summarization_signal' events
         # Pass backend for offloading conversation history to sandbox
-        summarization = SummarizationMiddleware.from_config(backend=backend)
+        summ_config = None
+        if self.config.llm.summarization:
+            from src.config.settings import get_summarization_config
+            summ_config = get_summarization_config()
+            summ_config["llm"] = self.config.llm.summarization
+        summarization = SummarizationMiddleware.from_config(config=summ_config, backend=backend)
 
         # Build model resilience middleware (retry + fallback)
         model_resilience = self._build_model_resilience_middleware()

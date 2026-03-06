@@ -629,6 +629,24 @@ async def resolve_llm_config(
                 f"[CHAT] No {pref_key} set, using system default: {getattr(config.llm, model_field, None) or config.llm.name}"
             )
 
+    # Apply other model overrides from user preferences
+    _other_model_keys = [
+        ("summarization_model", "summarization"),
+        ("fetch_model", "fetch"),
+    ]
+    for pref_key_other, config_field in _other_model_keys:
+        user_val = model_pref.get(pref_key_other)
+        if user_val:
+            if config is base_config:
+                config = config.model_copy(deep=True)
+            setattr(config.llm, config_field, user_val)
+
+    user_fallback = model_pref.get("fallback_models")
+    if user_fallback:
+        if config is base_config:
+            config = config.model_copy(deep=True)
+        config.llm.fallback = user_fallback
+
     # Resolve the effective model from whichever field we just set
     effective_model = getattr(config.llm, model_field, None) or config.llm.name
 
@@ -847,6 +865,11 @@ async def astream_flash_workflow(
                 setup.agent_config, user_id, request.llm_model, is_byok, mode="flash",
                 reasoning_effort=getattr(request, "reasoning_effort", None),
             )
+
+        # Propagate fetch model override to tool context
+        if config.llm.fetch:
+            from src.tools.fetch import fetch_model_override
+            fetch_model_override.set(config.llm.fetch)
 
         # Fetch user profile for prompt injection
         flash_user_profile = None
@@ -1597,6 +1620,11 @@ async def astream_ptc_workflow(
                 setup.agent_config, user_id, request.llm_model, is_byok, mode="ptc",
                 reasoning_effort=getattr(request, "reasoning_effort", None),
             )
+
+        # Propagate fetch model override to tool context
+        if config.llm.fetch:
+            from src.tools.fetch import fetch_model_override
+            fetch_model_override.set(config.llm.fetch)
 
         subagents = request.subagents_enabled or config.subagents.enabled
         sandbox_id = None

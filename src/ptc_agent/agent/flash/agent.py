@@ -227,11 +227,15 @@ class FlashAgent:
         logger.info("AskUserQuestion tool enabled for Flash agent")
 
         # Optional summarization (shares config with main agent)
-        summarization = SummarizationMiddleware.from_config(backend=None)
+        from src.config.settings import get_summarization_config
+        summ_config = None
+        if self.config.llm.summarization:
+            summ_config = get_summarization_config()
+            summ_config["llm"] = self.config.llm.summarization
+        summarization = SummarizationMiddleware.from_config(config=summ_config, backend=None)
         if summarization is not None:
             main_middleware.append(summarization)
-            from src.config.settings import get_summarization_config
-            summarization_config = get_summarization_config()
+            summarization_config = summ_config or get_summarization_config()
             logger.info(
                 "Summarization enabled",
                 threshold=summarization_config.get("token_threshold", 120000),
