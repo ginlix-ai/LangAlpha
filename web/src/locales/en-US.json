@@ -308,7 +308,15 @@
     "offloadedArgsNotification": "Tool arguments offloaded · {{count}} tools",
     "offloadedReadsNotification": "Stale read results offloaded · {{count}} reads",
     "offloadedNotification": "Context offloaded · {{args}} tool args, {{reads}} reads",
-    "compactionError": "Context compaction failed"
+    "compactionError": "Context compaction failed",
+    "modelSelector": {
+      "manageModels": "Manage models",
+      "configureModels": "Configure models →",
+      "reasoningEffort": "Reasoning",
+      "effortLow": "L",
+      "effortMedium": "M",
+      "effortHigh": "H"
+    }
   },
   "context": {
     "addToContext": "Add to context",

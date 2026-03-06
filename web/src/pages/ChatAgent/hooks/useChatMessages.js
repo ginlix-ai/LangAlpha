@@ -2692,7 +2692,7 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
    * @param {Array|null} additionalContext - Optional additional context for skill loading
    * @param {Array|null} attachmentMeta - Optional attachment metadata for user message display
    */
-  const handleSendMessage = async (message, planMode = false, additionalContext = null, attachmentMeta = null) => {
+  const handleSendMessage = async (message, planMode = false, additionalContext = null, attachmentMeta = null, { model, reasoningEffort } = {}) => {
     const hasContent = message.trim() || (additionalContext && additionalContext.length > 0);
     if (!workspaceId || !hasContent) {
       return;
@@ -2800,7 +2800,10 @@ export function useChatMessages(workspaceId, initialThreadId = null, updateTodoL
         planMode,
         processEvent,
         additionalContext,
-        agentMode
+        agentMode,
+        undefined, undefined, undefined, undefined,
+        model || null,
+        reasoningEffort || null
       );
 
       if (result?.disconnected) {

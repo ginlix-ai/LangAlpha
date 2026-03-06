@@ -2,9 +2,10 @@ import React, { useState, useRef, useEffect, useCallback, useMemo, forwardRef, u
 import {
   Plus, ArrowUp, X, FileText, Loader2, Archive, Square,
   ScrollText, ChartCandlestick, Zap, FileStack, ChevronDown, FolderOpen, TextSelect,
-  Terminal, Bot, Shrink, HardDriveDownload,
+  Terminal, Bot, Shrink, HardDriveDownload, Check,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import { TokenUsageRing } from './token-usage-ring';
 import { getSkills } from '../../pages/ChatAgent/utils/api';
 import './chat-input.css';
@@ -86,6 +87,23 @@ const BUILTIN_SLASH_COMMANDS = [
   { type: 'action', name: 'offload', aliases: ['truncate'] },
 ];
 
+/** Derive a short display name from a model key string. */
+function getModelDisplayName(key) {
+  if (!key) return '';
+  let name = key;
+  // Strip common provider prefixes
+  for (const prefix of ['claude-', 'gpt-', 'chatgpt-', 'o1-', 'o3-', 'o4-']) {
+    if (name.startsWith(prefix)) { name = name.slice(prefix.length); break; }
+  }
+  // Convert version-like patterns: "opus-4-6" → "Opus 4.6", "sonnet-4-6" → "Sonnet 4.6"
+  name = name
+    .replace(/-(\d+)-(\d+)/, ' $1.$2')  // "opus-4-6" → "opus 4.6"
+    .replace(/-(\d+\.\d+)/, ' $1')       // "3.1-pro" → "3.1 pro"
+    .replace(/-/g, ' ')                   // remaining hyphens to spaces
+    .replace(/\b\w/g, c => c.toUpperCase()); // title case
+  return name;
+}
+
 /* --- MAIN COMPONENT --- */
 
 /**
@@ -133,12 +151,22 @@ const ChatInput = forwardRef(function ChatInput({
   tokenUsage = null,
   // Action commands (e.g. /summarize) — fired immediately on selection
   onAction = null,
+  // Model selector
+  starredModels = [],
+  initialModel = null,
 }, ref) {
   const { t } = useTranslation();
   const [message, setMessage] = useState('');
   const [attachedFiles, setAttachedFiles] = useState([]);
   const [isDragging, setIsDragging] = useState(false);
   const [planMode, setPlanMode] = useState(false);
+
+  // Model selector state
+  const [selectedModel, setSelectedModel] = useState(initialModel);
+  const [reasoningEffort, setReasoningEffort] = useState(null);
+  const [showModelMenu, setShowModelMenu] = useState(false);
+  const modelMenuRef = useRef(null);
+  const navigate = useNavigate();
 
   // @file mention state
   const [mentionedFiles, setMentionedFiles] = useState([]);
@@ -215,6 +243,20 @@ const ChatInput = forwardRef(function ChatInput({
     }
   }, [prefillMessage, onClearPrefill]);
 
+  // Load per-model reasoning effort from localStorage
+  useEffect(() => {
+    if (!selectedModel) { setReasoningEffort(null); return; }
+    const saved = localStorage.getItem(`reasoning_effort:${selectedModel}`);
+    setReasoningEffort(saved || null);
+  }, [selectedModel]);
+
+  // Persist reasoning effort per model
+  useEffect(() => {
+    if (!selectedModel) return;
+    if (reasoningEffort) localStorage.setItem(`reasoning_effort:${selectedModel}`, reasoningEffort);
+    else localStorage.removeItem(`reasoning_effort:${selectedModel}`);
+  }, [reasoningEffort, selectedModel]);
+
   // Reset isStopping when loading finishes
   useEffect(() => {
     if (!isLoading) setIsStopping(false);
@@ -245,6 +287,18 @@ const ChatInput = forwardRef(function ChatInput({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showWorkspaceMenu]);
+
+  // Close model menu on click outside
+  useEffect(() => {
+    if (!showModelMenu) return;
+    const handleClickOutside = (e) => {
+      if (modelMenuRef.current && !modelMenuRef.current.contains(e.target)) {
+        setShowModelMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showModelMenu]);
 
   // --- File Upload Handling ---
   const handleFiles = useCallback((newFilesList) => {
@@ -549,6 +603,7 @@ const ChatInput = forwardRef(function ChatInput({
     setTimeout(() => {
       setShowAutocomplete(false);
       setShowSlashMenu(false);
+      setShowModelMenu(false);
     }, 200);
   }, []);
 
@@ -580,7 +635,7 @@ const ChatInput = forwardRef(function ChatInput({
       });
       finalMessage = finalMessage.trimEnd() + '\n' + blocks.join('\n');
     }
-    onSend(finalMessage, planMode, readyAttachments, slashCommands);
+    onSend(finalMessage, planMode, readyAttachments, slashCommands, { model: selectedModel, reasoningEffort });
     setMessage('');
     attachedFiles.forEach(f => { if (f.preview) URL.revokeObjectURL(f.preview); });
     setAttachedFiles([]);
@@ -826,6 +881,64 @@ const ChatInput = forwardRef(function ChatInput({
             </div>
           )}
 
+          {/* Model selector dropdown */}
+          {showModelMenu && (
+            <div className="model-dropdown" ref={modelMenuRef}>
+              {starredModels.length > 0 ? (
+                <>
+                  {starredModels.map((m) => (
+                    <div
+                      key={m}
+                      className={`model-dropdown-item ${m === selectedModel ? 'active' : ''}`}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setSelectedModel(m);
+                        setShowModelMenu(false);
+                      }}
+                    >
+                      <span>{getModelDisplayName(m)}</span>
+                      {m === selectedModel && <Check className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />}
+                    </div>
+                  ))}
+                  <div className="model-dropdown-separator" />
+                  <div className="model-effort-section">
+                    <span className="model-effort-label">{t('chat.modelSelector.reasoningEffort')}</span>
+                    <div className="model-effort-toggle">
+                      {[['low', t('chat.modelSelector.effortLow')], ['medium', t('chat.modelSelector.effortMedium')], ['high', t('chat.modelSelector.effortHigh')]].map(([level, label]) => (
+                        <button
+                          key={level}
+                          className={`model-effort-btn ${level === reasoningEffort ? 'active' : ''}`}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            setReasoningEffort(level === reasoningEffort ? null : level);
+                          }}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="model-dropdown-separator" />
+                  <div
+                    className="model-dropdown-link"
+                    onMouseDown={(e) => { e.preventDefault(); navigate('/settings', { state: { tab: 'models' } }); setShowModelMenu(false); }}
+                  >
+                    {t('chat.modelSelector.manageModels')}
+                  </div>
+                </>
+              ) : (
+                <div className="model-dropdown-empty">
+                  <div
+                    className="model-dropdown-link"
+                    onMouseDown={(e) => { e.preventDefault(); navigate('/settings', { state: { tab: 'models' } }); setShowModelMenu(false); }}
+                  >
+                    {t('chat.modelSelector.configureModels')}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Textarea */}
           <div className="relative">
             <textarea
@@ -966,6 +1079,34 @@ const ChatInput = forwardRef(function ChatInput({
 
             {/* Right Tools */}
             <div className="flex flex-row items-center min-w-0 gap-1">
+              {/* Model Selector */}
+              {(starredModels.length > 0 || selectedModel) && (
+                <button
+                  className="inline-flex items-center rounded-full border-none cursor-pointer"
+                  style={{
+                    gap: '4px',
+                    padding: '6px 10px',
+                    fontSize: '13px',
+                    fontWeight: 500,
+                    background: showModelMenu ? 'var(--color-accent-soft)' : 'transparent',
+                    color: showModelMenu ? 'var(--color-accent-light)' : 'var(--color-text-muted, #8b8fa3)',
+                    border: showModelMenu ? '1px solid var(--color-accent-overlay)' : '1px solid transparent',
+                    transition: 'background 0.2s, color 0.2s, border-color 0.2s',
+                  }}
+                  onClick={(e) => { e.stopPropagation(); setShowModelMenu((v) => !v); }}
+                  onMouseEnter={(e) => {
+                    if (!showModelMenu) e.currentTarget.style.background = 'var(--color-border-muted)';
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!showModelMenu) e.currentTarget.style.background = 'transparent';
+                  }}
+                  type="button"
+                  title="Select model"
+                >
+                  <span className="max-w-[120px] truncate">{getModelDisplayName(selectedModel) || 'Model'}</span>
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+              )}
               {/* Send / Stop Button */}
               {isLoading && onStop ? (
                 <button

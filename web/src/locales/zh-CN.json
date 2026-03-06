@@ -308,7 +308,15 @@
     "offloadedArgsNotification": "工具参数已转存 · {{count}} 个工具",
     "offloadedReadsNotification": "过期读取结果已转存 · {{count}} 个读取",
     "offloadedNotification": "上下文已转存 · {{args}} 个工具参数, {{reads}} 个读取",
-    "compactionError": "上下文压缩失败"
+    "compactionError": "上下文压缩失败",
+    "modelSelector": {
+      "manageModels": "管理模型",
+      "configureModels": "配置模型 →",
+      "reasoningEffort": "推理",
+      "effortLow": "低",
+      "effortMedium": "中",
+      "effortHigh": "高"
+    }
   },
   "context": {
     "addToContext": "添加到上下文",

@@ -130,7 +130,9 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
   const chatInputRef = useRef(null);
   const location = useLocation();
   const navigate = useNavigate();
-  const { refreshUser } = useAuth();
+  const { refreshUser, preferences } = useAuth();
+  const starredModels = preferences?.other_preference?.starred_models || [];
+  const preferredModel = preferences?.other_preference?.preferred_model || null;
   const initialMessageSentRef = useRef(false);
   // Determine agent mode: flash workspaces use flash mode, otherwise ptc
   const [agentMode, setAgentMode] = useState(location.state?.agentMode || 'ptc');
@@ -432,7 +434,7 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
 
   // Wrapper: converts ChatInput's (message, planMode, attachments, slashCommands) into
   // handleSendMessage(message, planMode, additionalContext, attachmentMeta)
-  const handleSendWithAttachments = useCallback((message, planMode, attachments = [], slashCommands = []) => {
+  const handleSendWithAttachments = useCallback((message, planMode, attachments = [], slashCommands = [], modelOptions = {}) => {
     const contexts = [];
     let attachmentMeta = null;
 
@@ -458,7 +460,7 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
     }
 
     const additionalContext = contexts.length > 0 ? contexts : null;
-    handleSendMessage(message, planMode, additionalContext, attachmentMeta);
+    handleSendMessage(message, planMode, additionalContext, attachmentMeta, modelOptions);
   }, [handleSendMessage]);
 
   // Handle action-type slash commands (e.g. /summarize, /compaction, /offload)
@@ -1415,6 +1417,8 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
                       files={workspaceFiles}
                       tokenUsage={tokenUsage}
                       onAction={handleAction}
+                      starredModels={starredModels}
+                      initialModel={preferredModel}
                     />
                   </>
                 ) : activeAgent ? (
