@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Plus, ArrowUpRight, ArrowDownRight, Trash2, Pencil, Eye, EyeOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useNavigate } from 'react-router-dom';
 import { getExtendedHoursInfo } from '@/lib/marketUtils';
 
 function ContextMenu({ menu, onClose, items }) {
@@ -32,6 +33,7 @@ function ContextMenu({ menu, onClose, items }) {
 }
 
 function WatchlistItem({ item, index, onDelete, marketStatus }) {
+  const navigate = useNavigate();
   const [menu, setMenu] = useState(null); // { x, y } or null
   const pos = item.isPositive;
   const pctStr = (pos ? '+' : '') + Number(item.changePercent).toFixed(2) + '%';
@@ -51,8 +53,9 @@ function WatchlistItem({ item, index, onDelete, marketStatus }) {
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: index * 0.05 }}
-        className="flex items-center justify-between p-3 rounded-xl border border-transparent transition-all cursor-default"
+        className="flex items-center justify-between p-3 rounded-xl border border-transparent transition-all cursor-pointer"
         style={{ backgroundColor: 'transparent' }}
+        onClick={() => navigate(`/market?symbol=${encodeURIComponent(item.symbol)}`)}
         onContextMenu={handleContextMenu}
         onMouseEnter={(e) => {
           e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)';
@@ -109,6 +112,7 @@ function WatchlistItem({ item, index, onDelete, marketStatus }) {
 }
 
 function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStatus }) {
+  const navigate = useNavigate();
   const [menu, setMenu] = useState(null); // { x, y } or null
   const pos = item.isPositive;
   const plStr =
@@ -131,8 +135,9 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStat
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: index * 0.05 }}
-        className="flex items-center justify-between p-3 rounded-xl border border-transparent transition-all cursor-default"
+        className="flex items-center justify-between p-3 rounded-xl border border-transparent transition-all cursor-pointer"
         style={{ backgroundColor: 'transparent' }}
+        onClick={() => navigate(`/market?symbol=${encodeURIComponent(item.symbol)}`)}
         onContextMenu={handleContextMenu}
         onMouseEnter={(e) => {
           e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)';

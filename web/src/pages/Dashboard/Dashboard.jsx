@@ -1,7 +1,6 @@
 import {
   INDEX_SYMBOLS,
   fallbackIndex,
-  getCurrentUser,
   getIndices,
   normalizeIndexSymbol,
   getNews,
@@ -12,6 +11,7 @@ import { useTranslation } from 'react-i18next';
 import { useToast } from '@/components/ui/use-toast';
 import { getFlashWorkspace } from '../ChatAgent/utils/api';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../../contexts/AuthContext';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../components/ui/dialog';
 import { Input } from '../../components/ui/input';
 import DashboardHeader from './components/DashboardHeader';
@@ -77,6 +77,7 @@ function Dashboard() {
   const { toast } = useToast();
   const navigate = useNavigate();
   const { t } = useTranslation();
+  const { user: authUser } = useAuth();
 
   // Onboarding check state
   const [showOnboardingDialog, setShowOnboardingDialog] = useState(false);
@@ -168,29 +169,17 @@ function Dashboard() {
     return () => { if (intervalId) clearTimeout(intervalId); };
   }, [fetchIndices]);
 
-  /**
-   * Check onboarding completion status on every Dashboard mount.
-   */
+  // Check onboarding completion reactively from auth context user data
   useEffect(() => {
-    const checkOnboarding = async () => {
-      try {
-        const userData = await getCurrentUser();
-        const onboardingCompleted = userData?.user?.onboarding_completed;
-
-        if (onboardingCompleted === true) {
-          setShowOnboardingDialog(false);
-          return;
-        }
-        if (onboardingCompleted === false && !isOnboardingIgnoredFor24h()) {
-          setShowOnboardingDialog(true);
-        }
-      } catch (error) {
-        console.error('[Dashboard] Error checking onboarding status:', error);
-      }
-    };
-
-    checkOnboarding();
-  }, []);
+    if (!authUser) return;
+    if (authUser.onboarding_completed === true) {
+      setShowOnboardingDialog(false);
+      return;
+    }
+    if (authUser.onboarding_completed === false && !isOnboardingIgnoredFor24h()) {
+      setShowOnboardingDialog(true);
+    }
+  }, [authUser]);
 
   const navigateToOnboarding = useCallback(async () => {
     setIsCreatingWorkspace(true);
@@ -279,7 +268,6 @@ function Dashboard() {
             {/* Right 1/3 — sticky sidebar */}
             <div className="lg:col-span-1">
               <div className="lg:sticky lg:top-24 space-y-6">
-                <EarningsCalendarCard />
                 <div className="lg:h-[calc(100vh-420px)]">
                   <PortfolioWatchlistCard
                     watchlistRows={watchlist.rows}
@@ -295,6 +283,7 @@ function Dashboard() {
                     marketStatus={marketStatus}
                   />
                 </div>
+                <EarningsCalendarCard />
               </div>
             </div>
           </div>
