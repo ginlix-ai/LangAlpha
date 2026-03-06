@@ -314,9 +314,9 @@
       "moreModels": "More models",
       "configureModels": "Configure models →",
       "reasoningEffort": "Reasoning",
-      "effortLow": "L",
-      "effortMedium": "M",
-      "effortHigh": "H",
+      "effortLow": "Low",
+      "effortMedium": "Medium",
+      "effortHigh": "High",
       "incompatibleSdk": "Cannot switch to this model in the current session (different provider)"
     }
   },

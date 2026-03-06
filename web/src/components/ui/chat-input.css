@@ -311,16 +311,6 @@
 
 .model-dropdown-submenu {
   position: absolute;
-  left: calc(100% + 4px);
-  /* Invisible bridge to cover the gap between trigger and submenu */
-  &::before {
-    content: '';
-    position: absolute;
-    right: 100%;
-    top: 0;
-    width: 8px;
-    height: 100%;
-  }
   width: 240px;
   background-color: var(--color-bg-elevated);
   border: 1px solid var(--color-border-muted);
@@ -338,6 +328,34 @@
 
 .model-dropdown-submenu-down {
   top: 0;
+}
+
+/* Submenu opens to the right (default) */
+.model-dropdown-submenu-right {
+  left: calc(100% + 4px);
+  /* Invisible bridge to cover the gap between trigger and submenu */
+  &::before {
+    content: '';
+    position: absolute;
+    right: 100%;
+    top: 0;
+    width: 8px;
+    height: 100%;
+  }
+}
+
+/* Submenu opens to the left (when no space on the right) */
+.model-dropdown-submenu-left {
+  right: calc(100% + 4px);
+  /* Invisible bridge on the right side */
+  &::before {
+    content: '';
+    position: absolute;
+    left: 100%;
+    top: 0;
+    width: 8px;
+    height: 100%;
+  }
 }
 
 .model-dropdown-empty {

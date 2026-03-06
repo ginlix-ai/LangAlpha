@@ -168,7 +168,7 @@
   padding: 6px 14px;
   border-radius: 9999px;
   border: 1px solid var(--color-border-muted);
-  background: var(--color-bg-surface, var(--color-bg-card));
+  background: var(--color-bg-elevated);
   color: var(--color-text-secondary);
   font-size: 12px;
   cursor: pointer;
@@ -180,10 +180,12 @@
   opacity: 1;
   transform: translateY(0);
 }
-.dashboard-suggestion-bubble:hover {
-  background: var(--color-bg-hover);
+.dashboard-suggestion-bubble:hover,
+.dashboard-suggestion-bubble:active {
+  background: var(--color-bg-elevated);
   border-color: var(--color-border-default);
   color: var(--color-text-primary);
+  filter: brightness(1.2);
 }
 
 /* === Floating chat input === */

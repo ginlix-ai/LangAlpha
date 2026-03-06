@@ -1093,7 +1093,8 @@ const ChatInput = forwardRef(function ChatInput({
                   </button>
                   {showModelMenu && (
                     <div className={`model-dropdown ${dropdownDirection === 'down' ? 'model-dropdown-down' : 'model-dropdown-up'}`}>
-                      {/* Primary menu: thread models + reasoning + "More models" */}
+                      {/* Primary menu: thread models + reasoning + "More models"
+                         Submenu direction: open left if dropdown is near right edge of viewport */}
                       {(() => {
                         const primaryModels = threadModelsProp.length > 0
                           ? [...new Set([...threadModelsProp, selectedModel].filter(Boolean))]
@@ -1144,10 +1145,13 @@ const ChatInput = forwardRef(function ChatInput({
                       >
                         <span>{t('chat.modelSelector.moreModels')}</span>
                         <ChevronRight className="h-3.5 w-3.5" />
-                        {/* Submenu — appears on hover */}
-                        {showMoreModels && (
+                        {/* Submenu — appears on hover; opens left if near right edge */}
+                        {showMoreModels && (() => {
+                          const menuRect = modelMenuRef.current?.getBoundingClientRect();
+                          const openLeft = menuRect && menuRect.right + 244 > window.innerWidth;
+                          return (
                           <div
-                            className={`model-dropdown-submenu ${dropdownDirection === 'down' ? 'model-dropdown-submenu-down' : 'model-dropdown-submenu-up'}`}
+                            className={`model-dropdown-submenu ${dropdownDirection === 'down' ? 'model-dropdown-submenu-down' : 'model-dropdown-submenu-up'} ${openLeft ? 'model-dropdown-submenu-left' : 'model-dropdown-submenu-right'}`}
                             onMouseEnter={() => clearTimeout(moreModelsTimeout.current)}
                             onMouseLeave={() => { moreModelsTimeout.current = setTimeout(() => setShowMoreModels(false), 150); }}
                           >
@@ -1185,7 +1189,8 @@ const ChatInput = forwardRef(function ChatInput({
                               {t('chat.modelSelector.manageModels')}
                             </div>
                           </div>
-                        )}
+                          );
+                        })()}
                       </div>
                     </div>
                   )}
