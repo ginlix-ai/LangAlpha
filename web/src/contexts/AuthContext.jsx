@@ -35,6 +35,9 @@ export function AuthProvider({ children }) {
   return <SupabaseAuthProvider>{children}</SupabaseAuthProvider>;
 }
 
+// Module-level — deduplicates concurrent syncUser calls within the same tab
+let _syncPromise = null;
+
 /** Inner provider that uses hooks — only rendered when Supabase auth is enabled. */
 function SupabaseAuthProvider({ children }) {
   const [session, setSession] = useState(null);
@@ -68,31 +71,37 @@ function SupabaseAuthProvider({ children }) {
   /** Sync user on actual sign-in: create/migrate + backfill fields. */
   const syncUser = useCallback(async (sess) => {
     if (!sess) return;
-    try {
-      const token = sess.access_token;
-      const meta = sess.user?.user_metadata ?? {};
-      const res = await fetch(`${baseURL}/api/v1/auth/sync`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          email: sess.user?.email,
-          name: meta.name || meta.full_name || null,
-          avatar_url: meta.avatar_url || null,
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || null,
-          locale: navigator.language || null,
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setLocalUser(data.user ?? data);
-        setPreferences(data.preferences ?? null);
+    if (_syncPromise) return _syncPromise;
+    _syncPromise = (async () => {
+      try {
+        const token = sess.access_token;
+        const meta = sess.user?.user_metadata ?? {};
+        const res = await fetch(`${baseURL}/api/v1/auth/sync`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            email: sess.user?.email,
+            name: meta.name || meta.full_name || null,
+            avatar_url: meta.avatar_url || null,
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || null,
+            locale: navigator.language || null,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setLocalUser(data.user ?? data);
+          setPreferences(data.preferences ?? null);
+        }
+      } catch (err) {
+        console.error('[auth] syncUser failed:', err);
+      } finally {
+        _syncPromise = null;
       }
-    } catch (err) {
-      console.error('[auth] syncUser failed:', err);
-    }
+    })();
+    return _syncPromise;
   }, []);
 
   // Bootstrap: read existing session and listen for auth changes.
@@ -114,8 +123,9 @@ function SupabaseAuthProvider({ children }) {
         wireTokenGetter();
         if (event === 'SIGNED_IN') {
           syncUser(sess);  // Full sync only on actual login
-        } else if (event === 'TOKEN_REFRESHED') {
-          // Token refreshed — no backend call needed
+        } else if (event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED') {
+          // INITIAL_SESSION: getSession() above already calls fetchUser
+          // TOKEN_REFRESHED: no backend call needed
         } else {
           fetchUser(sess.access_token);
         }

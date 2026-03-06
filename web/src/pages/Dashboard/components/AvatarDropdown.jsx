@@ -1,37 +1,28 @@
 import { User, Settings, LogOut, ChevronDown, CreditCard } from 'lucide-react';
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { getCurrentUser } from '../utils/api';
 import { useAuth } from '../../../contexts/AuthContext';
 import ConfirmDialog from './ConfirmDialog';
 
 const AvatarDropdown = () => {
   const navigate = useNavigate();
-  const { isLoggedIn, logout } = useAuth();
+  const { isLoggedIn, logout, user } = useAuth();
   const { t } = useTranslation();
-  const [avatarUrl, setAvatarUrl] = useState(null);
-  const [displayName, setDisplayName] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const dropdownRef = useRef(null);
   const accountUrl = import.meta.env.VITE_ACCOUNT_URL || null;
 
-  const refreshUser = useCallback(async () => {
-    try {
-      const data = await getCurrentUser();
-      const url = data?.user?.avatar_url;
-      const version = data?.user?.updated_at;
-      setAvatarUrl(url ? `${url}?v=${version}` : null);
-      setDisplayName(data?.user?.display_name || data?.user?.name || '');
-    } catch (err) {
-      console.error('Failed to fetch user:', err);
-    }
-  }, []);
+  const avatarUrl = useMemo(() => {
+    const url = user?.avatar_url;
+    const version = user?.updated_at;
+    return url ? `${url}?v=${version}` : null;
+  }, [user?.avatar_url, user?.updated_at]);
 
-  useEffect(() => {
-    if (isLoggedIn) refreshUser();
-  }, [isLoggedIn, refreshUser]);
+  const displayName = user?.display_name || user?.name || '';
+  const [avatarError, setAvatarError] = useState(false);
+  useEffect(() => setAvatarError(false), [avatarUrl]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -61,8 +52,8 @@ const AvatarDropdown = () => {
             className="h-8 w-8 rounded-full flex items-center justify-center overflow-hidden"
             style={{ backgroundColor: 'var(--color-accent-soft)' }}
           >
-            {avatarUrl ? (
-              <img src={avatarUrl} alt="avatar" className="h-full w-full object-cover" onError={() => setAvatarUrl(null)} />
+            {avatarUrl && !avatarError ? (
+              <img src={avatarUrl} alt="avatar" className="h-full w-full object-cover" onError={() => setAvatarError(true)} />
             ) : (
               <User className="h-4 w-4" style={{ color: 'var(--color-accent-primary)' }} />
             )}
