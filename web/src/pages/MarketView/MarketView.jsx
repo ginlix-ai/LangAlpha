@@ -19,6 +19,8 @@ import { MarketDataWSProvider, useMarketDataWSContext } from './contexts/MarketD
 
 import { loadPref, savePref } from './utils/prefs';
 
+import { useStockData } from './hooks/useStockData';
+
 const QUICK_QUERIES = [
   'Analyze the technical setup of {symbol}',
   'What are the key support and resistance levels for {symbol}?',
@@ -37,19 +39,33 @@ function MarketViewInner() {
   const { prices: wsPrices, connectionStatus: wsStatus, dataLevel: wsDataLevel, ginlixDataEnabled, subscribe: wsSubscribe, unsubscribe: wsUnsubscribe, setPreviousClose, setDayOpen } = useMarketDataWSContext();
   const [selectedStock, setSelectedStock] = useState(() => loadPref('symbol', 'GOOGL'));
   const [selectedStockDisplay, setSelectedStockDisplay] = useState(null);
-  const [stockInfo, setStockInfo] = useState(null);
-  const [realTimePrice, setRealTimePrice] = useState(null);
+
+  const {
+    stockInfo,
+    setStockInfo,
+    realTimePrice,
+    setRealTimePrice,
+    snapshotData,
+    setSnapshotData,
+    overviewData,
+    overviewLoading,
+    overlayData,
+    marketStatus,
+    handleLatestBar
+  } = useStockData({
+    selectedStock,
+    wsStatus,
+    setPreviousClose,
+    setDayOpen
+  });
+
   const [chartMeta, setChartMeta] = useState(null);
   const [selectedInterval, setSelectedInterval] = useState(() => loadPref('interval', '1day'));
   const chartRef = useRef();
   const [chartImage, setChartImage] = useState(null);       // base64 data URL
   const [chartImageDesc, setChartImageDesc] = useState(null); // text description for LLM
   const [showOverview, setShowOverview] = useState(false);
-  const [overviewData, setOverviewData] = useState(null);
-  const [overviewLoading, setOverviewLoading] = useState(false);
-  const [overlayData, setOverlayData] = useState(null);
-  const [snapshotData, setSnapshotData] = useState(null);
-  const [marketStatus, setMarketStatus] = useState(null);
+
   const [prefillMessage, setPrefillMessage] = useState('');
   const [mode, setMode] = useState('fast');
   const [workspaces, setWorkspaces] = useState([]);
@@ -102,8 +118,6 @@ function MarketViewInner() {
       const symbol = symbolParam.trim().toUpperCase();
       if (symbol && symbol !== selectedStock) {
         setSelectedStock(symbol);
-        setRealTimePrice(null);
-        setStockInfo(null);
         setSelectedStockDisplay(null);
         setChartMeta(null);
       }
@@ -119,18 +133,15 @@ function MarketViewInner() {
 
   const handleStockSearch = useCallback((symbol, searchResult) => {
     setSelectedStock(symbol);
-    setRealTimePrice(null);
-    setStockInfo(null);
     setSelectedStockDisplay(
       searchResult
         ? {
-            name: searchResult.name || searchResult.symbol,
-            exchange: searchResult.exchangeShortName || searchResult.stockExchange || '',
-          }
+          name: searchResult.name || searchResult.symbol,
+          exchange: searchResult.exchangeShortName || searchResult.stockExchange || '',
+        }
         : null
     );
     setChartMeta(null);
-    setSnapshotData(null);
     setShowOverview(false);
   }, []);
 
@@ -146,116 +157,6 @@ function MarketViewInner() {
   const realTimePriceMatch = realTimePrice?.symbol === selectedStock ? realTimePrice : null;
   const displayPrice = wsPrices.get(selectedStock) || realTimePriceMatch;
 
-  // Consolidated fetch: stockInfo + realTimePrice from a single API call
-  // with AbortController and Page Visibility API.
-  // When WS is connected, only fetch once (for stockInfo/name/exchange) — skip polling.
-  useEffect(() => {
-    if (!selectedStock) return;
-
-    const abortController = new AbortController();
-
-    const loadStockQuote = async () => {
-      try {
-        const { stockInfo: info, realTimePrice: price, snapshot } = await fetchStockQuote(
-          selectedStock,
-          { signal: abortController.signal }
-        );
-        setStockInfo(info);
-        if (price) setRealTimePrice(price);
-        // Seed WS refs from snapshot for accurate change% calculation
-        if (snapshot) {
-          setSnapshotData(snapshot);
-          if (snapshot.previous_close != null) setPreviousClose(selectedStock, snapshot.previous_close);
-          if (snapshot.open != null) setDayOpen(selectedStock, snapshot.open);
-        }
-      } catch (error) {
-        if (error?.name === 'CanceledError' || error?.name === 'AbortError') return;
-        console.error('Error loading stock quote:', error);
-        setStockInfo({
-          Symbol: selectedStock,
-          Name: `${selectedStock} Corp`,
-          Exchange: 'NASDAQ',
-        });
-      }
-    };
-
-    loadStockQuote();
-
-    // Suppress 60s polling when WS is connected — WS provides sub-second updates
-    if (wsStatus === 'connected') {
-      return () => abortController.abort();
-    }
-
-    // Refresh price every 60s, but skip when tab is hidden (Page Visibility API)
-    let cancelled = false;
-    const priceInterval = setInterval(async () => {
-      if (document.hidden) return; // Skip fetch when tab is not visible
-      try {
-        const { stockInfo: info, realTimePrice: price, snapshot } = await fetchStockQuote(selectedStock);
-        if (cancelled) return;
-        setStockInfo(info);
-        if (price) setRealTimePrice(price);
-        if (snapshot) {
-          setSnapshotData(snapshot);
-          if (snapshot.previous_close != null) setPreviousClose(selectedStock, snapshot.previous_close);
-          if (snapshot.open != null) setDayOpen(selectedStock, snapshot.open);
-        }
-      } catch (error) {
-        console.error('Error refreshing stock quote:', error);
-      }
-    }, 60000);
-
-    return () => {
-      cancelled = true;
-      abortController.abort();
-      clearInterval(priceInterval);
-    };
-  }, [selectedStock, wsStatus]);
-
-  // Fetch company overview data (lifted from CompanyOverviewPanel)
-  useEffect(() => {
-    if (!selectedStock) return;
-    const ac = new AbortController();
-    setOverviewLoading(true);
-    fetchCompanyOverview(selectedStock, { signal: ac.signal })
-      .then((result) => {
-        setOverviewData(result);
-      })
-      .catch((err) => {
-        if (err?.name === 'CanceledError' || err?.name === 'AbortError') return;
-        console.error('Error fetching company overview:', err);
-        setOverviewData(null);
-      })
-      .finally(() => setOverviewLoading(false));
-    return () => ac.abort();
-  }, [selectedStock]);
-
-  // Fetch analyst data (price targets + grades) for chart overlays
-  useEffect(() => {
-    if (!selectedStock) return;
-    const ac = new AbortController();
-    fetchAnalystData(selectedStock, { signal: ac.signal })
-      .then((analyst) => {
-        setOverlayData(analyst ? {
-          priceTargets: analyst.priceTargets || null,
-          grades: analyst.grades || [],
-        } : null);
-      })
-      .catch((err) => {
-        if (err?.name === 'CanceledError' || err?.name === 'AbortError') return;
-        setOverlayData(null);
-      });
-    return () => ac.abort();
-  }, [selectedStock]);
-
-  // Poll market status (60s interval)
-  useEffect(() => {
-    const loadStatus = () => fetchMarketStatus().then(setMarketStatus).catch(() => {});
-    loadStatus();
-    const id = setInterval(() => { if (!document.hidden) loadStatus(); }, 60000);
-    return () => clearInterval(id);
-  }, []);
-
   // Fetch workspaces for the workspace selector (deep mode)
   useEffect(() => {
     let cancelled = false;
@@ -268,7 +169,7 @@ function MarketViewInner() {
           setSelectedWorkspaceId(list[0].workspace_id);
         }
       })
-      .catch(() => {});
+      .catch(() => { });
     return () => { cancelled = true; };
   }, []);
 
@@ -425,35 +326,6 @@ function MarketViewInner() {
 
   const handleStockMeta = useCallback((meta) => {
     setChartMeta(meta);
-  }, []);
-
-  // Update header price from chart's latest bar (bridges REST polling data to header).
-  // Uses a ref for stockInfo to keep the callback identity stable (avoids MarketChart re-renders).
-  const stockInfoRef = useRef(stockInfo);
-  useEffect(() => { stockInfoRef.current = stockInfo; }, [stockInfo]);
-
-  const handleLatestBar = useCallback((bar) => {
-    if (!bar?.close) return;
-    setRealTimePrice((prev) => {
-      if (!prev || !prev.price) return prev;
-      const updatedPrice = Math.round(bar.close * 100) / 100;
-      // Use previousClose from snapshot if available, else derive from initial quote
-      const previousClose = prev.previousClose ?? ((prev.price ?? 0) - (prev.change ?? 0));
-      if (!previousClose) {
-        // Still update price even without previousClose — just skip change% recalculation
-        return { ...prev, price: updatedPrice, close: bar.close, timestamp: bar.time * 1000 };
-      }
-      const change = bar.close - previousClose;
-      const changePct = parseFloat(((change / previousClose) * 100).toFixed(2));
-      return {
-        ...prev,
-        price: updatedPrice,
-        close: bar.close,
-        change: Math.round(change * 100) / 100,
-        changePercent: changePct,
-        timestamp: bar.time * 1000,
-      };
-    });
   }, []);
 
   const handleDragStart = useCallback((e) => {
