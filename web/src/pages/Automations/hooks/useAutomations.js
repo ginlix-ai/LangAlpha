@@ -1,38 +1,20 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { listAutomations } from '../utils/api';
 
 const POLL_INTERVAL = 30000;
 
 export function useAutomations({ status } = {}) {
-  const [automations, setAutomations] = useState([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const intervalRef = useRef(null);
-
-  const fetch = useCallback(async (showLoading = false) => {
-    if (showLoading) setLoading(true);
-    try {
+  const { data = { automations: [], total: 0 }, isLoading: loading, error, refetch } = useQuery({
+    queryKey: ['automations', status],
+    queryFn: async () => {
       const params = { limit: 100, offset: 0 };
       if (status) params.status = status;
       const { data } = await listAutomations(params);
-      setAutomations(data.automations);
-      setTotal(data.total);
-      setError(null);
-    } catch (err) {
-      setError(err);
-    } finally {
-      setLoading(false);
-    }
-  }, [status]);
+      return { automations: data.automations, total: data.total };
+    },
+    refetchInterval: POLL_INTERVAL,
+    staleTime: 5000,
+  });
 
-  const refetch = useCallback(() => fetch(false), [fetch]);
-
-  useEffect(() => {
-    fetch(true);
-    intervalRef.current = setInterval(() => fetch(false), POLL_INTERVAL);
-    return () => clearInterval(intervalRef.current);
-  }, [fetch]);
-
-  return { automations, total, loading, error, refetch };
+  return { automations: data.automations, total: data.total, loading, error, refetch };
 }

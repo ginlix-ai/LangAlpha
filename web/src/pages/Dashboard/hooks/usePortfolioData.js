@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/components/ui/use-toast';
 import {
   addPortfolioHolding,
@@ -8,26 +9,22 @@ import {
   updatePortfolioHolding,
 } from '../utils/api';
 
-// Module-level cache (survives navigation, clears on page refresh)
-let portfolioCache = null; // { rows, hasRealHoldings }
-
 /**
  * Shared hook for portfolio data fetching and CRUD operations.
  * Used by both Dashboard and MarketView sidebar.
+ * Refactored to use TanStack Query for optimal polling and caching.
  */
 export function usePortfolioData() {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
 
-  const [rows, setRows] = useState(() => portfolioCache?.rows || []);
-  const [loading, setLoading] = useState(!portfolioCache);
-  const [hasRealHoldings, setHasRealHoldings] = useState(() => portfolioCache?.hasRealHoldings || false);
   const [modalOpen, setModalOpen] = useState(false);
   const [editRow, setEditRow] = useState(null);
   const [editForm, setEditForm] = useState({ quantity: '', averageCost: '', notes: '' });
 
-  const fetchPortfolio = useCallback(async () => {
-    if (!portfolioCache) setLoading(true);
-    try {
+  const { data = { rows: [], hasRealHoldings: false }, isLoading: loading, refetch: fetchPortfolio } = useQuery({
+    queryKey: ['portfolioData'],
+    queryFn: async () => {
       const { holdings } = await getPortfolio();
       const symbols = holdings?.length
         ? holdings.map((h) => String(h.symbol || '').trim().toUpperCase())
@@ -36,7 +33,6 @@ export function usePortfolioData() {
       const bySym = Object.fromEntries((prices || []).map((p) => [p.symbol, p]));
 
       if (holdings?.length) {
-        setHasRealHoldings(true);
         const combined = holdings.map((h) => {
           const sym = String(h.symbol || '').trim().toUpperCase();
           const p = bySym[sym] || {};
@@ -59,40 +55,22 @@ export function usePortfolioData() {
             lateTradingChangePercent: p.lateTradingChangePercent ?? null,
           };
         });
-        setRows(combined);
-        portfolioCache = { rows: combined, hasRealHoldings: true };
-      } else {
-        setHasRealHoldings(false);
-        setRows([]);
-        portfolioCache = { rows: [], hasRealHoldings: false };
+        return { rows: combined, hasRealHoldings: true };
       }
-    } catch (error) {
-      console.error('[usePortfolioData] Error fetching portfolio:', error);
-      if (!portfolioCache) {
-        setHasRealHoldings(false);
-        setRows([]);
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+      return { rows: [], hasRealHoldings: false };
+    },
+    refetchInterval: 60000,
+    staleTime: 1000 * 30, // 30s fresh cache
+  });
 
-  useEffect(() => {
-    fetchPortfolio();
-    const intervalId = setInterval(() => {
-      if (document.hidden) return;
-      fetchPortfolio();
-    }, 60000);
-    return () => clearInterval(intervalId);
-  }, [fetchPortfolio]);
+  const { rows, hasRealHoldings } = data;
 
   const handleAdd = useCallback(
     async (payload) => {
       try {
         await addPortfolioHolding(payload);
         setModalOpen(false);
-        portfolioCache = null;
-        fetchPortfolio();
+        queryClient.invalidateQueries({ queryKey: ['portfolioData'] });
 
         toast({
           title: 'Holding added',
@@ -118,7 +96,7 @@ export function usePortfolioData() {
         }
       }
     },
-    [fetchPortfolio, toast]
+    [queryClient, toast]
   );
 
   const handleDelete = useCallback(
@@ -131,15 +109,14 @@ export function usePortfolioData() {
         onConfirm: async () => {
           try {
             await deletePortfolioHolding(holdingId);
-            portfolioCache = null;
-            fetchPortfolio();
+            queryClient.invalidateQueries({ queryKey: ['portfolioData'] });
           } catch (e) {
             console.error('Delete portfolio holding failed:', e?.response?.status, e?.response?.data, e?.message);
           }
         },
       };
     },
-    [fetchPortfolio]
+    [queryClient]
   );
 
   const openEdit = useCallback((row) => {
@@ -166,8 +143,7 @@ export function usePortfolioData() {
         }
       );
       setEditRow(null);
-      portfolioCache = null;
-      fetchPortfolio();
+      queryClient.invalidateQueries({ queryKey: ['portfolioData'] });
     } catch (e) {
       console.error('Update portfolio holding failed:', e?.response?.status, e?.response?.data, e?.message);
 
@@ -187,7 +163,7 @@ export function usePortfolioData() {
         });
       }
     }
-  }, [editRow, editForm, fetchPortfolio, toast]);
+  }, [editRow, editForm, queryClient, toast]);
 
   return {
     rows,

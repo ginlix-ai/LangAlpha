@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/components/ui/use-toast';
 import {
   addWatchlistItem,
@@ -8,28 +9,23 @@ import {
   listWatchlistItems,
 } from '../utils/api';
 
-// Module-level cache (survives navigation, clears on page refresh)
-let watchlistCache = null; // { rows, watchlistId }
-
 /**
  * Shared hook for watchlist data fetching and CRUD operations.
  * Used by both Dashboard and MarketView sidebar.
+ * Refactored to use TanStack Query for optimal polling and caching.
  */
 export function useWatchlistData() {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
 
-  const [rows, setRows] = useState(() => watchlistCache?.rows || []);
-  const [loading, setLoading] = useState(!watchlistCache);
   const [modalOpen, setModalOpen] = useState(false);
-  const [currentWatchlistId, setCurrentWatchlistId] = useState(() => watchlistCache?.watchlistId || null);
 
-  const fetchWatchlist = useCallback(async () => {
-    if (!watchlistCache) setLoading(true);
-    try {
+  const { data = { rows: [], currentWatchlistId: null }, isLoading: loading, refetch: fetchWatchlist } = useQuery({
+    queryKey: ['watchlistData'],
+    queryFn: async () => {
       const { watchlists } = await listWatchlists();
       const firstWatchlist = watchlists?.[0];
       const watchlistId = firstWatchlist?.watchlist_id || 'default';
-      setCurrentWatchlistId(watchlistId);
 
       const { items } = await listWatchlistItems(watchlistId);
       const symbols = items?.length ? items.map((i) => i.symbol) : [];
@@ -38,37 +34,28 @@ export function useWatchlistData() {
 
       const combined = items?.length
         ? items.map((i) => {
-            const sym = String(i.symbol || '').trim().toUpperCase();
-            const p = bySym[sym] || {};
-            return {
-              watchlist_item_id: i.watchlist_item_id,
-              symbol: sym,
-              price: p.price ?? 0,
-              change: p.change ?? 0,
-              changePercent: p.changePercent ?? 0,
-              isPositive: p.isPositive ?? true,
-              earlyTradingChangePercent: p.earlyTradingChangePercent ?? null,
-              lateTradingChangePercent: p.lateTradingChangePercent ?? null,
-            };
-          })
+          const sym = String(i.symbol || '').trim().toUpperCase();
+          const p = bySym[sym] || {};
+          return {
+            watchlist_item_id: i.watchlist_item_id,
+            symbol: sym,
+            price: p.price ?? 0,
+            change: p.change ?? 0,
+            changePercent: p.changePercent ?? 0,
+            isPositive: p.isPositive ?? true,
+            earlyTradingChangePercent: p.earlyTradingChangePercent ?? null,
+            lateTradingChangePercent: p.lateTradingChangePercent ?? null,
+          };
+        })
         : [];
-      setRows(combined);
-      watchlistCache = { rows: combined, watchlistId };
-    } catch {
-      if (!watchlistCache) setRows([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
 
-  useEffect(() => {
-    fetchWatchlist();
-    const intervalId = setInterval(() => {
-      if (document.hidden) return;
-      fetchWatchlist();
-    }, 60000);
-    return () => clearInterval(intervalId);
-  }, [fetchWatchlist]);
+      return { rows: combined, currentWatchlistId: watchlistId };
+    },
+    refetchInterval: 60000,
+    staleTime: 1000 * 30, // 30s fresh
+  });
+
+  const { rows, currentWatchlistId } = data;
 
   const handleAdd = useCallback(
     async (itemData, watchlistId) => {
@@ -77,13 +64,11 @@ export function useWatchlistData() {
         if (!targetWatchlistId) {
           const { watchlists } = await listWatchlists();
           targetWatchlistId = watchlists?.[0]?.watchlist_id || 'default';
-          setCurrentWatchlistId(targetWatchlistId);
         }
 
         await addWatchlistItem(itemData, targetWatchlistId);
         setModalOpen(false);
-        watchlistCache = null;
-        fetchWatchlist();
+        queryClient.invalidateQueries({ queryKey: ['watchlistData'] });
 
         toast({
           title: 'Stock added',
@@ -110,7 +95,7 @@ export function useWatchlistData() {
         }
       }
     },
-    [currentWatchlistId, fetchWatchlist, toast]
+    [currentWatchlistId, queryClient, toast]
   );
 
   const handleDelete = useCallback(
@@ -120,17 +105,15 @@ export function useWatchlistData() {
         if (!watchlistId) {
           const { watchlists } = await listWatchlists();
           watchlistId = watchlists?.[0]?.watchlist_id || 'default';
-          setCurrentWatchlistId(watchlistId);
         }
 
         await deleteWatchlistItem(itemId, watchlistId);
-        watchlistCache = null;
-        fetchWatchlist();
+        queryClient.invalidateQueries({ queryKey: ['watchlistData'] });
       } catch (e) {
         console.error('Delete watchlist item failed:', e?.response?.status, e?.response?.data, e?.message);
       }
     },
-    [currentWatchlistId, fetchWatchlist]
+    [currentWatchlistId, queryClient]
   );
 
   return {
