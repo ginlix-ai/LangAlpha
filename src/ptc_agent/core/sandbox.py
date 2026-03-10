@@ -14,7 +14,6 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any
 
-import aiofiles
 import structlog
 from daytona_sdk import AsyncDaytona, DaytonaConfig, FileUpload
 from daytona_sdk.common.daytona import (
@@ -69,12 +68,46 @@ class ExecutionResult:
     charts: list[ChartData] = field(default_factory=list)
 
 
+@dataclass
+class SyncResult:
+    """Result of a unified sandbox asset sync operation."""
+
+    refreshed_modules: list[str]
+    forced: bool
+
+
+def _sha256_file(path: Path) -> str:
+    """Return the hex SHA-256 digest of a file's contents."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _hash_dict(d: dict[str, str]) -> str:
+    """Deterministic SHA-256 hash of a string→string dict."""
+    payload = "\n".join(f"{k}:{v}" for k, v in sorted(d.items()))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _resolve_local_path(local_path: str, config_dir: Path | None) -> str | None:
+    """Resolve a relative file path, trying *config_dir* first, then CWD."""
+    p = Path(local_path)
+    if not p.is_absolute() and config_dir:
+        candidate = (config_dir / local_path).resolve()
+        if candidate.exists():
+            return str(candidate)
+    if p.exists():
+        return str(p)
+    return None
+
+
 class PTCSandbox:
     """Manages Daytona sandbox for Programmatic Tool Calling (PTC) execution."""
 
     SNAPSHOT_PYTHON_VERSION = (
         "3.12"  # Intentionally pinned for stability/compatibility.
     )
+
+    UNIFIED_MANIFEST_PATH = "/home/daytona/_internal/.sandbox_manifest.json"
+    TOKEN_FRESHNESS_SECONDS = 25 * 60  # 25 min (access token TTL is 30 min)
 
     # Default Python dependencies installed in sandbox
     DEFAULT_DEPENDENCIES = [
@@ -155,7 +188,7 @@ class PTCSandbox:
         self._init_task: asyncio.Task[None] | None = None
         self._init_error: Exception | None = None
 
-        # Cached skills manifest (populated after sync_skills)
+        # Cached skills manifest (populated after sync_sandbox_assets)
         self._skills_manifest: dict[str, Any] | None = None
 
         # Track whether disabled tool modules have been pruned (only needed once)
@@ -194,10 +227,10 @@ class PTCSandbox:
 
     @property
     def skills_manifest(self) -> dict[str, Any] | None:
-        """Cached skills manifest from the last ``sync_skills`` call.
+        """Cached skills manifest from the last ``sync_sandbox_assets`` call.
 
         Contains ``"version"``, ``"files"``, and ``"skills"`` (parsed metadata).
-        Returns None if ``sync_skills`` has not been called yet.
+        Returns None if ``sync_sandbox_assets`` has not been called yet.
         """
         return self._skills_manifest
 
@@ -644,23 +677,39 @@ class PTCSandbox:
         logger.info("Sandbox workspace ready", sandbox_id=self.sandbox_id)
         return snapshot_name
 
-    async def setup_tools_and_mcp(self, snapshot_name: str | None) -> None:
+    async def setup_tools_and_mcp(
+        self,
+        snapshot_name: str | None,
+        *,
+        tokens: dict | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> None:
         """Install tool modules and start MCP servers.
 
         Requires MCP registry to be connected first.
 
         Args:
             snapshot_name: Snapshot name from setup_sandbox_workspace(), or None
+            tokens: Pre-minted OAuth tokens (written to initial manifest).
+            user_id: User ID for token tracking in manifest.
+            workspace_id: Workspace ID for token tracking in manifest.
         """
         logger.info("Setting up tools and MCP servers")
 
-        # Upload custom Python MCP server files to sandbox
-        await self._upload_mcp_server_files()
+        # Upload MCP server files, internal packages, and tokens in parallel (disjoint paths).
+        # Tokens must be on disk before _start_internal_mcp_servers reads them.
+        parallel = [
+            self._upload_mcp_server_files_impl(),  # → mcp_servers/
+            self._upload_internal_packages(),  # → _internal/src/
+        ]
+        if tokens:
+            parallel.append(
+                self.upload_token_file(tokens)
+            )  # → _internal/.mcp_tokens.json
+        await asyncio.gather(*parallel)
 
-        # Upload internal Python packages used by sandbox code
-        await self._upload_internal_packages()
-
-        # Always generate and install tool modules (dynamic content)
+        # Generate and install tool modules after mcp_servers (intent: derived from MCP definitions)
         await self._install_tool_modules()
 
         # Start internal MCP servers (when using snapshot with Node.js)
@@ -672,6 +721,15 @@ class PTCSandbox:
                 "Skipping internal MCP servers - not using snapshot. "
                 "MCP tools will not work without snapshot."
             )
+
+        # Write initial unified manifest so subsequent syncs can diff against it
+        try:
+            manifest = await self._compute_sandbox_manifest(
+                tokens=tokens, user_id=user_id, workspace_id=workspace_id
+            )
+            await self._write_unified_manifest(manifest)
+        except Exception as e:
+            logger.warning("Failed to write initial unified manifest", error=str(e))
 
         logger.info("Tools and MCP servers ready", sandbox_id=self.sandbox_id)
 
@@ -690,13 +748,15 @@ class PTCSandbox:
         if not tokens or not self.sandbox:
             return
 
-        token_data = json.dumps({
-            "access_token": tokens["access_token"],
-            "refresh_token": tokens["refresh_token"],
-            "client_id": tokens["client_id"],
-            "auth_service_url": os.getenv("AUTH_SERVICE_URL", ""),
-            "ginlix_data_url": os.getenv("GINLIX_DATA_URL", ""),
-        })
+        token_data = json.dumps(
+            {
+                "access_token": tokens["access_token"],
+                "refresh_token": tokens["refresh_token"],
+                "client_id": tokens["client_id"],
+                "auth_service_url": os.getenv("AUTH_SERVICE_URL", ""),
+                "ginlix_data_url": os.getenv("GINLIX_DATA_URL", ""),
+            }
+        )
 
         try:
             await self._daytona_call(
@@ -718,45 +778,16 @@ class PTCSandbox:
         )
         self._work_dir = work_dir
 
-    async def refresh_tools(self) -> dict[str, Any]:
-        """Rebuild sandbox tool modules and upload internal packages.
+    async def refresh_tools(self, **kwargs: Any) -> dict[str, Any]:
+        """Force-rebuild all sandbox tool modules and packages.
 
-        Safe to call on an already-running sandbox (e.g., after reconnect).
+        Delegates to :meth:`sync_sandbox_assets` with ``force_refresh=True``.
+        Accepts the same keyword arguments as ``sync_sandbox_assets``.
         """
-        await self._wait_ready()
-
-        async with self._tool_refresh_lock:
-            await self.ensure_sandbox_ready()
-            await self._prune_disabled_tool_modules()
-            await self._upload_mcp_server_files(force_refresh=True)
-            await self._upload_internal_packages()
-            await self._install_tool_modules()
-            try:
-                await self._start_internal_mcp_servers()
-            except Exception as e:
-                logger.warning("Failed to refresh MCP servers", error=str(e))
-
-        return {"success": True}
-
-    async def sync_tools(self) -> dict[str, Any]:
-        """Refresh tool modules if MCP config changed."""
-        await self._wait_ready()
-
-        async with self._tool_refresh_lock:
-            await self.ensure_sandbox_ready()
-            await self._prune_disabled_tool_modules()
-            changed = await self._upload_mcp_server_files(force_refresh=False)
-            if not changed:
-                return {"success": True, "refreshed": False}
-
-            await self._upload_internal_packages()
-            await self._install_tool_modules()
-            try:
-                await self._start_internal_mcp_servers()
-            except Exception as e:
-                logger.warning("Failed to refresh MCP servers", error=str(e))
-
-        return {"success": True, "refreshed": True}
+        kwargs.setdefault("force_refresh", True)
+        kwargs.setdefault("reusing_sandbox", True)
+        result = await self.sync_sandbox_assets(**kwargs)
+        return {"success": True, "refreshed_modules": result.refreshed_modules}
 
     async def setup(self) -> None:
         """Set up the sandbox environment.
@@ -1074,13 +1105,6 @@ class PTCSandbox:
         assert self.sandbox is not None
         sandbox = self.sandbox
 
-        # Ensure internal directory exists
-        await self._daytona_call(
-            sandbox.process.exec,
-            f"mkdir -p {internal_root}",
-            retry_policy=_DaytonaRetryPolicy.SAFE,
-        )
-
         files: list[tuple[Path, Path]] = []
         files.append((local_src_init, Path("__init__.py")))
         for file_path in local_data_client_dir.rglob("*.py"):
@@ -1089,151 +1113,298 @@ class PTCSandbox:
             rel = file_path.relative_to(local_src_dir)
             files.append((file_path, rel))
 
-        async def upload_one(local_path: Path, rel_path: Path) -> None:
-            sandbox_path = str(internal_root / rel_path)
-            await self._daytona_call(
-                sandbox.process.exec,
-                f"mkdir -p {shlex.quote(str(Path(sandbox_path).parent))}",
-                retry_policy=_DaytonaRetryPolicy.SAFE,
-            )
-            async with aiofiles.open(local_path) as f:
-                content = await f.read()
-            await self._daytona_call(
-                sandbox.fs.upload_file,
-                content.encode("utf-8"),
-                sandbox_path,
-                retry_policy=_DaytonaRetryPolicy.SAFE,
-            )
+        # Collect unique parent dirs → single mkdir command
+        parent_dirs = {str(Path(str(internal_root / rel)).parent) for _, rel in files}
+        mkdir_cmd = "mkdir -p " + " ".join(shlex.quote(d) for d in sorted(parent_dirs))
+        await self._daytona_call(
+            sandbox.process.exec,
+            mkdir_cmd,
+            retry_policy=_DaytonaRetryPolicy.SAFE,
+        )
 
-        await asyncio.gather(*[upload_one(lp, rp) for lp, rp in files])
+        # Batch upload — FileUpload(source=str) streams from local path
+        batch = [
+            FileUpload(
+                source=str(local_path),
+                destination=str(internal_root / rel_path),
+            )
+            for local_path, rel_path in files
+        ]
+        await self._daytona_call(
+            sandbox.fs.upload_files,
+            batch,
+            retry_policy=_DaytonaRetryPolicy.SAFE,
+        )
         logger.info(
             "Uploaded internal packages to sandbox",
             uploaded_files=len(files),
             sandbox_root=str(internal_root),
         )
 
-    def _compute_mcp_manifest(
-        self, expected_files: set[str], local_paths: dict[str, str] | None = None
-    ) -> dict[str, Any]:
-        files = sorted(expected_files)
-        # Include file content hashes so code changes trigger re-upload
-        parts = []
-        for f in files:
-            parts.append(f)
-            if local_paths and f in local_paths:
-                try:
-                    content = Path(local_paths[f]).read_bytes()
-                    parts.append(hashlib.sha256(content).hexdigest())
-                except OSError:
-                    pass
-        payload = "\n".join(parts)
-        version = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-        return {"version": version, "files": files}
+    # ── Unified manifest helpers ────────────────────────────────────────
 
-    async def _read_mcp_manifest(self, mcp_servers_dir: str) -> dict[str, Any] | None:
-        manifest_path = f"{mcp_servers_dir}/.mcp_manifest.json"
-        manifest_text = await self.aread_file_text(manifest_path)
-        if not manifest_text:
-            return None
+    def _compute_tool_schema_hash(self) -> str:
+        """Hash the current MCP tool schemas from the live registry.
+
+        Captures tool names + input schemas so that adding/removing/modifying
+        a tool on a running MCP server is detected even if the .py file is unchanged.
+        """
+        if not self.mcp_registry:
+            return ""
+        all_tools = self.mcp_registry.get_all_tools()
+        parts: list[str] = []
+        for server_name in sorted(all_tools):
+            for tool in sorted(all_tools[server_name], key=lambda t: t.name):
+                parts.append(
+                    f"{server_name}:{tool.name}:{json.dumps(tool.input_schema, sort_keys=True)}"
+                )
+        return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
+    async def _compute_skills_module(self, skill_roots: list[str]) -> dict[str, Any]:
+        """Compute a skills module manifest with content-based SHA-256 hashing.
+
+        Unlike the legacy ``_compute_skills_manifest`` (size+mtime), this hashes
+        actual file contents so the manifest is deterministic and portable.
+        """
+
+        def build() -> dict[str, Any]:
+            from ptc_agent.agent.middleware.skills import (
+                get_sandbox_skill_names,
+                SKILL_REGISTRY,
+            )
+            from ptc_agent.agent.middleware.skills.discovery import (
+                parse_skill_metadata,
+            )
+
+            sandbox_skill_names = get_sandbox_skill_names()
+            all_registry_names = set(SKILL_REGISTRY.keys())
+
+            files: dict[str, str] = {}  # rel_path → sha256
+            skills_metadata: dict[str, dict[str, Any]] = {}
+            seen_skill_names: set[str] = set()
+
+            for root_str in skill_roots:
+                root = Path(root_str).expanduser()
+                if not root.exists():
+                    continue
+
+                for skill_dir in root.iterdir():
+                    if not skill_dir.is_dir():
+                        continue
+                    if not (skill_dir / "SKILL.md").exists():
+                        continue
+
+                    skill_name = skill_dir.name
+                    # Skip flash-only skills (not needed in sandbox)
+                    if (
+                        skill_name not in sandbox_skill_names
+                        and skill_name in all_registry_names
+                    ):
+                        continue
+
+                    # Later sources override earlier ones
+                    if skill_name in seen_skill_names:
+                        prefix = f"{skill_name}/"
+                        files = {
+                            k: v for k, v in files.items() if not k.startswith(prefix)
+                        }
+                    seen_skill_names.add(skill_name)
+
+                    for fp in skill_dir.rglob("*"):
+                        if not fp.is_file():
+                            continue
+                        if "__pycache__" in fp.parts or fp.name == "LICENSE.txt":
+                            continue
+                        rel = f"{skill_name}/{fp.relative_to(skill_dir)}"
+                        files[rel] = _sha256_file(fp)
+
+                    # Parse SKILL.md frontmatter
+                    try:
+                        content = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                    sandbox_path = f"/home/daytona/skills/{skill_name}/SKILL.md"
+                    meta = parse_skill_metadata(content, sandbox_path, skill_name)
+                    skills_metadata[skill_name] = dict(meta)
+
+            version = _hash_dict(files)
+            return {"version": version, "files": files, "skills": skills_metadata}
+
+        return await asyncio.to_thread(build)
+
+    async def _compute_sandbox_manifest(
+        self,
+        *,
+        skill_roots: list[str] | None = None,
+        tokens: dict | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Compute the unified local manifest for all sandbox asset modules."""
+        modules: dict[str, Any] = {}
+        config_dir = getattr(self.config, "config_file_dir", None)
+
+        # ── Module: mcp_servers ──
+        mcp_files: dict[str, str] = {}  # filename → sha256
+        for server in self.config.mcp.servers:
+            if not server.enabled:
+                continue
+            if server.transport != "stdio" or server.command != "uv":
+                continue
+            if (
+                len(server.args) < 3
+                or server.args[0] != "run"
+                or server.args[1] != "python"
+            ):
+                continue
+            resolved = _resolve_local_path(server.args[2], config_dir)
+            if resolved:
+                mcp_files[Path(resolved).name] = _sha256_file(Path(resolved))
+        mcp_version = _hash_dict(mcp_files)
+        modules["mcp_servers"] = {"version": mcp_version, "files": mcp_files}
+
+        # ── Module: data_client ──
+        dc_files: dict[str, str] = {}
+        repo_root = config_dir or Path.cwd()
+        src_dir = (repo_root / "src").resolve()
+        src_init = src_dir / "__init__.py"
+        dc_dir = (src_dir / "data_client").resolve()
+        if src_init.exists() and dc_dir.exists():
+            dc_files["__init__.py"] = _sha256_file(src_init)
+            for fp in dc_dir.rglob("*.py"):
+                if "__pycache__" in fp.parts:
+                    continue
+                rel = str(fp.relative_to(src_dir))
+                dc_files[rel] = _sha256_file(fp)
+        dc_version = _hash_dict(dc_files)
+        modules["data_client"] = {"version": dc_version, "files": dc_files}
+
+        # ── Module: tool_modules (derived) ──
+        tool_schema_hash = self._compute_tool_schema_hash()
+        source_versions = {
+            "mcp_servers": mcp_version,
+            "tool_schemas": tool_schema_hash,
+        }
+        tm_version = _hash_dict(source_versions)
+        modules["tool_modules"] = {
+            "version": tm_version,
+            "source_versions": source_versions,
+        }
+
+        # ── Module: skills ──
+        if skill_roots:
+            modules["skills"] = await self._compute_skills_module(skill_roots)
+
+        # ── Module: tokens ──
+        if tokens:
+            # Version captures the config identity; freshness is checked via minted_at.
+            token_config_parts = {
+                "user_id": user_id or "",
+                "workspace_id": workspace_id or "",
+                "client_id": tokens.get("client_id", ""),
+            }
+            modules["tokens"] = {
+                "version": _hash_dict(token_config_parts),
+                "minted_at": time.time(),
+                "user_id": user_id or "",
+                "workspace_id": workspace_id or "",
+            }
+
+        return {"schema_version": 1, "modules": modules}
+
+    # ── Unified manifest I/O ─────────────────────────────────────────
+
+    async def _read_unified_manifest(self) -> dict[str, Any] | None:
+        """Read the unified manifest from the sandbox.
+
+        Uses the Daytona SDK directly (bypasses path validation for
+        ``_internal/``).  Returns None if missing, corrupt, or wrong
+        ``schema_version`` (triggers full refresh in the caller).
+        """
+        assert self.sandbox is not None
         try:
-            parsed = json.loads(manifest_text)
-            if isinstance(parsed, dict):
-                return parsed
-        except json.JSONDecodeError:
-            return None
+            raw = await self._daytona_call(
+                self.sandbox.fs.download_file,
+                self.UNIFIED_MANIFEST_PATH,
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+            )
+            if raw:
+                text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+                parsed = json.loads(text)
+                if isinstance(parsed, dict) and parsed.get("schema_version") == 1:
+                    return parsed
+        except Exception:
+            pass  # Missing file, decode error, or JSON error → full refresh
         return None
 
-    async def _write_mcp_manifest(
-        self, mcp_servers_dir: str, manifest: dict[str, Any]
-    ) -> None:
-        manifest_path = f"{mcp_servers_dir}/.mcp_manifest.json"
-        await self.awrite_file_text(manifest_path, json.dumps(manifest))
+    async def _write_unified_manifest(self, manifest: dict[str, Any]) -> None:
+        """Write the unified manifest directly via Daytona SDK.
 
-    async def _upload_mcp_server_files(self, *, force_refresh: bool = False) -> bool:
-        """Upload custom Python MCP server files to sandbox.
-
-        For Python MCP servers configured with 'uv run python mcp_servers/xxx.py',
-        this method uploads the Python files to the sandbox so they can be executed
-        as subprocesses inside the sandbox environment.
-
-        Returns:
-            True if MCP files were refreshed.
+        Bypasses path validation since ``_internal/`` is a protected directory
+        that the agent cannot access, but the system needs to write to.
         """
+        assert self.sandbox is not None
+        await self._daytona_call(
+            self.sandbox.fs.upload_file,
+            json.dumps(manifest, sort_keys=True).encode("utf-8"),
+            self.UNIFIED_MANIFEST_PATH,
+            retry_policy=_DaytonaRetryPolicy.SAFE,
+        )
+
+    async def _cleanup_legacy_manifests(self) -> None:
+        """Remove old per-module manifest files after migration to unified manifest."""
+        work_dir = getattr(self, "_work_dir", "/home/daytona")
+        legacy_paths = [
+            f"{work_dir}/mcp_servers/.mcp_manifest.json",
+            f"{work_dir}/skills/.skills_manifest.json",
+        ]
+        assert self.sandbox is not None
+        try:
+            rm_cmd = "rm -f " + " ".join(shlex.quote(p) for p in legacy_paths)
+            await self._daytona_call(
+                self.sandbox.process.exec,
+                rm_cmd,
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+            )
+        except Exception:
+            pass  # Best-effort cleanup
+
+    async def _upload_mcp_server_files_impl(self) -> None:
+        """Upload MCP server .py files to sandbox (pure upload, no manifest check)."""
         work_dir = getattr(self, "_work_dir", "/home/daytona")
         mcp_servers_dir = f"{work_dir}/mcp_servers"
-
-        # Collect files to upload
-        files_to_upload = []
-        expected_files: set[str] = set()
-
-        # Get config file directory
         config_dir = getattr(self.config, "config_file_dir", None)
+
+        files_to_upload: list[tuple[str, str, str]] = []
+        expected_files: set[str] = set()
 
         for server in self.config.mcp.servers:
             if not server.enabled:
                 continue
-            # Only handle Python MCP servers (uv run python ...)
             if server.transport == "stdio" and server.command == "uv":
                 if (
                     len(server.args) >= 3
                     and server.args[0] == "run"
                     and server.args[1] == "python"
                 ):
-                    local_path = server.args[
-                        2
-                    ]  # e.g., "mcp_servers/yfinance_mcp_server.py"
-
-                    # Resolve relative paths against config file directory first
-                    path_obj = Path(local_path)
-                    resolved_path = None
-
-                    if not path_obj.is_absolute() and config_dir:
-                        # Try resolving against config file directory
-                        config_relative_path = (config_dir / local_path).resolve()
-                        if config_relative_path.exists():
-                            resolved_path = str(config_relative_path)
-                            logger.debug(
-                                "Resolved MCP server path relative to config",
-                                server=server.name,
-                                original=local_path,
-                                resolved=resolved_path,
-                            )
-
-                    # Fall back to CWD-relative path
-                    if resolved_path is None and path_obj.exists():
-                        resolved_path = local_path
-
-                    if resolved_path:
-                        filename = Path(resolved_path).name
+                    resolved = _resolve_local_path(server.args[2], config_dir)
+                    if resolved:
+                        filename = Path(resolved).name
                         sandbox_path = f"{mcp_servers_dir}/{filename}"
                         expected_files.add(filename)
-                        files_to_upload.append(
-                            (server.name, resolved_path, sandbox_path)
-                        )
+                        files_to_upload.append((server.name, resolved, sandbox_path))
                     else:
-                        searched_paths = [local_path]
+                        searched = [server.args[2]]
                         if config_dir:
-                            searched_paths.append(str(config_dir / local_path))
+                            searched.append(str(config_dir / server.args[2]))
                         logger.warning(
-                            f"MCP server file not found: {local_path}",
+                            f"MCP server file not found: {server.args[2]}",
                             server=server.name,
-                            searched_paths=searched_paths,
+                            searched_paths=searched,
                         )
 
         assert self.sandbox is not None
         sandbox = self.sandbox
-
-        # Map filename → local path for content-based manifest hashing
-        local_paths = {
-            Path(resolved).name: resolved
-            for _, resolved, _ in files_to_upload
-        }
-        manifest = self._compute_mcp_manifest(expected_files, local_paths)
-        remote_manifest = await self._read_mcp_manifest(mcp_servers_dir)
-        remote_version = remote_manifest.get("version") if remote_manifest else None
-        should_refresh = force_refresh or remote_version != manifest["version"]
-        if not should_refresh:
-            return False
 
         await self._daytona_call(
             sandbox.process.exec,
@@ -1241,6 +1412,7 @@ class PTCSandbox:
             retry_policy=_DaytonaRetryPolicy.SAFE,
         )
 
+        # Prune stale files — single rm command instead of N
         existing_entries = await self.als_directory(mcp_servers_dir)
         if existing_entries:
             files_to_remove = [
@@ -1248,58 +1420,215 @@ class PTCSandbox:
                 for entry in existing_entries
                 if not entry.get("is_dir", False)
                 and entry.get("name") not in expected_files
-                and entry.get("name") != ".mcp_manifest.json"
+                and entry.get("name")
+                not in (".mcp_manifest.json", ".sandbox_manifest.json")
             ]
             if files_to_remove:
-
-                async def remove_one(path: str) -> None:
-                    await self._daytona_call(
-                        sandbox.process.exec,
-                        f"rm -f {shlex.quote(path)}",
-                        retry_policy=_DaytonaRetryPolicy.SAFE,
-                    )
-
-                await asyncio.gather(*[remove_one(path) for path in files_to_remove])
+                rm_cmd = "rm -f " + " ".join(shlex.quote(p) for p in files_to_remove)
+                await self._daytona_call(
+                    sandbox.process.exec,
+                    rm_cmd,
+                    retry_policy=_DaytonaRetryPolicy.SAFE,
+                )
                 logger.info(
                     "Pruned MCP server files",
                     removed=len(files_to_remove),
                     sandbox_root=mcp_servers_dir,
                 )
 
+        # Batch upload — single HTTP request via upload_files
         if files_to_upload:
-
-            async def upload_file(
-                server_name: str, local_path: str, sandbox_path: str
-            ) -> None:
-                # Read file from host using aiofiles to avoid blocking
-                async with aiofiles.open(local_path) as f:
-                    content = await f.read()
-
-                # Upload to sandbox
-                await self._daytona_call(
-                    sandbox.fs.upload_file,
-                    content.encode("utf-8"),
-                    sandbox_path,
-                    retry_policy=_DaytonaRetryPolicy.SAFE,
-                )
-
+            batch = [
+                FileUpload(source=local, destination=remote)
+                for _, local, remote in files_to_upload
+            ]
+            await self._daytona_call(
+                sandbox.fs.upload_files,
+                batch,
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+            )
+            for name, local, remote in files_to_upload:
                 logger.info(
                     "Uploaded MCP server file",
-                    server=server_name,
-                    local_path=local_path,
-                    sandbox_path=sandbox_path,
+                    server=name,
+                    local_path=local,
+                    sandbox_path=remote,
                 )
 
-            # Upload all files in parallel
-            await asyncio.gather(
-                *[
-                    upload_file(server_name, local_path, sandbox_path)
-                    for server_name, local_path, sandbox_path in files_to_upload
-                ]
+    # ── Unified sync entry point ─────────────────────────────────────
+
+    async def sync_sandbox_assets(
+        self,
+        *,
+        skill_dirs: list[tuple[str, str]] | None = None,
+        reusing_sandbox: bool = False,
+        force_refresh: bool = False,
+        tokens: dict | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> SyncResult:
+        """Sync all sandbox assets using a single unified manifest.
+
+        Replaces the previous ``sync_tools()`` and ``sync_skills()`` methods
+        with a single entry point that tracks MCP servers, data client, tool
+        modules, skills, and tokens in one manifest file.
+
+        Args:
+            skill_dirs: Ordered list of (local_path, sandbox_path) for skills.
+            reusing_sandbox: Whether reconnecting to an existing sandbox.
+            force_refresh: Force re-upload of all modules regardless of manifest.
+            tokens: Pre-minted OAuth tokens (from workspace_manager).
+            user_id: User ID for token tracking.
+            workspace_id: Workspace ID for token tracking.
+            on_progress: Optional callback for reporting progress.
+
+        Returns:
+            SyncResult with list of refreshed module names.
+        """
+        await self._wait_ready()
+
+        async with self._tool_refresh_lock:
+            await self.ensure_sandbox_ready()
+
+            # Steps 0+1+2: all three are independent — parallelize
+            # _prune_disabled_tool_modules → sandbox rm (disjoint from manifest paths)
+            # _compute_sandbox_manifest → local CPU/disk only
+            # _read_unified_manifest → sandbox HTTP GET
+            skill_roots = [d for d, _ in skill_dirs] if skill_dirs else None
+            _, local_manifest, remote_manifest = await asyncio.gather(
+                self._prune_disabled_tool_modules(),
+                self._compute_sandbox_manifest(
+                    skill_roots=skill_roots,
+                    tokens=tokens,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                ),
+                self._read_unified_manifest(),
             )
 
-        await self._write_mcp_manifest(mcp_servers_dir, manifest)
-        return True
+            # 3. Determine which modules changed (pure CPU)
+            if force_refresh or remote_manifest is None or not reusing_sandbox:
+                changed_modules = set(local_manifest["modules"].keys())
+            else:
+                changed_modules: set[str] = set()
+                for mod_name, mod_data in local_manifest["modules"].items():
+                    remote_mod = remote_manifest.get("modules", {}).get(mod_name)
+                    if mod_name == "tokens":
+                        if self._token_needs_refresh(
+                            remote_mod, tokens, user_id, workspace_id
+                        ):
+                            changed_modules.add("tokens")
+                    elif (
+                        remote_mod is None
+                        or remote_mod.get("version") != mod_data["version"]
+                    ):
+                        changed_modules.add(mod_name)
+
+            if not changed_modules:
+                if "skills" in local_manifest["modules"]:
+                    self._skills_manifest = local_manifest["modules"]["skills"]
+                return SyncResult(refreshed_modules=[], forced=False)
+
+            refreshed: list[str] = []
+
+            # 4. Upload changed modules
+            # Intent-based ordering: tool_modules after mcp_servers (derived from
+            # MCP definitions). All other modules write to disjoint sandbox paths
+            # and are safe to run in parallel.
+
+            async def _do_skills_upload() -> None:
+                """Skills sub-chain: collect → prune → upload (internally sequential)."""
+                local_skill_names = await self._collect_local_skill_names(
+                    [d for d, _ in skill_dirs]  # type: ignore[union-attr]
+                )
+                sandbox_base = skill_dirs[-1][1].rstrip("/")  # type: ignore[index]
+                await self._prune_remote_skills(sandbox_base, local_skill_names)
+                skills_mod = local_manifest["modules"].get("skills", {})
+                if skills_mod.get("files"):
+                    await self._upload_skills(
+                        skill_dirs,
+                        manifest=skills_mod,  # type: ignore[arg-type]
+                    )
+
+            # Group 1: independent uploads in parallel
+            parallel_uploads: list[tuple[str, Any]] = []
+            if "mcp_servers" in changed_modules:
+                if on_progress:
+                    on_progress("Syncing MCP server files...")
+                parallel_uploads.append(
+                    ("mcp_servers", self._upload_mcp_server_files_impl())
+                )
+            if "data_client" in changed_modules:
+                if on_progress:
+                    on_progress("Syncing data client...")
+                parallel_uploads.append(
+                    ("data_client", self._upload_internal_packages())
+                )
+            if "skills" in changed_modules and skill_dirs:
+                if on_progress:
+                    on_progress("Syncing skills...")
+                parallel_uploads.append(("skills", _do_skills_upload()))
+            if "tokens" in changed_modules and tokens:
+                if on_progress:
+                    on_progress("Uploading tokens...")
+                parallel_uploads.append(("tokens", self.upload_token_file(tokens)))
+
+            if parallel_uploads:
+                await asyncio.gather(*[coro for _, coro in parallel_uploads])
+                refreshed.extend(name for name, _ in parallel_uploads)
+
+            # Group 2: tool_modules AFTER mcp_servers (intent: derived from MCP definitions)
+            if "tool_modules" in changed_modules:
+                if on_progress:
+                    on_progress("Regenerating tool modules...")
+                await self._install_tool_modules()
+                refreshed.append("tool_modules")
+                try:
+                    await self._start_internal_mcp_servers()
+                except Exception as e:
+                    logger.warning("Failed to refresh MCP servers", error=str(e))
+
+            # Cache skills metadata
+            if "skills" in local_manifest["modules"]:
+                self._skills_manifest = local_manifest["modules"]["skills"]
+
+            # Steps 5+6: independent — parallelize
+            await asyncio.gather(
+                self._write_unified_manifest(local_manifest),
+                self._cleanup_legacy_manifests(),
+            )
+
+            logger.info(
+                "Sandbox asset sync complete",
+                refreshed=refreshed,
+                forced=force_refresh,
+            )
+            return SyncResult(refreshed_modules=refreshed, forced=force_refresh)
+
+    @staticmethod
+    def _token_needs_refresh(
+        remote_token_mod: dict[str, Any] | None,
+        tokens: dict | None,
+        user_id: str | None,
+        workspace_id: str | None,
+    ) -> bool:
+        """Check whether tokens need to be re-uploaded based on freshness."""
+        if not tokens:
+            return False
+        if remote_token_mod is None:
+            return True
+        # Re-mint if user or workspace changed
+        if remote_token_mod.get("user_id") != (user_id or ""):
+            return True
+        if remote_token_mod.get("workspace_id") != (workspace_id or ""):
+            return True
+        # Re-mint if older than freshness threshold
+        minted_at = remote_token_mod.get("minted_at", 0)
+        age = time.time() - minted_at
+        if age > PTCSandbox.TOKEN_FRESHNESS_SECONDS:
+            return True
+        return False
 
     async def _prune_disabled_tool_modules(self) -> None:
         if not self.sandbox or self._disabled_modules_pruned:
@@ -1330,23 +1659,9 @@ class PTCSandbox:
         self._disabled_modules_pruned = True
         logger.debug("Pruned disabled tool modules", removed=len(paths))
 
-    SKILLS_MANIFEST_FILENAME = ".skills_manifest.json"
-
-    async def compute_skills_manifest(
-        self, local_skill_roots: list[str]
-    ) -> dict[str, Any]:
-        """Compute a cheap manifest for skills contents.
-
-        Used to detect changes and avoid re-uploading skills on every startup.
-
-        Args:
-            local_skill_roots: List of local directories to scan, in priority order.
-                Later directories override earlier ones.
-
-        Returns:
-            Manifest dict with "version" and "files".
-        """
-        return await self._compute_skills_manifest(local_skill_roots)
+    SKILLS_MANIFEST_FILENAME = (
+        ".skills_manifest.json"  # Legacy; used by _prune_remote_skills
+    )
 
     def _is_transient_daytona_error(self, e: Exception) -> bool:
         message = str(e).lower()
@@ -1498,96 +1813,6 @@ class PTCSandbox:
 
         raise SandboxTransientError("Transient sandbox transport error")
 
-    async def _compute_skills_manifest(
-        self, local_skill_roots: list[str]
-    ) -> dict[str, Any]:
-        def build() -> dict[str, Any]:
-            from ptc_agent.agent.middleware.skills import (
-                get_sandbox_skill_names,
-                SKILL_REGISTRY,
-            )
-            from ptc_agent.agent.middleware.skills.discovery import parse_skill_metadata
-
-            # Skills eligible for sandbox upload (exposure "ptc" or "both")
-            sandbox_skill_names = get_sandbox_skill_names()
-            # All names known in the registry (so we can distinguish flash-only
-            # from user-created skill dirs that aren't in the registry at all)
-            all_registry_names = set(SKILL_REGISTRY.keys())
-
-            sandbox_skills_base = "/home/daytona/skills"
-            files: dict[str, dict[str, int]] = {}
-            skills_metadata: dict[str, dict[str, Any]] = {}
-            seen_skill_names: set[str] = set()
-
-            for root_str in local_skill_roots:
-                root = Path(root_str).expanduser()
-                if not root.exists():
-                    continue
-
-                for skill_dir in root.iterdir():
-                    if not skill_dir.is_dir():
-                        continue
-
-                    if not (skill_dir / "SKILL.md").exists():
-                        continue
-
-                    # Skip flash-only skills (not needed in sandbox)
-                    skill_name = skill_dir.name
-                    if (
-                        skill_name not in sandbox_skill_names
-                        and skill_name in all_registry_names
-                    ):
-                        continue
-
-                    # Later sources override earlier ones; mirror the sandbox
-                    # upload behavior by clearing files from the overridden dir.
-                    if skill_name in seen_skill_names:
-                        prefix = f"{skill_name}/"
-                        for key in list(files.keys()):
-                            if key.startswith(prefix):
-                                del files[key]
-                    else:
-                        seen_skill_names.add(skill_name)
-
-                    # Collect file stats
-                    for file_path in skill_dir.rglob("*"):
-                        if not file_path.is_file():
-                            continue
-                        if (
-                            "__pycache__" in file_path.parts
-                            or file_path.name == "LICENSE.txt"
-                        ):
-                            continue
-
-                        rel_path = (
-                            f"{skill_dir.name}/{file_path.relative_to(skill_dir)}"
-                        )
-                        stat = file_path.stat()
-                        files[rel_path] = {
-                            "size": stat.st_size,
-                            "mtime_ns": stat.st_mtime_ns,
-                        }
-
-                    # Parse SKILL.md frontmatter in the same pass.
-                    # Later roots overwrite earlier entries (matching files behavior).
-                    try:
-                        content = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
-                    except (OSError, UnicodeDecodeError):
-                        continue
-                    sandbox_path = f"{sandbox_skills_base}/{skill_name}/SKILL.md"
-                    meta = parse_skill_metadata(content, sandbox_path, skill_name)
-                    skills_metadata[skill_name] = dict(meta)
-
-            payload = "\n".join(
-                f"{p}:{meta['size']}:{meta['mtime_ns']}"
-                for p, meta in sorted(files.items())
-            )
-            version = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-            return {"version": version, "files": files, "skills": skills_metadata}
-
-        return await asyncio.to_thread(build)
-
     async def _collect_local_skill_names(
         self, local_skill_roots: list[str]
     ) -> set[str]:
@@ -1661,69 +1886,6 @@ class PTCSandbox:
             sandbox_root=sandbox_base,
         )
 
-    async def sync_skills(
-        self,
-        local_skills_dirs: list[tuple[str, str]],
-        *,
-        reusing_sandbox: bool,
-        force_refresh: bool = False,
-        on_progress: Callable[[str], None] | None = None,
-    ) -> bool:
-        """Ensure skills are present in the sandbox.
-
-        Computes a local manifest and compares it to the sandbox manifest.
-        Uploads only when the sandbox is new or the manifest version differs.
-
-        Args:
-            local_skills_dirs: Ordered list of (local_path, sandbox_path) sources.
-                Later entries override earlier ones.
-            reusing_sandbox: Whether we reconnected to an existing sandbox.
-            force_refresh: Force pruning/upload regardless of manifest.
-            on_progress: Optional callback for reporting progress.
-
-        Returns:
-            True if an upload occurred.
-        """
-        await self._wait_ready()
-
-        local_roots = [local_dir for local_dir, _ in local_skills_dirs]
-        local_manifest = await self._compute_skills_manifest(local_roots)
-
-        sandbox_base = local_skills_dirs[-1][1].rstrip("/")
-        manifest_path = f"{sandbox_base}/{self.SKILLS_MANIFEST_FILENAME}"
-
-        remote_manifest_text = await self.aread_file_text(manifest_path)
-        remote_manifest: dict[str, Any] | None = None
-        if remote_manifest_text:
-            try:
-                parsed = json.loads(remote_manifest_text)
-                if isinstance(parsed, dict):
-                    remote_manifest = parsed
-            except json.JSONDecodeError:
-                remote_manifest = None
-
-        remote_version = remote_manifest.get("version") if remote_manifest else None
-        local_version = local_manifest.get("version")
-        should_refresh = (
-            force_refresh or (not reusing_sandbox) or (remote_version != local_version)
-        )
-        if not should_refresh:
-            self._skills_manifest = local_manifest
-            return False
-
-        local_skill_names = await self._collect_local_skill_names(local_roots)
-        await self._prune_remote_skills(sandbox_base, local_skill_names)
-
-        if not local_manifest.get("files"):
-            self._skills_manifest = local_manifest
-            return False
-
-        if on_progress:
-            on_progress("Uploading skills...")
-        await self._upload_skills(local_skills_dirs, manifest=local_manifest)
-        self._skills_manifest = local_manifest
-        return True
-
     async def _upload_skills(
         self,
         local_skills_dirs: list[tuple[str, str]],
@@ -1732,10 +1894,10 @@ class PTCSandbox:
     ) -> None:
         """Upload skill files from local filesystem to sandbox.
 
-        Skills are markdown-based instruction files that extend agent capabilities.
-        Each skill is a directory containing a SKILL.md file with YAML frontmatter.
-
-        Skills from later local directories override earlier ones.
+        Uses a two-pass approach to fix override precedence:
+        - Pass 1 (local I/O only): Walk all sources, later sources overwrite earlier
+          ones for the same skill_name — each skill appears exactly once.
+        - Pass 2 (sandbox I/O): Single rm, single mkdir, parallel per-skill batch uploads.
 
         Args:
             local_skills_dirs: List of (local_path, sandbox_path) tuples.
@@ -1747,39 +1909,11 @@ class PTCSandbox:
 
         if manifest is None:
             local_roots = [local_dir for local_dir, _ in local_skills_dirs]
-            manifest = await self._compute_skills_manifest(local_roots)
+            manifest = await self._compute_skills_module(local_roots)
 
         if not manifest.get("files"):
             logger.debug("No skills found; skipping upload")
             return
-
-        upload_tasks: list[asyncio.Task[None]] = []
-        uploaded_skill_names: set[str] = set()
-
-        async def list_skill_dirs(local_root: Path) -> list[Path]:
-            def _list() -> list[Path]:
-                dirs: list[Path] = []
-                for entry in local_root.iterdir():
-                    if not entry.is_dir():
-                        continue
-                    if not (entry / "SKILL.md").exists():
-                        continue
-                    dirs.append(entry)
-                return dirs
-
-            return await asyncio.to_thread(_list)
-
-        async def list_skill_files(skill_dir: Path) -> list[Path]:
-            def _list() -> list[Path]:
-                return [
-                    p
-                    for p in skill_dir.rglob("*")
-                    if p.is_file()
-                    and "__pycache__" not in p.parts
-                    and p.name != "LICENSE.txt"
-                ]
-
-            return await asyncio.to_thread(_list)
 
         # Skills eligible for sandbox upload (exposure "ptc" or "both")
         from ptc_agent.agent.middleware.skills import (
@@ -1790,110 +1924,119 @@ class PTCSandbox:
         sandbox_skill_names = get_sandbox_skill_names()
         all_registry_names = set(SKILL_REGISTRY.keys())
 
-        total_skills_uploaded = 0
+        # ── Pass 1: Planning (local I/O only) ──
+        # For each skill, collect files from the *last* source that provides it.
+        # Key: skill_name → (sandbox_skill_dir, list of (local_file, sandbox_dest))
+        @dataclass
+        class _SkillPlan:
+            sandbox_dir: str
+            files: list[tuple[Path, str]] = field(default_factory=list)
+            subdirs: set[str] = field(default_factory=set)
 
-        for local_dir, sandbox_dir in local_skills_dirs:
-            local_path = Path(local_dir).expanduser()
-            if not local_path.exists():
-                logger.debug(f"Skills directory not found: {local_path}")
-                continue
+        final_skills: dict[str, _SkillPlan] = {}
 
-            # Create sandbox skills directory
+        def _list_skill_dirs(local_root: Path) -> list[Path]:
+            dirs: list[Path] = []
+            for entry in local_root.iterdir():
+                if not entry.is_dir():
+                    continue
+                if not (entry / "SKILL.md").exists():
+                    continue
+                dirs.append(entry)
+            return dirs
+
+        def _list_skill_files(skill_dir: Path) -> list[Path]:
+            return [
+                p
+                for p in skill_dir.rglob("*")
+                if p.is_file()
+                and "__pycache__" not in p.parts
+                and p.name != "LICENSE.txt"
+            ]
+
+        def _plan_all() -> None:
+            for local_dir, sandbox_dir in local_skills_dirs:
+                local_path = Path(local_dir).expanduser()
+                if not local_path.exists():
+                    continue
+
+                for skill_dir in _list_skill_dirs(local_path):
+                    skill_name = skill_dir.name
+                    if skill_name in ("", ".", ".."):
+                        continue
+                    if (
+                        skill_name not in sandbox_skill_names
+                        and skill_name in all_registry_names
+                    ):
+                        continue
+
+                    sandbox_skill_dir = f"{sandbox_dir.rstrip('/')}/{skill_name}"
+                    plan = _SkillPlan(sandbox_dir=sandbox_skill_dir)
+
+                    for fp in _list_skill_files(skill_dir):
+                        rel = fp.relative_to(skill_dir)
+                        dest = f"{sandbox_skill_dir}/{rel}"
+                        plan.files.append((fp, dest))
+                        if len(rel.parts) > 1:
+                            plan.subdirs.add(f"{sandbox_skill_dir}/{rel.parent}")
+
+                    # Later source overwrites earlier for same skill_name
+                    final_skills[skill_name] = plan
+
+        await asyncio.to_thread(_plan_all)
+
+        if not final_skills:
+            logger.debug("No skills to upload after planning")
+            return
+
+        # ── Pass 2: Execute (minimal sandbox I/O) ──
+        # 1. Single rm for clean slate (all skill dirs that will be uploaded)
+        rm_targets = [plan.sandbox_dir for plan in final_skills.values()]
+        if rm_targets:
+            rm_cmd = "rm -rf " + " ".join(shlex.quote(d) for d in rm_targets)
             await self._daytona_call(
                 sandbox.process.exec,
-                f"mkdir -p {shlex.quote(sandbox_dir)}",
+                rm_cmd,
                 retry_policy=_DaytonaRetryPolicy.SAFE,
             )
 
-            # Upload all skill directories
-            for skill_dir in await list_skill_dirs(local_path):
-                skill_name = skill_dir.name
-                if skill_name in ("", ".", ".."):
-                    continue
+        # 2. Single mkdir for all skill dirs + subdirs
+        mkdir_targets: set[str] = set()
+        for plan in final_skills.values():
+            mkdir_targets.add(plan.sandbox_dir)
+            mkdir_targets.update(plan.subdirs)
+        if mkdir_targets:
+            mkdir_cmd = "mkdir -p " + " ".join(
+                shlex.quote(d) for d in sorted(mkdir_targets)
+            )
+            await self._daytona_call(
+                sandbox.process.exec,
+                mkdir_cmd,
+                retry_policy=_DaytonaRetryPolicy.SAFE,
+            )
 
-                # Skip flash-only skills (not needed in sandbox).
-                # Only skip skills explicitly marked as flash-only in the registry;
-                # skill dirs not in the registry at all are still uploaded.
-                if (
-                    skill_name not in sandbox_skill_names
-                    and skill_name in all_registry_names
-                ):
-                    continue
-
-                sandbox_skill_dir = f"{sandbox_dir.rstrip('/')}/{skill_name}"
-
-                # Later sources override earlier ones; delete the existing directory to avoid stale files.
-                if skill_name in uploaded_skill_names:
-                    await self._daytona_call(
-                        sandbox.process.exec,
-                        f"rm -rf {shlex.quote(sandbox_skill_dir)}",
+        # 3. Parallel per-skill batch uploads — no race since planning collapsed duplicates
+        upload_coros = []
+        for plan in final_skills.values():
+            if plan.files:
+                batch = [
+                    FileUpload(source=str(fp), destination=dest)
+                    for fp, dest in plan.files
+                ]
+                upload_coros.append(
+                    self._daytona_call(
+                        sandbox.fs.upload_files,
+                        batch,
                         retry_policy=_DaytonaRetryPolicy.SAFE,
                     )
-
-                await self._daytona_call(
-                    sandbox.process.exec,
-                    f"mkdir -p {shlex.quote(sandbox_skill_dir)}",
-                    retry_policy=_DaytonaRetryPolicy.SAFE,
                 )
-                uploaded_skill_names.add(skill_name)
-                total_skills_uploaded += 1
-
-                skill_files = await list_skill_files(skill_dir)
-
-                # Create subdirectories for nested files
-                subdirs: set[str] = set()
-                for fp in skill_files:
-                    rel = fp.relative_to(skill_dir)
-                    if len(rel.parts) > 1:
-                        subdirs.add(f"{sandbox_skill_dir}/{rel.parent}")
-                if subdirs:
-                    mkdir_cmd = "mkdir -p " + " ".join(
-                        shlex.quote(d) for d in sorted(subdirs)
-                    )
-                    await self._daytona_call(
-                        sandbox.process.exec,
-                        mkdir_cmd,
-                        retry_policy=_DaytonaRetryPolicy.SAFE,
-                    )
-
-                # Batch upload all files for this skill in one HTTP request
-                if skill_files:
-                    batch = [
-                        FileUpload(
-                            source=str(fp),
-                            destination=f"{sandbox_skill_dir}/{fp.relative_to(skill_dir)}",
-                        )
-                        for fp in skill_files
-                    ]
-                    upload_tasks.append(
-                        asyncio.create_task(
-                            self._daytona_call(
-                                sandbox.fs.upload_files,
-                                batch,
-                                retry_policy=_DaytonaRetryPolicy.SAFE,
-                            )
-                        )
-                    )
-
-        if upload_tasks:
-            await asyncio.gather(*upload_tasks)
-
-        # Persist manifest in sandbox for cheap change detection on sandbox reuse.
-        manifest_dir = local_skills_dirs[-1][1].rstrip("/")
-        manifest_path = f"{manifest_dir}/{self.SKILLS_MANIFEST_FILENAME}"
-        manifest_bytes = json.dumps(manifest, sort_keys=True).encode("utf-8")
-        await self._daytona_call(
-            sandbox.fs.upload_file,
-            manifest_bytes,
-            manifest_path,
-            retry_policy=_DaytonaRetryPolicy.SAFE,
-        )
+        if upload_coros:
+            await asyncio.gather(*upload_coros)
 
         logger.info(
             "Uploaded skills to sandbox",
-            skill_count=total_skills_uploaded,
+            skill_count=len(final_skills),
             file_count=len(manifest.get("files", {})),
-            manifest_path=manifest_path,
         )
 
     async def _install_dependencies(self) -> None:
@@ -1950,15 +2093,27 @@ class PTCSandbox:
         assert self.mcp_registry is not None
         tools_by_server = self.mcp_registry.get_all_tools()
 
-        # Create per-server doc directories
         assert self.sandbox is not None
-        for server_name in tools_by_server:
-            doc_dir = f"{work_dir}/tools/docs/{server_name}"
-            await self._daytona_call(
-                self.sandbox.process.exec,
-                f"mkdir -p {doc_dir}",
-                retry_policy=_DaytonaRetryPolicy.SAFE,
-            )
+
+        # Prune stale doc dirs (best-effort)
+        docs_root = f"{work_dir}/tools/docs"
+        try:
+            existing = await self.als_directory(docs_root)
+            if existing:
+                stale = [
+                    entry["path"]
+                    for entry in existing
+                    if entry.get("is_dir") and entry.get("name") not in tools_by_server
+                ]
+                if stale:
+                    rm_cmd = "rm -rf " + " ".join(shlex.quote(p) for p in stale)
+                    await self._daytona_call(
+                        self.sandbox.process.exec,
+                        rm_cmd,
+                        retry_policy=_DaytonaRetryPolicy.SAFE,
+                    )
+        except Exception:
+            pass  # docs dir may not exist yet on fresh sandbox
 
         for server_name, tools in tools_by_server.items():
             # Generate Python module
@@ -2000,27 +2155,31 @@ class PTCSandbox:
         )
         uploads.append(init_item)
 
-        # Upload all files in parallel
-        async def upload_file(
-            content_bytes: bytes, path: str, log_info: tuple[str, dict[str, str]] | None
-        ) -> None:
-            assert self.sandbox is not None
-            await self._daytona_call(
-                self.sandbox.fs.upload_file,
-                content_bytes,
-                path,
-                retry_policy=_DaytonaRetryPolicy.SAFE,
-            )
+        # Batch mkdir — all dirs in one command
+        all_dirs = [f"{work_dir}/tools"] + [
+            f"{work_dir}/tools/docs/{name}" for name in tools_by_server
+        ]
+        mkdir_cmd = "mkdir -p " + " ".join(shlex.quote(d) for d in all_dirs)
+        await self._daytona_call(
+            self.sandbox.process.exec,
+            mkdir_cmd,
+            retry_policy=_DaytonaRetryPolicy.SAFE,
+        )
+
+        # Batch upload — single HTTP request for all generated content
+        batch = [
+            FileUpload(source=content, destination=path) for content, path, _ in uploads
+        ]
+        await self._daytona_call(
+            self.sandbox.fs.upload_files,
+            batch,
+            retry_policy=_DaytonaRetryPolicy.SAFE,
+        )
+        # Log after batch
+        for _, _, log_info in uploads:
             if log_info:
                 msg, kwargs = log_info
                 logger.info(msg, **kwargs)
-
-        await asyncio.gather(
-            *[
-                upload_file(content, path, log_info)
-                for content, path, log_info in uploads
-            ]
-        )
 
         logger.info("Tool modules installation complete")
 

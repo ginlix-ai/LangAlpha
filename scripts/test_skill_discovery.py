@@ -2,7 +2,7 @@
 """Test skill discovery optimization against a real Daytona sandbox.
 
 Verifies:
-1. sync_skills enriches manifest with parsed skill metadata
+1. sync_sandbox_assets enriches manifest with parsed skill metadata
 2. adiscover_skills uses known_skills cache (0 downloads for known skills)
 3. adiscover_skills downloads SKILL.md only for unknown skills
 4. End-to-end flow: sandbox.skills_manifest -> SkillsMiddleware known_skills
@@ -53,14 +53,18 @@ def info(msg: str) -> None:
 
 
 async def test_manifest_has_skills_metadata(sandbox, skill_dirs):
-    """Test 1: sync_skills populates skills_manifest with parsed metadata."""
-    section("Test 1: sync_skills enriches manifest with skill metadata")
+    """Test 1: sync_sandbox_assets populates skills_manifest with parsed metadata."""
+    section("Test 1: sync_sandbox_assets enriches manifest with skill metadata")
 
-    await sandbox.sync_skills(skill_dirs, reusing_sandbox=False, force_refresh=True)
+    await sandbox.sync_sandbox_assets(
+        skill_dirs=skill_dirs, reusing_sandbox=False, force_refresh=True
+    )
 
     manifest = sandbox.skills_manifest
-    assert manifest is not None, "skills_manifest should not be None after sync_skills"
-    ok("skills_manifest is set after sync_skills")
+    assert manifest is not None, (
+        "skills_manifest should not be None after sync_sandbox_assets"
+    )
+    ok("skills_manifest is set after sync_sandbox_assets")
 
     assert "version" in manifest, "manifest should have 'version' key"
     assert "files" in manifest, "manifest should have 'files' key"
@@ -88,13 +92,17 @@ async def test_manifest_preserved_on_no_upload(sandbox, skill_dirs):
     section("Test 2: skills_manifest preserved on no-upload path")
 
     # First sync populates the manifest
-    await sandbox.sync_skills(skill_dirs, reusing_sandbox=False, force_refresh=True)
+    await sandbox.sync_sandbox_assets(
+        skill_dirs=skill_dirs, reusing_sandbox=False, force_refresh=True
+    )
     first_manifest = sandbox.skills_manifest
     assert first_manifest is not None
 
     # Second sync should detect no changes and take the early-return path
-    uploaded = await sandbox.sync_skills(skill_dirs, reusing_sandbox=True)
-    assert not uploaded, "second sync should not upload (no changes)"
+    result = await sandbox.sync_sandbox_assets(
+        skill_dirs=skill_dirs, reusing_sandbox=True
+    )
+    assert not result.refreshed_modules, "second sync should not upload (no changes)"
     ok("Second sync correctly detected no changes")
 
     second_manifest = sandbox.skills_manifest

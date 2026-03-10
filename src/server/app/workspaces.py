@@ -419,28 +419,21 @@ async def refresh_workspace(
     if sandbox is None:
         raise HTTPException(status_code=503, detail="Sandbox not available")
 
-    refreshed_tools = False
-    skills_uploaded = False
+    skill_dirs = (
+        manager.config.skills.local_skill_dirs_with_sandbox()
+        if manager.config.skills.enabled
+        else None
+    )
 
     try:
-        result = await sandbox.refresh_tools()
-        refreshed_tools = bool(result.get("success", True))
+        result = await sandbox.sync_sandbox_assets(
+            skill_dirs=skill_dirs,
+            reusing_sandbox=True,
+            force_refresh=True,
+        )
     except Exception as e:
-        logger.exception(f"Refresh tools failed for workspace {workspace_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to refresh tools")
-
-    # Sync skills by default (manifest-based; usually no-op)
-    try:
-        if manager.config.skills.enabled:
-            skill_dirs = manager.config.skills.local_skill_dirs_with_sandbox()
-            if skill_dirs:
-                skills_uploaded = await sandbox.sync_skills(
-                    skill_dirs,
-                    reusing_sandbox=True,
-                    force_refresh=True,
-                )
-    except Exception as e:
-        logger.warning(f"Skills sync failed during refresh: {e}")
+        logger.exception(f"Refresh failed for workspace {workspace_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to refresh sandbox assets")
 
     servers: list[str] = []
     try:
@@ -453,10 +446,13 @@ async def refresh_workspace(
         workspace_id=workspace_id,
         status="ok",
         message="Sandbox refreshed",
-        refreshed_tools=refreshed_tools,
-        skills_uploaded=skills_uploaded,
+        refreshed_tools=bool(
+            set(result.refreshed_modules)
+            & {"mcp_servers", "data_client", "tool_modules"}
+        ),
+        skills_uploaded="skills" in result.refreshed_modules,
         servers=servers,
-        details={"tools": result},
+        details={"refreshed_modules": result.refreshed_modules},
     )
 
 

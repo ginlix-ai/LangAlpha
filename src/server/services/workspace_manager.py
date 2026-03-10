@@ -44,7 +44,7 @@ class WorkspaceManager:
 
     _instance: Optional["WorkspaceManager"] = None
 
-    # Sync cooldown: skip ensure_sandbox_ready + sync_tools if synced recently
+    # Sync cooldown: skip ensure_sandbox_ready + sync_sandbox_assets if synced recently
     _SYNC_COOLDOWN_SECONDS = 30
 
     def __init__(
@@ -136,8 +136,7 @@ class WorkspaceManager:
             await asyncio.wait_for(lock.acquire(), timeout=timeout)
         except asyncio.TimeoutError:
             raise RuntimeError(
-                f"Timeout acquiring lock for workspace {workspace_id} "
-                f"after {timeout}s"
+                f"Timeout acquiring lock for workspace {workspace_id} after {timeout}s"
             )
         try:
             yield
@@ -214,24 +213,6 @@ class WorkspaceManager:
         except Exception as e:
             logger.warning(f"User data sync failed for workspace {workspace_id}: {e}")
 
-    async def _ensure_sandbox_tokens(
-        self,
-        workspace_id: str,
-        user_id: str | None,
-        sandbox: Any,
-    ) -> None:
-        """Ensure sandbox has a valid token file; mint fresh tokens if missing or stale.
-
-        Called for reconnected sandboxes. New sandboxes get tokens during creation.
-        Always re-mints to guarantee a fresh access token after sandbox restart.
-        """
-        if not user_id:
-            return
-        tokens = await self._mint_sandbox_tokens(user_id, workspace_id)
-        if tokens:
-            await sandbox.upload_token_file(tokens)
-            logger.info(f"Refreshed sandbox tokens for workspace {workspace_id}")
-
     async def _sync_sandbox_assets(
         self,
         workspace_id: str,
@@ -239,36 +220,47 @@ class WorkspaceManager:
         sandbox: Any,
         reusing_sandbox: bool = False,
     ) -> None:
-        """
-        Sync skills and user data to sandbox in parallel.
+        """Sync all sandbox assets (tools, skills, data client, tokens) and user data.
+
+        Uses the unified manifest for tools/skills/data_client/tokens, and
+        syncs user data in parallel.
 
         Args:
             workspace_id: Workspace ID
             user_id: User ID (user data sync skipped if None)
             sandbox: Sandbox instance (all syncs skipped if None)
-            reusing_sandbox: If True, sandbox already has skills (skip unchanged)
+            reusing_sandbox: If True, sandbox already has assets (skip unchanged)
         """
         if not sandbox:
             return
 
         tasks = []
 
-        # Skills sync task
-        if self.config.skills.enabled:
-            skill_dirs = self.config.skills.local_skill_dirs_with_sandbox()
-            tasks.append(
-                sandbox.sync_skills(skill_dirs, reusing_sandbox=reusing_sandbox)
+        # Unified asset sync (skills + tools + data_client + tokens)
+        skill_dirs = (
+            self.config.skills.local_skill_dirs_with_sandbox()
+            if self.config.skills.enabled
+            else None
+        )
+        # Only mint tokens on reconnect — new sandboxes get tokens during
+        # session.initialize() → setup_tools_and_mcp() which writes the
+        # initial unified manifest with token info.
+        tokens = {}
+        if reusing_sandbox and user_id:
+            tokens = await self._mint_sandbox_tokens(user_id, workspace_id)
+        tasks.append(
+            sandbox.sync_sandbox_assets(
+                skill_dirs=skill_dirs,
+                reusing_sandbox=reusing_sandbox,
+                tokens=tokens or None,
+                user_id=user_id,
+                workspace_id=workspace_id,
             )
+        )
 
         # User data sync task
         if user_id:
             tasks.append(sync_user_data_to_sandbox(sandbox, user_id))
-
-        # Backfill token file for sandboxes created before scoped-token support
-        if reusing_sandbox:
-            tasks.append(
-                self._ensure_sandbox_tokens(workspace_id, user_id, sandbox)
-            )
 
         if tasks:
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -276,8 +268,9 @@ class WorkspaceManager:
                 if isinstance(result, Exception):
                     logger.warning(f"Asset sync failed for {workspace_id}: {result}")
 
-            # Track user data sync completion
-            if user_id:
+            # Track user data sync completion — only if user data task succeeded
+            # (user data task is always appended last when user_id is truthy)
+            if user_id and len(results) >= 2 and not isinstance(results[-1], Exception):
                 self._user_data_synced.add(workspace_id)
 
     @staticmethod
@@ -295,7 +288,10 @@ class WorkspaceManager:
         if not sandbox:
             return
 
-        desc = description or "Brief 1-2 sentence description — update based on the first conversation."
+        desc = (
+            description
+            or "Brief 1-2 sentence description — update based on the first conversation."
+        )
         lines = [
             "---",
             f"workspace_name: {name}",
@@ -342,7 +338,11 @@ class WorkspaceManager:
         """
         sandbox_tokens = await self._mint_sandbox_tokens(user_id or "", workspace_id)
         session = SessionManager.get_session(workspace_id, core_config)
-        await session.initialize(sandbox_tokens=sandbox_tokens)
+        await session.initialize(
+            sandbox_tokens=sandbox_tokens,
+            user_id=user_id,
+            workspace_id=workspace_id,
+        )
         new_sandbox_id = getattr(session.sandbox, "sandbox_id", None)
 
         await self._sync_sandbox_assets(
@@ -394,13 +394,6 @@ class WorkspaceManager:
         except Exception as e:
             logger.warning(f"File restore check failed for {workspace_id}: {e}")
 
-    async def _sync_tools(self, workspace_id: str, sandbox: Any) -> None:
-        """Sync tools to sandbox. Non-blocking on failure."""
-        try:
-            await sandbox.sync_tools()
-        except Exception as e:
-            logger.warning(f"Tool sync failed for {workspace_id}: {e}")
-
     async def create_workspace(
         self,
         user_id: str,
@@ -439,7 +432,11 @@ class WorkspaceManager:
                 # 3. Initialize sandbox via ptc-agent Session
                 core_config = self.config.to_core_config()
                 session = SessionManager.get_session(workspace_id, core_config)
-                await session.initialize(sandbox_tokens=sandbox_tokens)
+                await session.initialize(
+                    sandbox_tokens=sandbox_tokens,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                )
 
                 # Sync skills and user data to sandbox in parallel
                 await self._sync_sandbox_assets(
@@ -555,7 +552,9 @@ class WorkspaceManager:
                 else:
                     # Sandbox ready — check if sync is needed
                     needs_deferred_sync = workspace_id in self._pending_lazy_sync
-                    needs_sync = not self._sync_cooldown_ok(workspace_id) or needs_deferred_sync
+                    needs_sync = (
+                        not self._sync_cooldown_ok(workspace_id) or needs_deferred_sync
+                    )
                     if not needs_sync:
                         # Cooldown active, skip expensive Daytona calls
                         return session
@@ -599,8 +598,6 @@ class WorkspaceManager:
                             session.sandbox,
                             reusing_sandbox=sandbox_id is not None,
                         )
-                        if session.sandbox:
-                            await self._sync_tools(workspace_id, session.sandbox)
                     else:
                         needs_sync = True
 
@@ -665,7 +662,6 @@ class WorkspaceManager:
                     await self._maybe_restore_files(workspace_id, session.sandbox)
                     self._pending_lazy_sync.discard(workspace_id)
 
-                await self._sync_tools(workspace_id, session.sandbox)
                 await self._sync_user_data_if_needed(
                     workspace_id, workspace_user_id, session.sandbox
                 )
@@ -745,9 +741,7 @@ class WorkspaceManager:
 
             # Sandbox was deleted — recover with fresh one
             if sandbox_gone:
-                return await self._recover_sandbox(
-                    workspace_id, user_id, core_config
-                )
+                return await self._recover_sandbox(workspace_id, user_id, core_config)
 
             # Existing sandbox reconnected successfully — sync assets
             if not lazy_init:
@@ -756,7 +750,6 @@ class WorkspaceManager:
                 )
                 if session.sandbox:
                     await self._maybe_restore_files(workspace_id, session.sandbox)
-                    await self._sync_tools(workspace_id, session.sandbox)
                 self._record_sync(workspace_id)
 
             # Update status to running

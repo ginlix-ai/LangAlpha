@@ -81,7 +81,7 @@ class SessionService:
             extra={
                 "idle_timeout": idle_timeout,
                 "cleanup_interval": cleanup_interval,
-            }
+            },
         )
 
     @classmethod
@@ -178,7 +178,7 @@ class SessionService:
         if needs_init:
             logger.info(
                 f"Initializing session for {workspace_id}",
-                extra={"sandbox_id": sandbox_id}
+                extra={"sandbox_id": sandbox_id},
             )
             await session.initialize(sandbox_id=sandbox_id)
 
@@ -188,35 +188,31 @@ class SessionService:
                     metadata = self._metadata.get(workspace_id)
                     if metadata:
                         metadata.sandbox_id = getattr(
-                            session.sandbox, 'sandbox_id', None
+                            session.sandbox, "sandbox_id", None
                         )
 
-            # Sync skills to sandbox if enabled
-            if self.config.skills.enabled and session.sandbox:
-                skill_dirs = self.config.skills.local_skill_dirs_with_sandbox()
+            # Unified asset sync (skills + tools + data_client + tokens)
+            if session.sandbox:
+                skill_dirs = (
+                    self.config.skills.local_skill_dirs_with_sandbox()
+                    if self.config.skills.enabled
+                    else None
+                )
                 reusing_sandbox = sandbox_id is not None
                 try:
-                    did_upload = await session.sandbox.sync_skills(
-                        skill_dirs,
+                    result = await session.sandbox.sync_sandbox_assets(
+                        skill_dirs=skill_dirs,
                         reusing_sandbox=reusing_sandbox,
                     )
-                    if did_upload:
-                        logger.info(f"Skills synced for workspace: {workspace_id}")
+                    if result.refreshed_modules:
+                        logger.info(
+                            f"Assets synced for workspace {workspace_id}: {result.refreshed_modules}"
+                        )
                     else:
-                        logger.debug(f"Skills unchanged for workspace: {workspace_id}")
-                except Exception as e:
-                    # Skills are helpful but should not prevent session startup
-                    logger.warning(
-                        f"Skills sync failed for {workspace_id}: {e}",
-                        exc_info=True
-                    )
-
-            if session.sandbox and sandbox_id is not None:
-                try:
-                    await session.sandbox.sync_tools()
+                        logger.debug(f"Assets unchanged for workspace: {workspace_id}")
                 except Exception as e:
                     logger.warning(
-                        f"Tool sync failed for session {workspace_id}: {e}",
+                        f"Asset sync failed for {workspace_id}: {e}",
                         exc_info=True,
                     )
 
@@ -226,17 +222,25 @@ class SessionService:
                     from src.server.services.sync_user_data import (
                         sync_user_data_to_sandbox,
                     )
-                    logger.info(f"Syncing user data for workspace: {workspace_id}, user_id: {user_id}")
-                    result = await sync_user_data_to_sandbox(session.sandbox, user_id)
-                    logger.info(f"User data sync result for workspace {workspace_id}: {result}")
+
+                    logger.info(
+                        f"Syncing user data for workspace: {workspace_id}, user_id: {user_id}"
+                    )
+                    sync_result = await sync_user_data_to_sandbox(
+                        session.sandbox, user_id
+                    )
+                    logger.info(
+                        f"User data sync result for workspace {workspace_id}: {sync_result}"
+                    )
                 except Exception as e:
                     # User data sync is helpful but should not prevent session startup
                     logger.warning(
-                        f"User data sync failed for {workspace_id}: {e}",
-                        exc_info=True
+                        f"User data sync failed for {workspace_id}: {e}", exc_info=True
                     )
             else:
-                logger.debug(f"Skipping user data sync: user_id={user_id}, sandbox={session.sandbox is not None}")
+                logger.debug(
+                    f"Skipping user data sync: user_id={user_id}, sandbox={session.sandbox is not None}"
+                )
 
         return session
 
@@ -408,7 +412,10 @@ class SessionServiceProvider:
         self._session_service = SessionService.get_instance()
 
     async def get_or_create_session(
-        self, workspace_id: str, sandbox_id: Optional[str] = None, user_id: Optional[str] = None
+        self,
+        workspace_id: str,
+        sandbox_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> Session:
         """Get or create a session using SessionService.
 

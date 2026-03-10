@@ -58,13 +58,19 @@ class Session:
         self._agent_md_dirty = True
 
     async def initialize(
-        self, sandbox_id: str | None = None, sandbox_tokens: dict | None = None
+        self,
+        sandbox_id: str | None = None,
+        sandbox_tokens: dict | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> None:
         """Initialize the session (connect MCP servers and setup sandbox).
 
         Args:
             sandbox_id: Optional existing sandbox ID to reconnect to instead of creating new
             sandbox_tokens: Optional scoped OAuth2 tokens for sandbox ginlix-data access
+            user_id: User ID for token tracking in manifest.
+            workspace_id: Workspace ID for token tracking in manifest.
         """
         if self._initialized:
             logger.warning(
@@ -132,11 +138,12 @@ class Session:
 
             self.sandbox.mcp_registry = self.mcp_registry
 
-            # Upload scoped auth tokens before MCP servers start
-            if sandbox_tokens:
-                await self.sandbox.upload_token_file(sandbox_tokens)
-
-            await self.sandbox.setup_tools_and_mcp(snapshot_name)
+            await self.sandbox.setup_tools_and_mcp(
+                snapshot_name,
+                tokens=sandbox_tokens,
+                user_id=user_id,
+                workspace_id=workspace_id,
+            )
 
         self._initialized = True
 
