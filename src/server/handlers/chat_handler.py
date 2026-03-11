@@ -535,7 +535,15 @@ async def resolve_oauth_llm_client(
 
     token_data = await get_valid_token(user_id)
     if not token_data:
-        return None
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Model '{model_name}' requires a connected {provider} account. "
+                f"Please connect your account at ginlix.ai first."
+            ),
+        )
 
     access_token = token_data["access_token"]
     if not access_token or not isinstance(access_token, str):
