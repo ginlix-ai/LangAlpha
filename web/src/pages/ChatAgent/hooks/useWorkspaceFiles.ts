@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '../../../lib/queryKeys';
 import { listWorkspaceFiles } from '../utils/api';
@@ -19,7 +19,7 @@ export function useWorkspaceFiles(
   { includeSystem = false }: UseWorkspaceFilesOptions = {},
 ): UseWorkspaceFilesResult {
   const queryClient = useQueryClient();
-  const opts = { includeSystem };
+  const opts = useMemo(() => ({ includeSystem }), [includeSystem]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.workspaceFiles.byWs(workspaceId!, opts),
