@@ -26,9 +26,9 @@ uv run pytest tests/unit/path/to/test.py::test_name -v      # single test
 uv run pytest tests/integration/ -v -m integration          # integration (needs DB + Redis + API keys)
 
 # Tests — frontend
-cd web && npx vitest run                   # all tests (CI)
-cd web && npx vitest run path/to/test.js   # single file
-cd web && npx vitest                       # watch mode
+cd web && pnpm vitest run                  # all tests (CI)
+cd web && pnpm vitest run path/to/test.js  # single file
+cd web && pnpm vitest                      # watch mode
 
 # Database setup
 make setup-db     # start postgres via docker
