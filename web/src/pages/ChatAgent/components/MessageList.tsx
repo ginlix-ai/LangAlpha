@@ -62,7 +62,7 @@ interface SubagentInfo {
 
 /** Feedback result from API */
 interface FeedbackResult {
-  rating: string;
+  rating: string | null;
   [key: string]: unknown;
 }
 

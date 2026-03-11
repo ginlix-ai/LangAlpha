@@ -444,7 +444,7 @@ export function useChatMessages(
   const isStreamingRef = useRef(false);
 
   // Feedback state: { [turnIndex]: { rating, ... } }
-  const feedbackMapRef = useRef<Record<number, Record<string, unknown>>>({});
+  const feedbackMapRef = useRef<Record<number, { rating: string | null; [key: string]: unknown }>>({});
 
   // Track if history replay found an unresolved interrupt (skip reconnection in that case)
   const historyHasUnresolvedInterruptRef = useRef(false);
@@ -1635,8 +1635,8 @@ export function useChatMessages(
       if (threadId) {
         try {
           const feedbackList = await getThreadFeedback(threadId);
-          const map: Record<number, Record<string, unknown>> = {};
-          feedbackList.forEach((fb: Record<string, unknown>) => { map[fb.turn_index as number] = fb; });
+          const map: Record<number, { rating: string | null; [key: string]: unknown }> = {};
+          feedbackList.forEach((fb: Record<string, unknown>) => { map[fb.turn_index as number] = fb as { rating: string | null; [key: string]: unknown }; });
           feedbackMapRef.current = map;
         } catch (e) {
           // Non-critical — feedback display is best-effort
@@ -3751,7 +3751,7 @@ export function useChatMessages(
     }
   }, [deriveTurnIndex, threadId]);
 
-  const handleThumbDown = useCallback(async (messageId: string, issueCategories: string[] | undefined, comment: string | undefined, consentHumanReview: boolean | undefined) => {
+  const handleThumbDown = useCallback(async (messageId: string, issueCategories: string[], comment: string | null, consentHumanReview: boolean) => {
     const turnIndex = deriveTurnIndex(messageId);
     if (turnIndex === -1) return null;
 

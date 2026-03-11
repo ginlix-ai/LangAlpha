@@ -3,7 +3,7 @@ import { useState } from 'react';
 // --- Card-level types ---
 
 interface TodoItem {
-  status: string;
+  status: 'pending' | 'in_progress' | 'completed';
   [key: string]: unknown;
 }
 
@@ -324,7 +324,7 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
 
       const completedTodos = card.todoData.todos.map((t) => ({
         ...t,
-        status: 'completed',
+        status: 'completed' as const,
       }));
 
       return {

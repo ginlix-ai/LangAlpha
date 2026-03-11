@@ -11,7 +11,7 @@ interface UseWorkspaceFilesResult {
   files: string[];
   loading: boolean;
   error: string | null;
-  refresh: () => void;
+  refresh: () => Promise<void>;
 }
 
 export function useWorkspaceFiles(

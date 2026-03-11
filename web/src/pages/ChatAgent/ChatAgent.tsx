@@ -181,7 +181,7 @@ function ChatAgent(): React.ReactElement | null {
         <ThreadGallery
           workspaceId={urlWorkspaceId}
           onBack={handleBackToWorkspaceGallery}
-          onThreadSelect={handleThreadSelect as any} // TODO: type properly
+          onThreadSelect={handleThreadSelect}
         />
       </Suspense>
     );
@@ -189,7 +189,7 @@ function ChatAgent(): React.ReactElement | null {
     content = (
       <Suspense fallback={null}>
         <WorkspaceGallery
-          onWorkspaceSelect={handleWorkspaceSelect as any} // TODO: type properly
+          onWorkspaceSelect={handleWorkspaceSelect}
           prefetchThreads={prefetchThreads}
         />
       </Suspense>

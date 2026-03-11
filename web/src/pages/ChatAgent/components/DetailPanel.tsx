@@ -37,7 +37,7 @@ interface ToolCallResultData {
 }
 
 interface ToolCallProcessRecord {
-  toolName: string;
+  toolName?: string;
   toolCall?: ToolCallData | null;
   toolCallResult?: ToolCallResultData | null;
   isInProgress?: boolean;

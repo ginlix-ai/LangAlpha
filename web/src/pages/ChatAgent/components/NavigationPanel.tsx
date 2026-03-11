@@ -29,7 +29,7 @@ interface ThreadsData {
 interface AgentMessage {
   role: string;
   isStreaming?: boolean;
-  toolCallProcesses?: Record<string, { isInProgress: boolean }>;
+  toolCallProcesses?: Record<string, { isInProgress?: boolean }>;
   [key: string]: unknown;
 }
 

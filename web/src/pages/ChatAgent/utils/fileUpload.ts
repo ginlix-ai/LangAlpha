@@ -9,7 +9,7 @@ export const MAX_FILES = 5;
 
 export interface Attachment {
   file: File;
-  dataUrl: string;
+  dataUrl: string | null;
   type: string;
 }
 
@@ -40,11 +40,13 @@ export function readFileAsDataUrl(file: File): Promise<string> {
  * Convert attachments array to ImageContext format for additional_context
  */
 export function attachmentsToImageContexts(attachments: Attachment[]): ImageContext[] {
-  return attachments.map((a) => ({
-    type: 'image',
-    data: a.dataUrl,
-    description: a.file.name,
-  }));
+  return attachments
+    .filter((a) => a.dataUrl != null)
+    .map((a) => ({
+      type: 'image',
+      data: a.dataUrl!,
+      description: a.file.name,
+    }));
 }
 
 /**

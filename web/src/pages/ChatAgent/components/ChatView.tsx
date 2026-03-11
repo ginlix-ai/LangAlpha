@@ -121,7 +121,10 @@ interface ModelOptions {
 
 interface ActionCommand {
   name: string;
-  [key: string]: unknown;
+  type?: string;
+  skillName?: string;
+  description?: string;
+  aliases?: string[];
 }
 
 interface MsgSelectionTooltipData {
@@ -1352,7 +1355,7 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
                     workspaceThreads={navWorkspaceThreads}
                     currentWorkspaceId={workspaceId}
                     currentThreadId={currentThreadId || threadId}
-                    agents={agents as any} // TODO: type properly
+                    agents={agents}
                     activeAgentId={activeAgentId}
                     expandWorkspace={navExpandWorkspace}
                     onSelectAgent={handleSelectAgent}
@@ -1420,9 +1423,9 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
                         onEditMessage={(id, content) => handleEditMessage(id, content, chatInputRef.current?.getModelOptions?.())}
                         onRegenerate={(id) => handleRegenerate(id, chatInputRef.current?.getModelOptions?.())}
                         onRetry={() => handleRetry(chatInputRef.current?.getModelOptions?.())}
-                        onThumbUp={handleThumbUp as any} // TODO: type properly
-                        onThumbDown={handleThumbDown as any} // TODO: type properly
-                        getFeedbackForMessage={getFeedbackForMessage as any} // TODO: type properly
+                        onThumbUp={handleThumbUp}
+                        onThumbDown={handleThumbDown}
+                        getFeedbackForMessage={getFeedbackForMessage}
                         onReportWithAgent={(instruction) => {
                           handleSendMessage(`/self-improve ${instruction}`);
                         }}
@@ -1495,7 +1498,7 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
               <div className="w-full max-w-3xl space-y-3">
                 {activeAgentId === 'main' ? (
                   <>
-                    <TodoDrawer todoData={(cards['todo-list-card']?.todoData ?? null) as any} defaultCollapsed={!!cards['todo-list-card']?.todoData?.fromHistory} />
+                    <TodoDrawer todoData={cards['todo-list-card']?.todoData ?? null} defaultCollapsed={!!cards['todo-list-card']?.todoData?.fromHistory} />
                     {pendingRejection && (
                       <div
                         className="flex items-center gap-2 px-3 py-2 rounded-md text-sm"
@@ -1551,20 +1554,20 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
                     )}
                     <ChatInput
                       ref={chatInputRef}
-                      onSend={handleSendWithAttachments as any} // TODO: type properly
+                      onSend={handleSendWithAttachments}
                       disabled={isLoadingHistory || !workspaceId || !!pendingInterrupt}
                       onStop={handleSoftInterrupt}
                       isLoading={isLoading}
                       placeholder={chatPlaceholder}
                       files={workspaceFiles}
                       tokenUsage={tokenUsage}
-                      onAction={handleAction as any} // TODO: type properly
+                      onAction={handleAction}
                       initialModel={threadModels[0] || preferredModel}
                       threadModels={threadModels}
                     />
                   </>
                 ) : activeAgent ? (
-                  <SubagentStatusBar agent={activeAgent as any} threadId={threadId} onInstructionSent={handleSubagentInstruction} />
+                  <SubagentStatusBar agent={activeAgent} threadId={threadId} onInstructionSent={handleSubagentInstruction} />
                 ) : null}
               </div>
             </div>
@@ -1611,7 +1614,7 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
                   />
                 ) : rightPanelType === 'detail' && (detailToolCall || detailPlanData) ? (
                   <DetailPanel
-                    toolCallProcess={detailToolCall as any} // TODO: type properly
+                    toolCallProcess={detailToolCall}
                     planData={detailPlanData}
                     onClose={() => {
                       setRightPanelType(null);
