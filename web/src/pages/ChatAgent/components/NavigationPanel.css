@@ -14,15 +14,8 @@
 }
 
 .nav-panel {
-  background: transparent;
-}
-
-/* Add background when panel overlaps the centered message column */
-@container (max-width: 1407px) {
-  .nav-panel {
-    background: var(--color-bg-page);
-    border-right: 1px solid var(--color-border-muted);
-  }
+  background: var(--color-bg-page);
+  border-right: 1px solid var(--color-border-muted);
 }
 
 .nav-panel-row {

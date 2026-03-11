@@ -113,6 +113,8 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
   const [files, setFiles] = useState<string[]>([]);
   const isDraggingRef = useRef(false);
   const [isDragging, setIsDragging] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const containerWidthRef = useRef<number>(0);
   const DIVIDER_WIDTH = 4; // px -- matches w-[4px] divider
   const chatInputRef = useRef<ChatInputHandle>(null);
   const handleAddContext = useCallback((ctx: Record<string, unknown>) => {
@@ -155,6 +157,24 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
       if (pa !== pb) return pa - pb;
       return a.localeCompare(b);
     });
+  }, []);
+
+  // Clamp a desired panel width to fit the container
+  const clampPanelWidth = useCallback((desired: number) => {
+    const cw = containerWidthRef.current;
+    if (cw <= 0) return desired;
+    return Math.max(280, Math.min(desired, cw * 0.55));
+  }, []);
+
+  // Track container width via ResizeObserver
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries: ResizeObserverEntry[]) => {
+      containerWidthRef.current = entries[0].contentRect.width;
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
   }, []);
 
   // Derive sorted file list from hook data
@@ -448,8 +468,13 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
    * Toggle file panel visibility
    */
   const handleToggleFilePanel = useCallback(() => {
-    setShowFilePanel(!showFilePanel);
-  }, [showFilePanel]);
+    if (showFilePanel) {
+      setShowFilePanel(false);
+    } else {
+      setFilePanelWidth(clampPanelWidth(850));
+      setShowFilePanel(true);
+    }
+  }, [showFilePanel, clampPanelWidth]);
 
   /**
    * Handle drag panel width
@@ -464,7 +489,8 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
     const onMouseMove = (moveEvent: MouseEvent) => {
       if (!isDraggingRef.current) return;
       const delta = startX - moveEvent.clientX;
-      const newWidth = Math.max(280, Math.min(startWidth + delta, window.innerWidth * 0.6));
+      const maxW = containerWidthRef.current > 0 ? containerWidthRef.current * 0.55 : window.innerWidth * 0.6;
+      const newWidth = Math.max(280, Math.min(startWidth + delta, maxW));
       setFilePanelWidth(newWidth);
     };
 
@@ -551,6 +577,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
 
   return (
     <div
+      ref={containerRef}
       className="h-screen flex overflow-hidden"
       style={{
         backgroundColor: 'var(--color-bg-page)',
@@ -652,6 +679,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
                           onClick={(e) => {
                             e.stopPropagation();
                             setFilePanelTargetFile(filePath);
+                            setFilePanelWidth(clampPanelWidth(850));
                             setShowFilePanel(true);
                           }}
                         >

@@ -284,6 +284,7 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
   const navHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const navLockedRef = useRef(_navLocked);
   const contentAreaRef = useRef<HTMLDivElement>(null);
+  const contentAreaWidthRef = useRef<number>(0);
   // Skip nav panel slide-in on mount if it was already open (thread navigation);
   // allow animation on subsequent hover opens.
   const skipNavAnimRef = useRef(_navPanelVisible);
@@ -294,7 +295,8 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
     if (!container) return;
     const observer = new ResizeObserver((entries: ResizeObserverEntry[]) => {
       const width = entries[0].contentRect.width;
-      if (width < 800 && _navPanelVisible) {
+      contentAreaWidthRef.current = width;
+      if (width < 1100 && _navPanelVisible) {
         if (navHideTimerRef.current) clearTimeout(navHideTimerRef.current);
         _navPanelVisible = false;
         setNavPanelVisible(false);
@@ -755,6 +757,13 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
   }, [activeAgent, cards, updateSubagentCard]);
 
 
+  // Clamp a desired panel width to fit the content area
+  const clampPanelWidth = useCallback((desired: number) => {
+    const cw = contentAreaWidthRef.current;
+    if (cw <= 0) return desired;
+    return Math.max(280, Math.min(desired, cw * 0.55));
+  }, []);
+
   // Handle drag panel width
   const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -766,7 +775,8 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
     const onMouseMove = (moveEvent: MouseEvent) => {
       if (!isDraggingRef.current) return;
       const delta = startX - moveEvent.clientX;
-      const newWidth = Math.max(280, Math.min(startWidth + delta, window.innerWidth * 0.6));
+      const maxW = contentAreaWidthRef.current > 0 ? contentAreaWidthRef.current * 0.55 : window.innerWidth * 0.6;
+      const newWidth = Math.max(280, Math.min(startWidth + delta, maxW));
       setRightPanelWidth(newWidth);
     };
 
@@ -787,41 +797,41 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
 
   // Open a file in the right panel from chat tool calls
   const handleOpenFileFromChat = useCallback((filePath: string) => {
-    setRightPanelWidth(850);
+    setRightPanelWidth(clampPanelWidth(850));
     setRightPanelType('file');
     setFilePanelTargetDir(null);
     setFilePanelTargetFile(filePath);
-  }, []);
+  }, [clampPanelWidth]);
 
   // Open file panel filtered to a specific directory
   const handleOpenDirFromChat = useCallback((dirPath: string) => {
-    setRightPanelWidth(850);
+    setRightPanelWidth(clampPanelWidth(850));
     setRightPanelType('file');
     setFilePanelTargetFile(null);
     setFilePanelTargetDir(dirPath);
-  }, []);
+  }, [clampPanelWidth]);
 
   // Determine detail panel width based on content type
   const getDetailPanelWidth = useCallback((toolCallProcess: ToolCallProcessRecord | null) => {
-    if (!toolCallProcess) return 550;
-    const toolName = toolCallProcess.toolName || '';
-    const artifactType = toolCallProcess.toolCallResult?.artifact?.type;
+    let desired = 650;
+    if (!toolCallProcess) { desired = 550; }
+    else {
+      const toolName = toolCallProcess.toolName || '';
+      const artifactType = toolCallProcess.toolCallResult?.artifact?.type;
 
-    // Wide: file reading, SEC filings, subagent results
-    if (artifactType === 'sec_filing') return 850;
-    if (toolName === 'Read' || toolName === 'read_file') return 850;
-    if (toolName === 'Task' || toolName === 'task') return 750;
-
-    // Medium: charts, search results, default markdown
-    if (artifactType === 'stock_prices' || artifactType === 'market_indices' || artifactType === 'sector_performance') return 650;
-    if (toolName === 'WebSearch' || toolName === 'web_search') return 650;
-
-    // Slim: compact data cards
-    if (artifactType === 'company_overview') return 480;
-    if (artifactType === 'automations') return 480;
-
-    return 650;
-  }, []);
+      // Wide: file reading, SEC filings, subagent results
+      if (artifactType === 'sec_filing') desired = 850;
+      else if (toolName === 'Read' || toolName === 'read_file') desired = 850;
+      else if (toolName === 'Task' || toolName === 'task') desired = 750;
+      // Medium: charts, search results, default markdown
+      else if (artifactType === 'stock_prices' || artifactType === 'market_indices' || artifactType === 'sector_performance') desired = 650;
+      else if (toolName === 'WebSearch' || toolName === 'web_search') desired = 650;
+      // Slim: compact data cards
+      else if (artifactType === 'company_overview') desired = 480;
+      else if (artifactType === 'automations') desired = 480;
+    }
+    return clampPanelWidth(desired);
+  }, [clampPanelWidth]);
 
   // Open tool call detail in right panel
   const handleToolCallDetailClick = useCallback((toolCallProcess: ToolCallProcessRecord) => {
@@ -835,19 +845,19 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
   const handlePlanDetailClick = useCallback((planData: PlanData) => {
     setDetailPlanData(planData);
     setDetailToolCall(null);
-    setRightPanelWidth(550);
+    setRightPanelWidth(clampPanelWidth(550));
     setRightPanelType('detail');
-  }, []);
+  }, [clampPanelWidth]);
 
   // Toggle file panel
   const handleToggleFilePanel = useCallback(() => {
     if (rightPanelType === 'file') {
       setRightPanelType(null);
     } else {
-      setRightPanelWidth(850);
+      setRightPanelWidth(clampPanelWidth(850));
       setRightPanelType('file');
     }
-  }, [rightPanelType]);
+  }, [rightPanelType, clampPanelWidth]);
 
   // Add context from FilePanel or message selection to ChatInput
   const handleAddContext = useCallback((ctx: any) => { // TODO: type properly
@@ -917,7 +927,7 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
   const handleNavEnter = useCallback(() => {
     if (navLockedRef.current) return; // locked after explicit minimize
     // Don't open if content area is too narrow (e.g., right panel consuming space)
-    if ((contentAreaRef.current?.offsetWidth ?? Infinity) < 800) return;
+    if ((contentAreaRef.current?.offsetWidth ?? Infinity) < 1100) return;
     if (navHideTimerRef.current) clearTimeout(navHideTimerRef.current);
     _navPanelVisible = true;
     setNavPanelVisible(true);
@@ -1273,7 +1283,7 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
               left: 0,
               top: 0,
               bottom: 0,
-              width: 'max(16px, calc((100% - 768px) / 2))',
+              width: 'clamp(24px, calc((100% - 768px) / 2), 80px)',
               zIndex: 41,
               pointerEvents: navPanelVisible ? 'none' : 'auto',
             }}
@@ -1369,8 +1379,14 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
             </AnimatePresence>
           </div>
 
-          {/* Chat Window */}
-          <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+          {/* Chat Window — nudge right when nav panel is open so content clears the overlay */}
+          <div
+            className="flex-1 flex flex-col overflow-hidden min-w-0"
+            style={{
+              paddingLeft: navPanelVisible ? 'min(320px, max(0px, calc(1424px - 100%)))' : 0,
+              transition: 'padding-left 0.2s cubic-bezier(0.22, 1, 0.36, 1)',
+            }}
+          >
             {/* Messages Area - Fixed height, scrollable */}
             <div
               ref={msgAreaRef}

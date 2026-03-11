@@ -17,7 +17,7 @@ import { createWorkspace, deleteWorkspace, getFlashWorkspace, updateWorkspace, r
 import { removeStoredThreadId } from '../hooks/useChatMessages';
 import { clearChatSession } from '../hooks/utils/chatSessionRestore';
 
-const PAGE_SIZE = 8;
+const DEFAULT_PAGE_SIZE = 8;
 
 interface WorkspaceRecord {
   workspace_id: string;
@@ -311,11 +311,12 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
   const preSortByRef = useRef(sortBy); // sort mode before entering reorder
   const didReorderRef = useRef(false); // whether a drag occurred in reorder mode
   const isSearching = debouncedSearch.length > 0;
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
 
   // Pagination: reserve one slot on page 0 for the flash workspace
   const isFirstPage = currentPage === 0;
-  const wsLimit = isSearching ? 100 : isFirstPage ? PAGE_SIZE - 1 : PAGE_SIZE;
-  const wsOffset = isSearching ? 0 : isFirstPage ? 0 : (PAGE_SIZE - 1) + (currentPage - 1) * PAGE_SIZE;
+  const wsLimit = isSearching ? 100 : isFirstPage ? pageSize - 1 : pageSize;
+  const wsOffset = isSearching ? 0 : isFirstPage ? 0 : (pageSize - 1) + (currentPage - 1) * pageSize;
 
   // Main workspace list query
   const {
@@ -355,7 +356,7 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
   }, [wsData, flashWs, isFirstPage, isSearching]);
 
   const totalWorkspaces = (wsData as any)?.total || 0; // TODO: type properly
-  const totalPages = Math.ceil((totalWorkspaces + 1) / PAGE_SIZE);
+  const totalPages = Math.ceil((totalWorkspaces + 1) / pageSize);
 
   // Sync allWorkspaces state from query data when in reorder mode
   useEffect(() => {
@@ -387,6 +388,60 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
   useEffect(() => {
     scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
   }, [currentPage]);
+
+  // Dynamic page size: compute how many cards fit in the scroll container.
+  // Pagination container is always rendered (visibility:hidden when unused)
+  // so the scroll container height is stable and no paginationReserve is needed.
+  const computePageSizeFromHeight = useCallback((height: number) => {
+    const isMd = window.matchMedia('(min-width: 768px)').matches;
+    const columns = isMd ? 2 : 1;
+    const gap = isMd ? 24 : 12;
+    const cardHeight = 160;
+    const gridBottomMargin = isMd ? 24 : 12;
+    const available = height - gridBottomMargin;
+    const rows = Math.max(1, Math.floor((available + gap) / (cardHeight + gap)));
+    return Math.max(2, columns * rows);
+  }, []);
+
+  useEffect(() => {
+    if (isReorderMode || isWsLoading) return;
+    const el = scrollContainerRef.current;
+    if (!el) return;
+
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const handleResize = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        const newSize = computePageSizeFromHeight(el.clientHeight);
+        setPageSize(prev => prev === newSize ? prev : newSize);
+      }, 200);
+    };
+
+    // Measure after a frame to ensure layout is settled
+    requestAnimationFrame(() => {
+      const newSize = computePageSizeFromHeight(el.clientHeight);
+      setPageSize(newSize);
+    });
+
+    const observer = new ResizeObserver(handleResize);
+    observer.observe(el);
+
+    return () => {
+      observer.disconnect();
+      if (debounceTimer) clearTimeout(debounceTimer);
+    };
+  }, [isReorderMode, isWsLoading, computePageSizeFromHeight]);
+
+  // Reset page and grid height when page size changes
+  const prevPageSizeRef = useRef(DEFAULT_PAGE_SIZE);
+  useEffect(() => {
+    if (prevPageSizeRef.current !== pageSize) {
+      prevPageSizeRef.current = pageSize;
+      gridHeightRef.current = null;
+      setCurrentPage(0);
+    }
+  }, [pageSize]);
 
   /**
    * Debounced search: update debouncedSearch after 300ms
@@ -742,7 +797,7 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
       <div
         style={{ height: gridHeightRef.current || undefined, overflow: 'hidden' }}
         ref={(el) => {
-          if (el && visibleWorkspaces.length >= PAGE_SIZE) {
+          if (el && visibleWorkspaces.length >= pageSize) {
             const h = el.scrollHeight;
             if (!gridHeightRef.current || h > gridHeightRef.current) {
               gridHeightRef.current = h;
@@ -905,20 +960,25 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
         ) : (
           /* -- Normal Mode: paginated grid -- */
           <>
-            <div ref={scrollContainerRef} className="overflow-y-auto overflow-x-hidden px-1">
+            <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-hidden px-1">
               {renderGrid()}
             </div>
 
-            {/* Pagination dots -- pinned below scroll area */}
-            {!isSearching && totalPages > 1 && (
-              <div className="flex-shrink-0 py-3">
-                <MorphingPageDots
-                  totalPages={totalPages}
-                  activeIndex={currentPage}
-                  onChange={goToPage}
-                />
-              </div>
-            )}
+            {/* Pagination dots -- always rendered to keep scroll container height stable;
+                hidden via visibility when not needed to prevent layout oscillation */}
+            <div
+              className="flex-shrink-0 py-3"
+              style={{
+                visibility: (!isSearching && totalPages > 1) ? 'visible' : 'hidden',
+                pointerEvents: (!isSearching && totalPages > 1) ? 'auto' : 'none',
+              }}
+            >
+              <MorphingPageDots
+                totalPages={Math.max(totalPages, 2)}
+                activeIndex={currentPage}
+                onChange={goToPage}
+              />
+            </div>
           </>
         )}
       </main>
