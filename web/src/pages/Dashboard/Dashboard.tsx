@@ -118,7 +118,7 @@ function Dashboard() {
             {/* Right 1/3 — sticky sidebar */}
             <div className="lg:col-span-1">
               <div className="lg:sticky lg:top-24 space-y-6">
-                <div className="lg:h-[calc(100vh-420px)]">
+                <div>
                   <PortfolioWatchlistCard
                     watchlistRows={watchlist.rows}
                     watchlistLoading={watchlist.loading}

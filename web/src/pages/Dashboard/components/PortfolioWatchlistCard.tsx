@@ -351,7 +351,10 @@ function PortfolioWatchlistCard({
   const isPlPositive = totalPl >= 0;
 
   return (
-    <div className="dashboard-glass-card p-6 h-full flex flex-col">
+    <div
+      className="dashboard-glass-card p-6 flex flex-col"
+      style={{ minHeight: '200px', maxHeight: 'clamp(300px, calc(100vh - 420px), 800px)' }}
+    >
       {/* Header with tab switcher */}
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-xl font-bold" style={{ color: 'var(--color-text-primary)' }}>
@@ -382,7 +385,7 @@ function PortfolioWatchlistCard({
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto pr-1 space-y-1">
+      <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-1">
         <AnimatePresence mode="wait">
           {activeTab === 'watchlist' ? (
             <motion.div
