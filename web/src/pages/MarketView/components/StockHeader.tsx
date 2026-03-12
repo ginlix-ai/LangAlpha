@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Info, Sunrise, Sunset } from 'lucide-react';
+import { Info, List, Sunrise, Sunset } from 'lucide-react';
 import './StockHeader.css';
 import { isUSEquity, EXT_COLOR_PRE, EXT_COLOR_POST } from '../utils/chartConstants';
 import { getExtendedHoursInfo } from '@/lib/marketUtils';
@@ -33,6 +33,7 @@ interface StockHeaderProps {
   chartMeta: ChartMeta | null;
   displayOverride: DisplayOverride | null;
   onToggleOverview: () => void;
+  onOpenWatchlist?: () => void;
   wsStatus: ConnectionStatus;
   wsHasData?: boolean;
   wsDataLevel?: DataLevel;
@@ -52,7 +53,7 @@ function getDelayedLabel(sym: string | null | undefined): string {
   return EXCHANGE_LABELS[suffix] ? `${EXCHANGE_LABELS[suffix]} Delayed` : 'Delayed';
 }
 
-const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta, displayOverride, onToggleOverview, wsStatus, wsHasData = false, wsDataLevel = null, ginlixDataEnabled = true, quoteData, marketStatus, snapshot }: StockHeaderProps) => {
+const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta, displayOverride, onToggleOverview, onOpenWatchlist, wsStatus, wsHasData = false, wsDataLevel = null, ginlixDataEnabled = true, quoteData, marketStatus, snapshot }: StockHeaderProps) => {
   const formatNumber = (num: number | null | undefined): string => {
     if (num == null || (num !== 0 && !num)) return '—';
     if (num >= 1e12) return (num / 1e12).toFixed(2) + 'T';
@@ -238,6 +239,22 @@ const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta, displayOverr
             {changePct != null ? (changePct >= 0 ? '+' : '') + changePct.toFixed(2) + '%' : '—'}
           </span>
         </div>
+        {onOpenWatchlist && (
+          <div className="metric-item metric-item--watchlist">
+            <button
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-colors"
+              style={{
+                borderColor: 'var(--color-border-muted)',
+                color: 'var(--color-text-secondary)',
+                backgroundColor: 'var(--color-bg-card)',
+              }}
+              onClick={onOpenWatchlist}
+            >
+              <List size={13} />
+              Watchlist
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -81,3 +81,12 @@
   text-align: center;
   padding: 0 20px;
 }
+
+@media (max-width: 767px) {
+  .company-overview-panel {
+    width: 100%;
+    border-right: none;
+    height: auto;
+    overflow-y: visible;
+  }
+}

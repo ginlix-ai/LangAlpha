@@ -8,6 +8,10 @@
   overflow: hidden;
 }
 
+@media (max-width: 767px) {
+  .market-center-container { height: 100%; max-height: 100%; }
+}
+
 .market-content-wrapper {
   flex: 1;
   display: flex;
@@ -182,4 +186,44 @@ body.col-resizing * {
 
 .market-center-container::-webkit-scrollbar-thumb:hover {
   background: var(--color-border-default);
+}
+
+/* Mobile layout */
+.market-mobile-layout {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Floating pill button */
+.market-mobile-fab {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--color-border-muted);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.market-mobile-fab:active {
+  transform: scale(0.95);
+}
+
+/* Floating chat input at bottom */
+.market-mobile-chat-float {
+  position: fixed;
+  bottom: calc(var(--bottom-tab-height, 0px) + 8px);
+  left: 8px;
+  right: 8px;
+  z-index: 30;
 }

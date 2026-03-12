@@ -202,3 +202,18 @@
   color: var(--color-text-primary);
   border-color: var(--color-border-elevated);
 }
+
+@media (max-width: 767px) {
+  .stock-header { padding: 10px 12px; }
+  .stock-price { font-size: 22px; }
+  .stock-symbol { font-size: 16px; }
+  .stock-metrics { grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .metric-label { font-size: 10px; }
+  .metric-value { font-size: 12px; }
+  .metric-item--watchlist {
+    grid-column: 3 / -1;
+    display: flex;
+    align-items: flex-end;
+    justify-content: flex-end;
+  }
+}

@@ -9,6 +9,7 @@ import AddPortfolioHoldingDialog from '../../Dashboard/components/AddPortfolioHo
 import ConfirmDialog from '../../Dashboard/components/ConfirmDialog';
 import { getExtendedHoursInfo } from '@/lib/marketUtils';
 import { EXT_COLOR_PRE, EXT_COLOR_POST } from '../utils/chartConstants';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import './MarketSidebarPanel.css';
 
 interface SidebarRow {
@@ -42,7 +43,9 @@ interface MarketSidebarPanelProps {
 
 function MarketSidebarPanel({ activeSymbol, onSymbolClick, marketStatus }: MarketSidebarPanelProps) {
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const [expanded, setExpanded] = useState(false);
+  const effectiveExpanded = isMobile || expanded;
   const [activeTab, setActiveTab] = useState('watchlist');
   const watchlist = useWatchlistData();
   const portfolio = usePortfolioData();
@@ -175,7 +178,7 @@ function MarketSidebarPanel({ activeSymbol, onSymbolClick, marketStatus }: Marke
   }, [isWatchlist, watchlist.rows, portfolio.rows, wsPrices]);
 
   // Collapsed state — thin toggle strip
-  if (!expanded) {
+  if (!effectiveExpanded) {
     return (
       <div className="market-sidebar market-sidebar--collapsed">
         <button
@@ -228,13 +231,15 @@ function MarketSidebarPanel({ activeSymbol, onSymbolClick, marketStatus }: Marke
         >
           Portfolio
         </button>
-        <button
-          className="market-sidebar-collapse-btn"
-          onClick={() => setExpanded(false)}
-          title="Collapse"
-        >
-          <ChevronRight size={14} />
-        </button>
+        {!isMobile && (
+          <button
+            className="market-sidebar-collapse-btn"
+            onClick={() => setExpanded(false)}
+            title="Collapse"
+          >
+            <ChevronRight size={14} />
+          </button>
+        )}
       </div>
 
       {/* Section header */}

@@ -310,8 +310,8 @@
   line-height: 1.5;
 }
 
-/* Auto-collapse on narrow viewports */
-@media (max-width: 1280px) {
+/* Auto-collapse on narrow desktop viewports (not mobile — mobile uses drawer) */
+@media (max-width: 1280px) and (min-width: 768px) {
   .market-sidebar:not(.market-sidebar--collapsed) {
     width: 36px;
     align-items: center;
@@ -338,4 +338,9 @@
 @keyframes sidebar-pulse {
   0%, 100% { opacity: 0.4; }
   50% { opacity: 0.8; }
+}
+
+@media (max-width: 767px) {
+  .market-sidebar { width: 100%; border-left: none; height: 100%; }
+  .market-sidebar--collapsed { width: 100%; }
 }
