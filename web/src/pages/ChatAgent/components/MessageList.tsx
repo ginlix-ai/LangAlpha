@@ -326,7 +326,7 @@ function MessageList({ messages, isLoading, isLoadingHistory, hideAvatar, compac
 
   // Render message list
   return (
-    <div className="space-y-6">
+    <div className={isMobile ? 'space-y-4' : 'space-y-6'}>
       {messages.map((message) =>
         (message.role as string) === 'notification' ? (
           <NotificationDivider key={message.id as string} message={message} />
@@ -513,17 +513,17 @@ function MessageBubble({ message, isLoading, hideAvatar, compactToolCalls, isSub
 
   return (
     <div
-      className={`group flex gap-4 ${isUser ? 'justify-end' : 'justify-start'}`}
+      className={`group flex ${isMobile ? 'gap-3' : 'gap-4'} ${isUser ? 'justify-end' : 'justify-start'}`}
     >
       {/* Assistant avatar - shown on the left */}
       {isAssistant && !hideAvatar && (
-        <div className="flex-shrink-0 mt-2 w-8 h-8 flex items-center justify-center">
-          <img src={logo} alt="Assistant" className="w-8 h-8" />
+        <div className={`flex-shrink-0 mt-2 flex items-center justify-center ${isMobile ? 'w-6 h-6' : 'w-8 h-8'}`}>
+          <img src={logo} alt="Assistant" className={isMobile ? 'w-6 h-6' : 'w-8 h-8'} />
         </div>
       )}
 
       {/* Message content column -- bubble + standalone attachment cards */}
-      <div className={`${isUser ? 'max-w-[80%] flex flex-col items-end gap-2' : 'w-full min-w-0'}`}>
+      <div className={`${isUser ? (isEditing && isMobile ? 'w-full' : 'max-w-[80%]') + ' flex flex-col items-end gap-2' : 'w-full min-w-0'}`}>
 
         {/* ===== EDIT MODE (user messages) ===== */}
         {isEditing && isUser ? (
@@ -561,14 +561,14 @@ function MessageBubble({ message, isLoading, hideAvatar, compactToolCalls, isSub
             </div>
 
             {/* Info text + Cancel/Save row */}
-            <div className="flex items-center gap-3">
+            <div className={`flex gap-3 ${isMobile ? 'flex-col' : 'items-center'}`}>
               <div className="flex items-start gap-1.5 flex-1 min-w-0">
                 <Info className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" style={{ color: 'var(--color-text-tertiary)' }} />
                 <span className="text-xs leading-snug" style={{ color: 'var(--color-text-tertiary)' }}>
                   This will branch from the current thread. Messages after this point will be replaced and cannot be recovered.
                 </span>
               </div>
-              <div className="flex gap-2 flex-shrink-0">
+              <div className={`flex gap-2 flex-shrink-0 ${isMobile ? 'justify-end' : ''}`}>
                 <button
                   onClick={handleCancelEdit}
                   className="px-4 py-1.5 rounded-full text-sm font-medium transition-colors"
@@ -598,7 +598,9 @@ function MessageBubble({ message, isLoading, hideAvatar, compactToolCalls, isSub
         {/* Message bubble */}
         <div
           className={`rounded-lg ${
-            isUser ? 'px-4 py-3 rounded-tr-none overflow-hidden' : 'pl-0 pr-0 pb-3 rounded-tl-none'
+            isUser
+              ? `${isMobile ? 'px-3 py-2' : 'px-4 py-3'} rounded-tr-none overflow-hidden`
+              : `pl-0 pr-0 ${isMobile ? 'pb-2' : 'pb-3'} rounded-tl-none`
           }`}
           style={{
             backgroundColor: isUser
@@ -780,16 +782,16 @@ function MessageBubble({ message, isLoading, hideAvatar, compactToolCalls, isSub
         )}
       </div>
 
-      {/* User avatar - shown on the right */}
-      {isUser && !hideAvatar && (
+      {/* User avatar - shown on the right (hidden during edit on mobile) */}
+      {isUser && !hideAvatar && !(isEditing && isMobile) && (
         <div
-          className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center overflow-hidden"
+          className={`flex-shrink-0 rounded-full flex items-center justify-center overflow-hidden ${isMobile ? 'w-6 h-6' : 'w-8 h-8'}`}
           style={{ backgroundColor: 'var(--color-accent-soft)' }}
         >
           {avatarUrl ? (
             <img src={avatarUrl} alt="User" className="w-full h-full object-cover" />
           ) : (
-            <User className="h-4 w-4" style={{ color: 'var(--color-accent-primary)' }} />
+            <User className={isMobile ? 'h-3 w-3' : 'h-4 w-4'} style={{ color: 'var(--color-accent-primary)' }} />
           )}
         </div>
       )}

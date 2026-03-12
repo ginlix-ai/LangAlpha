@@ -54,7 +54,7 @@ function MobileBottomSheet({
               />
             </div>
             <div
-              className={`overflow-y-auto px-4${sizing === 'fixed' ? ' flex-1' : ''}${className ? ` ${className}` : ''}`}
+              className={`overflow-y-auto overflow-x-hidden px-4${sizing === 'fixed' ? ' flex-1' : ''}${className ? ` ${className}` : ''}`}
               style={sizing === 'auto' ? { maxHeight: `calc(${height} - 36px)`, ...style } : style}
             >
               {children}

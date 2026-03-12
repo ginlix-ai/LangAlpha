@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { TokenUsageRing, type TokenUsageData } from './token-usage-ring';
 import { usePreferences } from '@/hooks/usePreferences';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import { getSkills, getModelMetadata } from '../../pages/ChatAgent/utils/api';
 import './chat-input.css';
 
@@ -255,6 +256,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   dropdownDirection = 'up',
 }, ref) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const { preferences } = usePreferences();
   const otherPref = (preferences as Record<string, Record<string, unknown>> | null)?.other_preference;
   const starredModels = (otherPref?.starred_models as string[] | undefined) || [];
@@ -856,6 +858,48 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
 
   const showWorkspaceSelector = hasModeToggle && mode === 'deep' && workspaces && workspaces.length > 0;
 
+  /** Shared submenu body for "More models" — used by both desktop flyout and mobile inline */
+  const renderMoreModelsList = (indent: boolean) => {
+    const indentStyle = indent ? { paddingLeft: 24 } : undefined;
+    const compatible = starredModels.filter((m) => !initialModel || areModelsCompatible(selectedModel, m, modelMetadata));
+    return (
+      <>
+        {compatible.length > 0 ? (
+          compatible.map((m) => (
+            <div
+              key={m}
+              className="model-dropdown-item"
+              style={indentStyle}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                setSelectedModel(m);
+                setShowModelMenu(false);
+                setShowMoreModels(false);
+              }}
+            >
+              <span>{getModelDisplayName(m)}</span>
+              {m === selectedModel && <Check className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />}
+            </div>
+          ))
+        ) : (
+          <div className="model-dropdown-link" style={indentStyle}
+            onMouseDown={(e) => { e.preventDefault(); navigate('/settings?tab=model'); setShowModelMenu(false); setShowMoreModels(false); }}
+          >
+            {t('chat.modelSelector.configureModels')}
+          </div>
+        )}
+        <div className="model-dropdown-separator" />
+        <div
+          className="model-dropdown-link"
+          style={indentStyle}
+          onMouseDown={(e) => { e.preventDefault(); navigate('/settings?tab=model'); setShowModelMenu(false); setShowMoreModels(false); }}
+        >
+          {t('chat.modelSelector.manageModels')}
+        </div>
+      </>
+    );
+  };
+
   return (
     <div
       className="relative w-full"
@@ -1258,16 +1302,21 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                         </div>
                       )}
                       <div className="model-dropdown-separator" />
-                      {/* "More models" with hover submenu */}
+                      {/* "More models" with hover submenu (desktop) or tap-to-expand inline (mobile) */}
                       <div
                         className="model-dropdown-link model-dropdown-link-arrow"
-                        onMouseEnter={() => { if (moreModelsTimeout.current) clearTimeout(moreModelsTimeout.current); setShowMoreModels(true); }}
-                        onMouseLeave={() => { moreModelsTimeout.current = setTimeout(() => setShowMoreModels(false), 150); }}
+                        {...(isMobile
+                          ? { onMouseDown: (e: React.MouseEvent) => { e.preventDefault(); setShowMoreModels((v) => !v); } }
+                          : {
+                              onMouseEnter: () => { if (moreModelsTimeout.current) clearTimeout(moreModelsTimeout.current); setShowMoreModels(true); },
+                              onMouseLeave: () => { moreModelsTimeout.current = setTimeout(() => setShowMoreModels(false), 150); },
+                            }
+                        )}
                       >
                         <span>{t('chat.modelSelector.moreModels')}</span>
-                        <ChevronRight className="h-3.5 w-3.5" />
-                        {/* Submenu — appears on hover; opens left if near right edge */}
-                        {showMoreModels && (() => {
+                        <ChevronRight className={`h-3.5 w-3.5 transition-transform ${isMobile && showMoreModels ? 'rotate-90' : ''}`} />
+                        {/* Submenu — flyout on desktop; inline on mobile */}
+                        {showMoreModels && !isMobile && (() => {
                           const menuRect = modelMenuRef.current?.getBoundingClientRect();
                           const openLeft = menuRect && menuRect.right + 244 > window.innerWidth;
                           return (
@@ -1276,43 +1325,13 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                             onMouseEnter={() => { if (moreModelsTimeout.current) clearTimeout(moreModelsTimeout.current); }}
                             onMouseLeave={() => { moreModelsTimeout.current = setTimeout(() => setShowMoreModels(false), 150); }}
                           >
-                            {(() => {
-                              const compatible = starredModels.filter((m) => !initialModel || areModelsCompatible(selectedModel, m, modelMetadata));
-                              return compatible.length > 0 ? (
-                                compatible.map((m) => (
-                                  <div
-                                    key={m}
-                                    className="model-dropdown-item"
-                                    onMouseDown={(e) => {
-                                      e.preventDefault();
-                                      setSelectedModel(m);
-                                      setShowModelMenu(false);
-                                      setShowMoreModels(false);
-                                    }}
-                                  >
-                                    <span>{getModelDisplayName(m)}</span>
-                                    {m === selectedModel && <Check className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />}
-                                  </div>
-                                ))
-                              ) : (
-                                <div className="model-dropdown-link"
-                                  onMouseDown={(e) => { e.preventDefault(); navigate('/settings?tab=model'); setShowModelMenu(false); setShowMoreModels(false); }}
-                                >
-                                  {t('chat.modelSelector.configureModels')}
-                                </div>
-                              );
-                            })()}
-                            <div className="model-dropdown-separator" />
-                            <div
-                              className="model-dropdown-link"
-                              onMouseDown={(e) => { e.preventDefault(); navigate('/settings?tab=model'); setShowModelMenu(false); setShowMoreModels(false); }}
-                            >
-                              {t('chat.modelSelector.manageModels')}
-                            </div>
+                            {renderMoreModelsList(false)}
                           </div>
                           );
                         })()}
                       </div>
+                      {/* Mobile inline expanded submenu */}
+                      {showMoreModels && isMobile && renderMoreModelsList(true)}
                     </div>
                   )}
                 </div>

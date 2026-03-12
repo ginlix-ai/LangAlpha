@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import { X, FileText, ArrowRight, Zap, Loader2, ExternalLink, ChevronRight } from 'lucide-react';
 import { getDisplayName, getToolIcon, stripLineNumbers, parseTruncatedResult } from './toolDisplayConfig';
 import {
@@ -77,6 +78,7 @@ interface DetailPanelProps {
  */
 function DetailPanel({ toolCallProcess, planData, onClose, onOpenFile, onOpenSubagentTask }: DetailPanelProps): React.ReactElement | null {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
 
   // Plan detail view
   if (planData) {
@@ -85,12 +87,12 @@ function DetailPanel({ toolCallProcess, planData, onClose, onOpenFile, onOpenSub
         className="h-full flex flex-col"
         style={{
           backgroundColor: 'transparent',
-          borderLeft: '1px solid var(--color-border-muted)',
+          ...(!isMobile && { borderLeft: '1px solid var(--color-border-muted)' }),
         }}
       >
         <div
           className="flex items-center justify-between px-4 py-3 flex-shrink-0"
-          style={{ borderBottom: '1px solid var(--color-border-muted)' }}
+          style={!isMobile ? { borderBottom: '1px solid var(--color-border-muted)' } : undefined}
         >
           <div className="flex items-center gap-2 min-w-0">
             <Zap className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
@@ -139,13 +141,13 @@ function DetailPanel({ toolCallProcess, planData, onClose, onOpenFile, onOpenSub
       className="h-full flex flex-col"
       style={{
         backgroundColor: 'transparent',
-        borderLeft: '1px solid var(--color-border-muted)',
+        ...(!isMobile && { borderLeft: '1px solid var(--color-border-muted)' }),
       }}
     >
       {/* Header */}
       <div
         className="flex items-center justify-between px-4 py-3 flex-shrink-0"
-        style={{ borderBottom: '1px solid var(--color-border-muted)' }}
+        style={!isMobile ? { borderBottom: '1px solid var(--color-border-muted)' } : undefined}
       >
         <div className="flex items-center gap-2 min-w-0">
           {isTaskTool ? (
@@ -198,7 +200,7 @@ function DetailPanel({ toolCallProcess, planData, onClose, onOpenFile, onOpenSub
 
       {/* Content */}
       <div
-        className={`flex-1 px-4 py-4 ${artifact?.type === 'sec_filing' ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'}`}
+        className={`flex-1 px-4 py-4 overflow-x-hidden ${artifact?.type === 'sec_filing' ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'}`}
         style={{ minHeight: 0 }}
       >
         {isTaskTool ? (
