@@ -119,7 +119,7 @@ export default function ShareButton({ threadId, initialIsShared = false }: Share
         <div
           className="absolute right-0 top-full mt-2 w-80 rounded-lg border shadow-lg z-50"
           style={{
-            backgroundColor: 'var(--color-bg-secondary)',
+            backgroundColor: 'var(--color-bg-elevated, var(--color-bg-card))',
             borderColor: 'var(--color-border-muted)',
           }}
         >

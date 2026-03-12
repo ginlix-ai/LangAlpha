@@ -432,3 +432,10 @@
 .model-dropdown-empty {
   padding: 4px 0;
 }
+
+/* ====== Mobile responsive dropdowns ====== */
+@media (max-width: 767px) {
+  .model-dropdown { width: calc(100vw - 32px); max-width: 320px; }
+  .model-dropdown-submenu-right { left: 0; top: 100%; }
+  .workspace-dropdown { width: calc(100vw - 32px); max-width: 280px; }
+}

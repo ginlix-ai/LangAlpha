@@ -721,3 +721,18 @@
   .file-panel-editor-container .monaco-editor .overflow-guard {
     border-radius: 0 !important;
   }
+
+  /* ====== Mobile responsive ====== */
+  @media (max-width: 767px) {
+    .chat-split-left { min-width: 0; }
+    .chat-split-right { min-width: 0; width: 100%; }
+    .chat-split-divider { display: none; }
+
+    /* Add bottom padding to scrollable areas inside the mobile overlay
+       so content doesn't get clipped behind the floating bottom tab bar */
+    .mobile-panel-overlay [class*="overflow-y-auto"],
+    .mobile-panel-overlay [class*="overflow-auto"],
+    .mobile-panel-overlay .file-panel-content {
+      padding-bottom: var(--bottom-tab-height);
+    }
+  }

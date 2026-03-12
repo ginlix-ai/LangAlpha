@@ -1,7 +1,8 @@
 import React, { Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, FolderOpen, StopCircle, ScrollText, AlertTriangle, CheckCircle2, Circle, Loader2, TextSelect, Minus, PanelLeftOpen } from 'lucide-react';
+import { ArrowLeft, FolderOpen, StopCircle, ScrollText, AlertTriangle, CheckCircle2, Circle, Loader2, TextSelect, Minus, PanelLeftOpen, Menu } from 'lucide-react';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import { ScrollArea } from '../../../components/ui/scroll-area';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useQueryClient } from '@tanstack/react-query';
@@ -251,6 +252,7 @@ function SubagentStatusIndicator({ status, currentTool, toolCalls = 0, messages 
  */
 function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspaceName }: ChatViewProps): React.ReactElement | null {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const subagentScrollAreaRef = useRef<HTMLDivElement>(null);
   const chatInputRef = useRef<ChatInputHandle>(null);
@@ -296,6 +298,8 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
     const observer = new ResizeObserver((entries: ResizeObserverEntry[]) => {
       const width = entries[0].contentRect.width;
       contentAreaWidthRef.current = width;
+      // Skip auto-hide on mobile — hamburger controls nav drawer
+      if (window.matchMedia('(max-width: 767px)').matches) return;
       if (width < 1100 && _navPanelVisible) {
         if (navHideTimerRef.current) clearTimeout(navHideTimerRef.current);
         _navPanelVisible = false;
@@ -1225,7 +1229,7 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
       initial={_navPanelVisible ? false : { y: 10 }}
       animate={{ y: 0 }}
       transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-      className="flex h-screen w-full overflow-hidden"
+      className={`flex w-full overflow-hidden ${isMobile ? 'h-full' : 'h-screen'}`}
       style={{
         backgroundColor: 'var(--color-bg-page)',
       }}
@@ -1235,6 +1239,16 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
         {/* Top bar */}
         <div className="flex items-center justify-between px-4 py-2 border-b min-w-0 flex-shrink-0" style={{ borderColor: 'var(--color-border-muted)' }}>
           <div className="flex items-center gap-4 min-w-0 flex-shrink">
+            {isMobile && (
+              <button
+                onClick={handleNavExpand}
+                className="p-2 rounded-md transition-colors flex-shrink-0"
+                style={{ color: 'var(--color-text-primary)' }}
+                title="Menu"
+              >
+                <Menu className="h-5 w-5" />
+              </button>
+            )}
             <button
               onClick={() => { intentionalExitRef.current = true; onBack(); }}
               className="p-2 rounded-md transition-colors flex-shrink-0"
@@ -1276,21 +1290,23 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
 
         {/* Content area: Navigation Panel Overlay + Chat Window */}
         <div ref={contentAreaRef} className="flex-1 flex overflow-hidden" style={{ position: 'relative', containerType: 'inline-size' }}>
-          {/* Navigation trigger strip — hover zone clamped to left margin of centered content column */}
-          <div
-            style={{
-              position: 'absolute',
-              left: 0,
-              top: 0,
-              bottom: 0,
-              width: 'clamp(24px, calc((100% - 768px) / 2), 80px)',
-              zIndex: 41,
-              pointerEvents: navPanelVisible ? 'none' : 'auto',
-            }}
-            onMouseEnter={handleNavEnter}
-          />
-          {/* Expand tab — always visible when panel is hidden */}
-          {!navPanelVisible && (
+          {/* Navigation trigger strip — hover zone (desktop only) */}
+          {!isMobile && (
+            <div
+              style={{
+                position: 'absolute',
+                left: 0,
+                top: 0,
+                bottom: 0,
+                width: 'clamp(24px, calc((100% - 768px) / 2), 80px)',
+                zIndex: 41,
+                pointerEvents: navPanelVisible ? 'none' : 'auto',
+              }}
+              onMouseEnter={handleNavEnter}
+            />
+          )}
+          {/* Expand tab — desktop only, visible when panel is hidden */}
+          {!isMobile && !navPanelVisible && (
             <button
               onClick={handleNavExpand}
               className="nav-panel-dismiss-btn"
@@ -1315,6 +1331,18 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
               <PanelLeftOpen className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />
             </button>
           )}
+          {/* Mobile backdrop — dimmed overlay behind nav drawer */}
+          {isMobile && navPanelVisible && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                zIndex: 39,
+                backgroundColor: 'rgba(0, 0, 0, 0.5)',
+              }}
+              onClick={handleNavMinimize}
+            />
+          )}
           {/* Navigation panel area — responsive width, interactive only when visible */}
           <div
             style={{
@@ -1326,8 +1354,8 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
               zIndex: 40,
               pointerEvents: navPanelVisible ? 'auto' : 'none',
             }}
-            onMouseEnter={handleNavEnter}
-            onMouseLeave={handleNavLeave}
+            onMouseEnter={!isMobile ? handleNavEnter : undefined}
+            onMouseLeave={!isMobile ? handleNavLeave : undefined}
           >
             <AnimatePresence>
               {navPanelVisible && (
@@ -1383,7 +1411,7 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
           <div
             className="flex-1 flex flex-col overflow-hidden min-w-0"
             style={{
-              paddingLeft: navPanelVisible ? 'min(320px, max(0px, calc(1424px - 100%)))' : 0,
+              paddingLeft: !isMobile && navPanelVisible ? 'min(320px, max(0px, calc(1424px - 100%)))' : 0,
               transition: 'padding-left 0.2s cubic-bezier(0.22, 1, 0.36, 1)',
             }}
           >
@@ -1595,17 +1623,20 @@ function ChatView({ workspaceId, threadId, onBack, workspaceName: initialWorkspa
       <AnimatePresence>
         {rightPanelType && (
           <motion.div
-            initial={{ width: 0, opacity: 0 }}
-            animate={{ width: rightPanelWidth + DIVIDER_WIDTH, opacity: 1 }}
-            exit={{ width: 0, opacity: 0 }}
+            initial={isMobile ? { x: '100%' } : { width: 0, opacity: 0 }}
+            animate={isMobile ? { x: 0 } : { width: rightPanelWidth + DIVIDER_WIDTH, opacity: 1 }}
+            exit={isMobile ? { x: '100%' } : { width: 0, opacity: 0 }}
             transition={{ duration: isDragging ? 0 : 0.25, ease: [0.22, 1, 0.36, 1] }}
-            className="flex flex-shrink-0 overflow-hidden"
+            className={isMobile ? 'flex overflow-hidden mobile-panel-overlay' : 'flex flex-shrink-0 overflow-hidden'}
+            style={isMobile ? { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 30, backgroundColor: 'var(--color-bg-page)' } : undefined}
           >
-            <div
-              className="chat-split-divider"
-              onMouseDown={handleDividerMouseDown}
-            />
-            <div className="flex-shrink-0" style={{ width: rightPanelWidth }}>
+            {!isMobile && (
+              <div
+                className="chat-split-divider"
+                onMouseDown={handleDividerMouseDown}
+              />
+            )}
+            <div className="flex-shrink-0 h-full" style={{ width: isMobile ? '100%' : rightPanelWidth }}>
               <Suspense fallback={null}>
                 {rightPanelType === 'file' ? (
                   <FilePanel

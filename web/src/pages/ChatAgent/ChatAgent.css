@@ -7,3 +7,7 @@
   overflow: hidden;
   position: relative;
 }
+
+@media (max-width: 767px) {
+  .chat-agent-container { height: 100%; }
+}

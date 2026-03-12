@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo, Suspense } from 'react';
 import type { editor } from 'monaco-editor';
 import { ArrowLeft, X, FileText, FileImage, File, RefreshCw, Download, Upload, Folder, ChevronRight, ChevronDown, ArrowUpDown, AlertTriangle, Trash2, CheckSquare, Square, HardDrive, Printer, Minus, Plus, Pencil, Save, FileDiff, Undo2, Redo2, TextSelect, FolderOpen } from 'lucide-react';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import { useReactToPrint } from 'react-to-print';
 import SyntaxHighlighter, { oneDark, oneLight } from './SyntaxHighlighter';
 import { useTranslation } from 'react-i18next';
@@ -528,6 +529,7 @@ function FilePanel({
   onToggleSystemFiles = null,
 }: FilePanelProps): React.ReactElement {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   // Resolve API functions -- use adapter overrides if provided, otherwise fall back to authenticated imports
   const readFileFn = apiAdapter?.readFile
     ? (_: string, path: string) => apiAdapter.readFile!(path)
@@ -1247,6 +1249,10 @@ function FilePanel({
             </button>
           ) : targetDirectory ? (
             <button onClick={() => onTargetDirHandled?.()} className="file-panel-icon-btn" title={t('filePanel.backToAllFiles')}>
+              <ArrowLeft className="h-4 w-4" />
+            </button>
+          ) : isMobile ? (
+            <button onClick={onClose} className="file-panel-icon-btn" title={t('filePanel.close')}>
               <ArrowLeft className="h-4 w-4" />
             </button>
           ) : null}

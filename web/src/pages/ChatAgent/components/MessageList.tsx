@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Bot, User, FileText, ImageIcon, Pencil, RefreshCw, RotateCcw, Copy, Check, Info, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import ThumbDownModal from './ThumbDownModal';
 import logoLight from '../../../assets/img/logo.svg';
 import logoDark from '../../../assets/img/logo-dark.svg';
@@ -402,6 +403,7 @@ interface MessageBubbleProps {
  * based on role (user/assistant) and state (streaming/error)
  */
 function MessageBubble({ message, isLoading, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onEditMessage, onRegenerate, onRetry, onThumbUp, onThumbDown, getFeedbackForMessage, onReportWithAgent }: MessageBubbleProps): React.ReactElement {
+  const isMobile = useIsMobile();
   const { user } = useUser();
   const { theme } = useTheme();
   const logo = theme === 'light' ? logoDark : logoLight;
@@ -683,7 +685,9 @@ function MessageBubble({ message, isLoading, hideAvatar, compactToolCalls, isSub
         {/* Message action buttons -- visible on hover */}
         {showActions && !isEditing && (
           <div
-            className={`flex gap-1 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity ${
+            className={`flex gap-1 mt-0.5 transition-opacity ${
+              isMobile ? 'opacity-70' : 'opacity-0 group-hover:opacity-100'
+            } ${
               isUser ? 'justify-end' : 'justify-start'
             }`}
           >

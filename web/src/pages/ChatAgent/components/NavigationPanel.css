@@ -78,3 +78,9 @@
   opacity: 1;
   background-color: var(--color-border-muted) !important;
 }
+
+/* ====== Mobile touch targets ====== */
+@media (max-width: 767px) {
+  .nav-panel-row { min-height: 44px; padding: 10px 16px; }
+  .nav-panel-agent-row { min-height: 44px; padding: 10px 16px; }
+}

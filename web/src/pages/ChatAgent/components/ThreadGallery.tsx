@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { ArrowLeft, Loader2, Folder, FileText, Zap } from 'lucide-react';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -61,6 +62,7 @@ interface ThreadGalleryProps {
  */
 function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const location = useLocation();
   const queryClient = useQueryClient();
   const { theme } = useTheme();
@@ -578,8 +580,9 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
   return (
     <div
       ref={containerRef}
-      className="h-screen flex overflow-hidden"
+      className={`${isMobile ? 'h-full' : 'h-screen'} flex overflow-hidden`}
       style={{
+        position: 'relative',
         backgroundColor: 'var(--color-bg-page)',
         backgroundImage: 'radial-gradient(circle at center, var(--color-dot-grid) 0.75px, transparent 0.75px)',
         backgroundSize: '18px 18px',
@@ -740,17 +743,20 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
       <AnimatePresence>
         {showFilePanel && !isFlash && (
           <motion.div
-            initial={{ width: 0, opacity: 0 }}
-            animate={{ width: filePanelWidth + DIVIDER_WIDTH, opacity: 1 }}
-            exit={{ width: 0, opacity: 0 }}
+            initial={isMobile ? { x: '100%' } : { width: 0, opacity: 0 }}
+            animate={isMobile ? { x: 0 } : { width: filePanelWidth + DIVIDER_WIDTH, opacity: 1 }}
+            exit={isMobile ? { x: '100%' } : { width: 0, opacity: 0 }}
             transition={{ duration: isDragging ? 0 : 0.25, ease: [0.22, 1, 0.36, 1] }}
-            className="flex flex-shrink-0 overflow-hidden"
+            className={isMobile ? 'flex overflow-hidden' : 'flex flex-shrink-0 overflow-hidden'}
+            style={isMobile ? { position: 'absolute', inset: 0, zIndex: 30 } : undefined}
           >
-            <div
-              className="w-[4px] bg-transparent hover:bg-foreground/20 cursor-col-resize flex-shrink-0 transition-colors"
-              onMouseDown={handleDividerMouseDown}
-            />
-            <div className="flex-shrink-0" style={{ width: filePanelWidth }}>
+            {!isMobile && (
+              <div
+                className="w-[4px] bg-transparent hover:bg-foreground/20 cursor-col-resize flex-shrink-0 transition-colors"
+                onMouseDown={handleDividerMouseDown}
+              />
+            )}
+            <div className="flex-shrink-0" style={{ width: isMobile ? '100%' : filePanelWidth }}>
               <FilePanel
                 workspaceId={workspaceId}
                 onClose={() => setShowFilePanel(false)}
