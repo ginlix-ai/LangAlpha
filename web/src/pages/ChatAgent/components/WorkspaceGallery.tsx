@@ -927,7 +927,7 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
             >
               <Search className="h-5 w-5 flex-shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
               <input
-                className="w-full bg-transparent outline-none text-sm"
+                className="w-full bg-transparent outline-none text-base sm:text-sm"
                 style={{ color: 'var(--color-text-primary)' }}
                 placeholder={t('workspace.searchWorkspaces')}
                 value={searchQuery}

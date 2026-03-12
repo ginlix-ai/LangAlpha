@@ -13,6 +13,9 @@
 
   /* Utility: contain overscroll inside overlays/drawers */
   .mobile-scroll-contain { overscroll-behavior: contain; }
+
+  /* Prevent iOS Safari auto-zoom on input focus (requires >= 16px font-size) */
+  input, select, textarea { font-size: 16px !important; }
 }
 
 /* ---------- Semantic color tokens (hex/rgba for inline use) ---------- */
