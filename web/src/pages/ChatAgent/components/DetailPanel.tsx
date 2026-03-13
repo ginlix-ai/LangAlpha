@@ -104,13 +104,15 @@ function DetailPanel({ toolCallProcess, planData, onClose, onOpenFile, onOpenSub
               {t('toolArtifact.planDetails')}
             </span>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1 rounded hover:bg-foreground/10 transition-colors flex-shrink-0"
-            style={{ color: 'var(--Labels-Secondary)' }}
-          >
-            <X className="h-4 w-4" />
-          </button>
+          {!isMobile && (
+            <button
+              onClick={onClose}
+              className="p-1 rounded hover:bg-foreground/10 transition-colors flex-shrink-0"
+              style={{ color: 'var(--Labels-Secondary)' }}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
         </div>
         <div
           className={`${isMobile ? '' : 'flex-1 overflow-y-auto'} px-4 py-4`}
@@ -173,13 +175,15 @@ function DetailPanel({ toolCallProcess, planData, onClose, onOpenFile, onOpenSub
             </span>
           )}
         </div>
-        <button
-          onClick={onClose}
-          className="p-1 rounded hover:bg-foreground/10 transition-colors flex-shrink-0"
-          style={{ color: 'var(--Labels-Secondary)' }}
-        >
-          <X className="h-4 w-4" />
-        </button>
+        {!isMobile && (
+          <button
+            onClick={onClose}
+            className="p-1 rounded hover:bg-foreground/10 transition-colors flex-shrink-0"
+            style={{ color: 'var(--Labels-Secondary)' }}
+          >
+            <X className="h-4 w-4" />
+          </button>
+        )}
       </div>
 
       {/* URL bar for WebFetch */}

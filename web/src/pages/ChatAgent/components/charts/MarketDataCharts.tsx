@@ -130,7 +130,7 @@ function OpenInMarketLink({ symbol }: OpenInMarketLinkProps): React.ReactElement
       onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
       onMouseLeave={(e) => (e.currentTarget.style.opacity = '0.85')}
     >
-      {t('toolArtifact.openInMarketView')} ↗
+      {t('toolArtifact.openInMarketView')}
     </button>
   );
 }
