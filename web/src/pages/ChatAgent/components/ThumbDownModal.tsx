@@ -1,5 +1,13 @@
 import React, { useState } from 'react';
 import { Info, MessageSquareWarning } from 'lucide-react';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog';
 
 const ISSUE_CATEGORIES = [
   'Incorrect data or numbers',
@@ -26,12 +34,10 @@ interface ThumbDownModalProps {
  * Allows selecting issue categories, adding comments, and
  * optionally consenting to anonymous human review for credit refund.
  */
-function ThumbDownModal({ isOpen, onSubmit, onCancel, onReportWithAgent }: ThumbDownModalProps): React.ReactElement | null {
+function ThumbDownModal({ isOpen, onSubmit, onCancel, onReportWithAgent }: ThumbDownModalProps): React.ReactElement {
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
   const [comment, setComment] = useState('');
   const [consentHumanReview, setConsentHumanReview] = useState(false);
-
-  if (!isOpen) return null;
 
   const toggleCategory = (cat: string): void => {
     setSelectedCategories(prev => {
@@ -52,33 +58,29 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel, onReportWithAgent }: Thumb
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
-      style={{ backgroundColor: 'var(--color-bg-overlay-strong)' }}
-      onClick={onCancel}
-    >
-      <div
-        className="relative w-full max-w-md rounded-xl p-6"
+    <Dialog open={isOpen} onOpenChange={(open) => { if (!open) onCancel(); }}>
+      <DialogContent
+        className="[&>button:last-child]:hidden"
         style={{
           backgroundColor: 'var(--color-bg-elevated)',
-          border: '1px solid var(--color-border-default)',
+          borderColor: 'var(--color-border-default)',
           boxShadow: '0 20px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.06)',
         }}
-        onClick={(e: React.MouseEvent) => e.stopPropagation()}
       >
-        {/* Header */}
-        <h2 className="text-base font-semibold mb-1" style={{ color: 'var(--color-text-primary)' }}>
-          Report an Issue
-        </h2>
-        <p className="text-xs mb-5" style={{ color: 'var(--color-text-tertiary)' }}>
-          Help us improve the quality of responses
-        </p>
+        <DialogHeader>
+          <DialogTitle className="text-base" style={{ color: 'var(--color-text-primary)' }}>
+            Report an Issue
+          </DialogTitle>
+          <DialogDescription className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+            Help us improve the quality of responses
+          </DialogDescription>
+        </DialogHeader>
 
         {/* Issue categories */}
-        <p className="text-sm font-medium mb-3" style={{ color: 'var(--color-text-secondary)' }}>
+        <p className="text-sm font-medium mb-1" style={{ color: 'var(--color-text-secondary)' }}>
           What went wrong?
         </p>
-        <div className="flex flex-wrap gap-2 mb-4">
+        <div className="flex flex-wrap gap-2 mb-2">
           {ISSUE_CATEGORIES.map((cat) => {
             const selected = selectedCategories.has(cat);
             return (
@@ -99,7 +101,7 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel, onReportWithAgent }: Thumb
         </div>
 
         {/* Comment */}
-        <p className="text-sm mb-2" style={{ color: 'var(--color-text-secondary)' }}>
+        <p className="text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>
           Additional comments (optional)
         </p>
         <textarea
@@ -107,7 +109,7 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel, onReportWithAgent }: Thumb
           onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setComment(e.target.value)}
           placeholder="Tell us more about the issue..."
           rows={3}
-          className="w-full rounded-lg px-3 py-2.5 text-sm resize-none outline-none mb-5"
+          className="w-full rounded-lg px-3 py-2.5 text-sm resize-none outline-none mb-2"
           style={{
             backgroundColor: 'var(--color-bg-page)',
             color: 'var(--color-text-primary)',
@@ -117,7 +119,7 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel, onReportWithAgent }: Thumb
 
         {/* Human review consent */}
         <div
-          className="mb-6 rounded-lg pl-2.5 pr-3 py-2.5 cursor-pointer"
+          className="rounded-lg pl-2.5 pr-3 py-2.5 cursor-pointer"
           style={{
             backgroundColor: 'var(--color-bg-surface)',
             border: `1px solid ${consentHumanReview ? 'var(--color-accent-primary)' : 'var(--color-border-muted)'}`,
@@ -151,7 +153,7 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel, onReportWithAgent }: Thumb
         {/* Agent self-report CTA */}
         {onReportWithAgent && (
           <div
-            className="flex items-center gap-3 mb-6 rounded-lg p-3 cursor-pointer transition-colors"
+            className="flex items-center gap-3 rounded-lg p-3 cursor-pointer transition-colors"
             style={{
               backgroundColor: 'var(--color-bg-surface)',
               border: '1px solid var(--color-border-muted)',
@@ -184,7 +186,7 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel, onReportWithAgent }: Thumb
         )}
 
         {/* Action buttons */}
-        <div className="flex gap-3 justify-end">
+        <DialogFooter className="flex-row justify-end gap-3 sm:gap-3">
           <button
             onClick={onCancel}
             className="px-5 py-2 rounded-lg text-sm font-medium transition-colors"
@@ -206,9 +208,9 @@ function ThumbDownModal({ isOpen, onSubmit, onCancel, onReportWithAgent }: Thumb
           >
             Submit Report
           </button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
