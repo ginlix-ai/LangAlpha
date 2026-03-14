@@ -93,15 +93,13 @@ Split work along natural boundaries:
 
 ### Management Tools
 
-**`TaskOutput(task_id=None)`**
+**`TaskOutput(task_id=None, timeout=0)`**
 - Specific task: `TaskOutput(task_id="k7Xm2p")` — progress or final result
 - All tasks: `TaskOutput()` — overview of all background tasks
+- With timeout: `TaskOutput(task_id="k7Xm2p", timeout=60)` — blocks until complete (or timeout)
+- Wait for all: `TaskOutput(timeout=60)` — blocks until all pending tasks complete
 - Running task: shows status, tool call count, current activity, elapsed time
 - Completed task: returns the cached final result
-
-**`Wait(task_id=None, timeout=60.0)`**
-- Specific task: `Wait(task_id="k7Xm2p")` — blocks until that task completes
-- All tasks: `Wait()` — blocks until all pending tasks complete
 
 ### Update and Resume
 

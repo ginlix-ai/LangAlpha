@@ -22,7 +22,6 @@ from ptc_agent.agent.middleware.background_subagent.queue import (
 )
 from ptc_agent.agent.middleware.background_subagent.tools import (
     create_task_output_tool,
-    create_wait_tool,
 )
 
 __all__ = [
@@ -33,7 +32,6 @@ __all__ = [
     "SubagentMessageQueueMiddleware",
     "ToolCallCounterMiddleware",
     "create_task_output_tool",
-    "create_wait_tool",
     "current_background_agent_id",
     "current_background_tool_call_id",
 ]

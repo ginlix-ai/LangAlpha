@@ -22,7 +22,6 @@ from ptc_agent.agent.middleware.background_subagent.registry import (
 )
 from ptc_agent.agent.middleware.background_subagent.tools import (
     create_task_output_tool,
-    create_wait_tool,
 )
 from src.utils.tracking.per_call_token_tracker import PerCallTokenTracker
 
@@ -188,8 +187,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         # Create native tools for this middleware
         # These allow the main agent to wait for and check on background tasks
         self.tools = [
-            create_wait_tool(self),
-            create_task_output_tool(self.registry),
+            create_task_output_tool(self),
         ]
 
     def wrap_tool_call(
@@ -505,7 +503,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 f"You can:\n"
                 f"- Continue with other work\n"
                 f'- Use `TaskOutput(task_id="{task.task_id}")` to get progress or result\n'
-                f'- Use `Wait(task_id="{task.task_id}")` to block until complete'
+                f'- Use `TaskOutput(task_id="{task.task_id}", timeout=60)` to wait until complete'
             )
 
             return ToolMessage(
@@ -570,8 +568,8 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 f"You can:\n"
                 f"- Continue with other work\n"
                 f'- Use `TaskOutput(task_id="{task.task_id}")` to get progress or result\n'
-                f'- Use `Wait(task_id="{task.task_id}")` to block until complete\n'
-                f"- Use `Wait()` to wait for all background tasks"
+                f'- Use `TaskOutput(task_id="{task.task_id}", timeout=60)` to wait until complete\n'
+                f"- Use `TaskOutput(timeout=60)` to wait for all background tasks"
             )
 
             return ToolMessage(

@@ -21,7 +21,6 @@ if TYPE_CHECKING:
     )
     from ptc_agent.agent.middleware.background_subagent.registry import (
         BackgroundTask,
-        BackgroundTaskRegistry,
     )
 
 logger = structlog.get_logger(__name__)
@@ -49,76 +48,123 @@ def _sync_task_completion(task: BackgroundTask) -> None:
         task.result = {"success": False, "error": str(e)}
 
 
-def create_wait_tool(middleware: BackgroundSubagentMiddleware) -> StructuredTool:
-    """Create the wait tool for entering the waiting room.
+def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> StructuredTool:
+    """Create tool to get background task output.
 
-    This tool allows the main agent to explicitly wait for background
-    subagent(s) to complete and retrieve their results.
+    This tool allows the main agent to get the output of background subagents.
+    If the task is still running, it shows progress. If completed, it returns
+    the cached result. When timeout > 0, blocks until task(s) complete with
+    user-message-interruption support.
 
     Args:
         middleware: The BackgroundSubagentMiddleware instance
 
     Returns:
-        A StructuredTool for waiting
+        A StructuredTool for getting task output
     """
 
-    async def wait_for_subagents(
+    async def task_output(
         task_id: str | None = None,
-        timeout: float = 60.0,
+        timeout: float = 0,
     ) -> str:
-        """Wait for background task(s) to complete.
+        """Get background task output.
 
         Args:
             task_id: Task ID (e.g., 'k7Xm2p') or None for all
-            timeout: Max seconds (default: 60)
+            timeout: Max seconds to wait (0 = non-blocking, default)
 
         Returns:
-            Task result(s)
+            Result if completed, progress if still running
         """
         registry = middleware.registry
-
-        # Build a message checker so waits can be interrupted by user messages
-        thread_id = get_config().get("configurable", {}).get("thread_id")
-        checker = await build_message_checker(thread_id)
+        blocking = timeout > 0
 
         if task_id is not None:
-            # Wait for specific task
+            task = await registry.get_by_task_id(task_id)
+            if not task:
+                return f"Task-{task_id} not found"
+
+            # Sync completion status from asyncio task
+            _sync_task_completion(task)
+
+            # If already completed, return immediately regardless of timeout
+            if task.completed:
+                task.result_seen = True
+                return (
+                    f"**{task.display_id}** ({task.subagent_type}) completed:\n\n"
+                    f"{_format_result(task.result)}"
+                )
+
+            if not blocking:
+                return _format_task_progress(task)
+
+            # Blocking: wait for this specific task
             logger.info(
                 "Waiting for specific task",
                 task_id=task_id,
                 timeout=timeout,
             )
+            thread_id = get_config().get("configurable", {}).get("thread_id")
+            checker = await build_message_checker(thread_id)
             result = await registry.wait_for_specific(
                 task_id, timeout, message_checker=checker
             )
             task = await registry.get_by_task_id(task_id)
 
             if task:
-                # Check if interrupted by a queued user message
                 if isinstance(result, dict) and result.get("status") == "interrupted":
                     return (
                         f"Wait interrupted: new user message has been queued. "
                         f"**{task.display_id}** ({task.subagent_type}) still running in background."
                     )
-                # Check if still running (wait timed out but task continues)
                 if isinstance(result, dict) and result.get("status") == "timeout":
-                    # Don't mark as seen - task is still running
                     return (
                         f"**{task.display_id}** ({task.subagent_type}) still running "
                         f"(waited {timeout}s, task continues in background)"
                     )
-                task.result_seen = True  # Mark as seen only if completed
+                task.result_seen = True
                 return (
                     f"**{task.display_id}** ({task.subagent_type}) completed:\n\n"
                     f"{_format_result(result)}"
                 )
             return f"Task-{task_id} not found"
-        # Wait for all tasks
+
+        # --- All tasks ---
+
+        if not blocking:
+            # Non-blocking: show current state of all tasks
+            all_tasks = await registry.get_all_tasks()
+            if not all_tasks:
+                return "No background tasks have been assigned yet."
+
+            for task in all_tasks:
+                _sync_task_completion(task)
+
+            pending_count = sum(1 for t in all_tasks if not t.completed)
+            completed_count = len(all_tasks) - pending_count
+
+            output = (
+                f"**Background Tasks** ({len(all_tasks)} total: "
+                f"{completed_count} completed, {pending_count} running)\n\n"
+            )
+
+            for task in sorted(all_tasks, key=lambda t: t.task_id):
+                if task.completed:
+                    task.result_seen = True
+                    output += (
+                        f"### {task.display_id} ({task.subagent_type})\n"
+                        f"{_format_result(task.result)}\n\n"
+                    )
+                else:
+                    output += _format_task_progress(task) + "\n"
+
+            return output
+
+        # Blocking: wait for all tasks
         logger.info("Waiting for all background tasks", timeout=timeout)
+        thread_id = get_config().get("configurable", {}).get("thread_id")
+        checker = await build_message_checker(thread_id)
         results = await registry.wait_for_all(timeout=timeout, message_checker=checker)
-        # Don't store in _pending_results - results are returned directly
-        # to the agent via the tool response. Storing them would cause
-        # the orchestrator to inject a duplicate HumanMessage later.
 
         if not results:
             return "No background tasks were pending."
@@ -130,14 +176,14 @@ def create_wait_tool(middleware: BackgroundSubagentMiddleware) -> StructuredTool
         )
         if any_interrupted:
             still_running = [
-                registry.get_by_tool_call_id(tid)
-                for tid, r in results.items()
+                registry.get_by_tool_call_id(tcid)
+                for tcid, r in results.items()
                 if isinstance(r, dict) and r.get("status") == "interrupted"
             ]
             running_names = ", ".join(f"**{t.display_id}**" for t in still_running if t)
             completed_parts = []
-            for tid, r in results.items():
-                t = registry.get_by_tool_call_id(tid)
+            for tcid, r in results.items():
+                t = registry.get_by_tool_call_id(tcid)
                 if t and not (isinstance(r, dict) and r.get("status") == "interrupted"):
                     t.result_seen = True
                     completed_parts.append(
@@ -167,14 +213,14 @@ def create_wait_tool(middleware: BackgroundSubagentMiddleware) -> StructuredTool
         else:
             output = f"Background tasks: {completed_count} completed, {running_count} still running:\n\n"
 
-        for task_id, result in results.items():
-            task = registry.get_by_tool_call_id(task_id)
+        for tcid, result in results.items():
+            task = registry.get_by_tool_call_id(tcid)
             if task:
                 is_running = (
                     isinstance(result, dict) and result.get("status") == "timeout"
                 )
                 if not is_running:
-                    task.result_seen = True  # Mark as seen only if completed
+                    task.result_seen = True
                 status = "still running" if is_running else "completed"
                 output += f"### {task.display_id} ({task.subagent_type}) - {status}\n"
                 if not is_running:
@@ -184,91 +230,14 @@ def create_wait_tool(middleware: BackgroundSubagentMiddleware) -> StructuredTool
         return output
 
     return StructuredTool.from_function(
-        name="Wait",
-        description=(
-            "Wait for background subagent(s) to complete and retrieve their results. "
-            "Use Wait(task_id=\"k7Xm2p\") for a specific task or Wait() for all pending tasks. "
-            "You can also specify a custom timeout in seconds."
-        ),
-        coroutine=wait_for_subagents,
-    )
-
-
-def create_task_output_tool(registry: BackgroundTaskRegistry) -> StructuredTool:
-    """Create tool to get background task output.
-
-    This tool allows the main agent to get the output of background subagents.
-    If the task is still running, it shows progress. If completed, it returns
-    the cached result.
-
-    Args:
-        registry: The BackgroundTaskRegistry instance
-
-    Returns:
-        A StructuredTool for getting task output
-    """
-
-    async def task_output(task_id: str | None = None) -> str:
-        """Get background task output.
-
-        Args:
-            task_id: Task ID (e.g., 'k7Xm2p') or None for all
-
-        Returns:
-            Result if completed, progress if still running
-        """
-        if task_id is not None:
-            task = await registry.get_by_task_id(task_id)
-            if not task:
-                return f"Task-{task_id} not found"
-            # Sync completion status from asyncio task
-            _sync_task_completion(task)
-            # If completed, return the result
-            if task.completed:
-                task.result_seen = True  # Mark as seen
-                return (
-                    f"**{task.display_id}** ({task.subagent_type}) completed:\n\n"
-                    f"{_format_result(task.result)}"
-                )
-            # If still running, show progress
-            return _format_task_progress(task)
-
-        # Show all tasks
-        all_tasks = await registry.get_all_tasks()
-        if not all_tasks:
-            return "No background tasks have been assigned yet."
-
-        # Sync completion status for all tasks
-        for task in all_tasks:
-            _sync_task_completion(task)
-
-        pending_count = sum(1 for t in all_tasks if not t.completed)
-        completed_count = len(all_tasks) - pending_count
-
-        output = (
-            f"**Background Tasks** ({len(all_tasks)} total: "
-            f"{completed_count} completed, {pending_count} running)\n\n"
-        )
-
-        for task in sorted(all_tasks, key=lambda t: t.task_id):
-            if task.completed:
-                task.result_seen = True  # Mark as seen
-                output += (
-                    f"### {task.display_id} ({task.subagent_type})\n"
-                    f"{_format_result(task.result)}\n\n"
-                )
-            else:
-                output += _format_task_progress(task) + "\n"
-
-        return output
-
-    return StructuredTool.from_function(
         name="TaskOutput",
         description=(
             "Get the output of background subagent tasks. Returns the result "
             "if the task is completed, or shows progress if still running. "
             "Use TaskOutput(task_id=\"k7Xm2p\") for a specific task or "
-            "TaskOutput() to see all tasks."
+            "TaskOutput() to see all tasks. "
+            "Set timeout (seconds) to block until completion: "
+            "TaskOutput(task_id=\"k7Xm2p\", timeout=60)."
         ),
         coroutine=task_output,
     )
