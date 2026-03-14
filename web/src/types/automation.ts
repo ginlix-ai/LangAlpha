@@ -1,5 +1,9 @@
 /** Automation types — automation CRUD and execution records */
 
+export interface DeliveryConfig {
+  methods: string[];
+}
+
 export interface Automation {
   id: string;
   name: string;
@@ -13,6 +17,7 @@ export interface Automation {
   updated_at?: string;
   last_run_at?: string | null;
   next_run_at?: string | null;
+  delivery_config?: DeliveryConfig;
   [key: string]: unknown;
 }
 

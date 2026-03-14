@@ -408,7 +408,9 @@
     "statusPending": "Pending",
     "statusUnknown": "Unknown",
     "namePlaceholder": "e.g. Daily market summary",
-    "descPlaceholder": "Optional description"
+    "descPlaceholder": "Optional description",
+    "delivery": "Delivery",
+    "deliverToSlack": "Slack"
   },
   "toolArtifact": {
     "open": "Open",

@@ -408,7 +408,9 @@
     "statusPending": "待执行",
     "statusUnknown": "未知",
     "namePlaceholder": "例如：每日市场摘要",
-    "descPlaceholder": "可选描述"
+    "descPlaceholder": "可选描述",
+    "delivery": "推送",
+    "deliverToSlack": "Slack"
   },
   "toolArtifact": {
     "open": "开盘",

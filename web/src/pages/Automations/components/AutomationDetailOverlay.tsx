@@ -245,6 +245,14 @@ export default function AutomationDetailOverlay({
                 <span style={{ color: 'var(--color-text-secondary)' }}>Failures</span>
                 <span className="text-xs" style={{ color: 'var(--color-text-primary)' }}>{automation.failure_count as number} / {automation.max_failures as number}</span>
               </div>
+              {(automation.delivery_config as any)?.methods?.length > 0 && (
+                <div className="flex justify-between">
+                  <span style={{ color: 'var(--color-text-secondary)' }}>Delivery</span>
+                  <span className="text-xs capitalize" style={{ color: 'var(--color-text-primary)' }}>
+                    {((automation.delivery_config as any).methods as string[]).join(', ')}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 
