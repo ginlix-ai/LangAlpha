@@ -3,6 +3,7 @@ import {
   Plus, ArrowUp, X, FileText, Loader2, Archive, Square,
   ScrollText, ChartCandlestick, Zap, FileStack, ChevronDown, ChevronRight, FolderOpen, TextSelect,
   Terminal, Bot, Shrink, HardDriveDownload, Check, Brain, Flame, Rocket, CircleHelp,
+  Mic, MicOff,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -256,7 +257,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   // Dropdown direction: 'up' (default, for bottom-positioned inputs) or 'down' (for mid-page inputs like ThreadGallery)
   dropdownDirection = 'up',
 }, ref) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const isMobile = useIsMobile();
   const { preferences } = usePreferences();
   const otherPref = (preferences as Record<string, Record<string, unknown>> | null)?.other_preference;
@@ -285,7 +286,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   }, [effectiveInitialModel]);
 
   // Fetch model metadata for compatibility checking (eager prefetch, resolves instantly after first load)
-  useEffect(() => { getModelMetadata().then((d: Record<string, unknown>) => setModelMetadata(d as typeof modelMetadata)).catch(() => {}); }, []);
+  useEffect(() => { getModelMetadata().then((d: Record<string, unknown>) => setModelMetadata(d as typeof modelMetadata)).catch(() => { }); }, []);
 
   const isCodexModel = selectedModel ? modelMetadata[selectedModel]?.sdk === 'codex' : false;
 
@@ -307,8 +308,78 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   // Fetch skills filtered by agent mode (re-fetches when mode changes; cached per mode in api.js)
   const skillsMode = mode === 'fast' ? 'flash' : 'ptc';
   useEffect(() => {
-    getSkills(skillsMode).then((s: unknown[]) => setSkills(s as typeof skills)).catch(() => {});
+    getSkills(skillsMode).then((s: unknown[]) => setSkills(s as typeof skills)).catch(() => { });
   }, [skillsMode]);
+
+  // Voice Input (Speech Recognition)
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef<any>(null);
+
+  const toggleListening = useCallback(() => {
+    if (isListening) {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+      setIsListening(false);
+      return;
+    }
+
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      console.warn("Speech recognition is not supported in this browser.");
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = i18n.language || 'en-US';
+
+      recognition.onstart = () => {
+        setIsListening(true);
+      };
+
+      recognition.onresult = (event: any) => {
+        let finalTranscript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalTranscript += event.results[i][0].transcript;
+          }
+        }
+        if (finalTranscript) {
+          setMessage((prev) => {
+            const trimmed = prev.trim();
+            return trimmed ? `${trimmed} ${finalTranscript.trim()}` : finalTranscript.trim();
+          });
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        console.error('Speech recognition error:', event.error);
+        setIsListening(false);
+      };
+
+      recognition.onend = () => {
+        setIsListening(false);
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+    } catch (err) {
+      console.error('Failed to start speech recognition:', err);
+      setIsListening(false);
+    }
+  }, [isListening, i18n.language]);
+
+  // Clean up recognition on unmount
+  useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+    };
+  }, []);
 
   // Stop button state
   const [isStopping, setIsStopping] = useState(false);
@@ -1127,51 +1198,51 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
               {/* Workspace Selector */}
               {showWorkspaceSelector && (
                 <div className="relative" ref={workspaceMenuRef}>
-                <button
-                  ref={workspaceBtnRef}
-                  className="inline-flex items-center rounded-full border-none cursor-pointer"
-                  style={{
-                    gap: '4px',
-                    padding: '6px 10px',
-                    fontSize: '13px',
-                    fontWeight: 500,
-                    background: showWorkspaceMenu ? 'var(--color-accent-soft)' : 'transparent',
-                    color: showWorkspaceMenu ? 'var(--color-accent-light)' : 'var(--color-text-muted, #8b8fa3)',
-                    border: showWorkspaceMenu ? '1px solid var(--color-accent-overlay)' : '1px solid transparent',
-                    transition: 'background 0.2s, color 0.2s, border-color 0.2s',
-                  }}
-                  onClick={(e) => { e.stopPropagation(); setShowWorkspaceMenu((v) => !v); }}
-                  onMouseEnter={(e) => {
-                    if (!showWorkspaceMenu) e.currentTarget.style.background = 'var(--color-border-muted)';
-                  }}
-                  onMouseLeave={(e) => {
-                    if (!showWorkspaceMenu) e.currentTarget.style.background = 'transparent';
-                  }}
-                  type="button"
-                  title="Select workspace"
-                >
-                  <FolderOpen className="h-4 w-4" />
-                  <span className="max-w-[100px] truncate">{selectedWorkspaceName}</span>
-                  <ChevronDown className="h-3 w-3" />
-                </button>
-                {showWorkspaceMenu && (
-                  <div className="workspace-dropdown workspace-dropdown-up">
-                    {workspaces.map((ws) => (
-                      <div
-                        key={ws.workspace_id}
-                        className={`workspace-dropdown-item ${ws.workspace_id === selectedWorkspaceId ? 'active' : ''}`}
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          onWorkspaceChange?.(ws.workspace_id);
-                          setShowWorkspaceMenu(false);
-                        }}
-                      >
-                        <FolderOpen className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
-                        <span>{ws.name}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                  <button
+                    ref={workspaceBtnRef}
+                    className="inline-flex items-center rounded-full border-none cursor-pointer"
+                    style={{
+                      gap: '4px',
+                      padding: '6px 10px',
+                      fontSize: '13px',
+                      fontWeight: 500,
+                      background: showWorkspaceMenu ? 'var(--color-accent-soft)' : 'transparent',
+                      color: showWorkspaceMenu ? 'var(--color-accent-light)' : 'var(--color-text-muted, #8b8fa3)',
+                      border: showWorkspaceMenu ? '1px solid var(--color-accent-overlay)' : '1px solid transparent',
+                      transition: 'background 0.2s, color 0.2s, border-color 0.2s',
+                    }}
+                    onClick={(e) => { e.stopPropagation(); setShowWorkspaceMenu((v) => !v); }}
+                    onMouseEnter={(e) => {
+                      if (!showWorkspaceMenu) e.currentTarget.style.background = 'var(--color-border-muted)';
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!showWorkspaceMenu) e.currentTarget.style.background = 'transparent';
+                    }}
+                    type="button"
+                    title="Select workspace"
+                  >
+                    <FolderOpen className="h-4 w-4" />
+                    <span className="max-w-[100px] truncate">{selectedWorkspaceName}</span>
+                    <ChevronDown className="h-3 w-3" />
+                  </button>
+                  {showWorkspaceMenu && (
+                    <div className="workspace-dropdown workspace-dropdown-up">
+                      {workspaces.map((ws) => (
+                        <div
+                          key={ws.workspace_id}
+                          className={`workspace-dropdown-item ${ws.workspace_id === selectedWorkspaceId ? 'active' : ''}`}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            onWorkspaceChange?.(ws.workspace_id);
+                            setShowWorkspaceMenu(false);
+                          }}
+                        >
+                          <FolderOpen className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
+                          <span>{ws.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1309,9 +1380,9 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                         {...(isMobile
                           ? { onMouseDown: (e: React.MouseEvent) => { e.preventDefault(); setShowMoreModels((v) => !v); } }
                           : {
-                              onMouseEnter: () => { if (moreModelsTimeout.current) clearTimeout(moreModelsTimeout.current); setShowMoreModels(true); },
-                              onMouseLeave: () => { moreModelsTimeout.current = setTimeout(() => setShowMoreModels(false), 150); },
-                            }
+                            onMouseEnter: () => { if (moreModelsTimeout.current) clearTimeout(moreModelsTimeout.current); setShowMoreModels(true); },
+                            onMouseLeave: () => { moreModelsTimeout.current = setTimeout(() => setShowMoreModels(false), 150); },
+                          }
                         )}
                       >
                         <span>{t('chat.modelSelector.moreModels')}</span>
@@ -1321,13 +1392,13 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                           const menuRect = modelMenuRef.current?.getBoundingClientRect();
                           const openLeft = menuRect && menuRect.right + 244 > window.innerWidth;
                           return (
-                          <div
-                            className={`model-dropdown-submenu ${dropdownDirection === 'down' ? 'model-dropdown-submenu-down' : 'model-dropdown-submenu-up'} ${openLeft ? 'model-dropdown-submenu-left' : 'model-dropdown-submenu-right'}`}
-                            onMouseEnter={() => { if (moreModelsTimeout.current) clearTimeout(moreModelsTimeout.current); }}
-                            onMouseLeave={() => { moreModelsTimeout.current = setTimeout(() => setShowMoreModels(false), 150); }}
-                          >
-                            {renderMoreModelsList(false)}
-                          </div>
+                            <div
+                              className={`model-dropdown-submenu ${dropdownDirection === 'down' ? 'model-dropdown-submenu-down' : 'model-dropdown-submenu-up'} ${openLeft ? 'model-dropdown-submenu-left' : 'model-dropdown-submenu-right'}`}
+                              onMouseEnter={() => { if (moreModelsTimeout.current) clearTimeout(moreModelsTimeout.current); }}
+                              onMouseLeave={() => { moreModelsTimeout.current = setTimeout(() => setShowMoreModels(false), 150); }}
+                            >
+                              {renderMoreModelsList(false)}
+                            </div>
                           );
                         })()}
                       </div>
@@ -1337,6 +1408,21 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                   )}
                 </div>
               )}
+              {/* Voice Input Button */}
+              <button
+                onClick={(e) => { e.stopPropagation(); toggleListening(); }}
+                disabled={disabled || isLoading}
+                className={`inline-flex items-center justify-center h-8 w-8 rounded-xl transition-all active:scale-95 mic-button ${isListening ? 'recording' : 'text-[var(--color-icon-muted)] hover:text-[var(--color-text-muted)] hover:bg-foreground/5'}`}
+                type="button"
+                title={isListening ? 'Stop voice input' : 'Start voice input'}
+                aria-label={isListening ? 'Stop voice input' : 'Start voice input'}
+              >
+                {isListening ? (
+                  <MicOff className="w-4 h-4" />
+                ) : (
+                  <Mic className="w-4 h-4" />
+                )}
+              </button>
               {/* Send / Stop Button */}
               {isLoading && onStop ? (
                 <button
@@ -1374,12 +1460,14 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       </div>
 
       {/* Drag Overlay */}
-      {isDragging && (
-        <div className="absolute inset-0 bg-[var(--color-accent-soft)] border-2 border-dashed border-[hsl(var(--primary))] rounded-2xl z-50 flex flex-col items-center justify-center backdrop-blur-sm pointer-events-none">
-          <Archive className="w-10 h-10 text-[hsl(var(--primary))] mb-2 animate-bounce" />
-          <p className="text-[hsl(var(--primary))] font-medium">Drop files to upload</p>
-        </div>
-      )}
+      {
+        isDragging && (
+          <div className="absolute inset-0 bg-[var(--color-accent-soft)] border-2 border-dashed border-[hsl(var(--primary))] rounded-2xl z-50 flex flex-col items-center justify-center backdrop-blur-sm pointer-events-none">
+            <Archive className="w-10 h-10 text-[hsl(var(--primary))] mb-2 animate-bounce" />
+            <p className="text-[hsl(var(--primary))] font-medium">Drop files to upload</p>
+          </div>
+        )
+      }
 
       {/* Hidden File Input */}
       <input
