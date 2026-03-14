@@ -314,6 +314,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   // Voice Input (Speech Recognition)
   const [isListening, setIsListening] = useState(false);
   const recognitionRef = useRef<any>(null);
+  const baseMessageRef = useRef('');
 
   const toggleListening = useCallback(() => {
     if (isListening) {
@@ -336,23 +337,20 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       recognition.interimResults = true;
       recognition.lang = i18n.language || 'en-US';
 
+      // Capture message BEFORE starting recognition
+      const startMessage = message.trim();
+      baseMessageRef.current = startMessage ? startMessage + ' ' : '';
+
       recognition.onstart = () => {
         setIsListening(true);
       };
 
       recognition.onresult = (event: any) => {
-        let finalTranscript = '';
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          if (event.results[i].isFinal) {
-            finalTranscript += event.results[i][0].transcript;
-          }
+        let sessionTranscript = '';
+        for (let i = 0; i < event.results.length; ++i) {
+          sessionTranscript += event.results[i][0].transcript;
         }
-        if (finalTranscript) {
-          setMessage((prev) => {
-            const trimmed = prev.trim();
-            return trimmed ? `${trimmed} ${finalTranscript.trim()}` : finalTranscript.trim();
-          });
-        }
+        setMessage(baseMessageRef.current + sessionTranscript);
       };
 
       recognition.onerror = (event: any) => {
@@ -370,7 +368,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       console.error('Failed to start speech recognition:', err);
       setIsListening(false);
     }
-  }, [isListening, i18n.language]);
+  }, [isListening, i18n.language, message]);
 
   // Clean up recognition on unmount
   useEffect(() => {
