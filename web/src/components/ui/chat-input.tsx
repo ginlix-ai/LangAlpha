@@ -12,6 +12,7 @@ import { usePreferences } from '@/hooks/usePreferences';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { getSkills, getModelMetadata } from '../../pages/ChatAgent/utils/api';
 import { safeLocalStorage } from '@/lib/utils';
+import { useToast } from './use-toast';
 import './chat-input.css';
 
 /* --- TYPES --- */
@@ -261,6 +262,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   dropdownDirection = 'up',
 }, ref) {
   const { t, i18n } = useTranslation();
+  const { toast } = useToast();
   const isMobile = useIsMobile();
   const { preferences } = usePreferences();
   const otherPref = (preferences as Record<string, Record<string, unknown>> | null)?.other_preference;
@@ -412,6 +414,18 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
         if (event.error !== 'no-speech') {
           console.error('Speech recognition error:', event.error);
+          if (event.error === 'not-allowed') {
+            toast({
+              title: t('chat.voice.permissionDenied'),
+              variant: 'destructive',
+            });
+          } else if (event.error === 'service-not-allowed' || event.error === 'network') {
+            toast({
+              title: t('chat.voice.serviceError'),
+              description: event.message,
+              variant: 'destructive',
+            });
+          }
         }
         setIsListening(false);
         recognitionRef.current = null;
@@ -1489,34 +1503,37 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                     )}
                   </button>
 
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const nextLang = speechLang === 'en-US' ? 'zh-CN' : 'en-US';
-                      const defaultLang = i18n.language.startsWith('zh') ? 'zh-CN' : 'en-US';
+                  {/* Voice Language Toggle (only show for EN/ZH users) */}
+                  {(i18n.language.startsWith('en') || i18n.language.startsWith('zh')) && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const nextLang = speechLang === 'en-US' ? 'zh-CN' : 'en-US';
+                        const defaultLang = i18n.language.startsWith('zh') ? 'zh-CN' : 'en-US';
 
-                      // If user toggles back to the app's default locale, clear the manual flag 
-                      // to opt back into automatic sync.
-                      if (nextLang === defaultLang) {
-                        safeLocalStorage.removeItem('chat_input_speech_lang_manual');
-                      } else {
-                        safeLocalStorage.setItem('chat_input_speech_lang_manual', 'true');
-                      }
-                      setSpeechLang(nextLang);
-                    }}
-                    disabled={isListening}
-                    className={`inline-flex items-center justify-center px-1.5 h-6 rounded-md text-[10px] font-bold transition-all hover:bg-foreground/10 active:scale-95 border border-[var(--color-border-muted)] ${isListening ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    style={{
-                      color: 'var(--color-text-tertiary)',
-                      marginLeft: '-4px',
-                      zIndex: 10,
-                    }}
-                    type="button"
-                    title={isListening ? t('chat.voice.cannotChangeLang') : t('chat.voice.toggleLang')}
-                    aria-label={isListening ? t('chat.voice.cannotChangeLang') : t('chat.voice.toggleLang')}
-                  >
-                    {speechLang === 'en-US' ? 'EN' : 'CN'}
-                  </button>
+                        // If user toggles back to the app's default locale, clear the manual flag 
+                        // to opt back into automatic sync.
+                        if (nextLang === defaultLang) {
+                          safeLocalStorage.removeItem('chat_input_speech_lang_manual');
+                        } else {
+                          safeLocalStorage.setItem('chat_input_speech_lang_manual', 'true');
+                        }
+                        setSpeechLang(nextLang);
+                      }}
+                      disabled={isListening}
+                      className={`inline-flex items-center justify-center px-1.5 h-6 rounded-md text-[10px] font-bold transition-all hover:bg-foreground/10 active:scale-95 border border-[var(--color-border-muted)] ${isListening ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      style={{
+                        color: 'var(--color-text-tertiary)',
+                        marginLeft: '-4px',
+                        zIndex: 10,
+                      }}
+                      type="button"
+                      title={isListening ? t('chat.voice.cannotChangeLang') : t('chat.voice.toggleLang')}
+                      aria-label={isListening ? t('chat.voice.cannotChangeLang') : t('chat.voice.toggleLang')}
+                    >
+                      {speechLang === 'en-US' ? 'EN' : 'CN'}
+                    </button>
+                  )}
                 </div>
               )}
               {/* Send / Stop Button */}

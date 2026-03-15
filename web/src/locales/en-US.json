@@ -332,7 +332,9 @@
       "start": "Start voice input",
       "stop": "Stop voice input",
       "cannotChangeLang": "Cannot change language while recording",
-      "toggleLang": "Toggle voice input language"
+      "toggleLang": "Toggle voice input language",
+      "permissionDenied": "Microphone permission denied",
+      "serviceError": "Speech recognition service error"
     }
   },
   "context": {
