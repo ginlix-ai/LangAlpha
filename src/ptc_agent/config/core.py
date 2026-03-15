@@ -6,14 +6,23 @@ This module defines pure data classes for core configuration:
 - Filesystem access settings
 - Security settings
 - Logging settings
-
-Use src.config.loaders for file-based loading.
 """
 
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+# Default security lists — used by SecurityConfig defaults and create_default_security_config()
+DEFAULT_ALLOWED_IMPORTS = [
+    "os", "sys", "json", "yaml", "requests", "datetime",
+    "pathlib", "typing", "re", "math", "random", "time",
+    "collections", "itertools", "functools", "subprocess", "shutil",
+]
+
+DEFAULT_BLOCKED_PATTERNS = [
+    "eval(", "exec(", "__import__", "compile(", "globals(", "locals(",
+]
 
 
 class DaytonaConfig(BaseModel):
@@ -142,3 +151,15 @@ class CoreConfig(BaseModel):
                 f"  - {chr(10).join(missing_keys)}\n"
                 f"Please add these credentials to your .env file."
             )
+
+
+def create_default_security_config() -> SecurityConfig:
+    """Create SecurityConfig with sensible defaults for Daytona sandbox execution."""
+    return SecurityConfig(
+        max_execution_time=300,
+        max_code_length=10000,
+        max_file_size=10485760,
+        enable_code_validation=True,
+        allowed_imports=list(DEFAULT_ALLOWED_IMPORTS),
+        blocked_patterns=list(DEFAULT_BLOCKED_PATTERNS),
+    )

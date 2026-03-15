@@ -25,7 +25,6 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from ptc_agent.agent.backends.daytona import create_default_security_config
 from ptc_agent.config.agent import (
     AgentConfig,
     FlashConfig,
@@ -34,7 +33,7 @@ from ptc_agent.config.agent import (
     SubagentConfig,
     SubagentsConfig,
 )
-from ptc_agent.config.core import CoreConfig
+from ptc_agent.config.core import CoreConfig, create_default_security_config
 from ptc_agent.config.utils import (
     configure_logging,
     create_daytona_config,
@@ -44,7 +43,7 @@ from ptc_agent.config.utils import (
     load_dotenv_async,
     validate_required_sections,
 )
-from src.config.core import (
+from ptc_agent.config.file_utils import (
     AGENT_CONFIG_FILE,
     ConfigContext,
     find_config_file,

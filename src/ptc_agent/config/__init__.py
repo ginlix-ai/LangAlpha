@@ -48,7 +48,7 @@ from ptc_agent.config.loaders import (
     load_from_dict,
     load_from_files,
 )
-from src.config.core import (
+from ptc_agent.config.file_utils import (
     ConfigContext,
     ensure_config_dir,
     find_config_file,

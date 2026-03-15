@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ptc_agent.agent.backends.daytona import create_default_security_config
 from ptc_agent.config.core import (
     CoreConfig,
     DaytonaConfig,
@@ -21,6 +20,7 @@ from ptc_agent.config.core import (
     MCPConfig,
     MCPServerConfig,
     SecurityConfig,
+    create_default_security_config,
 )
 
 if TYPE_CHECKING:

@@ -20,11 +20,8 @@ Quick start:
 
 __version__ = "0.1.0"
 
-# Re-export commonly used classes for convenience
-from ptc_agent.agent import (
-    DaytonaBackend,
-    PTCAgent,
-)
+# Lightweight config imports — these are safe to load eagerly since
+# ptc_agent.config has no dependencies on heavy modules (agent, middleware, src.*).
 from ptc_agent.config import (
     AgentConfig,
     CoreConfig,
@@ -33,42 +30,61 @@ from ptc_agent.config import (
     load_core_from_files,
     load_from_files,
 )
-from ptc_agent.core import (
-    MCPRegistry,
-    MCPToolInfo,
-    PTCSandbox,
-    Session,
-    SessionManager,
-)
 
-# Todo tracking tools (re-exported for convenience)
-from ptc_agent.agent.tools.todo import (
-    TodoWrite,
-    TodoItem,
-    TodoStatus,
-)
+# Heavy imports (PTCAgent, SessionManager, etc.) are deferred via __getattr__
+# to avoid pulling in the agent/middleware/src.* chain at import time.
+# This allows `from ptc_agent.config.file_utils import X` to work without
+# triggering the entire dependency graph.
+
+_LAZY_IMPORTS = {
+    # ptc_agent.agent
+    "DaytonaBackend": "ptc_agent.agent.backends",
+    "PTCAgent": "ptc_agent.agent.agent",
+    # ptc_agent.core
+    "MCPRegistry": "ptc_agent.core",
+    "MCPToolInfo": "ptc_agent.core",
+    "PTCSandbox": "ptc_agent.core",
+    "Session": "ptc_agent.core",
+    "SessionManager": "ptc_agent.core",
+    # ptc_agent.agent.tools.todo
+    "TodoWrite": "ptc_agent.agent.tools.todo",
+    "TodoItem": "ptc_agent.agent.tools.todo",
+    "TodoStatus": "ptc_agent.agent.tools.todo",
+}
+
+
+def __getattr__(name: str):
+    if name in _LAZY_IMPORTS:
+        import importlib
+        module = importlib.import_module(_LAZY_IMPORTS[name])
+        value = getattr(module, name)
+        # Cache on the module to avoid repeated lookups
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
-    # Config
+    # Config (eagerly loaded)
     "AgentConfig",
     "CoreConfig",
-    "DaytonaBackend",
     "LLMConfig",
     "LLMDefinition",
+    "load_core_from_files",
+    "load_from_files",
+    # Agent (lazy)
+    "DaytonaBackend",
+    "PTCAgent",
+    # Core (lazy)
     "MCPRegistry",
     "MCPToolInfo",
-    # Agent
-    "PTCAgent",
-    # Core
     "PTCSandbox",
     "Session",
     "SessionManager",
-    # Todo tracking
+    # Todo tracking (lazy)
     "TodoWrite",
     "TodoItem",
     "TodoStatus",
     # Version
     "__version__",
-    "load_core_from_files",
-    "load_from_files",
 ]
