@@ -323,6 +323,12 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   });
   const recognitionRef = useRef<any>(null);
   const baseMessageRef = useRef('');
+  const messageRef = useRef(message);
+
+  // Sync message ref
+  useEffect(() => { messageRef.current = message; }, [message]);
+
+  const speechSupported = useMemo(() => !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition), []);
 
   // Persist speech language preference
   useEffect(() => {
@@ -351,7 +357,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       recognition.lang = speechLang;
 
       // Capture message BEFORE starting recognition
-      const startMessage = message.trim();
+      const startMessage = messageRef.current.trim();
       baseMessageRef.current = startMessage ? startMessage + ' ' : '';
 
       recognition.onstart = () => {
@@ -381,7 +387,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       console.error('Failed to start speech recognition:', err);
       setIsListening(false);
     }
-  }, [isListening, i18n.language, message]);
+  }, [isListening, speechLang]);
 
   // Clean up recognition on unmount
   useEffect(() => {
@@ -1419,40 +1425,41 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                   )}
                 </div>
               )}
-              {/* Voice Input Button */}
-              <button
-                onClick={(e) => { e.stopPropagation(); toggleListening(); }}
-                disabled={disabled || isLoading}
-                className={`inline-flex items-center justify-center h-8 w-8 rounded-xl transition-all active:scale-95 mic-button ${isListening ? 'recording' : 'text-[var(--color-icon-muted)] hover:text-[var(--color-text-muted)] hover:bg-foreground/5'}`}
-                type="button"
-                title={isListening ? 'Stop voice input' : 'Start voice input'}
-                aria-label={isListening ? 'Stop voice input' : 'Start voice input'}
-              >
-                {isListening ? (
-                  <MicOff className="w-4 h-4" />
-                ) : (
-                  <Mic className="w-4 h-4" />
-                )}
-              </button>
+              {/* Voice Input Button & Language Toggle */}
+              {speechSupported && !isLoading && (
+                <div className="flex items-center">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); toggleListening(); }}
+                    disabled={disabled}
+                    className={`inline-flex items-center justify-center h-8 w-8 rounded-xl transition-all active:scale-95 mic-button ${isListening ? 'recording' : 'text-[var(--color-icon-muted)] hover:text-[var(--color-text-muted)] hover:bg-foreground/5'}`}
+                    type="button"
+                    title={isListening ? 'Stop voice input' : 'Start voice input'}
+                    aria-label={isListening ? 'Stop voice input' : 'Start voice input'}
+                  >
+                    {isListening ? (
+                      <MicOff className="w-4 h-4" />
+                    ) : (
+                      <Mic className="w-4 h-4" />
+                    )}
+                  </button>
 
-              {/* Speech Language Toggle */}
-              {!isLoading && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSpeechLang((prev) => (prev === 'en-US' ? 'zh-CN' : 'en-US'));
-                  }}
-                  className="inline-flex items-center justify-center px-1.5 h-6 rounded-md text-[10px] font-bold transition-all hover:bg-foreground/10 active:scale-95 border border-[var(--color-border-muted)]"
-                  style={{
-                    color: 'var(--color-text-tertiary)',
-                    marginLeft: '-4px',
-                    zIndex: 10,
-                  }}
-                  type="button"
-                  title="Toggle voice input language"
-                >
-                  {speechLang === 'en-US' ? 'EN' : 'CN'}
-                </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSpeechLang((prev) => (prev === 'en-US' ? 'zh-CN' : 'en-US'));
+                    }}
+                    className="inline-flex items-center justify-center px-1.5 h-6 rounded-md text-[10px] font-bold transition-all hover:bg-foreground/10 active:scale-95 border border-[var(--color-border-muted)]"
+                    style={{
+                      color: 'var(--color-text-tertiary)',
+                      marginLeft: '-4px',
+                      zIndex: 10,
+                    }}
+                    type="button"
+                    title="Toggle voice input language"
+                  >
+                    {speechLang === 'en-US' ? 'EN' : 'CN'}
+                  </button>
+                </div>
               )}
               {/* Send / Stop Button */}
               {isLoading && onStop ? (
