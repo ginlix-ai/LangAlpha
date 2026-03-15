@@ -37,3 +37,16 @@ export function utcMsToChartSec(utcMs: number | null | undefined): number {
   return Date.UTC(get('year'), get('month') - 1, get('day'),
     get('hour'), get('minute'), get('second')) / 1000;
 }
+
+export const safeLocalStorage = {
+  getItem: (key: string): string | null => {
+    try { return localStorage.getItem(key); } catch { return null; }
+  },
+  setItem: (key: string, value: string): void => {
+    try { localStorage.setItem(key, value); } catch { /* ignore */ }
+  },
+  removeItem: (key: string): void => {
+    try { localStorage.removeItem(key); } catch { /* ignore */ }
+  },
+};
+

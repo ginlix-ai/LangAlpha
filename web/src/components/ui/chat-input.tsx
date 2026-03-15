@@ -11,6 +11,7 @@ import { TokenUsageRing, type TokenUsageData } from './token-usage-ring';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { getSkills, getModelMetadata } from '../../pages/ChatAgent/utils/api';
+import { safeLocalStorage } from '@/lib/utils';
 import './chat-input.css';
 
 /* --- TYPES --- */
@@ -107,15 +108,6 @@ const formatFileSize = (bytes: number): string => {
   const sizes = ['Bytes', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-};
-
-const safeLocalStorage = {
-  getItem: (key: string): string | null => {
-    try { return localStorage.getItem(key); } catch { return null; }
-  },
-  setItem: (key: string, value: string): void => {
-    try { localStorage.setItem(key, value); } catch { /* ignore */ }
-  },
 };
 
 /* --- FILE PREVIEW CARD --- */
@@ -417,13 +409,17 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       };
 
       recognition.onerror = (event: any) => {
-        console.error('Speech recognition error:', event.error);
+        if (event.error !== 'no-speech') {
+          console.error('Speech recognition error:', event.error);
+        }
         setIsListening(false);
+        recognitionRef.current = null;
       };
 
       recognition.onend = () => {
         isStartingRef.current = false; // Release lock in case onstart never fired
         setIsListening(false);
+        recognitionRef.current = null;
       };
 
       recognitionRef.current = recognition;
@@ -1494,10 +1490,17 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      // MVP Scope: Currently only supports toggling between English (US) and Chinese (CN).
-                      // Other app locales default to English for speech recognition.
-                      safeLocalStorage.setItem('chat_input_speech_lang_manual', 'true');
-                      setSpeechLang((prev) => (prev === 'en-US' ? 'zh-CN' : 'en-US'));
+                      const nextLang = speechLang === 'en-US' ? 'zh-CN' : 'en-US';
+                      const defaultLang = i18n.language.startsWith('zh') ? 'zh-CN' : 'en-US';
+
+                      // If user toggles back to the app's default locale, clear the manual flag 
+                      // to opt back into automatic sync.
+                      if (nextLang === defaultLang) {
+                        safeLocalStorage.removeItem('chat_input_speech_lang_manual');
+                      } else {
+                        safeLocalStorage.setItem('chat_input_speech_lang_manual', 'true');
+                      }
+                      setSpeechLang(nextLang);
                     }}
                     disabled={isListening}
                     className={`inline-flex items-center justify-center px-1.5 h-6 rounded-md text-[10px] font-bold transition-all hover:bg-foreground/10 active:scale-95 border border-[var(--color-border-muted)] ${isListening ? 'opacity-50 cursor-not-allowed' : ''}`}
