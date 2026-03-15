@@ -405,7 +405,7 @@ async def trigger_summarization(thread_id: str, keep_messages: int = 5) -> dict:
     """
     try:
         from ptc_agent.agent.middleware.summarization import summarize_messages
-        from src.config.settings import get_summarization_config
+        from src.server.app import setup
 
         graph, lg_config, state, messages, backend = await _resolve_graph_and_state(
             thread_id, "summarize"
@@ -413,8 +413,12 @@ async def trigger_summarization(thread_id: str, keep_messages: int = 5) -> dict:
 
         original_count = len(messages)
 
-        summarization_config = get_summarization_config()
-        model_name = summarization_config.get("llm", "")
+        summ_cfg = setup.agent_config.summarization if setup.agent_config else None
+        model_name = (
+            setup.agent_config.llm.summarization or ""
+            if setup.agent_config
+            else ""
+        )
 
         # Read previous event from state (for chained summarization)
         previous_event = state.values.get("_summarization_event")
@@ -426,6 +430,7 @@ async def trigger_summarization(thread_id: str, keep_messages: int = 5) -> dict:
                 model_name=model_name,
                 backend=backend,
                 previous_event=previous_event,
+                summarization_config=summ_cfg,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -523,11 +528,13 @@ async def trigger_offload(thread_id: str) -> dict:
             )
 
         # Call offload_tool_args (Tier 1 only)
+        summ_cfg = setup.agent_config.summarization if setup.agent_config else None
         try:
             result = await offload_tool_args(
                 messages=messages,
                 backend=backend,
                 already_offloaded=already_offloaded,
+                summarization_config=summ_cfg,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))

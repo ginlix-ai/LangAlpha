@@ -36,7 +36,7 @@ from langchain.chat_models import BaseChatModel, init_chat_model
 
 from src.llms.content_utils import format_llm_content
 from src.llms.token_counter import extract_token_usage
-from src.config.settings import get_summarization_config
+from ptc_agent.config.agent import SummarizationConfig
 from src.llms import get_llm_by_type
 
 from ptc_agent.agent.middleware.summarization.types import (
@@ -1213,7 +1213,7 @@ class SummarizationMiddleware(AgentMiddleware):
         """Create a configured instance from agent_config.yaml settings.
 
         Args:
-            config: Optional config override (defaults to get_summarization_config()).
+            config: Optional config override (defaults to SummarizationConfig defaults).
             backend: Backend for offloading conversation history (DaytonaBackend
                 for PTC, None for flash). When None, no filesystem ops are attempted.
 
@@ -1221,7 +1221,7 @@ class SummarizationMiddleware(AgentMiddleware):
             Configured SummarizationMiddleware or None if disabled.
         """
         if config is None:
-            config = get_summarization_config()
+            config = SummarizationConfig().model_dump()
 
         if not config.get("enabled", False):
             return None

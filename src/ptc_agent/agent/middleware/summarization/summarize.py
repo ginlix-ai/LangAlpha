@@ -11,7 +11,7 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langchain.chat_models import BaseChatModel
 
 from src.llms.content_utils import format_llm_content
-from src.config.settings import get_summarization_config
+from ptc_agent.config.agent import SummarizationConfig
 from src.llms import get_llm_by_type
 
 from ptc_agent.agent.middleware.summarization.types import (
@@ -43,6 +43,7 @@ async def summarize_messages(
     model_name: str = "",
     backend: Any | None = None,
     previous_event: SummarizationEvent | None = None,
+    summarization_config: SummarizationConfig | None = None,
 ) -> dict[str, Any]:
     """
     Summarize conversation messages with two-tier context management.
@@ -90,7 +91,7 @@ async def summarize_messages(
     effective = get_effective_messages(messages, previous_event)
 
     # ---- Tier 1: Truncate large tool args + stale Read results in old messages ----
-    config = get_summarization_config()
+    config = (summarization_config or SummarizationConfig()).model_dump()
     truncate_trigger_messages = config.get("truncate_args_trigger_messages")
     offloaded_arg_ids: set[str] = set()
     offloaded_read_ids: set[str] = set()
@@ -223,6 +224,7 @@ async def offload_tool_args(
     messages: list[AnyMessage],
     backend: Any | None = None,
     already_offloaded: set[str] | None = None,
+    summarization_config: SummarizationConfig | None = None,
 ) -> dict[str, Any]:
     """Offload large tool args and stale read results (Tier 1 only).
 
@@ -261,7 +263,7 @@ async def offload_tool_args(
         if msg.id is None:
             msg.id = str(uuid.uuid4())
 
-    config = get_summarization_config()
+    config = (summarization_config or SummarizationConfig()).model_dump()
 
     # Use truncation settings, applying reasonable defaults for manual trigger
     truncate_keep = int(config.get("truncate_args_keep_messages", 20))

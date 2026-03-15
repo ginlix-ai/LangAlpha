@@ -30,6 +30,7 @@ from ptc_agent.config.agent import (
     FlashConfig,
     LLMConfig,
     LLMDefinition,
+    SummarizationConfig,
 )
 from ptc_agent.config.core import (
     CoreConfig,
@@ -48,7 +49,7 @@ from ptc_agent.config.loaders import (
     load_from_dict,
     load_from_files,
 )
-from src.config.core import (
+from ptc_agent.config.file_utils import (
     ConfigContext,
     ensure_config_dir,
     find_config_file,
@@ -58,7 +59,10 @@ from src.config.core import (
 )
 
 # Utilities
-from ptc_agent.config.utils import configure_logging
+from ptc_agent.config.utils import configure_structlog
+
+# Backward compat alias
+configure_logging = configure_structlog
 
 __all__ = [
     # Agent data classes
@@ -76,8 +80,10 @@ __all__ = [
     "MCPConfig",
     "MCPServerConfig",
     "SecurityConfig",
+    "SummarizationConfig",
     # Utilities
-    "configure_logging",
+    "configure_logging",  # backward compat alias
+    "configure_structlog",
     "ensure_config_dir",
     "find_config_file",
     "find_project_root",

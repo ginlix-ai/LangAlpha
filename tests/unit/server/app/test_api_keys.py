@@ -284,6 +284,14 @@ async def test_list_models(client):
     mock_llm_cls = MagicMock()
     mock_llm_cls.get_model_config.return_value = mock_mc
 
+    from ptc_agent.config.agent import AgentConfig, LLMConfig
+    from ptc_agent.config.core import DaytonaConfig, FilesystemConfig, LoggingConfig, MCPConfig, SecurityConfig
+
+    agent_cfg = AgentConfig(
+        llm=LLMConfig(name="gpt-4o", flash="gpt-4o-mini"),
+        security=SecurityConfig(), logging=LoggingConfig(),
+        daytona=DaytonaConfig(api_key="test"), mcp=MCPConfig(), filesystem=FilesystemConfig(),
+    )
     with (
         patch(
             "src.llms.llm.get_configured_llm_models",
@@ -293,10 +301,7 @@ async def test_list_models(client):
             "src.llms.llm.LLM",
             mock_llm_cls,
         ),
-        patch(
-            "src.config.settings.load_agent_config",
-            return_value={"llm": {"name": "gpt-4o", "flash": "gpt-4o-mini"}},
-        ),
+        patch("src.server.app.setup.agent_config", agent_cfg),
     ):
         resp = await client.get("/api/v1/models")
 

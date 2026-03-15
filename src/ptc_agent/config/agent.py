@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ptc_agent.agent.backends.daytona import create_default_security_config
 from ptc_agent.config.core import (
     CoreConfig,
     DaytonaConfig,
@@ -21,10 +20,23 @@ from ptc_agent.config.core import (
     MCPConfig,
     MCPServerConfig,
     SecurityConfig,
+    create_default_security_config,
+    validate_daytona_api_key,
 )
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
+
+
+class SummarizationConfig(BaseModel):
+    """Conversation summarization settings."""
+
+    enabled: bool = True
+    token_threshold: int = 120000
+    keep_messages: int = 5
+    truncate_args_trigger_messages: int | None = None
+    truncate_args_keep_messages: int = 20
+    truncate_args_max_length: int = 2000
 
 
 class FlashConfig(BaseModel):
@@ -160,6 +172,12 @@ class AgentConfig(BaseModel):
 
     # Subagent configuration
     subagents: SubagentsConfig = Field(default_factory=SubagentsConfig)
+
+    # Summarization middleware configuration
+    summarization: SummarizationConfig = Field(default_factory=SummarizationConfig)
+
+    # Search API provider (tavily, bocha, serper)
+    search_api: str = "tavily"
 
     # Background task configuration
     # If True, wait for background tasks to complete before returning to CLI
@@ -349,17 +367,7 @@ class AgentConfig(BaseModel):
         Raises:
             ValueError: If required API keys are missing
         """
-        missing_keys = []
-
-        if not self.daytona.api_key:
-            missing_keys.append("DAYTONA_API_KEY")
-
-        if missing_keys:
-            raise ValueError(
-                f"Missing required credentials in .env file:\n"
-                f"  - {chr(10).join(missing_keys)}\n"
-                f"Please add these credentials to your .env file."
-            )
+        validate_daytona_api_key(self.daytona)
 
     def get_llm_client(self) -> "BaseChatModel":
         """Return the LLM client instance.

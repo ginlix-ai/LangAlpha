@@ -20,49 +20,8 @@ from typing import Any, Callable
 import structlog
 from deepagents.backends.protocol import EditResult, ExecuteResponse, FileDownloadResponse, FileUploadResponse, WriteResult
 
-from ptc_agent.config.core import SecurityConfig
+from ptc_agent.config.core import SecurityConfig, create_default_security_config  # noqa: F401
 from ptc_agent.core.sandbox import PTCSandbox
-
-DEFAULT_ALLOWED_IMPORTS = [
-    "os",
-    "sys",
-    "json",
-    "yaml",
-    "requests",
-    "datetime",
-    "pathlib",
-    "typing",
-    "re",
-    "math",
-    "random",
-    "time",
-    "collections",
-    "itertools",
-    "functools",
-    "subprocess",
-    "shutil",
-]
-
-DEFAULT_BLOCKED_PATTERNS = [
-    "eval(",
-    "exec(",
-    "__import__",
-    "compile(",
-    "globals(",
-    "locals(",
-]
-
-
-def create_default_security_config() -> SecurityConfig:
-    return SecurityConfig(
-        max_execution_time=300,
-        max_code_length=10000,
-        max_file_size=10485760,
-        enable_code_validation=True,
-        allowed_imports=list(DEFAULT_ALLOWED_IMPORTS),
-        blocked_patterns=list(DEFAULT_BLOCKED_PATTERNS),
-    )
-
 
 logger = structlog.get_logger(__name__)
 

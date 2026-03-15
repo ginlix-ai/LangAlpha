@@ -19,7 +19,7 @@ Configuration:
 - File-based: Use load_from_files() from ptc_agent.config
 """
 
-# Re-export from ptc_agent.config for backward compatibility
+# Re-export from ptc_agent.config (lightweight — no heavy dependencies)
 from ptc_agent.config import (
     # Config classes (pure data)
     AgentConfig,
@@ -41,10 +41,29 @@ from ptc_agent.config import (
     load_from_files,
 )
 
-from .agent import PTCAgent
-from .backends import DaytonaBackend
-from .graph import SessionProvider, build_ptc_graph, build_ptc_graph_with_session
-from .subagents import SubagentCompiler, SubagentDefinition, SubagentRegistry
+# Heavy imports (PTCAgent, graph, subagents) are deferred to avoid pulling in
+# the middleware chain and src.* dependencies at package import time.
+_LAZY_IMPORTS = {
+    "PTCAgent": ".agent",
+    "DaytonaBackend": ".backends",
+    "SessionProvider": ".graph",
+    "build_ptc_graph": ".graph",
+    "build_ptc_graph_with_session": ".graph",
+    "SubagentCompiler": ".subagents",
+    "SubagentDefinition": ".subagents",
+    "SubagentRegistry": ".subagents",
+}
+
+
+def __getattr__(name: str):
+    if name in _LAZY_IMPORTS:
+        import importlib
+        module = importlib.import_module(_LAZY_IMPORTS[name], __name__)
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     # Config classes (pure data)

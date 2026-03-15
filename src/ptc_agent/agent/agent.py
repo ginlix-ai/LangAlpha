@@ -539,8 +539,7 @@ class PTCAgent:
         # Pass backend for offloading conversation history to sandbox
         summ_config = None
         if self.config.llm.summarization:
-            from src.config.settings import get_summarization_config
-            summ_config = get_summarization_config()
+            summ_config = self.config.summarization.model_dump()
             summ_config["llm"] = self.config.llm.summarization
         summarization = SummarizationMiddleware.from_config(config=summ_config, backend=backend)
 

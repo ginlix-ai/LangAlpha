@@ -25,7 +25,6 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from ptc_agent.agent.backends.daytona import create_default_security_config
 from ptc_agent.config.agent import (
     AgentConfig,
     FlashConfig,
@@ -33,10 +32,11 @@ from ptc_agent.config.agent import (
     SkillsConfig,
     SubagentConfig,
     SubagentsConfig,
+    SummarizationConfig,
 )
-from ptc_agent.config.core import CoreConfig
+from ptc_agent.config.core import CoreConfig, create_default_security_config
 from ptc_agent.config.utils import (
-    configure_logging,
+    configure_structlog,
     create_daytona_config,
     create_filesystem_config,
     create_logging_config,
@@ -44,7 +44,7 @@ from ptc_agent.config.utils import (
     load_dotenv_async,
     validate_required_sections,
 )
-from src.config.core import (
+from ptc_agent.config.file_utils import (
     AGENT_CONFIG_FILE,
     ConfigContext,
     find_config_file,
@@ -52,6 +52,55 @@ from src.config.core import (
     get_default_config_dir,
     load_yaml_config,
 )
+
+
+async def _resolve_config_file(
+    config_file: Path | None,
+    *,
+    search_paths: bool,
+    context: ConfigContext,
+    auto_generate: bool = False,
+) -> tuple[Path, dict[str, Any]]:
+    """Find and load agent_config.yaml, returning the path and parsed data.
+
+    Raises:
+        FileNotFoundError: If agent_config.yaml is not found
+    """
+    cwd = await asyncio.to_thread(Path.cwd)
+
+    if config_file is None:
+        if search_paths:
+            config_file = await asyncio.to_thread(
+                find_config_file,
+                AGENT_CONFIG_FILE,
+                None,
+                "PTC_CONFIG_FILE",
+                context=context,
+            )
+        else:
+            config_file = cwd / AGENT_CONFIG_FILE
+
+    # Auto-generate if missing and requested
+    if (config_file is None or not config_file.exists()) and auto_generate:
+        generated = generate_config_template(
+            get_default_config_dir(), include_llms=False
+        )
+        config_file = generated["agent_config.yaml"]
+
+    if config_file is None or not config_file.exists():
+        searched = (
+            await asyncio.to_thread(get_config_search_paths, None, context=context)
+            if search_paths
+            else [cwd]
+        )
+        raise FileNotFoundError(
+            f"agent_config.yaml not found in search paths:\n"
+            f"  {chr(10).join(str(p) for p in searched)}\n"
+            f"Create one or set PTC_CONFIG_FILE environment variable."
+        )
+
+    config_data = await asyncio.to_thread(load_yaml_config, str(config_file))
+    return config_file, config_data
 
 
 async def load_from_files(
@@ -89,52 +138,16 @@ async def load_from_files(
         ValueError: If required configuration is missing or invalid
         KeyError: If required fields are missing from config files
     """
-    cwd = await asyncio.to_thread(Path.cwd)
-
-    # Find agent_config.yaml
-    if config_file is None:
-        if search_paths:
-            config_file = await asyncio.to_thread(
-                find_config_file,
-                AGENT_CONFIG_FILE,
-                None,
-                "PTC_CONFIG_FILE",
-                context=context,
-            )
-        else:
-            config_file = cwd / AGENT_CONFIG_FILE
-
-    # Auto-generate if missing and requested
-    if (config_file is None or not config_file.exists()) and auto_generate:
-        generated = generate_config_template(
-            get_default_config_dir(), include_llms=False
-        )
-        config_file = generated["agent_config.yaml"]
-
-    if config_file is None or not config_file.exists():
-        searched = (
-            await asyncio.to_thread(get_config_search_paths, None, context=context)
-            if search_paths
-            else [cwd]
-        )
-        raise FileNotFoundError(
-            f"agent_config.yaml not found in search paths:\n"
-            f"  {chr(10).join(str(p) for p in searched)}\n"
-            f"Create one or set PTC_CONFIG_FILE environment variable."
-        )
-
-    # Load environment variables for credentials
     await load_dotenv_async(env_file)
+    config_file, config_data = await _resolve_config_file(
+        config_file,
+        search_paths=search_paths,
+        context=context,
+        auto_generate=auto_generate,
+    )
 
-    # Load agent_config.yaml asynchronously
-    config_data = await asyncio.to_thread(load_yaml_config, str(config_file))
-
-    # Create config from dict
     config = load_from_dict(config_data)
-
-    # Store config file directory for path resolution
     config.config_file_dir = config_file.parent if config_file else None
-
     return config
 
 
@@ -165,51 +178,22 @@ async def load_core_from_files(
         ValueError: If required configuration is missing or invalid
         KeyError: If required fields are missing from config files
     """
-    cwd = await asyncio.to_thread(Path.cwd)
-
-    # Find agent_config.yaml
-    if config_file is None:
-        if search_paths:
-            config_file = await asyncio.to_thread(
-                find_config_file,
-                AGENT_CONFIG_FILE,
-                None,
-                "PTC_CONFIG_FILE",
-                context=context,
-            )
-        else:
-            config_file = cwd / AGENT_CONFIG_FILE
-
-    if config_file is None or not config_file.exists():
-        searched = (
-            await asyncio.to_thread(get_config_search_paths, None, context=context)
-            if search_paths
-            else [cwd]
-        )
-        raise FileNotFoundError(
-            f"agent_config.yaml not found in search paths:\n"
-            f"  {chr(10).join(str(p) for p in searched)}\n"
-            f"Create one or set PTC_CONFIG_FILE environment variable."
-        )
-
-    # Load environment variables for credentials
     await load_dotenv_async(env_file)
+    config_file, config_data = await _resolve_config_file(
+        config_file,
+        search_paths=search_paths,
+        context=context,
+    )
 
-    # Load agent_config.yaml asynchronously
-    config_data = await asyncio.to_thread(load_yaml_config, str(config_file))
-
-    # Validate that all required sections exist in agent_config.yaml
     required_sections = ["daytona", "mcp", "logging", "filesystem"]
     validate_required_sections(config_data, required_sections)
 
-    # Load configurations using shared factory functions
     daytona_config = create_daytona_config(config_data["daytona"])
     security_config = create_default_security_config()
     mcp_config = create_mcp_config(config_data["mcp"])
     logging_config = create_logging_config(config_data["logging"])
     filesystem_config = create_filesystem_config(config_data["filesystem"])
 
-    # Create config object
     core_config = CoreConfig(
         daytona=daytona_config,
         security=security_config,
@@ -217,10 +201,7 @@ async def load_core_from_files(
         logging=logging_config,
         filesystem=filesystem_config,
     )
-
-    # Store config file directory for path resolution
     core_config.config_file_dir = config_file.parent if config_file else None
-
     return core_config
 
 
@@ -255,6 +236,8 @@ def load_from_dict(
         # Simple string format: "claude-sonnet-4-5"
         llm_name = llm_data
         flash_llm = None
+        summarization_llm = None
+        fetch_llm = None
         fallback_models = None
     elif isinstance(llm_data, dict):
         llm_name = llm_data.get("name", "")
@@ -286,7 +269,7 @@ def load_from_dict(
     filesystem_config = create_filesystem_config(config_data["filesystem"])
 
     # Configure structlog to respect the log level from config
-    configure_logging(logging_config.level)
+    configure_structlog(logging_config.level)
 
     # Load Agent configuration (optional section)
     # Note: YAML sections with only comments parse as None, not {}
@@ -339,6 +322,13 @@ def load_from_dict(
         enabled=flash_data.get("enabled", True),
     )
 
+    # Load Summarization configuration (optional section)
+    summarization_data = config_data.get("summarization") or {}
+    summarization_config = SummarizationConfig(**summarization_data) if summarization_data else SummarizationConfig()
+
+    # Search API provider
+    search_api = config_data.get("search_api", "tavily")
+
     # Create config object
     config = AgentConfig(
         llm=llm_config,
@@ -351,6 +341,8 @@ def load_from_dict(
         flash=flash_config,
         enable_view_image=enable_view_image,
         subagents=subagents_config,
+        summarization=summarization_config,
+        search_api=search_api,
         background_auto_wait=background_auto_wait,
     )
 

@@ -2,15 +2,23 @@
 Tool-specific configuration access module.
 
 This module provides configuration helpers for tools (crawler, sitemap, search, etc.)
-that read from agent_config.yaml.
+that read from agent_config.yaml via the shared YAML cache.
 """
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
-from src.config.settings import load_agent_config
+from src.config.core import load_yaml_config, find_config_file
 
 logger = logging.getLogger(__name__)
+
+
+def _get_agent_config_dict() -> dict:
+    """Get the agent_config.yaml as a raw dict via shared YAML cache."""
+    path = find_config_file("agent_config.yaml")
+    if path is None:
+        return {}
+    return load_yaml_config(str(path))
 
 
 def _get_tool_config(key_path: str, default: Any = None) -> Any:
@@ -24,7 +32,7 @@ def _get_tool_config(key_path: str, default: Any = None) -> Any:
     Returns:
         Configuration value or default
     """
-    agent_config = load_agent_config()
+    agent_config = _get_agent_config_dict()
     keys = key_path.split('.')
     value = agent_config
 
