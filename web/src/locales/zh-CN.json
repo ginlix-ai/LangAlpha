@@ -327,6 +327,12 @@
       "fastModeDesc": "优先路由以获得更快响应",
       "fastModeHelpLine1": "等同于 Codex 中的 /fast",
       "fastModeHelpLine2": "消耗 2 倍积分，优先服务层级"
+    },
+    "voice": {
+      "start": "开启语音输入",
+      "stop": "停止语音输入",
+      "cannotChangeLang": "录音时无法更改语言",
+      "toggleLang": "切换语音输入语言"
     }
   },
   "context": {
