@@ -66,43 +66,13 @@ class TestCreateDefaultSecurityConfig:
         assert cfg.allowed_imports == DEFAULT_ALLOWED_IMPORTS
         assert cfg.blocked_patterns == DEFAULT_BLOCKED_PATTERNS
 
-    def test_divergence_from_field_defaults(self):
-        """Document the known divergence between SecurityConfig() and create_default_security_config().
-
-        SecurityConfig() field defaults include extras like 'asyncio', 'dataclasses', 'operator'.
-        create_default_security_config() uses the more restrictive DEFAULT_ALLOWED_IMPORTS.
-        This test documents the current (buggy) state for regression tracking.
-        """
+    def test_field_defaults_match_constants(self):
+        """SecurityConfig() and create_default_security_config() should produce identical results."""
         field_default = SecurityConfig()
         factory_default = create_default_security_config()
 
-        # The field defaults have MORE imports
-        field_only = set(field_default.allowed_imports) - set(factory_default.allowed_imports)
-        factory_only = set(factory_default.allowed_imports) - set(field_default.allowed_imports)
-
-        # Document: these are in field default but NOT in create_default
-        assert "asyncio" in field_only
-        assert "dataclasses" in field_only
-
-        # Document: these are in create_default but NOT in field default
-        assert "subprocess" in factory_only
-        assert "shutil" in factory_only
-
-    def test_blocked_patterns_divergence(self):
-        """Document divergence in blocked_patterns."""
-        field_default = SecurityConfig()
-        factory_default = create_default_security_config()
-
-        field_only = set(field_default.blocked_patterns) - set(factory_default.blocked_patterns)
-        factory_only = set(factory_default.blocked_patterns) - set(field_default.blocked_patterns)
-
-        # Field default includes subprocess/os patterns
-        assert "subprocess.call" in field_only
-        assert "os.system" in field_only
-
-        # Factory default includes compile/globals/locals
-        assert "compile(" in factory_only
-        assert "globals(" in factory_only
+        assert set(field_default.allowed_imports) == set(factory_default.allowed_imports)
+        assert set(field_default.blocked_patterns) == set(factory_default.blocked_patterns)
 
 
 # ---------------------------------------------------------------------------

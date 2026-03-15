@@ -209,19 +209,14 @@ class TestCreateFilesystemConfig:
         assert cfg.denied_directories == []
         assert cfg.enable_path_validation is True
 
-    def test_working_directory_bug(self):
-        """BUG: working_directory from config data is silently dropped.
-
-        create_filesystem_config does not pass working_directory from data
-        to FilesystemConfig, so it always uses the model default.
-        """
+    def test_working_directory_applied(self):
+        """working_directory from config data should be applied."""
         data = {
             "working_directory": "/custom/workdir",
             "allowed_directories": ["/home/daytona"],
         }
         cfg = create_filesystem_config(data)
-        # The working_directory from data is NOT applied
-        assert cfg.working_directory == "/home/daytona"  # Model default, NOT "/custom/workdir"
+        assert cfg.working_directory == "/custom/workdir"
 
     def test_missing_required_field(self):
         data = {}

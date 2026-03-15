@@ -25,7 +25,7 @@ from .decorators import log_io
 from .crawler.safe_wrapper import get_safe_crawler_sync, CrawlResult
 from .crawler.sitemap import get_sitemap_summary
 from src.llms import LLM, make_api_call, format_llm_content
-from src.config.settings import load_agent_config
+from src.config.core import load_yaml_config, find_config_file
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,8 @@ def _get_extraction_model() -> str:
     override = fetch_model_override.get()
     if override:
         return override
-    config = load_agent_config()
+    path = find_config_file("agent_config.yaml")
+    config = load_yaml_config(str(path)) if path else {}
     llm = config.get("llm", {})
     return llm.get("fetch") or llm.get("flash") or llm.get("name", "")
 

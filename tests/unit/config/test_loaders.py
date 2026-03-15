@@ -75,16 +75,15 @@ class TestLoadFromDictLLM:
         assert config.llm.fetch == "test-fetch"
         assert config.llm.fallback == ["fallback-1"]
 
-    def test_string_llm_format_bug(self):
-        """BUG: String LLM format raises UnboundLocalError.
-
-        When llm section is a string, `summarization_llm` and `fetch_llm` are
-        not defined in the string branch but used unconditionally in LLMConfig().
-        This test documents the existing bug for regression tracking.
-        """
+    def test_string_llm_format(self):
+        """String LLM format should produce LLMConfig with name only."""
         data = _full_config_dict(llm="claude-sonnet-4-5")
-        with pytest.raises(UnboundLocalError, match="summarization_llm"):
-            load_from_dict(data)
+        config = load_from_dict(data)
+        assert config.llm.name == "claude-sonnet-4-5"
+        assert config.llm.flash is None
+        assert config.llm.summarization is None
+        assert config.llm.fetch is None
+        assert config.llm.fallback is None
 
     def test_dict_llm_missing_name_raises(self):
         data = _full_config_dict(llm={"flash": "model"})
@@ -254,13 +253,11 @@ class TestLoadFromDictFilesystem:
         assert config.filesystem.allowed_directories == ["/home/daytona", "/tmp"]
 
     def test_filesystem_with_custom_working_dir(self):
-        """Document the working_directory bug: it's dropped by create_filesystem_config."""
+        """Custom working_directory from config should be applied."""
         data = _full_config_dict()
         data["filesystem"]["working_directory"] = "/workspace"
         config = load_from_dict(data)
-        # BUG: working_directory from config data is silently dropped
-        # This should be "/workspace" but create_filesystem_config doesn't pass it
-        assert config.filesystem.working_directory == "/home/daytona"
+        assert config.filesystem.working_directory == "/workspace"
 
     def test_filesystem_denied_directories(self):
         data = _full_config_dict()
@@ -281,6 +278,51 @@ class TestLoadFromDictSecurity:
         # create_default_security_config uses DEFAULT_ALLOWED_IMPORTS
         from ptc_agent.config.core import DEFAULT_ALLOWED_IMPORTS
         assert config.security.allowed_imports == DEFAULT_ALLOWED_IMPORTS
+
+
+# ---------------------------------------------------------------------------
+# load_from_dict — summarization + search_api
+# ---------------------------------------------------------------------------
+
+
+class TestLoadFromDictSummarization:
+    def test_default_summarization(self):
+        """No summarization section should produce defaults."""
+        config = load_from_dict(_full_config_dict())
+        assert config.summarization.enabled is True
+        assert config.summarization.token_threshold == 120000
+        assert config.summarization.keep_messages == 5
+
+    def test_custom_summarization(self):
+        data = _full_config_dict(summarization={
+            "enabled": False,
+            "token_threshold": 80000,
+            "keep_messages": 3,
+            "truncate_args_trigger_messages": 15,
+            "truncate_args_keep_messages": 10,
+            "truncate_args_max_length": 1000,
+        })
+        config = load_from_dict(data)
+        assert config.summarization.enabled is False
+        assert config.summarization.token_threshold == 80000
+        assert config.summarization.keep_messages == 3
+        assert config.summarization.truncate_args_trigger_messages == 15
+
+    def test_partial_summarization(self):
+        """Partial summarization section uses defaults for missing fields."""
+        data = _full_config_dict(summarization={"enabled": True, "keep_messages": 10})
+        config = load_from_dict(data)
+        assert config.summarization.keep_messages == 10
+        assert config.summarization.token_threshold == 120000  # default
+
+    def test_default_search_api(self):
+        config = load_from_dict(_full_config_dict())
+        assert config.search_api == "tavily"
+
+    def test_custom_search_api(self):
+        data = _full_config_dict(search_api="serper")
+        config = load_from_dict(data)
+        assert config.search_api == "serper"
 
 
 # ---------------------------------------------------------------------------

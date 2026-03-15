@@ -6,228 +6,55 @@ environment variables (.env) and YAML config files.
 
 Configuration loading strategy:
 1. Credentials come from environment variables (.env)
-2. Infrastructure settings come from config.yaml
-3. Agent/tool settings come from agent_config.yaml
+2. Infrastructure settings come from config.yaml via InfrastructureConfig
+3. Agent/tool settings come from agent_config.yaml via AgentConfig (ptc_agent.config)
 """
 
 import logging
-import os
-from pathlib import Path
-from typing import Dict, Any, Optional, List
-from functools import lru_cache
+from typing import Any, Dict, List, Optional
 
-from src.config.core import load_yaml_config
+from src.config.core import get_infrastructure_config
+
+# Re-export env-var constants for backward compatibility
+from src.config.env import (  # noqa: F401
+    AUTH_ENABLED,
+    AUTH_SERVICE_URL,
+    AUTOMATION_WEBHOOK_SECRET,
+    AUTOMATION_WEBHOOK_URL,
+    GINLIX_DATA_ENABLED,
+    GINLIX_DATA_URL,
+    GINLIX_DATA_WS_URL,
+    LOCAL_DEV_USER_ID,
+    SUPABASE_URL,
+)
 
 logger = logging.getLogger(__name__)
 
-# Config file paths
-_PROJECT_ROOT = Path(__file__).parent.parent.parent
-INFRASTRUCTURE_CONFIG_PATH = _PROJECT_ROOT / "config.yaml"
-AGENT_CONFIG_PATH = _PROJECT_ROOT / "agent_config.yaml"
-
-
-@lru_cache(maxsize=1)
-def load_app_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
-    """
-    Load application configuration from config.yaml.
-
-    This function is cached to avoid repeated file reads.
-
-    Args:
-        config_path: Path to configuration file (defaults to config.yaml in project root)
-
-    Returns:
-        Configuration dictionary
-    """
-    if config_path is None:
-        config_path = INFRASTRUCTURE_CONFIG_PATH
-
-    config = load_yaml_config(str(config_path))
-    return config
-
-
-@lru_cache(maxsize=1)
-def load_agent_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
-    """
-    Load agent configuration from agent_config.yaml.
-
-    This function is cached to avoid repeated file reads.
-
-    Args:
-        config_path: Path to configuration file (defaults to agent_config.yaml in project root)
-
-    Returns:
-        Configuration dictionary
-    """
-    if config_path is None:
-        config_path = AGENT_CONFIG_PATH
-
-    config = load_yaml_config(str(config_path))
-    return config
-
-
-def get_config(
-    key: str, default: Any = None, config_path: Optional[Path] = None
-) -> Any:
-    """
-    Get a configuration value from config.yaml.
-
-    Args:
-        key: Configuration key (e.g., 'debug', 'agent_recursion_limit')
-        default: Default value if key not found
-        config_path: Optional custom config file path
-
-    Returns:
-        Configuration value or default
-    """
-    config = load_app_config(config_path)
-    return config.get(key, default)
-
-
-def get_nested_config(
-    key_path: str, default: Any = None, config_path: Optional[Path] = None
-) -> Any:
-    """
-    Get a nested configuration value using dot notation.
-
-    Example:
-        get_nested_config('redis.cache_enabled') -> config['redis']['cache_enabled']
-
-    Args:
-        key_path: Dot-separated key path (e.g., 'redis.ttl.results_list')
-        default: Default value if key not found
-        config_path: Optional custom config file path
-
-    Returns:
-        Configuration value or default
-    """
-    config = load_app_config(config_path)
-
-    keys = key_path.split(".")
-    value = config
-
-    for key in keys:
-        if isinstance(value, dict) and key in value:
-            value = value[key]
-        else:
-            return default
-
-    return value
-
 
 # =============================================================================
-# Application Settings
+# Application Settings — delegates to InfrastructureConfig
 # =============================================================================
 
 
 def get_debug_mode() -> bool:
     """Get debug mode flag from config.yaml."""
-    return bool(get_config("debug", False))
+    return get_infrastructure_config().debug
 
 
-def get_agent_recursion_limit(default: int = 50) -> int:
-    """
-    Get agent recursion limit from config.yaml.
-
-    Args:
-        default: Default value if not configured
-
-    Returns:
-        Configured recursion limit
-    """
-    try:
-        limit = int(get_config("agent_recursion_limit", default))
-        if limit > 0:
-            return limit
-        else:
-            logger.warning(
-                f"agent_recursion_limit value {limit} is not positive. "
-                f"Using default value {default}."
-            )
-            return default
-    except (ValueError, TypeError) as e:
-        logger.warning(
-            f"Invalid agent_recursion_limit value: {e}. Using default value {default}."
-        )
-        return default
+def get_agent_recursion_limit() -> int:
+    """Get agent recursion limit from config.yaml."""
+    return get_infrastructure_config().agent_recursion_limit
 
 
-def get_workflow_timeout(default: int = 1600) -> int:
-    """
-    Get workflow timeout in seconds from config.yaml.
-
-    Args:
-        default: Default timeout in seconds
-
-    Returns:
-        Configured timeout in seconds
-    """
-    try:
-        timeout = int(get_config("workflow_timeout", default))
-        if timeout >= 0:  # 0 means no timeout
-            return timeout
-        else:
-            logger.warning(
-                f"workflow_timeout value {timeout} is negative. "
-                f"Using default value {default}."
-            )
-            return default
-    except (ValueError, TypeError) as e:
-        logger.warning(
-            f"Invalid workflow_timeout value: {e}. Using default value {default}."
-        )
-        return default
+def get_workflow_timeout() -> int:
+    """Get workflow timeout in seconds from config.yaml."""
+    return get_infrastructure_config().workflow_timeout
 
 
-def get_sse_keepalive_interval(default: float = 15.0) -> float:
-    """
-    Get SSE keepalive interval in seconds from config.yaml.
+def get_sse_keepalive_interval() -> float:
+    """Get SSE keepalive interval in seconds from config.yaml."""
+    return float(get_infrastructure_config().sse_keepalive_interval)
 
-    Args:
-        default: Default interval in seconds
-
-    Returns:
-        Configured keepalive interval in seconds
-    """
-    try:
-        interval = float(get_config("sse_keepalive_interval", default))
-        if interval > 0:
-            return interval
-        else:
-            logger.warning(
-                f"sse_keepalive_interval value {interval} is not positive. "
-                f"Using default value {default}."
-            )
-            return default
-    except (ValueError, TypeError) as e:
-        logger.warning(
-            f"Invalid sse_keepalive_interval value: {e}. Using default value {default}."
-        )
-        return default
-
-
-# =============================================================================
-# Auth / Login Service (Supabase)
-# =============================================================================
-SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
-AUTH_ENABLED: bool = bool(SUPABASE_URL)
-LOCAL_DEV_USER_ID: str = os.getenv("AUTH_USER_ID", "local-dev-user")
-
-# Quota enforcement service (ginlix-auth)
-AUTH_SERVICE_URL: str = os.getenv("AUTH_SERVICE_URL", "")
-
-# ginlix-data (real-time market data proxy)
-GINLIX_DATA_URL: str = os.getenv("GINLIX_DATA_URL", "")  # http://localhost:8005
-GINLIX_DATA_WS_URL: str = os.getenv("GINLIX_DATA_WS_URL", "") or (
-    GINLIX_DATA_URL.replace("http://", "ws://").replace("https://", "wss://")
-    if GINLIX_DATA_URL
-    else ""
-)
-GINLIX_DATA_ENABLED: bool = bool(GINLIX_DATA_URL)
-
-# Automation webhook delivery (ginlix-integration)
-AUTOMATION_WEBHOOK_URL: str = os.getenv("AUTOMATION_WEBHOOK_URL", "")
-AUTOMATION_WEBHOOK_SECRET: str = os.getenv("AUTOMATION_WEBHOOK_SECRET", "")
 
 # =============================================================================
 # Feature Flags
@@ -235,36 +62,36 @@ AUTOMATION_WEBHOOK_SECRET: str = os.getenv("AUTOMATION_WEBHOOK_SECRET", "")
 
 
 def get_market_data_providers() -> list[dict]:
-    """Return the ordered provider list from ``market_data.providers`` in config.yaml.
-
-    Defaults to FMP-only when no config exists — backward compatible.
-    """
-    return get_nested_config(
-        "market_data.providers", [{"name": "fmp", "markets": ["all"]}]
-    )
+    """Return the ordered provider list from ``market_data.providers`` in config.yaml."""
+    cfg = get_infrastructure_config()
+    providers = cfg.market_data.providers
+    if not providers:
+        return [{"name": "fmp", "markets": ["all"]}]
+    return [p.model_dump() for p in providers]
 
 
 def get_news_data_providers() -> list[dict]:
-    """Return the ordered provider list from ``news_data.providers`` in config.yaml.
-
-    Defaults to FMP-only when no config exists.
-    """
-    return get_nested_config("news_data.providers", [{"name": "fmp"}])
+    """Return the ordered provider list from ``news_data.providers`` in config.yaml."""
+    cfg = get_infrastructure_config()
+    providers = cfg.news_data.providers
+    if not providers:
+        return [{"name": "fmp"}]
+    return [p.model_dump() for p in providers]
 
 
 def is_result_log_db_enabled() -> bool:
     """Check if result logging to database is enabled."""
-    return bool(get_config("result_log_db_enabled", True))
+    return get_infrastructure_config().result_log_db_enabled
 
 
 def is_redis_warm_on_startup_enabled() -> bool:
     """Check if Redis cache warming on startup is enabled."""
-    return bool(get_config("redis_warm_on_startup", True))
+    return get_infrastructure_config().redis_warm_on_startup
 
 
 def is_langsmith_tracing_enabled() -> bool:
     """Check if LangSmith tracing is enabled."""
-    return bool(get_config("langsmith_tracing", False))
+    return get_infrastructure_config().langsmith_tracing
 
 
 # =============================================================================
@@ -274,26 +101,12 @@ def is_langsmith_tracing_enabled() -> bool:
 
 def is_sse_event_log_enabled() -> bool:
     """Check if SSE event logging is enabled."""
-    return bool(get_config("sse_event_log_enabled", True))
+    return get_infrastructure_config().sse_event_log_enabled
 
 
 def get_sse_event_log_level() -> str:
-    """
-    Get SSE event log level from config.yaml.
-
-    Returns:
-        Log level string (debug, info, warning, error, critical)
-    """
-    level = str(get_config("sse_event_log_level", "info")).lower()
-    valid_levels = {"debug", "info", "warning", "error", "critical"}
-
-    if level in valid_levels:
-        return level
-    else:
-        logger.warning(
-            f"Invalid sse_event_log_level value: {level}. Using default 'info'."
-        )
-        return "info"
+    """Get SSE event log level from config.yaml."""
+    return get_infrastructure_config().sse_event_log_level
 
 
 # =============================================================================
@@ -302,46 +115,19 @@ def get_sse_event_log_level() -> str:
 
 
 def get_log_level() -> str:
-    """
-    Get root logger level from config.yaml.
-
-    Returns:
-        Log level string (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-    """
-    level = str(get_config("log_level", "INFO")).upper()
-    valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
-
-    if level in valid_levels:
-        return level
-    else:
-        logger.warning(f"Invalid log_level value: {level}. Using default 'INFO'.")
-        return "INFO"
+    """Get root logger level from config.yaml."""
+    return get_infrastructure_config().log_level.upper()
 
 
 def get_log_format() -> str:
-    """
-    Get log format string from config.yaml.
-
-    Returns:
-        Log format string
-    """
-    return str(
-        get_config("log_format", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    )
+    """Get log format string from config.yaml."""
+    return get_infrastructure_config().log_format
 
 
 def get_module_log_levels() -> dict:
-    """
-    Get module-specific log levels from config.yaml.
-
-    Returns:
-        Dictionary mapping module names to log levels
-    """
-    module_levels = get_config("module_log_levels", {})
-    if isinstance(module_levels, dict):
-        # Convert all values to uppercase for consistency
-        return {k: v.upper() for k, v in module_levels.items()}
-    return {}
+    """Get module-specific log levels from config.yaml."""
+    levels = get_infrastructure_config().module_log_levels
+    return {k: v.upper() for k, v in levels.items()} if levels else {}
 
 
 # =============================================================================
@@ -350,23 +136,8 @@ def get_module_log_levels() -> dict:
 
 
 def get_allowed_origins() -> List[str]:
-    """
-    Get allowed CORS origins from config.yaml.
-
-    Returns:
-        List of allowed origin URLs
-    """
-    origins = get_config("allowed_origins", [])
-    if isinstance(origins, list):
-        return origins
-    elif isinstance(origins, str):
-        # Handle comma-separated string format
-        return [origin.strip() for origin in origins.split(",")]
-    else:
-        logger.warning(
-            f"Invalid allowed_origins type: {type(origins)}. Using default localhost."
-        )
-        return ["http://localhost:3000"]
+    """Get allowed CORS origins from config.yaml."""
+    return get_infrastructure_config().allowed_origins
 
 
 # =============================================================================
@@ -375,48 +146,20 @@ def get_allowed_origins() -> List[str]:
 
 
 def get_locale_config(locale: str, prompt_language: str) -> Dict[str, str]:
-    """
-    Get locale-specific timezone configuration.
-
-    This function maps locales to their appropriate timezones for consistent
-    timestamp formatting across the application. The timezone is used for
-    displaying current time in prompts and maintaining temporal consistency
-    during workflow execution.
-
-    Args:
-        locale: Locale string (e.g., "en-US", "zh-CN")
-        prompt_language: Prompt language code (e.g., "en", "zh")
-
-    Returns:
-        Dictionary containing:
-        - locale: Original locale string
-        - prompt_language: Original prompt language string
-        - timezone: Timezone identifier (e.g., "America/New_York", "Asia/Shanghai", "UTC")
-        - timezone_label: Display label for timezone (e.g., "EST", "EDT", "CST", "UTC")
-          Note: Label is DST-aware and based on current time
-
-    Timezone mapping:
-        - en-US → Eastern Time (America/New_York, "EST" or "EDT" depending on DST)
-        - zh-CN → China Standard Time (Asia/Shanghai, "CST")
-        - others → UTC (UTC, "UTC")
-    """
+    """Get locale-specific timezone configuration."""
     from datetime import datetime
     from zoneinfo import ZoneInfo
     from src.utils.timezone_utils import get_timezone_label
 
-    # Normalize locale to lowercase for comparison
     locale_lower = locale.lower() if locale else ""
 
-    # Determine timezone based on locale
     if locale_lower == "en-us":
         timezone = "America/New_York"
     elif locale_lower == "zh-cn":
         timezone = "Asia/Shanghai"
     else:
-        # Default to UTC for all other locales
         timezone = "UTC"
 
-    # Extract timezone label using current time (DST-aware)
     tz = ZoneInfo(timezone)
     current_time = datetime.now(tz)
     timezone_label = get_timezone_label(current_time)
@@ -430,59 +173,43 @@ def get_locale_config(locale: str, prompt_language: str) -> Dict[str, str]:
 
 
 # =============================================================================
-# Service Configuration
-# =============================================================================
-
-
-def get_search_api() -> str:
-    """
-    Get configured search API from agent_config.yaml.
-
-    Returns:
-        Search API name (tavily, duckduckgo, brave_search, arxiv, bocha)
-    """
-    agent_config = load_agent_config()
-    return str(agent_config.get("search_api", "tavily"))
-
-
-# =============================================================================
 # Redis Configuration
 # =============================================================================
 
 
 def is_redis_cache_enabled() -> bool:
     """Check if Redis caching is enabled."""
-    return bool(get_nested_config("redis.cache_enabled", True))
+    return get_infrastructure_config().redis.cache_enabled
 
 
-def get_redis_max_connections(default: int = 10) -> int:
+def get_redis_max_connections() -> int:
     """Get Redis connection pool max connections."""
-    return int(get_nested_config("redis.max_connections", default))
+    return get_infrastructure_config().redis.max_connections
 
 
-def get_redis_ttl_results_list(default: int = 300) -> int:
+def get_redis_ttl_results_list() -> int:
     """Get Redis TTL for results list (seconds)."""
-    return int(get_nested_config("redis.ttl.results_list", default))
+    return get_infrastructure_config().redis.ttl.results_list
 
 
-def get_redis_ttl_result_detail(default: int = 900) -> int:
+def get_redis_ttl_result_detail() -> int:
     """Get Redis TTL for result detail (seconds)."""
-    return int(get_nested_config("redis.ttl.result_detail", default))
+    return get_infrastructure_config().redis.ttl.result_detail
 
 
-def get_redis_ttl_metadata(default: int = 900) -> int:
+def get_redis_ttl_metadata() -> int:
     """Get Redis TTL for metadata (seconds)."""
-    return int(get_nested_config("redis.ttl.metadata", default))
+    return get_infrastructure_config().redis.ttl.metadata
 
 
-def get_redis_ttl_metadata_summary(default: int = 600) -> int:
+def get_redis_ttl_metadata_summary() -> int:
     """Get Redis TTL for metadata summary (seconds)."""
-    return int(get_nested_config("redis.ttl.metadata_summary", default))
+    return get_infrastructure_config().redis.ttl.metadata_summary
 
 
 def is_cache_invalidate_on_write_enabled() -> bool:
     """Check if cache invalidation on write is enabled."""
-    return bool(get_nested_config("redis.cache_invalidate_on_write", True))
+    return get_infrastructure_config().redis.cache_invalidate_on_write
 
 
 # Fallback TTLs matching config.yaml defaults (interval_seconds × 1.5)
@@ -499,90 +226,11 @@ _DEFAULT_OHLCV_TTLS: Dict[str, int] = {
 
 
 def get_ohlcv_ttl(interval: str) -> int:
-    """Get the Redis TTL for a given OHLCV interval.
-
-    Reads from ``redis.ttl.ohlcv.<interval>`` in config.yaml, falling back
-    to hardcoded defaults that mirror the canonical config values.
-    """
-    fallback = _DEFAULT_OHLCV_TTLS.get(interval, 90)
-    return int(get_nested_config(f"redis.ttl.ohlcv.{interval}", fallback))
-
-
-# =============================================================================
-# Summarization Middleware Configuration (from agent_config.yaml)
-# =============================================================================
-
-
-def _get_agent_nested_config(key_path: str, default: Any = None) -> Any:
-    """Get nested config from agent_config.yaml."""
-    agent_config = load_agent_config()
-    keys = key_path.split(".")
-    value = agent_config
-    for key in keys:
-        if isinstance(value, dict) and key in value:
-            value = value[key]
-        else:
-            return default
-    return value
-
-
-def get_summarization_config() -> Dict[str, Any]:
-    """
-    Get summarization middleware configuration from agent_config.yaml.
-
-    Returns:
-        Dictionary containing:
-        - enabled: Whether summarization is enabled
-        - llm: Model name for generating summaries
-        - token_threshold: Token count threshold to trigger summarization
-        - keep_messages: Number of recent messages to preserve after summarization
-        - truncate_args_trigger_messages: Message count to trigger arg truncation (or None)
-        - truncate_args_keep_messages: Messages to protect from truncation
-        - truncate_args_max_length: Per-arg-value max chars before truncation
-    """
-    result: Dict[str, Any] = {
-        "enabled": bool(_get_agent_nested_config("summarization.enabled", True)),
-        "llm": str(
-            _get_agent_nested_config("llm.summarization")
-            or _get_agent_nested_config("llm.name", "")
-        ),
-        "token_threshold": int(
-            _get_agent_nested_config("summarization.token_threshold", 120000)
-        ),
-        "keep_messages": int(
-            _get_agent_nested_config("summarization.keep_messages", 5)
-        ),
-    }
-
-    # Truncation config (None means disabled)
-    truncate_trigger = _get_agent_nested_config(
-        "summarization.truncate_args_trigger_messages"
-    )
-    if truncate_trigger is not None:
-        result["truncate_args_trigger_messages"] = int(truncate_trigger)
-        result["truncate_args_keep_messages"] = int(
-            _get_agent_nested_config("summarization.truncate_args_keep_messages", 20)
-        )
-        result["truncate_args_max_length"] = int(
-            _get_agent_nested_config("summarization.truncate_args_max_length", 2000)
-        )
-
-    return result
-
-
-def is_summarization_enabled() -> bool:
-    """Check if conversation summarization middleware is enabled."""
-    return bool(_get_agent_nested_config("summarization.enabled", True))
-
-
-def get_summarization_token_threshold(default: int = 120000) -> int:
-    """Get token threshold for triggering summarization."""
-    return int(_get_agent_nested_config("summarization.token_threshold", default))
-
-
-def get_summarization_keep_messages(default: int = 5) -> int:
-    """Get number of recent messages to preserve after summarization."""
-    return int(_get_agent_nested_config("summarization.keep_messages", default))
+    """Get the Redis TTL for a given OHLCV interval."""
+    cfg = get_infrastructure_config()
+    if interval in cfg.redis.ttl.ohlcv:
+        return cfg.redis.ttl.ohlcv[interval]
+    return _DEFAULT_OHLCV_TTLS.get(interval, 90)
 
 
 # =============================================================================
@@ -592,105 +240,102 @@ def get_summarization_keep_messages(default: int = 5) -> int:
 
 def is_background_execution_enabled() -> bool:
     """Check if background execution is enabled."""
-    return bool(get_config("background_execution_enabled", True))
+    return True  # Always enabled per config.yaml comments
 
 
-def get_max_concurrent_workflows(default: int = 100) -> int:
+def get_max_concurrent_workflows() -> int:
     """Get maximum number of concurrent background workflows."""
-    return int(
-        get_nested_config("background_execution.max_concurrent_workflows", default)
-    )
+    return get_infrastructure_config().background_execution.max_concurrent_workflows
 
 
-def get_workflow_result_ttl(default: int = 86400) -> int:
-    """Get workflow result TTL in seconds (default: 24 hours)."""
-    return int(get_nested_config("background_execution.workflow_result_ttl", default))
+def get_workflow_result_ttl() -> int:
+    """Get workflow result TTL in seconds."""
+    return get_infrastructure_config().background_execution.workflow_result_ttl
 
 
-def get_abandoned_workflow_timeout(default: int = 3600) -> int:
-    """Get abandoned workflow timeout in seconds (default: 1 hour)."""
-    return int(
-        get_nested_config("background_execution.abandoned_workflow_timeout", default)
-    )
+def get_abandoned_workflow_timeout() -> int:
+    """Get abandoned workflow timeout in seconds."""
+    return get_infrastructure_config().background_execution.abandoned_workflow_timeout
 
 
-def get_cleanup_interval(default: int = 300) -> int:
-    """Get background cleanup interval in seconds (default: 5 minutes)."""
-    return int(get_nested_config("background_execution.cleanup_interval", default))
+def get_cleanup_interval() -> int:
+    """Get background cleanup interval in seconds."""
+    return get_infrastructure_config().background_execution.cleanup_interval
 
 
 def is_intermediate_storage_enabled() -> bool:
     """Check if intermediate result storage is enabled."""
-    return bool(
-        get_nested_config("background_execution.enable_intermediate_storage", True)
-    )
+    return get_infrastructure_config().background_execution.enable_intermediate_storage
 
 
-def get_max_stored_messages_per_agent(default: int = 100) -> int:
+def get_max_stored_messages_per_agent() -> int:
     """Get maximum stored messages per agent."""
-    return int(
-        get_nested_config("background_execution.max_stored_messages_per_agent", default)
-    )
+    return get_infrastructure_config().background_execution.max_stored_messages_per_agent
 
 
-def get_subagent_collector_timeout(default: int = 120) -> int:
-    """Get initial subagent collector timeout in seconds (default: 120s)."""
-    return int(
-        get_nested_config("background_execution.subagent_collector_timeout", default)
-    )
+def get_subagent_collector_timeout() -> int:
+    """Get initial subagent collector timeout in seconds."""
+    return get_infrastructure_config().background_execution.subagent_collector_timeout
 
 
-def get_subagent_orphan_collector_timeout(default: int = 600) -> int:
-    """Get orphan subagent collector idle timeout in seconds (default: 600s).
-
-    The orphan collector resets this timer whenever any pending task shows
-    progress (new captured events or tool call activity).  A subagent that is
-    actively working will never be abandoned; only truly idle tasks time out.
-    """
-    return int(
-        get_nested_config(
-            "background_execution.subagent_orphan_collector_timeout", default
-        )
-    )
+def get_subagent_orphan_collector_timeout() -> int:
+    """Get orphan subagent collector idle timeout in seconds."""
+    return get_infrastructure_config().background_execution.subagent_orphan_collector_timeout
 
 
-def get_event_storage_backend(default: str = "redis") -> str:
-    """
-    Get event storage backend (redis or memory).
-
-    Args:
-        default: Default backend if not configured
-
-    Returns:
-        Event storage backend: "redis" or "memory"
-    """
-    backend = str(
-        get_nested_config("background_execution.event_storage_backend", default)
-    )
-    if backend not in ["redis", "memory"]:
-        logger.warning(f"Invalid event_storage_backend: {backend}, using {default}")
-        return default
-    return backend
+def get_event_storage_backend() -> str:
+    """Get event storage backend (redis or memory)."""
+    return get_infrastructure_config().background_execution.event_storage_backend
 
 
 def is_event_storage_fallback_enabled() -> bool:
     """Check if fallback to memory storage is enabled on Redis failure."""
-    return bool(
-        get_nested_config("background_execution.event_storage_fallback_to_memory", True)
-    )
+    return get_infrastructure_config().background_execution.event_storage_fallback_to_memory
 
 
-def get_redis_ttl_workflow_events(default: int = 86400) -> int:
+def get_redis_ttl_workflow_events() -> int:
+    """Get Redis TTL for workflow event buffers (seconds)."""
+    return get_infrastructure_config().redis.ttl.workflow_events
+
+
+# =============================================================================
+# Nested config accessor — kept for remaining callers
+# =============================================================================
+
+
+def get_nested_config(
+    key_path: str, default: Any = None, config_path: Optional[Any] = None
+) -> Any:
+    """Get a nested configuration value using dot notation.
+
+    This function is kept for backward compatibility with callers that need
+    raw dict-style access. New code should use get_infrastructure_config() directly.
     """
-    Get Redis TTL for workflow event buffers (seconds).
+    cfg = get_infrastructure_config()
+    # Walk the pydantic model using getattr for typed access
+    keys = key_path.split(".")
+    value: Any = cfg
+    for key in keys:
+        if isinstance(value, dict):
+            if key in value:
+                value = value[key]
+            else:
+                return default
+        elif hasattr(value, key):
+            value = getattr(value, key)
+        else:
+            return default
+    return value
 
-    Args:
-        default: Default TTL if not configured (24 hours)
 
-    Returns:
-        TTL in seconds
+def get_config(
+    key: str, default: Any = None, config_path: Optional[Any] = None
+) -> Any:
+    """Get a top-level configuration value from config.yaml.
+
+    Kept for backward compatibility. New code should use get_infrastructure_config().
     """
-    return int(get_nested_config("redis.ttl.workflow_events", default))
+    return get_nested_config(key, default)
 
 
 # =============================================================================
@@ -702,24 +347,9 @@ def get_langsmith_tags(
     msg_type: str,
     locale: Optional[str] = None,
 ) -> List[str]:
-    """
-    Generate LangSmith tags for workflow tracing.
-
-    Tags are used for filtering and grouping traces in the LangSmith UI.
-    All tags should be known upfront at request time (no runtime-determined values).
-
-    Args:
-        msg_type: Workflow type (e.g. "ptc", "flash", "technical_analysis")
-        locale: Locale string (e.g., "zh-CN", "en-US")
-
-    Returns:
-        List of tags for LangSmith tracing
-
-    Example tags: ["workflow:chat", "locale:zh-CN"]
-    """
+    """Generate LangSmith tags for workflow tracing."""
     tags = []
 
-    # Workflow type tag
     workflow_map = {
         "technical_analysis": "workflow:technical_analysis",
         "fundamental_analysis": "workflow:fundamental_analysis",
@@ -727,7 +357,6 @@ def get_langsmith_tags(
     }
     tags.append(workflow_map.get(msg_type, "workflow:chat"))
 
-    # Locale tag
     if locale:
         tags.append(f"locale:{locale}")
 
@@ -748,48 +377,21 @@ def get_langsmith_metadata(
     is_byok: bool = False,
     platform: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Generate LangSmith metadata for workflow tracing.
-
-    Metadata provides detailed contextual information for traces.
-    Unlike tags, metadata can contain complex JSON-serializable values.
-
-    Args:
-        user_id: User identifier
-        workspace_id: Workspace identifier
-        thread_id: Thread identifier (LangGraph checkpoint ID)
-        workflow_type: Workflow type (e.g. "ptc_agent", "flash_agent")
-        locale: Locale string
-        timezone: Timezone string
-        llm_model: Resolved LLM model name
-        reasoning_effort: Reasoning effort level (e.g. "low", "medium", "high")
-        fast_mode: Whether fast/streaming mode is enabled
-        plan_mode: Whether plan mode is enabled
-        is_byok: Whether user is using their own API key
-        platform: Client platform (e.g. "web", "slack", "api")
-
-    Returns:
-        Dictionary of metadata for LangSmith tracing
-    """
+    """Generate LangSmith metadata for workflow tracing."""
     metadata = {}
 
-    # User and session info
     if user_id:
         metadata["user_id"] = user_id
     if workspace_id:
         metadata["workspace_id"] = workspace_id
     if thread_id:
         metadata["thread_id"] = thread_id
-
-    # Workflow configuration
     if workflow_type:
         metadata["workflow_type"] = workflow_type
     if locale:
         metadata["locale"] = locale
     if timezone:
         metadata["timezone"] = timezone
-
-    # Model configuration
     if llm_model:
         metadata["llm_model"] = llm_model
     if reasoning_effort:

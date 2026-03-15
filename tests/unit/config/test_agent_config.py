@@ -26,6 +26,7 @@ from ptc_agent.config.agent import (
     SkillsConfig,
     SubagentConfig,
     SubagentsConfig,
+    SummarizationConfig,
 )
 from ptc_agent.config.core import (
     CoreConfig,
@@ -303,3 +304,60 @@ class TestLLMDefinition:
         assert defn.model_id == "gpt-4o"
         assert defn.base_url is None
         assert defn.parameters == {}
+
+
+# ---------------------------------------------------------------------------
+# SummarizationConfig
+# ---------------------------------------------------------------------------
+
+
+class TestSummarizationConfig:
+    def test_defaults(self):
+        cfg = SummarizationConfig()
+        assert cfg.enabled is True
+        assert cfg.token_threshold == 120000
+        assert cfg.keep_messages == 5
+        assert cfg.truncate_args_trigger_messages is None
+        assert cfg.truncate_args_keep_messages == 20
+        assert cfg.truncate_args_max_length == 2000
+
+    def test_custom_values(self):
+        cfg = SummarizationConfig(
+            enabled=False,
+            token_threshold=80000,
+            keep_messages=3,
+            truncate_args_trigger_messages=15,
+        )
+        assert cfg.enabled is False
+        assert cfg.token_threshold == 80000
+        assert cfg.keep_messages == 3
+        assert cfg.truncate_args_trigger_messages == 15
+
+
+# ---------------------------------------------------------------------------
+# AgentConfig — summarization + search_api fields
+# ---------------------------------------------------------------------------
+
+
+class TestAgentConfigNewFields:
+    def test_default_summarization(self):
+        """AgentConfig should have SummarizationConfig with defaults."""
+        config = _minimal_config()
+        assert isinstance(config.summarization, SummarizationConfig)
+        assert config.summarization.enabled is True
+        assert config.summarization.token_threshold == 120000
+
+    def test_default_search_api(self):
+        """AgentConfig should have search_api defaulting to 'tavily'."""
+        config = _minimal_config()
+        assert config.search_api == "tavily"
+
+    def test_custom_summarization(self):
+        summarization = SummarizationConfig(enabled=False, token_threshold=50000)
+        config = _minimal_config(summarization=summarization)
+        assert config.summarization.enabled is False
+        assert config.summarization.token_threshold == 50000
+
+    def test_custom_search_api(self):
+        config = _minimal_config(search_api="serper")
+        assert config.search_api == "serper"

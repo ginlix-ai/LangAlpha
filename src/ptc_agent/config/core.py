@@ -55,16 +55,12 @@ class SecurityConfig(BaseModel):
     max_code_length: int = 10000
     max_file_size: int = 10485760  # 10MB
     enable_code_validation: bool = True
-    allowed_imports: list[str] = Field(default_factory=lambda: [
-        "os", "sys", "json", "yaml", "requests", "asyncio",
-        "pathlib", "datetime", "re", "collections", "itertools",
-        "math", "random", "time", "typing", "dataclasses",
-        "functools", "operator", "string", "textwrap",
-    ])
-    blocked_patterns: list[str] = Field(default_factory=lambda: [
-        "eval(", "exec(", "__import__", "subprocess.call",
-        "subprocess.Popen", "os.system", "os.popen",
-    ])
+    allowed_imports: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_ALLOWED_IMPORTS)
+    )
+    blocked_patterns: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_BLOCKED_PATTERNS)
+    )
 
 
 class MCPServerConfig(BaseModel):
@@ -117,6 +113,20 @@ class FilesystemConfig(BaseModel):
     enable_path_validation: bool = True
 
 
+def validate_daytona_api_key(daytona: DaytonaConfig) -> None:
+    """Validate that the Daytona API key is present.
+
+    Raises:
+        ValueError: If the API key is missing
+    """
+    if not daytona.api_key:
+        raise ValueError(
+            "Missing required credentials in .env file:\n"
+            "  - DAYTONA_API_KEY\n"
+            "Please add these credentials to your .env file."
+        )
+
+
 class CoreConfig(BaseModel):
     """Core infrastructure configuration.
 
@@ -140,26 +150,9 @@ class CoreConfig(BaseModel):
         Raises:
             ValueError: If required API keys are missing
         """
-        missing_keys = []
-
-        if not self.daytona.api_key:
-            missing_keys.append("DAYTONA_API_KEY")
-
-        if missing_keys:
-            raise ValueError(
-                f"Missing required credentials in .env file:\n"
-                f"  - {chr(10).join(missing_keys)}\n"
-                f"Please add these credentials to your .env file."
-            )
+        validate_daytona_api_key(self.daytona)
 
 
 def create_default_security_config() -> SecurityConfig:
     """Create SecurityConfig with sensible defaults for Daytona sandbox execution."""
-    return SecurityConfig(
-        max_execution_time=300,
-        max_code_length=10000,
-        max_file_size=10485760,
-        enable_code_validation=True,
-        allowed_imports=list(DEFAULT_ALLOWED_IMPORTS),
-        blocked_patterns=list(DEFAULT_BLOCKED_PATTERNS),
-    )
+    return SecurityConfig()

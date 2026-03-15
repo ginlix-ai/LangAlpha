@@ -253,12 +253,11 @@ async def list_models():
     No auth required — this is public configuration info.
     """
     from src.llms.llm import get_configured_llm_models, LLM
-    from src.config.settings import load_agent_config
+    from src.server.app import setup
 
     models = get_configured_llm_models()
     config = LLM.get_model_config()
-    agent_cfg = load_agent_config()
-    llm_cfg = agent_cfg.get("llm", {})
+    llm_cfg = setup.agent_config.llm if setup.agent_config else None
     return {
         "models": {
             provider: {
@@ -269,10 +268,10 @@ async def list_models():
         },
         "model_metadata": config.get_model_metadata(),
         "system_defaults": {
-            "default_model": llm_cfg.get("name", ""),
-            "flash_model": llm_cfg.get("flash", ""),
-            "summarization_model": llm_cfg.get("summarization", ""),
-            "fetch_model": llm_cfg.get("fetch", ""),
-            "fallback_models": llm_cfg.get("fallback") or [],
+            "default_model": llm_cfg.name if llm_cfg else "",
+            "flash_model": (llm_cfg.flash or "") if llm_cfg else "",
+            "summarization_model": (llm_cfg.summarization or "") if llm_cfg else "",
+            "fetch_model": (llm_cfg.fetch or "") if llm_cfg else "",
+            "fallback_models": (llm_cfg.fallback or []) if llm_cfg else [],
         },
     }

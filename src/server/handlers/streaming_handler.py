@@ -41,8 +41,8 @@ from src.config.settings import (
     is_sse_event_log_enabled,
 )
 
-WORKFLOW_TIMEOUT = get_workflow_timeout(default=900)  # seconds
-SSE_KEEPALIVE_INTERVAL = get_sse_keepalive_interval(default=15.0)  # seconds
+WORKFLOW_TIMEOUT = get_workflow_timeout()  # seconds
+SSE_KEEPALIVE_INTERVAL = get_sse_keepalive_interval()  # seconds
 SSE_EVENT_LOG_ENABLED = is_sse_event_log_enabled()
 
 MERGED_STREAM_CHUNK_MAX_BYTES_DEFAULT = 16 * 1024
@@ -546,8 +546,12 @@ class WorkflowStreamHandler:
                                     cw_data[key] = event_data[key]
                             # Inject threshold for token_usage action
                             if event_data.get("action") == "token_usage":
-                                from src.config.settings import get_summarization_token_threshold
-                                cw_data["threshold"] = get_summarization_token_threshold()
+                                from src.server.app import setup
+                                cw_data["threshold"] = (
+                                    setup.agent_config.summarization.token_threshold
+                                    if setup.agent_config
+                                    else 120000
+                                )
 
                             action = event_data.get("action", "")
                             signal = event_data.get("signal", "")

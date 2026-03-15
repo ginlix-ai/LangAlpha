@@ -3,9 +3,8 @@ Tests for GET /api/v1/models — public model listing endpoint.
 
 Covers:
 - Response shape: models, model_metadata, system_defaults
-- System defaults populated from agent_config.yaml
+- System defaults populated from agent_config's LLMConfig
 - Multiple providers in response
-- Model metadata propagation
 - No auth required
 """
 
@@ -15,9 +14,25 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from ptc_agent.config.agent import AgentConfig, LLMConfig
+from ptc_agent.config.core import DaytonaConfig, FilesystemConfig, LoggingConfig, MCPConfig, SecurityConfig
 from tests.conftest import create_test_app
 
 DB = "src.server.app.api_keys"
+
+
+def _mock_agent_config(**llm_overrides) -> AgentConfig:
+    """Create a minimal AgentConfig with given LLM overrides."""
+    llm_defaults = {"name": "test-model"}
+    llm_defaults.update(llm_overrides)
+    return AgentConfig(
+        llm=LLMConfig(**llm_defaults),
+        security=SecurityConfig(),
+        logging=LoggingConfig(),
+        daytona=DaytonaConfig(api_key="test"),
+        mcp=MCPConfig(),
+        filesystem=FilesystemConfig(),
+    )
 
 
 @pytest_asyncio.fixture
@@ -56,13 +71,11 @@ class TestListModelsResponse:
         mock_llm_cls = MagicMock()
         mock_llm_cls.get_model_config.return_value = mock_mc
 
+        agent_cfg = _mock_agent_config(name="gpt-4o", flash="gpt-4o-mini")
         with (
             patch("src.llms.llm.get_configured_llm_models", return_value=mock_models),
             patch("src.llms.llm.LLM", mock_llm_cls),
-            patch(
-                "src.config.settings.load_agent_config",
-                return_value={"llm": {"name": "gpt-4o", "flash": "gpt-4o-mini"}},
-            ),
+            patch("src.server.app.setup.agent_config", agent_cfg),
         ):
             resp = await client.get("/api/v1/models")
 
@@ -74,7 +87,7 @@ class TestListModelsResponse:
 
     @pytest.mark.asyncio
     async def test_system_defaults_populated(self, client):
-        """System defaults should come from agent_config.yaml LLM section."""
+        """System defaults should come from AgentConfig LLMConfig."""
         mock_models = {}
         mock_mc = MagicMock()
         mock_mc.get_display_name.side_effect = lambda p: p
@@ -83,20 +96,17 @@ class TestListModelsResponse:
         mock_llm_cls = MagicMock()
         mock_llm_cls.get_model_config.return_value = mock_mc
 
-        llm_config = {
-            "name": "claude-sonnet-4-5",
-            "flash": "claude-haiku-4-5",
-            "summarization": "claude-haiku-4-5",
-            "fetch": "claude-haiku-4-5",
-            "fallback": ["gpt-4o"],
-        }
+        agent_cfg = _mock_agent_config(
+            name="claude-sonnet-4-5",
+            flash="claude-haiku-4-5",
+            summarization="claude-haiku-4-5",
+            fetch="claude-haiku-4-5",
+            fallback=["gpt-4o"],
+        )
         with (
             patch("src.llms.llm.get_configured_llm_models", return_value=mock_models),
             patch("src.llms.llm.LLM", mock_llm_cls),
-            patch(
-                "src.config.settings.load_agent_config",
-                return_value={"llm": llm_config},
-            ),
+            patch("src.server.app.setup.agent_config", agent_cfg),
         ):
             resp = await client.get("/api/v1/models")
 
@@ -107,33 +117,6 @@ class TestListModelsResponse:
         assert defaults["summarization_model"] == "claude-haiku-4-5"
         assert defaults["fetch_model"] == "claude-haiku-4-5"
         assert defaults["fallback_models"] == ["gpt-4o"]
-
-    @pytest.mark.asyncio
-    async def test_system_defaults_string_llm_bug(self, client):
-        """BUG: When LLM config is a string, the endpoint crashes.
-
-        The /api/v1/models endpoint calls llm_cfg.get("name") which fails
-        when llm_cfg is a string instead of a dict. This documents the
-        existing bug for regression tracking.
-        """
-        mock_models = {}
-        mock_mc = MagicMock()
-        mock_mc.get_display_name.side_effect = lambda p: p
-        mock_mc.get_model_metadata.return_value = {}
-
-        mock_llm_cls = MagicMock()
-        mock_llm_cls.get_model_config.return_value = mock_mc
-
-        with (
-            patch("src.llms.llm.get_configured_llm_models", return_value=mock_models),
-            patch("src.llms.llm.LLM", mock_llm_cls),
-            patch(
-                "src.config.settings.load_agent_config",
-                return_value={"llm": "gpt-4o"},
-            ),
-            pytest.raises(AttributeError, match="'str' object has no attribute 'get'"),
-        ):
-            await client.get("/api/v1/models")
 
     @pytest.mark.asyncio
     async def test_multiple_providers(self, client):
@@ -153,13 +136,11 @@ class TestListModelsResponse:
         mock_llm_cls = MagicMock()
         mock_llm_cls.get_model_config.return_value = mock_mc
 
+        agent_cfg = _mock_agent_config(name="gpt-4o")
         with (
             patch("src.llms.llm.get_configured_llm_models", return_value=mock_models),
             patch("src.llms.llm.LLM", mock_llm_cls),
-            patch(
-                "src.config.settings.load_agent_config",
-                return_value={"llm": {"name": "gpt-4o"}},
-            ),
+            patch("src.server.app.setup.agent_config", agent_cfg),
         ):
             resp = await client.get("/api/v1/models")
 
@@ -180,13 +161,11 @@ class TestListModelsResponse:
         mock_llm_cls = MagicMock()
         mock_llm_cls.get_model_config.return_value = mock_mc
 
+        agent_cfg = _mock_agent_config(name="test")
         with (
             patch("src.llms.llm.get_configured_llm_models", return_value=mock_models),
             patch("src.llms.llm.LLM", mock_llm_cls),
-            patch(
-                "src.config.settings.load_agent_config",
-                return_value={"llm": {"name": "test"}},
-            ),
+            patch("src.server.app.setup.agent_config", agent_cfg),
         ):
             resp = await client.get("/api/v1/models")
 

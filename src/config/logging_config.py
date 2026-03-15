@@ -13,7 +13,6 @@ Usage:
 """
 
 import logging
-from typing import Optional
 
 from src.config.settings import (
     get_log_level,
