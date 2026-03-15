@@ -371,13 +371,53 @@ function handleContextWindowEvent(event: SSEEvent, { getMsgId, nextOrder, setMes
   }
 }
 
+/**
+ * Marks incomplete todos as 'stale' in todoListProcesses of assistant messages.
+ * Used when the agent stream ends without completing all todos.
+ * @param messages - Current messages array
+ * @param targetMessageId - If provided, only finalize the specific message; otherwise finalize all
+ */
+export function finalizeTodoListProcessesInMessages(
+  messages: MessageRecord[],
+  targetMessageId?: string
+): MessageRecord[] {
+  let anyChanged = false;
+  const updated = messages.map((m) => {
+    if (m.role !== 'assistant') return m;
+    if (targetMessageId && m.id !== targetMessageId) return m;
+    const am = m as AssistantMessage;
+    if (!am.todoListProcesses || Object.keys(am.todoListProcesses).length === 0) return m;
+    const entries = Object.entries(am.todoListProcesses);
+    const lastEntry = entries.reduce((a, b) => ((a[1].order || 0) >= (b[1].order || 0) ? a : b));
+    const [lastKey, lastVal] = lastEntry;
+    const hasIncomplete = lastVal.todos?.some(
+      (todo: Record<string, unknown>) => todo.status !== 'completed' && todo.status !== 'stale'
+    );
+    if (!hasIncomplete) return m;
+    anyChanged = true;
+    const finalizedTodos = lastVal.todos.map((todo: Record<string, unknown>) =>
+      todo.status === 'completed' || todo.status === 'stale'
+        ? todo
+        : { ...todo, status: 'stale' as const }
+    );
+    return {
+      ...am,
+      todoListProcesses: {
+        ...am.todoListProcesses,
+        [lastKey]: { ...lastVal, todos: finalizedTodos, in_progress: 0, pending: 0 },
+      },
+    };
+  });
+  return anyChanged ? updated : messages;
+}
+
 export function useChatMessages(
   workspaceId: string,
   initialThreadId: string | null = null,
   updateTodoListCard: ((todoData: Record<string, unknown>, isNew?: boolean) => void) | null = null,
   updateSubagentCard: ((agentId: string, data: Record<string, unknown>) => void) | null = null,
   inactivateAllSubagents: (() => void) | null = null,
-  completePendingTodos: (() => void) | null = null,
+  finalizePendingTodos: (() => void) | null = null,
   onOnboardingRelatedToolComplete: (() => void) | null = null,
   onFileArtifact: ((event: SSEEvent) => void) | null = null,
   agentMode: string = 'ptc',
@@ -1984,6 +2024,10 @@ export function useChatMessages(
         // (Skipped when reconnecting because per-task SSE streams
         //  will deliver live events with the real status.)
         markAllSubagentTasksCompleted();
+        // Finalize any incomplete todos as stale (they weren't completed by the agent)
+        if (finalizePendingTodos) finalizePendingTodos();
+        // Also patch inline todoListProcesses in messages
+        setMessages((prev) => finalizeTodoListProcessesInMessages(prev));
       }
     };
 
@@ -2124,37 +2168,9 @@ export function useChatMessages(
     }
     setHasActiveSubagents(hasOpenStreams);
 
-    // Auto-complete pending todos
-    if (completePendingTodos) completePendingTodos();
-    setMessages((prev) => {
-      const msg = prev.find((m) => m.id === assistantMessageId);
-      if (!msg || msg.role !== 'assistant') return prev;
-      const aMsg = msg as AssistantMessage;
-      if (!aMsg.todoListProcesses || Object.keys(aMsg.todoListProcesses).length === 0) return prev;
-      const entries = Object.entries(aMsg.todoListProcesses);
-      const lastEntry = entries.reduce((a, b) => ((a[1].order || 0) >= (b[1].order || 0) ? a : b));
-      const [lastKey, lastVal] = lastEntry;
-      const hasIncomplete = lastVal.todos?.some((todo) => todo.status !== 'completed');
-      if (!hasIncomplete) return prev;
-      const completedTodos = lastVal.todos.map((todo) => ({ ...todo, status: 'completed' as const }));
-      return prev.map((m) => {
-        if (m.id !== assistantMessageId || m.role !== 'assistant') return m;
-        const am = m as AssistantMessage;
-        return {
-          ...am,
-          todoListProcesses: {
-            ...am.todoListProcesses,
-            [lastKey]: {
-              ...lastVal,
-              todos: completedTodos,
-              completed: lastVal.total || completedTodos.length,
-              in_progress: 0,
-              pending: 0,
-            },
-          },
-        };
-      });
-    });
+    // Finalize pending todos as stale
+    if (finalizePendingTodos) finalizePendingTodos();
+    setMessages((prev) => finalizeTodoListProcessesInMessages(prev, assistantMessageId));
   };
 
   /**
@@ -3268,7 +3284,7 @@ export function useChatMessages(
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, threadId, updateTodoListCard, updateSubagentCard, inactivateAllSubagents, completePendingTodos]);
+  }, [workspaceId, threadId, updateTodoListCard, updateSubagentCard, inactivateAllSubagents, finalizePendingTodos]);
 
   const handleApproveInterrupt = useCallback(() => {
     if (!pendingInterrupt) return;

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ListTodo, CheckCircle2, Circle, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
+import { ListTodo, CheckCircle2, Circle, CircleMinus, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
 
-type TodoStatus = 'completed' | 'in_progress' | 'pending';
+type TodoStatus = 'completed' | 'in_progress' | 'pending' | 'stale';
 
 interface TodoItem {
   activeForm?: string;
@@ -35,14 +35,16 @@ function TodoListMessageContent({ todos, total, completed, in_progress, pending 
   const [isExpanded, setIsExpanded] = useState(false);
   const wasAllCompleted = useRef(false);
 
-  // Auto-collapse when all todos become completed
+  const staleCount = todos?.filter(t => t.status === 'stale').length || 0;
+
+  // Auto-collapse when all todos are done (completed or stale)
   useEffect(() => {
-    const allCompleted = total > 0 && completed === total;
-    if (allCompleted && !wasAllCompleted.current) {
+    const allDone = total > 0 && (completed + staleCount) === total;
+    if (allDone && !wasAllCompleted.current) {
       setIsExpanded(false);
     }
-    wasAllCompleted.current = allCompleted;
-  }, [completed, total]);
+    wasAllCompleted.current = allDone;
+  }, [completed, total, staleCount]);
 
   // Don't render if there are no todos
   if (!todos || todos.length === 0) {
@@ -63,6 +65,8 @@ function TodoListMessageContent({ todos, total, completed, in_progress, pending 
         return <CheckCircle2 className="h-4 w-4" style={{ color: 'var(--color-profit)' }} />;
       case 'in_progress':
         return <Loader2 className="h-4 w-4 animate-spin" style={{ color: 'var(--color-accent-primary)' }} />;
+      case 'stale':
+        return <CircleMinus className="h-4 w-4" style={{ color: 'var(--color-text-tertiary)' }} />;
       case 'pending':
       default:
         return <Circle className="h-4 w-4" style={{ color: 'var(--color-text-tertiary)' }} />;
@@ -78,6 +82,8 @@ function TodoListMessageContent({ todos, total, completed, in_progress, pending 
         return 'Completed';
       case 'in_progress':
         return 'In Progress';
+      case 'stale':
+        return 'Stale';
       case 'pending':
         return 'Pending';
       default:
@@ -94,6 +100,7 @@ function TodoListMessageContent({ todos, total, completed, in_progress, pending 
         return 'var(--color-profit-soft)';
       case 'in_progress':
         return 'var(--color-accent-soft)';
+      case 'stale':
       case 'pending':
         return 'var(--color-border-muted)';
       default:
@@ -123,7 +130,7 @@ function TodoListMessageContent({ todos, total, completed, in_progress, pending 
 
         {/* Status summary */}
         <span className="text-xs ml-auto" style={{ color: 'var(--color-text-tertiary)' }}>
-          {completed}/{total} completed
+          {completed + staleCount}/{total} done
         </span>
 
         {/* Expand/collapse icon */}
@@ -159,6 +166,11 @@ function TodoListMessageContent({ todos, total, completed, in_progress, pending 
             <div className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
               <span className="font-semibold">Pending:</span> {pending}
             </div>
+            {staleCount > 0 && (
+              <div className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+                <span className="font-semibold">Stale:</span> {staleCount}
+              </div>
+            )}
           </div>
 
           {/* Todo items list */}

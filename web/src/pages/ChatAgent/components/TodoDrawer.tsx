@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ChevronDown, ChevronUp, Circle, Loader2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, Circle, CircleMinus, Loader2 } from 'lucide-react';
 
 interface TodoItem {
-  status: 'pending' | 'in_progress' | 'completed';
+  status: 'pending' | 'in_progress' | 'completed' | 'stale';
   activeForm?: string;
   content?: string;
   [key: string]: unknown;
@@ -40,14 +40,23 @@ function TodoDrawer({ todoData, defaultCollapsed = false }: TodoDrawerProps) {
   const _in_progress = todoData?.in_progress || 0;
   const _pending = todoData?.pending || 0;
 
-  // Auto-collapse when all todos become completed
+  const staleCount = todos?.filter(t => t.status === 'stale').length || 0;
+
+  // Auto-collapse when all todos are done (completed or stale)
   useEffect(() => {
-    const allCompleted = total > 0 && completed === total;
-    if (allCompleted && !wasAllCompleted.current) {
+    const allDone = total > 0 && (completed + staleCount) === total;
+    if (allDone && !wasAllCompleted.current) {
       setIsExpanded(false);
     }
-    wasAllCompleted.current = allCompleted;
-  }, [completed, total]);
+    wasAllCompleted.current = allDone;
+  }, [completed, total, staleCount]);
+
+  // Sync collapse state when defaultCollapsed changes (e.g., history loads async after mount)
+  useEffect(() => {
+    if (defaultCollapsed) {
+      setIsExpanded(false);
+    }
+  }, [defaultCollapsed]);
 
   // Don't render if no todo data
   if (!todoData || !todos || todos.length === 0) {
@@ -81,6 +90,8 @@ function TodoDrawer({ todoData, defaultCollapsed = false }: TodoDrawerProps) {
         );
       case 'in_progress':
         return <Loader2 className="w-4 h-4 animate-spin" style={{ color: 'currentColor' }} />;
+      case 'stale':
+        return <CircleMinus className="w-4 h-4" style={{ color: 'currentColor' }} />;
       case 'pending':
       default:
         return <Circle className="w-4 h-4" style={{ color: 'currentColor' }} />;
@@ -117,7 +128,7 @@ function TodoDrawer({ todoData, defaultCollapsed = false }: TodoDrawerProps) {
             />
           </svg>
           <span className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
-            Task Progress {completed}/{total}
+            Task Progress {completed + staleCount}/{total}
           </span>
         </div>
 
@@ -163,7 +174,7 @@ function TodoDrawer({ todoData, defaultCollapsed = false }: TodoDrawerProps) {
                   <div
                     className="text-sm"
                     style={{
-                      color: todo.status === 'completed' ? 'var(--color-text-secondary)' : 'var(--color-text-primary)',
+                      color: todo.status === 'completed' || todo.status === 'stale' ? 'var(--color-text-secondary)' : 'var(--color-text-primary)',
                     }}
                   >
                     {todo.activeForm || todo.content || `Task ${index + 1}`}

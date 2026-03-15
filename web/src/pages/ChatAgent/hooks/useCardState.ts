@@ -3,7 +3,7 @@ import { useState } from 'react';
 // --- Card-level types ---
 
 interface TodoItem {
-  status: 'pending' | 'in_progress' | 'completed';
+  status: 'pending' | 'in_progress' | 'completed' | 'stale';
   [key: string]: unknown;
 }
 
@@ -56,7 +56,7 @@ export interface UseCardStateResult {
   updateTodoListCard: (todoData: TodoData) => void;
   updateSubagentCard: (agentId: string, subagentDataUpdate: SubagentData) => void;
   inactivateAllSubagents: () => void;
-  completePendingTodos: () => void;
+  finalizePendingTodos: () => void;
   clearSubagentCards: () => void;
 }
 
@@ -314,18 +314,21 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
     });
   };
 
-  const completePendingTodos = () => {
+  const finalizePendingTodos = () => {
     setCards((prev) => {
       const card = prev['todo-list-card'];
       if (!card?.todoData?.todos) return prev;
 
-      const hasIncomplete = card.todoData.todos.some((t) => t.status !== 'completed');
+      const hasIncomplete = card.todoData.todos.some(
+        (t) => t.status !== 'completed' && t.status !== 'stale'
+      );
       if (!hasIncomplete) return prev;
 
-      const completedTodos = card.todoData.todos.map((t) => ({
-        ...t,
-        status: 'completed' as const,
-      }));
+      const finalizedTodos = card.todoData.todos.map((t) =>
+        t.status === 'completed' || t.status === 'stale'
+          ? t
+          : { ...t, status: 'stale' as const }
+      );
 
       return {
         ...prev,
@@ -333,8 +336,7 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
           ...card,
           todoData: {
             ...card.todoData,
-            todos: completedTodos,
-            completed: card.todoData.total || completedTodos.length,
+            todos: finalizedTodos,
             in_progress: 0,
             pending: 0,
           },
@@ -360,7 +362,7 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
     updateTodoListCard,
     updateSubagentCard,
     inactivateAllSubagents,
-    completePendingTodos,
+    finalizePendingTodos,
     clearSubagentCards,
   };
 }

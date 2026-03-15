@@ -429,7 +429,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     updateTodoListCard,
     updateSubagentCard,
     inactivateAllSubagents,
-    completePendingTodos,
+    finalizePendingTodos,
     clearSubagentCards,
   } = useCardState();
 
@@ -522,7 +522,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     getFeedbackForMessage,
     getSubagentHistory,
     resolveSubagentIdToAgentId,
-  } = useChatMessages(workspaceId, threadId, updateTodoListCard as (todoData: Record<string, unknown>) => void, updateSubagentCard, inactivateAllSubagents, completePendingTodos, handleOnboardingRelatedToolComplete, refreshFiles, agentMode, clearSubagentCards, handleWorkspaceCreated);
+  } = useChatMessages(workspaceId, threadId, updateTodoListCard as (todoData: Record<string, unknown>) => void, updateSubagentCard, inactivateAllSubagents, finalizePendingTodos, handleOnboardingRelatedToolComplete, refreshFiles, agentMode, clearSubagentCards, handleWorkspaceCreated);
 
   const chatPlaceholder = useMemo(() => {
     if (pendingRejection) return t('chat.placeholderPendingRejection');
