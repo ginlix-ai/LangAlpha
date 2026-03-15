@@ -40,13 +40,27 @@ export function utcMsToChartSec(utcMs: number | null | undefined): number {
 
 export const safeLocalStorage = {
   getItem: (key: string): string | null => {
-    try { return localStorage.getItem(key); } catch { return null; }
+    try {
+      return localStorage.getItem(key);
+    } catch (e) {
+      if (import.meta.env.DEV) console.warn('safeLocalStorage.getItem failed:', e);
+      return null;
+    }
   },
   setItem: (key: string, value: string): void => {
-    try { localStorage.setItem(key, value); } catch { /* ignore */ }
+    try {
+      localStorage.setItem(key, value);
+    } catch (e) {
+      if (import.meta.env.DEV) console.warn('safeLocalStorage.setItem failed:', e);
+    }
   },
   removeItem: (key: string): void => {
-    try { localStorage.removeItem(key); } catch { /* ignore */ }
+    try {
+      localStorage.removeItem(key);
+    } catch (e) {
+      if (import.meta.env.DEV) console.warn('safeLocalStorage.removeItem failed:', e);
+    }
   },
 };
+
 

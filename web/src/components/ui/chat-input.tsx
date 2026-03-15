@@ -414,7 +414,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
 
       recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
         if (recognitionRef.current !== recognition) return;
-        if (event.error !== 'no-speech') {
+        if (event.error !== 'no-speech' && event.error !== 'aborted') {
           console.error('Speech recognition error:', event.error);
           if (event.error === 'not-allowed') {
             toast({
