@@ -225,7 +225,7 @@ function areModelsCompatible(modelA: string | null, modelB: string | null, metad
  * @param {string}    prefillMessage
  * @param {Function}  onClearPrefill
  */
-const speechSupported = !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+const speechSupported = typeof window !== 'undefined' && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
 
 const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput({
   onSend,
@@ -317,8 +317,12 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   const [isListening, setIsListening] = useState(false);
   const [speechLang, setSpeechLang] = useState<string>(() => {
     // Priority: Persisted > App Locale > fallback en-US
-    const persisted = localStorage.getItem('chat_input_speech_lang');
-    if (persisted) return persisted;
+    // Only use persisted if the user has explicitly overridden the default
+    const isManual = localStorage.getItem('chat_input_speech_lang_manual') === 'true';
+    if (isManual) {
+      const persisted = localStorage.getItem('chat_input_speech_lang');
+      if (persisted) return persisted;
+    }
     return i18n.language.startsWith('zh') ? 'zh-CN' : 'en-US';
   });
   const recognitionRef = useRef<SpeechRecognition | null>(null);
@@ -332,8 +336,8 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
 
   // Sync speechLang with app locale change - only if not explicitly set by user
   useEffect(() => {
-    const persisted = localStorage.getItem('chat_input_speech_lang');
-    if (!persisted) {
+    const isManual = localStorage.getItem('chat_input_speech_lang_manual') === 'true';
+    if (!isManual) {
       setSpeechLang(i18n.language.startsWith('zh') ? 'zh-CN' : 'en-US');
     }
   }, [i18n.language]);
@@ -365,14 +369,14 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       return;
     }
 
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
+    const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognitionAPI) {
       console.warn("Speech recognition is not supported in this browser.");
       return;
     }
 
     try {
-      const recognition = new SpeechRecognition();
+      const recognition = new SpeechRecognitionAPI();
       recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = speechLang;
@@ -1477,6 +1481,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
+                      localStorage.setItem('chat_input_speech_lang_manual', 'true');
                       setSpeechLang((prev) => (prev === 'en-US' ? 'zh-CN' : 'en-US'));
                     }}
                     disabled={isListening}
