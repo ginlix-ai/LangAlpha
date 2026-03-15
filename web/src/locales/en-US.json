@@ -327,6 +327,14 @@
       "fastModeDesc": "Priority routing for faster responses",
       "fastModeHelpLine1": "Equivalent to /fast in Codex",
       "fastModeHelpLine2": "2× credit usage, priority service tier"
+    },
+    "voice": {
+      "start": "Start voice input",
+      "stop": "Stop voice input",
+      "cannotChangeLang": "Cannot change language while recording",
+      "toggleLang": "Toggle voice input language",
+      "permissionDenied": "Microphone permission denied",
+      "serviceError": "Speech recognition service error"
     }
   },
   "context": {

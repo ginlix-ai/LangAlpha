@@ -437,3 +437,28 @@
 @media (max-width: 767px) {
   .workspace-dropdown { width: calc(100vw - 32px); max-width: 280px; }
 }
+
+/* ====== Voice Input (Mic) ====== */
+
+.mic-button {
+  transition: all 0.2s ease;
+}
+
+.mic-button.recording {
+  background-color: var(--color-btn-danger) !important;
+  color: white !important;
+  animation: mic-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+  }
+}
+
