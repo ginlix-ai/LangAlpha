@@ -20,12 +20,13 @@ POSTGRES_IMAGE="postgres:18"
 POSTGRES_PORT="${DB_PORT:-5432}"
 POSTGRES_USER="${DB_USER:-postgres}"
 POSTGRES_PASSWORD="${DB_PASSWORD:-postgres}"
-POSTGRES_DB="${DB_NAME:-postgres}"
+POSTGRES_DB="${DB_NAME:-langalpha}"
 POSTGRES_VOLUME="langalpha-postgresql-data"
 
 REDIS_CONTAINER="langalpha-redis"
 REDIS_IMAGE="redis:7-alpine"
 REDIS_PORT="${REDIS_PORT:-6379}"
+REDIS_PASSWORD="${REDIS_PASSWORD:-redis}"
 REDIS_VOLUME="langalpha-redis-data"
 
 # Colors for output
@@ -104,7 +105,8 @@ start_or_create_redis() {
                 --name "$REDIS_CONTAINER" \
                 -p "$REDIS_PORT:6379" \
                 -v "$REDIS_VOLUME:/data" \
-                "$REDIS_IMAGE"
+                "$REDIS_IMAGE" \
+                redis-server --requirepass "$REDIS_PASSWORD"
             ;;
     esac
 }
@@ -137,7 +139,7 @@ wait_for_redis() {
     local attempt=1
 
     while [ $attempt -le $max_attempts ]; do
-        if docker exec "$REDIS_CONTAINER" redis-cli ping 2>/dev/null | grep -q "PONG"; then
+        if docker exec "$REDIS_CONTAINER" redis-cli -a "$REDIS_PASSWORD" ping 2>/dev/null | grep -q "PONG"; then
             log_info "Redis is ready"
             return 0
         fi
@@ -165,33 +167,9 @@ ensure_database() {
 
 # Setup database tables
 setup_tables() {
-    log_info "Setting up database tables..."
-
-    # Run checkpoint tables setup
-    if [ -f "$SCRIPT_DIR/setup_checkpoint_tables.py" ]; then
-        log_info "Running setup_checkpoint_tables.py..."
-        uv run python "$SCRIPT_DIR/setup_checkpoint_tables.py"
-    else
-        log_warn "setup_checkpoint_tables.py not found, skipping..."
-    fi
-
-    # Run unified table setup (all application tables)
-    if [ -f "$SCRIPT_DIR/setup_tables.py" ]; then
-        log_info "Running setup_tables.py..."
-        uv run python "$SCRIPT_DIR/setup_tables.py"
-    else
-        log_warn "setup_tables.py not found, skipping..."
-    fi
-
-    # Run store table setup (LangGraph Store for cross-turn metadata)
-    if [ -f "$SCRIPT_DIR/setup_store_table.py" ]; then
-        log_info "Running setup_store_table.py..."
-        uv run python "$SCRIPT_DIR/setup_store_table.py"
-    else
-        log_warn "setup_store_table.py not found, skipping..."
-    fi
-
-    log_info "Database tables setup complete"
+    log_info "Running database migrations..."
+    uv run alembic upgrade head
+    log_info "Database setup complete"
 }
 
 # Main execution
@@ -221,7 +199,7 @@ main() {
     log_info "All services are running!"
     echo ""
     echo "PostgreSQL: localhost:$POSTGRES_PORT (user: $POSTGRES_USER, password: $POSTGRES_PASSWORD, database: $POSTGRES_DB)"
-    echo "Redis:      localhost:$REDIS_PORT (redis://localhost:$REDIS_PORT/0)"
+    echo "Redis:      localhost:$REDIS_PORT (redis://:$REDIS_PASSWORD@localhost:$REDIS_PORT/0)"
 }
 
 main

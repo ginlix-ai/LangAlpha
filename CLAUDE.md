@@ -31,8 +31,15 @@ cd web && pnpm vitest run path/to/test.js  # single file
 cd web && pnpm vitest                      # watch mode
 
 # Database setup
-make setup-db     # start postgres via docker
-make migrate      # run migrations + setup tables
+make setup-db     # start postgres + redis via docker, run all migrations
+make migrate      # run migrations only
+
+# Create a new database migration
+uv run alembic revision -m "description of change"
+
+# Check migration status
+uv run alembic current
+uv run alembic history
 
 # Install dependencies
 uv sync --group dev --extra test           # backend
@@ -111,7 +118,7 @@ SSE events are buffered in Redis for reconnection and persisted to `conversation
 
 ### Database
 
-No ORM — raw `psycopg3` async queries with `psycopg_pool.AsyncConnectionPool`. Schema defined in `scripts/setup_tables.py`. Two separate postgres connection pools: one for app data, one for LangGraph checkpointer state.
+No ORM — raw `psycopg3` async queries with `psycopg_pool.AsyncConnectionPool`. Schema managed by Alembic migrations (`migrations/versions/`). Two separate postgres connection pools: one for app data, one for LangGraph checkpointer state.
 
 Key hierarchy: **User → Workspace (1:1 Daytona sandbox) → Thread → Turns (query + response + usage)**
 
@@ -128,6 +135,6 @@ Jinja2 templates in `src/ptc_agent/agent/prompts/templates/`, config in `prompts
 - **Python**: Ruff for linting (only `E741` ignored globally). Python 3.12+. Async-first (`async def` for all handlers/services).
 - **Frontend**: ESLint 9 flat config. Tests co-located in `__tests__/` subdirectories using Vitest + Testing Library.
 - **Package managers**: `uv` for Python, `pnpm` for frontend.
-- **No SQLAlchemy** — all DB access is raw SQL via psycopg3.
+- **No SQLAlchemy ORM** — all DB access is raw SQL via psycopg3. Alembic is used for migrations only (raw SQL via `op.execute()`).
 - **Two config layers**: `.env` for credentials/URLs, YAML files for behavioral settings.
 - **Middleware-driven architecture**: agent behavior is composed via middleware, not graph nodes.
