@@ -1,5 +1,8 @@
 """Backend implementations for deepagent middleware."""
 
-from .daytona import DaytonaBackend
+from .sandbox import SandboxBackend
 
-__all__ = ["DaytonaBackend"]
+# Backward-compat alias
+DaytonaBackend = SandboxBackend
+
+__all__ = ["DaytonaBackend", "SandboxBackend"]

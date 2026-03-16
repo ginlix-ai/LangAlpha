@@ -1,4 +1,4 @@
-"""Daytona backend for deepagents FilesystemMiddleware.
+"""Sandbox backend for deepagents FilesystemMiddleware.
 
 This backend bridges deepagents' BackendProtocol and SandboxBackendProtocol to `PTCSandbox`.
 
@@ -29,31 +29,32 @@ logger = structlog.get_logger(__name__)
 OperationCallback = Callable[[dict[str, Any]], None]
 
 
-class DaytonaBackend:
+class SandboxBackend:
     """deepagents backend implementation backed by `PTCSandbox`."""
 
     def __init__(
         self,
         sandbox: PTCSandbox,
-        root_dir: str = "/home/daytona",
+        root_dir: str | None = None,
         *,
         virtual_mode: bool = True,
         operation_callback: OperationCallback | None = None,
     ) -> None:
-        """Create a new DaytonaBackend.
+        """Create a new SandboxBackend.
 
         Args:
             sandbox: Initialized `PTCSandbox` instance.
             root_dir: Root directory used when resolving virtual paths.
+                      Defaults to ``sandbox.config.filesystem.working_directory``.
             virtual_mode: If True, treat non-absolute paths as relative to `root_dir`.
             operation_callback: Optional callback invoked on file operations (write, edit).
                                 Receives a dict with operation details for persistence/logging.
         """
         self.sandbox = sandbox
-        self.root_dir = root_dir.rstrip("/")
+        self.root_dir = (root_dir or sandbox.config.filesystem.working_directory).rstrip("/")
         self.virtual_mode = virtual_mode
         self.operation_callback = operation_callback
-        logger.info("Initialized DaytonaBackend", root_dir=self.root_dir, virtual_mode=self.virtual_mode)
+        logger.info("Initialized SandboxBackend", root_dir=self.root_dir, virtual_mode=self.virtual_mode)
 
     @property
     def id(self) -> str:
@@ -70,8 +71,8 @@ class DaytonaBackend:
 
         path = path.strip()
 
-        # Already absolute in sandbox
-        if path.startswith(("/home/daytona", "/tmp")):
+        # Already absolute in sandbox (working directory or /tmp)
+        if path.startswith((self.root_dir, "/tmp")):
             return path
 
         if path.startswith("/"):
@@ -114,7 +115,7 @@ class DaytonaBackend:
         Raises:
             RuntimeError: Always, because this backend is async-native.
         """
-        raise RuntimeError("DaytonaBackend is async-native; use als_info()")
+        raise RuntimeError("SandboxBackend is async-native; use als_info()")
 
     def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> str:  # pragma: no cover
         """Read a file (sync).
@@ -122,7 +123,7 @@ class DaytonaBackend:
         Raises:
             RuntimeError: Always, because this backend is async-native.
         """
-        raise RuntimeError("DaytonaBackend is async-native; use aread()")
+        raise RuntimeError("SandboxBackend is async-native; use aread()")
 
     def write(self, file_path: str, content: str) -> WriteResult:  # pragma: no cover
         """Write a file (sync).
@@ -130,7 +131,7 @@ class DaytonaBackend:
         Raises:
             RuntimeError: Always, because this backend is async-native.
         """
-        raise RuntimeError("DaytonaBackend is async-native; use awrite()")
+        raise RuntimeError("SandboxBackend is async-native; use awrite()")
 
     def edit(self, file_path: str, old_string: str, new_string: str, *, replace_all: bool = False) -> EditResult:  # pragma: no cover
         """Edit a file (sync).
@@ -138,7 +139,7 @@ class DaytonaBackend:
         Raises:
             RuntimeError: Always, because this backend is async-native.
         """
-        raise RuntimeError("DaytonaBackend is async-native; use aedit()")
+        raise RuntimeError("SandboxBackend is async-native; use aedit()")
 
     def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None) -> list[dict] | str:  # pragma: no cover
         """Search for pattern matches (sync).
@@ -146,7 +147,7 @@ class DaytonaBackend:
         Raises:
             RuntimeError: Always, because this backend is async-native.
         """
-        raise RuntimeError("DaytonaBackend is async-native; use agrep_raw()")
+        raise RuntimeError("SandboxBackend is async-native; use agrep_raw()")
 
     def glob_info(self, pattern: str, path: str = "/") -> list[dict]:  # pragma: no cover
         """Return glob matches (sync).
@@ -154,7 +155,7 @@ class DaytonaBackend:
         Raises:
             RuntimeError: Always, because this backend is async-native.
         """
-        raise RuntimeError("DaytonaBackend is async-native; use aglob_info()")
+        raise RuntimeError("SandboxBackend is async-native; use aglob_info()")
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:  # pragma: no cover
         """Upload files (sync).
@@ -162,7 +163,7 @@ class DaytonaBackend:
         Raises:
             RuntimeError: Always, because this backend is async-native.
         """
-        raise RuntimeError("DaytonaBackend is async-native; use aupload_files()")
+        raise RuntimeError("SandboxBackend is async-native; use aupload_files()")
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:  # pragma: no cover
         """Download files (sync).
@@ -170,7 +171,7 @@ class DaytonaBackend:
         Raises:
             RuntimeError: Always, because this backend is async-native.
         """
-        raise RuntimeError("DaytonaBackend is async-native; use adownload_files()")
+        raise RuntimeError("SandboxBackend is async-native; use adownload_files()")
 
     def execute(self, command: str) -> ExecuteResponse:  # pragma: no cover
         """Execute a shell command (sync).
@@ -178,7 +179,7 @@ class DaytonaBackend:
         Raises:
             RuntimeError: Always, because this backend is async-native.
         """
-        raise RuntimeError("DaytonaBackend is async-native; use aexecute()")
+        raise RuntimeError("SandboxBackend is async-native; use aexecute()")
 
     # ---------------------------------------------------------------------
     # Async protocol methods

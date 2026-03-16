@@ -2,7 +2,7 @@
 
 This module creates a PTC agent that:
 - Uses langchain's create_agent with custom middleware stack
-- Integrates Daytona sandbox via DaytonaBackend
+- Integrates sandbox via SandboxBackend
 - Provides MCP tools through execute_code
 - Supports sub-agent delegation for specialized tasks
 """
@@ -13,7 +13,7 @@ from typing import Any
 import structlog
 from langchain.agents import create_agent
 
-from ptc_agent.agent.backends import DaytonaBackend
+from ptc_agent.agent.backends import SandboxBackend
 from ptc_agent.agent.middleware import SubAgentMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
@@ -124,7 +124,7 @@ class PTCAgent:
 
     This agent:
     - Uses langchain's create_agent with custom middleware stack
-    - Integrates Daytona sandbox via DaytonaBackend
+    - Integrates sandbox via SandboxBackend
     - Provides execute_code tool for MCP tool invocation
     - Supports sub-agent delegation for specialized tasks
     """
@@ -196,6 +196,7 @@ class PTCAgent:
             include_anti_patterns=True,
             current_time=current_time,
             thread_id=thread_id or "",
+            working_directory=self.config.filesystem.working_directory,
         )
 
     def _build_model_resilience_middleware(self) -> list[Any]:
@@ -312,7 +313,7 @@ class PTCAgent:
         tools: list[Any] = [execute_code_tool, bash_tool, TodoWrite]
 
         # Create backend for SkillsMiddleware and LargeResultEvictionMiddleware
-        backend = DaytonaBackend(sandbox, operation_callback=operation_callback)
+        backend = SandboxBackend(sandbox, operation_callback=operation_callback)
 
         # Create custom filesystem tools (override deepagents middleware tools)
         read_file, write_file, edit_file = create_filesystem_tools(
@@ -372,7 +373,10 @@ class PTCAgent:
 
         # File operation SSE middleware - emits events for write_file/edit_file
         shared_middleware.append(
-            FileOperationMiddleware(on_agent_md_write=on_agent_md_write)
+            FileOperationMiddleware(
+                on_agent_md_write=on_agent_md_write,
+                work_dir=self.config.filesystem.working_directory,
+            )
         )
 
         # Todo operation SSE middleware - emits events for TodoWrite

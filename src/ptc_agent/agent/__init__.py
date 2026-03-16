@@ -2,12 +2,12 @@
 
 This package provides the PTC (Programmatic Tool Calling) agent pattern:
 - Uses deepagent for orchestration and sub-agent delegation
-- Integrates Daytona sandbox via DaytonaBackend
+- Integrates sandbox via SandboxBackend
 - MCP tools accessed through execute_code tool
 
 Structure:
 - agent.py: Main PTCAgent using deepagent
-- backends/: Custom backends (DaytonaBackend)
+- backends/: Custom backends (SandboxBackend)
 - prompts/: Prompt templates (base, research)
 - tools/: Custom tools (execute_code, research)
 - langchain_tools/: LangChain @tool implementations (Bash, Read, Write, Edit, Glob, Grep)
@@ -46,6 +46,7 @@ from ptc_agent.config import (
 _LAZY_IMPORTS = {
     "PTCAgent": ".agent",
     "DaytonaBackend": ".backends",
+    "SandboxBackend": ".backends",
     "SessionProvider": ".graph",
     "build_ptc_graph": ".graph",
     "build_ptc_graph_with_session": ".graph",
@@ -69,6 +70,7 @@ __all__ = [
     # Config classes (pure data)
     "AgentConfig",
     "DaytonaBackend",
+    "SandboxBackend",
     "LLMConfig",
     "LLMDefinition",
     # Agent

@@ -39,6 +39,7 @@ from ptc_agent.config import (
 _LAZY_IMPORTS = {
     # ptc_agent.agent
     "DaytonaBackend": "ptc_agent.agent.backends",
+    "SandboxBackend": "ptc_agent.agent.backends",
     "PTCAgent": "ptc_agent.agent.agent",
     # ptc_agent.core
     "MCPRegistry": "ptc_agent.core",
@@ -74,6 +75,7 @@ __all__ = [
     "load_from_files",
     # Agent (lazy)
     "DaytonaBackend",
+    "SandboxBackend",
     "PTCAgent",
     # Core (lazy)
     "MCPRegistry",

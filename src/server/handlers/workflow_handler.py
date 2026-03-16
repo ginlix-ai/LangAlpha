@@ -302,7 +302,7 @@ async def _resolve_graph_and_state(thread_id: str, verb: str) -> tuple:
     from src.server.database import conversation as qr_db
     from src.server.services.workspace_manager import WorkspaceManager
     from ptc_agent.agent.graph import build_ptc_graph_with_session
-    from ptc_agent.agent.backends.daytona import DaytonaBackend
+    from ptc_agent.agent.backends.sandbox import SandboxBackend
 
     # Validate thread + workspace
     thread_info = await qr_db.get_thread_with_summary(thread_id)
@@ -355,7 +355,7 @@ async def _resolve_graph_and_state(thread_id: str, verb: str) -> tuple:
     # Backend
     backend = None
     if hasattr(session, "sandbox") and session.sandbox is not None:
-        backend = DaytonaBackend(session.sandbox)
+        backend = SandboxBackend(session.sandbox)
 
     return graph, lg_config, state, messages, backend
 
