@@ -286,7 +286,7 @@ class MemoryProvider(SandboxProvider):
         if self._closed:
             raise RuntimeError("Provider is closed")
         runtime = self._runtimes.get(sandbox_id)
-        if runtime is None:
+        if runtime is None or runtime._deleted:
             raise RuntimeError(f"Runtime not found: {sandbox_id}")
         return runtime
 
