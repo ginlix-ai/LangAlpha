@@ -944,10 +944,12 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Automatic language detection based on direct keyboard input
     // Only switch to English if it's a direct Latin key AND we are not currently in an IME composition.
-    if (!e.repeat && !e.nativeEvent.isComposing && e.key.length === 1 && /[a-zA-Z]/.test(e.key)) {
+    // AND if the user has not explicitly set a manual language override.
+    const isManual = safeLocalStorage.getItem('chat_input_speech_lang_manual') === 'true';
+    if (!e.repeat && !e.nativeEvent.isComposing && !isManual &&
+      e.key.length === 1 && /[a-zA-Z]/.test(e.key)) {
       if (speechLang !== 'en-US') {
         setSpeechLang('en-US');
-        safeLocalStorage.removeItem('chat_input_speech_lang_manual');
       }
     }
 
@@ -1215,9 +1217,9 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
               onKeyDown={handleKeyDown}
               onBlur={handleBlur}
               onCompositionStart={() => {
-                if (i18n.language.startsWith('zh') && speechLang !== 'zh-CN') {
+                const isManual = safeLocalStorage.getItem('chat_input_speech_lang_manual') === 'true';
+                if (!isManual && i18n.language.startsWith('zh') && speechLang !== 'zh-CN') {
                   setSpeechLang('zh-CN');
-                  safeLocalStorage.removeItem('chat_input_speech_lang_manual');
                 }
               }}
               placeholder={placeholder}
