@@ -73,6 +73,8 @@ jobs:
         with:
           version: "latest"
       - run: uv sync --group dev --extra test
+      - name: Install ripgrep (needed by memory provider grep tests)
+        run: sudo apt-get install -y ripgrep
       - name: Run sandbox tests (memory)
         run: >-
           uv run pytest tests/integration/sandbox/
