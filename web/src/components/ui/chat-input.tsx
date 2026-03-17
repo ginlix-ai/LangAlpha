@@ -319,9 +319,12 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   // Voice Input (Speech Recognition)
   const [isListening, setIsListening] = useState(false);
   const [speechLang, setSpeechLang] = useState<string>(() => {
-    // Priority: Persisted > App Locale
-    const persisted = safeLocalStorage.getItem('chat_input_speech_lang');
-    if (persisted) return persisted;
+    // Priority: Manual Override > Persisted > App Locale
+    const isManual = safeLocalStorage.getItem('chat_input_speech_lang_manual') === 'true';
+    if (isManual) {
+      const persisted = safeLocalStorage.getItem('chat_input_speech_lang');
+      if (persisted) return persisted;
+    }
     return i18n.language.startsWith('zh') ? 'zh-CN' : 'en-US';
   });
   const recognitionRef = useRef<SpeechRecognition | null>(null);
@@ -333,12 +336,14 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   // Sync message ref
   useEffect(() => { messageRef.current = message; }, [message]);
 
-  // Sync speechLang with app locale change if user hasn't typed anything yet
+  // Sync speechLang with app locale change if user hasn't typed anything 
+  // and hasn't explicitly set a manual override.
   useEffect(() => {
-    if (!message) {
+    const isManual = safeLocalStorage.getItem('chat_input_speech_lang_manual') === 'true';
+    if (!message && !isManual) {
       setSpeechLang(i18n.language.startsWith('zh') ? 'zh-CN' : 'en-US');
     }
-  }, [i18n.language]);
+  }, [i18n.language, message]);
 
   // Persist speech language preference
   useEffect(() => {
@@ -1511,20 +1516,37 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                     )}
                   </button>
 
-                  {/* Voice Language Indicator (Auto-detected from keyboard) */}
+                  {/* Voice Language Indicator (Auto-detected from keyboard, clickable to toggle) */}
                   {(i18n.language.startsWith('en') || i18n.language.startsWith('zh')) && (
-                    <div
-                      className={`inline-flex items-center justify-center px-1.5 h-6 rounded-md text-[10px] font-bold border border-[var(--color-border-muted)] ${isListening ? 'opacity-50' : ''}`}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (isListening) return;
+
+                        const nextLang = speechLang === 'en-US' ? 'zh-CN' : 'en-US';
+                        const defaultLang = i18n.language.startsWith('zh') ? 'zh-CN' : 'en-US';
+
+                        // If user toggles to the language that ISN'T their current default,
+                        // set the manual flag. Toggling back to default clears it.
+                        if (nextLang === defaultLang) {
+                          safeLocalStorage.removeItem('chat_input_speech_lang_manual');
+                        } else {
+                          safeLocalStorage.setItem('chat_input_speech_lang_manual', 'true');
+                        }
+                        setSpeechLang(nextLang);
+                      }}
+                      disabled={isListening}
+                      className={`inline-flex items-center justify-center px-1.5 h-6 rounded-md text-[10px] font-bold transition-all border border-[var(--color-border-muted)] ${isListening ? 'opacity-50 cursor-not-allowed' : 'hover:bg-foreground/5 cursor-pointer'}`}
                       style={{
                         color: 'var(--color-text-tertiary)',
                         marginLeft: '-4px',
                         zIndex: 10,
                         backgroundColor: 'transparent',
                       }}
-                      title={t('chat.voice.detectedKeyboardLang')}
+                      title={isListening ? t('chat.voice.cannotChangeLang') : t('chat.voice.detectedKeyboardLang')}
                     >
                       {speechLang === 'en-US' ? 'EN' : 'CN'}
-                    </div>
+                    </button>
                   )}
                 </div>
               )}
