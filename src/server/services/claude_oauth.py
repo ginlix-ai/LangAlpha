@@ -5,10 +5,10 @@ Handles the OAuth 2.0 PKCE flow for connecting Claude models via users'
 existing Anthropic subscriptions. Unlike Codex (device code flow), Anthropic
 uses a hosted callback page where the user copies a code#state string.
 
-Protocol details (discovered from @mariozechner/pi-ai 0.54.0):
+Protocol details (discovered from @mariozechner/pi-ai 0.58.0):
 - Authorize URL: https://claude.ai/oauth/authorize
-- Token URL: https://console.anthropic.com/v1/oauth/token
-- Redirect URI: https://console.anthropic.com/oauth/code/callback (hosted)
+- Token URL: https://platform.claude.com/v1/oauth/token
+- Redirect URI: https://platform.claude.com/oauth/code/callback (hosted)
 - PKCE: S256, state = verifier
 - Token exchange: Content-Type: application/json (not form-urlencoded)
 - Extra authorize param: code=true
@@ -36,9 +36,9 @@ logger = logging.getLogger(__name__)
 CLAUDE_PROVIDER = "claude-oauth"
 CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 CLAUDE_AUTHORIZE_URL = "https://claude.ai/oauth/authorize"
-CLAUDE_TOKEN_URL = "https://api.anthropic.com/v1/oauth/token"
-CLAUDE_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
-CLAUDE_SCOPES = "org:create_api_key user:profile user:inference"
+CLAUDE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+CLAUDE_REDIRECT_URI = "https://platform.claude.com/oauth/code/callback"
+CLAUDE_SCOPES = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
 
 
 # --- PKCE ---
@@ -92,7 +92,7 @@ def parse_callback_input(raw: str) -> tuple[str, str]:
     """Parse various callback input formats into (code, state).
 
     Supported formats:
-    - Full URL: https://console.anthropic.com/oauth/code/callback?code=X&state=Y
+    - Full URL: https://platform.claude.com/oauth/code/callback?code=X&state=Y
     - code#state
     - Just the code (state derived from context)
 

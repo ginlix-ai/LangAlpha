@@ -45,11 +45,13 @@
         "name": "GPT-5 Mini",
         "is_reasoning": true,
         "description": "Smaller, faster GPT-5 variant",
-        "alias": ["gpt-5-mini-2025-08-07"],
+        "alias": [
+          "gpt-5-mini-2025-08-07"
+        ],
         "pricing": {
           "input": 0.25,
           "cached_input": 0.025,
-          "output": 2.00,
+          "output": 2.0,
           "unit": "per_1m_tokens"
         }
       },
@@ -58,11 +60,13 @@
         "name": "GPT-5 Nano",
         "is_reasoning": true,
         "description": "Smallest, fastest GPT-5 variant",
-        "alias": ["gpt-5-nano-2025-08-07"],
+        "alias": [
+          "gpt-5-nano-2025-08-07"
+        ],
         "pricing": {
           "input": 0.05,
           "cached_input": 0.005,
-          "output": 0.40,
+          "output": 0.4,
           "unit": "per_1m_tokens"
         }
       },
@@ -74,7 +78,7 @@
         "pricing": {
           "input": 1.25,
           "cached_input": 0.13,
-          "output": 10.00,
+          "output": 10.0,
           "unit": "per_1m_tokens"
         }
       },
@@ -86,7 +90,7 @@
         "pricing": {
           "input": 0.25,
           "cached_input": 0.03,
-          "output": 2.00,
+          "output": 2.0,
           "unit": "per_1m_tokens"
         }
       },
@@ -95,11 +99,13 @@
         "name": "GPT-5.1",
         "is_reasoning": true,
         "description": "The best model for coding and agentic tasks with configurable reasoning effort",
-        "alias": ["gpt-5.1"],
+        "alias": [
+          "gpt-5.1"
+        ],
         "pricing": {
           "input": 1.25,
           "cached_input": 0.13,
-          "output": 10.00,
+          "output": 10.0,
           "unit": "per_1m_tokens"
         }
       },
@@ -108,11 +114,13 @@
         "name": "GPT-5.2",
         "is_reasoning": true,
         "description": "The best model for coding and agentic tasks with configurable reasoning effort",
-        "alias": ["gpt-5.2"],
+        "alias": [
+          "gpt-5.2"
+        ],
         "pricing": {
           "input": 1.75,
           "cached_input": 0.175,
-          "output": 14.00,
+          "output": 14.0,
           "unit": "per_1m_tokens"
         }
       },
@@ -123,12 +131,26 @@
         "description": "OpenAI's latest and most capable reasoning model with tiered pricing",
         "pricing": {
           "input_tiers": [
-            {"max_tokens": 272000, "rate": 2.50, "cached_input": 0.25},
-            {"max_tokens": null, "rate": 5.00, "cached_input": 0.50}
+            {
+              "max_tokens": 272000,
+              "rate": 2.5,
+              "cached_input": 0.25
+            },
+            {
+              "max_tokens": null,
+              "rate": 5.0,
+              "cached_input": 0.5
+            }
           ],
           "output_tiers": [
-            {"max_tokens": 272000, "rate": 15.00},
-            {"max_tokens": null, "rate": 22.50}
+            {
+              "max_tokens": 272000,
+              "rate": 15.0
+            },
+            {
+              "max_tokens": null,
+              "rate": 22.5
+            }
           ],
           "output_pricing_mode": "input_dependent",
           "unit": "per_1m_tokens"
@@ -136,17 +158,19 @@
       }
     ],
     "anthropic": [
-        {
-          "id": "claude-opus-4-6",
+      {
+        "id": "claude-opus-4-6",
         "name": "Claude 4.6 Opus",
         "is_reasoning": true,
         "description": "Claude 4.6 Opus model",
-        "alias": ["claude-opus-4.6"],
+        "alias": [
+          "claude-opus-4.6"
+        ],
         "pricing": {
-          "input": 5.00,
-          "cached_input": 0.50,
+          "input": 5.0,
+          "cached_input": 0.5,
           "cache_5m": 6.25,
-          "output": 25.00,
+          "output": 25.0,
           "unit": "per_1m_tokens"
         }
       },
@@ -155,19 +179,35 @@
         "name": "Claude 4.6 Sonnet",
         "is_reasoning": true,
         "description": "Claude 4.6 Sonnet model",
-        "alias": ["claude-sonnet-4.6"],
+        "alias": [
+          "claude-sonnet-4.6"
+        ],
         "pricing": {
           "input_tiers": [
-            {"max_tokens": 200000, "rate": 3.00, "cached_input": 0.30},
-            {"max_tokens": null, "rate": 6.00, "cached_input": 0.60}
+            {
+              "max_tokens": 200000,
+              "rate": 3.0,
+              "cached_input": 0.3
+            },
+            {
+              "max_tokens": null,
+              "rate": 6.0,
+              "cached_input": 0.6
+            }
           ],
           "output_tiers": [
-            {"max_tokens": 200000, "rate": 15.00},
-            {"max_tokens": null, "rate": 22.50}
+            {
+              "max_tokens": 200000,
+              "rate": 15.0
+            },
+            {
+              "max_tokens": null,
+              "rate": 22.5
+            }
           ],
           "output_pricing_mode": "input_dependent",
           "cache_5m": 3.75,
-          "cache_1h": 7.50,
+          "cache_1h": 7.5,
           "unit": "per_1m_tokens"
         }
       },
@@ -176,12 +216,14 @@
         "name": "Claude 4.5 Haiku",
         "is_reasoning": true,
         "description": "Fast and cost-efficient model",
-        "alias": ["claude-haiku-4.5"],
+        "alias": [
+          "claude-haiku-4.5"
+        ],
         "pricing": {
-          "input": 0.80,
+          "input": 0.8,
           "cached_input": 0.08,
-          "cache_5m": 1.00,
-          "output": 4.00,
+          "cache_5m": 1.0,
+          "output": 4.0,
           "unit": "per_1m_tokens"
         }
       }
@@ -192,12 +234,14 @@
         "name": "Claude 4.6 Opus",
         "is_reasoning": true,
         "description": "Claude 4.6 Opus model",
-        "alias": ["claude-opus-4.6"],
+        "alias": [
+          "claude-opus-4.6"
+        ],
         "pricing": {
-          "input": 5.00,
-          "cached_input": 0.50,
+          "input": 5.0,
+          "cached_input": 0.5,
           "cache_5m": 6.25,
-          "output": 25.00,
+          "output": 25.0,
           "unit": "per_1m_tokens"
         }
       },
@@ -206,19 +250,35 @@
         "name": "Claude 4.6 Sonnet",
         "is_reasoning": true,
         "description": "Claude 4.6 Sonnet model",
-        "alias": ["claude-sonnet-4.6"],
+        "alias": [
+          "claude-sonnet-4.6"
+        ],
         "pricing": {
           "input_tiers": [
-            {"max_tokens": 200000, "rate": 3.00, "cached_input": 0.30},
-            {"max_tokens": null, "rate": 6.00, "cached_input": 0.60}
+            {
+              "max_tokens": 200000,
+              "rate": 3.0,
+              "cached_input": 0.3
+            },
+            {
+              "max_tokens": null,
+              "rate": 6.0,
+              "cached_input": 0.6
+            }
           ],
           "output_tiers": [
-            {"max_tokens": 200000, "rate": 15.00},
-            {"max_tokens": null, "rate": 22.50}
+            {
+              "max_tokens": 200000,
+              "rate": 15.0
+            },
+            {
+              "max_tokens": null,
+              "rate": 22.5
+            }
           ],
           "output_pricing_mode": "input_dependent",
           "cache_5m": 3.75,
-          "cache_1h": 7.50,
+          "cache_1h": 7.5,
           "unit": "per_1m_tokens"
         }
       },
@@ -227,12 +287,14 @@
         "name": "Claude 4.5 Haiku",
         "is_reasoning": true,
         "description": "Fast and cost-efficient model",
-        "alias": ["claude-haiku-4.5"],
+        "alias": [
+          "claude-haiku-4.5"
+        ],
         "pricing": {
-          "input": 0.80,
+          "input": 0.8,
           "cached_input": 0.08,
-          "cache_5m": 1.00,
-          "output": 4.00,
+          "cache_5m": 1.0,
+          "output": 4.0,
           "unit": "per_1m_tokens"
         }
       }
@@ -246,8 +308,8 @@
         "pricing": {
           "input": 0.25,
           "cached_input": 0.025,
-          "output": 1.50,
-          "cache_storage": 1.00,
+          "output": 1.5,
+          "cache_storage": 1.0,
           "unit": "per_1m_tokens"
         }
       },
@@ -257,8 +319,8 @@
         "description": "Designed for speed and efficiency, effective for quick interactive responses and high throughput image generation",
         "pricing": {
           "input": 0.25,
-          "output": 1.50,
-          "output_image": 60.00,
+          "output": 1.5,
+          "output_image": 60.0,
           "unit": "per_1m_tokens"
         }
       },
@@ -268,10 +330,10 @@
         "is_reasoning": true,
         "description": "Google's fast and cost-efficient model with thinking capabilities",
         "pricing": {
-          "input": 0.50,
+          "input": 0.5,
           "cached_input": 0.05,
-          "output": 3.00,
-          "storage": 1.00,
+          "output": 3.0,
+          "storage": 1.0,
           "unit": "per_1m_tokens"
         }
       },
@@ -282,23 +344,35 @@
         "description": "Google's latest performance, intelligence, and usability improvements for multimodal understanding, agentic capabilities, and vibe-coding",
         "pricing": {
           "input_tiers": [
-            {"max_tokens": 200000, "rate": 2.00, "cached_input": 0.20},
-            {"max_tokens": null, "rate": 4.00, "cached_input": 0.40}
+            {
+              "max_tokens": 200000,
+              "rate": 2.0,
+              "cached_input": 0.2
+            },
+            {
+              "max_tokens": null,
+              "rate": 4.0,
+              "cached_input": 0.4
+            }
           ],
           "output_tiers": [
-            {"max_tokens": 200000, "rate": 12.00},
-            {"max_tokens": null, "rate": 18.00}
+            {
+              "max_tokens": 200000,
+              "rate": 12.0
+            },
+            {
+              "max_tokens": null,
+              "rate": 18.0
+            }
           ],
           "output_pricing_mode": "input_dependent",
-          "cache_storage": 4.50,
+          "cache_storage": 4.5,
           "unit": "per_1m_tokens"
         }
       }
     ],
-    "lm-studio": [
-    ],
-    "openrouter": [
-    ],
+    "lm-studio": [],
+    "openrouter": [],
     "deepseek": [
       {
         "id": "deepseek-reasoner",
@@ -313,8 +387,7 @@
         }
       }
     ],
-    "vllm": [
-    ],
+    "vllm": [],
     "z-ai": [
       {
         "id": "glm-4.7",
@@ -322,9 +395,9 @@
         "is_reasoning": false,
         "description": "Z.AI's GLM-4.7 model with prompt caching support",
         "pricing": {
-          "input": 0.60,
+          "input": 0.6,
           "cached_input": 0.11,
-          "output": 2.20,
+          "output": 2.2,
           "unit": "per_1m_tokens"
         }
       }
@@ -337,12 +410,26 @@
         "description": "Z.AI's latest GLM-5 model with input-dependent tiered pricing",
         "pricing": {
           "input_tiers": [
-            {"max_tokens": 32000, "rate": 0.55, "cached_input": 0.14},
-            {"max_tokens": null, "rate": 0.83, "cached_input": 0.21}
+            {
+              "max_tokens": 32000,
+              "rate": 0.55,
+              "cached_input": 0.14
+            },
+            {
+              "max_tokens": null,
+              "rate": 0.83,
+              "cached_input": 0.21
+            }
           ],
           "output_tiers": [
-            {"max_tokens": 32000, "rate": 2.48},
-            {"max_tokens": null, "rate": 3.03}
+            {
+              "max_tokens": 32000,
+              "rate": 2.48
+            },
+            {
+              "max_tokens": null,
+              "rate": 3.03
+            }
           ],
           "output_pricing_mode": "input_dependent",
           "unit": "per_1m_tokens"
@@ -368,7 +455,7 @@
               "input_max": 32000,
               "output_max": null,
               "input": 0.43,
-              "output": 2.00,
+              "output": 2.0,
               "cached_input": 0.086
             },
             {
@@ -387,12 +474,15 @@
       {
         "id": "minimax-m2.5",
         "name": "MiniMax-M2.5",
-        "alias": ["MiniMax-M2.5", "minimax-m2.5"],
+        "alias": [
+          "MiniMax-M2.5",
+          "minimax-m2.5"
+        ],
         "is_reasoning": false,
         "description": "MiniMax's M2.5 model for commercial use",
         "pricing": {
-          "input": 0.30,
-          "output": 1.20,
+          "input": 0.3,
+          "output": 1.2,
           "cached_input": 0.03,
           "cache_storage": 0.375,
           "unit": "per_1m_tokens"
@@ -401,12 +491,14 @@
       {
         "id": "minimax-m2.5-highspeed",
         "name": "MiniMax-M2.5-Highspeed",
-        "alias": ["MiniMax-M2.5-highspeed"],
+        "alias": [
+          "MiniMax-M2.5-highspeed"
+        ],
         "is_reasoning": false,
         "description": "MiniMax's M2.5 Highspeed model with faster inference and higher output pricing",
         "pricing": {
-          "input": 0.60,
-          "output": 2.40,
+          "input": 0.6,
+          "output": 2.4,
           "cached_input": 0.03,
           "cache_storage": 0.375,
           "unit": "per_1m_tokens"
@@ -421,14 +513,35 @@
         "description": "Doubao Seed 2.0 Pro - high-capability model with tiered pricing",
         "pricing": {
           "input_tiers": [
-            {"max_tokens": 32000, "rate": 3.2, "cached_input": 0.64},
-            {"max_tokens": 128000, "rate": 4.8, "cached_input": 0.64},
-            {"max_tokens": 256000, "rate": 9.6, "cached_input": 0.64}
+            {
+              "max_tokens": 32000,
+              "rate": 3.2,
+              "cached_input": 0.64
+            },
+            {
+              "max_tokens": 128000,
+              "rate": 4.8,
+              "cached_input": 0.64
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 9.6,
+              "cached_input": 0.64
+            }
           ],
           "output_tiers": [
-            {"max_tokens": 32000, "rate": 16.0},
-            {"max_tokens": 128000, "rate": 24.0},
-            {"max_tokens": 256000, "rate": 48.0}
+            {
+              "max_tokens": 32000,
+              "rate": 16.0
+            },
+            {
+              "max_tokens": 128000,
+              "rate": 24.0
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 48.0
+            }
           ],
           "output_pricing_mode": "input_dependent",
           "cache_storage": 0.017,
@@ -442,14 +555,35 @@
         "description": "Doubao Seed 2.0 Lite - balanced performance and cost",
         "pricing": {
           "input_tiers": [
-            {"max_tokens": 32000, "rate": 0.6, "cached_input": 0.12},
-            {"max_tokens": 128000, "rate": 0.9, "cached_input": 0.12},
-            {"max_tokens": 256000, "rate": 1.8, "cached_input": 0.12}
+            {
+              "max_tokens": 32000,
+              "rate": 0.6,
+              "cached_input": 0.12
+            },
+            {
+              "max_tokens": 128000,
+              "rate": 0.9,
+              "cached_input": 0.12
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 1.8,
+              "cached_input": 0.12
+            }
           ],
           "output_tiers": [
-            {"max_tokens": 32000, "rate": 3.6},
-            {"max_tokens": 128000, "rate": 5.4},
-            {"max_tokens": 256000, "rate": 10.8}
+            {
+              "max_tokens": 32000,
+              "rate": 3.6
+            },
+            {
+              "max_tokens": 128000,
+              "rate": 5.4
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 10.8
+            }
           ],
           "output_pricing_mode": "input_dependent",
           "cache_storage": 0.017,
@@ -463,14 +597,35 @@
         "description": "Doubao Seed 2.0 Mini - lightweight and cost-efficient",
         "pricing": {
           "input_tiers": [
-            {"max_tokens": 32000, "rate": 0.2, "cached_input": 0.04},
-            {"max_tokens": 128000, "rate": 0.4, "cached_input": 0.04},
-            {"max_tokens": 256000, "rate": 0.8, "cached_input": 0.04}
+            {
+              "max_tokens": 32000,
+              "rate": 0.2,
+              "cached_input": 0.04
+            },
+            {
+              "max_tokens": 128000,
+              "rate": 0.4,
+              "cached_input": 0.04
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 0.8,
+              "cached_input": 0.04
+            }
           ],
           "output_tiers": [
-            {"max_tokens": 32000, "rate": 2.0},
-            {"max_tokens": 128000, "rate": 4.0},
-            {"max_tokens": 256000, "rate": 8.0}
+            {
+              "max_tokens": 32000,
+              "rate": 2.0
+            },
+            {
+              "max_tokens": 128000,
+              "rate": 4.0
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 8.0
+            }
           ],
           "output_pricing_mode": "input_dependent",
           "cache_storage": 0.017,
@@ -484,14 +639,35 @@
         "description": "Doubao Seed 2.0 Code - optimized for coding tasks",
         "pricing": {
           "input_tiers": [
-            {"max_tokens": 32000, "rate": 3.2, "cached_input": 0.64},
-            {"max_tokens": 128000, "rate": 4.8, "cached_input": 0.64},
-            {"max_tokens": 256000, "rate": 9.6, "cached_input": 0.64}
+            {
+              "max_tokens": 32000,
+              "rate": 3.2,
+              "cached_input": 0.64
+            },
+            {
+              "max_tokens": 128000,
+              "rate": 4.8,
+              "cached_input": 0.64
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 9.6,
+              "cached_input": 0.64
+            }
           ],
           "output_tiers": [
-            {"max_tokens": 32000, "rate": 16.0},
-            {"max_tokens": 128000, "rate": 24.0},
-            {"max_tokens": 256000, "rate": 48.0}
+            {
+              "max_tokens": 32000,
+              "rate": 16.0
+            },
+            {
+              "max_tokens": 128000,
+              "rate": 24.0
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 48.0
+            }
           ],
           "output_pricing_mode": "input_dependent",
           "cache_storage": 0.017,
@@ -509,14 +685,35 @@
         "max_output": 65536,
         "pricing": {
           "input_tiers": [
-            {"max_tokens": 128000, "rate": 0.115, "cached_input": 0.023},
-            {"max_tokens": 256000, "rate": 0.287, "cached_input": 0.057},
-            {"max_tokens": 1000000, "rate": 0.573, "cached_input": 0.115}
+            {
+              "max_tokens": 128000,
+              "rate": 0.115,
+              "cached_input": 0.023
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 0.287,
+              "cached_input": 0.057
+            },
+            {
+              "max_tokens": 1000000,
+              "rate": 0.573,
+              "cached_input": 0.115
+            }
           ],
           "output_tiers": [
-            {"max_tokens": 128000, "rate": 0.688},
-            {"max_tokens": 256000, "rate": 1.72},
-            {"max_tokens": 1000000, "rate": 3.44}
+            {
+              "max_tokens": 128000,
+              "rate": 0.688
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 1.72
+            },
+            {
+              "max_tokens": 1000000,
+              "rate": 3.44
+            }
           ],
           "output_pricing_mode": "input_dependent",
           "unit": "per_1m_tokens"
@@ -526,19 +723,40 @@
         "id": "qwen3.5-flash",
         "name": "Qwen3.5 Flash",
         "is_reasoning": true,
-        "description": "Alibaba's Qwen3.5 Flash — fastest and most cost-efficient in the series, 1M context",
+        "description": "Alibaba's Qwen3.5 Flash \u2014 fastest and most cost-efficient in the series, 1M context",
         "context_window": 1000000,
         "max_output": 65536,
         "pricing": {
           "input_tiers": [
-            {"max_tokens": 128000, "rate": 0.029, "cached_input": 0.006},
-            {"max_tokens": 256000, "rate": 0.115, "cached_input": 0.023},
-            {"max_tokens": 1000000, "rate": 0.172, "cached_input": 0.034}
+            {
+              "max_tokens": 128000,
+              "rate": 0.029,
+              "cached_input": 0.006
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 0.115,
+              "cached_input": 0.023
+            },
+            {
+              "max_tokens": 1000000,
+              "rate": 0.172,
+              "cached_input": 0.034
+            }
           ],
           "output_tiers": [
-            {"max_tokens": 128000, "rate": 0.287},
-            {"max_tokens": 256000, "rate": 1.147},
-            {"max_tokens": 1000000, "rate": 1.72}
+            {
+              "max_tokens": 128000,
+              "rate": 0.287
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 1.147
+            },
+            {
+              "max_tokens": 1000000,
+              "rate": 1.72
+            }
           ],
           "output_pricing_mode": "input_dependent",
           "unit": "per_1m_tokens"
@@ -553,12 +771,24 @@
         "max_output": 65536,
         "pricing": {
           "input_tiers": [
-            {"max_tokens": 128000, "rate": 0.172},
-            {"max_tokens": 256000, "rate": 0.43}
+            {
+              "max_tokens": 128000,
+              "rate": 0.172
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 0.43
+            }
           ],
           "output_tiers": [
-            {"max_tokens": 128000, "rate": 1.032},
-            {"max_tokens": 256000, "rate": 2.58}
+            {
+              "max_tokens": 128000,
+              "rate": 1.032
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 2.58
+            }
           ],
           "output_pricing_mode": "input_dependent",
           "unit": "per_1m_tokens"
@@ -573,12 +803,24 @@
         "max_output": 65536,
         "pricing": {
           "input_tiers": [
-            {"max_tokens": 128000, "rate": 0.115},
-            {"max_tokens": 256000, "rate": 0.287}
+            {
+              "max_tokens": 128000,
+              "rate": 0.115
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 0.287
+            }
           ],
           "output_tiers": [
-            {"max_tokens": 128000, "rate": 0.917},
-            {"max_tokens": 256000, "rate": 2.293}
+            {
+              "max_tokens": 128000,
+              "rate": 0.917
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 2.293
+            }
           ],
           "output_pricing_mode": "input_dependent",
           "unit": "per_1m_tokens"
@@ -593,12 +835,24 @@
         "max_output": 65536,
         "pricing": {
           "input_tiers": [
-            {"max_tokens": 128000, "rate": 0.086},
-            {"max_tokens": 256000, "rate": 0.258}
+            {
+              "max_tokens": 128000,
+              "rate": 0.086
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 0.258
+            }
           ],
           "output_tiers": [
-            {"max_tokens": 128000, "rate": 0.688},
-            {"max_tokens": 256000, "rate": 2.064}
+            {
+              "max_tokens": 128000,
+              "rate": 0.688
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 2.064
+            }
           ],
           "output_pricing_mode": "input_dependent",
           "unit": "per_1m_tokens"
@@ -613,12 +867,24 @@
         "max_output": 65536,
         "pricing": {
           "input_tiers": [
-            {"max_tokens": 128000, "rate": 0.057},
-            {"max_tokens": 256000, "rate": 0.229}
+            {
+              "max_tokens": 128000,
+              "rate": 0.057
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 0.229
+            }
           ],
           "output_tiers": [
-            {"max_tokens": 128000, "rate": 0.459},
-            {"max_tokens": 256000, "rate": 1.835}
+            {
+              "max_tokens": 128000,
+              "rate": 0.459
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 1.835
+            }
           ],
           "output_pricing_mode": "input_dependent",
           "unit": "per_1m_tokens"
@@ -630,17 +896,29 @@
         "id": "qwen3.5-plus",
         "name": "Qwen3.5 Plus (SG)",
         "is_reasoning": true,
-        "description": "Alibaba's Qwen3.5 Plus model — Singapore international region",
+        "description": "Alibaba's Qwen3.5 Plus model \u2014 Singapore international region",
         "context_window": 1000000,
         "max_output": 65536,
         "pricing": {
           "input_tiers": [
-            {"max_tokens": 256000, "rate": 0.421},
-            {"max_tokens": 1000000, "rate": 0.526}
+            {
+              "max_tokens": 256000,
+              "rate": 0.421
+            },
+            {
+              "max_tokens": 1000000,
+              "rate": 0.526
+            }
           ],
           "output_tiers": [
-            {"max_tokens": 256000, "rate": 2.524},
-            {"max_tokens": 1000000, "rate": 3.156}
+            {
+              "max_tokens": 256000,
+              "rate": 2.524
+            },
+            {
+              "max_tokens": 1000000,
+              "rate": 3.156
+            }
           ],
           "output_pricing_mode": "input_dependent",
           "unit": "per_1m_tokens"
@@ -650,17 +928,29 @@
         "id": "qwen3.5-flash",
         "name": "Qwen3.5 Flash (SG)",
         "is_reasoning": true,
-        "description": "Alibaba's Qwen3.5 Flash — Singapore international region",
+        "description": "Alibaba's Qwen3.5 Flash \u2014 Singapore international region",
         "context_window": 1000000,
         "max_output": 65536,
         "pricing": {
           "input_tiers": [
-            {"max_tokens": 256000, "rate": 0.053},
-            {"max_tokens": 1000000, "rate": 0.263}
+            {
+              "max_tokens": 256000,
+              "rate": 0.053
+            },
+            {
+              "max_tokens": 1000000,
+              "rate": 0.263
+            }
           ],
           "output_tiers": [
-            {"max_tokens": 256000, "rate": 0.421},
-            {"max_tokens": 1000000, "rate": 2.103}
+            {
+              "max_tokens": 256000,
+              "rate": 0.421
+            },
+            {
+              "max_tokens": 1000000,
+              "rate": 2.103
+            }
           ],
           "output_pricing_mode": "input_dependent",
           "unit": "per_1m_tokens"
@@ -678,7 +968,7 @@
         "pricing": {
           "input": 0.075,
           "cached_input": 0.0375,
-          "output": 0.30,
+          "output": 0.3,
           "unit": "per_1m_tokens"
         }
       },
@@ -692,7 +982,7 @@
         "pricing": {
           "input": 0.15,
           "cached_input": 0.075,
-          "output": 0.60,
+          "output": 0.6,
           "unit": "per_1m_tokens"
         }
       },
@@ -706,7 +996,7 @@
         "pricing": {
           "input": 0.075,
           "cached_input": 0.037,
-          "output": 0.30,
+          "output": 0.3,
           "unit": "per_1m_tokens"
         }
       }
@@ -719,9 +1009,9 @@
         "description": "Moonshot AI's Kimi model optimized for coding tasks",
         "context_window": 262144,
         "pricing": {
-          "input": 0.60,
-          "cached_input": 0.10,
-          "output": 3.00,
+          "input": 0.6,
+          "cached_input": 0.1,
+          "output": 3.0,
           "unit": "per_1m_tokens"
         }
       },
@@ -732,9 +1022,9 @@
         "description": "Moonshot AI's Kimi K2.5 multi-modal model with extended context",
         "context_window": 262144,
         "pricing": {
-          "input": 0.60,
-          "cached_input": 0.10,
-          "output": 3.00,
+          "input": 0.6,
+          "cached_input": 0.1,
+          "output": 3.0,
           "unit": "per_1m_tokens"
         }
       }
@@ -945,7 +1235,9 @@
       "auth_type": "oauth",
       "display_name": "Claude (OAuth)",
       "default_headers": {
-        "anthropic-beta": "oauth-2025-04-20"
+        "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
+        "user-agent": "claude-cli/2.1.77",
+        "x-app": "cli"
       }
     },
     "deepinfra": {
