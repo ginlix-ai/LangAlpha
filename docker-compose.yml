@@ -62,7 +62,6 @@ services:
       MEMORY_DB_PASSWORD: ${DB_PASSWORD:-postgres}
       BYOK_ENCRYPTION_KEY: ${BYOK_ENCRYPTION_KEY:-langalpha-local-dev-encryption-key}
       SANDBOX_PROVIDER: ${SANDBOX_PROVIDER:-daytona}
-      SUPABASE_URL: ""  # disable auth — all requests use AUTH_USER_ID
     volumes:
       # Mount source for hot-reload
       - ./src:/app/src
@@ -98,7 +97,6 @@ services:
       - "5173:5173"
     environment:
       VITE_API_BASE_URL: http://localhost:8000
-      VITE_SUPABASE_URL: ""  # disable auth
     volumes:
       - ./web:/app
       - frontend_node_modules:/app/node_modules
