@@ -331,6 +331,7 @@
     "voice": {
       "start": "开启语音输入",
       "stop": "停止语音输入",
+      "cannotChangeLang": "录音时无法更改语言",
       "detectedKeyboardLang": "语音输入语言（根据键盘自动检测）",
       "permissionDenied": "麦克风权限被拒绝",
       "serviceError": "语音识别服务错误"

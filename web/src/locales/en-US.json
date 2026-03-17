@@ -331,6 +331,7 @@
     "voice": {
       "start": "Start voice input",
       "stop": "Stop voice input",
+      "cannotChangeLang": "Cannot change language while recording",
       "detectedKeyboardLang": "Voice input language (auto-detected from keyboard)",
       "permissionDenied": "Microphone permission denied",
       "serviceError": "Speech recognition service error"
