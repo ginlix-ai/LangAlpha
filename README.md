@@ -63,13 +63,13 @@ flowchart TB
     subgraph Redis ["Redis"]
         EventBuf[("SSE Event Buffer<br/>150K events · Reconnect Replay")]
         DataCache[("API Cache<br/>Market Data · SWR")]
-        MsgQueue[("Message Queue<br/>User Messages Mid-workflow")]
+        Steering[("Steering Queue<br/>User Messages Mid-workflow")]
     end
 
     BTM --> AppPool
     BTM --> CheckPool
     BTM --> EventBuf
-    BTM --> MsgQueue
+    BTM --> Steering
     API --> DataCache
 
     BTM -. "Sandbox API" .-> Daytona["Daytona<br/>Cloud Sandboxes"]
@@ -191,7 +191,7 @@ flowchart TB
         direction LR
         MW1["Tool Safety<br/>Leak Detection<br/>Protected Paths<br/>Error Handling"]
         MW2["Context & Skills<br/>agent.md Injection<br/>Skill Loading<br/>Multimodal"]
-        MW3["Coordination<br/>HITL · Plan Mode<br/>Message Queue<br/>Subagent Dispatch"]
+        MW3["Coordination<br/>HITL · Plan Mode<br/>Steering<br/>Subagent Dispatch"]
         MW4["Resilience<br/>Summarization<br/>Retry + Fallback<br/>Prompt Caching"]
     end
 
