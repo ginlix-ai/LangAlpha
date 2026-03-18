@@ -8,6 +8,7 @@ Provides:
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -65,6 +66,18 @@ _ALL_TABLES = [
     "users",
 ]
 
+# Additional tables created by migrations (LangGraph, market_insights, etc.)
+_EXTRA_TABLES = [
+    "market_insights",
+    "user_oauth_tokens",
+    "store_migrations",
+    "store",
+    "checkpoint_writes",
+    "checkpoint_blobs",
+    "checkpoints",
+    "checkpoint_migrations",
+]
+
 
 def _build_db_uri() -> str:
     """Build PostgreSQL connection string from env vars (CI-compatible defaults)."""
@@ -77,317 +90,30 @@ def _build_db_uri() -> str:
     return f"postgresql://{user}:{password}@{host}:{port}/{name}?sslmode={sslmode}"
 
 
-# SQL that creates the full schema from scratch (the "golden" DDL).
-# This mirrors the final state after all migrations have been applied.
-_SCHEMA_SQL = """
--- Utility function used by updated_at triggers
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = NOW();
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+async def _run_alembic_upgrade(db_uri: str) -> None:
+    """Run alembic migrations against the given database URI.
 
--- Enable pgcrypto for encryption functions (api_keys tests)
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+    Uses the project's alembic.ini + migrations/ directory as the single
+    source of truth, so the test schema always matches production.
 
--- ======== users ========
-CREATE TABLE IF NOT EXISTS users (
-    user_id             VARCHAR(255) PRIMARY KEY,
-    email               VARCHAR(255),
-    name                VARCHAR(255),
-    avatar_url          TEXT,
-    timezone            VARCHAR(100),
-    locale              VARCHAR(50),
-    onboarding_completed BOOLEAN NOT NULL DEFAULT FALSE,
-    auth_provider       VARCHAR(50),
-    byok_enabled        BOOLEAN NOT NULL DEFAULT FALSE,
-    membership_id       UUID,
-    last_login_at       TIMESTAMPTZ,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+    Runs in a thread because the migration uses asyncio.run() internally
+    (for LangGraph checkpoint setup), which would conflict with the
+    already-running event loop in pytest-asyncio fixtures.
+    """
+    import asyncio
 
--- ======== user_preferences ========
-CREATE TABLE IF NOT EXISTS user_preferences (
-    user_preference_id  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id             VARCHAR(255) NOT NULL UNIQUE
-                            REFERENCES users(user_id) ON DELETE CASCADE ON UPDATE CASCADE,
-    risk_preference     JSONB,
-    investment_preference JSONB,
-    agent_preference    JSONB,
-    other_preference    JSONB,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+    from alembic import command
+    from alembic.config import Config
 
--- ======== workspaces ========
-CREATE TABLE IF NOT EXISTS workspaces (
-    workspace_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id             VARCHAR(255) NOT NULL
-                            REFERENCES users(user_id) ON DELETE CASCADE ON UPDATE CASCADE,
-    name                VARCHAR(255) NOT NULL,
-    description         TEXT,
-    sandbox_id          VARCHAR(255),
-    status              VARCHAR(20) NOT NULL DEFAULT 'creating'
-                            CHECK (status IN ('creating','running','stopping','stopped','error','deleted','flash')),
-    config              JSONB DEFAULT '{}'::jsonb,
-    last_activity_at    TIMESTAMPTZ,
-    stopped_at          TIMESTAMPTZ,
-    is_pinned           BOOLEAN NOT NULL DEFAULT FALSE,
-    sort_order          INTEGER NOT NULL DEFAULT 0,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+    project_root = Path(__file__).resolve().parent.parent
+    alembic_cfg = Config(str(project_root / "alembic.ini"))
+    alembic_cfg.set_main_option("script_location", str(project_root / "migrations"))
 
--- ======== conversation_threads ========
-CREATE TABLE IF NOT EXISTS conversation_threads (
-    conversation_thread_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    workspace_id        UUID NOT NULL
-                            REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
-    current_status      VARCHAR(50) NOT NULL DEFAULT 'in_progress'
-                            CHECK (current_status IN ('in_progress','interrupted','completed','error','cancelled')),
-    msg_type            VARCHAR(20)
-                            CHECK (msg_type IN ('flash','ptc','interrupted','task')),
-    thread_index        INTEGER NOT NULL DEFAULT 0,
-    title               TEXT,
-    latest_checkpoint_id TEXT,
-    share_token         VARCHAR(32) UNIQUE,
-    is_shared           BOOLEAN NOT NULL DEFAULT FALSE,
-    share_permissions   JSONB NOT NULL DEFAULT '{}',
-    shared_at           TIMESTAMPTZ,
-    external_id         VARCHAR(255),
-    platform            VARCHAR(50),
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT unique_thread_index_per_workspace UNIQUE (workspace_id, thread_index)
-);
+    # Convert psycopg URI to SQLAlchemy+psycopg URI for alembic
+    sa_url = db_uri.replace("postgresql://", "postgresql+psycopg://", 1)
+    alembic_cfg.set_main_option("sqlalchemy.url", sa_url)
 
--- ======== conversation_queries ========
-CREATE TABLE IF NOT EXISTS conversation_queries (
-    conversation_query_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    conversation_thread_id UUID NOT NULL
-                            REFERENCES conversation_threads(conversation_thread_id) ON DELETE CASCADE,
-    turn_index          INTEGER NOT NULL,
-    content             TEXT NOT NULL,
-    type                VARCHAR(50) NOT NULL
-                            CHECK (type IN ('initial','follow_up','resume_feedback')),
-    feedback_action     TEXT,
-    metadata            JSONB DEFAULT '{}'::jsonb,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT unique_pair_index_per_thread_query UNIQUE (conversation_thread_id, turn_index)
-);
-
--- ======== conversation_responses ========
-CREATE TABLE IF NOT EXISTS conversation_responses (
-    conversation_response_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    conversation_thread_id UUID NOT NULL
-                            REFERENCES conversation_threads(conversation_thread_id) ON DELETE CASCADE,
-    turn_index          INTEGER NOT NULL,
-    status              VARCHAR(50) NOT NULL
-                            CHECK (status IN ('in_progress','interrupted','completed','error','cancelled')),
-    interrupt_reason    TEXT,
-    metadata            JSONB DEFAULT '{}'::jsonb,
-    warnings            TEXT[],
-    errors              TEXT[],
-    execution_time      FLOAT,
-    sse_events          JSONB,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT unique_pair_index_per_thread_response UNIQUE (conversation_thread_id, turn_index)
-);
-
--- ======== conversation_usages (audit ledger, no FKs) ========
-CREATE TABLE IF NOT EXISTS conversation_usages (
-    conversation_usage_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    conversation_thread_id UUID,
-    conversation_response_id UUID,
-    workspace_id        UUID,
-    user_id             VARCHAR(255),
-    msg_type            VARCHAR(20),
-    status              VARCHAR(50),
-    token_usage         JSONB DEFAULT '{}'::jsonb,
-    credits_used        NUMERIC(10,4),
-    infrastructure_usage JSONB DEFAULT '{}'::jsonb,
-    is_byok             BOOLEAN NOT NULL DEFAULT FALSE,
-    credit_exempt       BOOLEAN NOT NULL DEFAULT FALSE,
-    credit_exempt_reason VARCHAR(100),
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- ======== watchlists ========
-CREATE TABLE IF NOT EXISTS watchlists (
-    watchlist_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id             VARCHAR(255) NOT NULL
-                            REFERENCES users(user_id) ON DELETE CASCADE ON UPDATE CASCADE,
-    name                VARCHAR(255) NOT NULL,
-    description         TEXT,
-    is_default          BOOLEAN NOT NULL DEFAULT FALSE,
-    display_order       INTEGER NOT NULL DEFAULT 0,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT unique_watchlist_name_per_user UNIQUE (user_id, name)
-);
-
--- ======== watchlist_items ========
-CREATE TABLE IF NOT EXISTS watchlist_items (
-    watchlist_item_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    watchlist_id        UUID NOT NULL
-                            REFERENCES watchlists(watchlist_id) ON DELETE CASCADE,
-    user_id             VARCHAR(255) NOT NULL
-                            REFERENCES users(user_id) ON DELETE CASCADE ON UPDATE CASCADE,
-    symbol              VARCHAR(50) NOT NULL,
-    instrument_type     VARCHAR(50) NOT NULL,
-    exchange            VARCHAR(50),
-    name                VARCHAR(255),
-    notes               TEXT,
-    alert_settings      JSONB DEFAULT '{}'::jsonb,
-    metadata            JSONB DEFAULT '{}'::jsonb,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- ======== user_portfolios ========
-CREATE TABLE IF NOT EXISTS user_portfolios (
-    user_portfolio_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id             VARCHAR(255) NOT NULL
-                            REFERENCES users(user_id) ON DELETE CASCADE ON UPDATE CASCADE,
-    symbol              VARCHAR(50) NOT NULL,
-    instrument_type     VARCHAR(50) NOT NULL,
-    exchange            VARCHAR(50),
-    name                VARCHAR(255),
-    quantity            NUMERIC(20,8) NOT NULL,
-    average_cost        NUMERIC(20,8),
-    currency            VARCHAR(10) NOT NULL DEFAULT 'USD',
-    account_name        VARCHAR(255),
-    notes               TEXT,
-    metadata            JSONB DEFAULT '{}'::jsonb,
-    first_purchased_at  TIMESTAMPTZ,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- ======== user_api_keys ========
-CREATE TABLE IF NOT EXISTS user_api_keys (
-    user_id             VARCHAR(255) NOT NULL
-                            REFERENCES users(user_id) ON DELETE CASCADE ON UPDATE CASCADE,
-    provider            VARCHAR(100) NOT NULL,
-    api_key             BYTEA NOT NULL,
-    base_url            TEXT,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (user_id, provider)
-);
-
--- ======== workspace_files ========
-CREATE TABLE IF NOT EXISTS workspace_files (
-    workspace_file_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    workspace_id        UUID NOT NULL
-                            REFERENCES workspaces(workspace_id) ON DELETE CASCADE,
-    file_path           VARCHAR(1024) NOT NULL,
-    file_name           VARCHAR(255) NOT NULL,
-    file_size           BIGINT NOT NULL DEFAULT 0,
-    content_hash        VARCHAR(64),
-    content_text        TEXT,
-    content_binary      BYTEA,
-    mime_type           VARCHAR(255),
-    is_binary           BOOLEAN NOT NULL DEFAULT FALSE,
-    permissions         VARCHAR(10),
-    sandbox_modified_at TIMESTAMPTZ,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT unique_file_per_workspace UNIQUE (workspace_id, file_path)
-);
-
--- ======== automations ========
-CREATE TABLE IF NOT EXISTS automations (
-    automation_id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id             VARCHAR(255) NOT NULL
-                            REFERENCES users(user_id) ON DELETE CASCADE ON UPDATE CASCADE,
-    name                VARCHAR(255) NOT NULL,
-    description         TEXT,
-    trigger_type        VARCHAR(20) NOT NULL
-                            CHECK (trigger_type IN ('cron', 'once')),
-    cron_expression     VARCHAR(100),
-    timezone            VARCHAR(100) NOT NULL DEFAULT 'UTC',
-    trigger_config      JSONB DEFAULT '{}'::jsonb,
-    next_run_at         TIMESTAMPTZ,
-    last_run_at         TIMESTAMPTZ,
-    agent_mode          VARCHAR(20) NOT NULL DEFAULT 'flash'
-                            CHECK (agent_mode IN ('ptc', 'flash')),
-    instruction         TEXT NOT NULL,
-    workspace_id        UUID
-                            REFERENCES workspaces(workspace_id) ON DELETE SET NULL,
-    llm_model           VARCHAR(100),
-    additional_context  JSONB,
-    thread_strategy     VARCHAR(20) NOT NULL DEFAULT 'new'
-                            CHECK (thread_strategy IN ('new', 'continue')),
-    conversation_thread_id UUID,
-    status              VARCHAR(20) NOT NULL DEFAULT 'active'
-                            CHECK (status IN ('active', 'paused', 'completed', 'disabled')),
-    max_failures        INT NOT NULL DEFAULT 3,
-    failure_count       INT NOT NULL DEFAULT 0,
-    delivery_config     JSONB DEFAULT '{}'::jsonb,
-    metadata            JSONB DEFAULT '{}'::jsonb,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- ======== automation_executions ========
-CREATE TABLE IF NOT EXISTS automation_executions (
-    automation_execution_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    automation_id       UUID NOT NULL
-                            REFERENCES automations(automation_id) ON DELETE CASCADE,
-    status              VARCHAR(20) NOT NULL DEFAULT 'pending'
-                            CHECK (status IN ('pending', 'running', 'completed', 'failed', 'timeout')),
-    conversation_thread_id UUID,
-    scheduled_at        TIMESTAMPTZ NOT NULL,
-    started_at          TIMESTAMPTZ,
-    completed_at        TIMESTAMPTZ,
-    error_message       TEXT,
-    server_id           VARCHAR(100),
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- ======== conversation_feedback ========
-CREATE TABLE IF NOT EXISTS conversation_feedback (
-    conversation_feedback_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    conversation_response_id UUID NOT NULL
-        REFERENCES conversation_responses(conversation_response_id)
-        ON DELETE CASCADE,
-    user_id             VARCHAR(255) NOT NULL,
-    rating              VARCHAR(20) NOT NULL
-        CHECK (rating IN ('thumbs_up', 'thumbs_down')),
-    issue_categories    TEXT[],
-    comment             TEXT,
-    consent_human_review BOOLEAN NOT NULL DEFAULT FALSE,
-    review_status       VARCHAR(50)
-        CHECK (review_status IN ('pending', 'confirmed', 'rejected')),
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT unique_feedback_per_response_user
-        UNIQUE (conversation_response_id, user_id)
-);
-
--- ======== market_insights ========
-CREATE TABLE IF NOT EXISTS market_insights (
-    market_insight_id   UUID PRIMARY KEY,
-    user_id             UUID,
-    type                VARCHAR(30) NOT NULL DEFAULT 'daily_brief',
-    status              VARCHAR(20) NOT NULL DEFAULT 'pending',
-    headline            TEXT,
-    summary             TEXT,
-    content             JSONB,
-    topics              JSONB,
-    sources             JSONB,
-    model               VARCHAR(10),
-    error_message       TEXT,
-    generation_time_ms  INTEGER,
-    metadata            JSONB,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    completed_at        TIMESTAMPTZ
-);
-"""
+    await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
 
 
 @pytest.fixture(scope="session")
@@ -400,26 +126,24 @@ def test_db_uri() -> str:
 async def test_db_pool(test_db_uri):
     """Session-scoped async connection pool for integration tests.
 
-    Creates all tables from the golden schema DDL, yields the pool,
-    then tears down by dropping all tables.
+    Runs alembic migrations (single source of truth) to create the schema,
+    yields the pool, then tears down by truncating all tables.
     """
     import psycopg
 
-    # Use a direct connection (not pooled) for schema DDL -- psycopg's
-    # execute() on a pipeline-free connection handles multi-statement SQL
-    # when autocommit is off and prepare_threshold is None (the default).
+    # Drop all existing tables to ensure a clean slate before migrations
     async with await psycopg.AsyncConnection.connect(
         test_db_uri, autocommit=False
     ) as conn:
         async with conn.cursor() as cur:
-            # Drop all tables first to ensure clean schema (handles existing DBs)
-            for table in _ALL_TABLES:
+            for table in _ALL_TABLES + _EXTRA_TABLES:
                 await cur.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
-            # Also drop tables not in _ALL_TABLES but in schema DDL
-            for extra in ["market_insights"]:
-                await cur.execute(f"DROP TABLE IF EXISTS {extra} CASCADE")
-            await cur.execute(_SCHEMA_SQL)
+            # Clear alembic version so migrations run from scratch
+            await cur.execute("DROP TABLE IF EXISTS alembic_version CASCADE")
         await conn.commit()
+
+    # Run alembic migrations -- the single source of truth for schema
+    await _run_alembic_upgrade(test_db_uri)
 
     # Now create the pool for actual test operations
     pool = AsyncConnectionPool(
