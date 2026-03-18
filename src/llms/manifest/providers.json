@@ -41,86 +41,30 @@
   "models": {
     "openai": [
       {
-        "id": "gpt-5-mini",
-        "name": "GPT-5 Mini",
+        "id": "gpt-5.4-mini",
+        "name": "GPT-5.4 Mini",
         "is_reasoning": true,
-        "description": "Smaller, faster GPT-5 variant",
-        "alias": [
-          "gpt-5-mini-2025-08-07"
-        ],
+        "description": "OpenAI's strongest mini model for coding, computer use, and subagents",
+        "context_window": 400000,
+        "max_output": 128000,
         "pricing": {
-          "input": 0.25,
-          "cached_input": 0.025,
-          "output": 2.0,
+          "input": 0.75,
+          "cached_input": 0.075,
+          "output": 4.5,
           "unit": "per_1m_tokens"
         }
       },
       {
-        "id": "gpt-5-nano",
-        "name": "GPT-5 Nano",
+        "id": "gpt-5.4-nano",
+        "name": "GPT-5.4 Nano",
         "is_reasoning": true,
-        "description": "Smallest, fastest GPT-5 variant",
-        "alias": [
-          "gpt-5-nano-2025-08-07"
-        ],
+        "description": "OpenAI's cheapest GPT-5.4-class model for simple high-volume tasks",
+        "context_window": 400000,
+        "max_output": 128000,
         "pricing": {
-          "input": 0.05,
-          "cached_input": 0.005,
-          "output": 0.4,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "gpt-5.1-codex",
-        "name": "GPT-5.1 Codex",
-        "is_reasoning": true,
-        "description": "A version of GPT-5.1 optimized for agentic coding in Codex",
-        "pricing": {
-          "input": 1.25,
-          "cached_input": 0.13,
-          "output": 10.0,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "gpt-5.1-codex-mini",
-        "name": "GPT-5.1 Codex Mini",
-        "is_reasoning": true,
-        "description": "Smaller, more cost-effective, less-capable version of GPT-5.1-Codex",
-        "pricing": {
-          "input": 0.25,
-          "cached_input": 0.03,
-          "output": 2.0,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "gpt-5.1-2025-11-13",
-        "name": "GPT-5.1",
-        "is_reasoning": true,
-        "description": "The best model for coding and agentic tasks with configurable reasoning effort",
-        "alias": [
-          "gpt-5.1"
-        ],
-        "pricing": {
-          "input": 1.25,
-          "cached_input": 0.13,
-          "output": 10.0,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "gpt-5.2-2025-12-11",
-        "name": "GPT-5.2",
-        "is_reasoning": true,
-        "description": "The best model for coding and agentic tasks with configurable reasoning effort",
-        "alias": [
-          "gpt-5.2"
-        ],
-        "pricing": {
-          "input": 1.75,
-          "cached_input": 0.175,
-          "output": 14.0,
+          "input": 0.2,
+          "cached_input": 0.02,
+          "output": 1.25,
           "unit": "per_1m_tokens"
         }
       },
@@ -153,6 +97,36 @@
             }
           ],
           "output_pricing_mode": "input_dependent",
+          "unit": "per_1m_tokens"
+        }
+      }
+    ],
+    "codex-oauth": [
+      {
+        "id": "gpt-5.4-mini",
+        "name": "GPT-5.4 Mini",
+        "is_reasoning": true,
+        "description": "OpenAI's strongest mini model for coding, computer use, and subagents",
+        "context_window": 400000,
+        "max_output": 128000,
+        "pricing": {
+          "input": 0.75,
+          "cached_input": 0.075,
+          "output": 4.5,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "gpt-5.4-nano",
+        "name": "GPT-5.4 Nano",
+        "is_reasoning": true,
+        "description": "OpenAI's cheapest GPT-5.4-class model for simple high-volume tasks",
+        "context_window": 400000,
+        "max_output": 128000,
+        "pricing": {
+          "input": 0.2,
+          "cached_input": 0.02,
+          "output": 1.25,
           "unit": "per_1m_tokens"
         }
       }
@@ -472,34 +446,34 @@
     ],
     "minimax": [
       {
-        "id": "minimax-m2.5",
-        "name": "MiniMax-M2.5",
+        "id": "minimax-m2.7",
+        "name": "MiniMax-M2.7",
         "alias": [
-          "MiniMax-M2.5",
-          "minimax-m2.5"
+          "MiniMax-M2.7",
+          "minimax-m2.7"
         ],
         "is_reasoning": false,
-        "description": "MiniMax's M2.5 model for commercial use",
+        "description": "MiniMax's M2.7 model for commercial use",
         "pricing": {
           "input": 0.3,
           "output": 1.2,
-          "cached_input": 0.03,
+          "cached_input": 0.06,
           "cache_storage": 0.375,
           "unit": "per_1m_tokens"
         }
       },
       {
-        "id": "minimax-m2.5-highspeed",
-        "name": "MiniMax-M2.5-Highspeed",
+        "id": "minimax-m2.7-highspeed",
+        "name": "MiniMax-M2.7-Highspeed",
         "alias": [
-          "MiniMax-M2.5-highspeed"
+          "MiniMax-M2.7-highspeed"
         ],
         "is_reasoning": false,
-        "description": "MiniMax's M2.5 Highspeed model with faster inference and higher output pricing",
+        "description": "MiniMax's M2.7 Highspeed model with faster inference and higher output pricing",
         "pricing": {
           "input": 0.6,
           "output": 2.4,
-          "cached_input": 0.03,
+          "cached_input": 0.06,
           "cache_storage": 0.375,
           "unit": "per_1m_tokens"
         }
