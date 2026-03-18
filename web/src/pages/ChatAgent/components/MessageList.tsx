@@ -28,7 +28,7 @@ import StartQuestionCard from './StartQuestionCard';
 import SubagentTaskMessageContent from './SubagentTaskMessageContent';
 import TextMessageContent from './TextMessageContent';
 import ToolCallMessageContent from './ToolCallMessageContent';
-import TodoListMessageContent from './TodoListMessageContent';
+
 import { TextShimmer } from '@/components/ui/text-shimmer';
 
 // Stable empty object to avoid defeating React.memo with fresh `|| {}` fallbacks
@@ -1396,21 +1396,6 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
               onOpenFile={onOpenFile}
             />
           );
-        } else if (segment.type === 'todo_list') {
-          const todoListProcess = todoListProcesses[segment.todoListId!];
-          if (todoListProcess) {
-            return (
-              <TodoListMessageContent
-                key={`todo-list-${segment.todoListId}`}
-                todos={(todoListProcess.todos as any[]) || []} // TODO: type properly — TodoItem[] not exported
-                total={(todoListProcess.total as number) || 0}
-                completed={(todoListProcess.completed as number) || 0}
-                in_progress={(todoListProcess.in_progress as number) || 0}
-                pending={(todoListProcess.pending as number) || 0}
-              />
-            );
-          }
-          return null;
         } else if (segment.type === 'subagent_task') {
           const task = subagentTasks[segment.subagentId!];
           if (task) {

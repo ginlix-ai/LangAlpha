@@ -1698,7 +1698,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
               <div className="w-full max-w-3xl space-y-3">
                 {activeAgentId === 'main' ? (
                   <>
-                    <TodoDrawer todoData={cards['todo-list-card']?.todoData ?? null} defaultCollapsed={!!cards['todo-list-card']?.todoData?.fromHistory} />
+                    <TodoDrawer todoData={cards['todo-list-card']?.todoData ?? null} />
                     {pendingRejection && (
                       <div
                         className="flex items-center gap-2 px-3 py-2 rounded-md text-sm"

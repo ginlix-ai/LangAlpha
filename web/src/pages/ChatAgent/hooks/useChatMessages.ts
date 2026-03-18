@@ -894,7 +894,6 @@ export function useChatMessages(
                 completed: payload.completed || 0,
                 in_progress: payload.in_progress || 0,
                 pending: payload.pending || 0,
-                fromHistory: true,
               });
             }
 

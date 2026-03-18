@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ChevronDown, ChevronUp, Circle, CircleMinus, Loader2 } from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
 
 interface TodoItem {
   status: 'pending' | 'in_progress' | 'completed' | 'stale';
@@ -18,27 +19,87 @@ interface TodoData {
 
 interface TodoDrawerProps {
   todoData: TodoData | null;
-  defaultCollapsed?: boolean;
 }
 
 /**
- * TodoDrawer Component
- *
- * A collapsible drawer that displays todo list above the chat input.
- * Features:
- * - Shows progress summary when collapsed
- * - Shows full todo list when expanded
- * - Positioned above chat input with lower z-index
+ * Get items to display in collapsed view.
+ * - If any in_progress: return ALL in_progress items
+ * - Otherwise fallback to single most relevant: last stale > last completed > first pending > first item
  */
-function TodoDrawer({ todoData, defaultCollapsed = false }: TodoDrawerProps) {
-  const [isExpanded, setIsExpanded] = useState(!defaultCollapsed);
+function getPreviewItems(todos: TodoItem[]): { item: TodoItem; index: number }[] {
+  if (!todos || todos.length === 0) return [];
+
+  const inProgress = todos
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => item.status === 'in_progress');
+  if (inProgress.length > 0) return inProgress;
+
+  // Find last stale (where work stopped)
+  for (let i = todos.length - 1; i >= 0; i--) {
+    if (todos[i].status === 'stale') return [{ item: todos[i], index: i }];
+  }
+
+  // Find last completed
+  for (let i = todos.length - 1; i >= 0; i--) {
+    if (todos[i].status === 'completed') return [{ item: todos[i], index: i }];
+  }
+
+  const pendingIdx = todos.findIndex(t => t.status === 'pending');
+  if (pendingIdx !== -1) return [{ item: todos[pendingIdx], index: pendingIdx }];
+
+  return [{ item: todos[0], index: 0 }];
+}
+
+function getStatusIcon(status: string) {
+  switch (status) {
+    case 'completed':
+      return (
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="1em"
+          height="1em"
+          viewBox="0 0 1024 1024"
+          className="w-4 h-4"
+          style={{ color: 'currentColor' }}
+        >
+          <path
+            d="M89.6 512c0-233.301333 189.098667-422.4 422.4-422.4s422.4 189.098667 422.4 422.4-189.098667 422.4-422.4 422.4-422.4-189.098667-422.4-422.4zM512 166.4a345.6 345.6 0 1 0 0 691.2 345.6 345.6 0 1 0 0-691.2z"
+            fill="currentColor"
+          />
+          <path
+            d="M731.136 365.397333a38.4 38.4 0 0 1 0 54.272l-255.445333 255.488a38.4 38.4 0 0 1-54.314667 0l-116.138667-116.138666a38.4 38.4 0 0 1 54.314667-54.314667l88.96 89.002667 228.309333-228.309334a38.4 38.4 0 0 1 54.314667 0z"
+            fill="currentColor"
+          />
+        </svg>
+      );
+    case 'in_progress':
+      return <Loader2 className="w-4 h-4 animate-spin" style={{ color: 'currentColor' }} />;
+    case 'stale':
+      return <CircleMinus className="w-4 h-4" style={{ color: 'currentColor' }} />;
+    case 'pending':
+    default:
+      return <Circle className="w-4 h-4" style={{ color: 'currentColor' }} />;
+  }
+}
+
+function getStatusColor(status: string): string {
+  switch (status) {
+    case 'completed':
+      return 'var(--color-profit)';
+    case 'in_progress':
+      return 'var(--color-accent-primary)';
+    default:
+      return 'var(--color-text-tertiary)';
+  }
+}
+
+function TodoDrawer({ todoData }: TodoDrawerProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
   const wasAllCompleted = useRef(false);
 
   const todos = todoData?.todos;
   const total = todoData?.total || 0;
   const completed = todoData?.completed || 0;
-  const _in_progress = todoData?.in_progress || 0;
-  const _pending = todoData?.pending || 0;
 
   const staleCount = todos?.filter(t => t.status === 'stale').length || 0;
 
@@ -51,52 +112,13 @@ function TodoDrawer({ todoData, defaultCollapsed = false }: TodoDrawerProps) {
     wasAllCompleted.current = allDone;
   }, [completed, total, staleCount]);
 
-  // Sync collapse state when defaultCollapsed changes (e.g., history loads async after mount)
-  useEffect(() => {
-    if (defaultCollapsed) {
-      setIsExpanded(false);
-    }
-  }, [defaultCollapsed]);
-
-  // Don't render if no todo data
   if (!todoData || !todos || todos.length === 0) {
     return null;
   }
 
-  /**
-   * Get icon for todo item based on status
-   */
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return (
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="1em"
-            height="1em"
-            viewBox="0 0 1024 1024"
-            className="w-4 h-4"
-            style={{ color: 'currentColor' }}
-          >
-            <path
-              d="M89.6 512c0-233.301333 189.098667-422.4 422.4-422.4s422.4 189.098667 422.4 422.4-189.098667 422.4-422.4 422.4-422.4-189.098667-422.4-422.4zM512 166.4a345.6 345.6 0 1 0 0 691.2 345.6 345.6 0 1 0 0-691.2z"
-              fill="currentColor"
-            />
-            <path
-              d="M731.136 365.397333a38.4 38.4 0 0 1 0 54.272l-255.445333 255.488a38.4 38.4 0 0 1-54.314667 0l-116.138667-116.138666a38.4 38.4 0 0 1 54.314667-54.314667l88.96 89.002667 228.309333-228.309334a38.4 38.4 0 0 1 54.314667 0z"
-              fill="currentColor"
-            />
-          </svg>
-        );
-      case 'in_progress':
-        return <Loader2 className="w-4 h-4 animate-spin" style={{ color: 'currentColor' }} />;
-      case 'stale':
-        return <CircleMinus className="w-4 h-4" style={{ color: 'currentColor' }} />;
-      case 'pending':
-      default:
-        return <Circle className="w-4 h-4" style={{ color: 'currentColor' }} />;
-    }
-  };
+  const previewItems = getPreviewItems(todos);
+  // Stable key for AnimatePresence based on the set of preview items
+  const previewKey = previewItems.map(p => `${p.index}-${p.item.status}-${p.item.activeForm || p.item.content}`).join('|');
 
   return (
     <div
@@ -107,13 +129,12 @@ function TodoDrawer({ todoData, defaultCollapsed = false }: TodoDrawerProps) {
         backdropFilter: 'blur(8px)',
       }}
     >
-      {/* Header - Always visible */}
+      {/* Header */}
       <button
         onClick={() => setIsExpanded(!isExpanded)}
         className="w-full flex items-center justify-between px-4 py-3 hover:bg-foreground/5 transition-colors"
       >
         <div className="flex items-center gap-2">
-          {/* Robot Icon */}
           <svg
             xmlns="http://www.w3.org/2000/svg"
             width="1em"
@@ -132,59 +153,93 @@ function TodoDrawer({ todoData, defaultCollapsed = false }: TodoDrawerProps) {
           </span>
         </div>
 
-        {/* Expand/Collapse Icon */}
         <div style={{ color: 'var(--color-text-tertiary)' }}>
           {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
         </div>
       </button>
 
-      {/* Expanded Content - Todo List */}
-      {isExpanded && (
-        <div
-          className="border-t"
-          style={{
-            borderColor: 'var(--color-border-muted)',
-            maxHeight: '320px',
-            overflowY: 'auto',
-          }}
-        >
-          <div className="p-3 space-y-2">
-            {todos.map((todo, index) => (
-              <div
-                key={`todo-${index}-${todo.activeForm || index}`}
-                className="flex items-start gap-2"
-              >
-                {/* Status Icon */}
-                <div
-                  className="flex-shrink-0 mt-0.5"
-                  style={{
-                    color:
-                      todo.status === 'completed'
-                        ? 'var(--color-profit)'
-                        : todo.status === 'in_progress'
-                        ? 'var(--color-accent-primary)'
-                        : 'var(--color-text-tertiary)',
-                  }}
-                >
-                  {getStatusIcon(todo.status)}
-                </div>
-
-                {/* Todo Text */}
-                <div className="flex-1 min-w-0">
+      {/* Preview items (collapsed) */}
+      {!isExpanded && previewItems.length > 0 && (
+        <div className="px-4 pb-3 -mt-1">
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={previewKey}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.2 }}
+              className="space-y-1"
+            >
+              {previewItems.map(({ item, index }) => (
+                <div key={`preview-${index}`} className="flex items-center gap-2">
                   <div
-                    className="text-sm"
+                    className="flex-shrink-0"
+                    style={{ color: getStatusColor(item.status) }}
+                  >
+                    {getStatusIcon(item.status)}
+                  </div>
+                  <span
+                    className="text-sm truncate"
                     style={{
-                      color: todo.status === 'completed' || todo.status === 'stale' ? 'var(--color-text-secondary)' : 'var(--color-text-primary)',
+                      color: item.status === 'completed' || item.status === 'stale'
+                        ? 'var(--color-text-secondary)'
+                        : 'var(--color-text-primary)',
                     }}
                   >
-                    {todo.activeForm || todo.content || `Task ${index + 1}`}
-                  </div>
+                    {item.activeForm || item.content || `Task ${index + 1}`}
+                  </span>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </motion.div>
+          </AnimatePresence>
         </div>
       )}
+
+      {/* Expanded Content - Full Todo List */}
+      <AnimatePresence>
+        {isExpanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="border-t overflow-hidden"
+            style={{ borderColor: 'var(--color-border-muted)' }}
+          >
+            <div
+              style={{ maxHeight: '320px', overflowY: 'auto' }}
+            >
+              <div className="p-3 space-y-2">
+                {todos.map((todo, index) => (
+                  <div
+                    key={`todo-${index}-${todo.activeForm || index}`}
+                    className="flex items-start gap-2"
+                  >
+                    <div
+                      className="flex-shrink-0 mt-0.5"
+                      style={{ color: getStatusColor(todo.status) }}
+                    >
+                      {getStatusIcon(todo.status)}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div
+                        className="text-sm"
+                        style={{
+                          color: todo.status === 'completed' || todo.status === 'stale'
+                            ? 'var(--color-text-secondary)'
+                            : 'var(--color-text-primary)',
+                        }}
+                      >
+                        {todo.activeForm || todo.content || `Task ${index + 1}`}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
