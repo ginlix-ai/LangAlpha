@@ -432,6 +432,16 @@ if GINLIX_DATA_ENABLED:
 
     logger.info("ginlix-data WS proxy enabled")
 else:
+    # Register a minimal status endpoint so the frontend preflight check
+    # gets a clean 200 instead of a noisy 404.
+    from fastapi import APIRouter as _APIRouter
+
+    market_data_ws_router = _APIRouter()
+
+    @market_data_ws_router.get("/ws/v1/market-data/status")
+    async def market_data_ws_status_disabled():
+        return {"enabled": False}
+
     logger.info("ginlix-data WS proxy disabled (GINLIX_DATA_URL not set)")
 
 # Include all routers
@@ -473,7 +483,6 @@ app.include_router(
 app.include_router(skills_router)  # /api/v1/skills - Available agent skills
 app.include_router(health_router)  # /health - Health check
 
-if GINLIX_DATA_ENABLED:
-    app.include_router(
-        market_data_ws_router
-    )  # /ws/v1/market-data/* - Real-time WS proxy
+app.include_router(
+    market_data_ws_router
+)  # /ws/v1/market-data/* - Real-time WS proxy (or just status endpoint when disabled)

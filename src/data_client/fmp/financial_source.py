@@ -78,5 +78,10 @@ class FMPFinancialSource:
     async def screen_stocks(self, **filters: Any) -> list[dict[str, Any]]:
         return await self._client.get_company_screener(**filters)
 
+    async def search_stocks(
+        self, query: str, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        return await self._client.search_stocks(query=query, limit=limit)
+
     async def close(self) -> None:
         pass  # client lifecycle managed by get_fmp_client singleton

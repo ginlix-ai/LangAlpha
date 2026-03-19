@@ -19,6 +19,7 @@ interface NewsItem {
   favicon: string | null;
   image: string | null;
   tickers: string[];
+  articleUrl?: string | null;
 }
 
 interface DashboardData {
@@ -95,6 +96,7 @@ export function useDashboardData(): DashboardData {
           favicon: (r.source as Record<string, unknown> | undefined)?.favicon_url as string || null,
           image: r.image_url as string || null,
           tickers: (r.tickers as string[]) || [],
+          articleUrl: (r.article_url as string) || null,
         }));
       }
       return [];

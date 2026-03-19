@@ -40,6 +40,7 @@ function Dashboard() {
   }, []);
   // News modal state
   const [selectedNewsId, setSelectedNewsId] = useState<string | null>(null);
+  const [selectedNewsFallbackUrl, setSelectedNewsFallbackUrl] = useState<string | null>(null);
 
   // Insight modal state
   const [selectedMarketInsightId, setSelectedMarketInsightId] = useState<string | null>(null);
@@ -149,7 +150,10 @@ function Dashboard() {
                 portfolioLoading={portfolioNews.loading}
                 watchlistItems={watchlistNews.items}
                 watchlistLoading={watchlistNews.loading}
-                onNewsClick={(id) => setSelectedNewsId(String(id))}
+                onNewsClick={(id, articleUrl) => {
+                  setSelectedNewsId(String(id));
+                  setSelectedNewsFallbackUrl(articleUrl ?? null);
+                }}
               />
             </div>
 
@@ -172,7 +176,7 @@ function Dashboard() {
       </main>
 
       {/* News Detail Modal */}
-      <NewsDetailModal newsId={selectedNewsId} onClose={() => setSelectedNewsId(null)} />
+      <NewsDetailModal newsId={selectedNewsId} onClose={() => { setSelectedNewsId(null); setSelectedNewsFallbackUrl(null); }} fallbackUrl={selectedNewsFallbackUrl} />
 
       {/* Insight Detail Modal */}
       <InsightDetailModal

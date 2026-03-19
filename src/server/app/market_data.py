@@ -37,8 +37,6 @@ from src.server.services.cache.intraday_cache_service import (
 from src.server.services.cache.daily_cache_service import (
     DailyCacheService,
 )
-from src.data_client.fmp.fmp_client import FMPClient
-
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
@@ -416,9 +414,10 @@ async def search_stocks(
 
     try:
         from src.utils.cache.redis_cache import get_cache_client
+        from src.data_client import get_financial_data_provider
 
         cache = get_cache_client()
-        cache_key = f"fmp:search:{query.strip().lower()}:{limit}"
+        cache_key = f"search:{query.strip().lower()}:{limit}"
 
         cached = await cache.get(cache_key)
         if cached is not None:
@@ -428,33 +427,31 @@ async def search_stocks(
                 results = [r for r in results if r.exchangeShortName and r.exchangeShortName.upper() in exchange_set]
             return StockSearchResponse(query=query.strip(), results=results, count=len(results))
 
-        fmp_client = FMPClient()
+        provider = await get_financial_data_provider()
+        if provider.financial is None:
+            raise HTTPException(status_code=503, detail="No financial data provider available")
 
-        try:
-            raw_results = await fmp_client.search_stocks(query=query.strip(), limit=limit)
+        raw_results = await provider.financial.search_stocks(query=query.strip(), limit=limit)
 
-            results = []
-            for item in raw_results:
-                result = StockSearchResult(
-                    symbol=item.get("symbol", ""),
-                    name=item.get("name", ""),
-                    currency=item.get("currency"),
-                    stockExchange=item.get("stockExchange"),
-                    exchangeShortName=item.get("exchangeShortName"),
-                )
-                results.append(result)
+        results = []
+        for item in raw_results:
+            result = StockSearchResult(
+                symbol=item.get("symbol", ""),
+                name=item.get("name", ""),
+                currency=item.get("currency"),
+                stockExchange=item.get("stockExchange"),
+                exchangeShortName=item.get("exchangeShortName"),
+            )
+            results.append(result)
 
-            # Cache unfiltered results
-            await cache.set(cache_key, {"results": [r.model_dump() for r in results]}, ttl=300)
+        # Cache unfiltered results
+        await cache.set(cache_key, {"results": [r.model_dump() for r in results]}, ttl=300)
 
-            if exchange:
-                exchange_set = {e.upper() for e in exchange}
-                results = [r for r in results if r.exchangeShortName and r.exchangeShortName.upper() in exchange_set]
+        if exchange:
+            exchange_set = {e.upper() for e in exchange}
+            results = [r for r in results if r.exchangeShortName and r.exchangeShortName.upper() in exchange_set]
 
-            return StockSearchResponse(query=query.strip(), results=results, count=len(results))
-
-        finally:
-            await fmp_client.close()
+        return StockSearchResponse(query=query.strip(), results=results, count=len(results))
 
     except HTTPException:
         raise
@@ -484,7 +481,7 @@ async def get_company_overview(symbol: str, user_id: CurrentUserId) -> CompanyOv
         from src.utils.cache.redis_cache import get_cache_client
 
         cache = get_cache_client()
-        cache_key = f"fmp:overview:{symbol_upper}"
+        cache_key = f"overview:{symbol_upper}"
 
         cached = await cache.get(cache_key)
         if cached is not None:
@@ -539,60 +536,71 @@ async def get_analyst_data(
     symbol_upper = symbol.strip().upper()
 
     try:
+        import asyncio
         from src.utils.cache.redis_cache import get_cache_client
+        from src.data_client import get_financial_data_provider
 
         cache = get_cache_client()
-        cache_key = f"fmp:analyst:{symbol_upper}"
+        cache_key = f"analyst:{symbol_upper}"
 
         cached = await cache.get(cache_key)
         if cached is not None:
             return AnalystDataResponse(**cached)
 
-        fmp_client = FMPClient()
+        provider = await get_financial_data_provider()
+        if provider.financial is None:
+            raise HTTPException(status_code=503, detail="No financial data provider available")
 
-        try:
-            import asyncio
-            price_targets_raw, grades_raw = await asyncio.gather(
-                fmp_client.get_price_target_summary(symbol_upper),
-                fmp_client.get_stock_grades(symbol_upper, limit=grade_limit),
-                return_exceptions=True,
+        # Price targets: via provider (works for FMP and yfinance)
+        # Grades: FMP-only (per-analyst records); gracefully empty otherwise
+        async def _fetch_grades() -> list:
+            try:
+                from src.data_client.fmp.fmp_client import FMPClient
+                fmp_client = FMPClient()
+                try:
+                    return await fmp_client.get_stock_grades(symbol_upper, limit=grade_limit)
+                finally:
+                    await fmp_client.close()
+            except Exception:
+                logger.warning("Failed to fetch grades for %s", symbol_upper, exc_info=True)
+                return []
+
+        price_targets_raw, grades_raw = await asyncio.gather(
+            provider.financial.get_analyst_price_targets(symbol_upper),
+            _fetch_grades(),
+            return_exceptions=True,
+        )
+
+        price_targets = None
+        if isinstance(price_targets_raw, list) and len(price_targets_raw) > 0:
+            pt = price_targets_raw[0]
+            price_targets = PriceTargetSummary(
+                targetHigh=pt.get("targetHigh"),
+                targetLow=pt.get("targetLow"),
+                targetConsensus=pt.get("targetConsensus"),
+                targetMedian=pt.get("targetMedian"),
             )
+        elif isinstance(price_targets_raw, Exception):
+            logger.warning(f"Failed to fetch price targets for {symbol_upper}: {price_targets_raw}")
 
-            price_targets = None
-            if isinstance(price_targets_raw, list) and len(price_targets_raw) > 0:
-                pt = price_targets_raw[0]
-                price_targets = PriceTargetSummary(
-                    targetHigh=pt.get("targetHigh"),
-                    targetLow=pt.get("targetLow"),
-                    targetConsensus=pt.get("targetConsensus"),
-                    targetMedian=pt.get("targetMedian"),
-                )
-            elif isinstance(price_targets_raw, Exception):
-                logger.warning(f"Failed to fetch price targets for {symbol_upper}: {price_targets_raw}")
+        grades = []
+        if isinstance(grades_raw, list):
+            for g in grades_raw:
+                grades.append(AnalystGrade(
+                    date=g.get("date", ""),
+                    company=g.get("gradingCompany", ""),
+                    previousGrade=g.get("previousGrade"),
+                    newGrade=g.get("newGrade"),
+                    action=g.get("action"),
+                ))
 
-            grades = []
-            if isinstance(grades_raw, list):
-                for g in grades_raw:
-                    grades.append(AnalystGrade(
-                        date=g.get("date", ""),
-                        company=g.get("gradingCompany", ""),
-                        previousGrade=g.get("previousGrade"),
-                        newGrade=g.get("newGrade"),
-                        action=g.get("action"),
-                    ))
-            elif isinstance(grades_raw, Exception):
-                logger.warning(f"Failed to fetch grades for {symbol_upper}: {grades_raw}")
-
-            response = AnalystDataResponse(
-                symbol=symbol_upper,
-                priceTargets=price_targets,
-                grades=grades,
-            )
-            await cache.set(cache_key, response.model_dump(), ttl=900)
-            return response
-
-        finally:
-            await fmp_client.close()
+        response = AnalystDataResponse(
+            symbol=symbol_upper,
+            priceTargets=price_targets,
+            grades=grades,
+        )
+        await cache.set(cache_key, response.model_dump(), ttl=900)
+        return response
 
     except HTTPException:
         raise
@@ -743,6 +751,7 @@ async def get_market_status(user_id: CurrentUserId) -> MarketStatusResponse:
             earlyHours=raw.get("earlyHours"),
             serverTime=raw.get("serverTime"),
             exchanges=raw.get("exchanges"),
+            providers=provider.source_names,
         )
         await cache.set(cache_key, response.model_dump(), ttl=_MARKET_STATUS_CACHE_TTL)
 

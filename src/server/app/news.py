@@ -22,15 +22,23 @@ router = APIRouter(prefix="/api/v1/news", tags=["News"])
 _cache = NewsCacheService()
 
 
-def _compact(article: dict) -> NewsArticleCompact:
-    """Convert a full article dict to a compact model."""
+def _compact(article: dict) -> NewsArticleCompact | None:
+    """Convert a full article dict to a compact model. Returns None for invalid articles."""
+    title = article.get("title")
+    if not title:
+        return None
     sentiments = article.get("sentiments")
+    article_id = article.get("id")
+    source = article.get("source")
+    if not article_id or not source:
+        return None
     return NewsArticleCompact(
-        id=article["id"],
-        title=article["title"],
-        published_at=article["published_at"],
+        id=article_id,
+        title=title,
+        published_at=article.get("published_at", ""),
         image_url=article.get("image_url"),
-        source=NewsPublisher(**article["source"]),
+        article_url=article.get("article_url"),
+        source=NewsPublisher(**source),
         tickers=article.get("tickers", []),
         has_sentiment=bool(sentiments and len(sentiments) > 0),
     )
@@ -57,9 +65,10 @@ async def get_news(
     if not cursor:
         cached = await _cache.get(tickers=ticker_list, limit=limit)
         if cached:
+            results = [c for a in cached["results"] if (c := _compact(a)) is not None]
             return NewsCompactResponse(
-                results=[_compact(a) for a in cached["results"]],
-                count=cached["count"],
+                results=results,
+                count=len(results),
                 next_cursor=cached.get("next_cursor"),
             )
 
@@ -81,9 +90,10 @@ async def get_news(
     if not cursor:
         await _cache.set(data, tickers=ticker_list, limit=limit)
 
+    results = [c for a in data["results"] if (c := _compact(a)) is not None]
     return NewsCompactResponse(
-        results=[_compact(a) for a in data["results"]],
-        count=data["count"],
+        results=results,
+        count=len(results),
         next_cursor=data.get("next_cursor"),
     )
 

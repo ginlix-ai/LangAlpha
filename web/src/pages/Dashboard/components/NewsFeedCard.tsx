@@ -12,6 +12,7 @@ interface NewsItem {
   favicon?: string | null;
   tickers?: string[];
   isHot?: boolean;
+  articleUrl?: string | null;
 }
 
 type TabKey = 'market' | 'portfolio' | 'watchlist';
@@ -70,7 +71,7 @@ function getDateRangeCutoff(key: DateRangeKey): number {
 interface NewsRowProps {
   item: NewsItem;
   idx: number;
-  onNewsClick?: (id: string | number) => void;
+  onNewsClick?: (id: string | number, articleUrl?: string | null) => void;
   skipAnimation?: boolean;
 }
 
@@ -92,7 +93,7 @@ function NewsRow({ item, idx, onNewsClick, skipAnimation }: NewsRowProps) {
   return (
     <Wrapper
       {...motionProps}
-      onClick={() => item.id != null && onNewsClick?.(item.id)}
+      onClick={() => item.id != null && onNewsClick?.(item.id, item.articleUrl)}
       className="group flex items-center gap-3 sm:gap-4 px-2 py-2.5 sm:p-3 rounded-lg sm:rounded-xl border border-transparent transition-all cursor-pointer"
       style={{ backgroundColor: 'transparent' }}
       onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => {
@@ -232,7 +233,7 @@ interface NewsFeedCardProps {
   portfolioLoading?: boolean;
   watchlistItems?: NewsItem[];
   watchlistLoading?: boolean;
-  onNewsClick?: (id: string | number) => void;
+  onNewsClick?: (id: string | number, articleUrl?: string | null) => void;
 }
 
 function NewsFeedCard({

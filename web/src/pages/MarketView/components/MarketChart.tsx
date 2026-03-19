@@ -77,6 +77,7 @@ interface MarketChartProps {
   liveTick: BarData | null;
   wsStatus: string;
   ginlixDataEnabled?: boolean;
+  marketStatus?: Record<string, unknown> | null;
   snapshot: SnapshotData | null;
 }
 
@@ -101,10 +102,13 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
   liveTick,
   wsStatus: _wsStatus,
   ginlixDataEnabled = true,
+  marketStatus,
   snapshot,
 }, ref) => {
   const { theme } = useTheme();
   const ct = getChartTheme(theme as 'dark' | 'light');
+  const providers = Array.isArray(marketStatus?.providers) ? marketStatus.providers as string[] : [];
+  const supports4hInterval = marketStatus == null || providers.some(p => p !== 'yfinance');
   const rootRef = useRef<HTMLDivElement>(null);
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const rsiChartContainerRef = useRef<HTMLDivElement>(null);
@@ -1382,6 +1386,11 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
             onIntervalChange?.('1min');
             return;
           }
+          // Silently downgrade 4H → 1H when provider doesn't support it
+          if (interval === '4hour' && !supports4hInterval) {
+            onIntervalChange?.('1hour');
+            return;
+          }
           clearChartSeries();
           let fallbackMsg;
           if (interval === '1s') {
@@ -1399,6 +1408,11 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
         // Silently downgrade 1s → 1min when ginlix-data unavailable or symbol ineligible
         if (interval === '1s' && (!ginlixDataEnabled || !supports1sInterval(symbol))) {
           onIntervalChange?.('1min');
+          return;
+        }
+        // Silently downgrade 4H → 1H when provider doesn't support it
+        if (interval === '4hour' && !supports4hInterval) {
+          onIntervalChange?.('1hour');
           return;
         }
         console.error('Failed to load stock data:', err);
@@ -1679,16 +1693,18 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
           <div className="interval-selector">
             {INTERVALS.filter(({ key }) => PRIMARY_INTERVAL_KEYS.has(key)).map(({ key, label }) => {
               const is1sDisabled = key === '1s' && (!ginlixDataEnabled || !supports1sInterval(symbol));
+              const is4hDisabled = key === '4hour' && !supports4hInterval;
+              const isDisabled = is1sDisabled || is4hDisabled;
               return (
               <div key={key} style={{ position: 'relative', display: 'inline-flex' }}>
                 <button
                   type="button"
-                  className={`interval-btn${interval === key ? ' interval-btn-active' : ''}${is1sDisabled ? ' interval-btn-disabled' : ''}`}
+                  className={`interval-btn${interval === key ? ' interval-btn-active' : ''}${isDisabled ? ' interval-btn-disabled' : ''}`}
                   onClick={() => {
-                    if (is1sDisabled) {
-                      const msg = !ginlixDataEnabled
-                        ? '1s data is not available'
-                        : '1s interval is only available for US stocks';
+                    if (isDisabled) {
+                      const msg = is1sDisabled
+                        ? (!ginlixDataEnabled ? '1s data is not available' : '1s interval is only available for US stocks')
+                        : '4H data requires FMP or Ginlix Data provider';
                       setDisabledTooltip(msg);
                       if (disabledTooltipTimer.current) clearTimeout(disabledTooltipTimer.current);
                       disabledTooltipTimer.current = setTimeout(() => setDisabledTooltip(null), 2000);
@@ -1699,7 +1715,7 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
                 >
                   {label}
                 </button>
-                {is1sDisabled && disabledTooltip && (
+                {isDisabled && disabledTooltip && (
                   <div className="interval-disabled-tooltip">{disabledTooltip}</div>
                 )}
               </div>

@@ -52,6 +52,11 @@ async def get_economic_calendar(
 
     try:
         fmp_client = FMPClient()
+    except (ValueError, ImportError):
+        # FMP unavailable — no fallback for economic calendar
+        return EconomicCalendarResponse(data=[], count=0)
+
+    try:
         try:
             raw = await fmp_client.get_economic_calendar(
                 from_date=from_date, to_date=to_date
@@ -89,6 +94,11 @@ async def get_earnings_calendar(
 
     try:
         fmp_client = FMPClient()
+    except (ValueError, ImportError):
+        # FMP unavailable — no fallback for earnings calendar
+        return EarningsCalendarResponse(data=[], count=0)
+
+    try:
         try:
             raw = await fmp_client.get_earnings_calendar_by_date(
                 from_date=from_date, to_date=to_date

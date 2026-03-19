@@ -124,12 +124,15 @@ market_data:
       markets: [us]          # US equities only
     - name: fmp
       markets: [all]         # FMP — global coverage, catch-all fallback
+    - name: yfinance
+      markets: [all]         # Free fallback — no API key required
 
 # Ordered news provider chain — sequential fallback (no market routing).
 news_data:
   providers:
     - name: ginlix-data
     - name: fmp
+    - name: yfinance
 
 
 # =============================================================================

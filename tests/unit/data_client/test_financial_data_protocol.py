@@ -177,6 +177,14 @@ class TestFMPFinancialSource:
         assert result == [{"symbol": "AAPL"}]
 
     @pytest.mark.asyncio
+    async def test_search_stocks(self, source):
+        src, client = source
+        client.search_stocks = AsyncMock(return_value=[{"symbol": "AAPL"}])
+        result = await src.search_stocks(query="apple", limit=10)
+        client.search_stocks.assert_awaited_once_with(query="apple", limit=10)
+        assert result == [{"symbol": "AAPL"}]
+
+    @pytest.mark.asyncio
     async def test_close_is_noop(self, source):
         src, _ = source
         await src.close()  # should not raise
@@ -313,6 +321,7 @@ class TestGetFinancialDataProviderFactory:
 
         with (
             patch("src.data_client.registry._fmp_available", return_value=False),
+            patch("src.data_client.registry._yfinance_available", return_value=False),
             patch("src.data_client.registry._ginlix_data_available", return_value=True),
             patch(
                 "src.data_client.ginlix_data.get_ginlix_data_client",
@@ -361,11 +370,33 @@ class TestGetFinancialDataProviderFactory:
         self._reset_singleton()
 
     @pytest.mark.asyncio
+    async def test_yfinance_fallback(self):
+        """When FMP unavailable but yfinance importable, uses YFinanceFinancialSource."""
+        self._reset_singleton()
+
+        with (
+            patch("src.data_client.registry._fmp_available", return_value=False),
+            patch("src.data_client.registry._yfinance_available", return_value=True),
+            patch("src.data_client.registry._ginlix_data_available", return_value=False),
+            patch(
+                "src.data_client.yfinance.financial_source.YFinanceFinancialSource"
+            ) as MockYF,
+        ):
+            from src.data_client import get_financial_data_provider
+
+            provider = await get_financial_data_provider()
+
+        assert provider.financial is not None
+        MockYF.assert_called_once()
+        self._reset_singleton()
+
+    @pytest.mark.asyncio
     async def test_neither_available(self):
         self._reset_singleton()
 
         with (
             patch("src.data_client.registry._fmp_available", return_value=False),
+            patch("src.data_client.registry._yfinance_available", return_value=False),
             patch("src.data_client.registry._ginlix_data_available", return_value=False),
         ):
             from src.data_client import get_financial_data_provider
@@ -375,3 +406,52 @@ class TestGetFinancialDataProviderFactory:
         assert provider.financial is None
         assert provider.intel is None
         self._reset_singleton()
+
+
+# ---------------------------------------------------------------------------
+# YFinanceFinancialSource
+# ---------------------------------------------------------------------------
+
+class TestYFinanceFinancialSource:
+    """Tests for the yfinance-backed FinancialDataSource."""
+
+    @pytest.mark.asyncio
+    async def test_search_stocks_passes_max_results(self):
+        mock_search = MagicMock()
+        mock_search.quotes = [{"symbol": "AAPL", "shortname": "Apple Inc."}]
+
+        with patch(
+            "src.data_client.yfinance.financial_source.yf.Search",
+            return_value=mock_search,
+        ) as MockSearch:
+            from src.data_client.yfinance.financial_source import YFinanceFinancialSource
+
+            source = YFinanceFinancialSource()
+            result = await source.search_stocks(query="apple", limit=20)
+
+        MockSearch.assert_called_once_with("apple", max_results=20)
+        assert len(result) == 1
+        assert result[0]["symbol"] == "AAPL"
+
+    @pytest.mark.asyncio
+    async def test_analyst_price_targets_empty_dict_returns_empty(self):
+        mock_ticker = MagicMock()
+        mock_ticker.analyst_price_targets = {}
+
+        with patch(
+            "src.data_client.yfinance.financial_source.yf.Ticker",
+            return_value=mock_ticker,
+        ):
+            from src.data_client.yfinance.financial_source import YFinanceFinancialSource
+
+            source = YFinanceFinancialSource()
+            result = await source.get_analyst_price_targets("AAPL")
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_close_is_noop(self):
+        from src.data_client.yfinance.financial_source import YFinanceFinancialSource
+
+        source = YFinanceFinancialSource()
+        await source.close()  # should not raise

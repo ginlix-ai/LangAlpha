@@ -33,6 +33,7 @@ interface Article {
 interface NewsDetailModalProps {
   newsId: string | null;
   onClose: () => void;
+  fallbackUrl?: string | null;
 }
 
 function sentimentIcon(sentiment: string): React.ReactElement {
@@ -89,12 +90,16 @@ function formatDate(dateString: string | undefined): string {
 function NewsBody({
   article,
   loading,
+  fetchFailed,
+  fallbackUrl,
   expandedSentiment,
   setExpandedSentiment,
   isMobile,
 }: {
   article: Article | null;
   loading: boolean;
+  fetchFailed?: boolean;
+  fallbackUrl?: string | null;
   expandedSentiment: number | null;
   setExpandedSentiment: React.Dispatch<React.SetStateAction<number | null>>;
   isMobile: boolean;
@@ -112,8 +117,25 @@ function NewsBody({
 
   if (!article) {
     return (
-      <div className="flex items-center justify-center py-24">
-        <p style={{ color: 'var(--color-text-secondary)' }}>Article not found</p>
+      <div className="flex flex-col items-center justify-center gap-3 py-24">
+        <p style={{ color: 'var(--color-text-secondary)' }}>
+          {fetchFailed ? 'Article details not available' : 'Article not found'}
+        </p>
+        {fetchFailed && fallbackUrl && (
+          <a
+            href={fallbackUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+            style={{
+              backgroundColor: 'var(--color-accent-primary)',
+              color: '#fff',
+            }}
+          >
+            Open article
+            <ExternalLink size={14} />
+          </a>
+        )}
       </div>
     );
   }
@@ -383,20 +405,23 @@ function NewsBody({
   );
 }
 
-function NewsDetailModal({ newsId, onClose }: NewsDetailModalProps) {
+function NewsDetailModal({ newsId, onClose, fallbackUrl }: NewsDetailModalProps) {
   const [article, setArticle] = useState<Article | null>(null);
   const [loading, setLoading] = useState(false);
+  const [fetchFailed, setFetchFailed] = useState(false);
   const [expandedSentiment, setExpandedSentiment] = useState<number | null>(null);
   const isMobile = useIsMobile();
 
   useEffect(() => {
     if (!newsId) {
       setArticle(null);
+      setFetchFailed(false);
       setExpandedSentiment(null);
       return;
     }
     let cancelled = false;
     setLoading(true);
+    setFetchFailed(false);
     setExpandedSentiment(null);
     getNewsArticle(newsId)
       .then((data) => {
@@ -404,7 +429,10 @@ function NewsDetailModal({ newsId, onClose }: NewsDetailModalProps) {
       })
       .catch((err) => {
         console.error('[NewsDetailModal] fetch failed:', err?.message);
-        if (!cancelled) setArticle(null);
+        if (!cancelled) {
+          setArticle(null);
+          setFetchFailed(true);
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -428,6 +456,8 @@ function NewsDetailModal({ newsId, onClose }: NewsDetailModalProps) {
     <NewsBody
       article={article}
       loading={loading}
+      fetchFailed={fetchFailed}
+      fallbackUrl={fallbackUrl}
       expandedSentiment={expandedSentiment}
       setExpandedSentiment={setExpandedSentiment}
       isMobile={isMobile}

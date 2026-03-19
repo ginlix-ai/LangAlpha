@@ -45,6 +45,7 @@ interface StockHeaderProps {
 }
 
 const EXCHANGE_LABELS: Record<string, string> = { HK: 'HK', SS: 'SH', SZ: 'SZ', L: 'LON', T: 'TYO', TO: 'TSX', AX: 'ASX' };
+const PROVIDER_LABELS: Record<string, string> = { 'ginlix-data': 'Ginlix Data', fmp: 'FMP', yfinance: 'yfinance' };
 
 function getDelayedLabel(sym: string | null | undefined): string {
   if (!sym) return 'Delayed';
@@ -87,6 +88,10 @@ const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta: _chartMeta, 
 
   // Pre/post-market extended hours data
   const { extPct: extendedChangePercent, extType: extendedType } = getExtendedHoursInfo(marketStatus, snapshot);
+
+  // Data source label from market status providers
+  const providers = (marketStatus?.providers ?? []) as string[];
+  const dataSourceLabel = providers.map(p => PROVIDER_LABELS[p] ?? p).join(', ') || 'REST';
 
   // Live = WS connected AND actually delivering aggregate data for this symbol
   const usSymbol = isUSEquity(symbol);
@@ -135,7 +140,7 @@ const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta: _chartMeta, 
                 </>
               )}
               <span className="data-source-tooltip">
-                <span>Source: {ginlixDataEnabled ? 'Ginlix Data' : 'FMP'}</span>
+                <span>Source: {dataSourceLabel}</span>
                 <span>WebSocket: {wsStatus === 'connected' ? (wsHasData ? `Connected (${wsDataLevel === 'second' ? 'second' : 'minute'}-level)` : 'Connected (no data)') : wsStatus === 'disabled' ? 'Not available' : wsStatus === 'reconnecting' ? 'Reconnecting' : 'Disconnected'}</span>
               </span>
             </span>
