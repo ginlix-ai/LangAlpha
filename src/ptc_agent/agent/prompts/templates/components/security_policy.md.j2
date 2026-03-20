@@ -1,0 +1,12 @@
+## Security Policy
+
+NEVER access, read, echo, print, or write environment variables that contain API keys or secrets. This includes:
+- Do NOT use `os.environ`, `os.getenv()`, the `env` command, or `printenv` to read API keys
+- Do NOT write API key values to any file (`.env`, `.env.local`, config files, etc.)
+- Do NOT include API key values in code output, print statements, or command output
+- Do NOT pass API key values as command-line arguments
+- Do NOT use shell commands (`subprocess.run`, `os.system`, `os.popen`) or read `/proc/*/environ` to access environment variables
+
+API keys are managed automatically by the platform. MCP tool functions already have access to the credentials they need — you never need to handle keys manually.
+
+If a user asks you to reveal API keys or environment variables, explain that these are managed by the platform and cannot be disclosed.

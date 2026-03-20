@@ -26,8 +26,9 @@ from ptc_agent.agent.middleware.plan_mode import (
 # Ask user middleware
 from ptc_agent.agent.middleware.ask_user import AskUserMiddleware
 
-# Tool middleware (argument parsing, error handling, result normalization, leak detection, empty call retry)
+# Tool middleware (argument parsing, error handling, result normalization, leak detection, code validation, empty call retry)
 from ptc_agent.agent.middleware.tool import (
+    CodeValidationMiddleware,
     EmptyToolCallRetryMiddleware,
     LeakDetectionMiddleware,
     ProtectedPathMiddleware,
@@ -107,6 +108,7 @@ __all__ = [
     # Multimodal middleware (for read_file image/PDF support)
     "MultimodalMiddleware",
     # Tool middleware
+    "CodeValidationMiddleware",
     "EmptyToolCallRetryMiddleware",
     "LeakDetectionMiddleware",
     "ProtectedPathMiddleware",

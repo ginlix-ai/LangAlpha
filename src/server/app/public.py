@@ -20,6 +20,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
+from src.server.utils.secret_redactor import get_redactor
+
 from src.server.database.conversation import (
     get_thread_by_share_token,
     get_queries_for_thread,
@@ -286,6 +288,7 @@ async def read_shared_file(
             raise HTTPException(status_code=415, detail="Cannot read binary file as text.")
 
         text_content = file_record.get("content_text", "")
+        text_content = get_redactor().redact(text_content)
         lines = text_content.splitlines()
         content = "\n".join(lines[offset:offset + limit])
         mime = file_record.get("mime_type") or "text/plain"
@@ -323,6 +326,7 @@ async def read_shared_file(
                 except UnicodeDecodeError:
                     raise HTTPException(status_code=415, detail="File appears to be binary.")
 
+                text_content = get_redactor().redact(text_content)
                 lines = text_content.splitlines()
                 content = "\n".join(lines[offset:offset + limit])
                 from src.server.app.workspace_files import _to_client_path
@@ -384,6 +388,9 @@ async def download_shared_file(
         filename = file_record.get("file_name", "download")
         mime = file_record.get("mime_type") or "application/octet-stream"
 
+        if mime and mime.startswith("text/"):
+            content = get_redactor().redact_bytes(content)
+
         return StreamingResponse(
             iter([content]),
             media_type=mime,
@@ -412,6 +419,9 @@ async def download_shared_file(
 
                 filename = client_path.split("/")[-1] if client_path else "download"
                 mime, _ = mimetypes.guess_type(filename)
+
+                if mime and mime.startswith("text/"):
+                    content = get_redactor().redact_bytes(content)
 
                 return StreamingResponse(
                     iter([content]),

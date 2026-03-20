@@ -27,6 +27,7 @@ from ptc_agent.agent.middleware import (
     MultimodalMiddleware,
     create_plan_mode_interrupt_config,
     # Tool middleware
+    CodeValidationMiddleware,
     EmptyToolCallRetryMiddleware,
     LeakDetectionMiddleware,
     ProtectedPathMiddleware,
@@ -375,6 +376,7 @@ class PTCAgent:
                 ProtectedPathMiddleware(
                     denied_directories=self.config.filesystem.denied_directories,
                 ),
+                CodeValidationMiddleware(),
                 ToolErrorHandlingMiddleware(),
                 LeakDetectionMiddleware(mcp_servers=self.config.mcp.servers),
                 ToolResultNormalizationMiddleware(),
