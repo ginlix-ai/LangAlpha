@@ -330,8 +330,11 @@ async def _resolve_graph_and_state(thread_id: str, verb: str) -> tuple:
         raise HTTPException(
             status_code=500, detail="Agent configuration not initialized"
         )
+    from src.server.app.workspace_sandbox import _set_cached_signed_url
+
     graph = await build_ptc_graph_with_session(
-        session=session, config=setup.agent_config, checkpointer=checkpointer
+        session=session, config=setup.agent_config, checkpointer=checkpointer,
+        on_signed_url=_set_cached_signed_url,
     )
 
     # State with timeout

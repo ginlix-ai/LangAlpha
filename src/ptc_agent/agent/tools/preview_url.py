@@ -1,5 +1,6 @@
 """Get preview URLs for services running in the sandbox."""
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import structlog
@@ -7,13 +8,22 @@ from langchain_core.tools import BaseTool, tool
 
 logger = structlog.get_logger(__name__)
 
+# Callback signature: (sandbox_id, port, signed_url) -> None
+OnSignedUrl = Callable[[str, int, str], Awaitable[None]]
 
-def create_preview_url_tool(sandbox: Any, *, workspace_id: str = "") -> BaseTool:
+
+def create_preview_url_tool(
+    sandbox: Any,
+    *,
+    workspace_id: str = "",
+    on_signed_url: OnSignedUrl | None = None,
+) -> BaseTool:
     """Factory function to create GetPreviewUrl tool with injected dependencies.
 
     Args:
         sandbox: PTCSandbox instance for preview URL generation
         workspace_id: Workspace ID for preview URL generation
+        on_signed_url: Optional async callback to cache signed URLs
 
     Returns:
         Configured GetPreviewUrl tool function
@@ -54,16 +64,12 @@ def create_preview_url_tool(sandbox: Any, *, workspace_id: str = "") -> BaseTool
             preview_info = await sandbox.start_and_get_preview_url(command, port)
             display_title = title or f"Port {port}"
 
-            # Cache the fresh signed URL in Redis so frontend resolves it instantly
-            try:
-                from src.server.app.workspace_sandbox import (
-                    _set_cached_signed_url,
-                )
-                await _set_cached_signed_url(sandbox.sandbox_id, port, preview_info.url)
-            except ImportError:
-                pass  # Server layer not available (e.g. CLI context)
-            except Exception:
-                logger.debug("Failed to cache signed URL for port %s", port, exc_info=True)
+            # Cache the fresh signed URL so frontend resolves it instantly
+            if on_signed_url:
+                try:
+                    await on_signed_url(sandbox.sandbox_id, port, preview_info.url)
+                except Exception:
+                    logger.debug("Failed to cache signed URL for port %s", port, exc_info=True)
 
             logger.info(
                 "Generated preview URL",

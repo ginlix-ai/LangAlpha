@@ -252,6 +252,8 @@ async def astream_ptc_workflow(
         # Build graph with the workspace's session
         # Note: agent.md is injected dynamically by WorkspaceContextMiddleware
         # on every model call, ensuring it's always the latest content.
+        from src.server.app.workspace_sandbox import _set_cached_signed_url
+
         ptc_graph = await build_ptc_graph_with_session(
             session=session,
             config=config,
@@ -263,6 +265,7 @@ async def astream_ptc_workflow(
             plan_mode=effective_plan_mode,
             thread_id=thread_id,
             store=setup.store,
+            on_signed_url=_set_cached_signed_url,
         )
 
         if session.sandbox:

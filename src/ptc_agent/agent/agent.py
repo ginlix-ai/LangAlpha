@@ -261,6 +261,7 @@ class PTCAgent:
         thread_id: str | None = None,
         on_agent_md_write: Any | None = None,
         store: Any | None = None,
+        on_signed_url: Any | None = None,
     ) -> Any:
         """Create a deepagent with PTC pattern capabilities.
 
@@ -288,6 +289,8 @@ class PTCAgent:
                 First 8 chars used as thread directory name in .agent/threads/{id}/.
             on_agent_md_write: Optional callback invoked when agent.md is written/edited.
                 Used to invalidate Session's agent.md cache.
+            on_signed_url: Optional async callback(sandbox_id, port, url) to cache
+                signed preview URLs. Injected from the server layer.
 
         Returns:
             Configured BackgroundSubagentOrchestrator wrapping the deepagent
@@ -314,7 +317,7 @@ class PTCAgent:
 
         # Create the preview URL tool for sandbox service previews
         workspace_id = getattr(session, "conversation_id", "") if session else ""
-        preview_url_tool = create_preview_url_tool(sandbox, workspace_id=workspace_id)
+        preview_url_tool = create_preview_url_tool(sandbox, workspace_id=workspace_id, on_signed_url=on_signed_url)
 
         # Start with base tools
         tools: list[Any] = [execute_code_tool, bash_tool, bash_output_tool, preview_url_tool, TodoWrite]
