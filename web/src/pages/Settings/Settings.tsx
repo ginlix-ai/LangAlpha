@@ -670,12 +670,12 @@ function Settings() {
 
   const handleVoiceInputToggle = async () => {
     const currentOtherPref = (prefsData as any)?.other_preference || {};
-    const newValue = !!currentOtherPref.voice_input_enabled;
+    const currentEnabled = !!currentOtherPref.voice_input_enabled;
     try {
       await updatePrefsMutation.mutateAsync({
         other_preference: {
           ...currentOtherPref,
-          voice_input_enabled: !newValue,
+          voice_input_enabled: !currentEnabled,
         },
       });
     } catch {
