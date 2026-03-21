@@ -75,6 +75,10 @@ Cross-page data goes through shared hooks in `hooks/`.
 - **Per-component `.css` files** for scoped styles
 - **`clsx` + `tailwind-merge`** (`cn()` pattern) for conditional class merging in `components/ui/`
 
+### Layout Alignment
+
+The ChatAgent page has side-by-side panels (ChatView + FilePanel). Their headers must align horizontally. The ChatView top bar uses `px-4 py-2` with `p-2` buttons containing `h-5 w-5` icons (~52px total height). The FilePanel header (`file-panel-header` in `FilePanel.css`) must match this height — currently `padding: 12px 16px` with `6px`-padded buttons containing `h-4 w-4` icons. When modifying either header, verify they still align visually.
+
 ### Key Conventions
 
 - **Path alias:** `@` → `src/` (configured in both `vite.config.js` and `vitest.config.js`)

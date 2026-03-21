@@ -4,6 +4,22 @@ export interface DeliveryConfig {
   methods: string[];
 }
 
+export interface PriceCondition {
+  type: 'price_above' | 'price_below' | 'pct_change_above' | 'pct_change_below';
+  value: number;
+  reference?: 'previous_close' | 'day_open';
+}
+
+export interface PriceTriggerConfig {
+  symbol: string;
+  market?: 'stock' | 'index';
+  conditions: PriceCondition[];
+  retrigger: {
+    mode: 'one_shot' | 'recurring';
+    cooldown_seconds?: number;
+  };
+}
+
 export interface Automation {
   id: string;
   name: string;
@@ -13,6 +29,8 @@ export interface Automation {
   status: 'active' | 'paused' | 'error';
   prompt?: string;
   config?: Record<string, unknown>;
+  trigger_type?: 'cron' | 'once' | 'price';
+  trigger_config?: PriceTriggerConfig;
   created_at?: string;
   updated_at?: string;
   last_run_at?: string | null;

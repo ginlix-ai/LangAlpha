@@ -6,6 +6,7 @@ DEFAULT_DEPENDENCIES = [
     # Core
     "mcp",
     "fastmcp",
+    "fastapi",
     "pandas",
     "requests",
     "aiohttp",

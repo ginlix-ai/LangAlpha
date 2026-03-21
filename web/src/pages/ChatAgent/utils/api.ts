@@ -539,6 +539,20 @@ export async function refreshWorkspace(workspaceId: string) {
   return data;
 }
 
+export async function getPreviewUrl(workspaceId: string, port: number, command?: string, force?: boolean) {
+  const { data } = await api.post(`/api/v1/workspaces/${workspaceId}/sandbox/preview-url`, {
+    port,
+    ...(command && { command }),
+    ...(force && { force: true }),
+  });
+  return data;
+}
+
+export async function checkPreviewHealth(workspaceId: string, port: number) {
+  const { data } = await api.post(`/api/v1/workspaces/${workspaceId}/sandbox/preview-health`, { port });
+  return data as { reachable: boolean; checked_at: number };
+}
+
 // --- Thread Sharing ---
 
 /**
@@ -659,5 +673,32 @@ export async function uploadWorkspaceFile(
         : undefined,
     }
   );
+  return data;
+}
+
+// --- Vault Secrets ---
+
+export async function getVaultSecrets(workspaceId: string) {
+  const { data } = await api.get(`/api/v1/workspaces/${workspaceId}/vault/secrets`);
+  return data.secrets;
+}
+
+export async function createVaultSecret(workspaceId: string, body: { name: string; value: string; description?: string }) {
+  const { data } = await api.post(`/api/v1/workspaces/${workspaceId}/vault/secrets`, body);
+  return data;
+}
+
+export async function updateVaultSecret(workspaceId: string, name: string, body: { value?: string; description?: string }) {
+  const { data } = await api.put(`/api/v1/workspaces/${workspaceId}/vault/secrets/${name}`, body);
+  return data;
+}
+
+export async function revealVaultSecret(workspaceId: string, name: string) {
+  const { data } = await api.get(`/api/v1/workspaces/${workspaceId}/vault/secrets/${name}/reveal`);
+  return data.value as string;
+}
+
+export async function deleteVaultSecret(workspaceId: string, name: string) {
+  const { data } = await api.delete(`/api/v1/workspaces/${workspaceId}/vault/secrets/${name}`);
   return data;
 }

@@ -1,8 +1,8 @@
 """
-Message Queue Middleware.
+Steering Middleware.
 
-Checks Redis for queued user messages before each LLM call and injects them
-into the conversation state. This enables users to send messages while the
+Checks Redis for steering messages from the user before each LLM call and injects
+them into the conversation state. This enables users to send messages while the
 agent is processing, which get picked up before the next model invocation.
 """
 
@@ -12,7 +12,7 @@ import time
 from typing import Any
 
 from langchain_core.messages import HumanMessage
-from langgraph.config import get_config, get_stream_writer
+from langchain_core.runnables import RunnableConfig
 from langgraph.runtime import Runtime
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState
@@ -20,25 +20,25 @@ from langchain.agents.middleware.types import AgentMiddleware, AgentState
 logger = logging.getLogger(__name__)
 
 
-class MessageQueueMiddleware(AgentMiddleware):
-    """Checks Redis for queued user messages before each LLM call.
+class SteeringMiddleware(AgentMiddleware):
+    """Checks Redis for steering messages from the user before each LLM call.
 
     When a user sends a message while the agent is already processing,
-    the server queues it in Redis. This middleware picks up those queued
+    the server queues it in Redis. This middleware picks up those steering
     messages before the next LLM invocation and injects them as a
     HumanMessage into the conversation state.
 
-    Placement: main_only_middleware (subagents don't consume queued messages).
+    Placement: main_only_middleware (subagents don't consume steering messages).
     """
 
     async def abefore_model(
-        self, state: AgentState, runtime: Runtime
+        self, state: AgentState, runtime: Runtime, *, config: RunnableConfig
     ) -> dict[str, Any] | None:
-        """Check Redis for queued messages and inject them before model call."""
+        """Check Redis for steering messages and inject them before model call."""
         try:
-            config = get_config()
             thread_id = config.get("configurable", {}).get("thread_id")
             if not thread_id:
+                logger.debug("[Steering] No thread_id in config, skipping")
                 return None
 
             # Import here to avoid circular imports
@@ -48,9 +48,9 @@ class MessageQueueMiddleware(AgentMiddleware):
             if not cache.enabled or not cache.client:
                 return None
 
-            key = f"workflow:queued_messages:{thread_id}"
+            key = f"workflow:steering:{thread_id}"
 
-            # Atomically read all queued messages and delete the key
+            # Atomically read all steering messages and delete the key
             pipe = cache.client.pipeline()
             pipe.lrange(key, 0, -1)
             pipe.delete(key)
@@ -60,63 +60,68 @@ class MessageQueueMiddleware(AgentMiddleware):
             if not raw_messages:
                 return None
 
-            # Parse queued messages
-            queued = []
+            # Parse steering messages (handle both str and dict payloads)
+            parsed: list[dict] = []
             for raw in raw_messages:
                 try:
                     data = json.loads(
                         raw.decode("utf-8") if isinstance(raw, bytes) else raw
                     )
-                    queued.append(data)
+                    if isinstance(data, str):
+                        parsed.append({"content": data})
+                    elif isinstance(data, dict):
+                        parsed.append(data)
+                    else:
+                        parsed.append({"content": str(data)})
                 except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                    logger.warning(f"[MessageQueue] Failed to parse queued message: {e}")
+                    logger.warning(f"[Steering] Failed to parse steering message: {e}")
 
-            if not queued:
+            if not parsed:
                 return None
 
             # Build combined message content
-            if len(queued) == 1:
-                content = queued[0]["content"]
+            if len(parsed) == 1:
+                content = parsed[0].get("content", str(parsed[0]))
             else:
                 lines = [
-                    f"{i + 1}. {msg['content']}" for i, msg in enumerate(queued)
+                    f"{i + 1}. {msg.get('content', str(msg))}"
+                    for i, msg in enumerate(parsed)
                 ]
                 content = "\n".join(lines)
 
             human_msg = HumanMessage(
-                content=f"[Queued Message from User]\n{content}"
+                content=f"[Steering from User]\n{content}"
             )
 
             logger.info(
-                f"[MessageQueue] Injecting {len(queued)} queued message(s) "
+                f"[Steering] Injecting {len(parsed)} steering message(s) "
                 f"for thread_id={thread_id}"
             )
 
             # Emit SSE custom event so frontend knows the message was delivered
             try:
-                writer = get_stream_writer()
-                writer(
+                runtime.stream_writer(
                     {
-                        "type": "queued_message_injected",
+                        "type": "steering_delivered",
                         "thread_id": thread_id,
-                        "count": len(queued),
+                        "count": len(parsed),
                         "messages": [
                             {
-                                "content": q["content"],
+                                "content": q.get("content", ""),
                                 "user_id": q.get("user_id"),
                                 "timestamp": q.get("timestamp"),
                             }
-                            for q in queued
+                            for q in parsed
                         ],
                         "timestamp": time.time(),
                     }
                 )
             except Exception:
                 # Stream writer may not be available in all contexts
-                pass
+                logger.debug("[Steering] stream_writer unavailable, skipping SSE event")
 
             return {"messages": [human_msg]}
 
         except Exception as e:
-            logger.error(f"[MessageQueue] Error checking queue: {e}")
+            logger.error(f"[Steering] Error checking steering queue: {e}")
             return None

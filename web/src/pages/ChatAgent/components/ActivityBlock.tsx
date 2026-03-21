@@ -17,6 +17,7 @@ import {
   InlineStockScreenerCard,
 } from './charts/InlineMarketCharts';
 import { InlineAutomationCard } from './charts/InlineAutomationCards';
+import { InlinePreviewCard } from './charts/InlinePreviewCard';
 import { useTranslation } from 'react-i18next';
 
 /** Tool names where clicking should open the file in the FilePanel */
@@ -36,6 +37,7 @@ const INLINE_ARTIFACT_MAP: Record<string, React.ComponentType<{ artifact: Record
   sec_filing: InlineSecFilingCard,
   stock_screener: InlineStockScreenerCard,
   automations: InlineAutomationCard,
+  preview_url: InlinePreviewCard,
 };
 
 /** Spring config matching radix-accordion feel */

@@ -1,5 +1,5 @@
 """
-Tests for resolve_llm_config() and related model resolution in chat_handler.py.
+Tests for resolve_llm_config() and related model resolution in chat/llm_config.py.
 
 Covers:
 - Model priority: per-request > user preference > system default
@@ -33,7 +33,7 @@ from ptc_agent.config.core import (
 # ---------------------------------------------------------------------------
 
 
-HANDLER = "src.server.handlers.chat_handler"
+HANDLER = "src.server.handlers.chat.llm_config"
 
 
 def _make_config(**llm_overrides) -> AgentConfig:
@@ -75,7 +75,7 @@ class TestModelPriority:
     @pytest.mark.asyncio
     async def test_system_default_used(self, base_config):
         """No per-request or preference → system default."""
-        from src.server.handlers.chat_handler import resolve_llm_config
+        from src.server.handlers.chat.llm_config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -89,7 +89,7 @@ class TestModelPriority:
     @pytest.mark.asyncio
     async def test_user_preference_overrides_default(self, base_config):
         """User preferred_model overrides system default."""
-        from src.server.handlers.chat_handler import resolve_llm_config
+        from src.server.handlers.chat.llm_config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -107,7 +107,7 @@ class TestModelPriority:
     @pytest.mark.asyncio
     async def test_per_request_overrides_preference(self, base_config):
         """Per-request llm_model overrides both preference and default."""
-        from src.server.handlers.chat_handler import resolve_llm_config
+        from src.server.handlers.chat.llm_config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -127,7 +127,7 @@ class TestModelPriority:
     @pytest.mark.asyncio
     async def test_does_not_mutate_base_config(self, base_config):
         """resolve_llm_config should deep-copy, not mutate the base config."""
-        from src.server.handlers.chat_handler import resolve_llm_config
+        from src.server.handlers.chat.llm_config import resolve_llm_config
 
         original_name = base_config.llm.name
         mock_mc = _mock_model_config()
@@ -155,7 +155,7 @@ class TestModeModelField:
     @pytest.mark.asyncio
     async def test_flash_mode_uses_flash_field(self, base_config):
         """Flash mode reads/writes the 'flash' field, not 'name'."""
-        from src.server.handlers.chat_handler import resolve_llm_config
+        from src.server.handlers.chat.llm_config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -172,7 +172,7 @@ class TestModeModelField:
     @pytest.mark.asyncio
     async def test_flash_mode_per_request_override(self, base_config):
         """Per-request model in flash mode sets the flash field."""
-        from src.server.handlers.chat_handler import resolve_llm_config
+        from src.server.handlers.chat.llm_config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -188,7 +188,7 @@ class TestModeModelField:
     @pytest.mark.asyncio
     async def test_flash_mode_user_preference(self, base_config):
         """Flash mode uses preferred_flash_model preference key."""
-        from src.server.handlers.chat_handler import resolve_llm_config
+        from src.server.handlers.chat.llm_config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -214,7 +214,7 @@ class TestModeModelField:
 class TestOtherModelPreferences:
     @pytest.mark.asyncio
     async def test_summarization_model_preference(self, base_config):
-        from src.server.handlers.chat_handler import resolve_llm_config
+        from src.server.handlers.chat.llm_config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -231,7 +231,7 @@ class TestOtherModelPreferences:
 
     @pytest.mark.asyncio
     async def test_fetch_model_preference(self, base_config):
-        from src.server.handlers.chat_handler import resolve_llm_config
+        from src.server.handlers.chat.llm_config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -248,7 +248,7 @@ class TestOtherModelPreferences:
 
     @pytest.mark.asyncio
     async def test_fallback_models_preference(self, base_config):
-        from src.server.handlers.chat_handler import resolve_llm_config
+        from src.server.handlers.chat.llm_config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -273,7 +273,7 @@ class TestReasoningEffort:
     @pytest.mark.asyncio
     async def test_per_request_reasoning(self, base_config):
         """Per-request reasoning_effort takes precedence."""
-        from src.server.handlers.chat_handler import resolve_llm_config
+        from src.server.handlers.chat.llm_config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         mock_llm = MagicMock()
@@ -298,7 +298,7 @@ class TestReasoningEffort:
     @pytest.mark.asyncio
     async def test_user_pref_reasoning(self, base_config):
         """User pref reasoning_effort used when no per-request value."""
-        from src.server.handlers.chat_handler import resolve_llm_config
+        from src.server.handlers.chat.llm_config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         mock_llm = MagicMock()
@@ -329,7 +329,7 @@ class TestBYOKResolution:
     @pytest.mark.asyncio
     async def test_byok_client_injected(self, base_config):
         """When BYOK is active, a fresh LLM client should be created and injected."""
-        from src.server.handlers.chat_handler import resolve_llm_config
+        from src.server.handlers.chat.llm_config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         mock_byok_llm = MagicMock(name="byok-llm-client")
@@ -351,7 +351,7 @@ class TestBYOKResolution:
     @pytest.mark.asyncio
     async def test_byok_not_active_no_client(self, base_config):
         """When is_byok=False, BYOK resolution is skipped."""
-        from src.server.handlers.chat_handler import resolve_llm_config
+        from src.server.handlers.chat.llm_config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -378,7 +378,7 @@ class TestOAuthResolution:
     @pytest.mark.asyncio
     async def test_oauth_takes_precedence_over_byok(self, base_config):
         """OAuth client is tried first; if found, BYOK is skipped."""
-        from src.server.handlers.chat_handler import resolve_llm_config
+        from src.server.handlers.chat.llm_config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         mock_oauth_llm = MagicMock(name="oauth-llm-client")
@@ -411,7 +411,7 @@ class TestCustomModelFallback:
     @pytest.mark.asyncio
     async def test_custom_model_without_byok_reverts_to_default(self, base_config):
         """Custom model selected but BYOK disabled → fall back to system default."""
-        from src.server.handlers.chat_handler import resolve_llm_config
+        from src.server.handlers.chat.llm_config import resolve_llm_config
 
         # Model not in system models → treated as custom
         mock_mc = _mock_model_config(system_models={"system-default-model", "system-flash-model"})
@@ -445,7 +445,7 @@ class TestFastMode:
     @pytest.mark.asyncio
     async def test_fast_mode_per_request(self, base_config):
         """Per-request fast_mode should be passed to OAuth resolver as service_tier."""
-        from src.server.handlers.chat_handler import resolve_llm_config
+        from src.server.handlers.chat.llm_config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (
@@ -467,7 +467,7 @@ class TestFastMode:
     @pytest.mark.asyncio
     async def test_fast_mode_from_preference(self, base_config):
         """User pref fast_mode used when no per-request value."""
-        from src.server.handlers.chat_handler import resolve_llm_config
+        from src.server.handlers.chat.llm_config import resolve_llm_config
 
         mock_mc = _mock_model_config()
         with (

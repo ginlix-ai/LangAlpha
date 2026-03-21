@@ -54,15 +54,6 @@ class ToolResultNormalizationMiddleware(AgentMiddleware):
                 logger.warning(f"Failed to JSON serialize tool result: {e}, falling back to str()")
                 return str(result)
 
-        # ToolMessage - normalize its content
-        if isinstance(result, ToolMessage):
-            normalized_content = self._normalize_result(result.content)
-            return ToolMessage(
-                content=normalized_content,
-                tool_call_id=result.tool_call_id,
-                status=result.status if hasattr(result, 'status') else None
-            )
-
         # Other types - convert to string
         return str(result)
 

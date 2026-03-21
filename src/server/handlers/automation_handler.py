@@ -73,6 +73,18 @@ async def create_automation(
         # Ensure timezone-aware
         if next_run_at.tzinfo is None:
             next_run_at = next_run_at.replace(tzinfo=timezone.utc)
+    elif trigger_type == "price":
+        # Validate trigger_config as PriceTriggerConfig
+        trigger_config = data.get("trigger_config")
+        if not trigger_config:
+            raise ValueError("trigger_config is required for trigger_type='price'")
+        from src.server.models.automation import PriceTriggerConfig
+        try:
+            PriceTriggerConfig(**trigger_config)
+        except Exception as e:
+            raise ValueError(f"Invalid price trigger config: {e}")
+        # Price triggers have no scheduled next_run_at
+        next_run_at = None
     else:
         raise ValueError(f"Unsupported trigger_type: '{trigger_type}'")
 
@@ -237,6 +249,9 @@ async def resume_automation(
             raise ValueError(
                 "Cannot resume a one-time automation whose scheduled time has passed"
             )
+    elif current["trigger_type"] == "price":
+        # Price triggers don't use next_run_at — just re-activate
+        pass
 
     return await auto_db.update_automation(automation_id, user_id, **update_kwargs)
 

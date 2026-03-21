@@ -1,10 +1,12 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Clock, Timer } from 'lucide-react';
+import { Clock, Timer, TrendingUp } from 'lucide-react';
 import StatusBadge from './StatusBadge';
 import { cronToHuman } from '../utils/cron';
+import { formatPriceTrigger } from '../utils/price';
 import { formatRelativeTime, formatDateTime } from '../utils/time';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { useTranslation } from 'react-i18next';
 import type { Automation } from '@/types/automation';
 
 const STATUS_GLOW: Record<string, string> = {
@@ -21,10 +23,14 @@ interface AutomationRowProps {
 }
 
 export default function AutomationRow({ automation, index, onClick }: AutomationRowProps) {
+  const { t } = useTranslation();
   const isCron = automation.trigger_type === 'cron';
-  const schedule = isCron
-    ? cronToHuman(automation.cron_expression as string)
-    : formatDateTime(automation.next_run_at);
+  const isPrice = automation.trigger_type === 'price';
+  const schedule = isPrice
+    ? formatPriceTrigger(automation.trigger_config)
+    : isCron
+      ? cronToHuman(automation.cron_expression as string)
+      : formatDateTime(automation.next_run_at);
 
   const glowColor = STATUS_GLOW[automation.status] || 'transparent';
   const isMobile = useIsMobile();
@@ -52,7 +58,9 @@ export default function AutomationRow({ automation, index, onClick }: Automation
 
         {/* Top row: icon + name + status */}
         <div className="flex items-center gap-2 min-w-0">
-          {isCron ? (
+          {isPrice ? (
+            <TrendingUp className="w-4 h-4 shrink-0" style={{ color: 'var(--color-text-secondary)' }} />
+          ) : isCron ? (
             <Clock className="w-4 h-4 shrink-0" style={{ color: 'var(--color-text-secondary)' }} />
           ) : (
             <Timer className="w-4 h-4 shrink-0" style={{ color: 'var(--color-text-secondary)' }} />
@@ -66,7 +74,7 @@ export default function AutomationRow({ automation, index, onClick }: Automation
         {/* Bottom row: schedule + next run */}
         <div className="flex items-center gap-3 text-xs pl-6" style={{ color: 'var(--color-text-secondary)' }}>
           <span className="truncate">{schedule}</span>
-          {automation.next_run_at && (
+          {!isPrice && automation.next_run_at && (
             <>
               <span style={{ color: 'var(--color-border-default)' }}>·</span>
               <span className="shrink-0">{formatRelativeTime(automation.next_run_at)}</span>
@@ -100,7 +108,9 @@ export default function AutomationRow({ automation, index, onClick }: Automation
 
       {/* Name */}
       <div className="flex items-center gap-2 min-w-0">
-        {isCron ? (
+        {isPrice ? (
+          <TrendingUp className="w-4 h-4 shrink-0" style={{ color: 'var(--color-text-secondary)' }} />
+        ) : isCron ? (
           <Clock className="w-4 h-4 shrink-0" style={{ color: 'var(--color-text-secondary)' }} />
         ) : (
           <Timer className="w-4 h-4 shrink-0" style={{ color: 'var(--color-text-secondary)' }} />
@@ -123,7 +133,7 @@ export default function AutomationRow({ automation, index, onClick }: Automation
 
       {/* Next Run */}
       <span className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-        {automation.next_run_at ? formatRelativeTime(automation.next_run_at) : '\u2014'}
+        {isPrice ? t('automation.onTrigger') : automation.next_run_at ? formatRelativeTime(automation.next_run_at) : '\u2014'}
       </span>
 
       {/* Status */}

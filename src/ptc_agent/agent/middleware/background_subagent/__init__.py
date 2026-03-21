@@ -17,8 +17,8 @@ from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTask,
     BackgroundTaskRegistry,
 )
-from ptc_agent.agent.middleware.background_subagent.queue import (
-    SubagentMessageQueueMiddleware,
+from ptc_agent.agent.middleware.background_subagent.steering import (
+    SubagentSteeringMiddleware,
 )
 from ptc_agent.agent.middleware.background_subagent.tools import (
     create_task_output_tool,
@@ -29,7 +29,7 @@ __all__ = [
     "BackgroundSubagentOrchestrator",
     "BackgroundTask",
     "BackgroundTaskRegistry",
-    "SubagentMessageQueueMiddleware",
+    "SubagentSteeringMiddleware",
     "ToolCallCounterMiddleware",
     "create_task_output_tool",
     "current_background_agent_id",

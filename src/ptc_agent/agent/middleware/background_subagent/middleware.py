@@ -210,7 +210,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             description: The follow-up message content
 
         Returns:
-            True if message was queued successfully
+            True if steering message was stored successfully
         """
         try:
             from src.utils.cache.redis_cache import get_cache_client
@@ -219,7 +219,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             if not cache.enabled or not cache.client:
                 return False
 
-            key = f"subagent:queued_messages:{task_id}"
+            key = f"subagent:steering:{task_id}"
             payload = json.dumps(description)
             await cache.client.rpush(key, payload)
             # 1 hour TTL — if not consumed, it's stale

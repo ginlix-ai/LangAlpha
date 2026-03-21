@@ -114,7 +114,7 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
             if task:
                 if isinstance(result, dict) and result.get("status") == "interrupted":
                     return (
-                        f"Wait interrupted: new user message has been queued. "
+                        f"Wait interrupted: new user steering received. "
                         f"**{task.display_id}** ({task.subagent_type}) still running in background."
                     )
                 if isinstance(result, dict) and result.get("status") == "timeout":
@@ -191,7 +191,7 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
                         f"{_format_result(r)}\n"
                     )
             output = (
-                f"Wait interrupted: new user message has been queued. "
+                f"Wait interrupted: new user steering received. "
                 f"Still running in background: {running_names}.\n\n"
             )
             if completed_parts:

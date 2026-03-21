@@ -92,6 +92,7 @@ async def build_ptc_graph(
     checkpointer: Any | None = None,
     background_registry: Any | None = None,
     store: Any | None = None,
+    on_signed_url: Any | None = None,
 ) -> Any:
     """
     Build a compiled LangGraph for a specific conversation.
@@ -108,6 +109,7 @@ async def build_ptc_graph(
         operation_callback: Optional callback for file operation logging
         checkpointer: Optional LangGraph checkpointer for state persistence (e.g., AsyncPostgresSaver)
         background_registry: Optional shared registry for background subagent tasks
+        on_signed_url: Optional async callback(sandbox_id, port, url) to cache signed preview URLs
 
     Returns:
         Compiled StateGraph compatible with LangGraph streaming
@@ -151,6 +153,7 @@ async def build_ptc_graph(
         checkpointer=checkpointer,
         background_registry=background_registry,
         store=store,
+        on_signed_url=on_signed_url,
     )
 
     logger.info(
@@ -175,6 +178,7 @@ async def build_ptc_graph_with_session(
     plan_mode: bool = False,
     thread_id: str | None = None,
     store: Any | None = None,
+    on_signed_url: Any | None = None,
 ) -> Any:
     """
     Build a compiled LangGraph using a provided session.
@@ -191,6 +195,7 @@ async def build_ptc_graph_with_session(
         background_registry: Optional shared registry for background subagent tasks
         user_id: Optional user ID for fetching user profile to inject into system prompt
         plan_mode: If True, enables submit_plan tool for plan review workflow
+        on_signed_url: Optional async callback(sandbox_id, port, url) to cache signed preview URLs
 
     Returns:
         Compiled StateGraph compatible with LangGraph streaming
@@ -226,6 +231,9 @@ async def build_ptc_graph_with_session(
     # Create the inner agent with the session's sandbox.
     # IMPORTANT: pass the server checkpointer into the deepagent so that partial
     # progress (tools, intermediate messages, etc.) is checkpointed frequently.
+    # Read cached vault secrets from sandbox (populated by vault API on mutation)
+    vault_secrets = getattr(session.sandbox, "vault_secrets", None)
+
     inner_agent = ptc_agent.create_agent(
         sandbox=session.sandbox,
         mcp_registry=session.mcp_registry,
@@ -239,6 +247,8 @@ async def build_ptc_graph_with_session(
         thread_id=thread_id,
         on_agent_md_write=session.invalidate_agent_md,
         store=store,
+        on_signed_url=on_signed_url,
+        vault_secrets=vault_secrets,
     )
 
     logger.info(

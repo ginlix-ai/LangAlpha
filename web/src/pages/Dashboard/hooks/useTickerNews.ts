@@ -10,6 +10,7 @@ export interface TickerNewsItem {
   source: string;
   favicon: string | null;
   tickers: string[];
+  articleUrl?: string | null;
 }
 
 interface TickerRow {
@@ -49,6 +50,7 @@ function mapNewsResults(results: Record<string, unknown>[]): TickerNewsItem[] {
     source: (r.source as Record<string, unknown> | undefined)?.name as string || '',
     favicon: (r.source as Record<string, unknown> | undefined)?.favicon_url as string || null,
     tickers: (r.tickers as string[]) || [],
+    articleUrl: (r.article_url as string) || null,
   }));
 }
 

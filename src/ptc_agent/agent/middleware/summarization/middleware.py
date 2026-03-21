@@ -1226,9 +1226,13 @@ class SummarizationMiddleware(AgentMiddleware):
         if not config.get("enabled", False):
             return None
 
-        # Get summarization model from config
-        model_name = config.get("llm", "")
-        summarization_model: BaseChatModel = get_llm_by_type(model_name)
+        # Get summarization model from config (prefer pre-built OAuth/BYOK client)
+        llm_client = config.get("_llm_client")
+        if llm_client is not None:
+            summarization_model: BaseChatModel = llm_client
+        else:
+            model_name = config.get("llm", "")
+            summarization_model: BaseChatModel = get_llm_by_type(model_name)
 
         # Disable streaming to prevent normal message_chunk events
         # This ensures only our custom context_window events are emitted

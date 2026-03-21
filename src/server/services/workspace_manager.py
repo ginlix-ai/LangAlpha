@@ -8,6 +8,8 @@ Manages workspace lifecycle with database persistence and sandbox integration:
 """
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import time
@@ -154,6 +156,36 @@ class WorkspaceManager:
         """Record that a sync was performed for this workspace."""
         self._last_sync_at[workspace_id] = time.monotonic()
 
+    async def push_vault_secrets(
+        self, workspace_id: str, sandbox: "PTCSandbox | None" = None,
+    ) -> None:
+        """Push vault secrets to the running sandbox.
+
+        Called by the vault API on mutation and by ``_sync_sandbox_assets``
+        during workspace startup/restart.
+
+        Args:
+            workspace_id: Workspace UUID.
+            sandbox: Optional sandbox to push to directly.  When omitted the
+                sandbox is looked up from the session cache — this fails during
+                initial startup (session not cached yet), so callers that
+                already hold a sandbox reference should pass it explicitly.
+        """
+        if sandbox is None:
+            session = self._sessions.get(workspace_id)
+            if not session or not session.sandbox:
+                return
+            sandbox = session.sandbox
+
+        from src.server.database.vault_secrets import get_workspace_secrets_decrypted
+
+        secrets = await get_workspace_secrets_decrypted(workspace_id)
+        await sandbox.upload_vault_secrets(secrets)
+        logger.info(
+            f"[vault] Pushed {len(secrets)} secret(s) to sandbox",
+            extra={"workspace_id": workspace_id},
+        )
+
     @staticmethod
     async def _mint_sandbox_tokens(user_id: str, workspace_id: str) -> dict:
         """Mint scoped OAuth2 tokens for sandbox ginlix-data access.
@@ -257,6 +289,11 @@ class WorkspaceManager:
                 workspace_id=workspace_id,
             )
         )
+
+        # Vault secrets — piggyback on existing parallel gather so
+        # secrets are available after stop/start and sandbox recovery.
+        # Pass sandbox directly: session may not be in self._sessions yet.
+        tasks.append(self.push_vault_secrets(workspace_id, sandbox=sandbox))
 
         # User data sync task
         if user_id:
@@ -394,6 +431,169 @@ class WorkspaceManager:
         except Exception as e:
             logger.warning(f"File restore check failed for {workspace_id}: {e}")
 
+    # ── Sandbox config migration ─────────────────────────────────────
+
+    @staticmethod
+    def _compute_sandbox_config_hash(config: AgentConfig) -> str:
+        """Hash of sandbox config fields that require sandbox recreation on change.
+
+        Adding a new field to the dict automatically invalidates old hashes,
+        triggering transparent migration for existing workspaces.
+        """
+        data = {
+            "provider": config.sandbox.provider,
+            "working_dir": config.filesystem.working_directory,
+        }
+        return hashlib.sha256(
+            json.dumps(data, sort_keys=True).encode()
+        ).hexdigest()[:8]
+
+    def _sandbox_config_stamp(self) -> Dict[str, Any]:
+        """Build the sandbox config fields to persist in workspace config JSONB.
+
+        Stores both the hash (for fast mismatch detection) and the actual
+        values (for observability / debugging).
+        """
+        return {
+            "sandbox_config_hash": self._compute_sandbox_config_hash(self.config),
+            "sandbox_provider": self.config.sandbox.provider,
+            "sandbox_working_dir": self.config.filesystem.working_directory,
+        }
+
+    @staticmethod
+    async def _update_workspace_config_fields(
+        workspace_id: str, fields: Dict[str, Any], *, raise_on_error: bool = False
+    ) -> None:
+        """Merge keys into the workspace config JSONB column (atomic, non-destructive).
+
+        Args:
+            raise_on_error: If True, re-raise exceptions after logging so the
+                caller can retry or handle the failure.  Default False keeps
+                the original fire-and-forget behaviour for non-critical stamps.
+        """
+        from psycopg.types.json import Json
+
+        from src.server.database.conversation import get_db_connection
+
+        try:
+            async with get_db_connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        """
+                        UPDATE workspaces
+                        SET config = COALESCE(config, '{}'::jsonb) || %s::jsonb,
+                            updated_at = NOW()
+                        WHERE workspace_id = %s
+                        """,
+                        (Json(fields), workspace_id),
+                    )
+        except Exception as e:
+            logger.warning(
+                f"Failed to update config for workspace {workspace_id}: {e}"
+            )
+            if raise_on_error:
+                raise
+
+    async def _maybe_migrate_sandbox(
+        self,
+        workspace_id: str,
+        user_id: str | None,
+        session: Session,
+        workspace: Dict[str, Any],
+        *,
+        expected_hash: str | None = None,
+    ) -> Session | None:
+        """Check if sandbox working directory matches config; migrate if not.
+
+        Returns a new Session if migration happened, None if no migration needed.
+        Migration = backup files from old sandbox → destroy → create fresh → restore.
+
+        Args:
+            expected_hash: Pre-computed config hash (avoids recomputation when
+                the caller already checked it, e.g. in ``_restart_workspace``).
+        """
+        if expected_hash is None:
+            expected_hash = self._compute_sandbox_config_hash(self.config)
+
+        # Fast path: DB config says already on target version
+        ws_config = workspace.get("config") or {}
+        stored_hash = ws_config.get("sandbox_config_hash")
+        if stored_hash == expected_hash:
+            return None
+
+        # Check actual sandbox working dir (set by fetch_working_dir during reconnect)
+        if not session.sandbox:
+            return None
+        actual_wd = session.sandbox.working_dir
+        expected_wd = self.config.filesystem.working_directory
+        if actual_wd == expected_wd:
+            # Already correct (sandbox was recreated for other reasons). Just stamp DB.
+            await self._update_workspace_config_fields(
+                workspace_id, self._sandbox_config_stamp()
+            )
+            return None
+
+        # --- Full migration needed ---
+        logger.info(
+            f"Migrating workspace {workspace_id} sandbox: "
+            f"{actual_wd} -> {expected_wd}"
+        )
+
+        # 1. Backup files to DB (must succeed or we abort — data loss prevention)
+        try:
+            result = await FilePersistenceService.sync_to_db(
+                workspace_id, session.sandbox
+            )
+            logger.info(f"Pre-migration backup for {workspace_id}: {result}")
+        except Exception:
+            logger.error(
+                f"Migration aborted for {workspace_id}: file backup failed",
+                exc_info=True,
+            )
+            return None
+
+        # 2. Tear down old sandbox (delete, not just stop — we're replacing it)
+        self._sessions.pop(workspace_id, None)
+        try:
+            await SessionManager.cleanup_session(workspace_id)
+        except Exception as e:
+            # cleanup_session may fail after cleanup() but before del _sessions,
+            # leaving a stale entry.  Evict unconditionally so _recover_sandbox
+            # creates a fresh session.
+            SessionManager.remove_session(workspace_id)
+            logger.warning(f"Old sandbox cleanup failed for {workspace_id}: {e}")
+
+        # 3. Create fresh sandbox + restore files from DB
+        core_config = self.config.to_core_config()
+        new_session = await self._recover_sandbox(
+            workspace_id, user_id, core_config
+        )
+
+        # 4. Stamp DB so future reconnects skip migration.
+        # Retry once on failure — an unstamped workspace would re-migrate every
+        # reconnect, wasting resources and risking data loss.
+        stamp = self._sandbox_config_stamp()
+        for attempt in range(2):
+            try:
+                await self._update_workspace_config_fields(
+                    workspace_id, stamp, raise_on_error=True
+                )
+                break
+            except Exception:
+                if attempt == 0:
+                    logger.warning(
+                        f"Retrying config stamp for {workspace_id}"
+                    )
+                else:
+                    logger.error(
+                        f"Failed to stamp sandbox config for {workspace_id} "
+                        f"after 2 attempts. Workspace may re-migrate on next reconnect.",
+                        exc_info=True,
+                    )
+
+        logger.info(f"Migration complete for workspace {workspace_id}")
+        return new_session
+
     async def create_workspace(
         self,
         user_id: str,
@@ -462,6 +662,11 @@ class WorkspaceManager:
                 )
 
                 self._record_sync(workspace_id)
+
+                # Stamp sandbox config (provider, working dir, hash) for migration detection
+                await self._update_workspace_config_fields(
+                    workspace_id, self._sandbox_config_stamp()
+                )
 
                 logger.info(
                     f"Workspace {workspace_id} created with sandbox {sandbox_id}"
@@ -598,6 +803,13 @@ class WorkspaceManager:
                             session.sandbox,
                             reusing_sandbox=sandbox_id is not None,
                         )
+
+                        # Check if sandbox needs config migration
+                        migrated = await self._maybe_migrate_sandbox(
+                            workspace_id, workspace_user_id, session, workspace
+                        )
+                        if migrated is not None:
+                            session = migrated
                     else:
                         needs_sync = True
 
@@ -626,6 +838,82 @@ class WorkspaceManager:
                                 user_id=workspace_user_id,
                                 lazy_init=True,
                             )
+
+                    # Still "stopping" after 10s — check actual sandbox state
+                    # from the provider. If the sandbox is actually running or
+                    # stopped, the DB status is stale (e.g. process crashed
+                    # mid-stop). Recover by correcting the DB.
+                    sandbox_id = workspace.get("sandbox_id")
+                    if sandbox_id:
+                        try:
+                            from ptc_agent.core.sandbox.providers import create_provider
+
+                            provider = create_provider(self.config.to_core_config())
+                            try:
+                                runtime = await provider.get(sandbox_id)
+                                actual_state = await runtime.get_state()
+                            finally:
+                                await provider.close()
+
+                            logger.warning(
+                                "Workspace %s stuck in 'stopping' but sandbox "
+                                "is actually '%s', recovering",
+                                workspace_id,
+                                actual_state.value,
+                            )
+                            # Correct the DB status based on actual sandbox state
+                            # Only treat definitively stopped/archived as "stopped";
+                            # transient states (starting, stopping, archiving) should
+                            # not trigger a restart — let them finish naturally.
+                            stopped_states = {"stopped", "archived"}
+                            if actual_state.value in stopped_states:
+                                corrected = "stopped"
+                            elif actual_state.value == "running":
+                                corrected = "running"
+                            else:
+                                logger.info(
+                                    "Workspace %s sandbox in transient state '%s', "
+                                    "not correcting — will retry on next request",
+                                    workspace_id,
+                                    actual_state.value,
+                                )
+                                raise RuntimeError(
+                                    f"Workspace {workspace_id} sandbox is in transient "
+                                    f"state '{actual_state.value}'. Please wait and try again."
+                                )
+                            workspace = await update_workspace_status(
+                                workspace_id=workspace_id,
+                                status=corrected,
+                            )
+                            if corrected == "stopped":
+                                return await self._restart_workspace(
+                                    workspace,
+                                    user_id=workspace_user_id,
+                                    lazy_init=True,
+                                )
+                            # Sandbox is running — create session inline
+                            # (cannot recurse into get_session_for_workspace
+                            # because the per-workspace asyncio.Lock is held
+                            # and is not reentrant)
+                            core_config = self.config.to_core_config()
+                            session = SessionManager.get_session(workspace_id, core_config)
+                            if not session._initialized:
+                                await session.initialize(sandbox_id=sandbox_id)
+                                await self._sync_sandbox_assets(
+                                    workspace_id,
+                                    workspace_user_id,
+                                    session.sandbox,
+                                    reusing_sandbox=True,
+                                )
+                            self._sessions[workspace_id] = session
+                            return session
+                        except Exception as e:
+                            logger.error(
+                                "Failed to check actual sandbox state for %s: %s",
+                                workspace_id,
+                                e,
+                            )
+
                     raise RuntimeError(
                         f"Workspace {workspace_id} is still stopping after timeout. "
                         "Please wait and try again."
@@ -699,6 +987,19 @@ class WorkspaceManager:
                 f"Workspace {workspace_id} has no sandbox_id. Cannot restart."
             )
 
+        # Force non-lazy init if sandbox config may have changed (e.g., working
+        # directory migration).  Without blocking init we cannot detect the
+        # mismatch before the agent starts executing with stale paths.
+        expected_hash = self._compute_sandbox_config_hash(self.config)
+        ws_config = workspace.get("config") or {}
+        stored_hash = ws_config.get("sandbox_config_hash")
+        if stored_hash != expected_hash and lazy_init:
+            logger.info(
+                f"Forcing non-lazy init for {workspace_id}: "
+                f"sandbox_config_hash={stored_hash!r}, expected={expected_hash!r}"
+            )
+            lazy_init = False
+
         logger.info(
             f"Reconnecting to sandbox {sandbox_id} for workspace {workspace_id}",
             extra={"lazy_init": lazy_init},
@@ -751,6 +1052,14 @@ class WorkspaceManager:
                 if session.sandbox:
                     await self._maybe_restore_files(workspace_id, session.sandbox)
                 self._record_sync(workspace_id)
+
+                # Check if sandbox needs config migration (e.g., working dir change)
+                migrated = await self._maybe_migrate_sandbox(
+                    workspace_id, user_id, session, workspace,
+                    expected_hash=expected_hash,
+                )
+                if migrated is not None:
+                    return migrated
 
             # Update status to running
             await update_workspace_status(

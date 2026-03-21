@@ -268,7 +268,7 @@ async def _handle_send_message(
     request: ChatRequest, auth: ChatRateLimited, thread_id: str
 ):
     """Shared logic for both POST /threads/messages and POST /threads/{id}/messages."""
-    from src.server.handlers.chat_handler import (
+    from src.server.handlers.chat import (
         astream_flash_workflow,
         astream_ptc_workflow,
     )
@@ -340,7 +340,7 @@ async def _handle_send_message(
     )
 
     # Resolve LLM config eagerly — credit check must happen before SSE stream starts
-    from src.server.handlers.chat_handler import resolve_llm_config
+    from src.server.handlers.chat import resolve_llm_config
     from src.server.dependencies.usage_limits import (
         enforce_credit_limit,
         release_burst_slot,
@@ -410,7 +410,7 @@ async def reconnect_to_stream(
     Replays buffered events, then attaches to live stream if still running.
     """
     await require_thread_owner(thread_id, x_user_id)
-    from src.server.handlers.chat_handler import reconnect_to_workflow_stream
+    from src.server.handlers.chat import reconnect_to_workflow_stream
 
     async def stream_reconnection():
         try:
@@ -660,7 +660,7 @@ async def stream_subagent_task(
 ):
     """Stream a single subagent's content events (message_chunk, tool_calls, etc.)."""
     await require_thread_owner(thread_id, x_user_id)
-    from src.server.handlers.chat_handler import stream_subagent_task_events
+    from src.server.handlers.chat import stream_subagent_task_events
 
     return StreamingResponse(
         stream_subagent_task_events(thread_id, task_id, last_event_id),
@@ -678,9 +678,9 @@ async def send_subagent_message(
 ):
     """Send a message/instruction to a running background subagent."""
     await require_thread_owner(thread_id, x_user_id)
-    from src.server.handlers.chat_handler import queue_message_for_subagent
+    from src.server.handlers.chat import steer_subagent
 
-    return await queue_message_for_subagent(
+    return await steer_subagent(
         thread_id=thread_id,
         task_id=task_id,
         content=request.content,

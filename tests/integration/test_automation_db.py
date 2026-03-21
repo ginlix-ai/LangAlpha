@@ -243,6 +243,150 @@ class TestDeleteAutomation:
         assert deleted is False
 
 
+class TestPriceTriggerAutomation:
+    """Test price-triggered automation CRUD and query."""
+
+    async def test_create_price_automation(
+        self, seed_user, patched_get_db_connection
+    ):
+        from src.server.database.automation import create_automation
+
+        trigger_config = {
+            "symbol": "AAPL",
+            "conditions": [
+                {"type": "price_below", "value": 150.0, "reference": "previous_close"}
+            ],
+            "retrigger": {"mode": "one_shot", "cooldown_seconds": 3600},
+        }
+
+        auto = await create_automation(
+            user_id=seed_user["user_id"],
+            name="AAPL Price Alert",
+            trigger_type="price",
+            instruction="Analyze why AAPL dropped below $150",
+            trigger_config=trigger_config,
+            agent_mode="flash",
+        )
+
+        assert auto["name"] == "AAPL Price Alert"
+        assert auto["trigger_type"] == "price"
+        assert auto["trigger_config"]["symbol"] == "AAPL"
+        assert auto["trigger_config"]["conditions"][0]["type"] == "price_below"
+        assert auto["trigger_config"]["conditions"][0]["value"] == 150.0
+        assert auto["cron_expression"] is None
+        assert auto["next_run_at"] is None
+        assert auto["status"] == "active"
+
+    async def test_get_active_price_automations(
+        self, seed_user, patched_get_db_connection
+    ):
+        from src.server.database.automation import (
+            create_automation,
+            get_active_price_automations,
+        )
+
+        # Create two price automations and one cron automation
+        await create_automation(
+            user_id=seed_user["user_id"],
+            name="AAPL Alert",
+            trigger_type="price",
+            instruction="aapl task",
+            trigger_config={
+                "symbol": "AAPL",
+                "conditions": [{"type": "price_below", "value": 150.0}],
+                "retrigger": {"mode": "one_shot"},
+            },
+        )
+        await create_automation(
+            user_id=seed_user["user_id"],
+            name="TSLA Alert",
+            trigger_type="price",
+            instruction="tsla task",
+            trigger_config={
+                "symbol": "TSLA",
+                "conditions": [{"type": "price_above", "value": 300.0}],
+                "retrigger": {"mode": "recurring"},
+            },
+        )
+        await create_automation(
+            user_id=seed_user["user_id"],
+            name="Daily Cron",
+            trigger_type="cron",
+            instruction="cron task",
+            cron_expression="0 9 * * *",
+        )
+
+        price_autos = await get_active_price_automations()
+        assert len(price_autos) == 2
+        names = {a["name"] for a in price_autos}
+        assert names == {"AAPL Alert", "TSLA Alert"}
+
+    async def test_get_active_price_automations_excludes_paused(
+        self, seed_user, patched_get_db_connection
+    ):
+        from src.server.database.automation import (
+            create_automation,
+            get_active_price_automations,
+            update_automation,
+        )
+
+        auto = await create_automation(
+            user_id=seed_user["user_id"],
+            name="Paused Alert",
+            trigger_type="price",
+            instruction="paused task",
+            trigger_config={
+                "symbol": "MSFT",
+                "conditions": [{"type": "price_above", "value": 400.0}],
+                "retrigger": {"mode": "one_shot"},
+            },
+        )
+
+        await update_automation(
+            str(auto["automation_id"]),
+            seed_user["user_id"],
+            status="paused",
+        )
+
+        price_autos = await get_active_price_automations()
+        assert len(price_autos) == 0
+
+    async def test_update_price_automation_trigger_config(
+        self, seed_user, patched_get_db_connection
+    ):
+        from src.server.database.automation import (
+            create_automation,
+            get_automation,
+            update_automation,
+        )
+
+        auto = await create_automation(
+            user_id=seed_user["user_id"],
+            name="Update Config",
+            trigger_type="price",
+            instruction="test update",
+            trigger_config={
+                "symbol": "AAPL",
+                "conditions": [{"type": "price_below", "value": 150.0}],
+                "retrigger": {"mode": "one_shot"},
+            },
+        )
+
+        updated = await update_automation(
+            str(auto["automation_id"]),
+            seed_user["user_id"],
+            trigger_config={
+                "symbol": "AAPL",
+                "conditions": [{"type": "price_above", "value": 200.0}],
+                "retrigger": {"mode": "cooldown", "cooldown_seconds": 1800},
+            },
+        )
+
+        assert updated["trigger_config"]["conditions"][0]["type"] == "price_above"
+        assert updated["trigger_config"]["conditions"][0]["value"] == 200.0
+        assert updated["trigger_config"]["retrigger"]["mode"] == "cooldown"
+
+
 class TestExecutionHistory:
     """Test automation execution record operations."""
 

@@ -84,6 +84,11 @@ def _schedule_sync(entity: str, config: RunnableConfig) -> None:
         logger.debug("[user_profile] No workspace_id in config, skipping sync")
         return
 
+    # Flash workspaces have no sandbox — nothing to sync
+    agent_mode = config.get("configurable", {}).get("agent_mode")
+    if agent_mode == "flash":
+        return
+
     # Fire-and-forget: schedule sync without awaiting
     asyncio.create_task(_sync_user_file_async(entity, user_id, workspace_id))
 

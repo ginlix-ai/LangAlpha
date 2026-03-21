@@ -8,9 +8,10 @@ import { usePreferences } from '@/hooks/usePreferences';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { updateCurrentUser } from '../../Dashboard/utils/api';
-import { softInterruptWorkflow, getWorkspace, summarizeThread, offloadThread } from '../utils/api';
+import { softInterruptWorkflow, getWorkspace, summarizeThread, offloadThread, getPreviewUrl } from '../utils/api';
 import { useChatMessages } from '../hooks/useChatMessages';
 import { saveChatSession, getChatSession, clearChatSession } from '../hooks/utils/chatSessionRestore';
+import type { PreviewData } from '../hooks/utils/types';
 import { clampPanelWidth as clampPanelWidthUtil } from '@/lib/panelUtils';
 import { useCardState } from '../hooks/useCardState';
 import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
@@ -32,6 +33,7 @@ import { MobileBottomSheet } from '@/components/ui/mobile-bottom-sheet';
 
 const FilePanel = React.lazy(() => import('./FilePanel'));
 const DetailPanel = React.lazy(() => import('./DetailPanel'));
+const PreviewViewer = React.lazy(() => import('./viewers/PreviewViewer'));
 
 // --- Types ---
 
@@ -279,9 +281,10 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const isDraggingRef = useRef(false);
   const [isDragging, setIsDragging] = useState(false);
 
-  // Right panel management - can show 'file', 'detail', or null (closed)
-  const [rightPanelType, setRightPanelType] = useState<'file' | 'detail' | null>(null);
+  // Right panel management - can show 'file', 'detail', 'preview', or null (closed)
+  const [rightPanelType, setRightPanelType] = useState<'file' | 'detail' | 'preview' | null>(null);
   const [rightPanelWidth, setRightPanelWidth] = useState(750);
+  const [previewData, setPreviewData] = useState<PreviewData | null>(null);
   const DIVIDER_WIDTH = 4; // px – matches .chat-split-divider
   // Active agent in main view (default: 'main', or from URL taskId)
   const [activeAgentId, setActiveAgentId] = useState(
@@ -485,6 +488,14 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     });
   }, [navigate, navWorkspaces, workspaceName]);
 
+  // Stable ref-based callback for opening preview URLs from SSE events.
+  // Defined here so it can be passed to useChatMessages; assigned after
+  // clampPanelWidth/pushPanelHistory are defined further down.
+  const openPreviewRef = useRef<(data: PreviewData) => void>(() => {});
+  const handleOpenPreviewFromStream = useCallback((data: PreviewData) => {
+    openPreviewRef.current(data);
+  }, []);
+
   // Chat messages management - receives updateTodoListCard and updateSubagentCard from floating cards hook
   const {
     messages,
@@ -496,8 +507,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     isLoadingHistory,
     isReconnecting: _isReconnecting,
     messageError,
-    returnedQueuedMessage,
-    clearReturnedQueuedMessage,
+    returnedSteering,
+    clearReturnedSteering,
     handleSendMessage,
     pendingInterrupt,
     pendingRejection,
@@ -522,7 +533,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     getFeedbackForMessage,
     getSubagentHistory,
     resolveSubagentIdToAgentId,
-  } = useChatMessages(workspaceId, threadId, updateTodoListCard as (todoData: Record<string, unknown>) => void, updateSubagentCard, inactivateAllSubagents, finalizePendingTodos, handleOnboardingRelatedToolComplete, refreshFiles, agentMode, clearSubagentCards, handleWorkspaceCreated);
+  } = useChatMessages(workspaceId, threadId, updateTodoListCard as (todoData: Record<string, unknown>) => void, updateSubagentCard, inactivateAllSubagents, finalizePendingTodos, handleOnboardingRelatedToolComplete, refreshFiles, handleOpenPreviewFromStream, agentMode, clearSubagentCards, handleWorkspaceCreated);
 
   const chatPlaceholder = useMemo(() => {
     if (pendingRejection) return t('chat.placeholderPendingRejection');
@@ -533,13 +544,13 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     return t('chat.placeholderDefault');
   }, [pendingRejection, wasInterrupted, isLoading, pendingInterrupt, hasActiveSubagents, t]);
 
-  // Restore queued message text to input when agent finishes without consuming it
+  // Restore steering text to input when agent finishes without consuming it
   useEffect(() => {
-    if (returnedQueuedMessage) {
-      chatInputRef.current?.setValue(returnedQueuedMessage);
-      clearReturnedQueuedMessage();
+    if (returnedSteering) {
+      chatInputRef.current?.setValue(returnedSteering);
+      clearReturnedSteering();
     }
-  }, [returnedQueuedMessage, clearReturnedQueuedMessage]);
+  }, [returnedSteering, clearReturnedSteering]);
 
   // Ref to avoid stale closure in unmount cleanup
   const currentThreadIdRef = useRef(currentThreadId);
@@ -788,23 +799,28 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
 
 
   const clampPanelWidth = useCallback(
-    (desired: number) => clampPanelWidthUtil(desired, contentAreaWidthRef.current),
+    (desired: number) => clampPanelWidthUtil(desired, containerRef.current?.offsetWidth || window.innerWidth),
     [],
   );
 
   // Handle drag panel width
+  const PREVIEW_MAX_RATIO = 0.92;
   const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     isDraggingRef.current = true;
     setIsDragging(true);
     const startX = e.clientX;
     const startWidth = rightPanelWidth;
+    // Use total container width (chat area + panel + divider), not just the
+    // chat area — contentAreaWidthRef excludes the open panel, so clamping
+    // against it would immediately shrink the panel on the first mouse move.
+    const containerW = containerRef.current?.offsetWidth || window.innerWidth;
+    const maxRatio = rightPanelType === 'preview' ? PREVIEW_MAX_RATIO : undefined;
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       if (!isDraggingRef.current) return;
       const delta = startX - moveEvent.clientX;
-      const containerW = contentAreaWidthRef.current > 0 ? contentAreaWidthRef.current : window.innerWidth;
-      setRightPanelWidth(clampPanelWidthUtil(startWidth + delta, containerW));
+      setRightPanelWidth(clampPanelWidthUtil(startWidth + delta, containerW, maxRatio));
     };
 
     const onMouseUp = () => {
@@ -820,7 +836,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     document.body.style.userSelect = 'none';
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
-  }, [rightPanelWidth]);
+  }, [rightPanelWidth, rightPanelType]);
 
   // Open a file in the right panel from chat tool calls
   // --- Mobile back-button integration for panels ---
@@ -861,6 +877,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
         setRightPanelType(null);
         setDetailToolCall(null);
         setDetailPlanData(null);
+        setPreviewData(null);
       }
     };
     window.addEventListener('popstate', onPopState);
@@ -926,14 +943,76 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     return clampPanelWidth(desired);
   }, [clampPanelWidth]);
 
-  // Open tool call detail in right panel
+  // Resolve preview URL: get signed URL from backend, restart server on 503.
+  const resolvePreviewUrl = useCallback(async (wid: string, port: number, command?: string): Promise<string> => {
+    try {
+      const result = await getPreviewUrl(wid, port, undefined);
+      return result.url;
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status === 503 && command) {
+        const result = await getPreviewUrl(wid, port, command);
+        return result.url;
+      }
+      throw err;
+    }
+  }, []);
+
+  // Resolve a preview URL and update previewData state with the result
+  const resolveAndSetPreview = useCallback((wid: string, port: number, command?: string) => {
+    resolvePreviewUrl(wid, port, command)
+      .then((url: string) => {
+        setPreviewData(prev => prev?.port === port
+          ? { ...prev, url, loading: false, error: undefined }
+          : prev);
+      })
+      .catch(() => {
+        setPreviewData(prev => prev?.port === port
+          ? { ...prev, url: '', loading: false, error: true }
+          : prev);
+      });
+  }, [resolvePreviewUrl]);
+
+  // Open preview URL in right panel
+  const handleOpenPreview = useCallback((data: PreviewData) => {
+    setPreviewData(data);
+    setRightPanelType('preview');
+    const containerW = containerRef.current?.offsetWidth || window.innerWidth;
+    setRightPanelWidth(clampPanelWidthUtil(850, containerW, PREVIEW_MAX_RATIO));
+    pushPanelHistory();
+    // If opened with loading state (no URL yet), resolve via authenticated endpoint
+    if (data.loading && !data.url && workspaceId) {
+      resolveAndSetPreview(workspaceId, data.port, data.command);
+    }
+  }, [pushPanelHistory, workspaceId, resolveAndSetPreview]);
+
+  // Keep the ref in sync so SSE events (via handleOpenPreviewFromStream) use the latest closure
+  openPreviewRef.current = handleOpenPreview;
+
+  // Open tool call detail in right panel (or preview panel for preview_url artifacts)
   const handleToolCallDetailClick = useCallback((toolCallProcess: ToolCallProcessRecord) => {
+    const artifact = toolCallProcess.toolCallResult?.artifact as Record<string, unknown> | undefined;
+    if (artifact?.type === 'preview_url' && artifact.port && workspaceId) {
+      const port = artifact.port as number;
+      const title = artifact.title as string | undefined;
+      const command = artifact.command as string | undefined;
+      // Show cached URL instantly, then verify in background (handles sandbox recreation + dead server)
+      if (previewData?.port === port && previewData.url) {
+        handleOpenPreview({ ...previewData, loading: false, error: undefined });
+        resolveAndSetPreview(workspaceId, port, command);
+        return;
+      }
+      // No cache — resolve (restarts server if needed via 503 fallback)
+      // handleOpenPreview will trigger resolution since loading=true and url=''
+      handleOpenPreview({ url: '', port, title, command, loading: true });
+      return;
+    }
     setDetailToolCall(toolCallProcess);
     setDetailPlanData(null);
     setRightPanelWidth(getDetailPanelWidth(toolCallProcess));
     setRightPanelType('detail');
     pushPanelHistory();
-  }, [getDetailPanelWidth, pushPanelHistory]);
+  }, [getDetailPanelWidth, pushPanelHistory, workspaceId, handleOpenPreview, previewData, resolveAndSetPreview]);
 
   // Open plan detail in right panel
   const handlePlanDetailClick = useCallback((planData: PlanData) => {
@@ -951,6 +1030,25 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     setDetailPlanData(null);
     popPanelHistory();
   }, [popPanelHistory]);
+
+  // Close preview panel (keep previewData cached for instant reopen)
+  const handleClosePreview = useCallback(() => {
+    setRightPanelType(null);
+    popPanelHistory();
+  }, [popPanelHistory]);
+
+  // Refresh preview: restart process + resolve fresh signed URL (force bypasses cache)
+  const handleRefreshPreview = useCallback(async () => {
+    if (!previewData || !workspaceId) return;
+    setPreviewData(prev => prev ? { ...prev, loading: true, error: undefined } : null);
+    try {
+      const result = await getPreviewUrl(workspaceId, previewData.port, previewData.command, true);
+      setPreviewData(prev => prev ? { ...prev, url: result.url, loading: false } : null);
+    } catch (e) {
+      console.error('Failed to refresh preview:', e);
+      setPreviewData(prev => prev ? { ...prev, loading: false, error: true } : null);
+    }
+  }, [previewData, workspaceId]);
 
   // Toggle file panel
   const handleToggleFilePanel = useCallback(() => {
@@ -1698,7 +1796,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
               <div className="w-full max-w-3xl space-y-3">
                 {activeAgentId === 'main' ? (
                   <>
-                    <TodoDrawer todoData={cards['todo-list-card']?.todoData ?? null} defaultCollapsed={!!cards['todo-list-card']?.todoData?.fromHistory} />
+                    <TodoDrawer todoData={cards['todo-list-card']?.todoData ?? null} />
                     {pendingRejection && (
                       <div
                         className="flex items-center gap-2 px-3 py-2 rounded-md text-sm"
@@ -1795,6 +1893,29 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
         </MobileBottomSheet>
       )}
 
+      {/* Mobile preview bottom sheet */}
+      {isMobile && (
+        <MobileBottomSheet
+          open={rightPanelType === 'preview' && !!previewData}
+          onClose={handleClosePreview}
+          sizing="fixed"
+          height="75vh"
+          className="!px-0 !overflow-hidden"
+        >
+          <Suspense fallback={null}>
+            <PreviewViewer
+              url={previewData?.url ?? ''}
+              port={previewData?.port ?? 0}
+              title={previewData?.title}
+              loading={previewData?.loading}
+              error={previewData?.error}
+              onClose={handleClosePreview}
+              onRefresh={handleRefreshPreview}
+            />
+          </Suspense>
+        </MobileBottomSheet>
+      )}
+
       {/* Right Side: File panel (mobile overlay) or split panel (desktop) */}
       {isMobile ? (
         /* Mobile: no AnimatePresence — avoids exit animation restart when React Router
@@ -1852,8 +1973,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
               initial={{ width: 0, opacity: 0 }}
               animate={{ width: rightPanelWidth + DIVIDER_WIDTH, opacity: 1 }}
               exit={{ width: 0, opacity: 0 }}
-              transition={{ duration: isDragging ? 0 : 0.25, ease: [0.22, 1, 0.36, 1] }}
+              transition={isDragging ? { duration: 0 } : { duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
               className="flex flex-shrink-0 overflow-hidden"
+              style={isDragging ? { width: rightPanelWidth + DIVIDER_WIDTH } : undefined}
             >
               <div
                 className="chat-split-divider"
@@ -1889,6 +2011,17 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                       onClose={handleCloseDetailPanel}
                       onOpenFile={handleOpenFileFromChat}
                       onOpenSubagentTask={handleOpenSubagentTask}
+                    />
+                  ) : rightPanelType === 'preview' && previewData ? (
+                    <PreviewViewer
+                      url={previewData.url}
+                      port={previewData.port}
+                      title={previewData.title}
+                      loading={previewData.loading}
+                      error={previewData.error}
+                      onClose={handleClosePreview}
+                      onRefresh={handleRefreshPreview}
+                      isDragging={isDragging}
                     />
                   ) : null}
                 </Suspense>

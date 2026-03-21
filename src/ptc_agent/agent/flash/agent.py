@@ -219,10 +219,10 @@ class FlashAgent:
         # Main middleware stack (minimal)
         main_middleware: list[Any] = []
 
-        # Message queue middleware (allows injecting queued user messages)
-        from src.ptc_agent.agent.middleware.message_queue import MessageQueueMiddleware
+        # Steering middleware (allows injecting steering messages from user)
+        from src.ptc_agent.agent.middleware.steering import SteeringMiddleware
 
-        main_middleware.append(MessageQueueMiddleware())
+        main_middleware.append(SteeringMiddleware())
 
         # AskUserQuestion middleware (needed for onboarding and preference updates)
         ask_user_middleware = AskUserMiddleware()
@@ -235,6 +235,9 @@ class FlashAgent:
         if self.config.llm.summarization:
             summ_config = self.config.summarization.model_dump()
             summ_config["llm"] = self.config.llm.summarization
+            summ_client = self.config.subsidiary_llm_clients.get("summarization")
+            if summ_client:
+                summ_config["_llm_client"] = summ_client
         summarization = SummarizationMiddleware.from_config(config=summ_config, backend=None)
         if summarization is not None:
             main_middleware.append(summarization)

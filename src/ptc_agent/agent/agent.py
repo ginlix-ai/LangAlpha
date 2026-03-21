@@ -27,6 +27,7 @@ from ptc_agent.agent.middleware import (
     MultimodalMiddleware,
     create_plan_mode_interrupt_config,
     # Tool middleware
+    CodeValidationMiddleware,
     EmptyToolCallRetryMiddleware,
     LeakDetectionMiddleware,
     ProtectedPathMiddleware,
@@ -43,10 +44,10 @@ from ptc_agent.agent.middleware import (
     SummarizationMiddleware,
     # Large result eviction middleware
     LargeResultEvictionMiddleware,
-    # Message queue middleware
-    MessageQueueMiddleware,
-    # Subagent message queue middleware
-    SubagentMessageQueueMiddleware,
+    # Steering middleware
+    SteeringMiddleware,
+    # Subagent steering middleware
+    SubagentSteeringMiddleware,
     # Workspace context middleware
     WorkspaceContextMiddleware,
 )
@@ -66,11 +67,13 @@ from ptc_agent.agent.subagents import (
     create_subagents,
 )
 from ptc_agent.agent.tools import (
+    create_bash_output_tool,
     create_execute_bash_tool,
     create_execute_code_tool,
     create_filesystem_tools,
     create_glob_tool,
     create_grep_tool,
+    create_preview_url_tool,
     TodoWrite,
 )
 from src.tools.search import get_web_search_tool
@@ -259,6 +262,8 @@ class PTCAgent:
         thread_id: str | None = None,
         on_agent_md_write: Any | None = None,
         store: Any | None = None,
+        on_signed_url: Any | None = None,
+        vault_secrets: dict[str, str] | None = None,
     ) -> Any:
         """Create a deepagent with PTC pattern capabilities.
 
@@ -286,6 +291,8 @@ class PTCAgent:
                 First 8 chars used as thread directory name in .agent/threads/{id}/.
             on_agent_md_write: Optional callback invoked when agent.md is written/edited.
                 Used to invalidate Session's agent.md cache.
+            on_signed_url: Optional async callback(sandbox_id, port, url) to cache
+                signed preview URLs. Injected from the server layer.
 
         Returns:
             Configured BackgroundSubagentOrchestrator wrapping the deepagent
@@ -308,9 +315,14 @@ class PTCAgent:
 
         # Create the Bash tool for shell command execution
         bash_tool = create_execute_bash_tool(sandbox, thread_id=short_thread_id)
+        bash_output_tool = create_bash_output_tool(sandbox)
+
+        # Create the preview URL tool for sandbox service previews
+        workspace_id = getattr(session, "conversation_id", "") if session else ""
+        preview_url_tool = create_preview_url_tool(sandbox, workspace_id=workspace_id, on_signed_url=on_signed_url)
 
         # Start with base tools
-        tools: list[Any] = [execute_code_tool, bash_tool, TodoWrite]
+        tools: list[Any] = [execute_code_tool, bash_tool, bash_output_tool, preview_url_tool, TodoWrite]
 
         # Create backend for SkillsMiddleware and LargeResultEvictionMiddleware
         backend = SandboxBackend(sandbox, operation_callback=operation_callback)
@@ -365,8 +377,12 @@ class PTCAgent:
                 ProtectedPathMiddleware(
                     denied_directories=self.config.filesystem.denied_directories,
                 ),
+                CodeValidationMiddleware(),
                 ToolErrorHandlingMiddleware(),
-                LeakDetectionMiddleware(mcp_servers=self.config.mcp.servers),
+                LeakDetectionMiddleware(
+                    mcp_servers=self.config.mcp.servers,
+                    vault_secrets=vault_secrets,
+                ),
                 ToolResultNormalizationMiddleware(),
             ]
         )
@@ -416,10 +432,10 @@ class PTCAgent:
         # --- Build main-only middleware (NOT passed to subagents) ---
         main_only_middleware: list[Any] = []
 
-        # Message queue middleware - checks Redis for queued user messages
-        # before each LLM call (must be first so queued context is visible
+        # Steering middleware - checks Redis for steering messages from the user
+        # before each LLM call (must be first so steering context is visible
         # before any other middleware runs)
-        main_only_middleware.append(MessageQueueMiddleware())
+        main_only_middleware.append(SteeringMiddleware())
 
         # Create counter middleware for tracking subagent tool calls
         # (Created early so it can be passed to BackgroundSubagentMiddleware)
@@ -545,18 +561,21 @@ class PTCAgent:
         if self.config.llm.summarization:
             summ_config = self.config.summarization.model_dump()
             summ_config["llm"] = self.config.llm.summarization
+            summ_client = self.config.subsidiary_llm_clients.get("summarization")
+            if summ_client:
+                summ_config["_llm_client"] = summ_client
         summarization = SummarizationMiddleware.from_config(config=summ_config, backend=backend)
 
         # Build model resilience middleware (retry + fallback)
         model_resilience = self._build_model_resilience_middleware()
 
         # Subagent middleware (shared only, no SubAgentMiddleware/BackgroundSubagentMiddleware/HITL)
-        # SubagentMessageQueueMiddleware is first so follow-up messages are
+        # SubagentSteeringMiddleware is first so follow-up messages are
         # visible before any other middleware runs.
         subagent_middleware = [
             m
             for m in [
-                SubagentMessageQueueMiddleware(registry=background_middleware.registry),
+                SubagentSteeringMiddleware(registry=background_middleware.registry),
                 LargeResultEvictionMiddleware(
                     backend=backend, eviction_dir=eviction_dir
                 ),

@@ -34,3 +34,13 @@ export interface TodoPayload {
   pending?: number;
   [key: string]: unknown;
 }
+
+/** Data for a preview URL panel. */
+export interface PreviewData {
+  url: string;
+  port: number;
+  title?: string;
+  command?: string;
+  loading?: boolean;
+  error?: boolean;
+}

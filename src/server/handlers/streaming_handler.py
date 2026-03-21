@@ -310,9 +310,9 @@ class WorkflowStreamHandler:
         # Background task registry (single source of truth for SSE events)
         self._background_registry = background_registry
 
-        # Track queued messages injected mid-workflow (for query backfill)
-        self.injected_queued_messages: list[dict] = []
-        self.on_queued_message_injected: Optional[Any] = None
+        # Track steering messages injected mid-workflow (for query backfill)
+        self.injected_steerings: list[dict] = []
+        self.on_steering_delivered: Optional[Any] = None
 
         # Snapshot of task IDs from previous workflow (set at stream start)
         self._old_tool_call_ids: set[str] = set()
@@ -561,18 +561,18 @@ class WorkflowStreamHandler:
                             yield self._format_sse_event("context_window", cw_data)
                             continue
 
-                        # Handle queued message injection signal
-                        if event_type == "queued_message_injected":
-                            yield self._format_sse_event("queued_message_injected", {
+                        # Handle steering delivery signal
+                        if event_type == "steering_delivered":
+                            yield self._format_sse_event("steering_delivered", {
                                 "thread_id": self.thread_id,
                                 "count": event_data.get("count", 0),
                                 "messages": event_data.get("messages", []),
                                 "timestamp": event_data.get("timestamp"),
                             })
                             # Track injected messages for later query backfill
-                            if self.on_queued_message_injected:
+                            if self.on_steering_delivered:
                                 try:
-                                    await self.on_queued_message_injected(
+                                    await self.on_steering_delivered(
                                         event_data.get("messages", [])
                                     )
                                 except Exception:

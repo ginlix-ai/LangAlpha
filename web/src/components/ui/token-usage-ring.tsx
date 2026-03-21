@@ -85,7 +85,7 @@ export function TokenUsageRing({ tokenUsage }: TokenUsageRingProps) {
           </svg>
         </div>
       </PopoverTrigger>
-      <PopoverContent side="top" className="w-auto p-3" style={{ background: 'var(--color-bg-elevated, #1a1a1a)', border: '1px solid var(--color-border-muted)', color: 'var(--text-primary, #ccc)' }}>
+      <PopoverContent side="top" className="w-auto p-3" style={{ background: 'var(--color-bg-elevated)', border: '1px solid var(--color-border-muted)', color: 'var(--color-text-primary)' }}>
         {tooltipContent}
       </PopoverContent>
     </Popover>

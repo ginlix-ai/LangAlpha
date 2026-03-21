@@ -13,7 +13,7 @@ from daytona_sdk.common.daytona import (
     CreateSandboxFromSnapshotParams,
     Image,
 )
-from daytona_sdk.common.process import CodeRunParams
+from daytona_sdk.common.process import CodeRunParams, SessionExecuteRequest
 from daytona_sdk.common.snapshot import CreateSnapshotParams
 
 from ptc_agent.config.core import DaytonaConfig
@@ -22,9 +22,11 @@ from ptc_agent.core.sandbox.runtime import (
     Artifact,
     CodeRunResult,
     ExecResult,
+    PreviewInfo,
     RuntimeState,
     SandboxProvider,
     SandboxRuntime,
+    SessionCommandResult,
 )
 
 logger = structlog.get_logger(__name__)
@@ -61,6 +63,15 @@ class DaytonaRuntime(SandboxRuntime):
     @property
     def id(self) -> str:
         return self._sandbox.id
+
+    @property
+    def proxy_domain(self) -> str | None:
+        from urllib.parse import urlparse
+
+        url = getattr(self._sandbox, "toolbox_proxy_url", None)
+        if not url:
+            return None
+        return urlparse(url).hostname
 
     @property
     def working_dir(self) -> str:
@@ -190,11 +201,81 @@ class DaytonaRuntime(SandboxRuntime):
             return [vars(f) for f in result]
         return result
 
+    # -- Sessions (background processes) --
+
+    async def create_session(self, session_id: str) -> None:
+        await self._sandbox.process.create_session(session_id)
+
+    async def session_execute(
+        self,
+        session_id: str,
+        command: str,
+        *,
+        run_async: bool = False,
+        timeout: int | None = None,
+    ) -> SessionCommandResult:
+        req = SessionExecuteRequest(command=command, run_async=run_async)
+        result = await self._sandbox.process.execute_session_command(
+            session_id, req, timeout=timeout
+        )
+        return SessionCommandResult(
+            cmd_id=result.cmd_id,
+            exit_code=result.exit_code,
+            stdout=result.stdout or "",
+            stderr=result.stderr or "",
+        )
+
+
+    async def session_command_logs(
+        self, session_id: str, command_id: str
+    ) -> SessionCommandResult:
+        cmd, logs = await asyncio.gather(
+            self._sandbox.process.get_session_command(session_id, command_id),
+            self._sandbox.process.get_session_command_logs(
+                session_id, command_id
+            ),
+        )
+        return SessionCommandResult(
+            cmd_id=command_id,
+            exit_code=cmd.exit_code,
+            stdout=logs.stdout or "",
+            stderr=logs.stderr or "",
+        )
+
+    async def delete_session(self, session_id: str) -> None:
+        await self._sandbox.process.delete_session(session_id)
+
+    # -- Preview URLs --
+
+    async def get_preview_url(self, port: int, expires_in: int = 3600) -> PreviewInfo:
+        """Get a signed preview URL for a service running on the given port.
+
+        Daytona returns the base URL and token separately. For iframe use the
+        token must be embedded as a query parameter since iframes cannot set
+        custom headers.
+        """
+        result = await self._sandbox.create_signed_preview_url(port, expires_in)
+        url = result.url
+        # Embed token in URL if not already present (required for iframe access)
+        if result.token and "token=" not in url:
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}token={result.token}"
+        return PreviewInfo(url=url, token=result.token)
+
+    async def get_preview_link(self, port: int) -> PreviewInfo:
+        """Get a standard (non-signed) preview URL with header-based auth token."""
+        result = await self._sandbox.get_preview_link(port)
+        return PreviewInfo(
+            url=result.url,
+            token=result.token,
+            auth_headers={"X-Daytona-Preview-Token": result.token},
+        )
+
     # -- Capabilities & metadata --
 
     @property
     def capabilities(self) -> set[str]:
-        return {"exec", "code_run", "file_io", "archive", "snapshot"}
+        return {"exec", "code_run", "file_io", "archive", "snapshot", "preview_url", "sessions"}
 
     async def archive(self) -> None:
         await self._sandbox.archive()
@@ -374,7 +455,7 @@ class DaytonaProvider(SandboxProvider):
                 " fonts-noto-cjk",
                 "curl -LsSf https://astral.sh/uv/install.sh | sh",
                 "mv /root/.local/bin/uv /usr/local/bin/uv",
-                "curl -fsSL https://deb.nodesource.com/setup_20.x | bash -",
+                "curl -fsSL https://deb.nodesource.com/setup_24.x | bash -",
                 "apt-get install -y nodejs",
                 *[f"npm install -g {pkg}" for pkg in pkgs],
                 "npm install -g docx pptxgenjs",

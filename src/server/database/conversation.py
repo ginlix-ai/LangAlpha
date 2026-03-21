@@ -38,6 +38,8 @@ def get_db_connection_string() -> str:
     """
     import os
 
+    from urllib.parse import quote_plus
+
     db_host = os.getenv("DB_HOST", "localhost")
     db_port = os.getenv("DB_PORT", "5432")
     db_name = os.getenv("DB_NAME", "postgres")
@@ -45,7 +47,7 @@ def get_db_connection_string() -> str:
     db_password = os.getenv("DB_PASSWORD", "postgres")
 
     sslmode = "require" if "supabase.com" in db_host else "disable"
-    return f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}?sslmode={sslmode}"
+    return f"postgresql://{quote_plus(db_user)}:{quote_plus(db_password)}@{db_host}:{db_port}/{db_name}?sslmode={sslmode}"
 
 
 def _on_reconnect_failed(pool):

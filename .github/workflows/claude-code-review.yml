@@ -45,39 +45,56 @@ jobs:
                - Update the PR description using: `gh pr edit ${{ github.event.pull_request.number }} --body "your generated description"`
             3. If description is already meaningful (>50 chars), skip this step
 
-            After handling PR description, proceed with code review:
+            CONTEXT GATHERING (Do this BEFORE reviewing code):
+            1. Read the CLAUDE.md files for project context.
+            2. Read PR comments using `gh pr view ${{ github.event.pull_request.number }} --comments` — the author may have left explanations, known limitations, or context about trade-offs. Factor these into your review: do not flag issues the author has already acknowledged or explained.
 
-            Review this PR. ONLY report issues that matter. Read the CLAUDE.md files for project context.
+            After handling PR description and gathering context, proceed with code review:
+
+            Review this PR.
+
+            SCOPE RULE: ONLY review code that is part of this PR's diff. Do NOT flag issues in unchanged code, even if you notice them. If you find a real bug in unchanged code, create a separate GitHub issue for it using `gh issue create` instead of mentioning it in the review.
+
+            ISSUE CLASSIFICATION: Every issue MUST be labeled as one of:
+            - 🚫 **Blocking** — must fix before merge (bugs, security, data loss, significant perf issues)
+            - 💡 **Non-blocking** — should fix for good practice but not a merge blocker (naming, patterns, minor DRY, style)
+
+            Do NOT flag minor DRY violations where the duplication is 2-3 lines and extracting a helper adds more complexity than it removes.
 
             REVIEW PRIORITIES (in order of importance):
 
-            1. DRY Violations
-               - Duplicated logic or copy-pasted code
-               - Utility functions that already exist but weren't reused
-               - Same pattern implemented in multiple places
-               - Flag WHICH existing function should be used instead
+            🚫 BLOCKING issues:
 
-            2. Performance
-               - Blocking calls in async code (this is an async-first codebase)
-               - Missing timeouts on external API/DB calls
-               - Unnecessary React re-renders (missing memo, unstable references in deps arrays)
+            1. Correctness & Bugs
+               - Logic errors, off-by-one, wrong conditions
+               - Missing error handling on failure paths that would crash or corrupt data
+               - Race conditions in async code
+
+            2. Security (clear vulnerabilities)
+               - Credential exposure
+               - Injection risks
+               - Missing auth checks on protected endpoints
+
+            3. Latency & Performance (HIGH PRIORITY — this is a real-time AI agent platform where latency directly impacts UX)
+               - Blocking/synchronous calls in async code paths (this is an async-first codebase)
+               - Sequential awaits that could be concurrent (asyncio.gather, Promise.all)
                - N+1 query patterns in database access
-               - Large objects allocated in hot paths
+               - Missing timeouts on external API/DB calls
+               - Unnecessary serialization/deserialization in hot paths
+               - Redundant network round-trips (multiple API calls that could be batched)
+               - Large payloads where only a subset of fields is needed
+               - Missing or broken caching for repeated expensive operations
+               - Unnecessary re-renders in React components on the streaming path
+               - Memory allocations in tight loops or per-message handlers
 
-            3. SSE Streaming Bugs
-               - Incorrect or inconsistent SSE event types
-               - Missing error events on failure paths
+            4. SSE Streaming Bugs (latency-sensitive — directly affects time-to-first-token)
                - Events sent after stream close
                - Race conditions in event buffering
-               - Reconnection edge cases
                - Orphaned streams or missing cleanup on disconnect
+               - Unnecessary buffering that delays event delivery
+               - Missing backpressure handling
 
-            4. Cache & Invalidation
-               - Stale cache reads after mutations
-               - Missing React Query cache invalidation after related mutations
-               - Inconsistent cache keys (check web/src/lib/queryKeys.js patterns)
-               - Redis TTL mismatches
-               - Over-caching mutable data
+            💡 NON-BLOCKING issues:
 
             5. Naming
                - Function/variable/file names that don't match their actual behavior
@@ -91,20 +108,21 @@ jobs:
                - Inconsistent with architecture in similar existing files
                - Deviates from conventions without justification
 
-            7. Security (only flag clear vulnerabilities)
-               - Credential exposure
-               - Injection risks
-               - Missing auth checks on protected endpoints
+            7. DRY Violations (substantial ones only)
+               - Large blocks of duplicated logic (10+ lines) that should clearly share an existing utility
+               - Flag WHICH existing function should be used instead
 
             REVIEW FORMAT:
-            - Keep review BRIEF — only issues that matter
-            - Skip minor style/formatting
-            - Group related issues together
+            - Group issues under **🚫 Blocking** and **💡 Non-blocking** sections
             - Provide specific file:line references
             - Suggest concrete fixes
+            - Keep it concise — no filler
 
-            If no critical issues found: Simply comment "LGTM — no critical issues found."
+            If no blocking issues found: lead with "No blocking issues." then list any non-blocking suggestions.
+            If no issues at all: Simply comment "LGTM — no issues found."
+
+            OUT-OF-SCOPE BUGS: If you notice a real bug in code NOT changed by this PR, do NOT include it in the review. Instead create a separate issue: `gh issue create --title "Bug: <description>" --body "<details>"`.
 
             Use `gh pr comment ${{ github.event.pull_request.number }}` to post your review.
 
-          claude_args: '--allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr edit:*),Bash(gh pr review:*),Bash(gh api:*)"'
+          claude_args: '--allowed-tools "Bash(gh issue view:*),Bash(gh issue create:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr edit:*),Bash(gh pr review:*),Bash(gh api:*)"'

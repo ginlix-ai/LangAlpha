@@ -81,8 +81,10 @@ def get_checkpointer(memory_type: str = "memory", **kwargs) -> Optional[Any]:
         )
 
         # Auto-detect SSL mode for Supabase
+        from urllib.parse import quote_plus
+
         sslmode = "require" if "supabase.com" in db_host else "disable"
-        db_uri = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}?sslmode={sslmode}"
+        db_uri = f"postgresql://{quote_plus(db_user)}:{quote_plus(db_password)}@{db_host}:{db_port}/{db_name}?sslmode={sslmode}"
 
         # Cache connection pools by URI to avoid creating new pools on every graph instantiation
         if db_uri not in _postgres_pool_cache:

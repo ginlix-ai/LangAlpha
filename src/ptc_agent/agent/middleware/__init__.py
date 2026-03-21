@@ -26,8 +26,9 @@ from ptc_agent.agent.middleware.plan_mode import (
 # Ask user middleware
 from ptc_agent.agent.middleware.ask_user import AskUserMiddleware
 
-# Tool middleware (argument parsing, error handling, result normalization, leak detection, empty call retry)
+# Tool middleware (argument parsing, error handling, result normalization, leak detection, code validation, empty call retry)
 from ptc_agent.agent.middleware.tool import (
+    CodeValidationMiddleware,
     EmptyToolCallRetryMiddleware,
     LeakDetectionMiddleware,
     ProtectedPathMiddleware,
@@ -72,9 +73,9 @@ from ptc_agent.agent.middleware.large_result_eviction import (
     LargeResultEvictionMiddleware,
 )
 
-# Message queue middleware
-from ptc_agent.agent.middleware.message_queue import (
-    MessageQueueMiddleware,
+# Steering middleware
+from ptc_agent.agent.middleware.steering import (
+    SteeringMiddleware,
 )
 
 # Workspace context middleware (agent.md injection)
@@ -82,9 +83,9 @@ from ptc_agent.agent.middleware.workspace_context import (
     WorkspaceContextMiddleware,
 )
 
-# Subagent message queue middleware
-from ptc_agent.agent.middleware.background_subagent.queue import (
-    SubagentMessageQueueMiddleware,
+# Subagent steering middleware
+from ptc_agent.agent.middleware.background_subagent.steering import (
+    SubagentSteeringMiddleware,
 )
 
 # Subagent middleware
@@ -107,6 +108,7 @@ __all__ = [
     # Multimodal middleware (for read_file image/PDF support)
     "MultimodalMiddleware",
     # Tool middleware
+    "CodeValidationMiddleware",
     "EmptyToolCallRetryMiddleware",
     "LeakDetectionMiddleware",
     "ProtectedPathMiddleware",
@@ -130,10 +132,10 @@ __all__ = [
     "SkillsMiddleware",
     # Large result eviction
     "LargeResultEvictionMiddleware",
-    # Message queue
-    "MessageQueueMiddleware",
-    # Subagent message queue
-    "SubagentMessageQueueMiddleware",
+    # Steering
+    "SteeringMiddleware",
+    # Subagent steering
+    "SubagentSteeringMiddleware",
     # Workspace context
     "WorkspaceContextMiddleware",
     # Subagent middleware

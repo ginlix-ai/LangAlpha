@@ -1,9 +1,10 @@
 """
 WebSocket proxy for ginlix-data real-time market aggregates.
 
-Authenticates the frontend WebSocket via Supabase JWT, then opens a
-backend WebSocket to ginlix-data using the internal service token.
-Messages are forwarded bidirectionally until either side disconnects.
+Authenticates the frontend WebSocket via Supabase JWT, then registers
+the client as a consumer of the SharedWSConnectionManager.  Messages
+from the shared upstream connection are forwarded to each client based
+on their symbol subscriptions.
 
 WS ticks are also written into the Redis OHLCV cache so that REST
 reads always reflect near-real-time data (WS-fed cache).
@@ -15,17 +16,16 @@ true (i.e. ``GINLIX_DATA_WS_URL`` is set) — see ``setup.py``.
 import asyncio
 import json
 import logging
-import os
 import time as _time
 from typing import Optional
+from uuid import uuid4
 
-import websockets
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from src.config.settings import GINLIX_DATA_WS_URL
 from src.server.auth.ws_auth import authenticate_websocket
 from src.server.services.cache._ohlcv_envelope import _build_envelope, _parse_envelope
 from src.server.services.cache.intraday_cache_service import IntradayCacheKeyBuilder
+from src.server.services.shared_ws_manager import SharedWSConnectionManager
 from src.utils.cache.redis_cache import get_cache_client
 from src.utils.market_hours import current_trading_date
 
@@ -33,8 +33,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_INTERNAL_SERVICE_TOKEN = os.getenv("INTERNAL_SERVICE_TOKEN", "")
-_ALLOWED_MARKETS = {"stock", "index", "crypto", "forex"}
+_ALLOWED_MARKETS = {"stock", "index"}
 
 # Map WS interval param → cache interval key
 _WS_INTERVAL_TO_CACHE: dict[str, str] = {
@@ -78,56 +77,6 @@ def _cleanup_stale_entries() -> None:
         _backfill_done.pop(k, None)
         _last_flush.pop(k, None)
 
-
-def _parse_ws_bar(raw_msg: str) -> Optional[dict]:
-    """Parse a WS message into a normalised bar dict.
-
-    Returns ``None`` for non-aggregate messages (status, keepalive, etc.).
-    """
-    try:
-        msg = json.loads(raw_msg)
-    except (json.JSONDecodeError, TypeError):
-        return None
-
-    symbol: Optional[str] = None
-    o = h = l = c = v = ts = None
-
-    if isinstance(msg, dict):
-        ev = msg.get("ev")
-        if ev in ("AM", "A"):
-            # Raw ginlix-data aggregate
-            symbol = msg.get("sym")
-            o, h, l, c, v = msg.get("o"), msg.get("h"), msg.get("l"), msg.get("c"), msg.get("v")
-            ts = msg.get("s") or msg.get("e")
-        elif msg.get("type") == "aggregate" and isinstance(msg.get("data"), dict):
-            # Wrapped format
-            d = msg["data"]
-            symbol = msg.get("symbol") or d.get("sym") or d.get("symbol")
-            o = d.get("open", d.get("o"))
-            h = d.get("high", d.get("h"))
-            l = d.get("low", d.get("l"))
-            c = d.get("close", d.get("c"))
-            v = d.get("volume", d.get("v"))
-            ts = d.get("time", d.get("timestamp", d.get("s", d.get("e"))))
-
-    if not symbol or c is None or ts is None:
-        return None
-
-    # Normalise timestamp to Unix milliseconds
-    if isinstance(ts, (int, float)):
-        ts_ms = int(ts) if ts > 1e12 else int(ts * 1000)
-    else:
-        return None
-
-    return {
-        "symbol": symbol.upper(),
-        "time": ts_ms,
-        "open": float(o) if o is not None else 0.0,
-        "high": float(h) if h is not None else 0.0,
-        "low": float(l) if l is not None else 0.0,
-        "close": float(c) if c is not None else 0.0,
-        "volume": int(v) if v is not None else 0,
-    }
 
 
 def _cache_key_for(symbol: str, market: str, cache_interval: str) -> str:
@@ -312,13 +261,17 @@ async def market_data_ws_status():
 
 @router.websocket("/ws/v1/market-data/aggregates/{market}")
 async def ws_market_data_proxy(
-    websocket: WebSocket, market: str, interval: str = "minute", tier: str = "realtime",
+    websocket: WebSocket, market: str, interval: str = "second", tier: str = "realtime",
 ):
-    """Proxy frontend WS to ginlix-data aggregate stream."""
+    """Proxy frontend WS via SharedWSConnectionManager."""
 
     if market not in _ALLOWED_MARKETS:
         await websocket.close(code=1008, reason=f"Invalid market: {market}")
         return
+
+    # Index data is delayed-only; override any client-supplied tier
+    if market == "index":
+        tier = "delayed"
 
     if tier not in ("delayed", "realtime"):
         await websocket.close(code=1008, reason=f"Invalid tier: {tier}")
@@ -333,84 +286,82 @@ async def ws_market_data_proxy(
     await websocket.accept()
     logger.info("WS proxy opened: user=%s market=%s interval=%s tier=%s", user_id, market, interval, tier)
 
-    # Build backend URL
-    backend_url = f"{GINLIX_DATA_WS_URL}/ws/v1/data/aggregates/{market}?interval={interval}&tier={tier}"
-    backend_headers = {"X-User-Id": user_id}
-    if _INTERNAL_SERVICE_TOKEN:
-        backend_headers["X-Service-Token"] = _INTERNAL_SERVICE_TOKEN
+    shared_ws = SharedWSConnectionManager.get_instance(market=market, interval=interval, tier=tier)
+    consumer_id = f"ws_proxy_{uuid4().hex[:12]}"
+    cache_interval = _WS_INTERVAL_TO_CACHE.get(interval)
+    connection_keys: set[str] = set()
+    _msg_count = 0
+    disconnected = asyncio.Event()
+
+    async def on_message(raw_msg: str, bar: Optional[dict]) -> None:
+        """Callback from SharedWSConnectionManager — forward to frontend client."""
+        nonlocal _msg_count
+        try:
+            _msg_count += 1
+            if _msg_count <= 5 or _msg_count % 50 == 0:
+                logger.debug(
+                    "shared→client %s (#%d): %s",
+                    consumer_id, _msg_count,
+                    raw_msg[:300] if isinstance(raw_msg, str) else str(raw_msg)[:300],
+                )
+            await websocket.send_text(raw_msg)
+
+            # Buffer tick for throttled cache write
+            if cache_interval and bar:
+                key = _cache_key_for(bar["symbol"], market, cache_interval)
+                connection_keys.add(key)
+                _buffer_tick(bar, market, cache_interval, user_id)
+        except Exception:
+            # Client likely disconnected — signal cleanup
+            disconnected.set()
+
+    handle = shared_ws.register_consumer(consumer_id, on_message)
 
     try:
-        async with websockets.connect(
-            backend_url,
-            additional_headers=backend_headers,
-            ping_interval=20,
-            ping_timeout=10,
-            close_timeout=5,
-        ) as backend_ws:
-
-            _msg_count = 0
-
-            async def client_to_backend():
-                """Forward messages from the frontend client to ginlix-data."""
-                try:
-                    while True:
-                        msg = await websocket.receive_text()
-                        await backend_ws.send(msg)
-                except WebSocketDisconnect:
-                    pass  # Client disconnected
-                except Exception as exc:
-                    logger.debug("client_to_backend closed: %s", exc)
-
-            cache_interval = _WS_INTERVAL_TO_CACHE.get(interval)
-            connection_keys: set[str] = set()  # track cache keys owned by this connection
-
-            async def backend_to_client():
-                """Forward messages from ginlix-data to the frontend client."""
-                nonlocal _msg_count
-                try:
-                    async for msg in backend_ws:
-                        _msg_count += 1
-                        if _msg_count <= 5 or _msg_count % 50 == 0:
-                            logger.debug("backend→client (#%d): %s", _msg_count, msg[:300] if isinstance(msg, str) else str(msg)[:300])
-                        await websocket.send_text(msg)
-
-                        # Buffer tick for throttled cache write
-                        if cache_interval:
-                            bar = _parse_ws_bar(msg)
-                            if bar:
-                                key = _cache_key_for(bar["symbol"], market, cache_interval)
-                                connection_keys.add(key)
-                                _buffer_tick(bar, market, cache_interval, user_id)
-                except websockets.exceptions.ConnectionClosed:
-                    pass  # Backend disconnected
-                except Exception as exc:
-                    logger.debug("backend_to_client closed: %s", exc)
-
-            # Flush only this connection's buffered ticks when WS closes
-            async def _flush_remaining():
-                for key in list(connection_keys):
-                    bars = _pending_bars.pop(key, [])
-                    if bars:
-                        await _flush_to_redis(key, bars)
-
-            # Run both directions concurrently; when either finishes, cancel the other
+        # Read client messages (subscribe/unsubscribe) and forward through handle.
+        # Race receive_text against disconnected event so we unblock immediately
+        # if the on_message callback detects a send failure.
+        while True:
+            receive_task = asyncio.ensure_future(websocket.receive_text())
+            disconnect_task = asyncio.ensure_future(disconnected.wait())
             done, pending = await asyncio.wait(
-                [
-                    asyncio.create_task(client_to_backend()),
-                    asyncio.create_task(backend_to_client()),
-                ],
+                [receive_task, disconnect_task],
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            for task in pending:
-                task.cancel()
+            for t in pending:
+                t.cancel()
 
-            # Flush remaining buffered bars
-            await _flush_remaining()
+            if disconnect_task in done:
+                break
 
-    except (websockets.exceptions.WebSocketException, OSError) as exc:
-        logger.warning("Backend WS connection failed: %s", exc)
+            try:
+                msg = receive_task.result()
+            except (WebSocketDisconnect, Exception):
+                break
+
+            # Parse client subscribe/unsubscribe and route through handle
+            try:
+                parsed = json.loads(msg)
+                action = parsed.get("action", "")
+                symbols = parsed.get("symbols", [])
+                if action == "subscribe" and symbols:
+                    await handle.subscribe(symbols)
+                elif action == "unsubscribe" and symbols:
+                    await handle.unsubscribe(symbols)
+                elif action == "ping":
+                    await websocket.send_text(json.dumps({"type": "pong"}))
+            except (json.JSONDecodeError, TypeError):
+                pass
     finally:
-        # Ensure client socket is closed
+        # Unregister consumer
+        await handle.close()
+
+        # Flush remaining buffered bars
+        for key in list(connection_keys):
+            bars = _pending_bars.pop(key, [])
+            if bars:
+                await _flush_to_redis(key, bars)
+
         try:
             await websocket.close()
         except Exception:

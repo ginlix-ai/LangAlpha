@@ -209,6 +209,17 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Failed to initialize PTC Agent: {e}")
         logger.warning("PTC Agent endpoints may not work correctly")
 
+    # Start SharedWSConnectionManager (shared upstream WS to ginlix-data)
+    try:
+        from src.server.services.shared_ws_manager import DEFAULT_WS_FEEDS, SharedWSConnectionManager
+
+        for market, interval, tier in DEFAULT_WS_FEEDS:
+            ws = SharedWSConnectionManager.get_instance(market, interval, tier)
+            await ws.start()
+        logger.info("SharedWSConnectionManager instances started")
+    except Exception as e:
+        logger.warning(f"Failed to start SharedWSConnectionManager: {e}")
+
     # Start AutomationScheduler (polling loop for time-based triggers)
     try:
         from src.server.services.automation_scheduler import AutomationScheduler
@@ -219,6 +230,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to start AutomationScheduler: {e}")
         logger.warning("Scheduled automations will not run")
+
+    # Start PriceMonitorService (real-time price condition triggers)
+    try:
+        from src.server.services.price_monitor import PriceMonitorService
+
+        price_monitor = PriceMonitorService.get_instance()
+        await price_monitor.start()
+        logger.info("PriceMonitorService started")
+    except Exception as e:
+        logger.warning(f"Failed to start PriceMonitorService: {e}")
+        logger.warning("Price-triggered automations will not run")
 
     # Start MarketInsightService (schedule-based market news gathering)
     try:
@@ -243,6 +265,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Error shutting down MarketInsightService: {e}")
 
+    # 0.5. Shutdown PriceMonitorService (before scheduler so executions can drain)
+    try:
+        from src.server.services.price_monitor import PriceMonitorService
+
+        price_mon = PriceMonitorService.get_instance()
+        await price_mon.stop()
+    except Exception as e:
+        logger.warning(f"Error shutting down PriceMonitorService: {e}")
+
     # 1. Shutdown AutomationScheduler
     try:
         from src.server.services.automation_scheduler import AutomationScheduler
@@ -251,6 +282,15 @@ async def lifespan(app: FastAPI):
         await scheduler.shutdown()
     except Exception as e:
         logger.warning(f"Error shutting down AutomationScheduler: {e}")
+
+    # 1.5. Shutdown SharedWSConnectionManager
+    try:
+        from src.server.services.shared_ws_manager import SharedWSConnectionManager
+
+        for ws in SharedWSConnectionManager.all_instances():
+            await ws.stop()
+    except Exception as e:
+        logger.warning(f"Error shutting down SharedWSConnectionManager: {e}")
 
     # 2. Cancel background subagent tasks
     try:
@@ -409,6 +449,7 @@ from src.server.app.utilities import health_router
 from src.server.app.workspaces import router as workspaces_router
 from src.server.app.workspace_files import router as workspace_files_router
 from src.server.app.workspace_sandbox import router as workspace_sandbox_router
+from src.server.app.workspace_sandbox import preview_redirect_router
 from src.server.app.market_data import router as market_data_router
 from src.server.app.users import router as users_router
 from src.server.app.watchlist import router as watchlist_router
@@ -423,6 +464,7 @@ from src.server.app.insights import router as insights_router
 from src.server.app.oauth import router as oauth_router
 from src.server.app.public import router as public_router
 from src.server.app.skills import router as skills_router
+from src.server.app.vault import router as vault_router
 
 # Conditionally import ginlix-data WS proxy (only when GINLIX_DATA_WS_URL is set)
 from src.config.settings import GINLIX_DATA_ENABLED
@@ -432,6 +474,16 @@ if GINLIX_DATA_ENABLED:
 
     logger.info("ginlix-data WS proxy enabled")
 else:
+    # Register a minimal status endpoint so the frontend preflight check
+    # gets a clean 200 instead of a noisy 404.
+    from fastapi import APIRouter as _APIRouter
+
+    market_data_ws_router = _APIRouter()
+
+    @market_data_ws_router.get("/ws/v1/market-data/status")
+    async def market_data_ws_status_disabled():
+        return {"enabled": False}
+
     logger.info("ginlix-data WS proxy disabled (GINLIX_DATA_URL not set)")
 
 # Include all routers
@@ -471,9 +523,14 @@ app.include_router(
     public_router
 )  # /api/v1/public/* - Public shared thread access (no auth)
 app.include_router(skills_router)  # /api/v1/skills - Available agent skills
+app.include_router(
+    vault_router
+)  # /api/v1/workspaces/{id}/vault/secrets - Per-workspace secret storage
 app.include_router(health_router)  # /health - Health check
+app.include_router(
+    preview_redirect_router
+)  # /api/v1/preview/{workspace_id}/{port} - Unauthenticated preview URL redirect
 
-if GINLIX_DATA_ENABLED:
-    app.include_router(
-        market_data_ws_router
-    )  # /ws/v1/market-data/* - Real-time WS proxy
+app.include_router(
+    market_data_ws_router
+)  # /ws/v1/market-data/* - Real-time WS proxy (or just status endpoint when disabled)

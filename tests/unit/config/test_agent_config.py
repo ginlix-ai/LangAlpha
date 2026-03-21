@@ -109,14 +109,22 @@ class TestAgentConfigCreate:
             config = AgentConfig.create(llm=mock_llm)
         assert config.daytona.api_key == "env-key-456"
 
-    def test_create_raises_without_api_key(self):
-        """create() should raise if no API key available."""
+    def test_create_auto_detects_docker_without_api_key(self):
+        """create() should auto-detect docker provider when no DAYTONA_API_KEY."""
         mock_llm = MagicMock()
         with patch.dict(os.environ, {}, clear=True):
-            # Remove DAYTONA_API_KEY if present
+            os.environ.pop("DAYTONA_API_KEY", None)
+            os.environ.pop("SANDBOX_PROVIDER", None)
+            config = AgentConfig.create(llm=mock_llm)
+        assert config.sandbox.provider == "docker"
+
+    def test_create_raises_when_daytona_explicit_without_key(self):
+        """create() should raise if daytona provider is explicit but no API key."""
+        mock_llm = MagicMock()
+        with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("DAYTONA_API_KEY", None)
             with pytest.raises(ValueError, match="DAYTONA_API_KEY"):
-                AgentConfig.create(llm=mock_llm)
+                AgentConfig.create(llm=mock_llm, provider="daytona")
 
     def test_create_with_mcp_servers(self):
         mock_llm = MagicMock()

@@ -87,7 +87,10 @@ class GinlixDataSource:
         day's data instead of an empty future date.
         """
         if to_date is None:
-            to_date = date.today().strftime("%Y-%m-%d")
+            if lookback_days == 0:
+                to_date = current_trading_date()
+            else:
+                to_date = date.today().strftime("%Y-%m-%d")
         if from_date is None:
             if lookback_days == 0:
                 from_date = current_trading_date()

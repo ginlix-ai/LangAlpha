@@ -199,7 +199,9 @@ export default function useMarketDataWS(): UseMarketDataWSReturn {
       // /ws/v1/market-data/aggregates/stock → /ws/v1/market-data/status
       const statusUrl = wsUrl.replace(/^ws/, 'http').replace(/\/aggregates\/.*$/, '/status');
       const res = await fetch(statusUrl, { method: 'GET', signal: AbortSignal.timeout(5000) });
-      return res.ok;
+      if (!res.ok) return false;
+      const data = await res.json();
+      return data.enabled !== false;
     } catch {
       // Network error / timeout = server down or unreachable
       return false;

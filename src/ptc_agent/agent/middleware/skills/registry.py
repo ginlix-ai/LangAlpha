@@ -245,6 +245,14 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
         exposure="ptc",
         command="report-issue",
     ),
+    "interactive-dashboard": SkillDefinition(
+        name="interactive-dashboard",
+        description="Interactive web dashboards: stock trackers, sector heatmaps, portfolio monitors — served via preview URL",
+        tools=[],
+        skill_md_path="skills/interactive-dashboard/SKILL.md",
+        exposure="ptc",
+        command="dashboard",
+    ),
     "initiating-coverage": SkillDefinition(
         name="initiating-coverage",
         description="Full equity research initiation: company research, financial model, valuation, charts, 30-50 page report",

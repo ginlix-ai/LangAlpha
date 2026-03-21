@@ -275,6 +275,7 @@ class MarketStatusResponse(BaseModel):
     earlyHours: Optional[bool] = Field(None, description="Whether pre-market trading is active")
     serverTime: Optional[str] = Field(None, description="Server time (ISO)")
     exchanges: Optional[Dict[str, Any]] = Field(None, description="Per-exchange status")
+    providers: List[str] = Field(default_factory=list, description="Active market data provider names")
 
 
 class StockSearchResult(BaseModel):

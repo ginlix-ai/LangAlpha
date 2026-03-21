@@ -35,13 +35,19 @@ class LeakDetectionMiddleware(AgentMiddleware):
     # Matches sandbox access tokens (gxsa_...) and refresh tokens (gxsr_...)
     _SANDBOX_TOKEN_RE = re.compile(r"gxs[ar]_[A-Za-z0-9_.\-]+")
 
-    def __init__(self, mcp_servers: list | None = None) -> None:
+    def __init__(
+        self,
+        mcp_servers: list | None = None,
+        vault_secrets: dict[str, str] | None = None,
+    ) -> None:
         """Initialize by extracting secret values from MCP server config.
 
         Args:
             mcp_servers: List of MCPServerConfig objects. Each server's
                 env dict is scanned for ${VAR} placeholders, which are
                 resolved from os.environ to get the actual secret values.
+            vault_secrets: Per-workspace user vault secrets (name→value).
+                Merged into the redaction list alongside MCP secrets.
         """
         secrets: dict[str, str] = {}
 
@@ -70,6 +76,12 @@ class LeakDetectionMiddleware(AgentMiddleware):
             gh_token = os.environ.get(token_env)
             if gh_token and len(gh_token) >= 8:
                 secrets["GITHUB_TOKEN"] = gh_token
+
+        # Merge vault secrets (user-provided API keys stored per-workspace)
+        # Use same >=8 threshold as MCP secrets to avoid false-positive redaction
+        for name, value in (vault_secrets or {}).items():
+            if value and len(value) >= 8:
+                secrets[name] = value
 
         # Sort by value length descending so longer matches replace first
         self._secrets = sorted(secrets.items(), key=lambda kv: len(kv[1]), reverse=True)

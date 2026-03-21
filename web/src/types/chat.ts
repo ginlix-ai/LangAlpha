@@ -177,8 +177,8 @@ export interface UserMessage {
   isStreaming: false;
   isHistory?: boolean;
   attachments?: Attachment[];
-  queueDelivered?: boolean;
-  queued?: boolean;
+  steeringDelivered?: boolean;
+  steering?: boolean;
 }
 
 export interface AssistantMessage {
@@ -201,8 +201,8 @@ export interface AssistantMessage {
   workspaceProposals?: Record<string, WorkspaceProposalState>;
   questionProposals?: Record<string, QuestionProposalState>;
   // Runtime flags
-  queued?: boolean;
-  queueDelivered?: boolean;
+  steering?: boolean;
+  steeringDelivered?: boolean;
   error?: boolean | string;
 }
 

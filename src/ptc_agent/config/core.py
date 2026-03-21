@@ -20,9 +20,7 @@ DEFAULT_ALLOWED_IMPORTS = [
     "collections", "itertools", "functools", "subprocess", "shutil",
 ]
 
-DEFAULT_BLOCKED_PATTERNS = [
-    "eval(", "exec(", "__import__", "compile(", "globals(", "locals(",
-]
+DEFAULT_BLOCKED_PATTERNS: list[str] = []
 
 
 class DaytonaConfig(BaseModel):

@@ -12,6 +12,7 @@ Endpoints:
 - GET /api/v1/public/shared/{share_token}/files/download — Download raw file (requires allow_download)
 """
 
+import asyncio
 import json
 import logging
 import mimetypes
@@ -19,6 +20,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
+
+from src.server.utils.secret_redactor import get_redactor, get_vault_secrets_for_redaction
 
 from src.server.database.conversation import (
     get_thread_by_share_token,
@@ -279,13 +282,17 @@ async def read_shared_file(
     if _is_always_hidden_path(normalized_path) or _is_hidden_path(normalized_path) or _is_system_path(normalized_path):
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Try DB first
-    file_record = await FilePersistenceService.get_file_content(workspace_id, normalized_path)
+    # Try DB first — parallel vault secrets + file content fetch
+    vault_secrets, file_record = await asyncio.gather(
+        get_vault_secrets_for_redaction(workspace_id),
+        FilePersistenceService.get_file_content(workspace_id, normalized_path),
+    )
     if file_record:
         if file_record.get("is_binary"):
             raise HTTPException(status_code=415, detail="Cannot read binary file as text.")
 
         text_content = file_record.get("content_text", "")
+        text_content = get_redactor().redact(text_content, vault_secrets=vault_secrets)
         lines = text_content.splitlines()
         content = "\n".join(lines[offset:offset + limit])
         mime = file_record.get("mime_type") or "text/plain"
@@ -300,7 +307,7 @@ async def read_shared_file(
             "source": "database",
         }
 
-    # Try live sandbox
+    # Try live sandbox — vault secrets from session cache (instant)
     if workspace.get("status") not in ("stopped", "stopping"):
         try:
             manager = WorkspaceManager.get_instance()
@@ -323,6 +330,7 @@ async def read_shared_file(
                 except UnicodeDecodeError:
                     raise HTTPException(status_code=415, detail="File appears to be binary.")
 
+                text_content = get_redactor().redact(text_content, vault_secrets=vault_secrets)
                 lines = text_content.splitlines()
                 content = "\n".join(lines[offset:offset + limit])
                 from src.server.app.workspace_files import _to_client_path
@@ -369,8 +377,11 @@ async def download_shared_file(
     if _is_always_hidden_path(normalized_path) or _is_hidden_path(normalized_path) or _is_system_path(normalized_path):
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Try DB first
-    file_record = await FilePersistenceService.get_file_content(workspace_id, normalized_path)
+    # Try DB first — parallel vault secrets + file content fetch
+    vault_secrets, file_record = await asyncio.gather(
+        get_vault_secrets_for_redaction(workspace_id),
+        FilePersistenceService.get_file_content(workspace_id, normalized_path),
+    )
     if file_record:
         if file_record.get("is_binary") and file_record.get("content_binary"):
             content = file_record["content_binary"]
@@ -384,13 +395,16 @@ async def download_shared_file(
         filename = file_record.get("file_name", "download")
         mime = file_record.get("mime_type") or "application/octet-stream"
 
+        if mime and mime.startswith("text/"):
+            content = get_redactor().redact_bytes(content, vault_secrets=vault_secrets)
+
         return StreamingResponse(
             iter([content]),
             media_type=mime,
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
-    # Try live sandbox
+    # Try live sandbox — vault secrets from session cache (instant)
     if workspace.get("status") not in ("stopped", "stopping"):
         try:
             manager = WorkspaceManager.get_instance()
@@ -412,6 +426,9 @@ async def download_shared_file(
 
                 filename = client_path.split("/")[-1] if client_path else "download"
                 mime, _ = mimetypes.guess_type(filename)
+
+                if mime and mime.startswith("text/"):
+                    content = get_redactor().redact_bytes(content, vault_secrets=vault_secrets)
 
                 return StreamingResponse(
                     iter([content]),

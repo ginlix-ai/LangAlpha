@@ -20,7 +20,7 @@ POSTGRES_IMAGE="postgres:18"
 POSTGRES_PORT="${DB_PORT:-5432}"
 POSTGRES_USER="${DB_USER:-postgres}"
 POSTGRES_PASSWORD="${DB_PASSWORD:-postgres}"
-POSTGRES_DB="${DB_NAME:-langalpha}"
+POSTGRES_DB="${DB_NAME:-postgres}"
 POSTGRES_VOLUME="langalpha-postgresql-data"
 
 REDIS_CONTAINER="langalpha-redis"

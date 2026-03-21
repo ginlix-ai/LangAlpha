@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from src.server.database import automation as auto_db
+from src.server.models.automation import PriceTriggerConfig, RetriggerMode
 from src.server.database.workspace import get_or_create_flash_workspace
 from src.server.models.chat import ChatMessage, ChatRequest
 from src.server.services.webhook_client import WebhookClient
@@ -130,7 +131,7 @@ class AutomationExecutor:
             )
 
             # ─── Invoke agent workflow ─────────────────────────────
-            from src.server.handlers.chat_handler import (
+            from src.server.handlers.chat import (
                 astream_flash_workflow,
                 astream_ptc_workflow,
             )
@@ -182,11 +183,22 @@ class AutomationExecutor:
                     execution_id, "completed", delivery_result=delivery_result,
                 )
 
-            # Mark one-time automations as completed
+            # Mark one-time / one-shot automations as completed
             if automation["trigger_type"] == "once":
                 await auto_db.update_automation_next_run(
                     automation_id, next_run_at=None, status="completed"
                 )
+            elif automation["trigger_type"] == "price":
+                tc = automation.get("trigger_config") or {}
+                config = PriceTriggerConfig(**tc)
+                if config.retrigger.mode == RetriggerMode.ONE_SHOT:
+                    await auto_db.update_automation_next_run(
+                        automation_id, next_run_at=None, status="completed"
+                    )
+                else:
+                    # Recurring — restore to active only if still 'executing'
+                    # (user may have paused/disabled during execution)
+                    await auto_db.restore_executing_to_active(automation_id)
 
         except Exception as e:
             error_msg = f"{type(e).__name__}: {str(e)[:500]}"
@@ -206,6 +218,11 @@ class AutomationExecutor:
 
             # Increment failure count (may auto-disable)
             await auto_db.increment_failure_count(automation_id)
+
+            # Restore price automations from 'executing' to 'active' on failure
+            # (increment_failure_count may have set 'disabled' — only restore if still 'executing')
+            if automation.get("trigger_type") == "price":
+                await auto_db.restore_executing_to_active(automation_id)
 
             # Notify webhooks: failed
             delivery_result = await self._fire_webhook(

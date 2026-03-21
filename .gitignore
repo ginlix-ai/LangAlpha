@@ -34,6 +34,10 @@ ENV/
 .env.local
 .env.production
 
+# Production deploy files
+docker-compose.prod.yml
+scripts/load_env.sh
+
 # IDE
 .vscode/
 .idea/

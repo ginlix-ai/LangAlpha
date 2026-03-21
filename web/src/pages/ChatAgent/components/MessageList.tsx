@@ -18,6 +18,7 @@ import {
   InlineStockScreenerCard,
 } from './charts/InlineMarketCharts';
 import { InlineAutomationCard } from './charts/InlineAutomationCards';
+import { InlinePreviewCard } from './charts/InlinePreviewCard';
 import { extractFilePaths, FileMentionCards } from './FileCard';
 import { useUser } from '@/hooks/useUser';
 import ReasoningMessageContent from './ReasoningMessageContent';
@@ -28,7 +29,7 @@ import StartQuestionCard from './StartQuestionCard';
 import SubagentTaskMessageContent from './SubagentTaskMessageContent';
 import TextMessageContent from './TextMessageContent';
 import ToolCallMessageContent from './ToolCallMessageContent';
-import TodoListMessageContent from './TodoListMessageContent';
+
 import { TextShimmer } from '@/components/ui/text-shimmer';
 
 // Stable empty object to avoid defeating React.memo with fresh `|| {}` fallbacks
@@ -127,6 +128,7 @@ const INLINE_ARTIFACT_MAP: Record<string, React.ComponentType<{ artifact: Record
   sec_filing: InlineSecFilingCard,
   stock_screener: InlineStockScreenerCard,
   automations: InlineAutomationCard,
+  preview_url: InlinePreviewCard,
 };
 
 /* --- Attachment helpers --- */
@@ -421,7 +423,7 @@ const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvat
   const avatarUrl = user?.avatar_url as string | undefined;
   const isUser = (message.role as string) === 'user';
   const isAssistant = (message.role as string) === 'assistant';
-  const isPendingDelivery = isUser && ((message.isPending as boolean) || (message.queued as boolean));
+  const isPendingDelivery = isUser && ((message.isPending as boolean) || (message.steering as boolean));
   const attachments = message.attachments as AttachmentData[] | undefined;
   const hasAttachments = isUser && attachments && attachments.length > 0;
 
@@ -1396,21 +1398,6 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
               onOpenFile={onOpenFile}
             />
           );
-        } else if (segment.type === 'todo_list') {
-          const todoListProcess = todoListProcesses[segment.todoListId!];
-          if (todoListProcess) {
-            return (
-              <TodoListMessageContent
-                key={`todo-list-${segment.todoListId}`}
-                todos={(todoListProcess.todos as any[]) || []} // TODO: type properly — TodoItem[] not exported
-                total={(todoListProcess.total as number) || 0}
-                completed={(todoListProcess.completed as number) || 0}
-                in_progress={(todoListProcess.in_progress as number) || 0}
-                pending={(todoListProcess.pending as number) || 0}
-              />
-            );
-          }
-          return null;
         } else if (segment.type === 'subagent_task') {
           const task = subagentTasks[segment.subagentId!];
           if (task) {

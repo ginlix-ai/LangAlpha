@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     fonts-liberation \
     curl \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv
@@ -28,6 +29,7 @@ RUN uv run playwright install --with-deps chromium
 COPY src/ src/
 COPY server.py .
 COPY scripts/ scripts/
+RUN chmod +x scripts/docker_entrypoint.sh
 COPY config.yaml .
 COPY agent_config.yaml .
 COPY mcp_servers/ mcp_servers/

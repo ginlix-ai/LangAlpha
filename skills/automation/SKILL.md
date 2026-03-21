@@ -1,6 +1,6 @@
 ---
 name: automation
-description: Create and manage scheduled automations (cron jobs, one-time tasks).
+description: Create and manage scheduled and price-triggered automations.
 ---
 
 # Automation Skill
@@ -117,6 +117,83 @@ create_automation(
     thread="current",
 )
 ```
+
+---
+
+## Price-Triggered Automations
+
+In addition to cron/datetime schedules, automations can trigger when a stock price meets a specific condition. Set `trigger_type="price"` and provide a `trigger_config` dict instead of (or alongside) a `schedule`.
+
+### Condition Types
+
+| Condition | Description |
+|-----------|-------------|
+| `price_above` | Fires when price rises above the given value |
+| `price_below` | Fires when price drops below the given value |
+| `pct_change_above` | Fires when percentage change exceeds the given value |
+| `pct_change_below` | Fires when percentage change drops below the given (negative) value |
+
+For percentage conditions, `reference` sets the baseline price:
+
+| Reference | Description |
+|-----------|-------------|
+| `previous_close` | Prior trading day's closing price (default) |
+| `day_open` | Current trading day's opening price |
+
+### Retrigger Modes
+
+| Mode | Behavior |
+|------|----------|
+| `one_shot` | Trigger once, then mark completed (default) |
+| `recurring` | Re-arm after cooldown. Omit `cooldown_seconds` for once-per-trading-day default, or set `cooldown_seconds` (min 14400 = 4 hours) for custom interval. |
+
+### Examples
+
+```python
+# Alert when AAPL drops below $150 (one-shot)
+create_automation(
+    name="AAPL Price Alert",
+    instruction="AAPL has dropped below $150. Summarize recent news and analyst sentiment.",
+    trigger_type="price",
+    trigger_config={
+        "symbol": "AAPL",
+        "conditions": [{"type": "price_below", "value": 150}],
+    },
+)
+
+# Run analysis when TSLA moves up 5% from yesterday's close
+create_automation(
+    name="TSLA Momentum Alert",
+    instruction="TSLA is up 5% from yesterday's close. Analyze volume, technicals, and any catalysts.",
+    trigger_type="price",
+    trigger_config={
+        "symbol": "TSLA",
+        "conditions": [
+            {"type": "pct_change_above", "value": 5, "reference": "previous_close"},
+        ],
+    },
+)
+
+# Recurring alert with 4-hour cooldown
+create_automation(
+    name="BTC Volatility Watch",
+    instruction="BTC moved more than 3% from today's open. Summarize order flow and sentiment.",
+    trigger_type="price",
+    trigger_config={
+        "symbol": "BTC-USD",
+        "conditions": [
+            {"type": "pct_change_above", "value": 3, "reference": "day_open"},
+        ],
+        "retrigger": {"mode": "recurring", "cooldown_seconds": 14400},
+    },
+)
+```
+
+### Agent Guidelines for Price Triggers
+
+- **Confirm before creating.** Always repeat the symbol, condition, threshold value, and retrigger mode back to the user and get explicit confirmation.
+- **Default to `one_shot`** retrigger mode unless the user asks for repeated alerts. For recurring, omit cooldown_seconds to default to once per trading day.
+- **Use flash mode** by default for price-triggered automations (lightweight, low-latency execution).
 
 ---
 

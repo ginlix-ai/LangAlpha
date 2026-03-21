@@ -36,7 +36,7 @@ function SheetPanel({
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.2 }}
-        className="fixed inset-0 z-40"
+        className="fixed inset-0 z-[1010]"
         style={{ backgroundColor: 'var(--color-bg-overlay)' }}
         onClick={onClose}
       />
@@ -52,7 +52,7 @@ function SheetPanel({
           borderColor: 'var(--color-border-muted)',
           ...(sizing === 'fixed' ? { height } : { maxHeight: height }),
         }}
-        className={`fixed bottom-0 left-0 right-0 z-50 rounded-t-3xl border-t${sizing === 'fixed' ? ' flex flex-col' : ''}`}
+        className={`fixed bottom-0 left-0 right-0 z-[1020] rounded-t-3xl border-t${sizing === 'fixed' ? ' flex flex-col' : ''}`}
       >
         {/* Drag handle */}
         <div

@@ -24,6 +24,7 @@ export const INLINE_ARTIFACT_TOOLS = new Set([
   'screen_stocks',
   'check_automations',
   'create_automation',
+  'GetPreviewUrl',
 ]);
 
 // ─── Helpers ────────────────────────────────────────────────────────

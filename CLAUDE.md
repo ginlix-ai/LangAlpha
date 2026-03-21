@@ -92,7 +92,7 @@ The agent does NOT use a hand-written `StateGraph`. It uses `create_agent()` fro
 
 **`src/ptc_agent/agent/agent.py` — `PTCAgent.create_agent()`** assembles:
 1. **Tools**: `execute_code`, `bash`, filesystem ops (read/write/edit/glob/grep), `web_search`, `web_fetch`, SEC/market tools
-2. **Middleware chain** (~23 layers): tool argument parsing → protected paths → error handling → leak detection → file/todo artifact emission → multimodal support → skills → message queue → background subagents → HITL → summarization → model retry/fallback → prompt caching → workspace context injection
+2. **Middleware chain** (~23 layers): tool argument parsing → protected paths → error handling → leak detection → file/todo artifact emission → multimodal support → skills → steering → background subagents → HITL → summarization → model retry/fallback → prompt caching → workspace context injection
 3. **`BackgroundSubagentOrchestrator`** wraps the agent for parallel background task coordination
 
 **Subagents** (`src/ptc_agent/agent/subagents/`): `general-purpose` and `research` built-in; registry loads additional from `agent_config.yaml`.
@@ -107,7 +107,7 @@ The core differentiator: the LLM doesn't call MCP tools directly. Instead, it wr
 
 ```
 Client POST /api/v1/threads/{id}/messages
-  → threads.py → chat_handler.py (resolve LLM, credit check)
+  → threads.py → chat/ (resolve LLM, credit check)
     → build_ptc_graph_with_session() (get sandbox session from WorkspaceManager)
       → BackgroundSubagentOrchestrator.astream()
         → WorkflowStreamHandler.stream_workflow_events()

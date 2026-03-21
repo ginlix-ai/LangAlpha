@@ -1,8 +1,9 @@
 #!/bin/bash
-# Docker entrypoint: run database migrations then start the backend server.
+# Docker entrypoint: wait for database, run migrations, then exec CMD.
+# Used by both dev (docker-compose.yml) and prod (docker-compose.prod.yml).
 set -e
 
-DB_HOST="${DB_HOST:-postgres}"
+DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-5432}"
 DB_USER="${DB_USER:-postgres}"
 
@@ -14,5 +15,5 @@ done
 echo "Running database migrations..."
 uv run alembic upgrade head
 
-echo "Database ready. Starting server..."
-exec uv run python server.py --host 0.0.0.0 --port 8000 --reload
+echo "Database ready."
+exec "$@"

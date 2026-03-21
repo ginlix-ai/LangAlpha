@@ -35,6 +35,25 @@ class ExecResult:
 
 
 @dataclass
+class PreviewInfo:
+    """Preview URL info for a service running in the sandbox."""
+
+    url: str
+    token: str
+    auth_headers: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class SessionCommandResult:
+    """Result of a command executed in a background session."""
+
+    cmd_id: str
+    exit_code: int | None  # None = still running
+    stdout: str
+    stderr: str
+
+
+@dataclass
 class Artifact:
     """An artifact produced by code execution (e.g. a chart image)."""
 
@@ -71,6 +90,11 @@ class SandboxRuntime(ABC):
     def working_dir(self) -> str:
         """Default working directory inside the sandbox (sync, may return cached/default)."""
         ...
+
+    @property
+    def proxy_domain(self) -> str | None:
+        """Hostname of the sandbox proxy (e.g. 'sandbox-abc123.proxy.example.com'). None if unsupported."""
+        return None
 
     async def fetch_working_dir(self) -> str:
         """Fetch and cache the working directory (async). Override if working_dir requires I/O."""
@@ -154,6 +178,48 @@ class SandboxRuntime(ABC):
         Not all providers support this; the default raises NotImplementedError.
         """
         raise NotImplementedError
+
+    # -- Sessions (background processes) --
+
+    async def create_session(self, session_id: str) -> None:
+        """Create a named session for background command execution."""
+        raise NotImplementedError("Sessions not supported by this runtime")
+
+    async def session_execute(
+        self,
+        session_id: str,
+        command: str,
+        *,
+        run_async: bool = False,
+        timeout: int | None = None,
+    ) -> SessionCommandResult:
+        """Execute a command in a session. Use run_async=True for background execution."""
+        raise NotImplementedError("Sessions not supported by this runtime")
+
+    async def session_command_logs(
+        self, session_id: str, command_id: str
+    ) -> SessionCommandResult:
+        """Get stdout/stderr logs of a session command."""
+        raise NotImplementedError("Sessions not supported by this runtime")
+
+    async def delete_session(self, session_id: str) -> None:
+        """Delete a session. Default is no-op for providers without session support."""
+
+    async def get_preview_url(self, port: int, expires_in: int = 3600) -> PreviewInfo:
+        """Get a signed preview URL for a service running on the given port.
+
+        Not all providers support this; the default raises NotImplementedError.
+        """
+        raise NotImplementedError("Preview URLs not supported by this runtime")
+
+    async def get_preview_link(self, port: int) -> PreviewInfo:
+        """Get a standard (non-signed) preview URL for a service running on the given port.
+
+        Returns PreviewInfo with ``auth_headers`` populated for authenticated
+        requests. Unlike signed URLs, this token resets on sandbox restart.
+        Used for health checks.
+        """
+        raise NotImplementedError("Preview links not supported by this runtime")
 
     async def get_metadata(self) -> dict[str, Any]:
         """Return provider-specific metadata about the runtime."""

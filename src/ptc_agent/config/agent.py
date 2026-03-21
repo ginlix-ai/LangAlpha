@@ -197,6 +197,7 @@ class AgentConfig(BaseModel):
     # Runtime data (not from config files)
     llm_definition: LLMDefinition | None = Field(default=None, exclude=True)
     llm_client: Any | None = Field(default=None, exclude=True)  # BaseChatModel instance
+    subsidiary_llm_clients: dict[str, Any] = Field(default_factory=dict, exclude=True)
     config_file_dir: Path | None = Field(
         default=None, exclude=True
     )  # For path resolution
@@ -272,8 +273,14 @@ class AgentConfig(BaseModel):
         # Create LLM config (placeholder for file-based loading compatibility)
         llm_config = LLMConfig(name="custom")
 
-        # Resolve provider
-        resolved_provider = provider or os.getenv("SANDBOX_PROVIDER", "daytona")
+        # Resolve provider: explicit > env var > auto-detect from API key presence
+        resolved_provider = provider or os.getenv("SANDBOX_PROVIDER", "")
+        if not resolved_provider:
+            resolved_provider = (
+                "daytona"
+                if (daytona_api_key or os.getenv("DAYTONA_API_KEY"))
+                else "docker"
+            )
 
         # Create Daytona config (required for daytona provider, defaults for others)
         if resolved_provider == "daytona":

@@ -12,8 +12,8 @@ export type SSEEventType =
   | 'workflow_status'
   | 'thread_created'
   | 'error'
-  | 'queued_message_injected'
-  | 'task_message_queued'
+  | 'steering_delivered'
+  | 'task_steering_accepted'
   | 'interrupt'
   | 'finish';
 
@@ -116,16 +116,16 @@ export interface ErrorEvent extends BaseSSEEvent {
   error_type?: string;
 }
 
-export interface QueuedMessageInjectedEvent extends BaseSSEEvent {
-  event: 'queued_message_injected';
+export interface SteeringDeliveredEvent extends BaseSSEEvent {
+  event: 'steering_delivered';
   messages: Array<{
     content: string;
     timestamp?: number;
   }>;
 }
 
-export interface TaskMessageQueuedEvent extends BaseSSEEvent {
-  event: 'task_message_queued';
+export interface TaskSteeringAcceptedEvent extends BaseSSEEvent {
+  event: 'task_steering_accepted';
   task_id: string;
   content: string;
   queue_position: number;
@@ -188,8 +188,8 @@ export type SSEEvent =
   | WorkflowStatusEvent
   | ThreadCreatedEvent
   | ErrorEvent
-  | QueuedMessageInjectedEvent
-  | TaskMessageQueuedEvent
+  | SteeringDeliveredEvent
+  | TaskSteeringAcceptedEvent
   | UserMessageEvent
   | InterruptEvent
   | FinishEvent;

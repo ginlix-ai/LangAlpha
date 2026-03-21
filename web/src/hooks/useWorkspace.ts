@@ -16,7 +16,8 @@ export function useWorkspace(workspaceId: string | null | undefined) {
     enabled: !!workspaceId,
     staleTime: 5 * 60_000,
     retry: (failureCount, error) => {
-      if ((error as { response?: { status?: number } })?.response?.status === 403) return false;
+      const status = (error as { response?: { status?: number } })?.response?.status;
+      if (status === 403 || status === 404) return false;
       return failureCount < 3;
     },
     initialData: (): Workspace | undefined => {

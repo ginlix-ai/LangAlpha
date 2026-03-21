@@ -35,7 +35,7 @@ dependencies = [
     "psycopg[binary,pool]>=3.2.9",
     "alembic>=1.15.0",
     "sqlalchemy>=2.0.0",
-    "yfinance==0.2.61",
+    "yfinance>=1.2.0",
     "matplotlib",
     "mplfinance==0.12.10b0",
     "tabulate",

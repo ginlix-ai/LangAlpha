@@ -5,7 +5,6 @@ import { Input } from '../../../components/ui/input';
 import { uploadWorkspaceFile } from '../utils/api';
 import './CreateWorkspaceModal.css';
 
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -78,15 +77,9 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
     const incoming = Array.from(fileList);
     setError(null);
 
-    const oversized = incoming.filter((f) => f.size > MAX_FILE_SIZE);
-    if (oversized.length > 0) {
-      setError(`${oversized.map((f) => f.name).join(', ')} ${t('workspace.exceedsLimit')}`);
-    }
-
-    const valid = incoming.filter((f) => f.size <= MAX_FILE_SIZE);
     setQueuedFiles((prev) => {
       const existingNames = new Set(prev.map((f) => f.name));
-      const deduped = valid.filter((f) => !existingNames.has(f.name));
+      const deduped = incoming.filter((f) => !existingNames.has(f.name));
       return [...prev, ...deduped];
     });
   }, []);
@@ -169,8 +162,14 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
             setCurrentUploadProgress(pct);
           });
           setFileStatuses((prev) => ({ ...prev, [file.name]: 'done' }));
-        } catch {
+        } catch (err: unknown) {
           setFileStatuses((prev) => ({ ...prev, [file.name]: 'failed' }));
+          const e = err as { response?: { status?: number } };
+          if (e?.response?.status === 413) {
+            const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+            const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+            setProgressError(detail || `${file.name} is too large (${sizeMB} MB). Maximum upload size is 250 MB.`);
+          }
         }
       }
     }
@@ -208,8 +207,13 @@ function CreateWorkspaceModal({ isOpen, onClose, onCreate, onComplete }: CreateW
           setCurrentUploadProgress(pct);
         });
         setFileStatuses((prev) => ({ ...prev, [file.name]: 'done' }));
-      } catch {
+      } catch (err: unknown) {
         setFileStatuses((prev) => ({ ...prev, [file.name]: 'failed' }));
+        const e = err as { response?: { status?: number } };
+        if (e?.response?.status === 413) {
+          const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+          setProgressError(`${file.name} is too large (${sizeMB} MB). Maximum upload size is 250 MB.`);
+        }
       }
     }
 

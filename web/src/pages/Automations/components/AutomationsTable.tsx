@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next';
 import { AnimatePresence } from 'framer-motion';
 import AutomationRow from './AutomationRow';
 import AutomationDetailOverlay from './AutomationDetailOverlay';
-import EmptyState from './EmptyState';
 import type { Automation } from '@/types/automation';
 
 interface AutomationsTableProps {
@@ -12,7 +11,6 @@ interface AutomationsTableProps {
   selectedAutomation: Automation | null;
   onSelectAutomation: (automation: Automation) => void;
   onCloseOverlay: () => void;
-  onCreateClick: () => void;
   onEdit: (automation: Automation) => void;
   onDelete: (automation: Automation) => void;
   onPause: (id: string) => void;
@@ -27,7 +25,6 @@ export default function AutomationsTable({
   selectedAutomation,
   onSelectAutomation,
   onCloseOverlay,
-  onCreateClick: _onCreateClick,
   onEdit,
   onDelete,
   onPause,
@@ -36,10 +33,6 @@ export default function AutomationsTable({
   mutationsLoading,
 }: AutomationsTableProps) {
   const { t } = useTranslation();
-
-  if (!loading && automations.length === 0) {
-    return <EmptyState />;
-  }
 
   return (
     <div className="relative flex-1 min-h-0">
@@ -57,6 +50,13 @@ export default function AutomationsTable({
 
       {/* Rows */}
       <div className="flex flex-col gap-2">
+        {!loading && automations.length === 0 && (
+          <div className="flex items-center justify-center py-12">
+            <span className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
+              {t('automation.noAutomationsHint')}
+            </span>
+          </div>
+        )}
         <AnimatePresence>
           {automations.map((automation, index) => (
             <AutomationRow

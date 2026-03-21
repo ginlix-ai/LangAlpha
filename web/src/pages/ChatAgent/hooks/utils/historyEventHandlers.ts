@@ -32,8 +32,8 @@ interface HistoryUserMessageRefs {
   [key: string]: unknown;
 }
 
-/** Refs passed to history queued message handler. */
-interface HistoryQueuedMessageRefs {
+/** Refs passed to history steering delivered handler. */
+interface HistorySteeringRefs {
   newMessagesStartIndexRef: { current: number };
   historyMessagesRef: { current: Set<string> };
   [key: string]: unknown;
@@ -582,8 +582,8 @@ export function handleHistoryToolCallResult({ assistantMessageId, toolCallId, re
 }
 
 /**
- * Handles queued_message_injected events in history replay.
- * Creates user bubble(s) for each queued message, then a new assistant placeholder
+ * Handles steering_delivered events in history replay.
+ * Creates user bubble(s) for each steering message, then a new assistant placeholder
  * so subsequent events render in a fresh assistant bubble.
  * @param {Object} params - Handler parameters
  * @param {Object} params.event - The history event (contains messages array)
@@ -593,7 +593,7 @@ export function handleHistoryToolCallResult({ assistantMessageId, toolCallId, re
  * @param {Object} params.refs - Refs object with newMessagesStartIndexRef, historyMessagesRef
  * @param {Function} params.setMessages - State setter for messages
  */
-export function handleHistoryQueuedMessageInjected({
+export function handleHistorySteeringDelivered({
   event,
   pairIndex,
   assistantMessagesByPair,
@@ -605,16 +605,16 @@ export function handleHistoryQueuedMessageInjected({
   pairIndex: number;
   assistantMessagesByPair: Map<number, string>;
   pairStateByPair: Map<number, PairState>;
-  refs: HistoryQueuedMessageRefs;
+  refs: HistorySteeringRefs;
   setMessages: SetMessages;
 }): void {
   const { newMessagesStartIndexRef, historyMessagesRef } = refs;
-  const queuedMessages = (event.messages || []) as Array<Record<string, unknown>>;
+  const steeringMessages = (event.messages || []) as Array<Record<string, unknown>>;
 
-  // Create user message bubble(s) for each queued message
-  for (const qMsg of queuedMessages) {
+  // Create user message bubble(s) for each steering message
+  for (const qMsg of steeringMessages) {
     if (!qMsg.content) continue;
-    const userMsgId = `history-queued-user-${pairIndex}-${Date.now()}`;
+    const userMsgId = `history-steering-user-${pairIndex}-${Date.now()}`;
     const userMessage: MessageRecord = {
       id: userMsgId,
       role: 'user',
@@ -623,7 +623,7 @@ export function handleHistoryQueuedMessageInjected({
       timestamp: qMsg.timestamp ? new Date((qMsg.timestamp as number) * 1000) : new Date(),
       isStreaming: false,
       isHistory: true,
-      queueDelivered: true,
+      steeringDelivered: true,
     };
     setMessages((prev: MessageRecord[]) => {
       const idx = newMessagesStartIndexRef.current;
@@ -635,7 +635,7 @@ export function handleHistoryQueuedMessageInjected({
   }
 
   // Create new assistant message placeholder
-  const newAssistantId = `history-assistant-queued-${pairIndex}-${Date.now()}`;
+  const newAssistantId = `history-assistant-steering-${pairIndex}-${Date.now()}`;
   assistantMessagesByPair.set(pairIndex, newAssistantId);
 
   // Reset pair state for the new assistant message

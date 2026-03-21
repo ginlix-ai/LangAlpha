@@ -353,7 +353,7 @@ class BackgroundTaskRegistry:
             task_id: The 6-char task identifier (e.g., 'k7Xm2p')
             timeout: Maximum time to wait in seconds
             message_checker: Optional async callable that returns True when a
-                user message is queued (used to interrupt the wait early).
+                a user steering message is pending (used to interrupt the wait early).
             poll_interval: Seconds between message-checker polls (ignored when
                 *message_checker* is None — falls back to a single wait).
 
@@ -409,11 +409,11 @@ class BackgroundTaskRegistry:
                 if task.asyncio_task.done():
                     break
 
-                # Check for queued user messages
+                # Check for pending user steering
                 try:
                     if await message_checker():
                         logger.info(
-                            "Wait interrupted by queued user message",
+                            "Wait interrupted by user steering",
                             task_id=task_id,
                             display_id=task.display_id,
                             elapsed=f"{time.monotonic() - start:.1f}s",
@@ -421,7 +421,7 @@ class BackgroundTaskRegistry:
                         return {
                             "success": False,
                             "status": "interrupted",
-                            "reason": "user_message_queued",
+                            "reason": "user_steering",
                         }
                 except Exception:
                     # Redis glitch — continue waiting normally
@@ -465,7 +465,7 @@ class BackgroundTaskRegistry:
         Args:
             timeout: Maximum time to wait in seconds
             message_checker: Optional async callable that returns True when a
-                user message is queued (used to interrupt the wait early).
+                a user steering message is pending (used to interrupt the wait early).
             poll_interval: Seconds between message-checker polls (ignored when
                 *message_checker* is None — falls back to a single wait).
 
@@ -518,7 +518,7 @@ class BackgroundTaskRegistry:
                 try:
                     if await message_checker():
                         logger.info(
-                            "wait_for_all interrupted by queued user message",
+                            "wait_for_all interrupted by user steering",
                             elapsed=f"{time.monotonic() - start:.1f}s",
                             pending=len(remaining_tasks),
                         )
@@ -560,7 +560,7 @@ class BackgroundTaskRegistry:
                     results[tool_call_id] = {
                         "success": False,
                         "status": "interrupted",
-                        "reason": "user_message_queued",
+                        "reason": "user_steering",
                     }
                 else:
                     # Task didn't complete within timeout

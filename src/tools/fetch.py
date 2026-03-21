@@ -17,7 +17,7 @@ import hashlib
 import logging
 import os
 from contextvars import ContextVar
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 from langchain_core.tools import StructuredTool
 
@@ -36,8 +36,9 @@ CACHE_PREFIX = "web_fetch"
 # Extraction model configuration
 EXTRACTION_TIMEOUT = 60.0  # seconds per model attempt
 
-# Per-request override for extraction model (set by chat handler from user preferences)
+# Per-request overrides for extraction model (set by chat handler from user preferences)
 fetch_model_override: ContextVar[str | None] = ContextVar("fetch_model_override", default=None)
+fetch_llm_client_override: ContextVar[Any] = ContextVar("fetch_llm_client_override", default=None)
 
 
 def _get_extraction_model() -> str:
@@ -141,7 +142,11 @@ async def _extract_with_llm(
 {markdown}
 """
 
-    llm = LLM(model).get_llm()
+    client_override = fetch_llm_client_override.get()
+    if client_override is not None:
+        llm = client_override
+    else:
+        llm = LLM(model).get_llm()
 
     # Disable streaming to prevent SSE events from extraction LLM
     if hasattr(llm, 'streaming'):

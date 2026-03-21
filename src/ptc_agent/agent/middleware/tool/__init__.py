@@ -7,6 +7,7 @@ This module contains middleware classes that handle tool input/output processing
 """
 
 from ptc_agent.agent.middleware.tool.argument_parsing import ToolArgumentParsingMiddleware
+from ptc_agent.agent.middleware.tool.code_validation import CodeValidationMiddleware
 from ptc_agent.agent.middleware.tool.empty_call_retry import EmptyToolCallRetryMiddleware
 from ptc_agent.agent.middleware.tool.error_handling import (
     ToolErrorHandlingMiddleware,
@@ -17,6 +18,7 @@ from ptc_agent.agent.middleware.tool.protected_path import ProtectedPathMiddlewa
 from ptc_agent.agent.middleware.tool.result_normalization import ToolResultNormalizationMiddleware
 
 __all__ = [
+    "CodeValidationMiddleware",
     "EmptyToolCallRetryMiddleware",
     "LeakDetectionMiddleware",
     "ProtectedPathMiddleware",

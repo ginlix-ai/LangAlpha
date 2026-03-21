@@ -20,9 +20,11 @@ from ptc_agent.core.sandbox._defaults import DEFAULT_DEPENDENCIES, SNAPSHOT_PYTH
 from ptc_agent.core.sandbox.providers import create_provider
 from ptc_agent.core.sandbox.retry import RetryPolicy, async_retry_with_backoff
 from ptc_agent.core.sandbox.runtime import (
+    PreviewInfo,
     RuntimeState,
     SandboxRuntime,
     SandboxTransientError,
+    SessionCommandResult,
 )
 
 from ..mcp_registry import MCPRegistry
@@ -141,6 +143,9 @@ class PTCSandbox:
         # Track per-thread code dirs that have been created (avoids repeated mkdir)
         self._thread_dirs_created: set[str] = set()
 
+        # Background session for long-running commands (lazy-created)
+        self._bg_session_id: str | None = None
+
         # Lazy initialization support
         self._ready_event: asyncio.Event | None = None
         self._init_task: asyncio.Task[None] | None = None
@@ -151,6 +156,9 @@ class PTCSandbox:
 
         # Track whether disabled tool modules have been pruned (only needed once)
         self._disabled_modules_pruned = False
+
+        # Cached standard preview link info per port (avoids repeated Daytona API calls)
+        self._preview_link_cache: dict[int, PreviewInfo] = {}
 
         logger.info("Initialized PTCSandbox")
 
@@ -440,6 +448,43 @@ class PTCSandbox:
         except Exception as e:
             logger.warning("Failed to upload sandbox token file", error=str(e))
 
+    async def upload_vault_secrets(self, secrets: dict[str, str]) -> None:
+        """Write (or remove) vault secrets JSON in the sandbox.
+
+        Called by the vault API on every CRUD mutation.  Also caches the
+        secrets dict on ``self`` so the server can pass them to
+        ``LeakDetectionMiddleware`` without an extra DB call.
+        """
+        self.vault_secrets: dict[str, str] = secrets
+
+        if not self.runtime:
+            return
+
+        vault_path = f"{self._work_dir}/_internal/.vault_secrets.json"
+
+        if not secrets:
+            # Remove the file so vault.list_names() returns []
+            try:
+                await self._runtime_call(
+                    self.runtime.exec,
+                    f"rm -f {vault_path}",
+                    retry_policy=RetryPolicy.SAFE,
+                )
+            except Exception as e:
+                logger.warning("Failed to remove vault secrets file", error=str(e))
+            return
+
+        try:
+            await self._runtime_call(
+                self.runtime.upload_file,
+                json.dumps(secrets).encode("utf-8"),
+                vault_path,
+                retry_policy=RetryPolicy.SAFE,
+            )
+            logger.info("Uploaded vault secrets file", path=vault_path)
+        except Exception as e:
+            logger.warning("Failed to upload vault secrets file", error=str(e))
+
     async def ensure_sandbox_ready(self) -> None:
         await self._wait_ready()
 
@@ -481,6 +526,10 @@ class PTCSandbox:
             RuntimeError: If sandbox cannot be found or is in invalid state
         """
         logger.info("Reconnecting to stopped sandbox", sandbox_id=sandbox_id)
+
+        # Clear stale state — sessions and preview links don't survive stop/start
+        self._bg_session_id = None
+        self._preview_link_cache.clear()
 
         # Get the existing sandbox via provider
         try:
@@ -750,6 +799,22 @@ class PTCSandbox:
             uploaded_files=len(files),
             sandbox_root=str(internal_root),
         )
+
+        # Upload vault helper module so `from vault import get` is always
+        # importable, even if no secrets exist yet.
+        try:
+            from ptc_agent.core.sandbox.vault_helper import VAULT_MODULE_SOURCE
+
+            vault_dest = str(internal_root / "vault.py")
+            await self._runtime_call(
+                sandbox.upload_file,
+                VAULT_MODULE_SOURCE.encode("utf-8"),
+                vault_dest,
+                retry_policy=RetryPolicy.SAFE,
+            )
+            logger.info("Uploaded vault helper module", path=vault_dest)
+        except Exception as e:
+            logger.warning("Failed to upload vault helper module", error=str(e))
 
     # ── Unified manifest helpers ────────────────────────────────────────
 
@@ -2048,6 +2113,161 @@ class PTCSandbox:
                 charts=[],
             )
 
+    @property
+    def proxy_domain(self) -> str | None:
+        """Hostname of the sandbox proxy, or None if unavailable."""
+        if self.runtime is None:
+            return None
+        return self.runtime.proxy_domain
+
+    async def get_preview_url(self, port: int, expires_in: int = 3600) -> PreviewInfo:
+        """Get a signed preview URL for a service running on the given port.
+
+        Args:
+            port: Port number (3000-9999) the service is listening on.
+            expires_in: URL expiry in seconds (default: 3600 = 1 hour).
+
+        Returns:
+            PreviewInfo with url and token.
+        """
+        await self._wait_ready()
+        assert self.runtime is not None
+        return await self._runtime_call(
+            self.runtime.get_preview_url,
+            port,
+            expires_in,
+            retry_policy=RetryPolicy.SAFE,
+        )
+
+    async def get_preview_link(self, port: int) -> PreviewInfo:
+        """Get a standard preview URL with header-based auth token.
+
+        Results are cached per-port since the standard URL doesn't change
+        while the sandbox is running. Cache is cleared on sandbox restart.
+        """
+        cached = self._preview_link_cache.get(port)
+        if cached is not None:
+            return cached
+        await self._wait_ready()
+        assert self.runtime is not None
+        result = await self._runtime_call(
+            self.runtime.get_preview_link,
+            port,
+            retry_policy=RetryPolicy.SAFE,
+        )
+        self._preview_link_cache[port] = result
+        return result
+
+    async def start_preview_server(self, command: str) -> str:
+        """Start a command in background for preview URL serving.
+
+        Fire-and-forget: starts the command via the background session.
+        If the port is already in use (server already running), the command
+        fails silently in the background — existing server keeps serving.
+
+        Returns:
+            The command ID from the session.
+        """
+        session_id = await self._ensure_bg_session()
+        assert self.runtime is not None
+        result = await self._runtime_call(
+            self.runtime.session_execute,
+            session_id,
+            command,
+            run_async=True,
+            retry_policy=RetryPolicy.UNSAFE,
+            total_timeout=30,
+        )
+        logger.info(
+            "Preview server command started",
+            cmd_id=result.cmd_id,
+            session_id=session_id,
+        )
+        return result.cmd_id
+
+    async def start_and_get_preview_url(
+        self,
+        command: str,
+        port: int,
+        *,
+        expires_in: int = 3600,
+        startup_delay: float = 2.0,
+    ) -> PreviewInfo:
+        """Start a server command in background and return a signed preview URL.
+
+        Combines start_preview_server + sleep + get_preview_url into a single call.
+        If the server command fails (e.g. port already in use), the preview URL
+        is still generated — the existing server keeps serving.
+        """
+        try:
+            await self.start_preview_server(command)
+        except Exception as e:
+            logger.warning("Failed to start preview server", command=command, error=str(e))
+        await asyncio.sleep(startup_delay)
+        return await self.get_preview_url(port, expires_in=expires_in)
+
+    async def _ensure_bg_session(self) -> str:
+        """Lazily create a background session for long-running commands."""
+        if self._bg_session_id is not None:
+            return self._bg_session_id
+
+        await self._wait_ready()
+        assert self.runtime is not None
+        session_id = f"bg-{self.runtime.id[:12]}"
+        try:
+            await self._runtime_call(
+                self.runtime.create_session,
+                session_id,
+                retry_policy=RetryPolicy.SAFE,
+            )
+        except Exception as e:
+            # Session may already exist from a previous sandbox reconnect
+            if "already exists" in str(e).lower():
+                logger.debug("Background session already exists", session_id=session_id)
+            else:
+                raise
+        self._bg_session_id = session_id
+        logger.info("Background session ready", session_id=session_id)
+        return session_id
+
+    async def get_background_command_status(self, cmd_id: str) -> dict[str, Any]:
+        """Get status and logs for a background command.
+
+        Args:
+            cmd_id: Command ID returned when the background command was started.
+
+        Returns:
+            Dict with keys: success, is_running, exit_code, stdout, stderr, cmd_id.
+        """
+        await self._wait_ready()
+        assert self.runtime is not None
+
+        if not self._bg_session_id:
+            return {
+                "success": False,
+                "is_running": False,
+                "exit_code": None,
+                "stdout": "",
+                "stderr": "No background session exists",
+                "cmd_id": cmd_id,
+            }
+
+        result: SessionCommandResult = await self._runtime_call(
+            self.runtime.session_command_logs,
+            self._bg_session_id,
+            cmd_id,
+            retry_policy=RetryPolicy.SAFE,
+        )
+        is_running = result.exit_code is None
+        return {
+            "success": not is_running and result.exit_code == 0,
+            "is_running": is_running,
+            "exit_code": result.exit_code,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "cmd_id": cmd_id,
+        }
+
     async def execute_bash_command(
         self,
         command: str,
@@ -2063,7 +2283,7 @@ class PTCSandbox:
             command: Bash command to execute
             working_dir: Working directory for command execution (default: sandbox working dir)
             timeout: Maximum execution time in seconds (default: 60)
-            background: Run command in background (not fully implemented yet)
+            background: Run command in background
             thread_id: Optional thread ID (first 8 chars) for thread-scoped script storage
 
         Returns:
@@ -2134,6 +2354,36 @@ class PTCSandbox:
                     bash_id=bash_id,
                     error=str(upload_err),
                 )
+
+            # Background execution via Daytona session
+            if background:
+                session_id = await self._ensure_bg_session()
+                assert self.runtime is not None
+                result = await self._runtime_call(
+                    self.runtime.session_execute,
+                    session_id,
+                    full_command,
+                    run_async=True,
+                    retry_policy=RetryPolicy.UNSAFE,
+                    total_timeout=30,
+                )
+                logger.info(
+                    "Background command started",
+                    bash_id=bash_id,
+                    cmd_id=result.cmd_id,
+                    session_id=session_id,
+                )
+                return {
+                    "success": True,
+                    "stdout": (
+                        f"Background command started (command_id: {result.cmd_id})\n"
+                        f"Use BashOutput tool with command_id=\"{result.cmd_id}\" to check output and status."
+                    ),
+                    "stderr": "",
+                    "exit_code": 0,
+                    "bash_id": bash_id,
+                    "command_hash": command_hash,
+                }
 
             # Execute directly via process.exec — no file upload dependency
             assert self.runtime is not None
@@ -2797,6 +3047,18 @@ class PTCSandbox:
 
         try:
             if self.runtime:
+                # Clean up background session if one was created
+                if self._bg_session_id:
+                    try:
+                        await self._runtime_call(
+                            self.runtime.delete_session,
+                            self._bg_session_id,
+                            retry_policy=RetryPolicy.SAFE,
+                        )
+                    except Exception as e:
+                        logger.debug("Failed to delete background session", error=str(e))
+                    self._bg_session_id = None
+
                 try:
                     await self._runtime_call(
                         self.runtime.delete,

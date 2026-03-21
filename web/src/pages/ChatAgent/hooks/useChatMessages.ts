@@ -22,6 +22,7 @@ export { removeStoredThreadId } from './utils/threadStorage';
 import { createUserMessage, createAssistantMessage, createNotificationMessage, appendMessage, updateMessage, type AttachmentMeta } from './utils/messageHelpers';
 import type { ChatMessage, AssistantMessage } from '@/types/chat';
 import type { ActionRequest, ToolCallData, TodoItem } from '@/types/sse';
+import type { PreviewData } from './utils/types';
 import { createRecentlySentTracker } from './utils/recentlySentTracker';
 import {
   handleReasoningSignal,
@@ -36,7 +37,7 @@ import {
   handleSubagentToolCallChunks,
   handleSubagentToolCalls,
   handleSubagentToolCallResult,
-  handleTaskMessageQueued,
+  handleTaskSteeringAccepted,
   getOrCreateTaskRefs,
 } from './utils/streamEventHandlers';
 import {
@@ -47,7 +48,7 @@ import {
   handleHistoryToolCalls,
   handleHistoryToolCallResult,
   handleHistoryTodoUpdate,
-  handleHistoryQueuedMessageInjected,
+  handleHistorySteeringDelivered,
   isSubagentHistoryEvent,
 } from './utils/historyEventHandlers';
 
@@ -215,7 +216,7 @@ interface StreamProcessorRefs {
   contentOrderCounterRef: { current: number };
   currentReasoningIdRef: { current: string | null };
   currentToolCallIdRef: { current: string | null };
-  queuedAtOrderRef?: { current: number | null };
+  steeringAtOrderRef?: { current: number | null };
   updateTodoListCard?: ((data: Record<string, unknown>, isNew: boolean) => void) | undefined;
   isNewConversation?: boolean;
   subagentStateRefs?: Record<string, TaskRefs>;
@@ -420,6 +421,7 @@ export function useChatMessages(
   finalizePendingTodos: (() => void) | null = null,
   onOnboardingRelatedToolComplete: (() => void) | null = null,
   onFileArtifact: ((event: SSEEvent) => void) | null = null,
+  onPreviewUrl: ((data: PreviewData) => void) | null = null,
   agentMode: string = 'ptc',
   clearSubagentCards: (() => void) | null = null,
   onWorkspaceCreated: ((info: { workspaceId: string; question: string }) => void) | null = null,
@@ -442,8 +444,8 @@ export function useChatMessages(
   const [workspaceStarting, setWorkspaceStarting] = useState(false);  // Workspace is starting up (stopped/archived sandbox)
   const [isCompacting, setIsCompacting] = useState<string | false>(false);  // Context compaction in progress (summarization/offload)
   const [messageError, setMessageError] = useState<string | null>(null);
-  // Queued message returned by the server (agent finished before consuming it)
-  const [returnedQueuedMessage, setReturnedQueuedMessage] = useState<string | null>(null);
+  // Steering returned by the server (agent finished before consuming it)
+  const [returnedSteering, setReturnedSteering] = useState<string | null>(null);
   // HITL (Human-in-the-Loop) plan mode interrupt state
   const [pendingInterrupt, setPendingInterrupt] = useState<PendingInterrupt | null>(null);
   // When user clicks Reject on a plan, this stores the interruptId so the next message
@@ -470,7 +472,7 @@ export function useChatMessages(
   const contentOrderCounterRef = useRef(0);
   const currentReasoningIdRef = useRef<string | null>(null);
   const currentToolCallIdRef = useRef<string | null>(null);
-  const queuedAtOrderRef = useRef<number | null>(null); // Shared across streams for queued message rollback
+  const steeringAtOrderRef = useRef<number | null>(null); // Shared across streams for steering rollback
 
   // Refs for history loading state
   const historyLoadingRef = useRef(false);
@@ -569,7 +571,7 @@ export function useChatMessages(
         contentOrderCounterRef.current = 0;
         currentReasoningIdRef.current = null;
         currentToolCallIdRef.current = null;
-        queuedAtOrderRef.current = null;
+        steeringAtOrderRef.current = null;
         historyLoadingRef.current = false;
         historyMessagesRef.current.clear();
         newMessagesStartIndexRef.current = 0;
@@ -611,8 +613,8 @@ export function useChatMessages(
       // Track subagent events by task ID for this history load
       // Map<taskId, { messages: Array, events: Array, description?: string, type?: string }>
       const subagentHistoryByTaskId = new Map<string, SubagentHistoryData>();
-      // Track which agentIds had message_queued actions (for inline card "Updated" label)
-      const messageQueuedAgentIds = new Set<string>();
+      // Track which agentIds had steering_accepted actions (for inline card "Updated" label)
+      const steeredAgentIds = new Set<string>();
       try {
         await replayThreadHistory(threadIdToUse, (_rawEvent) => {
         // Cast to SSEEvent for type-safe field access within this callback
@@ -677,9 +679,10 @@ export function useChatMessages(
           return;
         }
 
-        // Handle queued_message_injected events from sse_events
-        if (eventType === 'queued_message_injected' && hasPairIndex) {
-          handleHistoryQueuedMessageInjected({
+        // Handle steering_delivered events from sse_events (main agent only;
+        // subagent steering_delivered events are routed through the isSubagent block below)
+        if (eventType === 'steering_delivered' && hasPairIndex && !isSubagent) {
+          handleHistorySteeringDelivered({
             event: event as Record<string, unknown>,
             pairIndex: event.turn_index!,
             assistantMessagesByPair,
@@ -894,7 +897,6 @@ export function useChatMessages(
                 completed: payload.completed || 0,
                 in_progress: payload.in_progress || 0,
                 pending: payload.pending || 0,
-                fromHistory: true,
               });
             }
 
@@ -959,7 +961,7 @@ export function useChatMessages(
             const description = payload.description as string | undefined;
             const prompt = payload.prompt as string | undefined;
             const type = payload.type as string | undefined;
-            const action = (() => { if (rawAction === 'spawned') return 'init'; if (rawAction === 'message_queued') return 'update'; if (rawAction === 'resumed') return 'resume'; return rawAction || 'init'; })();
+            const action = (() => { if (rawAction === 'spawned') return 'init'; if (rawAction === 'steering_accepted') return 'update'; if (rawAction === 'resumed') return 'resume'; return rawAction || 'init'; })();
             if (task_id) {
               const agentId = `task:${task_id}`;
               if (!subagentHistoryByTaskId.has(agentId)) {
@@ -988,9 +990,9 @@ export function useChatMessages(
                   });
                 }
               }
-              // Track message_queued actions for inline card "Updated" label
+              // Track steering_accepted actions for inline card "Updated" label
               if (action === 'update') {
-                messageQueuedAgentIds.add(agentId);
+                steeredAgentIds.add(agentId);
               }
               // Map tool_call_id from the event context
               if (event.tool_call_id) {
@@ -1515,28 +1517,28 @@ export function useChatMessages(
                 });
                 console.log('[History] handleSubagentToolCallResult result:', result);
               } else if (eventType === 'subagent_followup_injected' || eventType === 'turn_start') {
-                // Legacy subagent_followup_injected had content (queued user message).
+                // Legacy subagent_followup_injected had content (steering user message).
                 // turn_start was an inter-model-call boundary — no longer emitted,
                 // but old persisted data may still contain it. Just extract content.
                 if (event.content) {
-                  handleTaskMessageQueued({
+                  handleTaskSteeringAccepted({
                     taskId,
                     content: event.content as string,
                     refs: tempRefs,
                     updateSubagentCard: historyUpdateSubagentCard,
                   });
-                  // Sync local run index — handleTaskMessageQueued bumps runIndex
+                  // Sync local run index — handleTaskSteeringAccepted bumps runIndex
                   currentRunIndex = tempSubagentStateRefs[taskId].runIndex;
                 }
-              } else if (eventType === 'message_queued') {
+              } else if (eventType === 'steering_delivered') {
                 if (event.content) {
-                  handleTaskMessageQueued({
+                  handleTaskSteeringAccepted({
                     taskId,
                     content: event.content as string,
                     refs: tempRefs,
                     updateSubagentCard: historyUpdateSubagentCard,
                   });
-                  // Sync local run index — handleTaskMessageQueued bumps runIndex
+                  // Sync local run index — handleTaskSteeringAccepted bumps runIndex
                   currentRunIndex = tempSubagentStateRefs[taskId].runIndex;
                 }
               } else if (eventType === 'context_window') {
@@ -1652,8 +1654,8 @@ export function useChatMessages(
       // loadAndMaybeReconnect will call it after determining whether the
       // workflow is still active (reconnect case) or truly completed.
 
-      // Post-process: update inline cards for message_queued actions to show "Updated"
-      if (messageQueuedAgentIds.size > 0) {
+      // Post-process: update inline cards for steering_accepted actions to show "Updated"
+      if (steeredAgentIds.size > 0) {
         setMessages(prev => prev.map(msg => {
           if (msg.role !== 'assistant') return msg;
           const aMsg = msg as AssistantMessage;
@@ -1661,7 +1663,7 @@ export function useChatMessages(
           let changed = false;
           const newTasks = { ...aMsg.subagentTasks };
           for (const [tcId, task] of Object.entries(newTasks)) {
-            if (task.resumeTargetId && messageQueuedAgentIds.has(task.resumeTargetId) && task.action === 'resume') {
+            if (task.resumeTargetId && steeredAgentIds.has(task.resumeTargetId) && task.action === 'resume') {
               newTasks[tcId] = { ...task, action: 'update' };
               changed = true;
             }
@@ -1748,7 +1750,7 @@ export function useChatMessages(
       contentOrderCounterRef,
       currentReasoningIdRef,
       currentToolCallIdRef,
-      queuedAtOrderRef,
+      steeringAtOrderRef,
       updateTodoListCard: updateTodoListCard || undefined,
       isNewConversation: false,
       subagentStateRefs: subagentStateRefsRef.current,
@@ -1993,7 +1995,7 @@ export function useChatMessages(
           contentOrderCounterRef,
           currentReasoningIdRef,
           currentToolCallIdRef,
-          queuedAtOrderRef,
+          steeringAtOrderRef,
           updateTodoListCard: updateTodoListCard || undefined,
           isNewConversation: false,
           subagentStateRefs: subagentStateRefsRef.current,
@@ -2189,10 +2191,10 @@ export function useChatMessages(
   // TODO: type properly — refs should use a proper interface matching StreamRefs from streamEventHandlers
   const createStreamEventProcessor = (assistantMessageId: string, refs: StreamProcessorRefs, getTaskIdFromEvent: (event: SSEEvent) => string | null, wasInterruptedRef: { current: boolean } | null = null) => {
     // Snapshot of the old assistant message's content order at the time the user
-    // sent a queued message.  Used to roll back any content that leaked into the
+    // sent a steering message.  Used to roll back any content that leaked into the
     // old bubble due to stream-mode multiplexing (custom events can arrive after
     // message chunks from the post-injection model call).
-    let queuedAtOrder: number | null = null;
+    let steeringAtOrder: number | null = null;
 
     // FIFO queue for matching Task tool call IDs to artifact 'spawned' events.
     // Populated by the tool_calls handler, drained by the artifact/spawned handler.
@@ -2240,21 +2242,22 @@ export function useChatMessages(
         });
       }
 
-      // Handle message_queued events for the MAIN agent (user sent a message while agent streams).
-      // Subagent message_queued events are handled below in the isSubagent block.
-      if (eventType === 'message_queued' && !isSubagent) {
+      // Handle steering_accepted events for the MAIN agent (user sent a message while agent streams).
+      // Subagent steering_accepted events are handled below in the isSubagent block.
+      if (eventType === 'steering_accepted' && !isSubagent) {
         // Record the content order counter so we can roll back leaked content
-        // when queued_message_injected arrives (see handler below).
-        queuedAtOrder = refs.contentOrderCounterRef.current;
-        if (refs.queuedAtOrderRef) refs.queuedAtOrderRef.current = refs.contentOrderCounterRef.current;
+        // when steering_delivered arrives (see handler below).
+        steeringAtOrder = refs.contentOrderCounterRef.current;
+        if (refs.steeringAtOrderRef) refs.steeringAtOrderRef.current = refs.contentOrderCounterRef.current;
         return;
       }
 
-      // Handle queued_message_injected custom events (middleware picked up the queued message)
-      if (eventType === 'queued_message_injected') {
+      // Handle steering_delivered custom events (middleware picked up the steering message).
+      // Subagent steering_delivered events are handled in the isSubagent block below.
+      if (eventType === 'steering_delivered' && !isSubagent) {
         const oldAssistantId = assistantMessageId;
 
-        // 1. Roll back old assistant message to the snapshot taken at message_queued
+        // 1. Roll back old assistant message to the snapshot taken at steering_accepted
         //    time, removing any content that leaked due to stream-mode multiplexing.
         //    Then finalize it (isStreaming: false).
         setMessages((prev) =>
@@ -2264,19 +2267,27 @@ export function useChatMessages(
             const aMsg = msg as AssistantMessage;
 
             // Use closure-local snapshot or fall back to the shared ref
-            // (message_queued only arrives on the secondary POST stream, so
-            // the closure-local queuedAtOrder is typically null — the shared
-            // ref is set by handleSendQueuedMessage on the secondary stream).
-            const effectiveQueuedAtOrder = queuedAtOrder ?? refs.queuedAtOrderRef?.current ?? null;
+            // (steering_accepted only arrives on the secondary POST stream, so
+            // the closure-local steeringAtOrder is typically null — the shared
+            // ref is set by handleSendSteering on the secondary stream).
+            const effectiveSteeringAtOrder = steeringAtOrder ?? refs.steeringAtOrderRef?.current ?? null;
 
-            // If no snapshot, just finalize
-            if (effectiveQueuedAtOrder === null) {
-              return { ...aMsg, isStreaming: false };
+            // If no snapshot, just finalize (mark all in-progress processes as complete)
+            if (effectiveSteeringAtOrder === null) {
+              const tp: typeof aMsg.toolCallProcesses = {};
+              for (const [id, val] of Object.entries(aMsg.toolCallProcesses || {})) {
+                tp[id] = val.isInProgress ? { ...val, isInProgress: false, isComplete: true } : val;
+              }
+              const rp: typeof aMsg.reasoningProcesses = {};
+              for (const [id, val] of Object.entries(aMsg.reasoningProcesses || {})) {
+                rp[id] = val.isReasoning ? { ...val, isReasoning: false, reasoningComplete: true } : val;
+              }
+              return { ...aMsg, isStreaming: false, toolCallProcesses: tp, reasoningProcesses: rp };
             }
 
-            // Keep only segments at or before the queue point
+            // Keep only segments at or before the steering point
             const keptSegments = (aMsg.contentSegments || []).filter(
-              (s) => s.order <= effectiveQueuedAtOrder
+              (s) => s.order <= effectiveSteeringAtOrder
             );
 
             // Rebuild plain-text content from kept text segments
@@ -2308,42 +2319,52 @@ export function useChatMessages(
               return out;
             };
 
+            // Finalize retained processes: mark in-progress as complete
+            const keptToolCalls = filterObj(aMsg.toolCallProcesses, keptToolCallIds);
+            for (const [id, val] of Object.entries(keptToolCalls)) {
+              if (val.isInProgress) keptToolCalls[id] = { ...val, isInProgress: false, isComplete: true };
+            }
+            const keptReasoning = filterObj(aMsg.reasoningProcesses, keptReasoningIds);
+            for (const [id, val] of Object.entries(keptReasoning)) {
+              if (val.isReasoning) keptReasoning[id] = { ...val, isReasoning: false, reasoningComplete: true };
+            }
+
             return {
               ...aMsg,
               contentSegments: keptSegments,
               content: keptContent,
-              reasoningProcesses: filterObj(aMsg.reasoningProcesses, keptReasoningIds),
-              toolCallProcesses: filterObj(aMsg.toolCallProcesses, keptToolCallIds),
+              reasoningProcesses: keptReasoning,
+              toolCallProcesses: keptToolCalls,
               todoListProcesses: filterObj(aMsg.todoListProcesses, keptTodoListIds),
               subagentTasks: filterObj(aMsg.subagentTasks, keptSubagentIds),
               isStreaming: false,
             };
           })
         );
-        queuedAtOrder = null;
-        if (refs.queuedAtOrderRef) refs.queuedAtOrderRef.current = null;
+        steeringAtOrder = null;
+        if (refs.steeringAtOrderRef) refs.steeringAtOrderRef.current = null;
 
-        // 2. Mark queued user messages as delivered, OR create them from event
+        // 2. Mark steering user messages as delivered, OR create them from event
         //    data if none exist (reconnect scenario — in-memory state was lost).
         setMessages((prev) => {
-          const hasQueuedMessages = prev.some((msg) => 'queued' in msg && msg.queued);
-          if (hasQueuedMessages) {
-            // Live path: mark existing queued messages as delivered
+          const hasSteeringMessages = prev.some((msg) => 'steering' in msg && msg.steering);
+          if (hasSteeringMessages) {
+            // Live path: mark existing steering messages as delivered
             return prev.map((msg) =>
-              'queued' in msg && msg.queued ? { ...msg, queued: false, queueDelivered: true } : msg
+              'steering' in msg && msg.steering ? { ...msg, steering: false, steeringDelivered: true } : msg
             );
           }
           // Reconnect path: create user bubbles from event payload
-          const queuedMsgs = (event.messages || []).filter((qMsg) => qMsg.content);
-          if (queuedMsgs.length === 0) return prev;
-          const newUserMessages: MessageRecord[] = queuedMsgs.map((qMsg) => ({
-            id: `queued-user-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          const steeringMsgs = (event.messages || []).filter((qMsg) => qMsg.content);
+          if (steeringMsgs.length === 0) return prev;
+          const newUserMessages: MessageRecord[] = steeringMsgs.map((qMsg) => ({
+            id: `steering-user-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             role: 'user' as const,
             content: qMsg.content as string,
             contentType: 'text' as const,
             timestamp: qMsg.timestamp ? new Date((qMsg.timestamp as number) * 1000) : new Date(),
             isStreaming: false as const,
-            queueDelivered: true,
+            steeringDelivered: true,
           }));
           return [...prev, ...newUserMessages];
         });
@@ -2364,16 +2385,16 @@ export function useChatMessages(
         return;
       }
 
-      // Handle queued_message_returned — agent finished before consuming the queued message.
-      // Remove the queued user message from chat and restore text to input box.
-      if (eventType === 'queued_message_returned') {
+      // Handle steering_returned — agent finished before consuming the steering message.
+      // Remove the steering user message from chat and restore text to input box.
+      if (eventType === 'steering_returned') {
         const returnedMessages = event.messages || [];
         if (returnedMessages.length > 0) {
-          // Remove queued user messages from the chat
-          setMessages((prev) => prev.filter((msg) => !('queued' in msg && msg.queued)));
+          // Remove steering user messages from the chat
+          setMessages((prev) => prev.filter((msg) => !('steering' in msg && msg.steering)));
           // Restore the text to the input box via state
           const combinedText = returnedMessages.map((m) => m.content).join('\n');
-          setReturnedQueuedMessage(combinedText);
+          setReturnedSteering(combinedText);
         }
         return;
       }
@@ -2509,9 +2530,9 @@ export function useChatMessages(
                 agent: event.agent,
               });
             }
-          } else if (eventType === 'message_queued') {
+          } else if (eventType === 'steering_delivered') {
             if (event.content) {
-              handleTaskMessageQueued({
+              handleTaskSteeringAccepted({
                 taskId,
                 content: event.content as string,
                 refs,
@@ -2605,10 +2626,19 @@ export function useChatMessages(
           console.log('[Stream] handleTodoUpdate result:', result);
         } else if (artifactType === 'file_operation' && onFileArtifact) {
           onFileArtifact(event);
+        } else if (artifactType === 'preview_url' && onPreviewUrl) {
+          const payload = (event.payload || {}) as Record<string, unknown>;
+          onPreviewUrl({
+            url: '',  // resolved by ChatView via authenticated endpoint
+            port: payload.port as number,
+            title: payload.title as string | undefined,
+            command: payload.command as string | undefined,
+            loading: true,
+          });
         } else if (artifactType === 'task') {
           const payload = (event.payload || {}) as Record<string, unknown>;
           const { task_id, action: rawAction, description, prompt, type } = payload;
-          const action = (() => { if (rawAction === 'spawned') return 'init'; if (rawAction === 'message_queued') return 'update'; if (rawAction === 'resumed') return 'resume'; return rawAction || 'init'; })() as string;
+          const action = (() => { if (rawAction === 'spawned') return 'init'; if (rawAction === 'steering_accepted') return 'update'; if (rawAction === 'resumed') return 'resume'; return rawAction || 'init'; })() as string;
           if (!task_id) return;
           const agentId = `task:${task_id}`;
 
@@ -2696,7 +2726,7 @@ export function useChatMessages(
             openSubagentStream(currentThreadId, task_id as string, processEvent);
           } else if (action === 'update') {
             if (updateSubagentCard) {
-              updateSubagentCard(agentId, { queuedMessage: prompt || payload.description });
+              updateSubagentCard(agentId, { steeringMessage: prompt || payload.description });
             }
             // Update inline card to show "Updated" instead of "Resumed"
             setMessages(prev => prev.map(msg => {
@@ -2965,18 +2995,18 @@ export function useChatMessages(
   };
 
   /**
-   * Handles sending a message while the agent is already streaming.
-   * The backend will queue it for injection before the next LLM call.
+   * Handles sending a message while the agent is already streaming (steering).
+   * The backend will accept it for injection before the next LLM call.
    */
-  const handleSendQueuedMessage = async (message: string, planMode: boolean = false, additionalContext: Record<string, unknown>[] | null = null, attachmentMeta: Record<string, unknown>[] | null = null) => {
-    // Show user message in chat with queued indicator
+  const handleSendSteering = async (message: string, planMode: boolean = false, additionalContext: Record<string, unknown>[] | null = null, attachmentMeta: Record<string, unknown>[] | null = null) => {
+    // Show user message in chat with steering indicator
     const userMsg = createUserMessage(message, attachmentMeta as AttachmentMeta[] | null);
-    const userMessage: MessageRecord = { ...userMsg, queued: true };
+    const userMessage: MessageRecord = { ...userMsg, steering: true };
     recentlySentTrackerRef.current.track(message.trim(), userMessage.timestamp, userMessage.id);
     setMessages((prev) => appendMessage(prev,userMessage));
 
     try {
-      // Send to same endpoint — backend will auto-queue and return message_queued SSE
+      // Send to same endpoint — backend will auto-accept steering and return steering_accepted SSE
       await sendChatMessageStream(
         message,
         workspaceId,
@@ -2985,15 +3015,15 @@ export function useChatMessages(
         planMode,
         (event) => {
           const eventType = event.event || 'message_chunk';
-          if (eventType === 'message_queued') {
+          if (eventType === 'steering_accepted') {
             // Snapshot the content order counter so the primary stream's
-            // queued_message_injected handler can roll back leaked content.
-            queuedAtOrderRef.current = contentOrderCounterRef.current;
-            // Update the user message to reflect queued status
+            // steering_delivered handler can roll back leaked content.
+            steeringAtOrderRef.current = contentOrderCounterRef.current;
+            // Update the user message to reflect steering status
             setMessages((prev) =>
               updateMessage(prev,userMessage.id as string, (msg) => ({
                 ...msg,
-                queued: true,
+                steering: true,
                 queuePosition: event.position,
               }))
             );
@@ -3003,13 +3033,13 @@ export function useChatMessages(
         agentMode
       );
     } catch (err: unknown) {
-      console.error('Error queuing message:', err);
-      // Update user message to show queue failure
+      console.error('Error sending steering:', err);
+      // Update user message to show steering failure
       setMessages((prev) =>
         updateMessage(prev,userMessage.id as string, (msg) => ({
           ...msg,
-          queued: false,
-          queueError: (err as Error).message || 'Failed to queue message',
+          steering: false,
+          queueError: (err as Error).message || 'Failed to send steering',
         }))
       );
     }
@@ -3029,9 +3059,9 @@ export function useChatMessages(
       return;
     }
 
-    // If agent is already streaming, send as queued message
+    // If agent is already streaming, send as steering message
     if (isLoading) {
-      return handleSendQueuedMessage(message, planMode, additionalContext, attachmentMeta);
+      return handleSendSteering(message, planMode, additionalContext, attachmentMeta);
     }
 
     // Store planMode so HITL interrupt handler can access it
@@ -3121,7 +3151,7 @@ export function useChatMessages(
         contentOrderCounterRef,
         currentReasoningIdRef,
         currentToolCallIdRef,
-        queuedAtOrderRef,
+        steeringAtOrderRef,
         updateTodoListCard: updateTodoListCard || undefined,
         isNewConversation: isNewConversationRef.current,
         subagentStateRefs: subagentStateRefsRef.current,
@@ -3153,7 +3183,7 @@ export function useChatMessages(
         return;
       }
 
-      // Mark message as complete (use live ref in case queued_message_injected switched it)
+      // Mark message as complete (use live ref in case steering_delivered switched it)
       {
         const finalId = currentMessageRef.current || assistantMessageId;
         setMessages((prev) =>
@@ -3189,7 +3219,7 @@ export function useChatMessages(
           }
         } finally {
           if (!wasDisconnected && !wasInterruptedRef.current) {
-            // Mark message as complete (use live ref in case queued_message_injected switched it)
+            // Mark message as complete (use live ref in case steering_delivered switched it)
             const finalId = currentMessageRef.current || assistantMessageId;
             setMessages((prev) =>
               updateMessage(prev,finalId, (msg) => ({
@@ -3231,7 +3261,7 @@ export function useChatMessages(
       contentOrderCounterRef,
       currentReasoningIdRef,
       currentToolCallIdRef,
-      queuedAtOrderRef,
+      steeringAtOrderRef,
       updateTodoListCard: updateTodoListCard || undefined,
       isNewConversation: false,
       subagentStateRefs: subagentStateRefsRef.current,
@@ -3260,7 +3290,7 @@ export function useChatMessages(
         return;
       }
 
-      // Mark message as complete (use live ref in case queued_message_injected switched it)
+      // Mark message as complete (use live ref in case steering_delivered switched it)
       {
         const finalId = currentMessageRef.current || assistantMessageId;
         setMessages((prev) =>
@@ -3598,7 +3628,7 @@ export function useChatMessages(
         contentOrderCounterRef,
         currentReasoningIdRef,
         currentToolCallIdRef,
-        queuedAtOrderRef,
+        steeringAtOrderRef,
         updateTodoListCard: updateTodoListCard || undefined,
         isNewConversation: false,
         subagentStateRefs: subagentStateRefsRef.current,
@@ -3803,8 +3833,8 @@ export function useChatMessages(
     isLoadingHistory,
     isReconnecting,
     messageError,
-    returnedQueuedMessage,
-    clearReturnedQueuedMessage: () => setReturnedQueuedMessage(null),
+    returnedSteering,
+    clearReturnedSteering: () => setReturnedSteering(null),
     handleSendMessage,
     pendingInterrupt,
     pendingRejection,

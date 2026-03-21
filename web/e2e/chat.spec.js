@@ -16,6 +16,7 @@ import {
   sampleThread,
   sseEvents,
 } from './helpers/mockResponses.js';
+import { loadFixture } from './helpers/loadFixture.js';
 
 // -- Shared helpers --
 
@@ -705,5 +706,114 @@ test.describe('Chat View -- SSE Streaming', () => {
 
     // The reconnected stream content should appear
     await expect(page.getByText('Your portfolio returned 12% YTD.')).toBeVisible({ timeout: 15000 });
+  });
+});
+
+// ================================================================
+// Steering -- History Replay (captured SSE fixtures)
+// ================================================================
+
+/** Overrides for multi-turn chat with steering. */
+function steeringChatOverrides(turnCount = 1) {
+  const turns = Array.from({ length: turnCount }, (_, i) => ({
+    turn_index: i,
+    edit_checkpoint_id: `cp-edit-${i}`,
+    regenerate_checkpoint_id: `cp-regen-${i}`,
+  }));
+  return {
+    ...threadOverrides(),
+    'GET /threads/th-1': th1,
+    'GET /threads/th-1/status': { can_reconnect: false, status: 'idle' },
+    'GET /threads/th-1/turns': {
+      thread_id: 'th-1',
+      turns,
+      retry_checkpoint_id: 'cp-retry-0',
+    },
+    'GET /workspaces/ws-1/files': { files: [] },
+  };
+}
+
+test.describe('Steering -- History Replay', () => {
+  test.beforeEach(async () => {
+    await resetMockServer();
+  });
+
+  test('steering_delivered renders user bubble and post-steering content', async ({ page }) => {
+    await mockAPI(page, steeringChatOverrides(1));
+
+    // Fixture: single turn where the user steers the agent mid-stream with
+    // "focus on speaker list". The agent produces content before and after.
+    const turn0Events = loadFixture('steering-single-turn.json', 0);
+
+    await configureSSE({
+      method: 'GET',
+      path: '/api/v1/threads/th-1/messages/replay',
+      events: [
+        sseEvents.userMessage('any investment opportunity?', 0),
+        ...turn0Events,
+        sseEvents.replayDone(),
+      ],
+      delay: 5,
+    });
+
+    await page.goto('/chat/t/th-1');
+
+    // User query should appear
+    await expect(page.getByText('any investment opportunity?')).toBeVisible({ timeout: 15000 });
+
+    // Steering user message should appear as a delivered bubble
+    await expect(page.getByText('focus on speaker list')).toBeVisible({ timeout: 15000 });
+
+    // Post-steering assistant content should appear (the agent continued after steering)
+    await expect(page.getByText('NVIDIA GTC 2026').first()).toBeVisible({ timeout: 15000 });
+
+    // The turn has 1 steering_delivered → 2 assistant messages (pre + post steering).
+    // Each assistant message renders exactly one img[alt="Assistant"] avatar.
+    const assistantAvatars = page.locator('img[alt="Assistant"]');
+    await expect(assistantAvatars).toHaveCount(2);
+  });
+
+  test('subagent steering_delivered does not create empty main-chat placeholders', async ({ page }) => {
+    await mockAPI(page, steeringChatOverrides(2));
+
+    // Fixture: 2-turn conversation. Turn 1 spawns 3 subagents, user steers
+    // mid-stream, and the main agent forwards steering to all 3 subagents.
+    // This produces 1 main steering_delivered + 3 subagent steering_delivered events.
+    //
+    // Regression: before the fix, each subagent steering_delivered was caught by
+    // the main-agent history handler, creating 3 empty assistant placeholders
+    // (inflating the assistant avatar count from 4 to 7).
+    const turn0Events = loadFixture('steering-single-turn.json', 0);
+    const turn1Events = loadFixture('steering-with-subagents.json', 1);
+
+    await configureSSE({
+      method: 'GET',
+      path: '/api/v1/threads/th-1/messages/replay',
+      events: [
+        sseEvents.userMessage('any investment opportunity?', 0),
+        ...turn0Events,
+        sseEvents.userMessage('find investment ideas from GTC 2026', 1),
+        ...turn1Events,
+        sseEvents.replayDone(),
+      ],
+      delay: 2,
+    });
+
+    await page.goto('/chat/t/th-1');
+
+    // Wait for post-steering content to confirm replay completed
+    await expect(page.getByText('All three subagents updated')).toBeVisible({ timeout: 30000 });
+
+    // Main steering user message should be visible (from the steering_delivered event)
+    await expect(page.getByText('let subagent group its finding by sector')).toBeVisible();
+
+    // Regression gate: count assistant avatars. Each assistant message renders
+    // exactly one img[alt="Assistant"]. Expected layout:
+    //   Turn 0: 2 assistants (pre-steering + post-steering)
+    //   Turn 1: 2 assistants (pre-steering + post-steering)
+    //   Total: 4
+    // Before fix: 3 subagent steering_delivered events inflated this to 7.
+    const assistantAvatars = page.locator('img[alt="Assistant"]');
+    await expect(assistantAvatars).toHaveCount(4);
   });
 });

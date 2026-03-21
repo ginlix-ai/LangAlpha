@@ -371,6 +371,30 @@ async def reset_failure_count(automation_id: str) -> None:
             """, (automation_id,))
 
 
+async def restore_executing_to_active(automation_id: str) -> None:
+    """Restore status from 'executing' back to 'active' (only if still 'executing')."""
+    async with get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                UPDATE automations SET status = 'active'
+                WHERE automation_id = %s AND status = 'executing'
+            """, (automation_id,))
+
+
+async def get_active_price_automations() -> List[Dict[str, Any]]:
+    """Get all active price-triggered automations (for PriceMonitorService)."""
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(f"""
+                SELECT {AUTOMATION_COLUMNS}
+                FROM automations
+                WHERE trigger_type = 'price'
+                  AND status = 'active'
+            """)
+            results = await cur.fetchall()
+            return [dict(row) for row in results]
+
+
 # =============================================================================
 # Execution record queries
 # =============================================================================

@@ -2,6 +2,8 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 
+const backendTarget = process.env.VITE_PROXY_BACKEND || 'http://localhost:8000'
+
 // https://vitejs.dev/config/
 export default defineConfig({
   base: process.env.VITE_CDN_BASE || '/',
@@ -28,11 +30,11 @@ export default defineConfig({
     host: '127.0.0.1',
     proxy: {
       '/api/v1': {
-        target: 'http://localhost:8000',
+        target: backendTarget,
         changeOrigin: true,
       },
       '/ws/v1': {
-        target: 'ws://localhost:8000',
+        target: backendTarget.replace(/^http/, 'ws'),
         ws: true,
       },
     },

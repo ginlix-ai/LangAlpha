@@ -1,6 +1,7 @@
 import React from 'react';
-import { Clock, Timer, CheckCircle2 } from 'lucide-react';
+import { Clock, Timer, TrendingUp, CheckCircle2 } from 'lucide-react';
 import { cronToHuman } from '../../../Automations/utils/cron';
+import { formatPriceTrigger } from '../../../Automations/utils/price';
 import { formatRelativeTime } from '../../../Automations/utils/time';
 import { useTranslation } from 'react-i18next';
 
@@ -39,6 +40,9 @@ function statusColor(status: string): string {
 
 function scheduleLabel(automation: Record<string, unknown> | null | undefined): string {
   if (!automation) return '';
+  if (automation.trigger_type === 'price') {
+    return formatPriceTrigger(automation.trigger_config as any) || '';
+  }
   if (automation.trigger_type === 'cron' && automation.schedule) {
     return cronToHuman(automation.schedule as string);
   }
@@ -194,7 +198,8 @@ function InlineAutomationDetailCard({ artifact, onClick }: InlineAutomationDetai
   if (!automation) return null;
 
   const isCron = automation.trigger_type === 'cron';
-  const Icon = isCron ? Clock : Timer;
+  const isPrice = automation.trigger_type === 'price';
+  const Icon = isPrice ? TrendingUp : isCron ? Clock : Timer;
 
   return (
     <div

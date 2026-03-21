@@ -63,13 +63,13 @@ flowchart TB
     subgraph Redis ["Redis"]
         EventBuf[("SSE Event Buffer<br/>150K events · Reconnect Replay")]
         DataCache[("API Cache<br/>Market Data · SWR")]
-        MsgQueue[("Message Queue<br/>User Messages Mid-workflow")]
+        Steering[("Steering Queue<br/>User Messages Mid-workflow")]
     end
 
     BTM --> AppPool
     BTM --> CheckPool
     BTM --> EventBuf
-    BTM --> MsgQueue
+    BTM --> Steering
     API --> DataCache
 
     BTM -. "Sandbox API" .-> Daytona["Daytona<br/>Cloud Sandboxes"]
@@ -191,7 +191,7 @@ flowchart TB
         direction LR
         MW1["Tool Safety<br/>Leak Detection<br/>Protected Paths<br/>Error Handling"]
         MW2["Context & Skills<br/>agent.md Injection<br/>Skill Loading<br/>Multimodal"]
-        MW3["Coordination<br/>HITL · Plan Mode<br/>Message Queue<br/>Subagent Dispatch"]
+        MW3["Coordination<br/>HITL · Plan Mode<br/>Steering<br/>Subagent Dispatch"]
         MW4["Resilience<br/>Summarization<br/>Retry + Fallback<br/>Prompt Caching"]
     end
 
@@ -231,6 +231,7 @@ Beyond simple dispatch, the main agent can send follow-up instructions to a stil
 ### Middleware Stack
 
 The agent ships with a middleware stack, including:
+- **Live steering** — agents can take wrong turns, chase irrelevant data, or misunderstand your intent mid-analysis. Steering lets you course-correct without waiting. Send a follow-up message at any time while the agent is working — updated instructions, clarifications, or entirely new questions — and the middleware injects it into the conversation before the next LLM call. The agent sees your message as if you had said it in real time, adjusts its plan, and continues from there. Steering works at every level: redirect the main agent, send follow-up instructions to individual background subagents via `Task(action="update")`, or let the system gracefully return unconsumed messages to your input box if the workflow finishes before picking them up. No work is lost, no restarts required.
 - **Dynamic skill loading** via a `LoadSkill` tool that lets the agent discover and activate skill toolsets on demand, keeping the default tool surface lean while making specialized capabilities available when needed
 - **Multimodal** intercepts file reads for images and PDFs, downloads content from the sandbox or URLs, and injects it as base64 into the conversation so multimodal models can interpret them natively
 - **Plan mode** with human-in-the-loop interrupts lets you review and approve the agent's strategy before execution

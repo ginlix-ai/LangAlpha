@@ -6,6 +6,13 @@
   overflow: hidden;
 }
 
+.automations-creation-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
 .automations-card {
   position: relative;
   flex: 1;
@@ -36,7 +43,30 @@
   background: transparent;
 }
 
+/* ── Inline form label pattern ─────────────────────── */
+
+.automation-inline-form .form-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  line-height: 1;
+}
+
 @media (max-width: 767px) {
-  .automations-page { padding: 16px 12px; }
+  .automations-page {
+    padding: 16px 12px;
+    overflow-y: auto;
+  }
+  .automations-creation-section { gap: 12px; margin-bottom: 16px; }
   .automations-card { padding: 12px; border-radius: 8px; }
+  .automation-inline-form { padding: 16px !important; gap: 16px !important; }
+  .automation-inline-form .form-actions {
+    flex-direction: column;
+  }
+  .automation-inline-form .form-actions button {
+    width: 100%;
+    justify-content: center;
+  }
 }

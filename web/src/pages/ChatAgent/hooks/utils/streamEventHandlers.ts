@@ -1363,20 +1363,20 @@ export function handleSubagentToolCallResult({ taskId, assistantMessageId, toolC
 }
 
 /**
- * Handles message_queued events on per-task SSE streams.
- * Emitted when a follow-up instruction is queued for the running subagent.
+ * Handles steering_accepted events on per-task SSE streams.
+ * Emitted when a follow-up instruction (steering) is accepted for the running subagent.
  * Inserts a user message bubble with the instruction content, finalizes
  * the current assistant message, and bumps runIndex so subsequent events
  * create a new assistant message below the user bubble.
  *
  * @param {Object} params - Handler parameters
  * @param {string} params.taskId - Task ID (e.g., "task:k7Xm2p")
- * @param {string} params.content - The queued instruction content
+ * @param {string} params.content - The steering instruction content
  * @param {Object} params.refs - Refs object with subagentStateRefs
  * @param {Function} params.updateSubagentCard - Callback to update subagent card
  * @returns {boolean} True if event was handled
  */
-export function handleTaskMessageQueued({ taskId, content, refs, updateSubagentCard }: {
+export function handleTaskSteeringAccepted({ taskId, content, refs, updateSubagentCard }: {
   taskId: string;
   content: string;
   refs: StreamRefs;
@@ -1389,7 +1389,7 @@ export function handleTaskMessageQueued({ taskId, content, refs, updateSubagentC
   const taskRefs = getOrCreateTaskRefs(refs, taskId);
   const updatedMessages = [...taskRefs.messages];
 
-  // Finalize the current assistant message so content before the queued
+  // Finalize the current assistant message so content before the steering
   // instruction stays above the user bubble
   for (let i = updatedMessages.length - 1; i >= 0; i--) {
     if (updatedMessages[i].role === 'assistant' && updatedMessages[i].isStreaming) {

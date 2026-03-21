@@ -37,6 +37,15 @@ def _fmp_available() -> bool:
     return bool(os.getenv("FMP_API_KEY"))
 
 
+def _yfinance_available() -> bool:
+    try:
+        import yfinance  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Async source constructors
 # ---------------------------------------------------------------------------
@@ -70,6 +79,18 @@ async def _build_fmp_news_source() -> NewsDataSource:
     return FMPNewsSource()
 
 
+async def _build_yfinance_source() -> MarketDataSource:
+    from .yfinance.data_source import YFinanceDataSource
+
+    return YFinanceDataSource()
+
+
+async def _build_yfinance_news_source() -> NewsDataSource:
+    from .yfinance.news_source import YFinanceNewsSource
+
+    return YFinanceNewsSource()
+
+
 # ---------------------------------------------------------------------------
 # Source registries — map config name → (availability_check, async_constructor)
 # ---------------------------------------------------------------------------
@@ -77,11 +98,13 @@ async def _build_fmp_news_source() -> NewsDataSource:
 _SOURCE_REGISTRY: dict[str, tuple[Any, Any]] = {
     "ginlix-data": (_ginlix_data_available, _build_ginlix_data_source),
     "fmp": (_fmp_available, _build_fmp_source),
+    "yfinance": (_yfinance_available, _build_yfinance_source),
 }
 
 _NEWS_SOURCE_REGISTRY: dict[str, tuple[Any, Any]] = {
     "ginlix-data": (_ginlix_data_available, _build_ginlix_data_news_source),
     "fmp": (_fmp_available, _build_fmp_news_source),
+    "yfinance": (_yfinance_available, _build_yfinance_news_source),
 }
 
 # ---------------------------------------------------------------------------
@@ -220,6 +243,13 @@ async def get_financial_data_provider() -> FinancialDataProvider:
             financial = FMPFinancialSource(fmp_client)
             logger.info(
                 "financial_data.source.registered | name=fmp (FinancialDataSource)"
+            )
+        elif _yfinance_available():
+            from .yfinance.financial_source import YFinanceFinancialSource
+
+            financial = YFinanceFinancialSource()
+            logger.info(
+                "financial_data.source.registered | name=yfinance (FinancialDataSource)"
             )
 
         if _ginlix_data_available():

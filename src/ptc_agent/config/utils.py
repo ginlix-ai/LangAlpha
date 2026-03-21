@@ -142,8 +142,11 @@ def create_sandbox_config(config_data: dict[str, Any]) -> SandboxConfig:
 
     from ptc_agent.config.core import DaytonaConfig, DockerConfig, SandboxConfig
 
+    provider_explicit = False  # True when config file sets the provider
+
     if "sandbox" in config_data:
         sandbox_data = config_data["sandbox"]
+        provider_explicit = "provider" in sandbox_data or "daytona" in sandbox_data
         provider = sandbox_data.get("provider", "daytona")
         daytona_cfg = (
             create_daytona_config(sandbox_data["daytona"])
@@ -156,7 +159,8 @@ def create_sandbox_config(config_data: dict[str, Any]) -> SandboxConfig:
             else DockerConfig()
         )
     elif "daytona" in config_data:
-        # Backward compat: top-level "daytona:" key
+        # Backward compat: top-level "daytona:" key — implicitly daytona provider
+        provider_explicit = True
         provider = "daytona"
         daytona_cfg = create_daytona_config(config_data["daytona"])
         docker_cfg = DockerConfig()
@@ -166,8 +170,13 @@ def create_sandbox_config(config_data: dict[str, Any]) -> SandboxConfig:
             "in agent_config.yaml"
         )
 
-    # Allow SANDBOX_PROVIDER env var to override
-    provider = os.getenv("SANDBOX_PROVIDER", provider)
+    # SANDBOX_PROVIDER env var always wins.
+    # Auto-detect from DAYTONA_API_KEY only when no explicit provider was configured.
+    env_provider = os.getenv("SANDBOX_PROVIDER", "")
+    if env_provider:
+        provider = env_provider
+    elif not provider_explicit and not os.getenv("DAYTONA_API_KEY"):
+        provider = "docker"
 
     sandbox_config = SandboxConfig(
         provider=provider,

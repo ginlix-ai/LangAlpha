@@ -108,14 +108,44 @@ mcp:
       url: "https://mcp.alphavantage.co/mcp?apikey=${ALPHA_VANTAGE_API_KEY}"
 
 
-    - name: "yfinance"
+    - name: "yf_price"
       enabled: false
-      description: "Yahoo Finance API for stock prices, financial statements, options chains, and company data"
-      instruction: "Use for historical stock prices, financial statements (income, balance sheet, cash flow), options chains, company info, analyst recommendations, and institutional holders. Best for fundamental analysis, historical data, and comparing multiple stocks. Returns large datasets ideal for code-based post-processing."
-      tool_exposure_mode: "summary" # 21 tools with high PTC value
+      description: "Yahoo Finance price history, dividends, and splits data"
+      instruction: "Use for historical OHLCV price data, dividend history, stock splits, and multi-stock price comparisons. Returns large time series ideal for code-based analysis."
+      tool_exposure_mode: "summary"
       transport: "stdio"
       command: "uv"
-      args: ["run", "python", "mcp_servers/yfinance_mcp_server.py"] # Both absolute and relative path accepted
+      args: ["run", "python", "mcp_servers/yf_price_mcp_server.py"]
+      env: {}
+
+    - name: "yf_fundamentals"
+      enabled: false
+      description: "Yahoo Finance financial statements, earnings, company info, and valuations"
+      instruction: "Use for income statements, balance sheets, cash flow, earnings data, company info, and valuation comparisons across multiple stocks. Returns structured financial data ideal for fundamental analysis."
+      tool_exposure_mode: "summary"
+      transport: "stdio"
+      command: "uv"
+      args: ["run", "python", "mcp_servers/yf_fundamentals_mcp_server.py"]
+      env: {}
+
+    - name: "yf_analysis"
+      enabled: false
+      description: "Yahoo Finance analyst data, holdings, insiders, news, and ESG"
+      instruction: "Use for analyst recommendations, price targets, upgrades/downgrades, earnings estimates, institutional/mutual fund holders, insider transactions, news, and ESG sustainability scores."
+      tool_exposure_mode: "summary"
+      transport: "stdio"
+      command: "uv"
+      args: ["run", "python", "mcp_servers/yf_analysis_mcp_server.py"]
+      env: {}
+
+    - name: "yf_market"
+      enabled: false
+      description: "Yahoo Finance market status, search, screener, calendars, sectors"
+      instruction: "Use for ticker search, stock screening (custom and predefined), earnings calendars, market status, and sector/industry analysis. Best for market-wide discovery and screening."
+      tool_exposure_mode: "summary"
+      transport: "stdio"
+      command: "uv"
+      args: ["run", "python", "mcp_servers/yf_market_mcp_server.py"]
       env: {}
 
   # Tool discovery settings

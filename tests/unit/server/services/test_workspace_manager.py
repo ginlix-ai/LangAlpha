@@ -25,6 +25,8 @@ def _make_config():
     config = MagicMock()
     config.to_core_config.return_value = MagicMock()
     config.daytona = MagicMock(api_key="test-key", base_url="https://daytona.test")
+    config.sandbox = MagicMock(provider="daytona")
+    config.filesystem = MagicMock(working_directory="/home/workspace")
     config.skills = MagicMock(enabled=False)
     return config
 

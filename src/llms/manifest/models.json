@@ -1,56 +1,26 @@
 {
-  "gpt-5-mini": {
-    "model_id": "gpt-5-mini",
-    "provider": "openai",
-    "parameters": {
-      "reasoning": {
-        "effort": "medium",
-        "summary": "auto"
-      }
-    }
-  },
-  "gpt-5-nano": {
-    "model_id": "gpt-5-nano",
-    "provider": "openai",
-    "parameters": {
-      "reasoning": {
-        "effort": "medium",
-        "summary": "auto"
-      }
-    }
-  },
-  "gpt-5.1-codex-mini": {
-    "model_id": "gpt-5.1-codex-mini",
-    "provider": "openai",
-    "parameters": {
-      "reasoning": {
-        "effort": "medium",
-        "summary": "auto"
-      }
-    }
-  },
-  "gpt-5.1": {
-    "model_id": "gpt-5.1-2025-11-13",
-    "provider": "openai",
-    "parameters": {
-      "reasoning": {
-        "effort": "medium",
-        "summary": "auto"
-      }
-    }
-  },
-  "gpt-5.2": {
-    "model_id": "gpt-5.2-2025-12-11",
-    "provider": "openai",
-    "parameters": {
-      "reasoning": {
-        "effort": "medium",
-        "summary": "auto"
-      }
-    }
-  },
   "gpt-5.4": {
     "model_id": "gpt-5.4",
+    "provider": "openai",
+    "parameters": {
+      "reasoning": {
+        "effort": "medium",
+        "summary": "auto"
+      }
+    }
+  },
+  "gpt-5.4-mini": {
+    "model_id": "gpt-5.4-mini",
+    "provider": "openai",
+    "parameters": {
+      "reasoning": {
+        "effort": "medium",
+        "summary": "auto"
+      }
+    }
+  },
+  "gpt-5.4-nano": {
+    "model_id": "gpt-5.4-nano",
     "provider": "openai",
     "parameters": {
       "reasoning": {
@@ -342,8 +312,8 @@
       }
     }
   },
-  "minimax-m2.5": {
-    "model_id": "MiniMax-M2.5-highspeed",
+  "minimax-m2.7": {
+    "model_id": "MiniMax-M2.7-highspeed",
     "provider": "minimax",
     "visible": true,
     "parameters": {
@@ -428,62 +398,8 @@
       }
     }
   },
-  "gpt-5.1-codex-mini-oauth": {
-    "model_id": "gpt-5.1-codex-mini",
-    "provider": "codex-oauth",
-    "visible": true,
-    "parameters": {
-      "reasoning": {
-        "effort": "medium",
-        "summary": "auto"
-      },
-      "include": [
-        "reasoning.encrypted_content"
-      ],
-      "store": false,
-      "model_kwargs": {
-        "instructions": "You are a helpful AI assistant."
-      }
-    }
-  },
-  "gpt-5.2-oauth": {
-    "model_id": "gpt-5.2",
-    "provider": "codex-oauth",
-    "visible": true,
-    "parameters": {
-      "reasoning": {
-        "effort": "medium",
-        "summary": "auto"
-      },
-      "include": [
-        "reasoning.encrypted_content"
-      ],
-      "store": false,
-      "model_kwargs": {
-        "instructions": "You are a helpful AI assistant."
-      }
-    }
-  },
   "gpt-5.3-codex-oauth": {
     "model_id": "gpt-5.3-codex",
-    "provider": "codex-oauth",
-    "visible": true,
-    "parameters": {
-      "reasoning": {
-        "effort": "medium",
-        "summary": "auto"
-      },
-      "include": [
-        "reasoning.encrypted_content"
-      ],
-      "store": false,
-      "model_kwargs": {
-        "instructions": "You are a helpful AI assistant."
-      }
-    }
-  },
-  "gpt-5.1-codex-max-oauth": {
-    "model_id": "gpt-5.1-codex-max",
     "provider": "codex-oauth",
     "visible": true,
     "parameters": {
@@ -520,6 +436,42 @@
   },
   "gpt-5.4-oauth": {
     "model_id": "gpt-5.4",
+    "provider": "codex-oauth",
+    "visible": true,
+    "parameters": {
+      "reasoning": {
+        "effort": "medium",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "store": false,
+      "model_kwargs": {
+        "instructions": "You are a helpful AI assistant."
+      }
+    }
+  },
+  "gpt-5.4-mini-oauth": {
+    "model_id": "gpt-5.4-mini",
+    "provider": "codex-oauth",
+    "visible": true,
+    "parameters": {
+      "reasoning": {
+        "effort": "medium",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "store": false,
+      "model_kwargs": {
+        "instructions": "You are a helpful AI assistant."
+      }
+    }
+  },
+  "gpt-5.4-nano-oauth": {
+    "model_id": "gpt-5.4-nano",
     "provider": "codex-oauth",
     "visible": true,
     "parameters": {

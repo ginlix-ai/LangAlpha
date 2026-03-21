@@ -41,7 +41,7 @@ vi.mock('../utils/streamEventHandlers', () => ({
   handleSubagentToolCallChunks: vi.fn(),
   handleSubagentToolCalls: vi.fn(),
   handleSubagentToolCallResult: vi.fn(),
-  handleTaskMessageQueued: vi.fn(),
+  handleTaskSteeringAccepted: vi.fn(),
   getOrCreateTaskRefs: vi.fn().mockReturnValue({
     contentOrderCounterRef: { current: 0 },
     currentReasoningIdRef: { current: null },
@@ -57,7 +57,7 @@ vi.mock('../utils/historyEventHandlers', () => ({
   handleHistoryToolCalls: vi.fn(),
   handleHistoryToolCallResult: vi.fn(),
   handleHistoryTodoUpdate: vi.fn(),
-  handleHistoryQueuedMessageInjected: vi.fn(),
+  handleHistorySteeringDelivered: vi.fn(),
   handleHistoryInterrupt: vi.fn(),
   handleHistoryArtifact: vi.fn(),
 }));

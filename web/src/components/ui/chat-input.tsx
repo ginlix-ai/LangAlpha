@@ -870,8 +870,6 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     setTimeout(() => {
       setShowAutocomplete(false);
       setShowSlashMenu(false);
-      setShowModelMenu(false);
-      setShowMoreModels(false);
     }, 200);
   }, []);
 
@@ -914,7 +912,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [hasContent, disabled, message, planMode, attachedFiles, chartImage, onSend, mentionedFiles, slashCommands]);
+  }, [hasContent, disabled, message, planMode, attachedFiles, onSend, mentionedFiles, slashCommands, selectedModel, reasoningEffort, fastMode, t]);
 
   // --- Keyboard & Language Detection ---
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {

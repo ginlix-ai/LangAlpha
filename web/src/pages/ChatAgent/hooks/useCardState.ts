@@ -13,7 +13,6 @@ interface TodoData {
   completed: number;
   in_progress: number;
   pending: number;
-  fromHistory?: boolean;
   [key: string]: unknown;
 }
 
