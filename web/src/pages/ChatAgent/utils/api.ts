@@ -675,3 +675,30 @@ export async function uploadWorkspaceFile(
   );
   return data;
 }
+
+// --- Vault Secrets ---
+
+export async function getVaultSecrets(workspaceId: string) {
+  const { data } = await api.get(`/api/v1/workspaces/${workspaceId}/vault/secrets`);
+  return data.secrets;
+}
+
+export async function createVaultSecret(workspaceId: string, body: { name: string; value: string; description?: string }) {
+  const { data } = await api.post(`/api/v1/workspaces/${workspaceId}/vault/secrets`, body);
+  return data;
+}
+
+export async function updateVaultSecret(workspaceId: string, name: string, body: { value?: string; description?: string }) {
+  const { data } = await api.put(`/api/v1/workspaces/${workspaceId}/vault/secrets/${name}`, body);
+  return data;
+}
+
+export async function revealVaultSecret(workspaceId: string, name: string) {
+  const { data } = await api.get(`/api/v1/workspaces/${workspaceId}/vault/secrets/${name}/reveal`);
+  return data.value as string;
+}
+
+export async function deleteVaultSecret(workspaceId: string, name: string) {
+  const { data } = await api.delete(`/api/v1/workspaces/${workspaceId}/vault/secrets/${name}`);
+  return data;
+}

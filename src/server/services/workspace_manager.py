@@ -156,6 +156,36 @@ class WorkspaceManager:
         """Record that a sync was performed for this workspace."""
         self._last_sync_at[workspace_id] = time.monotonic()
 
+    async def push_vault_secrets(
+        self, workspace_id: str, sandbox: "PTCSandbox | None" = None,
+    ) -> None:
+        """Push vault secrets to the running sandbox.
+
+        Called by the vault API on mutation and by ``_sync_sandbox_assets``
+        during workspace startup/restart.
+
+        Args:
+            workspace_id: Workspace UUID.
+            sandbox: Optional sandbox to push to directly.  When omitted the
+                sandbox is looked up from the session cache — this fails during
+                initial startup (session not cached yet), so callers that
+                already hold a sandbox reference should pass it explicitly.
+        """
+        if sandbox is None:
+            session = self._sessions.get(workspace_id)
+            if not session or not session.sandbox:
+                return
+            sandbox = session.sandbox
+
+        from src.server.database.vault_secrets import get_workspace_secrets_decrypted
+
+        secrets = await get_workspace_secrets_decrypted(workspace_id)
+        await sandbox.upload_vault_secrets(secrets)
+        logger.info(
+            f"[vault] Pushed {len(secrets)} secret(s) to sandbox",
+            extra={"workspace_id": workspace_id},
+        )
+
     @staticmethod
     async def _mint_sandbox_tokens(user_id: str, workspace_id: str) -> dict:
         """Mint scoped OAuth2 tokens for sandbox ginlix-data access.
@@ -259,6 +289,11 @@ class WorkspaceManager:
                 workspace_id=workspace_id,
             )
         )
+
+        # Vault secrets — piggyback on existing parallel gather so
+        # secrets are available after stop/start and sandbox recovery.
+        # Pass sandbox directly: session may not be in self._sessions yet.
+        tasks.append(self.push_vault_secrets(workspace_id, sandbox=sandbox))
 
         # User data sync task
         if user_id:

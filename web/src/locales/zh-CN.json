@@ -271,6 +271,7 @@
     "goToChats": "返回对话列表",
     "loadingHistory": "加载历史记录...",
     "workspaceFiles": "工作区文件",
+    "workspaceSettings": "工作区设置",
     "agents": "智能体",
     "questionStarted": "问题已开始",
     "questionDeclined": "问题已跳过",

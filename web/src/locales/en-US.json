@@ -271,6 +271,7 @@
     "goToChats": "Go to Chats",
     "loadingHistory": "Loading history...",
     "workspaceFiles": "Workspace Files",
+    "workspaceSettings": "Workspace Settings",
     "agents": "Agents",
     "questionStarted": "Question started",
     "questionDeclined": "Question declined",

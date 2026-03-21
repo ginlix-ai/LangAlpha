@@ -448,6 +448,43 @@ class PTCSandbox:
         except Exception as e:
             logger.warning("Failed to upload sandbox token file", error=str(e))
 
+    async def upload_vault_secrets(self, secrets: dict[str, str]) -> None:
+        """Write (or remove) vault secrets JSON in the sandbox.
+
+        Called by the vault API on every CRUD mutation.  Also caches the
+        secrets dict on ``self`` so the server can pass them to
+        ``LeakDetectionMiddleware`` without an extra DB call.
+        """
+        self.vault_secrets: dict[str, str] = secrets
+
+        if not self.runtime:
+            return
+
+        vault_path = f"{self._work_dir}/_internal/.vault_secrets.json"
+
+        if not secrets:
+            # Remove the file so vault.list_names() returns []
+            try:
+                await self._runtime_call(
+                    self.runtime.exec,
+                    f"rm -f {vault_path}",
+                    retry_policy=RetryPolicy.SAFE,
+                )
+            except Exception as e:
+                logger.warning("Failed to remove vault secrets file", error=str(e))
+            return
+
+        try:
+            await self._runtime_call(
+                self.runtime.upload_file,
+                json.dumps(secrets).encode("utf-8"),
+                vault_path,
+                retry_policy=RetryPolicy.SAFE,
+            )
+            logger.info("Uploaded vault secrets file", path=vault_path)
+        except Exception as e:
+            logger.warning("Failed to upload vault secrets file", error=str(e))
+
     async def ensure_sandbox_ready(self) -> None:
         await self._wait_ready()
 
@@ -762,6 +799,22 @@ class PTCSandbox:
             uploaded_files=len(files),
             sandbox_root=str(internal_root),
         )
+
+        # Upload vault helper module so `from vault import get` is always
+        # importable, even if no secrets exist yet.
+        try:
+            from ptc_agent.core.sandbox.vault_helper import VAULT_MODULE_SOURCE
+
+            vault_dest = str(internal_root / "vault.py")
+            await self._runtime_call(
+                sandbox.upload_file,
+                VAULT_MODULE_SOURCE.encode("utf-8"),
+                vault_dest,
+                retry_policy=RetryPolicy.SAFE,
+            )
+            logger.info("Uploaded vault helper module", path=vault_dest)
+        except Exception as e:
+            logger.warning("Failed to upload vault helper module", error=str(e))
 
     # ── Unified manifest helpers ────────────────────────────────────────
 

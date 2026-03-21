@@ -263,6 +263,7 @@ class PTCAgent:
         on_agent_md_write: Any | None = None,
         store: Any | None = None,
         on_signed_url: Any | None = None,
+        vault_secrets: dict[str, str] | None = None,
     ) -> Any:
         """Create a deepagent with PTC pattern capabilities.
 
@@ -378,7 +379,10 @@ class PTCAgent:
                 ),
                 CodeValidationMiddleware(),
                 ToolErrorHandlingMiddleware(),
-                LeakDetectionMiddleware(mcp_servers=self.config.mcp.servers),
+                LeakDetectionMiddleware(
+                    mcp_servers=self.config.mcp.servers,
+                    vault_secrets=vault_secrets,
+                ),
                 ToolResultNormalizationMiddleware(),
             ]
         )

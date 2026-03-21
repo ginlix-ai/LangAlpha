@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo, Suspense } from 'react';
 import type { editor } from 'monaco-editor';
-import { ArrowLeft, X, FileText, FileImage, File, RefreshCw, Download, Upload, Folder, ChevronRight, ChevronDown, ArrowUpDown, AlertTriangle, Trash2, CheckSquare, Square, HardDrive, Printer, Minus, Plus, Pencil, Save, FileDiff, Undo2, Redo2, TextSelect, FolderOpen } from 'lucide-react';
+import { ArrowLeft, X, FileText, FileImage, File, RefreshCw, Download, Upload, Folder, ChevronRight, ChevronDown, ArrowUpDown, AlertTriangle, Trash2, CheckSquare, Square, HardDrive, Printer, Minus, Plus, Pencil, Save, FileDiff, Undo2, Redo2, TextSelect, FolderOpen, Settings } from 'lucide-react';
+import { useWorkspace } from '@/hooks/useWorkspace';
+import { SandboxSettingsContent } from './SandboxSettingsPanel';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { useReactToPrint } from 'react-to-print';
 import SyntaxHighlighter, { oneDark, oneLight } from './SyntaxHighlighter';
@@ -541,6 +543,12 @@ function FilePanel({
   const readFileFullFn = apiAdapter?.readFileFull
     ? (_: string, path: string) => apiAdapter.readFileFull!(path)
     : readWorkspaceFileFull;
+
+  // Workspace settings inline view
+  const [showSettings, setShowSettings] = useState(false);
+  const { data: wsData } = useWorkspace(workspaceId);
+  const isFlashWorkspace = wsData?.status === 'flash';
+  const workspaceName = wsData?.name;
 
   // File detail view state
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -1235,7 +1243,11 @@ function FilePanel({
       {/* Header */}
       <div className="file-panel-header">
         <div className="flex items-center gap-2 min-w-0">
-          {selectedFile ? (
+          {showSettings ? (
+            <button onClick={() => setShowSettings(false)} className="file-panel-icon-btn" title={t('filePanel.backToFileList')}>
+              <ArrowLeft className="h-4 w-4" />
+            </button>
+          ) : selectedFile ? (
             <button onClick={handleBack} className="file-panel-icon-btn" title={t('filePanel.backToFileList')}>
               <ArrowLeft className="h-4 w-4" />
             </button>
@@ -1249,11 +1261,11 @@ function FilePanel({
             </button>
           ) : null}
           <span className="text-sm font-semibold truncate" style={{ color: 'var(--color-text-primary)' }}>
-            {selectedFile ? (<>{fileName}{hasUnsavedChanges && <span style={{ color: 'var(--color-text-tertiary)' }}> *</span>}</>) : targetDirectory ? `${targetDirectory}/` : t('chat.workspaceFiles')}
+            {showSettings ? t('chat.workspaceSettings') : selectedFile ? (<>{fileName}{hasUnsavedChanges && <span style={{ color: 'var(--color-text-tertiary)' }}> *</span>}</>) : targetDirectory ? `${targetDirectory}/` : t('chat.workspaceFiles')}
           </span>
         </div>
         <div className="flex items-center gap-1">
-          {!selectedFile && !selectMode && (
+          {!showSettings && !selectedFile && !selectMode && (
             <>
               {!readOnly && files.length > 0 && (
                 <button
@@ -1547,7 +1559,7 @@ function FilePanel({
       )}
 
       {/* Filter & Sort toolbar */}
-      {!selectedFile && !filesLoading && !filesError && files.length > 0 && (
+      {!showSettings && !selectedFile && !filesLoading && !filesError && files.length > 0 && (
         <div className="file-panel-toolbar">
           <div className="file-panel-filter-chips">
             <button className={`file-panel-chip ${filterType === 'All' ? 'active' : ''}`} onClick={() => setFilterType('All')}>
@@ -1593,7 +1605,27 @@ function FilePanel({
         </div>
       )}
 
-      {/* Content */}
+      {/* Workspace settings card */}
+      {!showSettings && !selectedFile && !readOnly && !isFlashWorkspace && !selectMode && (
+        <div
+          className="flex items-center justify-between mx-3 mt-2 mb-1 px-3 py-2 rounded-lg cursor-pointer transition-colors hover:opacity-80"
+          style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}
+          onClick={() => setShowSettings(true)}
+        >
+          <span className="text-xs truncate" style={{ color: 'var(--color-text-secondary)' }}>
+            {workspaceName || t('thread.workspace')}
+          </span>
+          <Settings className="h-3.5 w-3.5 flex-shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
+        </div>
+      )}
+
+      {/* Inline settings view */}
+      {showSettings ? (
+        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', padding: '0 12px 12px' }}>
+          <SandboxSettingsContent workspaceId={workspaceId} />
+        </div>
+      ) : (
+      /* Content */
       <div
         className="file-panel-content-wrapper"
         onDragEnter={!readOnly && !selectedFile ? handleDragEnter : undefined}
@@ -1775,6 +1807,7 @@ function FilePanel({
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }

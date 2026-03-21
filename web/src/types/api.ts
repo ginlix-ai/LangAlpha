@@ -21,6 +21,7 @@ export interface UserPreferences {
 export interface Workspace {
   workspace_id: string;
   name: string;
+  status?: string;
   description?: string;
   config?: Record<string, unknown>;
   created_at?: string;

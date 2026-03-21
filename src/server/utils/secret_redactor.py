@@ -68,21 +68,38 @@ class SecretRedactor:
                 names=[name for name, _ in self._secrets],
             )
 
-    def redact(self, text: str) -> str:
-        """Replace known secret values with [REDACTED:KEY_NAME]."""
+    def redact(
+        self, text: str, vault_secrets: dict[str, str] | None = None,
+    ) -> str:
+        """Replace known secret values with [REDACTED:KEY_NAME].
+
+        Args:
+            text: Content to scan.
+            vault_secrets: Per-workspace vault secrets ({name: value}).
+                Merged into the scan alongside global MCP secrets.
+        """
         for name, value in self._secrets:
             if value in text:
                 text = text.replace(value, f"[REDACTED:{name}]")
+        if vault_secrets:
+            for name, value in sorted(
+                vault_secrets.items(), key=lambda kv: len(kv[1]), reverse=True,
+            ):
+                if value and len(value) >= 8 and value in text:
+                    text = text.replace(value, f"[REDACTED:{name}]")
         text = _SANDBOX_TOKEN_RE.sub("[REDACTED:SANDBOX_TOKEN]", text)
         return text
 
-    def redact_bytes(self, data: bytes, encoding: str = "utf-8") -> bytes:
+    def redact_bytes(
+        self, data: bytes, encoding: str = "utf-8",
+        vault_secrets: dict[str, str] | None = None,
+    ) -> bytes:
         """Decode bytes, redact secrets, re-encode. Returns original on decode failure."""
         try:
             text = data.decode(encoding)
         except (UnicodeDecodeError, LookupError):
             return data
-        return self.redact(text).encode(encoding)
+        return self.redact(text, vault_secrets=vault_secrets).encode(encoding)
 
 
 _instance: SecretRedactor | None = None
@@ -94,3 +111,32 @@ def get_redactor() -> SecretRedactor:
     if _instance is None:
         _instance = SecretRedactor()
     return _instance
+
+
+async def get_vault_secrets_for_redaction(workspace_id: str) -> dict[str, str]:
+    """Get per-workspace vault secrets for redaction.
+
+    Tries the active sandbox session first (zero cost), falls back to DB
+    for stopped workspaces.
+    """
+    # Fast path: read from active session (already in memory from push_vault_secrets)
+    try:
+        from src.server.services.workspace_manager import WorkspaceManager
+
+        wm = WorkspaceManager.get_instance()
+        session = wm._sessions.get(workspace_id)
+        if session and session.sandbox:
+            secrets = getattr(session.sandbox, "vault_secrets", None)
+            if secrets is not None:
+                return secrets
+    except Exception:
+        pass
+
+    # Slow path: DB query for stopped workspaces (infrequent, max 20 rows)
+    try:
+        from src.server.database.vault_secrets import get_workspace_secrets_decrypted
+
+        return await get_workspace_secrets_decrypted(workspace_id)
+    except Exception:
+        logger.warning("Failed to fetch vault secrets for redaction", workspace_id=workspace_id)
+        return {}

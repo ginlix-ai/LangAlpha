@@ -231,6 +231,9 @@ async def build_ptc_graph_with_session(
     # Create the inner agent with the session's sandbox.
     # IMPORTANT: pass the server checkpointer into the deepagent so that partial
     # progress (tools, intermediate messages, etc.) is checkpointed frequently.
+    # Read cached vault secrets from sandbox (populated by vault API on mutation)
+    vault_secrets = getattr(session.sandbox, "vault_secrets", None)
+
     inner_agent = ptc_agent.create_agent(
         sandbox=session.sandbox,
         mcp_registry=session.mcp_registry,
@@ -245,6 +248,7 @@ async def build_ptc_graph_with_session(
         on_agent_md_write=session.invalidate_agent_md,
         store=store,
         on_signed_url=on_signed_url,
+        vault_secrets=vault_secrets,
     )
 
     logger.info(

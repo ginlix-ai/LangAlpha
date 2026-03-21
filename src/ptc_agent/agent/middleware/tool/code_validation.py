@@ -13,7 +13,7 @@ from langchain_core.messages import ToolMessage
 logger = structlog.get_logger(__name__)
 
 # Patterns that indicate attempts to access protected internal files
-_INTERNAL_PATH_PATTERNS = ("_internal/", ".mcp_tokens", ".mcp_secrets")
+_INTERNAL_PATH_PATTERNS = ("_internal/", ".mcp_tokens", ".mcp_secrets", ".vault_secrets")
 
 
 class CodeValidationMiddleware(AgentMiddleware):
@@ -31,9 +31,9 @@ class CodeValidationMiddleware(AgentMiddleware):
                 logger.warning("Internal path reference in code", pattern=pattern)
                 return (
                     "<system_warning>Code validation failed: references to internal "
-                    "system paths (_internal/, .mcp_tokens, .mcp_secrets) are not "
-                    "allowed. These are protected platform files that must not be "
-                    "accessed directly.</system_warning>"
+                    "system paths (_internal/, .mcp_tokens, .mcp_secrets, "
+                    ".vault_secrets) are not allowed. These are protected platform "
+                    "files that must not be accessed directly.</system_warning>"
                 )
         return None
 

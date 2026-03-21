@@ -22,6 +22,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import mimetypes
@@ -44,7 +45,7 @@ from ptc_agent.core.paths import (
 from src.server.database.workspace import get_workspace as db_get_workspace
 from src.server.services.workspace_manager import WorkspaceManager
 from src.server.services.persistence.file import FilePersistenceService
-from src.server.utils.secret_redactor import get_redactor
+from src.server.utils.secret_redactor import get_redactor, get_vault_secrets_for_redaction
 
 logger = logging.getLogger(__name__)
 
@@ -401,8 +402,10 @@ async def read_workspace_file(
         if not normalized_path:
             raise HTTPException(status_code=400, detail="File path is required")
 
-        file_record = await FilePersistenceService.get_file_content(
-            workspace_id, normalized_path
+        # Parallel: fetch vault secrets + file content in one round-trip window
+        vault_secrets, file_record = await asyncio.gather(
+            get_vault_secrets_for_redaction(workspace_id),
+            FilePersistenceService.get_file_content(workspace_id, normalized_path),
         )
         if not file_record:
             raise HTTPException(status_code=404, detail="File not found")
@@ -414,7 +417,7 @@ async def read_workspace_file(
             )
 
         text_content = file_record.get("content_text", "")
-        text_content = get_redactor().redact(text_content)
+        text_content = get_redactor().redact(text_content, vault_secrets=vault_secrets)
         if unlimited:
             content = text_content
         else:
@@ -463,7 +466,8 @@ async def read_workspace_file(
             detail="File appears to be binary and cannot be read as text. Use GET /files/download instead.",
         )
 
-    text_content = get_redactor().redact(text_content)
+    vault_secrets = await get_vault_secrets_for_redaction(workspace_id)
+    text_content = get_redactor().redact(text_content, vault_secrets=vault_secrets)
 
     # Apply line range (skip when unlimited=True for edit mode)
     if unlimited:
@@ -605,8 +609,10 @@ async def download_workspace_file(
         if not normalized_path:
             raise HTTPException(status_code=400, detail="File path is required")
 
-        file_record = await FilePersistenceService.get_file_content(
-            workspace_id, normalized_path
+        # Parallel: fetch vault secrets + file content in one round-trip window
+        vault_secrets, file_record = await asyncio.gather(
+            get_vault_secrets_for_redaction(workspace_id),
+            FilePersistenceService.get_file_content(workspace_id, normalized_path),
         )
         if not file_record:
             raise HTTPException(status_code=404, detail="File not found")
@@ -624,7 +630,7 @@ async def download_workspace_file(
         mime = file_record.get("mime_type") or "application/octet-stream"
 
         if mime and mime.startswith("text/"):
-            content = get_redactor().redact_bytes(content)
+            content = get_redactor().redact_bytes(content, vault_secrets=vault_secrets)
 
         return _build_download_response(content, filename, mime, request)
 
@@ -649,7 +655,8 @@ async def download_workspace_file(
     mime, _enc = mimetypes.guess_type(filename)
 
     if mime and mime.startswith("text/"):
-        content = get_redactor().redact_bytes(content)
+        vault_secrets = await get_vault_secrets_for_redaction(workspace_id)
+        content = get_redactor().redact_bytes(content, vault_secrets=vault_secrets)
 
     return _build_download_response(
         content, filename, mime or "application/octet-stream", request

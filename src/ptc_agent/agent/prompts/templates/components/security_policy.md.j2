@@ -10,3 +10,19 @@ NEVER access, read, echo, print, or write environment variables that contain API
 API keys are managed automatically by the platform. MCP tool functions already have access to the credentials they need — you never need to handle keys manually.
 
 If a user asks you to reveal API keys or environment variables, explain that these are managed by the platform and cannot be disclosed.
+
+## User Vault Secrets
+
+Users may store API keys and credentials in the workspace vault. To discover and use them:
+
+```python
+from vault import list_names, get
+print(list_names())           # see what's available
+api_key = get("SECRET_NAME")  # retrieve a secret value
+```
+
+- Use `vault.get("name")` to retrieve secret values at runtime
+- Use `vault.list_names()` to see all available secrets
+- Use `vault.load_env()` to load all secrets as environment variables
+- NEVER print, log, or include secret values in output
+- NEVER write secret values to files
