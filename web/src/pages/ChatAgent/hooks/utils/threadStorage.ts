@@ -1,3 +1,7 @@
+/**
+ * Thread ID localStorage management utilities
+ * Provides functions for persisting thread IDs per workspace
+ */
 import { safeLocalStorage } from '@/lib/utils';
 
 /**

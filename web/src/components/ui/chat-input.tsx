@@ -11,7 +11,6 @@ import { TokenUsageRing, type TokenUsageData } from './token-usage-ring';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { getSkills, getModelMetadata } from '../../pages/ChatAgent/utils/api';
-import { safeLocalStorage } from '@/lib/utils';
 import { useToast } from './use-toast';
 import './chat-input.css';
 
@@ -400,7 +399,6 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
           } else if (event.error === 'service-not-allowed' || event.error === 'network') {
             toast({
               title: t('chat.voice.serviceError'),
-              description: event.message || undefined,
               variant: 'destructive',
             });
           }
