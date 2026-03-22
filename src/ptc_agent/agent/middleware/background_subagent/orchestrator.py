@@ -157,6 +157,10 @@ class BackgroundSubagentOrchestrator:
                     current_state = None  # Resume from updated checkpoint
                     continue
 
+            if await self._reinvoke_for_steering(config, iteration):
+                current_state = None
+                continue
+
             logger.debug(
                 "No pending background tasks, returning",
                 iteration=iteration,
@@ -271,11 +275,17 @@ class BackgroundSubagentOrchestrator:
 
             # After streaming completes, check for pending background tasks
             if not self.middleware.registry.has_pending_tasks():
+                if await self._reinvoke_for_steering(config, iteration):
+                    current_state = None
+                    continue
                 return
 
             # If auto_wait is False, return immediately without waiting
             # CLI will handle displaying task status and collecting results later
             if not self.auto_wait:
+                if await self._reinvoke_for_steering(config, iteration):
+                    current_state = None
+                    continue
                 logger.info(
                     "Background tasks pending, returning immediately (auto_wait=False)",
                     pending_count=self.middleware.registry.pending_count,
@@ -296,6 +306,9 @@ class BackgroundSubagentOrchestrator:
 
             notification = await self.check_and_get_notification()
             if not notification:
+                if await self._reinvoke_for_steering(config, iteration):
+                    current_state = None
+                    continue
                 return
 
             logger.info(
@@ -387,6 +400,47 @@ class BackgroundSubagentOrchestrator:
     def has_pending_tasks(self) -> bool:
         """Check if there are any pending background tasks."""
         return self.middleware.registry.has_pending_tasks()
+
+    async def _has_pending_steering(self, config: dict[str, Any]) -> bool:
+        """Check if there are pending steering messages in Redis."""
+        thread_id = (config.get("configurable") or {}).get("thread_id")
+        checker = await build_message_checker(thread_id)
+        if checker is None:
+            return False
+        try:
+            return await checker()
+        except Exception as e:
+            logger.warning("Steering check failed, skipping re-invocation", error=str(e))
+            return False
+
+    async def _reinvoke_for_steering(
+        self, config: dict[str, Any], iteration: int
+    ) -> bool:
+        """Check for pending steering and set up re-invocation if found.
+
+        Returns True if re-invocation was set up (caller should ``continue``),
+        False otherwise (caller should proceed to return).
+        """
+        if not await self._has_pending_steering(config):
+            return False
+
+        logger.info(
+            "Pending steering detected, re-invoking agent",
+            iteration=iteration,
+        )
+
+        # Inject a minimal trigger so the graph routes to the agent node.
+        # SteeringMiddleware.abefore_model() will consume the actual content.
+        trigger = HumanMessage(
+            content="User sent additional instructions.",
+            name="orchestrator",
+        )
+        await self.agent.aupdate_state(
+            config,
+            {"messages": [trigger]},
+            as_node="__start__",
+        )
+        return True
 
     async def check_and_get_notification(self) -> str | None:
         """Check for newly completed tasks and return notification if any.
