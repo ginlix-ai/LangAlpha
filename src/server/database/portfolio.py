@@ -75,91 +75,6 @@ async def get_portfolio_holding(
             return dict(result) if result else None
 
 
-async def create_portfolio_holding(
-    user_id: str,
-    symbol: str,
-    instrument_type: str,
-    quantity: Decimal,
-    exchange: Optional[str] = None,
-    name: Optional[str] = None,
-    average_cost: Optional[Decimal] = None,
-    currency: str = "USD",
-    account_name: Optional[str] = None,
-    notes: Optional[str] = None,
-    metadata: Optional[Dict[str, Any]] = None,
-    first_purchased_at: Optional[datetime] = None,
-) -> Dict[str, Any]:
-    """
-    Create a new portfolio holding.
-
-    Args:
-        user_id: User ID
-        symbol: Instrument symbol
-        instrument_type: Type of instrument (stock, etf, etc.)
-        quantity: Number of units held
-        exchange: Exchange name
-        name: Full instrument name
-        average_cost: Average cost per unit
-        currency: Currency code
-        account_name: Account name (e.g., 'Robinhood')
-        notes: User notes
-        metadata: Additional metadata
-        first_purchased_at: First purchase date
-
-    Returns:
-        Created portfolio holding dict
-
-    Raises:
-        ValueError: If holding already exists (same symbol + instrument_type + account_name)
-    """
-    user_portfolio_id = str(uuid4())
-
-    async with get_db_connection() as conn:
-        async with conn.cursor(row_factory=dict_row) as cur:
-            # Check for existing holding with same symbol + instrument_type + account_name
-            # IS NOT DISTINCT FROM handles NULL comparisons properly
-            await cur.execute("""
-                SELECT user_portfolio_id FROM user_portfolios
-                WHERE user_id = %s AND symbol = %s AND instrument_type = %s
-                AND account_name IS NOT DISTINCT FROM %s
-            """, (user_id, symbol, instrument_type, account_name))
-
-            existing = await cur.fetchone()
-            if existing:
-                account_str = f" in {account_name}" if account_name else ""
-                raise ValueError(
-                    f"Portfolio holding already exists for {symbol} "
-                    f"({instrument_type}){account_str}"
-                )
-
-            # Insert new portfolio holding
-            await cur.execute("""
-                INSERT INTO user_portfolios (
-                    user_portfolio_id, user_id, symbol, instrument_type, exchange,
-                    name, quantity, average_cost, currency, account_name,
-                    notes, metadata, first_purchased_at, created_at, updated_at
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
-                RETURNING
-                    user_portfolio_id, user_id, symbol, instrument_type, exchange,
-                    name, quantity, average_cost, currency, account_name,
-                    notes, metadata, first_purchased_at, created_at, updated_at
-            """, (
-                user_portfolio_id, user_id, symbol, instrument_type, exchange,
-                name, quantity, average_cost, currency, account_name,
-                notes,
-                Json(metadata or {}),
-                first_purchased_at,
-            ))
-
-            result = await cur.fetchone()
-            logger.info(
-                f"[portfolio_db] create_portfolio_holding user_id={user_id} "
-                f"symbol={symbol}"
-            )
-            return dict(result)
-
-
 async def update_portfolio_holding(
     user_portfolio_id: str,
     user_id: str,
@@ -226,6 +141,158 @@ async def update_portfolio_holding(
                     f"user_portfolio_id={user_portfolio_id}"
                 )
             return dict(result) if result else None
+
+
+async def upsert_portfolio_holding(
+    user_id: str,
+    symbol: str,
+    instrument_type: str,
+    quantity: Decimal,
+    exchange: Optional[str] = None,
+    name: Optional[str] = None,
+    average_cost: Optional[Decimal] = None,
+    currency: str = "USD",
+    account_name: Optional[str] = None,
+    notes: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    first_purchased_at: Optional[datetime] = None,
+) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    """
+    Create or merge a portfolio holding.
+
+    If a holding already exists for the same (user_id, symbol, instrument_type, account_name),
+    merges the position by summing quantities and computing weighted average cost.
+
+    Args:
+        user_id: User ID
+        symbol: Instrument symbol
+        instrument_type: Type of instrument (stock, etf, etc.)
+        quantity: Number of units held
+        exchange: Exchange name
+        name: Full instrument name
+        average_cost: Average cost per unit
+        currency: Currency code
+        account_name: Account name (e.g., 'Robinhood')
+        notes: User notes
+        metadata: Additional metadata
+        first_purchased_at: First purchase date
+
+    Returns:
+        Tuple of (holding dict, merge_details dict or None).
+        merge_details is None for fresh creates, or a dict with previous/added/result
+        when an existing position was merged.
+    """
+    _returning = """
+        RETURNING
+            user_portfolio_id, user_id, symbol, instrument_type, exchange,
+            name, quantity, average_cost, currency, account_name,
+            notes, metadata, first_purchased_at, created_at, updated_at
+    """
+
+    async with get_db_connection() as conn:
+        # Explicit transaction for atomicity (autocommit is ON by default)
+        async with conn.transaction():
+            async with conn.cursor(row_factory=dict_row) as cur:
+                # FOR UPDATE locks the row to prevent concurrent merge races
+                await cur.execute(f"""
+                    SELECT
+                        user_portfolio_id, user_id, symbol, instrument_type, exchange,
+                        name, quantity, average_cost, currency, account_name,
+                        notes, metadata, first_purchased_at, created_at, updated_at
+                    FROM user_portfolios
+                    WHERE user_id = %s AND symbol = %s AND instrument_type = %s
+                    AND account_name IS NOT DISTINCT FROM %s
+                    FOR UPDATE
+                """, (user_id, symbol, instrument_type, account_name))
+
+                existing = await cur.fetchone()
+
+                if existing:
+                    existing_qty = existing["quantity"] or Decimal("0")
+                    total_qty = existing_qty + quantity
+
+                    # Weighted average cost (guard against zero total quantity)
+                    existing_cost = existing["average_cost"]
+                    if total_qty == 0:
+                        merged_avg_cost = None
+                    elif existing_cost is not None and average_cost is not None:
+                        merged_avg_cost = (
+                            existing_qty * existing_cost + quantity * average_cost
+                        ) / total_qty
+                    elif average_cost is not None:
+                        merged_avg_cost = average_cost
+                    elif existing_cost is not None:
+                        merged_avg_cost = existing_cost
+                    else:
+                        merged_avg_cost = None
+
+                    # Keep the earlier first_purchased_at
+                    existing_date = existing["first_purchased_at"]
+                    if existing_date and first_purchased_at:
+                        merged_date = min(existing_date, first_purchased_at)
+                    else:
+                        merged_date = existing_date or first_purchased_at
+
+                    merged_name = name or existing["name"]
+                    merged_notes = notes or existing["notes"]
+
+                    merge_details = {
+                        "previous": {
+                            "quantity": str(existing_qty),
+                            "average_cost": str(existing_cost) if existing_cost is not None else None,
+                        },
+                        "added": {
+                            "quantity": str(quantity),
+                            "average_cost": str(average_cost) if average_cost is not None else None,
+                        },
+                        "result": {
+                            "quantity": str(total_qty),
+                            "average_cost": str(merged_avg_cost) if merged_avg_cost is not None else None,
+                        },
+                    }
+
+                    await cur.execute(f"""
+                        UPDATE user_portfolios
+                        SET quantity = %s, average_cost = %s, name = %s, notes = %s,
+                            first_purchased_at = %s, updated_at = NOW()
+                        WHERE user_portfolio_id = %s AND user_id = %s
+                        {_returning}
+                    """, (
+                        total_qty, merged_avg_cost, merged_name, merged_notes,
+                        merged_date, existing["user_portfolio_id"], user_id,
+                    ))
+
+                    result = await cur.fetchone()
+                    logger.info(
+                        f"[portfolio_db] upsert_portfolio_holding merged "
+                        f"user_id={user_id} symbol={symbol}"
+                    )
+                    return dict(result), merge_details
+
+                else:
+                    user_portfolio_id = str(uuid4())
+                    await cur.execute(f"""
+                        INSERT INTO user_portfolios (
+                            user_portfolio_id, user_id, symbol, instrument_type, exchange,
+                            name, quantity, average_cost, currency, account_name,
+                            notes, metadata, first_purchased_at, created_at, updated_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                        {_returning}
+                    """, (
+                        user_portfolio_id, user_id, symbol, instrument_type, exchange,
+                        name, quantity, average_cost, currency, account_name,
+                        notes,
+                        Json(metadata or {}),
+                        first_purchased_at,
+                    ))
+
+                    result = await cur.fetchone()
+                    logger.info(
+                        f"[portfolio_db] upsert_portfolio_holding created "
+                        f"user_id={user_id} symbol={symbol}"
+                    )
+                    return dict(result), None
 
 
 async def delete_portfolio_holding(user_portfolio_id: str, user_id: str) -> bool:

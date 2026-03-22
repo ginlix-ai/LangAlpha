@@ -217,9 +217,9 @@ class TestPortfolioCRUD:
     async def test_create_portfolio_holding(
         self, seed_user, patched_get_db_connection
     ):
-        from src.server.database.portfolio import create_portfolio_holding
+        from src.server.database.portfolio import upsert_portfolio_holding
 
-        holding = await create_portfolio_holding(
+        holding, merge_details = await upsert_portfolio_holding(
             user_id=seed_user["user_id"],
             symbol="AAPL",
             instrument_type="stock",
@@ -234,42 +234,50 @@ class TestPortfolioCRUD:
         assert holding["quantity"] == Decimal("100.5")
         assert holding["average_cost"] == Decimal("150.25")
         assert holding["currency"] == "USD"
+        assert merge_details is None
 
-    async def test_duplicate_holding_raises(
+    async def test_duplicate_holding_merges(
         self, seed_user, patched_get_db_connection
     ):
-        from src.server.database.portfolio import create_portfolio_holding
+        from src.server.database.portfolio import upsert_portfolio_holding
 
-        await create_portfolio_holding(
+        await upsert_portfolio_holding(
             user_id=seed_user["user_id"],
             symbol="GOOG",
             instrument_type="stock",
             quantity=Decimal("50"),
+            average_cost=Decimal("100"),
         )
 
-        with pytest.raises(ValueError, match="already exists"):
-            await create_portfolio_holding(
-                user_id=seed_user["user_id"],
-                symbol="GOOG",
-                instrument_type="stock",
-                quantity=Decimal("10"),
-            )
+        holding, merge_details = await upsert_portfolio_holding(
+            user_id=seed_user["user_id"],
+            symbol="GOOG",
+            instrument_type="stock",
+            quantity=Decimal("50"),
+            average_cost=Decimal("200"),
+        )
+
+        assert holding["quantity"] == Decimal("100")
+        assert holding["average_cost"] == Decimal("150")
+        assert merge_details is not None
+        assert merge_details["previous"]["quantity"] == "50"
+        assert merge_details["result"]["quantity"] == "100"
 
     async def test_get_user_portfolio(
         self, seed_user, patched_get_db_connection
     ):
         from src.server.database.portfolio import (
-            create_portfolio_holding,
+            upsert_portfolio_holding,
             get_user_portfolio,
         )
 
-        await create_portfolio_holding(
+        await upsert_portfolio_holding(
             user_id=seed_user["user_id"],
             symbol="NVDA",
             instrument_type="stock",
             quantity=Decimal("25"),
         )
-        await create_portfolio_holding(
+        await upsert_portfolio_holding(
             user_id=seed_user["user_id"],
             symbol="SPY",
             instrument_type="etf",
@@ -285,11 +293,11 @@ class TestPortfolioCRUD:
         self, seed_user, patched_get_db_connection
     ):
         from src.server.database.portfolio import (
-            create_portfolio_holding,
+            upsert_portfolio_holding,
             update_portfolio_holding,
         )
 
-        holding = await create_portfolio_holding(
+        holding, _ = await upsert_portfolio_holding(
             user_id=seed_user["user_id"],
             symbol="AMZN",
             instrument_type="stock",
@@ -314,12 +322,12 @@ class TestPortfolioCRUD:
         self, seed_user, patched_get_db_connection
     ):
         from src.server.database.portfolio import (
-            create_portfolio_holding,
+            upsert_portfolio_holding,
             delete_portfolio_holding,
             get_user_portfolio,
         )
 
-        holding = await create_portfolio_holding(
+        holding, _ = await upsert_portfolio_holding(
             user_id=seed_user["user_id"],
             symbol="META",
             instrument_type="stock",
@@ -338,11 +346,11 @@ class TestPortfolioCRUD:
         self, seed_user, patched_get_db_connection
     ):
         from src.server.database.portfolio import (
-            create_portfolio_holding,
+            upsert_portfolio_holding,
             get_portfolio_holding,
         )
 
-        holding = await create_portfolio_holding(
+        holding, _ = await upsert_portfolio_holding(
             user_id=seed_user["user_id"],
             symbol="NFLX",
             instrument_type="stock",

@@ -17,11 +17,11 @@ from fastapi import APIRouter
 from fastapi.responses import Response
 
 from src.server.database.portfolio import (
-    create_portfolio_holding as db_create_portfolio_holding,
     delete_portfolio_holding as db_delete_portfolio_holding,
     get_portfolio_holding as db_get_portfolio_holding,
     get_user_portfolio as db_get_user_portfolio,
     update_portfolio_holding as db_update_portfolio_holding,
+    upsert_portfolio_holding as db_upsert_portfolio_holding,
 )
 from src.server.services.onboarding import maybe_complete_onboarding
 from src.server.models.user import (
@@ -58,25 +58,25 @@ async def list_portfolio(user_id: CurrentUserId):
 
 
 @router.post("", response_model=PortfolioHoldingResponse, status_code=201)
-@handle_api_exceptions("add portfolio holding", logger, conflict_on_value_error=True)
+@handle_api_exceptions("add portfolio holding", logger)
 async def add_portfolio_holding(
     request: PortfolioHoldingCreate,
     user_id: CurrentUserId,
+    response: Response,
 ):
     """
-    Add a holding to the portfolio.
+    Add a holding to the portfolio. If the same symbol + instrument_type + account_name
+    already exists, merges the position (sums quantity, computes weighted average cost).
 
     Args:
         request: Portfolio holding data
         user_id: User ID from authentication header
+        response: FastAPI response for setting status code
 
     Returns:
-        Created portfolio holding
-
-    Raises:
-        409: Holding already exists (same symbol + instrument_type + account_name)
+        Created or merged portfolio holding (201 for new, 200 for merged)
     """
-    holding = await db_create_portfolio_holding(
+    holding, merge_details = await db_upsert_portfolio_holding(
         user_id=user_id,
         symbol=request.symbol,
         instrument_type=request.instrument_type.value,
@@ -93,7 +93,12 @@ async def add_portfolio_holding(
 
     await maybe_complete_onboarding(user_id)
 
-    logger.info(f"Added portfolio holding {holding['user_portfolio_id']} for user {user_id}")
+    if merge_details:
+        response.status_code = 200
+        logger.info(f"Merged portfolio holding {holding['user_portfolio_id']} for user {user_id}")
+    else:
+        logger.info(f"Added portfolio holding {holding['user_portfolio_id']} for user {user_id}")
+
     return PortfolioHoldingResponse.model_validate(holding)
 
 

@@ -110,9 +110,9 @@ async def test_add_portfolio_holding(client):
     h = _holding()
     with (
         patch(
-            f"{DB}.db_create_portfolio_holding",
+            f"{DB}.db_upsert_portfolio_holding",
             new_callable=AsyncMock,
-            return_value=h,
+            return_value=(h, None),
         ),
         patch(
             f"{DB}.maybe_complete_onboarding",
@@ -133,12 +133,18 @@ async def test_add_portfolio_holding(client):
 
 
 @pytest.mark.asyncio
-async def test_add_portfolio_holding_duplicate_409(client):
+async def test_add_portfolio_holding_merge(client):
+    h = _holding(quantity="30", average_cost=Decimal("193.33"))
+    merge_details = {
+        "previous": {"quantity": "10", "average_cost": "180.00"},
+        "added": {"quantity": "20", "average_cost": "200.00"},
+        "result": {"quantity": "30", "average_cost": "193.33"},
+    }
     with (
         patch(
-            f"{DB}.db_create_portfolio_holding",
+            f"{DB}.db_upsert_portfolio_holding",
             new_callable=AsyncMock,
-            side_effect=ValueError("duplicate"),
+            return_value=(h, merge_details),
         ),
         patch(
             f"{DB}.maybe_complete_onboarding",
@@ -150,11 +156,13 @@ async def test_add_portfolio_holding_duplicate_409(client):
             json={
                 "symbol": "AAPL",
                 "instrument_type": "stock",
-                "quantity": 10,
+                "quantity": 20,
+                "average_cost": 200.00,
             },
         )
 
-    assert resp.status_code == 409
+    assert resp.status_code == 200
+    assert resp.json()["quantity"] == "30"
 
 
 @pytest.mark.asyncio

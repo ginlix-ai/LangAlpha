@@ -303,7 +303,7 @@ async def _upsert_watchlist_item(config: RunnableConfig, data: dict[str, Any], r
 
 
 async def _upsert_portfolio_holding(config: RunnableConfig, data: dict[str, Any], replace: bool = False) -> dict[str, Any]:
-    """Add or update a portfolio holding."""
+    """Add or update a portfolio holding. Merges with existing position if duplicate."""
     user_id = _get_user_id(config)
 
     symbol = data.get("symbol")
@@ -324,24 +324,26 @@ async def _upsert_portfolio_holding(config: RunnableConfig, data: dict[str, Any]
 
     average_cost = data.get("average_cost")
 
-    try:
-        holding = await portfolio_db.create_portfolio_holding(
-            user_id=user_id,
-            symbol=symbol.upper(),
-            instrument_type=data.get("instrument_type", "stock"),
-            quantity=Decimal(str(quantity)),
-            average_cost=Decimal(str(average_cost)) if average_cost else None,
-            currency=data.get("currency", "USD"),
-            exchange=data.get("exchange"),
-            name=data.get("name"),
-            account_name=data.get("account_name"),
-            notes=data.get("notes"),
-            first_purchased_at=purchase_date,
-        )
-        await maybe_complete_onboarding(user_id)
-        return {"success": True, "portfolio_holding": holding}
-    except ValueError as e:
-        return {"error": str(e)}
+    holding, merge_details = await portfolio_db.upsert_portfolio_holding(
+        user_id=user_id,
+        symbol=symbol.upper(),
+        instrument_type=data.get("instrument_type", "stock"),
+        quantity=Decimal(str(quantity)),
+        average_cost=Decimal(str(average_cost)) if average_cost else None,
+        currency=data.get("currency", "USD"),
+        exchange=data.get("exchange"),
+        name=data.get("name"),
+        account_name=data.get("account_name"),
+        notes=data.get("notes"),
+        first_purchased_at=purchase_date,
+    )
+    await maybe_complete_onboarding(user_id)
+
+    result = {"success": True, "portfolio_holding": holding}
+    if merge_details:
+        result["merged"] = True
+        result["merge_details"] = merge_details
+    return result
 
 
 # ==================== REMOVE Handlers ====================
@@ -425,7 +427,7 @@ async def _remove_portfolio_holding(config: RunnableConfig, identifier: dict[str
     if not matching_holding:
         return {"success": False, "error": f"Holding for {symbol_upper} not found in portfolio"}
 
-    deleted = await portfolio_db.delete_portfolio_holding(matching_holding["holding_id"], user_id)
+    deleted = await portfolio_db.delete_portfolio_holding(matching_holding["user_portfolio_id"], user_id)
     if deleted:
         return {"success": True, "symbol": symbol_upper}
     return {"success": False, "error": "Failed to delete holding"}
