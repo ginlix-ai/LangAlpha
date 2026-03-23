@@ -1217,6 +1217,7 @@ class WorkflowStreamHandler:
                     "thread_id": self.thread_id,
                     "status": "completed",
                     "payload": task_artifact,
+                    "tool_call_id": message_chunk.tool_call_id,
                 })
 
             yield self._format_sse_event("tool_call_result", event_stream_message)

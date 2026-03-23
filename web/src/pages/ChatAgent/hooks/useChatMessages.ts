@@ -999,16 +999,28 @@ export function useChatMessages(
                 toolCallIdToTaskIdMapRef.current.set(event.tool_call_id, agentId);
               }
               // Match pending tool call IDs from earlier tool_calls events.
-              // The artifact 'spawned' event drains the pending queue to
-              // establish the toolCallId → agentId mapping for replay.
+              // The artifact event drains the pending queue to establish
+              // the toolCallId → agentId mapping for replay.
               if (action === 'init') {
                 const pendingToolCallIds = historyPendingTaskToolCallIdsRef.current;
                 if (pendingToolCallIds.length > 0) {
-                  const toolCallId = pendingToolCallIds[0];
-                  if (!toolCallIdToTaskIdMapRef.current.has(toolCallId)) {
-                    toolCallIdToTaskIdMapRef.current.set(toolCallId, agentId);
+                  if (event.tool_call_id) {
+                    // Direct mapping available — remove this specific ID from the
+                    // pending queue by value (not FIFO). LangGraph processes tool
+                    // calls in parallel, so artifact events may arrive in a
+                    // different order than the tool_calls array.
+                    historyPendingTaskToolCallIdsRef.current = pendingToolCallIds.filter(
+                      id => id !== event.tool_call_id
+                    );
+                  } else {
+                    // Legacy fallback: FIFO drain for events persisted without
+                    // tool_call_id. May be incorrect for parallel tool calls.
+                    const toolCallId = pendingToolCallIds[0];
+                    if (!toolCallIdToTaskIdMapRef.current.has(toolCallId)) {
+                      toolCallIdToTaskIdMapRef.current.set(toolCallId, agentId);
+                    }
+                    historyPendingTaskToolCallIdsRef.current = pendingToolCallIds.slice(1);
                   }
-                  historyPendingTaskToolCallIdsRef.current = pendingToolCallIds.slice(1);
                 }
               }
             }
@@ -2643,9 +2655,18 @@ export function useChatMessages(
           const agentId = `task:${task_id}`;
 
           if (action === 'init') {
-            // Drain pending Task tool call ID to establish toolCallId → agentId mapping
-            // immediately, so clicking the inline card before tool_call_result resolves correctly
-            if (pendingTaskToolCallIds.length > 0) {
+            // Establish toolCallId → agentId mapping immediately, so clicking
+            // the inline card before tool_call_result resolves correctly.
+            const eventToolCallId = event.tool_call_id as string | undefined;
+            if (eventToolCallId) {
+              // Direct mapping — always set regardless of queue state.
+              toolCallIdToTaskIdMapRef.current.set(eventToolCallId, agentId);
+              // Also drain from pending queue by value (not FIFO) since parallel
+              // tool calls may complete in different order than the tool_calls array.
+              const idx = pendingTaskToolCallIds.indexOf(eventToolCallId);
+              if (idx !== -1) pendingTaskToolCallIds.splice(idx, 1);
+            } else if (pendingTaskToolCallIds.length > 0) {
+              // Legacy fallback: FIFO drain
               const toolCallId = pendingTaskToolCallIds.shift()!;
               toolCallIdToTaskIdMapRef.current.set(toolCallId, agentId);
             }
