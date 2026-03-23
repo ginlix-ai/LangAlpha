@@ -522,6 +522,7 @@ const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvat
 
   return (
     <div
+      data-message-id={message.id as string}
       className={`group flex ${isMobile ? 'gap-3' : 'gap-4'} ${isUser ? 'justify-end' : 'justify-start'}`}
     >
       {/* Assistant avatar - shown on the left */}

@@ -21,6 +21,7 @@ import { attachmentsToImageContexts, type Attachment } from '../utils/fileUpload
 import MessageList, { normalizeSubagentText } from './MessageList';
 import Markdown from './Markdown';
 import NavigationPanel from './NavigationPanel';
+import ChatMinimap from './ChatMinimap';
 import { useNavigationData } from '../hooks/useNavigationData';
 import ShareButton from './ShareButton';
 import { WorkspaceProvider } from '../contexts/WorkspaceContext';
@@ -1750,7 +1751,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                 );
               })()}
               {activeAgentId === 'main' ? (
-                <ScrollArea ref={scrollAreaRef} className="h-full w-full">
+                <ScrollArea ref={scrollAreaRef} className={`h-full w-full${!isMobile && !rightPanelType ? ' chat-scroll-hide-scrollbar' : ''}`}>
                   <div className={`${isMobile ? 'px-3 py-3' : 'px-6 py-4'} flex justify-center`}>
                     <div className="w-full max-w-3xl overflow-x-hidden">
                       <MessageList
@@ -1840,6 +1841,13 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                     {t('chat.agentNotFound')}
                   </p>
                 </div>
+              )}
+              {/* Minimap TOC — desktop only, when no right panel open */}
+              {!isMobile && !rightPanelType && activeAgentId === 'main' && (
+                <ChatMinimap
+                  messages={messages as unknown as MessageRecord[]}
+                  scrollAreaRef={scrollAreaRef}
+                />
               )}
             </div>
 
