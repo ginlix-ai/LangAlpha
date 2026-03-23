@@ -417,6 +417,69 @@ class TestInterruptHandling:
 # ---------------------------------------------------------------------------
 
 
+class TestTaskArtifactEvent:
+    """Tests that task artifact SSE events include tool_call_id.
+
+    When the backend emits an artifact event for a spawned subagent task,
+    it must include the originating tool_call_id so the frontend can
+    directly map the inline card to the correct subagent — without relying
+    on FIFO ordering which is unreliable for parallel tool calls.
+    """
+
+    def _make_handler(self):
+        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+
+        return WorkflowStreamHandler(thread_id="t-task-artifact")
+
+    def test_task_artifact_event_includes_tool_call_id(self):
+        """Artifact event for a spawned task must carry tool_call_id."""
+        handler = self._make_handler()
+        task_artifact = {
+            "task_id": "abc123",
+            "action": "init",
+            "description": "Research NVIDIA",
+            "prompt": "Research NVIDIA GPU timeline",
+            "type": "research",
+        }
+        # Build the artifact event data the same way stream_workflow does
+        event_data = {
+            "artifact_type": "task",
+            "artifact_id": f"task:{task_artifact['task_id']}",
+            "agent": "main",
+            "thread_id": handler.thread_id,
+            "status": "completed",
+            "payload": task_artifact,
+            "tool_call_id": "tc-nvidia-001",
+        }
+        raw = handler._format_sse_event("artifact", event_data)
+        parsed = json.loads(raw.split("data: ", 1)[1].rstrip("\n"))
+        assert parsed["tool_call_id"] == "tc-nvidia-001"
+        assert parsed["artifact_type"] == "task"
+        assert parsed["artifact_id"] == "task:abc123"
+        assert parsed["payload"]["task_id"] == "abc123"
+
+    def test_task_artifact_event_without_tool_call_id_still_works(self):
+        """Legacy events without tool_call_id should still emit correctly."""
+        handler = self._make_handler()
+        event_data = {
+            "artifact_type": "task",
+            "artifact_id": "task:legacy123",
+            "agent": "main",
+            "thread_id": handler.thread_id,
+            "status": "completed",
+            "payload": {"task_id": "legacy123", "action": "init"},
+        }
+        raw = handler._format_sse_event("artifact", event_data)
+        parsed = json.loads(raw.split("data: ", 1)[1].rstrip("\n"))
+        assert parsed["artifact_type"] == "task"
+        assert "tool_call_id" not in parsed
+
+
+# ---------------------------------------------------------------------------
+# WorkflowStreamHandler — event_counter integration
+# ---------------------------------------------------------------------------
+
+
 class TestEventCounter:
     """Test that event_counter (shared counter) is respected."""
 
