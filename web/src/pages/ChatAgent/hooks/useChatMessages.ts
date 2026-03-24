@@ -2663,6 +2663,7 @@ export function useChatMessages(
             port: payload.port as number,
             title: payload.title as string | undefined,
             command: payload.command as string | undefined,
+            path: payload.path as string | undefined,
             loading: true,
           });
         } else if (artifactType === 'task') {
@@ -3746,20 +3747,22 @@ export function useChatMessages(
     // Excludes steering assistant messages (mid-turn continuations) which don't map to backend turns.
     const turnIndex = messages.slice(0, msgIndex).filter((m) => m.role === 'assistant' && !m.isSteering).length;
 
-    // Immediate visual feedback: truncate, show edited message + loading placeholder
+    // Immediate visual feedback: truncate, show edited message + loading placeholder.
+    // Save snapshot so we can restore on failure.
+    const snapshotMessages = messages;
     setIsLoading(true);
     setMessageError(null);
-    const placeholderId = `assistant-pending-${Date.now()}`;
     const editedUserMsg = createUserMessage(newContent);
     setMessages((prev) => [
       ...prev.slice(0, msgIndex),
       editedUserMsg,
-      createAssistantMessage(placeholderId),
+      createAssistantMessage(`assistant-pending-${Date.now()}`),
     ]);
 
     const turnsData = await getTurnCheckpoints();
     if (!turnsData?.turns?.[turnIndex]) {
       setIsLoading(false);
+      setMessages(snapshotMessages);
       setMessageError('Unable to edit: checkpoint data unavailable');
       return;
     }
@@ -3767,6 +3770,7 @@ export function useChatMessages(
     const checkpointId = turnsData.turns[turnIndex].edit_checkpoint_id;
     if (!checkpointId) {
       setIsLoading(false);
+      setMessages(snapshotMessages);
       setMessageError('Unable to edit: this is the first message');
       return;
     }
@@ -3786,18 +3790,20 @@ export function useChatMessages(
     // Excludes steering assistant messages (mid-turn continuations) which don't map to backend turns.
     const turnIndex = messages.slice(0, msgIndex + 1).filter((m) => m.role === 'assistant' && !m.isSteering).length - 1;
 
-    // Immediate visual feedback: truncate at the assistant message, show loading placeholder
+    // Immediate visual feedback: truncate at the assistant message, show loading placeholder.
+    // Save snapshot so we can restore on failure.
+    const snapshotMessages = messages;
     setIsLoading(true);
     setMessageError(null);
-    const placeholderId = `assistant-pending-${Date.now()}`;
     setMessages((prev) => [
       ...prev.slice(0, msgIndex),
-      createAssistantMessage(placeholderId),
+      createAssistantMessage(`assistant-pending-${Date.now()}`),
     ]);
 
     const turnsData = await getTurnCheckpoints();
     if (!turnsData?.turns?.[turnIndex]) {
       setIsLoading(false);
+      setMessages(snapshotMessages);
       setMessageError('Unable to regenerate: checkpoint data unavailable');
       return;
     }

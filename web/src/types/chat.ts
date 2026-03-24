@@ -203,6 +203,7 @@ export interface AssistantMessage {
   // Runtime flags
   steering?: boolean;
   steeringDelivered?: boolean;
+  isSteering?: boolean;
   error?: boolean | string;
 }
 
