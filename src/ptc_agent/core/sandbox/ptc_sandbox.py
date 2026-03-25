@@ -143,8 +143,10 @@ class PTCSandbox:
         # Track per-thread code dirs that have been created (avoids repeated mkdir)
         self._thread_dirs_created: set[str] = set()
 
-        # Background session for long-running commands (lazy-created)
-        self._bg_session_id: str | None = None
+        # Per-command sessions for background Bash commands (cmd_id → session_id)
+        self._bg_sessions: dict[str, str] = {}
+        # Per-port sessions for preview servers (port → (session_id, cmd_id))
+        self._preview_sessions: dict[int, tuple[str, str]] = {}
 
         # Lazy initialization support
         self._ready_event: asyncio.Event | None = None
@@ -528,7 +530,8 @@ class PTCSandbox:
         logger.info("Reconnecting to stopped sandbox", sandbox_id=sandbox_id)
 
         # Clear stale state — sessions and preview links don't survive stop/start
-        self._bg_session_id = None
+        self._bg_sessions.clear()
+        self._preview_sessions.clear()
         self._preview_link_cache.clear()
 
         # Get the existing sandbox via provider
@@ -2158,18 +2161,46 @@ class PTCSandbox:
         self._preview_link_cache[port] = result
         return result
 
-    async def start_preview_server(self, command: str) -> str:
-        """Start a command in background for preview URL serving.
+    async def start_preview_server(self, command: str, port: int) -> str:
+        """Start a command in a dedicated per-port session for preview URL serving.
 
-        Fire-and-forget: starts the command via the background session.
-        If the port is already in use (server already running), the command
-        fails silently in the background — existing server keeps serving.
+        Each port gets its own Daytona session so blocking server commands
+        (e.g. ``python -m http.server``) don't interfere with each other.
+        If a session for this port already exists the old one is deleted first.
 
         Returns:
             The command ID from the session.
         """
-        session_id = await self._ensure_bg_session()
+        await self._wait_ready()
         assert self.runtime is not None
+
+        session_id = f"preview-{port}"
+
+        # Tear down stale session for this port if one exists
+        if port in self._preview_sessions:
+            old_sid, _old_cmd = self._preview_sessions[port]
+            try:
+                await self._runtime_call(
+                    self.runtime.delete_session,
+                    old_sid,
+                    retry_policy=RetryPolicy.SAFE,
+                )
+            except Exception:
+                logger.debug("Stale preview session cleanup failed", port=port)
+            del self._preview_sessions[port]
+
+        try:
+            await self._runtime_call(
+                self.runtime.create_session,
+                session_id,
+                retry_policy=RetryPolicy.SAFE,
+            )
+        except Exception as e:
+            if "already exists" in str(e).lower():
+                logger.debug("Preview session already exists", session_id=session_id)
+            else:
+                raise
+
         result = await self._runtime_call(
             self.runtime.session_execute,
             session_id,
@@ -2178,12 +2209,38 @@ class PTCSandbox:
             retry_policy=RetryPolicy.UNSAFE,
             total_timeout=30,
         )
+        self._preview_sessions[port] = (session_id, result.cmd_id)
         logger.info(
-            "Preview server command started",
+            "Preview server started",
             cmd_id=result.cmd_id,
             session_id=session_id,
+            port=port,
         )
         return result.cmd_id
+
+    async def _is_preview_reachable(self, port: int, *, timeout: float = 3.0) -> bool:
+        """Check if a preview port is reachable via the Daytona proxy.
+
+        Uses the preview link (proxy URL + auth headers) to verify the server
+        is accessible from outside the sandbox — not just locally.  A server
+        binding to 127.0.0.1 passes an in-sandbox ``/dev/tcp`` check but
+        returns 502 through the proxy.
+        """
+        import httpx
+
+        try:
+            link = await self.get_preview_link(port)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.head(
+                    link.url,
+                    headers=link.auth_headers,
+                    follow_redirects=True,
+                )
+                # 4xx means the server IS running (path not found, etc.)
+                # 5xx (especially 502) means the proxy can't reach the backend
+                return 200 <= resp.status_code < 500 and resp.status_code != 502
+        except Exception:
+            return False
 
     async def start_and_get_preview_url(
         self,
@@ -2191,29 +2248,79 @@ class PTCSandbox:
         port: int,
         *,
         expires_in: int = 3600,
-        startup_delay: float = 2.0,
+        startup_delay: float = 10.0,
     ) -> PreviewInfo:
         """Start a server command in background and return a signed preview URL.
 
-        Combines start_preview_server + sleep + get_preview_url into a single call.
-        If the server command fails (e.g. port already in use), the preview URL
-        is still generated — the existing server keeps serving.
+        Combines start_preview_server + port readiness poll + get_preview_url.
+        If the port is already reachable through the Daytona proxy the server
+        start is skipped entirely, making this method safe to call repeatedly.
+
+        Polls for up to ``startup_delay`` seconds to confirm the port is
+        actually listening before generating the URL.  If the port never
+        becomes reachable the URL is still returned — the frontend
+        health-check polling handles dead-server detection.
+
+        If the server command fails (e.g. port already in use), the preview
+        URL is still generated — the existing server keeps serving.
         """
-        try:
-            await self.start_preview_server(command)
-        except Exception as e:
-            logger.warning("Failed to start preview server", command=command, error=str(e))
-        await asyncio.sleep(startup_delay)
-        return await self.get_preview_url(port, expires_in=expires_in)
-
-    async def _ensure_bg_session(self) -> str:
-        """Lazily create a background session for long-running commands."""
-        if self._bg_session_id is not None:
-            return self._bg_session_id
-
         await self._wait_ready()
         assert self.runtime is not None
-        session_id = f"bg-{self.runtime.id[:12]}"
+
+        # Quick probe: is the server already reachable through the proxy?
+        # This catches the common case where the server is already running
+        # and avoids an unnecessary (destructive) session teardown + restart.
+        # We check the proxy — not an in-sandbox /dev/tcp — because a server
+        # binding to 127.0.0.1 would pass the in-sandbox check but return 502
+        # through the proxy.
+        if await self._is_preview_reachable(port):
+            logger.info("Preview already reachable via proxy, skipping server start", port=port)
+            return await self.get_preview_url(port, expires_in=expires_in)
+
+        try:
+            await self.start_preview_server(command, port)
+        except Exception as e:
+            logger.warning("Failed to start preview server", command=command, error=str(e))
+
+        # Poll until the port is listening.
+        # Uses bash built-in /dev/tcp (no external tools like nc needed) via
+        # a single lightweight runtime.exec call with an internal retry loop.
+        max_attempts = max(int(startup_delay / 0.5), 1)
+        try:
+            result = await self._runtime_call(
+                self.runtime.exec,
+                f"bash -c 'for i in $(seq 1 {max_attempts}); do"
+                f" (echo > /dev/tcp/localhost/{port}) 2>/dev/null && echo READY && exit 0;"
+                f" sleep 0.5; done; echo TIMEOUT'",
+                timeout=int(startup_delay) + 5,
+                retry_policy=RetryPolicy.SAFE,
+            )
+            if "READY" in result.stdout:
+                logger.info("Preview server port ready", port=port)
+            else:
+                logger.warning(
+                    "Preview server port not reachable after startup delay",
+                    port=port,
+                    startup_delay=startup_delay,
+                )
+        except Exception:
+            logger.warning(
+                "Port readiness check failed, proceeding anyway",
+                port=port,
+                exc_info=True,
+            )
+
+        return await self.get_preview_url(port, expires_in=expires_in)
+
+    async def _create_bg_session(self, label: str) -> str:
+        """Create a dedicated session for a background command.
+
+        Each background command gets its own Daytona session so blocking
+        commands don't prevent subsequent ones from executing.
+        """
+        await self._wait_ready()
+        assert self.runtime is not None
+        session_id = f"bg-{label}"
         try:
             await self._runtime_call(
                 self.runtime.create_session,
@@ -2221,12 +2328,24 @@ class PTCSandbox:
                 retry_policy=RetryPolicy.SAFE,
             )
         except Exception as e:
-            # Session may already exist from a previous sandbox reconnect
             if "already exists" in str(e).lower():
-                logger.debug("Background session already exists", session_id=session_id)
+                # Stale session from a previous run — delete and recreate
+                # to avoid inheriting env/state from the old session
+                try:
+                    await self._runtime_call(
+                        self.runtime.delete_session,
+                        session_id,
+                        retry_policy=RetryPolicy.SAFE,
+                    )
+                    await self._runtime_call(
+                        self.runtime.create_session,
+                        session_id,
+                        retry_policy=RetryPolicy.SAFE,
+                    )
+                except Exception:
+                    logger.debug("Stale bg session cleanup failed, reusing", session_id=session_id)
             else:
                 raise
-        self._bg_session_id = session_id
         logger.info("Background session ready", session_id=session_id)
         return session_id
 
@@ -2242,23 +2361,38 @@ class PTCSandbox:
         await self._wait_ready()
         assert self.runtime is not None
 
-        if not self._bg_session_id:
+        session_id = self._bg_sessions.get(cmd_id)
+        if not session_id:
             return {
                 "success": False,
                 "is_running": False,
                 "exit_code": None,
                 "stdout": "",
-                "stderr": "No background session exists",
+                "stderr": "No background session found for this command",
                 "cmd_id": cmd_id,
             }
 
         result: SessionCommandResult = await self._runtime_call(
             self.runtime.session_command_logs,
-            self._bg_session_id,
+            session_id,
             cmd_id,
             retry_policy=RetryPolicy.SAFE,
         )
         is_running = result.exit_code is None
+
+        # Auto-clean: if the command finished (e.g. killed via pkill), tear
+        # down the orphaned session so it doesn't leak on the Daytona side.
+        if not is_running:
+            sid = self._bg_sessions.pop(cmd_id, None)
+            if sid:
+                try:
+                    await self._runtime_call(
+                        self.runtime.delete_session, sid,
+                        retry_policy=RetryPolicy.SAFE,
+                    )
+                except Exception:
+                    logger.debug("Auto-clean bg session failed", session_id=sid)
+
         return {
             "success": not is_running and result.exit_code == 0,
             "is_running": is_running,
@@ -2267,6 +2401,95 @@ class PTCSandbox:
             "stderr": result.stderr,
             "cmd_id": cmd_id,
         }
+
+    async def stop_background_command(self, cmd_id: str) -> bool:
+        """Stop a background command by deleting its session.
+
+        Returns True if the session was found and deleted.
+        """
+        session_id = self._bg_sessions.get(cmd_id)
+        if not session_id:
+            return False
+        await self._wait_ready()
+        assert self.runtime is not None
+        try:
+            await self._runtime_call(
+                self.runtime.delete_session,
+                session_id,
+                retry_policy=RetryPolicy.SAFE,
+            )
+        except Exception:
+            logger.warning("Failed to delete bg session", session_id=session_id)
+            self._bg_sessions.pop(cmd_id, None)
+            return False
+        self._bg_sessions.pop(cmd_id, None)
+        return True
+
+    async def get_preview_server_logs(self, port: int) -> dict[str, Any]:
+        """Get logs for the preview server running on the given port.
+
+        Returns:
+            Dict with keys: success, is_running, stdout, stderr, port.
+        """
+        entry = self._preview_sessions.get(port)
+        if not entry:
+            return {
+                "success": False,
+                "is_running": False,
+                "stdout": "",
+                "stderr": f"No preview session for port {port}",
+                "port": port,
+            }
+        session_id, cmd_id = entry
+        await self._wait_ready()
+        assert self.runtime is not None
+        try:
+            result: SessionCommandResult = await self._runtime_call(
+                self.runtime.session_command_logs,
+                session_id,
+                cmd_id,
+                retry_policy=RetryPolicy.SAFE,
+            )
+            is_running = result.exit_code is None
+            return {
+                "success": True,
+                "is_running": is_running,
+                "exit_code": result.exit_code,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "port": port,
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "is_running": False,
+                "stdout": "",
+                "stderr": f"Failed to get logs: {e!s}",
+                "port": port,
+            }
+
+    async def stop_preview_server(self, port: int) -> bool:
+        """Stop the preview server on the given port by deleting its session.
+
+        Returns True if the session was found and deleted.
+        """
+        entry = self._preview_sessions.get(port)
+        if not entry:
+            return False
+        session_id, _cmd_id = entry
+        await self._wait_ready()
+        assert self.runtime is not None
+        try:
+            await self._runtime_call(
+                self.runtime.delete_session,
+                session_id,
+                retry_policy=RetryPolicy.SAFE,
+            )
+            logger.info("Preview server stopped", port=port, session_id=session_id)
+        except Exception:
+            logger.debug("Failed to delete preview session", session_id=session_id)
+        self._preview_sessions.pop(port, None)
+        return True
 
     async def execute_bash_command(
         self,
@@ -2355,9 +2578,9 @@ class PTCSandbox:
                     error=str(upload_err),
                 )
 
-            # Background execution via Daytona session
+            # Background execution via dedicated Daytona session per command
             if background:
-                session_id = await self._ensure_bg_session()
+                session_id = await self._create_bg_session(bash_id)
                 assert self.runtime is not None
                 result = await self._runtime_call(
                     self.runtime.session_execute,
@@ -2367,6 +2590,7 @@ class PTCSandbox:
                     retry_policy=RetryPolicy.UNSAFE,
                     total_timeout=30,
                 )
+                self._bg_sessions[result.cmd_id] = session_id
                 logger.info(
                     "Background command started",
                     bash_id=bash_id,
@@ -3047,17 +3271,18 @@ class PTCSandbox:
 
         try:
             if self.runtime:
-                # Clean up background session if one was created
-                if self._bg_session_id:
+                # Clean up all managed sessions (preview + background)
+                all_sessions = [sid for sid, _ in self._preview_sessions.values()] + list(self._bg_sessions.values())
+                for sid in dict.fromkeys(all_sessions):  # deduplicate
                     try:
                         await self._runtime_call(
-                            self.runtime.delete_session,
-                            self._bg_session_id,
+                            self.runtime.delete_session, sid,
                             retry_policy=RetryPolicy.SAFE,
                         )
-                    except Exception as e:
-                        logger.debug("Failed to delete background session", error=str(e))
-                    self._bg_session_id = None
+                    except Exception:
+                        logger.debug("Failed to delete session", session_id=sid)
+                self._preview_sessions.clear()
+                self._bg_sessions.clear()
 
                 try:
                     await self._runtime_call(
