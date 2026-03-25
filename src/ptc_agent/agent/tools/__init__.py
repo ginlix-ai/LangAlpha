@@ -27,6 +27,7 @@ from .file_ops import create_filesystem_tools
 from .glob import create_glob_tool
 from .grep import create_grep_tool
 from .preview_url import create_preview_url_tool
+from .show_widget import create_show_widget_tool
 from .think import think_tool
 
 # Todo tracking
@@ -59,6 +60,8 @@ __all__ = [
     "create_grep_tool",
     # Preview URL
     "create_preview_url_tool",
+    # Show Widget
+    "create_show_widget_tool",
     # Helper
     "get_all_tools",
     # Research

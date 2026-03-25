@@ -74,6 +74,7 @@ from ptc_agent.agent.tools import (
     create_glob_tool,
     create_grep_tool,
     create_preview_url_tool,
+    create_show_widget_tool,
     TodoWrite,
 )
 from src.tools.search import get_web_search_tool
@@ -321,8 +322,11 @@ class PTCAgent:
         workspace_id = getattr(session, "conversation_id", "") if session else ""
         preview_url_tool = create_preview_url_tool(sandbox, workspace_id=workspace_id, on_signed_url=on_signed_url)
 
+        # Create the show widget tool for inline HTML visualizations
+        show_widget_tool = create_show_widget_tool()
+
         # Start with base tools
-        tools: list[Any] = [execute_code_tool, bash_tool, bash_output_tool, preview_url_tool, TodoWrite]
+        tools: list[Any] = [execute_code_tool, bash_tool, bash_output_tool, preview_url_tool, show_widget_tool, TodoWrite]
 
         # Create backend for SkillsMiddleware and LargeResultEvictionMiddleware
         backend = SandboxBackend(sandbox, operation_callback=operation_callback)
