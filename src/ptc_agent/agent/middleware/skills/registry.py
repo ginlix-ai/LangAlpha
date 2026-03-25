@@ -245,6 +245,13 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
         exposure="ptc",
         command="report-issue",
     ),
+    "inline-widget": SkillDefinition(
+        name="inline-widget",
+        description="Inline HTML widgets: charts, dashboards, data tables rendered directly in the chat via ShowWidget",
+        tools=[],
+        skill_md_path="skills/inline-widget/SKILL.md",
+        exposure="ptc",
+    ),
     "interactive-dashboard": SkillDefinition(
         name="interactive-dashboard",
         description="Interactive web dashboards: stock trackers, sector heatmaps, portfolio monitors — served via preview URL",

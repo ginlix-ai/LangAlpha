@@ -1,14 +1,14 @@
 # Visualizations
 
-Save visualizations to `work/<task_name>/charts/` and reference them with markdown image syntax.
+**Default**: Use **ShowWidget** for all visualizations — charts, dashboards, data tables, interactive displays. This is the preferred approach for direct responses.
 
-**CRITICAL**: Use RELATIVE paths, NOT absolute paths:
-- CORRECT: `plt.savefig('work/<task_name>/charts/chart.png')`
-- WRONG: `plt.savefig('/work/<task_name>/charts/chart.png')`
+**Image files**: Fall back to image files (matplotlib/plotly `savefig`) only when the user explicitly requests it, based on user preference, or when producing a report/PDF that requires embedded images. Save to `work/<task_name>/charts/` with relative paths:
 
-During work, save charts to your task directory:
 ```python
-plt.savefig('work/<task_name>/chart.png', dpi=150, bbox_inches='tight')
+# CORRECT — relative path
+plt.savefig('work/<task_name>/charts/chart.png', dpi=150, bbox_inches='tight')
+# WRONG — absolute path
+# plt.savefig('/work/<task_name>/charts/chart.png')
 ```
 
-Embed chart references in your report: `![Chart Title](work/<task_name>/charts/chart.png)`
+Embed in reports: `![Chart Title](work/<task_name>/charts/chart.png)`

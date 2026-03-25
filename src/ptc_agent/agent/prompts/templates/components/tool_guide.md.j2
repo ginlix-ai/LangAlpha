@@ -15,6 +15,20 @@ Call these directly as tool calls for all fundamental operations:
 | WebSearch | Search the web |
 | WebFetch | Fetch and extract content from URLs |
 | TodoWrite | Track task progress |
+| ShowWidget | Render interactive HTML/SVG inline in the chat |
+
+### ShowWidget
+
+Renders an HTML widget inline in the chat — charts, dashboards, data tables, or any interactive display. See **Visualizations** section below for when to use this vs image files. Detailed rules are in the **inline-widget** skill — load it before first use.
+
+Quick reference:
+- **Outer element must be transparent** — no background, border, or border-radius on the outermost div
+- **Inner cards** use `var(--color-bg-card)`, `0.5px solid var(--color-border-muted)`, `border-radius: 8px`
+- **Charts**: wrap `<canvas>` in a div with explicit height; use `responsive: true, maintainAspectRatio: false`
+- **CDN**: `cdnjs.cloudflare.com`, `cdn.jsdelivr.net`, `unpkg.com`, `esm.sh`
+- **No network**: `fetch()`/`XMLHttpRequest` blocked — embed all data in HTML
+- **No** `ResizeObserver`, `parent.postMessage`, `position: fixed`, `window.top`/`window.parent`
+- **`sendPrompt('text')`**: trigger follow-up chat messages from buttons (add ↗ arrow) (optional)
 
 ## Financial Tools (Direct)
 
