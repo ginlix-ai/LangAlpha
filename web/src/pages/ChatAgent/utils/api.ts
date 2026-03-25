@@ -138,7 +138,14 @@ async function streamFetch(
     if (res.status === 404 && url.includes('/replay')) {
       throw new Error(`HTTP error! status: ${res.status}`);
     }
-    throw new Error(`HTTP error! status: ${res.status}`);
+    // Read response body for error detail
+    let detail = '';
+    try {
+      const body = await res.json();
+      detail = typeof body?.detail === 'string' ? body.detail : JSON.stringify(body?.detail || body);
+    } catch { /* ignore parse errors */ }
+    console.error(`[api] ${opts.method || 'GET'} ${url} failed:`, res.status, detail);
+    throw new Error(detail || `HTTP error! status: ${res.status}`);
   }
 
   const reader = res.body!.getReader();
