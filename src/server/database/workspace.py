@@ -46,7 +46,7 @@ async def get_or_create_flash_workspace(
             VALUES (%s, %s, %s, %s, %s, %s, TRUE)
             ON CONFLICT (workspace_id) DO UPDATE SET updated_at = NOW(), is_pinned = TRUE
             RETURNING workspace_id, user_id, name, description, sandbox_id,
-                      status, created_at, updated_at, last_activity_at, stopped_at, config,
+                      status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
                       is_pinned, sort_order
             """,
             (workspace_id, user_id, "Flash", "Flash mode conversations", config_json, "flash"),
@@ -112,7 +112,7 @@ async def create_workspace(
                     INSERT INTO workspaces (workspace_id, user_id, name, description, config, status)
                     VALUES (%s, %s, %s, %s, %s, %s)
                     RETURNING workspace_id, user_id, name, description, sandbox_id,
-                              status, created_at, updated_at, last_activity_at, stopped_at, config,
+                              status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
                               is_pinned, sort_order
                     """,
                     (workspace_id, user_id, name, description, config_json, status),
@@ -124,7 +124,7 @@ async def create_workspace(
                     INSERT INTO workspaces (user_id, name, description, config, status)
                     VALUES (%s, %s, %s, %s, %s)
                     RETURNING workspace_id, user_id, name, description, sandbox_id,
-                              status, created_at, updated_at, last_activity_at, stopped_at, config,
+                              status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
                               is_pinned, sort_order
                     """,
                     (user_id, name, description, config_json, status),
@@ -166,7 +166,7 @@ async def get_workspace(
             await cur.execute(
                 """
                 SELECT workspace_id, user_id, name, description, sandbox_id,
-                       status, created_at, updated_at, last_activity_at, stopped_at, config,
+                       status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
                        is_pinned, sort_order
                 FROM workspaces
                 WHERE workspace_id = %s AND status != 'deleted'
@@ -244,7 +244,7 @@ async def get_workspaces_for_user(
             await cur.execute(
                 f"""
                 SELECT workspace_id, user_id, name, description, sandbox_id,
-                       status, created_at, updated_at, last_activity_at, stopped_at, config,
+                       status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
                        is_pinned, sort_order
                 FROM workspaces
                 WHERE user_id = %s {status_filter} {flash_filter}
@@ -330,7 +330,7 @@ async def update_workspace(
                 SET {update_clause}
                 WHERE workspace_id = %s AND status != 'deleted'
                 RETURNING workspace_id, user_id, name, description, sandbox_id,
-                          status, created_at, updated_at, last_activity_at, stopped_at, config,
+                          status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
                           is_pinned, sort_order
                 """,
                 params,
@@ -384,7 +384,7 @@ async def update_workspace_status(
                     SET status = %s, sandbox_id = %s, updated_at = %s, stopped_at = %s
                     WHERE workspace_id = %s
                     RETURNING workspace_id, user_id, name, description, sandbox_id,
-                              status, created_at, updated_at, last_activity_at, stopped_at, config,
+                              status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
                               is_pinned, sort_order
                 """
                 params = (status, sandbox_id, now, now, workspace_id)
@@ -394,7 +394,7 @@ async def update_workspace_status(
                     SET status = %s, sandbox_id = %s, updated_at = %s
                     WHERE workspace_id = %s
                     RETURNING workspace_id, user_id, name, description, sandbox_id,
-                              status, created_at, updated_at, last_activity_at, stopped_at, config,
+                              status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
                               is_pinned, sort_order
                 """
                 params = (status, sandbox_id, now, workspace_id)
@@ -405,7 +405,7 @@ async def update_workspace_status(
                     SET status = %s, updated_at = %s, stopped_at = %s
                     WHERE workspace_id = %s
                     RETURNING workspace_id, user_id, name, description, sandbox_id,
-                              status, created_at, updated_at, last_activity_at, stopped_at, config,
+                              status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
                               is_pinned, sort_order
                 """
                 params = (status, now, now, workspace_id)
@@ -415,7 +415,7 @@ async def update_workspace_status(
                     SET status = %s, updated_at = %s
                     WHERE workspace_id = %s
                     RETURNING workspace_id, user_id, name, description, sandbox_id,
-                              status, created_at, updated_at, last_activity_at, stopped_at, config,
+                              status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
                               is_pinned, sort_order
                 """
                 params = (status, now, workspace_id)
@@ -466,7 +466,7 @@ async def update_workspace_activity(
                 SET last_activity_at = %s, updated_at = %s
                 WHERE workspace_id = %s AND status != 'deleted'
                 RETURNING workspace_id, user_id, name, description, sandbox_id,
-                          status, created_at, updated_at, last_activity_at, stopped_at, config,
+                          status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
                           is_pinned, sort_order
                 """,
                 (now, now, workspace_id),
@@ -626,7 +626,7 @@ async def get_workspaces_by_status(
             await cur.execute(
                 """
                 SELECT workspace_id, user_id, name, description, sandbox_id,
-                       status, created_at, updated_at, last_activity_at, stopped_at, config,
+                       status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
                        is_pinned, sort_order
                 FROM workspaces
                 WHERE status = %s
@@ -649,3 +649,45 @@ async def get_workspaces_by_status(
     except Exception as e:
         logger.error(f"Error getting workspaces by status {status}: {e}")
         raise
+
+
+# ---------------------------------------------------------------------------
+# Preview server command persistence
+# ---------------------------------------------------------------------------
+
+
+async def save_preview_command(
+    workspace_id: str, port: int, command: str
+) -> None:
+    """Store a preview server command in ``artifacts.preview_servers``."""
+    try:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE workspaces
+                    SET artifacts = jsonb_set(
+                        COALESCE(artifacts, '{}'::jsonb),
+                        '{preview_servers}',
+                        COALESCE(artifacts->'preview_servers', '{}'::jsonb)
+                            || jsonb_build_object(%s::text, %s::text),
+                        true
+                    )
+                    WHERE workspace_id = %s
+                    """,
+                    (str(port), command, workspace_id),
+                )
+    except Exception:
+        logger.debug("Failed to persist preview command", exc_info=True)
+
+
+async def get_preview_command(
+    workspace_id: str, port: int
+) -> Optional[str]:
+    """Read a preview server command from ``artifacts.preview_servers``."""
+    workspace = await get_workspace(workspace_id)
+    if not workspace:
+        return None
+    artifacts = workspace.get("artifacts") or {}
+    servers = artifacts.get("preview_servers") or {}
+    return servers.get(str(port))
