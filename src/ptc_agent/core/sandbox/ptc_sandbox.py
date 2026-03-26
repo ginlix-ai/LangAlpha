@@ -1575,19 +1575,21 @@ class PTCSandbox:
         """
         if not self.runtime:
             return
-        sb = f"{self._work_dir}/.agents/skills"
-        lock = f"{sb}/skills-lock.json"
+        skills_base = f"{self._work_dir}/.agents/skills"
+        lock_path = f"{skills_base}/skills-lock.json"
 
         # Single inline Python script that runs entirely in the sandbox.
         # Reads dirs + lock file, diffs, parses SKILL.md for new entries,
         # writes updated lock — all in one exec round trip.
+        # Uses json.dumps() for path interpolation (not shlex.quote) because
+        # values appear as Python string literals inside python3 -c.
         script = textwrap.dedent(f"""\
             python3 -c '
 import json, os, re, hashlib, sys
 from datetime import datetime, timezone
 
-SKILLS_BASE = {shlex.quote(sb)}
-LOCK_PATH = {shlex.quote(lock)}
+SKILLS_BASE = {json.dumps(skills_base)}
+LOCK_PATH = {json.dumps(lock_path)}
 
 # 1. List skill dirs (only dirs containing SKILL.md)
 dirs = set()
@@ -1598,14 +1600,14 @@ if os.path.isdir(SKILLS_BASE):
             dirs.add(name)
 
 # 2. Read existing lock
-lock = {{"version": 1, "skills": {{}}}}
+lock_data = {{"version": 1, "skills": {{}}}}
 if os.path.isfile(LOCK_PATH):
     try:
         with open(LOCK_PATH) as f:
-            lock = json.load(f)
+            lock_data = json.load(f)
     except (json.JSONDecodeError, OSError):
         pass
-skills = lock.get("skills", {{}})
+skills = lock_data.get("skills", {{}})
 
 # 3. Compute diff
 locked_names = set(skills.keys())
@@ -1630,9 +1632,10 @@ for name in sorted(to_add):
     license_val = None
     allowed_tools = []
     try:
-        with open(skill_md) as f:
+        with open(skill_md, errors="replace") as f:
             content = f.read(1048576)  # 1MB cap
-        m = re.match(r"^---\\s*\\n(.*?)\\n---\\s*\\n", content, re.DOTALL)
+        content = content.replace("\\r\\n", "\\n")
+        m = re.match(r"^---\\s*\\n(.*?)\\n---\\s*(?:\\n|$)", content, re.DOTALL)
         if m:
             # Minimal YAML-like parser for simple key: value frontmatter
             # Avoids PyYAML dependency in sandbox
@@ -1648,7 +1651,7 @@ for name in sorted(to_add):
                         license_val = v.strip("\\"\\x27") or None
             confirmed = confirmed and bool(name)
         content_hash = "sha256:" + hashlib.sha256(content.encode()).hexdigest()
-    except OSError:
+    except Exception:
         content_hash = ""
 
     skills[name] = {{
@@ -1667,11 +1670,12 @@ for name in sorted(to_add):
     }}
 
 # 6. Write updated lock atomically
-lock["skills"] = skills
+lock_data["skills"] = skills
+os.makedirs(os.path.dirname(LOCK_PATH), exist_ok=True)
 tmp = LOCK_PATH + ".tmp"
 try:
     with open(tmp, "w") as f:
-        json.dump(lock, f, sort_keys=True, indent=2, ensure_ascii=False)
+        json.dump(lock_data, f, sort_keys=True, indent=2, ensure_ascii=False)
         f.write("\\n")
     os.replace(tmp, LOCK_PATH)
     print(json.dumps({{"status": "ok", "removed": len(to_remove), "added": len(to_add)}}))
@@ -1700,7 +1704,7 @@ except OSError as e:
                             "Skills lock synced",
                             removed=info.get("removed", 0),
                             added=info.get("added", 0),
-                            skills_base=sb,
+                            skills_base=skills_base,
                         )
                     elif info.get("status") == "noop":
                         logger.debug("Skills lock already in sync")
