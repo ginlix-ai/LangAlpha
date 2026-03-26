@@ -1277,13 +1277,14 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
 
           if (block.type === 'html_widget') {
             const widgetSeg = (block as HtmlWidgetRenderBlock).segment;
-            const widgetData = (htmlWidgetProcesses as Record<string, { html: string; title: string }> | undefined)?.[widgetSeg.widgetId!];
+            const widgetData = (htmlWidgetProcesses as Record<string, { html: string; title: string; data?: Record<string, string> }> | undefined)?.[widgetSeg.widgetId!];
             if (!widgetData) return null;
             return (
               <InlineWidget
                 key={block.key}
                 html={widgetData.html}
                 onSendPrompt={onWidgetSendPrompt}
+                data={widgetData.data}
               />
             );
           }

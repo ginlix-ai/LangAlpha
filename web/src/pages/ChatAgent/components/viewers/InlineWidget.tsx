@@ -5,6 +5,8 @@ interface InlineWidgetProps {
   html: string;
   title?: string;
   onSendPrompt?: (text: string) => void;
+  /** Inline data file contents — injected directly as __WIDGET_DATA__. */
+  data?: Record<string, string>;
 }
 
 /** CSS variables to inject into the widget iframe for theme matching. */
@@ -56,11 +58,14 @@ function resolveThemeVars(): string {
     .join('\n  ');
 }
 
-function buildSrcDoc(html: string): string {
+function buildSrcDoc(html: string, widgetData?: Record<string, string>): string {
   const themeCSS = resolveThemeVars();
+  const dataScript = widgetData && Object.keys(widgetData).length > 0
+    ? `<script>window.__WIDGET_DATA__ = ${JSON.stringify(widgetData).replace(/<\//g, '<\\/')};</script>\n`
+    : '';
 
   return `<!DOCTYPE html><html><head>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' cdnjs.cloudflare.com cdn.jsdelivr.net unpkg.com esm.sh; style-src 'unsafe-inline'; img-src data: blob:; font-src cdnjs.cloudflare.com cdn.jsdelivr.net; connect-src 'none';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' cdnjs.cloudflare.com cdn.jsdelivr.net unpkg.com esm.sh; style-src 'unsafe-inline'; img-src data: blob:; font-src cdnjs.cloudflare.com cdn.jsdelivr.net; connect-src cdnjs.cloudflare.com cdn.jsdelivr.net unpkg.com esm.sh;">
 <style>
 :root {
   ${themeCSS}
@@ -69,7 +74,7 @@ function buildSrcDoc(html: string): string {
 body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--color-text-primary); background: transparent; overflow: hidden; }
 ${SEAMLESS_OVERRIDE}
 </style>
-<script>
+${dataScript}<script>
 window.sendPrompt = function(text) {
   parent.postMessage({ type: 'widget:sendPrompt', text: String(text) }, '*');
 };
@@ -114,11 +119,11 @@ window.sendPrompt = function(text) {
 </head><body>${html}</body></html>`;
 }
 
-export default function InlineWidget({ html, onSendPrompt }: InlineWidgetProps) {
+export default function InlineWidget({ html, onSendPrompt, data }: InlineWidgetProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState<number | null>(null);
 
-  const srcDoc = useMemo(() => buildSrcDoc(html), [html]);
+  const srcDoc = useMemo(() => buildSrcDoc(html, data), [html, data]);
 
   const handleMessage = useCallback(
     (e: MessageEvent) => {
