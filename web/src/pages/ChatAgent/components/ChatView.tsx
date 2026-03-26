@@ -312,6 +312,12 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
 
   // Clear the drag-just-ended flag after each render so future transitions animate normally.
   useEffect(() => { dragJustEndedRef.current = false; });
+  // Clear preview cache when workspace changes to avoid leaking old workspace data.
+  useEffect(() => {
+    previewMapRef.current.clear();
+    activePreviewPortRef.current = null;
+    setPreviewData(null);
+  }, [workspaceId]);
   // Active agent in main view (default: 'main', or from URL taskId)
   const [activeAgentId, setActiveAgentId] = useState(
     initialTaskId ? `task:${initialTaskId}` : 'main'
@@ -998,12 +1004,12 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // Resolve a preview URL and update the Map entry for this port.
   // Only syncs to render state if this port is still active.
   // If the entry has a `path` suffix (e.g. "/timeline.html"), it's appended to the signed URL.
-  const resolveAndSetPreview = useCallback((wid: string, port: number, command?: string) => {
+  const resolveAndSetPreview = useCallback((wid: string, port: number, command?: string, pathSuffix?: string) => {
     resolvePreviewUrl(wid, port, command)
       .then((baseUrl: string) => {
         const entry = previewMapRef.current.get(port);
         if (!entry) return;
-        const url = appendPathSuffix(baseUrl, entry.path);
+        const url = appendPathSuffix(baseUrl, pathSuffix ?? entry.path);
         const updated = { ...entry, url, loading: false, error: undefined };
         previewMapRef.current.set(port, updated);
         if (activePreviewPortRef.current === port) setPreviewData(updated);
@@ -1028,7 +1034,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     pushPanelHistory();
     // If opened with loading state (no URL yet), resolve via authenticated endpoint
     if (data.loading && !data.url && workspaceId) {
-      resolveAndSetPreview(workspaceId, data.port, data.command);
+      resolveAndSetPreview(workspaceId, data.port, data.command, data.path);
     }
   }, [pushPanelHistory, workspaceId, resolveAndSetPreview]);
 
@@ -1048,7 +1054,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       const cached = previewMapRef.current.get(port);
       if (cached?.url) {
         handleOpenPreview({ ...cached, url: '', loading: true, error: undefined, reloadToken: token, path });
-        resolveAndSetPreview(workspaceId, port, command);
+        resolveAndSetPreview(workspaceId, port, command, path);
         return;
       }
       // No cache — resolve (restarts server if needed via 503 fallback)
