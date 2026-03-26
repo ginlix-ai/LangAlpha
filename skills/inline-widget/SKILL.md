@@ -234,7 +234,7 @@ document.getElementById("img").src = window.__WIDGET_DATA__["chart.png"];
 
 ### Size limits
 
-When cloud storage is configured, files are uploaded to CDN — no size limit. When cloud storage is unavailable, files are embedded inline with a 500KB total cap.
+Total inline data is capped at 500KB across all files. Keep datasets concise — aggregate or sample large files before passing them.
 
 ## Blocked Patterns
 

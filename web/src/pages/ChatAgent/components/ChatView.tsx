@@ -1780,7 +1780,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                         onReportWithAgent={(instruction) => {
                           handleSendMessage(`/self-improve ${instruction}`);
                         }}
-                        onWidgetSendPrompt={(text) => handleSendMessage(text)}
+                        onWidgetSendPrompt={handleSendMessage}
                       />
                     </div>
                   </div>
