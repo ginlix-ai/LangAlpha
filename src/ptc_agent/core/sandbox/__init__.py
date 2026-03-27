@@ -10,7 +10,7 @@ from ptc_agent.core.sandbox.ptc_sandbox import (
     _sha256_file,
 )
 from ptc_agent.core.sandbox.retry import RetryPolicy
-from ptc_agent.core.sandbox.runtime import SandboxTransientError
+from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
 
 # Backward-compat alias: _DaytonaRetryPolicy was renamed to RetryPolicy
 _DaytonaRetryPolicy = RetryPolicy
@@ -20,6 +20,7 @@ __all__ = [
     "ChartData",
     "ExecutionResult",
     "SyncResult",
+    "SandboxGoneError",
     "SandboxTransientError",
     "_DaytonaRetryPolicy",
     "_hash_dict",

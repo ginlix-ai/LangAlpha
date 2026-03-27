@@ -14,6 +14,20 @@ class SandboxTransientError(RuntimeError):
     """
 
 
+class SandboxGoneError(RuntimeError):
+    """The sandbox no longer exists (deleted, expired, or in an unrecoverable state).
+
+    Callers should create a fresh sandbox and restore files from backup.
+    """
+
+    def __init__(self, sandbox_id: str, message: str = ""):
+        self.sandbox_id = sandbox_id
+        full_msg = f"Sandbox {sandbox_id} is gone"
+        if message:
+            full_msg += f": {message}"
+        super().__init__(full_msg)
+
+
 class RuntimeState(str, Enum):
     """Possible states of a sandbox runtime."""
 

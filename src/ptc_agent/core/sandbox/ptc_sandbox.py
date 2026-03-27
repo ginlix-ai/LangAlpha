@@ -23,6 +23,7 @@ from ptc_agent.core.sandbox.retry import RetryPolicy, async_retry_with_backoff
 from ptc_agent.core.sandbox.runtime import (
     PreviewInfo,
     RuntimeState,
+    SandboxGoneError,
     SandboxRuntime,
     SandboxTransientError,
     SessionCommandResult,
@@ -205,7 +206,7 @@ class PTCSandbox:
             raise RuntimeError("Sandbox initialization timed out after 300s")
 
         if self._init_error:
-            raise RuntimeError(f"Sandbox initialization failed: {self._init_error}")
+            raise self._init_error
 
     def is_ready(self) -> bool:
         """Check if sandbox is ready without blocking.
@@ -219,6 +220,17 @@ class PTCSandbox:
 
         # Using lazy init - check if event is set and no error
         return self._ready_event.is_set() and self._init_error is None
+
+    def has_failed(self) -> bool:
+        """Check if lazy initialization completed with an error."""
+        if self._ready_event is None:
+            return False
+        return self._ready_event.is_set() and self._init_error is not None
+
+    @property
+    def init_error(self) -> Exception | None:
+        """The error from lazy initialization, if any."""
+        return self._init_error
 
     @property
     def skills_manifest(self) -> dict[str, Any] | None:
@@ -543,7 +555,7 @@ class PTCSandbox:
             sandbox_id: The ID of an existing sandbox
 
         Raises:
-            RuntimeError: If sandbox cannot be found or is in invalid state
+            SandboxGoneError: If sandbox cannot be found or is in an unrecoverable state
         """
         logger.info("Reconnecting to stopped sandbox", sandbox_id=sandbox_id)
 
@@ -561,10 +573,7 @@ class PTCSandbox:
                 allow_reconnect=False,
             )
         except Exception as e:
-            raise RuntimeError(
-                f"Failed to find sandbox {sandbox_id}. It may have been deleted. "
-                f"Original error: {e}"
-            ) from e
+            raise SandboxGoneError(sandbox_id, f"not found: {e}") from e
 
         assert self.runtime is not None
         self.sandbox_id = sandbox_id
@@ -605,9 +614,9 @@ class PTCSandbox:
                 if state_value == "running":
                     break
             if state_value != "running":
-                raise RuntimeError(
-                    f"Sandbox still in state '{state_value}' after waiting. "
-                    f"Expected 'running'."
+                raise SandboxGoneError(
+                    sandbox_id,
+                    f"stuck in state '{state_value}', expected 'running'",
                 )
         elif state_value == "stopping":
             # Wait for sandbox to finish stopping, then start it.
@@ -638,9 +647,9 @@ class PTCSandbox:
                     retry_policy=RetryPolicy.SAFE,
                 )
             else:
-                raise RuntimeError(
-                    f"Sandbox still in state '{state_value}' after waiting. "
-                    f"Expected 'stopped'."
+                raise SandboxGoneError(
+                    sandbox_id,
+                    f"stuck in state '{state_value}', expected 'stopped'",
                 )
         elif state_value == "archived":
             logger.info(
@@ -664,9 +673,9 @@ class PTCSandbox:
                 retry_policy=RetryPolicy.SAFE,
             )
         else:
-            raise RuntimeError(
-                f"Cannot reconnect to sandbox in state: {state_value}. "
-                f"Expected 'stopped', 'running', or 'error'."
+            raise SandboxGoneError(
+                sandbox_id,
+                f"unrecoverable state: {state_value}",
             )
 
         # Get work directory reference

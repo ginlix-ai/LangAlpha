@@ -8,11 +8,13 @@ idle cleanup, singleton pattern, and background cleanup tasks.
 import asyncio
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from ptc_agent.core.sandbox.runtime import SandboxGoneError
 from src.server.services.workspace_manager import WorkspaceManager
 
 
@@ -513,3 +515,365 @@ class TestSeedAgentMd:
 
         # Should not raise
         await WorkspaceManager._seed_agent_md(sandbox, "Name")
+
+
+# ---------------------------------------------------------------------------
+# SandboxGoneError
+# ---------------------------------------------------------------------------
+
+class TestSandboxGoneError:
+    """Test SandboxGoneError exception class."""
+
+    def test_attributes_and_message(self):
+        err = SandboxGoneError("sandbox-123", "not found: 404")
+        assert err.sandbox_id == "sandbox-123"
+        assert "sandbox-123" in str(err)
+        assert "not found: 404" in str(err)
+
+    def test_is_runtime_error(self):
+        err = SandboxGoneError("sandbox-123")
+        assert isinstance(err, RuntimeError)
+
+    def test_empty_message(self):
+        err = SandboxGoneError("sandbox-123")
+        assert str(err) == "Sandbox sandbox-123 is gone"
+
+
+# ---------------------------------------------------------------------------
+# PTCSandbox.has_failed() state matrix
+# ---------------------------------------------------------------------------
+
+class TestHasFailed:
+    """Test PTCSandbox.has_failed() distinguishes 'init failed' from 'still initializing'."""
+
+    def test_no_lazy_init(self):
+        """Non-lazy sandbox: _ready_event is None → has_failed() returns False."""
+        sandbox = MagicMock()
+        sandbox._ready_event = None
+        sandbox._init_error = None
+        # Call the real has_failed logic
+        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+        result = PTCSandbox.has_failed(sandbox)
+        assert result is False
+
+    def test_still_initializing(self):
+        """Lazy init in progress: event not set → has_failed() returns False."""
+        sandbox = MagicMock()
+        sandbox._ready_event = asyncio.Event()
+        sandbox._init_error = None
+        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+        result = PTCSandbox.has_failed(sandbox)
+        assert result is False
+
+    def test_success(self):
+        """Lazy init succeeded: event set, no error → has_failed() returns False."""
+        sandbox = MagicMock()
+        sandbox._ready_event = asyncio.Event()
+        sandbox._ready_event.set()
+        sandbox._init_error = None
+        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+        result = PTCSandbox.has_failed(sandbox)
+        assert result is False
+
+    def test_with_error(self):
+        """Lazy init failed: event set + error → has_failed() returns True."""
+        sandbox = MagicMock()
+        sandbox._ready_event = asyncio.Event()
+        sandbox._ready_event.set()
+        sandbox._init_error = SandboxGoneError("sb-1", "not found")
+        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+        result = PTCSandbox.has_failed(sandbox)
+        assert result is True
+
+
+# ---------------------------------------------------------------------------
+# Sandbox recovery — Gap 1 & Gap 2 fixes
+# ---------------------------------------------------------------------------
+
+class TestSandboxRecovery:
+    """Test sandbox recovery when lazy init fails with sandbox-gone error."""
+
+    def setup_method(self):
+        WorkspaceManager.reset_instance()
+
+    def teardown_method(self):
+        WorkspaceManager.reset_instance()
+
+    def _make_manager(self):
+        config = _make_config()
+        return WorkspaceManager.get_instance(config=config)
+
+    def _make_failed_session(self, error=None):
+        """Create a session whose sandbox has a failed lazy init."""
+        session = _make_mock_session()
+        session.sandbox.is_ready = MagicMock(return_value=False)
+        session.sandbox.has_failed = MagicMock(return_value=True)
+        session.sandbox.init_error = error or SandboxGoneError("sb-old", "not found")
+        return session
+
+    def _make_initializing_session(self):
+        """Create a session whose sandbox is still lazy-initializing."""
+        session = _make_mock_session()
+        session.sandbox.is_ready = MagicMock(return_value=False)
+        session.sandbox.has_failed = MagicMock(return_value=False)
+        return session
+
+    @pytest.mark.asyncio
+    @patch("src.server.services.workspace_manager.db_get_workspace")
+    @patch("src.server.services.workspace_manager.SessionManager")
+    @patch("src.server.services.workspace_manager.update_workspace_status")
+    @patch("src.server.services.workspace_manager.update_workspace_activity")
+    async def test_cache_hit_failed_lazy_sandbox_gone_recovers(
+        self, mock_activity, mock_status, mock_session_mgr, mock_get_ws
+    ):
+        """Gap 1: cached session with SandboxGoneError → _recover_sandbox called."""
+        manager = self._make_manager()
+        ws_id = str(uuid.uuid4())
+        workspace = _make_workspace(workspace_id=ws_id, status="running")
+        mock_get_ws.return_value = workspace
+
+        # Place broken session in cache
+        broken_session = self._make_failed_session()
+        manager._sessions[ws_id] = broken_session
+
+        # Mock recovery: SessionManager.get_session returns a new working session
+        new_session = _make_mock_session()
+        new_session.sandbox.sandbox_id = "sb-new"
+        mock_session_mgr.get_session.return_value = new_session
+
+        result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
+
+        # Broken session should be removed
+        mock_session_mgr.remove_session.assert_called_with(ws_id)
+        # Recovery creates a new session
+        new_session.initialize.assert_called_once()
+        # Status updated
+        assert result is not None
+
+    @pytest.mark.asyncio
+    @patch("src.server.services.workspace_manager.db_get_workspace")
+    @patch("src.server.services.workspace_manager.SessionManager")
+    @patch("src.server.services.workspace_manager.update_workspace_status")
+    @patch("src.server.services.workspace_manager.update_workspace_activity")
+    async def test_cache_hit_failed_lazy_other_error_clears(
+        self, mock_activity, mock_status, mock_session_mgr, mock_get_ws
+    ):
+        """Gap 1: cached session with non-SandboxGoneError → clears session, falls through."""
+        manager = self._make_manager()
+        ws_id = str(uuid.uuid4())
+        workspace = _make_workspace(workspace_id=ws_id, status="running")
+        mock_get_ws.return_value = workspace
+
+        # Broken session with a non-SandboxGoneError
+        broken_session = self._make_failed_session(
+            error=RuntimeError("network timeout")
+        )
+        manager._sessions[ws_id] = broken_session
+
+        # Fall-through: SessionManager.get_session returns a new session for reconnect
+        new_session = _make_mock_session()
+        mock_session_mgr.get_session.return_value = new_session
+
+        result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
+
+        # Broken session removed
+        mock_session_mgr.remove_session.assert_called_with(ws_id)
+        # Falls through to status-based handling (reconnect)
+        assert result is not None
+
+    @pytest.mark.asyncio
+    @patch("src.server.services.workspace_manager.db_get_workspace")
+    async def test_cache_hit_still_initializing_returns(self, mock_get_ws):
+        """Sandbox still initializing → returns session immediately, no recovery."""
+        manager = self._make_manager()
+        ws_id = str(uuid.uuid4())
+        workspace = _make_workspace(workspace_id=ws_id, status="running")
+        mock_get_ws.return_value = workspace
+
+        session = self._make_initializing_session()
+        manager._sessions[ws_id] = session
+
+        result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
+
+        # Same session returned, no recovery triggered
+        assert result is session
+
+    @pytest.mark.asyncio
+    @patch("src.server.services.workspace_manager.db_get_workspace")
+    @patch("src.server.services.workspace_manager.SessionManager")
+    @patch("src.server.services.workspace_manager.update_workspace_status")
+    @patch("src.server.services.workspace_manager.update_workspace_activity")
+    async def test_phase2_sandbox_gone_recovers(
+        self, mock_activity, mock_status, mock_session_mgr, mock_get_ws
+    ):
+        """Gap 2: ensure_sandbox_ready raises SandboxGoneError → recovery in Phase 2."""
+        manager = self._make_manager()
+        ws_id = str(uuid.uuid4())
+        workspace = _make_workspace(workspace_id=ws_id, status="running")
+        mock_get_ws.return_value = workspace
+
+        # Ready session but ensure_sandbox_ready fails (sandbox gone after cooldown)
+        session = _make_mock_session()
+        session.sandbox.ensure_sandbox_ready = AsyncMock(
+            side_effect=SandboxGoneError("sb-old", "not found")
+        )
+        manager._sessions[ws_id] = session
+        # Force sync by clearing cooldown
+        manager._last_sync_at = {}
+
+        # Mock recovery
+        new_session = _make_mock_session()
+        new_session.sandbox.sandbox_id = "sb-new"
+        mock_session_mgr.get_session.return_value = new_session
+
+        result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
+
+        # Recovery triggered
+        mock_session_mgr.remove_session.assert_called_with(ws_id)
+        new_session.initialize.assert_called_once()
+        assert result is not None
+
+    @pytest.mark.asyncio
+    @patch("src.server.services.workspace_manager.db_get_workspace")
+    @patch("src.server.services.workspace_manager.SessionManager")
+    async def test_phase2_concurrent_recovery_skips(
+        self, mock_session_mgr, mock_get_ws
+    ):
+        """Gap 2: SandboxGoneError but session already recovered → uses existing."""
+        manager = self._make_manager()
+        ws_id = str(uuid.uuid4())
+        workspace = _make_workspace(workspace_id=ws_id, status="running")
+        mock_get_ws.return_value = workspace
+
+        # Session with sandbox-gone error in Phase 2
+        broken_session = _make_mock_session()
+        broken_session.sandbox.ensure_sandbox_ready = AsyncMock(
+            side_effect=SandboxGoneError("sb-old", "not found")
+        )
+        manager._sessions[ws_id] = broken_session
+        manager._last_sync_at = {}
+
+        # Simulate concurrent recovery: when we re-acquire the lock,
+        # another request has already placed a working session in the cache.
+        already_recovered = _make_mock_session()
+        already_recovered.sandbox.is_ready = MagicMock(return_value=True)
+
+        original_acquire = manager._acquire_workspace_lock
+
+        @asynccontextmanager
+        async def mock_acquire(wid, timeout=60.0):
+            # Before yielding the lock, simulate concurrent recovery
+            manager._sessions[wid] = already_recovered
+            async with original_acquire(wid, timeout=timeout):
+                yield
+
+        manager._acquire_workspace_lock = mock_acquire
+
+        result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
+
+        # Should return the already-recovered session, not create a new one
+        assert result is already_recovered
+
+    @pytest.mark.asyncio
+    @patch("src.server.services.workspace_manager.db_get_workspace")
+    async def test_phase2_other_error_logs_warning(self, mock_get_ws):
+        """Phase 2: non-SandboxGoneError → logs warning, returns session."""
+        manager = self._make_manager()
+        ws_id = str(uuid.uuid4())
+        workspace = _make_workspace(workspace_id=ws_id, status="running")
+        mock_get_ws.return_value = workspace
+
+        session = _make_mock_session()
+        session.sandbox.ensure_sandbox_ready = AsyncMock(
+            side_effect=RuntimeError("network blip")
+        )
+        manager._sessions[ws_id] = session
+        manager._last_sync_at = {}
+
+        result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
+
+        # Same session returned (broken, but we don't know it's sandbox-gone)
+        assert result is session
+
+    @pytest.mark.asyncio
+    @patch("src.server.services.workspace_manager.db_get_workspace")
+    @patch("src.server.services.workspace_manager.SessionManager")
+    @patch("src.server.services.workspace_manager.update_workspace_status")
+    @patch("src.server.services.workspace_manager.update_workspace_activity")
+    async def test_running_reconnect_sandbox_gone_recovers(
+        self, mock_activity, mock_status, mock_session_mgr, mock_get_ws
+    ):
+        """Existing path: status=running, initialize raises SandboxGoneError → recovery."""
+        manager = self._make_manager()
+        ws_id = str(uuid.uuid4())
+        workspace = _make_workspace(workspace_id=ws_id, status="running")
+        mock_get_ws.return_value = workspace
+
+        # First session fails to initialize (sandbox gone)
+        failing_session = _make_mock_session(initialized=False)
+        failing_session.initialize = AsyncMock(
+            side_effect=SandboxGoneError("sb-old", "not found")
+        )
+
+        # Recovery session
+        recovered_session = _make_mock_session()
+        recovered_session.sandbox.sandbox_id = "sb-new"
+
+        mock_session_mgr.get_session.side_effect = [failing_session, recovered_session]
+
+        result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
+
+        # Recovery triggered
+        mock_session_mgr.remove_session.assert_called_with(ws_id)
+        recovered_session.initialize.assert_called_once()
+        assert result is not None
+
+    @pytest.mark.asyncio
+    @patch("src.server.services.workspace_manager.db_get_workspace")
+    @patch("src.server.services.workspace_manager.SessionManager")
+    @patch("src.server.services.workspace_manager.update_workspace_status")
+    @patch("src.server.services.workspace_manager.update_workspace_activity")
+    async def test_stopped_workspace_lazy_init_sandbox_gone_recovers(
+        self, mock_activity, mock_status, mock_session_mgr, mock_get_ws
+    ):
+        """REGRESSION: First request to a stopped workspace whose sandbox is deleted.
+
+        Previously, _restart_workspace(lazy_init=True) returned a session
+        with a pending background reconnect. The reconnect failed with
+        SandboxGoneError but the error only surfaced when the chat handler
+        called _wait_ready(). Now, the stopped path falls through to Phase 2
+        which waits for lazy init and handles SandboxGoneError.
+        """
+        manager = self._make_manager()
+        ws_id = str(uuid.uuid4())
+        workspace = _make_workspace(workspace_id=ws_id, status="stopped")
+        mock_get_ws.return_value = workspace
+
+        # _restart_workspace returns a session whose sandbox will fail in Phase 2
+        lazy_session = _make_mock_session()
+        lazy_session.sandbox.ensure_sandbox_ready = AsyncMock(
+            side_effect=SandboxGoneError("sb-old", "not found")
+        )
+
+        # Recovery session
+        recovered_session = _make_mock_session()
+        recovered_session.sandbox.sandbox_id = "sb-new"
+
+        # First call: _restart_workspace gets lazy_session
+        # Second call: _recover_sandbox gets recovered_session
+        mock_session_mgr.get_session.side_effect = [lazy_session, recovered_session]
+
+        # Patch _restart_workspace to return the lazy session directly
+        # (simulates the real lazy init path)
+        async def mock_restart(workspace, user_id, lazy_init=True):
+            session = lazy_session
+            manager._sessions[ws_id] = session
+            manager._pending_lazy_sync.add(ws_id)
+            return session
+
+        with patch.object(manager, "_restart_workspace", side_effect=mock_restart):
+            result = await manager.get_session_for_workspace(ws_id, user_id="user-1")
+
+        # Phase 2 caught SandboxGoneError and triggered recovery
+        mock_session_mgr.remove_session.assert_called_with(ws_id)
+        assert result is not None
