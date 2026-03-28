@@ -13,14 +13,20 @@
 
 @media print {
   .cite-bubble-pill {
-    background: none !important;
-    color: #333 !important;
-    border: 1px solid #999;
-    padding: 0 4px;
-    font-size: 11px;
+    all: unset !important;
+    font-size: 0.75em !important;
+    color: #666 !important;
+  }
+
+  .cite-bubble-pill::before {
+    content: "[";
+  }
+
+  .cite-bubble-pill::after {
+    content: "]";
   }
 
   .cite-bubble-pill img {
-    display: none;
+    display: none !important;
   }
 }
