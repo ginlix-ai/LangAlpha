@@ -470,24 +470,6 @@
       }
     }
   },
-  "gpt-5.4-nano-oauth": {
-    "model_id": "gpt-5.4-nano",
-    "provider": "codex-oauth",
-    "visible": true,
-    "parameters": {
-      "reasoning": {
-        "effort": "medium",
-        "summary": "auto"
-      },
-      "include": [
-        "reasoning.encrypted_content"
-      ],
-      "store": false,
-      "model_kwargs": {
-        "instructions": "You are a helpful AI assistant."
-      }
-    }
-  },
   "claude-sonnet-4-6-oauth": {
     "model_id": "claude-sonnet-4-6",
     "provider": "claude-oauth",
@@ -553,20 +535,6 @@
       },
       "output_config": {
         "effort": "medium"
-      }
-    },
-    "context_window": 1000000,
-    "additional_betas": [
-      "context-1m-2025-08-07"
-    ]
-  },
-  "claude-sonnet-4-6-oauth-1m": {
-    "model_id": "claude-sonnet-4-6",
-    "provider": "claude-oauth",
-    "visible": true,
-    "parameters": {
-      "thinking": {
-        "type": "adaptive"
       }
     },
     "context_window": 1000000,
