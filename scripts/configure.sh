@@ -88,7 +88,20 @@ import json, sys
 d, mode = sys.argv[1], sys.argv[2]
 with open(f'{d}/providers.json') as f: pd = json.load(f)
 with open(f'{d}/models.json') as f: md = json.load(f)
-pc = pd['provider_config']
+# Flatten grouped v2 provider_config (same logic as ModelConfig._flatten_providers)
+pc = {}
+for gk, cfg in pd['provider_config'].items():
+    variants = cfg.get('variants')
+    shared = {k: v for k, v in cfg.items() if k != 'variants'}
+    if not variants:
+        pc[gk] = shared; continue
+    has_self = gk in variants
+    for vk, ovr in variants.items():
+        merged = {**shared, **ovr}
+        if vk != gk: merged['parent_provider'] = gk
+        pc[vk] = merged
+    if not has_self:
+        pc[gk] = shared
 def _provider_family(p):
     return {p} | {k for k, c in pc.items() if c.get('parent_provider') == p}
 def _has_models(p):
@@ -97,7 +110,7 @@ def _has_models(p):
 if mode == 'providers':
     items = []
     for k, c in pc.items():
-        if c.get('parent_provider') or c.get('auth_type') == 'oauth': continue
+        if c.get('parent_provider') or c.get('access_type') in ('oauth', 'coding_plan'): continue
         dn, ek = c.get('display_name'), c.get('env_key')
         if not dn or not ek or ek == 'lm-studio': continue
         if not _has_models(k): continue
@@ -147,8 +160,8 @@ case $llm in
             b)
                 set_llm_field "name" "gpt-5.4-oauth"
                 set_llm_field "flash" "gpt-5.4-mini-oauth"
-                set_llm_field "summarization" "gpt-5.4-nano-oauth"
-                set_llm_field "fetch" "gpt-5.4-nano-oauth"
+                set_llm_field "summarization" "gpt-5.4-mini-oauth"
+                set_llm_field "fetch" "gpt-5.4-mini-oauth"
                 success "ChatGPT OAuth — connect your subscription in the UI after starting"
                 ;;
             *)

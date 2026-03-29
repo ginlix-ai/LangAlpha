@@ -184,16 +184,25 @@ def find_model_pricing(model_name: str, provider: Optional[str] = None) -> Optio
 
     model_name_normalized = _normalize(model_name)
 
-    # Determine which providers to search
-    if provider and provider in manifest['models']:
-        # Provider-specific search
-        providers_to_search = [(provider, manifest['models'][provider])]
-        logger.debug(f"Searching for '{model_name}' in provider: {provider}")
+    # Determine which providers to search (provider → parent → global)
+    if provider:
+        providers_to_search = []
+        if provider in manifest['models']:
+            providers_to_search.append((provider, manifest['models'][provider]))
+        # Fall back to parent provider's pricing if available
+        parent = model_config.get_parent_provider(provider)
+        if parent != provider and parent in manifest['models']:
+            providers_to_search.append((parent, manifest['models'][parent]))
+            logger.debug(f"Including parent provider '{parent}' in pricing search for '{provider}'")
+        if not providers_to_search:
+            # Neither provider nor parent has models listed, search all
+            providers_to_search = list(manifest['models'].items())
+            logger.debug(f"Provider '{provider}' and parent not found in manifest, searching all providers")
+        else:
+            logger.debug(f"Searching for '{model_name}' in provider(s): {[p for p, _ in providers_to_search]}")
     else:
         # Global search across all providers
         providers_to_search = list(manifest['models'].items())
-        if provider:
-            logger.debug(f"Provider '{provider}' not found in manifest, searching all providers")
 
     # STEP 1 & 2: Exact ID and alias matching (case-insensitive)
     for prov, models in providers_to_search:

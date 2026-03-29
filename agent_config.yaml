@@ -14,7 +14,7 @@ llm:
   fallback:
     - "kimi-k2.5"
     - "minimax-m2.7"
-    #- "glm-5-turbo"
+    - "glm-5-turbo"
 
 sandbox:
   # Provider selection: "daytona" (cloud) or "docker" (local).

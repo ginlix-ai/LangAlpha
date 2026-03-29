@@ -344,17 +344,17 @@
       "enable_thinking": true
     }
   },
-  "qwen3.5-plus-sg": {
+  "qwen3.5-plus-intl": {
     "model_id": "qwen3.5-plus",
-    "provider": "dashscope-sg",
+    "provider": "dashscope-intl",
     "visible": true,
     "extra_body": {
       "enable_thinking": true
     }
   },
-  "qwen3.5-flash-sg": {
+  "qwen3.5-flash-intl": {
     "model_id": "qwen3.5-flash",
-    "provider": "dashscope-sg",
+    "provider": "dashscope-intl",
     "visible": true,
     "extra_body": {
       "enable_thinking": true
@@ -389,8 +389,18 @@
     }
   },
   "kimi-k2.5": {
-    "model_id": "kimi-for-coding",
+    "model_id": "kimi-k2.5",
     "provider": "moonshot",
+    "visible": true,
+    "parameters": {
+      "thinking": {
+        "type": "enabled"
+      }
+    }
+  },
+  "kimi-k2.5-coding": {
+    "model_id": "kimi-for-coding",
+    "provider": "moonshot-coding",
     "visible": true,
     "parameters": {
       "thinking": {
@@ -454,24 +464,6 @@
   },
   "gpt-5.4-mini-oauth": {
     "model_id": "gpt-5.4-mini",
-    "provider": "codex-oauth",
-    "visible": true,
-    "parameters": {
-      "reasoning": {
-        "effort": "medium",
-        "summary": "auto"
-      },
-      "include": [
-        "reasoning.encrypted_content"
-      ],
-      "store": false,
-      "model_kwargs": {
-        "instructions": "You are a helpful AI assistant."
-      }
-    }
-  },
-  "gpt-5.4-nano-oauth": {
-    "model_id": "gpt-5.4-nano",
     "provider": "codex-oauth",
     "visible": true,
     "parameters": {
@@ -553,20 +545,6 @@
       },
       "output_config": {
         "effort": "medium"
-      }
-    },
-    "context_window": 1000000,
-    "additional_betas": [
-      "context-1m-2025-08-07"
-    ]
-  },
-  "claude-sonnet-4-6-oauth-1m": {
-    "model_id": "claude-sonnet-4-6",
-    "provider": "claude-oauth",
-    "visible": true,
-    "parameters": {
-      "thinking": {
-        "type": "adaptive"
       }
     },
     "context_window": 1000000,

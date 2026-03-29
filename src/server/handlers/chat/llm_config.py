@@ -181,7 +181,7 @@ async def resolve_oauth_llm_client(
 
     provider = model_info["provider"]
     provider_info = mc.get_provider_info(provider)
-    if provider_info.get("auth_type") != "oauth":
+    if provider_info.get("access_type") != "oauth":
         return None
 
     # Dispatch to the correct OAuth service by provider

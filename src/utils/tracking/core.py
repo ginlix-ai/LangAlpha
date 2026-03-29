@@ -798,6 +798,11 @@ def add_cost_to_token_usage(token_usage: Optional[Dict[str, Any]]) -> Dict[str, 
             logger.debug(f"No pricing found for model: {model_name} (provider: {provider})")
             continue
 
+        # Skip cost calculation for subscription-priced models (coding plans)
+        if pricing.get("pricing_type") == "subscription":
+            logger.debug(f"Skipping cost calculation for subscription model: {model_name}")
+            continue
+
         # Extract token counts
         input_tokens = usage.get('input_tokens', 0)
         output_tokens = usage.get('output_tokens', 0)

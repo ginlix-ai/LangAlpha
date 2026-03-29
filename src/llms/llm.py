@@ -25,13 +25,57 @@ class ModelConfig:
         with open(manifest_path, 'r') as f:
             self.manifest = json.load(f)
 
+        # Flatten grouped provider_config into a flat dict for downstream access.
+        # Raw self.manifest stays pristine for grouped UI views.
+        self._flat_providers = self._flatten_providers(
+            self.manifest.get("provider_config", {})
+        )
+
+    @staticmethod
+    def _flatten_providers(grouped: dict) -> dict:
+        """Flatten grouped provider_config into a flat dict.
+
+        Handles two patterns:
+        - Pattern A: group key IS a complete provider, variants override fields
+        - Pattern B: group key is a brand container, default variant shares group key
+        """
+        flat = {}
+        for group_key, config in grouped.items():
+            variants = config.get("variants")  # don't mutate manifest
+            shared = {k: v for k, v in config.items() if k != "variants"}
+
+            if not variants:
+                flat[group_key] = shared
+                continue
+
+            has_self_variant = group_key in variants
+            for vkey, overrides in variants.items():
+                merged = {**shared, **overrides}
+                if vkey != group_key:
+                    merged["parent_provider"] = group_key
+                flat[vkey] = merged
+
+            if not has_self_variant:
+                flat[group_key] = shared
+
+        # Post-flatten validation: every entry must have an sdk field
+        for key, entry in flat.items():
+            if "sdk" not in entry:
+                raise ValueError(
+                    f"Provider '{key}' missing 'sdk' after flatten. "
+                    f"Check providers.json — Pattern B providers must have "
+                    f"a self-variant with the same key as the group."
+                )
+
+        return flat
+
     def get_model_config(self, model_id: str) -> Optional[Dict]:
         """Get model configuration from llm_config."""
         return self.llm_config.get(model_id)
 
     def get_provider_info(self, provider: str) -> Dict:
-        """Get provider configuration from manifest."""
-        return self.manifest["provider_config"].get(provider, {})
+        """Get provider configuration from the flattened provider dict."""
+        return self._flat_providers.get(provider, {})
 
     def get_model_pricing(self, custom_model_name: str) -> Optional[Dict[str, Any]]:
         """Get pricing information for a specific model from manifest."""
@@ -67,10 +111,14 @@ class ModelConfig:
         return None
 
     def get_byok_eligible_providers(self) -> list[str]:
-        """Return list of provider names that have byok_eligible=true in manifest."""
+        """Return list of provider names that have byok_eligible=true.
+
+        Includes all access types (api_key, oauth, coding_plan) since all
+        represent user-provided model access for credit tracking purposes.
+        """
         return [
             name
-            for name, cfg in self.manifest.get("provider_config", {}).items()
+            for name, cfg in self._flat_providers.items()
             if cfg.get("byok_eligible", False)
         ]
 
@@ -80,14 +128,15 @@ class ModelConfig:
         return info.get("parent_provider", provider)
 
     def get_display_name(self, provider: str) -> str:
-        """Return display name, resolving through parent if needed."""
+        """Return display name, preferring own name then resolving through parent."""
         info = self.get_provider_info(provider)
-        parent = info.get("parent_provider")
-        if parent:
-            info = self.get_provider_info(parent)
-        else:
-            parent = provider
-        return info.get("display_name", parent.title())
+        if info.get("display_name"):
+            return info["display_name"]
+        parent = info.get("parent_provider", provider)
+        if parent != provider:
+            parent_info = self.get_provider_info(parent)
+            return parent_info.get("display_name", parent.title())
+        return provider.title()
 
     def get_model_metadata(self) -> dict[str, dict[str, str]]:
         """Return {model_key: {sdk, provider}} for all visible models."""
@@ -406,7 +455,7 @@ class LLM:
         from langchain_anthropic import ChatAnthropic
         from src.llms.extension import ChatAnthropicOAuth
 
-        is_oauth = self.provider_info.get("auth_type") == "oauth"
+        is_oauth = self.provider_info.get("access_type") == "oauth"
 
         # Set API key: prefer BYOK override, then env var
         api_key = self.api_key_override or (os.getenv(self.env_key) if self.env_key else None)

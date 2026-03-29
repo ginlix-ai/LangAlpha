@@ -101,108 +101,7 @@
         }
       }
     ],
-    "codex-oauth": [
-      {
-        "id": "gpt-5.4-mini",
-        "name": "GPT-5.4 Mini",
-        "is_reasoning": true,
-        "description": "OpenAI's strongest mini model for coding, computer use, and subagents",
-        "context_window": 400000,
-        "max_output": 128000,
-        "pricing": {
-          "input": 0.75,
-          "cached_input": 0.075,
-          "output": 4.5,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "gpt-5.4-nano",
-        "name": "GPT-5.4 Nano",
-        "is_reasoning": true,
-        "description": "OpenAI's cheapest GPT-5.4-class model for simple high-volume tasks",
-        "context_window": 400000,
-        "max_output": 128000,
-        "pricing": {
-          "input": 0.2,
-          "cached_input": 0.02,
-          "output": 1.25,
-          "unit": "per_1m_tokens"
-        }
-      }
-    ],
     "anthropic": [
-      {
-        "id": "claude-opus-4-6",
-        "name": "Claude 4.6 Opus",
-        "is_reasoning": true,
-        "description": "Claude 4.6 Opus model",
-        "alias": [
-          "claude-opus-4.6"
-        ],
-        "pricing": {
-          "input": 5.0,
-          "cached_input": 0.5,
-          "cache_5m": 6.25,
-          "output": 25.0,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "claude-sonnet-4-6",
-        "name": "Claude 4.6 Sonnet",
-        "is_reasoning": true,
-        "description": "Claude 4.6 Sonnet model",
-        "alias": [
-          "claude-sonnet-4.6"
-        ],
-        "pricing": {
-          "input_tiers": [
-            {
-              "max_tokens": 200000,
-              "rate": 3.0,
-              "cached_input": 0.3
-            },
-            {
-              "max_tokens": null,
-              "rate": 6.0,
-              "cached_input": 0.6
-            }
-          ],
-          "output_tiers": [
-            {
-              "max_tokens": 200000,
-              "rate": 15.0
-            },
-            {
-              "max_tokens": null,
-              "rate": 22.5
-            }
-          ],
-          "output_pricing_mode": "input_dependent",
-          "cache_5m": 3.75,
-          "cache_1h": 7.5,
-          "unit": "per_1m_tokens"
-        }
-      },
-      {
-        "id": "claude-haiku-4-5-20251001",
-        "name": "Claude 4.5 Haiku",
-        "is_reasoning": true,
-        "description": "Fast and cost-efficient model",
-        "alias": [
-          "claude-haiku-4.5"
-        ],
-        "pricing": {
-          "input": 0.8,
-          "cached_input": 0.08,
-          "cache_5m": 1.0,
-          "output": 4.0,
-          "unit": "per_1m_tokens"
-        }
-      }
-    ],
-    "claude-oauth": [
       {
         "id": "claude-opus-4-6",
         "name": "Claude 4.6 Opus",
@@ -364,6 +263,30 @@
     "vllm": [],
     "z-ai": [
       {
+        "id": "glm-5",
+        "name": "GLM-5",
+        "is_reasoning": true,
+        "description": "Z.AI's latest GLM-5 model with extended thinking capabilities",
+        "pricing": {
+          "input": 1.0,
+          "cached_input": 0.2,
+          "output": 3.2,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "glm-5-turbo",
+        "name": "GLM-5-Turbo",
+        "is_reasoning": true,
+        "description": "Z.AI's GLM-5 Turbo model optimized for agentic tasks and tool calling",
+        "pricing": {
+          "input": 1.2,
+          "cached_input": 0.24,
+          "output": 4.0,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
         "id": "glm-4.7",
         "name": "GLM-4.7",
         "is_reasoning": false,
@@ -403,6 +326,38 @@
             {
               "max_tokens": null,
               "rate": 3.03
+            }
+          ],
+          "output_pricing_mode": "input_dependent",
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "glm-5-turbo",
+        "name": "GLM-5-Turbo",
+        "is_reasoning": true,
+        "description": "Z.AI's GLM-5 Turbo model optimized for agentic tasks, tiered pricing",
+        "pricing": {
+          "input_tiers": [
+            {
+              "max_tokens": 32000,
+              "rate": 0.69,
+              "cached_input": 0.17
+            },
+            {
+              "max_tokens": null,
+              "rate": 0.97,
+              "cached_input": 0.25
+            }
+          ],
+          "output_tiers": [
+            {
+              "max_tokens": 32000,
+              "rate": 3.03
+            },
+            {
+              "max_tokens": null,
+              "rate": 3.59
             }
           ],
           "output_pricing_mode": "input_dependent",
@@ -865,7 +820,7 @@
         }
       }
     ],
-    "dashscope-sg": [
+    "dashscope-intl": [
       {
         "id": "qwen3.5-plus",
         "name": "Qwen3.5 Plus (SG)",
@@ -977,6 +932,21 @@
     ],
     "moonshot": [
       {
+        "id": "kimi-k2.5",
+        "name": "Kimi K2.5",
+        "is_reasoning": true,
+        "description": "Moonshot AI's Kimi K2.5 multi-modal model with extended context",
+        "context_window": 262144,
+        "pricing": {
+          "input": 0.6,
+          "cached_input": 0.1,
+          "output": 3.0,
+          "unit": "per_1m_tokens"
+        }
+      }
+    ],
+    "moonshot-coding": [
+      {
         "id": "kimi-for-coding",
         "name": "Kimi for Coding",
         "is_reasoning": true,
@@ -1052,26 +1022,196 @@
       "sdk": "openai",
       "base_url": "https://api.openai.com/v1",
       "env_key": "OPENAI_API_KEY",
-      "use_response_api": false,
+      "access_type": "api_key",
       "byok_eligible": true,
-      "display_name": "OpenAI"
+      "use_response_api": false,
+      "display_name": "OpenAI",
+      "variants": {
+        "codex-oauth": {
+          "sdk": "codex",
+          "base_url": "https://chatgpt.com/backend-api/codex",
+          "env_key": null,
+          "access_type": "oauth",
+          "use_response_api": true,
+          "display_name": "ChatGPT Codex"
+        }
+      }
     },
     "anthropic": {
       "sdk": "anthropic",
       "env_key": "ANTHROPIC_API_KEY",
+      "access_type": "api_key",
       "byok_eligible": true,
-      "display_name": "Anthropic"
+      "display_name": "Anthropic",
+      "variants": {
+        "claude-oauth": {
+          "base_url": "https://api.anthropic.com",
+          "env_key": null,
+          "access_type": "oauth",
+          "display_name": "Claude (OAuth)",
+          "default_headers": {
+            "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
+            "user-agent": "claude-cli/2.1.77",
+            "x-app": "cli"
+          }
+        }
+      }
     },
     "gemini": {
       "sdk": "gemini",
       "env_key": "GEMINI_API_KEY",
+      "access_type": "api_key",
       "byok_eligible": true,
       "display_name": "Gemini"
+    },
+    "dashscope": {
+      "env_key": "DASHSCOPE_API_KEY",
+      "access_type": "api_key",
+      "region": "cn",
+      "display_name": "DashScope (Qwen)",
+      "variants": {
+        "dashscope": {
+          "sdk": "openai",
+          "base_url": "https://dashscope.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1",
+          "use_response_api": true,
+          "default_headers": {
+            "x-dashscope-session-cache": "enabled"
+          }
+        },
+        "dashscope-intl": {
+          "sdk": "openai",
+          "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+          "env_key": "DASHSCOPE_API_KEY_INT",
+          "use_response_api": true,
+          "default_headers": {
+            "x-dashscope-session-cache": "enabled"
+          },
+          "region": "intl",
+          "display_name": "DashScope (Intl)"
+        },
+        "dashscope-coding": {
+          "sdk": "anthropic",
+          "base_url": "https://coding.dashscope.aliyuncs.com/apps/anthropic",
+          "env_key": "DASHSCOPE_API_KEY_CODING",
+          "access_type": "coding_plan",
+          "display_name": "DashScope (Coding)"
+        }
+      }
+    },
+    "volcengine": {
+      "env_key": "VOLCENGINE_API_KEY",
+      "access_type": "api_key",
+      "region": "cn",
+      "display_name": "Doubao",
+      "variants": {
+        "volcengine": {
+          "sdk": "openai",
+          "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+          "use_response_api": true
+        },
+        "doubao-anthropic": {
+          "sdk": "anthropic",
+          "base_url": "https://ark.cn-beijing.volces.com/api/compatible"
+        },
+        "doubao-coding": {
+          "sdk": "anthropic",
+          "base_url": "https://ark.cn-beijing.volces.com/api/coding",
+          "access_type": "coding_plan"
+        }
+      }
+    },
+    "moonshot": {
+      "sdk": "anthropic",
+      "base_url": "https://api.moonshot.ai/anthropic",
+      "env_key": "MOONSHOT_API_KEY",
+      "access_type": "api_key",
+      "display_name": "Moonshot (Kimi)",
+      "variants": {
+        "moonshot-coding": {
+          "base_url": "https://api.kimi.com/coding",
+          "access_type": "coding_plan"
+        }
+      }
+    },
+    "z-ai": {
+      "sdk": "anthropic",
+      "base_url": "https://api.z.ai/api/anthropic",
+      "env_key": "ZAI_API_KEY",
+      "access_type": "api_key",
+      "byok_eligible": true,
+      "display_name": "Zhipu AI",
+      "variants": {
+        "z-ai-cn": {
+          "base_url": "https://open.bigmodel.cn/api/anthropic",
+          "env_key": "ZAI_CN_API_KEY",
+          "region": "cn"
+        },
+        "z-ai-coding": {
+          "base_url": "https://api.z.ai/api/anthropic",
+          "env_key": "ZAI_CODING_API_KEY",
+          "access_type": "coding_plan"
+        }
+      }
+    },
+    "minimax": {
+      "sdk": "anthropic",
+      "base_url": "https://api.minimax.io/anthropic",
+      "env_key": "MINIMAX_API_KEY",
+      "access_type": "api_key",
+      "byok_eligible": true,
+      "display_name": "MiniMax",
+      "variants": {
+        "minimax-coding": {
+          "base_url": "https://api.minimax.io/anthropic",
+          "env_key": "MINIMAX_CODING_API_KEY",
+          "access_type": "coding_plan"
+        }
+      }
+    },
+    "openrouter": {
+      "sdk": "deepseek",
+      "base_url": "https://openrouter.ai/api/v1",
+      "env_key": "OPENROUTER_API_KEY",
+      "access_type": "api_key",
+      "byok_eligible": true,
+      "display_name": "OpenRouter",
+      "variants": {
+        "deepinfra": {
+          "sdk": "openai",
+          "use_response_api": true,
+          "comment": "DeepInfra models accessed via OpenRouter with provider routing"
+        }
+      }
+    },
+    "deepseek": {
+      "sdk": "anthropic",
+      "base_url": "https://api.deepseek.com/anthropic",
+      "env_key": "DEEPSEEK_API_KEY",
+      "access_type": "api_key",
+      "byok_eligible": false,
+      "display_name": "DeepSeek"
+    },
+    "groq": {
+      "sdk": "openai",
+      "base_url": "https://api.groq.com/openai/v1",
+      "env_key": "GROQ_API_KEY",
+      "access_type": "api_key",
+      "use_response_api": true,
+      "display_name": "Groq"
+    },
+    "cerebras": {
+      "sdk": "openai",
+      "base_url": "https://api.cerebras.ai/v1",
+      "env_key": "CEREBRAS_API_KEY",
+      "access_type": "api_key",
+      "use_response_api": false,
+      "display_name": "Cerebras"
     },
     "lm-studio": {
       "sdk": "openai",
       "base_url": "http://{HOST_IP}:1234/v1",
       "env_key": "lm-studio",
+      "access_type": "api_key",
       "dynamic_models": true,
       "display_name": "LM Studio",
       "default_parameters": {
@@ -1082,145 +1222,10 @@
       "sdk": "openai",
       "base_url": "http://{HOST_IP}:8000/v1",
       "env_key": null,
+      "access_type": "api_key",
       "dynamic_models": true,
       "use_response_api": true,
       "display_name": "vLLM"
-    },
-    "volcengine": {
-      "sdk": "openai",
-      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-      "env_key": "VOLCENGINE_API_KEY",
-      "use_response_api": true,
-      "display_name": "Doubao"
-    },
-    "openrouter": {
-      "sdk": "deepseek",
-      "base_url": "https://openrouter.ai/api/v1",
-      "env_key": "OPENROUTER_API_KEY",
-      "byok_eligible": true,
-      "display_name": "OpenRouter"
-    },
-    "moonshot": {
-      "sdk": "anthropic",
-      "base_url": "https://api.kimi.com/coding",
-      "env_key": "MOONSHOT_API_KEY",
-      "use_response_api": false,
-      "display_name": "Moonshot (Kimi)"
-    },
-    "deepseek": {
-      "sdk": "anthropic",
-      "base_url": "https://api.deepseek.com/anthropic",
-      "env_key": "DEEPSEEK_API_KEY",
-      "byok_eligible": false,
-      "display_name": "DeepSeek"
-    },
-    "qwen": {
-      "sdk": "openai",
-      "base_url": "https://openrouter.ai/api/v1",
-      "env_key": "OPENROUTER_API_KEY",
-      "display_name": "Qwen"
-    },
-    "alibaba": {
-      "sdk": "openai",
-      "base_url": "https://openrouter.ai/api/v1",
-      "env_key": "OPENROUTER_API_KEY",
-      "display_name": "Alibaba Cloud"
-    },
-    "z-ai": {
-      "sdk": "anthropic",
-      "base_url": "https://api.z.ai/api/anthropic",
-      "env_key": "ZAI_API_KEY",
-      "byok_eligible": true,
-      "display_name": "Zhipu AI"
-    },
-    "z-ai-cn": {
-      "sdk": "anthropic",
-      "base_url": "https://open.bigmodel.cn/api/anthropic",
-      "env_key": "ZAI_CN_API_KEY",
-      "byok_eligible": true,
-      "parent_provider": "z-ai"
-    },
-    "minimax": {
-      "sdk": "anthropic",
-      "base_url": "https://api.minimax.io/anthropic",
-      "env_key": "MINIMAX_API_KEY",
-      "byok_eligible": true,
-      "display_name": "MiniMax"
-    },
-    "doubao-anthropic": {
-      "sdk": "anthropic",
-      "base_url": "https://ark.cn-beijing.volces.com/api/compatible",
-      "env_key": "VOLCENGINE_API_KEY",
-      "parent_provider": "volcengine"
-    },
-    "doubao-coding": {
-      "sdk": "anthropic",
-      "base_url": "https://ark.cn-beijing.volces.com/api/coding",
-      "env_key": "VOLCENGINE_API_KEY",
-      "parent_provider": "volcengine"
-    },
-    "dashscope": {
-      "sdk": "openai",
-      "base_url": "https://dashscope.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1",
-      "env_key": "DASHSCOPE_API_KEY",
-      "use_response_api": true,
-      "display_name": "DashScope (Qwen)"
-    },
-    "dashscope-sg": {
-      "sdk": "qwq",
-      "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-      "env_key": "DASHSCOPE_API_KEY_INT",
-      "parent_provider": "dashscope",
-      "display_name": "DashScope (Qwen) (SG)"
-    },
-    "dashscope-coding": {
-      "sdk": "anthropic",
-      "base_url": "https://coding.dashscope.aliyuncs.com/apps/anthropic",
-      "env_key": "DASHSCOPE_API_KEY_CODING",
-      "parent_provider": "dashscope",
-      "display_name": "DashScope (Coding)"
-    },
-    "groq": {
-      "sdk": "openai",
-      "base_url": "https://api.groq.com/openai/v1",
-      "env_key": "GROQ_API_KEY",
-      "use_response_api": true,
-      "display_name": "Groq"
-    },
-    "cerebras": {
-      "sdk": "openai",
-      "base_url": "https://api.cerebras.ai/v1",
-      "env_key": "CEREBRAS_API_KEY",
-      "use_response_api": false,
-      "display_name": "Cerebras"
-    },
-    "codex-oauth": {
-      "sdk": "codex",
-      "base_url": "https://chatgpt.com/backend-api/codex",
-      "env_key": null,
-      "use_response_api": true,
-      "auth_type": "oauth",
-      "display_name": "ChatGPT Codex"
-    },
-    "claude-oauth": {
-      "sdk": "anthropic",
-      "base_url": "https://api.anthropic.com",
-      "env_key": null,
-      "auth_type": "oauth",
-      "display_name": "Claude (OAuth)",
-      "default_headers": {
-        "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14",
-        "user-agent": "claude-cli/2.1.77",
-        "x-app": "cli"
-      }
-    },
-    "deepinfra": {
-      "sdk": "openai",
-      "base_url": "https://openrouter.ai/api/v1",
-      "env_key": "OPENROUTER_API_KEY",
-      "use_response_api": true,
-      "parent_provider": "openrouter",
-      "comment": "DeepInfra models accessed via OpenRouter with provider routing"
     }
   },
   "infrastructure_pricing": {
