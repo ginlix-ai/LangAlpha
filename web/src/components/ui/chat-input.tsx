@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Plus, ArrowUp, X, FileText, Loader2, Archive, Square,
   ScrollText, ChartCandlestick, Zap, FileStack, ChevronDown, ChevronRight, FolderOpen, TextSelect,
@@ -284,6 +285,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   const moreModelsTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [modelMetadata, setModelMetadata] = useState<Record<string, { sdk?: string; provider?: string }>>({});
   const modelMenuRef = useRef<HTMLDivElement>(null);
+  const modelDropdownRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
   // Sync selectedModel when initialModel or preferredModel changes
@@ -556,17 +558,24 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showWorkspaceMenu]);
 
-  // Close model menu on click outside
+  // Close model menu on click outside, scroll, or resize
   useEffect(() => {
     if (!showModelMenu) return;
     const handleClickOutside = (e: MouseEvent) => {
-      if (modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
-        setShowModelMenu(false);
-        setShowMoreModels(false);
-      }
+      const target = e.target as Node;
+      if (modelMenuRef.current?.contains(target) || modelDropdownRef.current?.contains(target)) return;
+      setShowModelMenu(false);
+      setShowMoreModels(false);
     };
+    const dismiss = () => { setShowModelMenu(false); setShowMoreModels(false); };
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    window.addEventListener('scroll', dismiss, true);
+    window.addEventListener('resize', dismiss);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('scroll', dismiss, true);
+      window.removeEventListener('resize', dismiss);
+    };
   }, [showModelMenu]);
 
   // --- File Upload Handling ---
@@ -708,7 +717,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
 
     // Remove pills whose /{command} or @mention text was deleted from the textarea
     setSlashCommands((prev) => prev.filter((cmd) => val.includes(`/${cmd.name}`)));
-    setMentionedFiles((prev) => prev.filter((f) => val.includes(`@${f.path}`)));
+    setMentionedFiles((prev) => prev.filter((f) => f.snippet || val.includes(`@${f.path}`)));
 
     const cursorPos = e.target.selectionStart;
 
@@ -1392,8 +1401,21 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                     {fastMode && isCodexModel && <Rocket className="h-3 w-3" style={{ color: 'var(--color-accent-light)' }} />}
                     <ChevronDown className="h-3 w-3" />
                   </button>
-                  {showModelMenu && (
-                    <div className={`model-dropdown ${dropdownDirection === 'down' ? 'model-dropdown-down' : 'model-dropdown-up'}`}>
+                  {showModelMenu && (() => {
+                    const btnRect = modelMenuRef.current?.getBoundingClientRect();
+                    if (!btnRect) return null;
+                    const fixedStyle: React.CSSProperties = {
+                      position: 'fixed',
+                      right: Math.max(8, window.innerWidth - btnRect.right),
+                      left: 'auto',
+                      margin: 0,
+                      ...(dropdownDirection === 'down'
+                        ? { top: btnRect.bottom + 4, bottom: 'auto' }
+                        : { bottom: window.innerHeight - btnRect.top + 4, top: 'auto' }),
+                    };
+                    return createPortal(
+                    <div ref={modelDropdownRef} className={`model-dropdown ${dropdownDirection === 'down' ? 'model-dropdown-down' : 'model-dropdown-up'}`} style={fixedStyle}>
+
                       {/* Primary menu: thread models + reasoning + "More models"
                          Submenu direction: open left if dropdown is near right edge of viewport */}
                       {(() => {
@@ -1474,7 +1496,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                         <ChevronRight className={`h-3.5 w-3.5 transition-transform ${isMobile && showMoreModels ? 'rotate-90' : ''}`} />
                         {/* Submenu — flyout on desktop; inline on mobile */}
                         {showMoreModels && !isMobile && (() => {
-                          const menuRect = modelMenuRef.current?.getBoundingClientRect();
+                          const menuRect = modelDropdownRef.current?.getBoundingClientRect();
                           const openLeft = menuRect && menuRect.right + 244 > window.innerWidth;
                           return (
                             <div
@@ -1489,8 +1511,10 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                       </div>
                       {/* Mobile inline expanded submenu */}
                       {showMoreModels && isMobile && renderMoreModelsList(true)}
-                    </div>
-                  )}
+                    </div>,
+                    document.body
+                    );
+                  })()}
                 </div>
               )}
               {/* Voice Input Button (Show only if enabled in user settings) */}

@@ -135,8 +135,7 @@
 .interval-disabled-tooltip {
   position: absolute;
   top: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
   white-space: nowrap;
   font-size: 11px;
   padding: 5px 10px;
@@ -151,8 +150,8 @@
 }
 
 @keyframes tooltip-fade-in {
-  from { opacity: 0; transform: translateX(-50%) translateY(-2px); }
-  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+  from { opacity: 0; transform: translateY(-2px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 .chart-tools-right {
@@ -228,6 +227,7 @@
   position: relative;
   min-height: 0;
   width: 100%;
+  overflow: hidden;
 }
 
 .rsi-container {
