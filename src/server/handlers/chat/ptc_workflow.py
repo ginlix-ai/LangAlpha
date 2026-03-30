@@ -68,6 +68,8 @@ from ._common import (
     stream_live_events,
     wait_or_steer,
 )
+from src.config.settings import get_ptc_recursion_limit
+
 from .llm_config import resolve_llm_config
 from .steering import backfill_steering_queries
 
@@ -396,7 +398,7 @@ async def astream_ptc_workflow(
             request=request,
             effective_model=effective_model,
             is_byok=is_byok,
-            recursion_limit=1000,
+            recursion_limit=get_ptc_recursion_limit(),
             plan_mode=effective_plan_mode,
         )
 

@@ -636,7 +636,7 @@ class PTCAgent:
             middleware=deepagent_middleware,
             checkpointer=checkpointer,
             store=store,
-        ).with_config({"recursion_limit": 1000})
+        ).with_config({"recursion_limit": 2000})
 
         # Wrap with orchestrator for background execution support
         return BackgroundSubagentOrchestrator(

@@ -310,6 +310,6 @@ class FlashAgent:
         agent = create_agent(
             model,
             **create_kwargs,
-        ).with_config({"recursion_limit": 100})
+        ).with_config({"recursion_limit": 500})
 
         return agent

@@ -113,9 +113,6 @@ MAX_ARG_LENGTH = 150
 # Maximum error message length for display
 MAX_ERROR_LENGTH = 500
 
-# Agent configuration for langgraph
-langgraph_config = {"recursion_limit": 1000}
-
 # Rich console instance (respects NO_COLOR environment variable)
 console = Console(highlight=False, no_color=get_theme().colors_disabled)
 

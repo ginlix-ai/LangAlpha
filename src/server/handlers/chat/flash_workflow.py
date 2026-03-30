@@ -59,6 +59,8 @@ from ._common import (
     stream_live_events,
     wait_or_steer,
 )
+from src.config.settings import get_flash_recursion_limit
+
 from .llm_config import resolve_llm_config
 from .steering import backfill_steering_queries, steer_thread
 
@@ -283,7 +285,7 @@ async def astream_flash_workflow(
             request=request,
             effective_model=effective_model,
             is_byok=is_byok,
-            recursion_limit=100,
+            recursion_limit=get_flash_recursion_limit(),
         )
 
         # Create stream handler

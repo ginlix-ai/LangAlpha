@@ -629,7 +629,7 @@ def build_graph_config(
     request: ChatRequest,
     effective_model: str | None,
     is_byok: bool,
-    recursion_limit: int = 100,
+    recursion_limit: int,
     plan_mode: bool | None = None,
     extra_configurable: dict | None = None,
 ) -> dict:

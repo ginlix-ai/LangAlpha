@@ -84,7 +84,8 @@ class TestInfrastructureConfigComplete:
             "debug": True,
             "workflow_timeout": 1600,
             "sse_keepalive_interval": 30,
-            "agent_recursion_limit": 50,
+            "ptc_recursion_limit": 3000,
+            "flash_recursion_limit": 800,
             "allowed_origins": ["http://localhost:3000"],
             "log_level": "DEBUG",
             "background_execution": {
@@ -112,6 +113,8 @@ class TestInfrastructureConfigComplete:
         cfg = InfrastructureConfig(**data)
         assert cfg.debug is True
         assert cfg.workflow_timeout == 1600
+        assert cfg.ptc_recursion_limit == 3000
+        assert cfg.flash_recursion_limit == 800
         assert cfg.background_execution.subagent_collector_timeout == 60
         assert len(cfg.market_data.providers) == 2
         assert cfg.market_data.providers[0].name == "ginlix-data"
@@ -167,6 +170,16 @@ class TestSettingsBackwardCompat:
         from src.config.settings import get_sse_keepalive_interval
         with self._patch_infra_config(sse_keepalive_interval=30):
             assert get_sse_keepalive_interval() == 30
+
+    def test_get_ptc_recursion_limit(self):
+        from src.config.settings import get_ptc_recursion_limit
+        with self._patch_infra_config(ptc_recursion_limit=3000):
+            assert get_ptc_recursion_limit() == 3000
+
+    def test_get_flash_recursion_limit(self):
+        from src.config.settings import get_flash_recursion_limit
+        with self._patch_infra_config(flash_recursion_limit=800):
+            assert get_flash_recursion_limit() == 800
 
     def test_background_execution_accessors(self):
         from src.config.settings import (

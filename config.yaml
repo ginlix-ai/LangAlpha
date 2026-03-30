@@ -15,7 +15,8 @@ cli:
 
 # Application Settings
 debug: false
-agent_recursion_limit: 100
+ptc_recursion_limit: 2000
+flash_recursion_limit: 500
 
 # Workflow Settings
 workflow_timeout: 3200  # seconds (53 minutes)

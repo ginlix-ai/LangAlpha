@@ -8,7 +8,6 @@ from ptc_cli.core.config import (
     PTC_AGENT_ASCII,
     Settings,
     console,
-    langgraph_config,
     settings,
 )
 from ptc_cli.core.state import ReconnectStateManager, SessionState
@@ -33,6 +32,5 @@ __all__ = [
     "get_syntax_theme",
     "get_theme",
     "get_toolbar_styles",
-    "langgraph_config",
     "settings",
 ]

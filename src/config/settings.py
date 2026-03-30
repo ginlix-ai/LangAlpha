@@ -41,9 +41,14 @@ def get_debug_mode() -> bool:
     return get_infrastructure_config().debug
 
 
-def get_agent_recursion_limit() -> int:
-    """Get agent recursion limit from config.yaml."""
-    return get_infrastructure_config().agent_recursion_limit
+def get_ptc_recursion_limit() -> int:
+    """Get PTC agent recursion limit from config.yaml."""
+    return get_infrastructure_config().ptc_recursion_limit
+
+
+def get_flash_recursion_limit() -> int:
+    """Get Flash agent recursion limit from config.yaml."""
+    return get_infrastructure_config().flash_recursion_limit
 
 
 def get_workflow_timeout() -> int:

@@ -562,6 +562,7 @@ class TestBuildGraphConfig:
             ),
             effective_model="gpt-4o",
             is_byok=False,
+            recursion_limit=100,
         )
         defaults.update(kwargs)
         with (
@@ -571,15 +572,15 @@ class TestBuildGraphConfig:
             return build_graph_config(**defaults)
 
     def test_basic_flash_config(self):
-        config = self._build(mode="flash")
+        config = self._build(mode="flash", recursion_limit=500)
         assert config["configurable"]["agent_mode"] == "flash"
         assert config["configurable"]["thread_id"] == "t-1"
-        assert config["recursion_limit"] == 100
+        assert config["recursion_limit"] == 500
 
     def test_ptc_config_with_plan_mode(self):
-        config = self._build(mode="ptc", plan_mode=True, recursion_limit=1000)
+        config = self._build(mode="ptc", plan_mode=True, recursion_limit=2000)
         assert config["configurable"]["agent_mode"] == "ptc"
-        assert config["recursion_limit"] == 1000
+        assert config["recursion_limit"] == 2000
 
     def test_checkpoint_id_added(self):
         request = MagicMock(
