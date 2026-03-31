@@ -6,6 +6,8 @@ import { ModelTierConfig } from '@/components/model/ModelTierConfig';
 import type { ProviderModelsData } from '@/components/model/types';
 import { useAllModels } from '@/hooks/useAllModels';
 import { useConfiguredProviders } from '@/hooks/useConfiguredProviders';
+import { useFilteredModels } from '@/hooks/useFilteredModels';
+import type { ModelMetadataEntry } from '@/hooks/useFilteredModels';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useUpdatePreferences } from '@/hooks/useUpdatePreferences';
 
@@ -16,53 +18,37 @@ import { useUpdatePreferences } from '@/hooks/useUpdatePreferences';
 export default function DefaultsStep() {
   const navigate = useNavigate();
   const { models, isLoading: modelsLoading } = useAllModels();
-  const { configuredSet } = useConfiguredProviders();
+  const { providers: configuredProviders, isLoading: providersLoading } = useConfiguredProviders();
   const { preferences } = usePreferences();
   const updatePreferences = useUpdatePreferences();
 
   // ---------------------------------------------------------------------------
   // Filter models to only those the user has access to.
   //
-  // model_metadata has per-model { provider, sdk }. The "provider" is the
-  // actual provider key (e.g. "claude-oauth", "anthropic", "codex-oauth").
-  // We check if that provider is in the user's configured set.
-  //
-  // The "models" response groups by parent provider, so we rebuild the
-  // grouped structure with only accessible models.
+  // Uses the shared filterModelsByAccess logic which checks both the model's
+  // own provider (direct match) and the groupKey fallback (only when the
+  // configured provider's access_type matches the model's access_type).
+  // This prevents OAuth/coding_plan variants from leaking through groupKey.
   // ---------------------------------------------------------------------------
 
-  const normalizedModels = useMemo<Record<string, ProviderModelsData>>(() => {
-    if (!models) return {};
+  const { providerMap, metadata } = useMemo(() => {
+    if (!models) return { providerMap: {} as Record<string, ProviderModelsData>, metadata: {} as Record<string, ModelMetadataEntry> };
     const raw = models as Record<string, unknown>;
-    const providerMap = (raw.models ?? raw) as Record<string, Record<string, unknown>>;
-    const metadata = (raw.model_metadata ?? {}) as Record<string, { provider?: string }>;
+    const rawProviderMap = (raw.models ?? raw) as Record<string, Record<string, unknown>>;
+    const rawMetadata = (raw.model_metadata ?? {}) as Record<string, ModelMetadataEntry>;
 
-    const hasFilter = configuredSet.size > 0;
-    const out: Record<string, ProviderModelsData> = {};
-
-    for (const [groupKey, data] of Object.entries(providerMap)) {
+    const pm: Record<string, ProviderModelsData> = {};
+    for (const [groupKey, data] of Object.entries(rawProviderMap)) {
       if (!data || typeof data !== 'object') continue;
-      const allModels = (data.models as string[]) ?? [];
-
-      // Filter: keep model if its actual provider (from metadata) is configured
-      const filtered = hasFilter
-        ? allModels.filter((m) => {
-            const modelProvider = metadata[m]?.provider;
-            if (!modelProvider) return false;
-            // Check direct match or parent match
-            return configuredSet.has(modelProvider) || configuredSet.has(groupKey);
-          })
-        : allModels;
-
-      if (filtered.length > 0) {
-        out[groupKey] = {
-          models: filtered,
-          display_name: (data.display_name as string) ?? groupKey,
-        };
-      }
+      pm[groupKey] = {
+        models: (data.models as string[]) ?? [],
+        display_name: (data.display_name as string) ?? groupKey,
+      };
     }
-    return out;
-  }, [models, configuredSet]);
+    return { providerMap: pm, metadata: rawMetadata };
+  }, [models]);
+
+  const normalizedModels = useFilteredModels(providerMap, metadata, configuredProviders);
 
   // System defaults from models response
   const systemDefaults = useMemo(() => {
@@ -113,17 +99,19 @@ export default function DefaultsStep() {
     return out;
   }, [normalizedModels]);
 
-  // Seed fallback with all accessible models (minus primary/flash) once
+  // Seed fallback with all accessible models (minus primary/flash) once.
+  // Guard on !providersLoading to avoid seeding with unfiltered models
+  // before the configured provider set has loaded.
   const fallbackSeeded = useRef(false);
   useEffect(() => {
-    if (!fallbackSeeded.current && allAccessibleModels.length > 0) {
+    if (!fallbackSeeded.current && !providersLoading && allAccessibleModels.length > 0) {
       fallbackSeeded.current = true;
       setAdvancedModels((prev) => ({
         ...prev,
         fallbackModels: allAccessibleModels.filter((m) => m !== primaryModel && m !== flashModel),
       }));
     }
-  }, [allAccessibleModels, primaryModel, flashModel]);
+  }, [allAccessibleModels, providersLoading, primaryModel, flashModel]);
 
   // ---------------------------------------------------------------------------
   // Handlers

@@ -175,3 +175,32 @@ class TestListModelsResponse:
             resp = await client.get("/api/v1/models")
 
         assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_model_metadata_includes_access_type(self, client):
+        """model_metadata values should include access_type alongside sdk and provider."""
+        mock_models = {
+            "openai": [{"name": "gpt-4o", "model_id": "gpt-4o"}],
+        }
+        mock_mc = MagicMock()
+        mock_mc.get_display_name.side_effect = lambda p: p.title()
+        mock_mc.get_model_metadata.return_value = {
+            "gpt-4o": {"sdk": "openai", "provider": "openai", "access_type": "api_key"},
+        }
+
+        mock_llm_cls = MagicMock()
+        mock_llm_cls.get_model_config.return_value = mock_mc
+
+        agent_cfg = _mock_agent_config(name="gpt-4o")
+        with (
+            patch("src.llms.llm.get_configured_llm_models", return_value=mock_models),
+            patch("src.llms.llm.LLM", mock_llm_cls),
+            patch("src.server.app.setup.agent_config", agent_cfg),
+        ):
+            resp = await client.get("/api/v1/models")
+
+        body = resp.json()
+        metadata = body["model_metadata"]
+        assert "gpt-4o" in metadata
+        assert "access_type" in metadata["gpt-4o"]
+        assert metadata["gpt-4o"]["access_type"] == "api_key"

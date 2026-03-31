@@ -381,12 +381,16 @@ async def resolve_llm_config(
     import asyncio
 
     async def _resolve_one(model_name: str):
-        client = await resolve_oauth_llm_client(user_id, model_name)
-        if not client and is_byok:
-            client = await resolve_byok_llm_client(
-                user_id, model_name, is_byok, _pref_cache=model_pref,
-            )
-        return client
+        try:
+            client = await resolve_oauth_llm_client(user_id, model_name)
+            if not client and is_byok:
+                client = await resolve_byok_llm_client(
+                    user_id, model_name, is_byok, _pref_cache=model_pref,
+                )
+            return client
+        except Exception:
+            logger.warning("[CHAT] Failed to resolve fallback model %s, skipping", model_name)
+            return None
 
     subsidiary_pairs = [(role, m) for role, m in [("summarization", config.llm.summarization), ("fetch", config.llm.fetch)] if m]
     fallback_models = config.llm.fallback or []

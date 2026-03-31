@@ -488,3 +488,86 @@ class TestFastMode:
             )
         call_kwargs = mock_oauth.call_args
         assert call_kwargs.kwargs.get("service_tier") == "priority"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_one error handling (fallback model resolution)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveOneFallbackGuard:
+    @pytest.mark.asyncio
+    async def test_resolve_one_catches_exception_from_oauth(self, base_config):
+        """If resolve_oauth_llm_client raises for a fallback model, it should be skipped (not crash)."""
+        from src.server.handlers.chat.llm_config import resolve_llm_config
+
+        mock_mc = _mock_model_config(system_models={"system-default-model", "system-flash-model", "oauth-model"})
+
+        async def _oauth_side_effect(user_id, model_name, *args, **kwargs):
+            if model_name == "oauth-model":
+                raise Exception("OAuth token expired")
+            return None
+
+        with (
+            patch(
+                f"{HANDLER}.get_model_preference",
+                new_callable=AsyncMock,
+                return_value={"fallback_models": ["oauth-model"]},
+            ),
+            patch(
+                f"{HANDLER}.resolve_oauth_llm_client",
+                new_callable=AsyncMock,
+                side_effect=_oauth_side_effect,
+            ),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        ):
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+
+        # The fallback should be skipped, not crash the whole request
+        assert config.llm.name == "system-default-model"
+        # No fallback clients resolved (the one model failed)
+        assert not getattr(config, "fallback_llm_clients", None)
+
+    @pytest.mark.asyncio
+    async def test_mixed_fallback_valid_and_invalid(self, base_config):
+        """Mixed fallback list: valid API-key model resolves, invalid OAuth model is skipped."""
+        from src.server.handlers.chat.llm_config import resolve_llm_config
+
+        mock_mc = _mock_model_config(
+            system_models={"system-default-model", "system-flash-model", "valid-model", "oauth-model"}
+        )
+        mock_valid_client = MagicMock(name="valid-fallback-client")
+
+        async def _oauth_side_effect(user_id, model_name, *args, **kwargs):
+            if model_name == "oauth-model":
+                raise Exception("OAuth provider not configured")
+            return None
+
+        async def _byok_side_effect(user_id, model_name, is_byok, *args, **kwargs):
+            if model_name == "valid-model":
+                return mock_valid_client
+            return None
+
+        with (
+            patch(
+                f"{HANDLER}.get_model_preference",
+                new_callable=AsyncMock,
+                return_value={"fallback_models": ["valid-model", "oauth-model"]},
+            ),
+            patch(
+                f"{HANDLER}.resolve_oauth_llm_client",
+                new_callable=AsyncMock,
+                side_effect=_oauth_side_effect,
+            ),
+            patch(
+                f"{HANDLER}.resolve_byok_llm_client",
+                new_callable=AsyncMock,
+                side_effect=_byok_side_effect,
+            ),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        ):
+            config = await resolve_llm_config(base_config, "user-1", None, True)
+
+        # Valid model resolved, invalid skipped
+        assert len(config.fallback_llm_clients) == 1
+        assert config.fallback_llm_clients[0] is mock_valid_client

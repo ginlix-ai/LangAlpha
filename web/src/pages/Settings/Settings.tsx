@@ -18,6 +18,8 @@ import { getFlashWorkspace } from '@/pages/ChatAgent/utils/api';
 import ConfirmDialog from '@/pages/Dashboard/components/ConfirmDialog';
 import { ModelTierConfig } from '@/components/model/ModelTierConfig';
 import type { ByokProvider, CustomModelEntry, CustomModelFormState, AddProviderFormState, ProviderModelsData } from '@/components/model/types';
+import { filterModelsByAccess, buildConfiguredTypeMap } from '@/hooks/useFilteredModels';
+import type { ConfiguredProvider } from '@/hooks/useConfiguredProviders';
 import './Settings.css';
 
 interface CodexDeviceCode {
@@ -79,6 +81,7 @@ function Settings() {
 
   // Model tab state
   const [availableModels, setAvailableModels] = useState<Record<string, string[] | ProviderModelsData>>({});
+  const [modelMetadata, setModelMetadata] = useState<Record<string, { provider?: string; sdk?: string; access_type?: string }>>({});
   const [preferredModel, setPreferredModel] = useState('');
   const [preferredFlashModel, setPreferredFlashModel] = useState('');
   const [starredModels, setStarredModels] = useState<string[]>([]);
@@ -246,6 +249,7 @@ function Settings() {
         getClaudeOAuthStatus(),
       ]) as [Record<string, unknown>, Record<string, unknown>, OAuthStatus, OAuthStatus];
       setAvailableModels((modelsRes?.models as Record<string, string[] | ProviderModelsData>) || {});
+      setModelMetadata((modelsRes?.model_metadata as Record<string, { provider?: string; sdk?: string; access_type?: string }>) || {});
       const defaults = (modelsRes?.system_defaults as Record<string, unknown>) || {};
       setSystemDefaults(defaults);
       setByokEnabled(!!keysRes?.byok_enabled);
@@ -762,9 +766,27 @@ function Settings() {
     }
   };
 
+  // Build configured providers list from local state for access filtering
+  const localConfiguredProviders = useMemo<ConfiguredProvider[]>(() => {
+    const result: ConfiguredProvider[] = [];
+    for (const p of byokProviders) {
+      if (p.has_key) {
+        result.push({ provider: p.provider, displayName: p.display_name || p.provider, type: 'api_key' });
+      }
+    }
+    if (codexOAuthStatus.connected) {
+      result.push({ provider: 'codex-oauth', displayName: 'ChatGPT Codex', type: 'oauth' });
+    }
+    if (claudeOAuthStatus.connected) {
+      result.push({ provider: 'claude-oauth', displayName: 'Claude (OAuth)', type: 'oauth' });
+    }
+    return result;
+  }, [byokProviders, codexOAuthStatus, claudeOAuthStatus]);
+
   // Normalize availableModels to the Record<string, ProviderModelsData> shape
   // expected by ModelTierConfig / ModelSelector (backend may return string[]).
   // Also merges custom models so they appear in the model dropdowns.
+  // Finally filters by access type to prevent OAuth/coding_plan model leaks.
   const normalizedModels = useMemo<Record<string, ProviderModelsData>>(() => {
     const out: Record<string, ProviderModelsData> = {};
     for (const [provider, pd] of Object.entries(availableModels)) {
@@ -785,8 +807,11 @@ function Settings() {
         out[key].models!.push(cm.name);
       }
     }
-    return out;
-  }, [availableModels, customModels]);
+    // Filter by access type to prevent OAuth/coding_plan variants from leaking
+    const configuredSet = new Set(localConfiguredProviders.map(p => p.provider));
+    const configuredTypeMap = buildConfiguredTypeMap(localConfiguredProviders);
+    return filterModelsByAccess(out, modelMetadata, configuredSet, configuredTypeMap);
+  }, [availableModels, customModels, modelMetadata, localConfiguredProviders]);
 
   // All valid model names for filtering stale references
   const allValidModels = useMemo(() => {

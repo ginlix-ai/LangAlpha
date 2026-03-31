@@ -144,14 +144,16 @@ class ModelConfig:
         return provider.title()
 
     def get_model_metadata(self) -> dict[str, dict[str, str]]:
-        """Return {model_key: {sdk, provider}} for all visible models."""
+        """Return {model_key: {sdk, provider, access_type}} for all visible models."""
         result = {}
         for model_name, model_info in self.llm_config.items():
             if not model_info or not model_info.get("visible", False):
                 continue
             provider = model_info.get("provider", "unknown")
-            sdk = self.get_provider_info(provider).get("sdk", "unknown")
-            result[model_name] = {"sdk": sdk, "provider": provider}
+            provider_info = self.get_provider_info(provider)
+            sdk = provider_info.get("sdk", "unknown")
+            access_type = provider_info.get("access_type", "api_key")
+            result[model_name] = {"sdk": sdk, "provider": provider, "access_type": access_type}
         return result
 
 

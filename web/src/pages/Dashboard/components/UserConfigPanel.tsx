@@ -16,6 +16,8 @@ import ConfirmDialog from './ConfirmDialog';
 import { ProviderManager } from '@/components/model/ProviderManager';
 import { ModelTierConfig } from '@/components/model/ModelTierConfig';
 import type { ByokProvider, ProviderModelsData } from '@/components/model/types';
+import { filterModelsByAccess, buildConfiguredTypeMap } from '@/hooks/useFilteredModels';
+import type { ConfiguredProvider } from '@/hooks/useConfiguredProviders';
 
 type SettingsTab = 'userInfo' | 'preferences' | 'model';
 
@@ -83,6 +85,7 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
 
   // Model tab state
   const [availableModels, setAvailableModels] = useState<Record<string, string[] | ProviderModelsData>>({});
+  const [modelMetadata, setModelMetadata] = useState<Record<string, { provider?: string; sdk?: string; access_type?: string }>>({});
   const [preferredModel, setPreferredModel] = useState('');
   const [preferredFlashModel, setPreferredFlashModel] = useState('');
   const [starredModels, setStarredModels] = useState<string[]>([]);
@@ -230,9 +233,10 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
         getCodexOAuthStatus(),
         getClaudeOAuthStatus(),
       ]);
-      const modelsData = modelsRes as { models?: Record<string, string[] | ProviderModelsData> };
+      const modelsData = modelsRes as { models?: Record<string, string[] | ProviderModelsData>; model_metadata?: Record<string, { provider?: string; sdk?: string; access_type?: string }> };
       const keysData = keysRes as { byok_enabled?: boolean; providers?: ByokProvider[] };
       setAvailableModels(modelsData?.models || {});
+      setModelMetadata(modelsData?.model_metadata || {});
       setByokEnabled(keysData?.byok_enabled || false);
       setByokProviders(keysData?.providers || []);
       const initialBaseUrls: Record<string, string> = {};
@@ -677,8 +681,26 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
     onClose();
   };
 
+  // Build configured providers list from local state for access filtering
+  const localConfiguredProviders = useMemo<ConfiguredProvider[]>(() => {
+    const result: ConfiguredProvider[] = [];
+    for (const p of byokProviders) {
+      if (p.has_key) {
+        result.push({ provider: p.provider, displayName: p.display_name || p.provider, type: 'api_key' });
+      }
+    }
+    if (codexOAuthStatus.connected) {
+      result.push({ provider: 'codex-oauth', displayName: 'ChatGPT Codex', type: 'oauth' });
+    }
+    if (claudeOAuthStatus.connected) {
+      result.push({ provider: 'claude-oauth', displayName: 'Claude (OAuth)', type: 'oauth' });
+    }
+    return result;
+  }, [byokProviders, codexOAuthStatus, claudeOAuthStatus]);
+
   // Normalize availableModels to the Record<string, ProviderModelsData> shape
   // expected by ModelTierConfig / ModelSelector (backend may return string[]).
+  // Filters by access type to prevent OAuth/coding_plan variants from leaking.
   const normalizedModels = useMemo<Record<string, ProviderModelsData>>(() => {
     const out: Record<string, ProviderModelsData> = {};
     for (const [provider, pd] of Object.entries(availableModels)) {
@@ -688,8 +710,11 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
         out[provider] = pd as ProviderModelsData;
       }
     }
-    return out;
-  }, [availableModels]);
+    // Filter by access type to prevent OAuth/coding_plan variants from leaking
+    const configuredSet = new Set(localConfiguredProviders.map(p => p.provider));
+    const configuredTypeMap = buildConfiguredTypeMap(localConfiguredProviders);
+    return filterModelsByAccess(out, modelMetadata, configuredSet, configuredTypeMap);
+  }, [availableModels, modelMetadata, localConfiguredProviders]);
 
   // Build provider manifest for ProviderManager from byokProviders list.
   const providerManifest = useMemo(() => {

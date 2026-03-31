@@ -17,14 +17,14 @@ export interface ConfiguredProvider {
 export function useConfiguredProviders() {
   const { apiKeys, isLoading: keysLoading } = useApiKeys();
 
-  const { data: codexStatus } = useQuery({
+  const { data: codexStatus, isLoading: codexLoading } = useQuery({
     queryKey: queryKeys.oauth.codex(),
     queryFn: getCodexOAuthStatus,
     staleTime: 60_000,
     retry: false,
   });
 
-  const { data: claudeStatus } = useQuery({
+  const { data: claudeStatus, isLoading: claudeLoading } = useQuery({
     queryKey: queryKeys.oauth.claude(),
     queryFn: getClaudeOAuthStatus,
     staleTime: 60_000,
@@ -83,6 +83,6 @@ export function useConfiguredProviders() {
     providers,
     configuredSet,
     hasAny: providers.length > 0,
-    isLoading: keysLoading,
+    isLoading: keysLoading || codexLoading || claudeLoading,
   };
 }
