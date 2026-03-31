@@ -251,4 +251,116 @@ describe('ExportPreviewModal', () => {
       expect(preview.textContent).not.toMatch(/^\d+\s/);
     });
   });
+
+  it('shows error state with retry and export-anyway buttons on fetch failure', async () => {
+    const failFn = vi.fn().mockRejectedValue(new Error('Network error'));
+    renderModal({ readFileFullFn: failFn });
+
+    await waitFor(() => {
+      expect(screen.getByText('filePanel.exportLoadError')).toBeInTheDocument();
+      expect(screen.getByText('filePanel.tryAgain')).toBeInTheDocument();
+      expect(screen.getByText('filePanel.exportAnyway')).toBeInTheDocument();
+    });
+  });
+
+  it('retry button calls readFileFullFn again after error', async () => {
+    const failFn = vi.fn().mockRejectedValue(new Error('Network error'));
+    renderModal({ readFileFullFn: failFn });
+
+    await waitFor(() => {
+      expect(screen.getByText('filePanel.tryAgain')).toBeInTheDocument();
+    });
+
+    // First call was on mount
+    expect(failFn).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByText('filePanel.tryAgain'));
+
+    await waitFor(() => {
+      expect(failFn).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('export-anyway button dismisses error and shows truncated content', async () => {
+    const failFn = vi.fn().mockRejectedValue(new Error('Network error'));
+    renderModal({ readFileFullFn: failFn });
+
+    await waitFor(() => {
+      expect(screen.getByText('filePanel.exportAnyway')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('filePanel.exportAnyway'));
+
+    await waitFor(() => {
+      // Error should be gone, markdown preview shows the fallback content
+      expect(screen.queryByText('filePanel.exportLoadError')).not.toBeInTheDocument();
+      expect(screen.getByTestId('markdown-preview')).toHaveTextContent('# Test Report');
+    });
+  });
+
+  it('zoom stepper: clicking + increments, clicking - decrements', () => {
+    renderModal();
+
+    // Zoom is the 3rd stepper (font size, line height, zoom)
+    const steppers = document.querySelectorAll('.export-preview-stepper');
+    const zoomStepper = steppers[2];
+    const [minusBtn, plusBtn] = zoomStepper.querySelectorAll('button');
+
+    // Default zoom is 50%
+    expect(screen.getByText('50%')).toBeInTheDocument();
+
+    fireEvent.click(plusBtn);
+    expect(screen.getByText('60%')).toBeInTheDocument();
+
+    fireEvent.click(minusBtn);
+    expect(screen.getByText('50%')).toBeInTheDocument();
+  });
+
+  it('zoom stepper: min clamp at 25%, max clamp at 100%', () => {
+    renderModal();
+
+    const steppers = document.querySelectorAll('.export-preview-stepper');
+    const zoomStepper = steppers[2];
+    const [minusBtn, plusBtn] = zoomStepper.querySelectorAll('button');
+
+    // Go down to 25% (from 50%, need 3 clicks of -10%)
+    for (let i = 0; i < 3; i++) fireEvent.click(minusBtn);
+    // After 3 clicks: 50 -> 40 -> 30 -> 25 (clamped since 30-10 = 20 < 25)
+    // Actually Math.max(0.25, 0.3-0.1) = 0.25 on 3rd click
+    expect(minusBtn).toBeDisabled();
+
+    // Go up to 100% (from 25%, need 8 clicks of +10%)
+    for (let i = 0; i < 8; i++) fireEvent.click(plusBtn);
+    expect(screen.getByText('100%')).toBeInTheDocument();
+    expect(plusBtn).toBeDisabled();
+  });
+
+  it('line height stepper: max button disabled at 2.4', () => {
+    renderModal();
+
+    const steppers = document.querySelectorAll('.export-preview-stepper');
+    const lineHeightStepper = steppers[1];
+    const [, plusBtn] = lineHeightStepper.querySelectorAll('button');
+
+    // Default is 1.4, click plus 5 times to reach 2.4
+    for (let i = 0; i < 5; i++) fireEvent.click(plusBtn);
+    expect(screen.getByText('2.4')).toBeInTheDocument();
+    expect(plusBtn).toBeDisabled();
+  });
+
+  it('shows "Custom" when font is changed independently from preset', () => {
+    renderModal();
+
+    const selects = screen.getAllByRole('combobox');
+    const fontSelect = selects[1];
+    const presetSelect = selects[0];
+
+    // Change font to Merriweather (not part of default Equity Research preset)
+    fireEvent.change(fontSelect, { target: { value: '"Merriweather", serif' } });
+
+    // Preset should now show Custom
+    expect(presetSelect).toHaveValue('');
+    // The "Custom" option text
+    expect(screen.getByText('filePanel.custom')).toBeInTheDocument();
+  });
 });
