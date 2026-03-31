@@ -150,7 +150,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
         }}
       >
         {/* Search */}
-        <div className="flex-1 max-w-xl">
+        <div className="flex-1 min-w-0 max-w-xl">
           <div className="dashboard-search-wrapper" ref={dropdownRef}>
             <form
               onSubmit={handleSubmit}
@@ -226,9 +226,9 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
         </div>
 
         {/* Right actions */}
-        <div className="flex items-center gap-3 ml-4">
-          {/* Help */}
-          <div className="relative" ref={helpRef}>
+        <div className="flex items-center gap-3 ml-3 shrink-0">
+          {/* Help — hidden on mobile to save space */}
+          <div className="relative hidden sm:block" ref={helpRef}>
             <button
               className="p-2 transition-colors"
               style={{ color: showHelpPopover ? 'var(--color-text-primary)' : 'var(--color-text-secondary)' }}
@@ -279,7 +279,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
           </div>
 
           {/* Divider */}
-          <div className="h-8 w-[1px] mx-2" style={{ backgroundColor: 'var(--color-border-muted)' }} />
+          <div className="h-8 w-[1px] mx-2 hidden sm:block" style={{ backgroundColor: 'var(--color-border-muted)' }} />
 
           {/* User avatar + dropdown */}
           <AvatarDropdown />

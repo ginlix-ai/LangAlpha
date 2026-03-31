@@ -378,36 +378,34 @@ function AIDailyBriefCard({ onReadFull }: AIDailyBriefCardProps) {
 
             {/* Mobile: full-width CTA + stack indicator */}
             <div className="flex flex-col gap-2 mt-4 sm:hidden">
-              <div className="flex gap-2">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onReadFull?.(latest.market_insight_id);
-                  }}
-                  className="group/btn flex items-center justify-center gap-1.5 flex-1 py-2.5 rounded-lg text-sm font-semibold transition-colors"
-                  style={{
-                    backgroundColor: 'var(--color-btn-primary-bg, var(--color-accent-primary))',
-                    color: 'var(--color-btn-primary-text, #fff)',
-                  }}
-                >
-                  Read Full Brief
-                  <ArrowRight size={14} className="group-hover/btn:translate-x-1 transition-transform" />
-                </button>
-                <button
-                  onClick={handleGeneratePersonalized}
-                  disabled={generating}
-                  title="Generate a personalized market brief based on your watchlist and portfolio holdings"
-                  className="group/btn flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg text-sm font-semibold transition-colors border"
-                  style={{
-                    borderColor: 'var(--color-border-default)',
-                    color: 'var(--color-text-secondary)',
-                    opacity: generating ? 0.6 : 1,
-                  }}
-                >
-                  {generating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-                  {generating ? 'Generating...' : 'Generate Personalized Brief'}
-                </button>
-              </div>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onReadFull?.(latest.market_insight_id);
+                }}
+                className="group/btn flex items-center justify-center gap-1.5 w-full py-2.5 rounded-lg text-sm font-semibold transition-colors"
+                style={{
+                  backgroundColor: 'var(--color-btn-primary-bg, var(--color-accent-primary))',
+                  color: 'var(--color-btn-primary-text, #fff)',
+                }}
+              >
+                Read Full Brief
+                <ArrowRight size={14} className="group-hover/btn:translate-x-1 transition-transform" />
+              </button>
+              <button
+                onClick={handleGeneratePersonalized}
+                disabled={generating}
+                title="Generate a personalized market brief based on your watchlist and portfolio holdings"
+                className="group/btn flex items-center justify-center gap-1.5 w-full py-2.5 rounded-lg text-sm font-semibold transition-colors border"
+                style={{
+                  borderColor: 'var(--color-border-default)',
+                  color: 'var(--color-text-secondary)',
+                  opacity: generating ? 0.6 : 1,
+                }}
+              >
+                {generating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                {generating ? 'Generating...' : 'Generate Personalized Brief'}
+              </button>
               {generateError && (
                 <p className="text-xs mt-1" style={{ color: 'var(--color-loss, #ef4444)' }}>{generateError}</p>
               )}

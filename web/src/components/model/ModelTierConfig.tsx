@@ -350,7 +350,7 @@ export function ModelTierConfig({
               style={{ color: "var(--color-accent-primary)" }}
             />
             <span className="text-sm font-medium flex-1">
-              Two ways to research
+              Two agent modes
             </span>
             <ChevronRight
               className={cn(
@@ -376,14 +376,15 @@ export function ModelTierConfig({
                       className="text-xs font-semibold"
                       style={{ color: "var(--color-text-primary)" }}
                     >
-                      Deep Research
+                      PTC Mode (Primary)
                     </span>
                     <span
                       className="text-xs leading-relaxed"
                       style={{ color: "var(--color-text-tertiary)" }}
                     >
-                      Full sandbox with code execution, charts, and data
-                      analysis. Uses your primary model.
+                      The full agent with a sandboxed environment for code
+                      execution, charts, and data analysis. Powered by your
+                      primary model.
                     </span>
                   </div>
                   <div className="flex flex-col gap-1">
@@ -391,14 +392,14 @@ export function ModelTierConfig({
                       className="text-xs font-semibold"
                       style={{ color: "var(--color-text-primary)" }}
                     >
-                      Quick Answers
+                      Flash Mode
                     </span>
                     <span
                       className="text-xs leading-relaxed"
                       style={{ color: "var(--color-text-tertiary)" }}
                     >
-                      Fast responses, no sandbox. Uses your flash model for
-                      speed.
+                      A lightweight agent for quick answers without a sandbox.
+                      Powered by your flash model for speed.
                     </span>
                   </div>
                 </div>

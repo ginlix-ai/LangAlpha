@@ -711,7 +711,7 @@
     "nKB": "~{{size}} KB"
   },
   "setup": {
-    "brandedHeader": "设置您的 AI 研究助手",
+    "brandedHeader": "配置您的 LLM 提供商",
     "securityNote": "您的 API 密钥已加密且不会被共享",
     "methodTitle": "您想如何连接？",
     "methodSubtitle": "选择访问 AI 模型的方式。您可以稍后添加更多提供商。",
@@ -734,9 +734,9 @@
     "primaryDescription": "用于深度研究",
     "flashModel": "快速模型",
     "flashDescription": "用于快速问答",
-    "explainerTitle": "两种研究方式",
-    "explainerDeep": "深度研究：完整沙盒环境，支持代码执行、图表和数据分析。使用您的主模型。",
-    "explainerFlash": "快速问答：快速响应，无沙盒。使用您的快速模型以提高速度。",
+    "explainerTitle": "两种代理模式",
+    "explainerDeep": "PTC 模式（主要）：完整代理，带有沙盒环境，支持代码执行、图表和数据分析。由您的主模型驱动。",
+    "explainerFlash": "Flash 模式：轻量代理，无需沙盒即可快速回答。由您的快速模型驱动。",
     "doneTitle": "准备就绪！",
     "doneSummary": "您的 AI 研究助手已配置完成，随时可用。",
     "goToDashboard": "前往控制台",

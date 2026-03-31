@@ -721,7 +721,7 @@
     "nKB": "~{{size}} KB"
   },
   "setup": {
-    "brandedHeader": "Set up your AI research assistant",
+    "brandedHeader": "Configure your LLM providers",
     "securityNote": "Your API keys are encrypted and never shared",
     "methodTitle": "How would you like to connect?",
     "methodSubtitle": "Choose how you'll access AI models. You can add more providers later.",
@@ -744,9 +744,9 @@
     "primaryDescription": "For deep research",
     "flashModel": "Flash Model",
     "flashDescription": "For quick answers",
-    "explainerTitle": "Two ways to research",
-    "explainerDeep": "Deep Research: Full sandbox with code execution, charts, data analysis. Uses your primary model.",
-    "explainerFlash": "Quick Answers: Fast responses, no sandbox. Uses your flash model for speed.",
+    "explainerTitle": "Two agent modes",
+    "explainerDeep": "PTC Mode (Primary): The full agent with a sandboxed environment for code execution, charts, and data analysis. Powered by your primary model.",
+    "explainerFlash": "Flash Mode: A lightweight agent for quick answers without a sandbox. Powered by your flash model for speed.",
     "doneTitle": "You're all set!",
     "doneSummary": "Your AI research assistant is configured and ready to go.",
     "goToDashboard": "Go to Dashboard",

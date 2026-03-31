@@ -193,7 +193,7 @@ export default function MethodStep() {
   }, [selected, navigate]);
 
   const handleSkipToDefaults = useCallback(() => {
-    navigate('/setup/models');
+    navigate('/setup/defaults');
   }, [navigate]);
 
   const handleRedeemInvitation = useCallback(async () => {
@@ -219,7 +219,7 @@ export default function MethodStep() {
   }, [invitationCode, queryClient, navigate]);
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-4 sm:gap-6">
       {/* Configured providers banner (visible when looping back) */}
       {hasConfigured && (
         <ConfiguredBanner

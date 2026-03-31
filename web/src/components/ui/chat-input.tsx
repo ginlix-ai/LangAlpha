@@ -1414,7 +1414,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                         : { bottom: window.innerHeight - btnRect.top + 4, top: 'auto' }),
                     };
                     return createPortal(
-                    <div ref={modelDropdownRef} className={`model-dropdown ${dropdownDirection === 'down' ? 'model-dropdown-down' : 'model-dropdown-up'}`} style={fixedStyle}>
+                    <div ref={modelDropdownRef} data-click-outside-ignore className={`model-dropdown ${dropdownDirection === 'down' ? 'model-dropdown-down' : 'model-dropdown-up'}`} style={fixedStyle}>
 
                       {/* Primary menu: thread models + reasoning + "More models"
                          Submenu direction: open left if dropdown is near right edge of viewport */}

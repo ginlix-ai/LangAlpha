@@ -1552,23 +1552,27 @@ function Settings() {
                 </div>
               </div>
 
-              {/* Manage providers link */}
+              {/* Manage providers */}
               <div
-                className="flex items-center justify-between"
-                style={{ borderTop: '1px solid var(--color-border-muted)', paddingTop: '16px' }}
+                role="button"
+                tabIndex={0}
+                className="flex items-center justify-between gap-4 p-4 rounded-lg cursor-pointer transition-colors"
+                style={{
+                  backgroundColor: 'var(--color-accent-soft)',
+                  border: '1px solid var(--color-border-default)',
+                }}
+                onClick={() => navigate('/setup/method')}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate('/setup/method'); } }}
               >
-                <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-                  Add or remove API keys, custom providers, and models
-                </p>
-                <button
-                  type="button"
-                  onClick={() => navigate('/setup/method')}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors shrink-0"
-                  style={{ backgroundColor: 'var(--color-accent-soft)', color: 'var(--color-accent-primary)' }}
-                >
-                  <Settings2 className="h-3.5 w-3.5" />
-                  {t('settings.manageProviders', 'Manage providers')}
-                </button>
+                <div className="flex flex-col gap-1 min-w-0">
+                  <span className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
+                    {t('settings.manageProviders', 'Manage providers')}
+                  </span>
+                  <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+                    Add or remove API keys, custom providers, and models
+                  </span>
+                </div>
+                <Settings2 className="h-5 w-5 shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
               </div>
 
 
