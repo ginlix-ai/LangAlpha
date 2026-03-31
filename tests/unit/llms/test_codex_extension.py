@@ -29,7 +29,7 @@ class TestSystemToInstructions:
         ]
         payload = llm._get_request_payload(messages)
 
-        assert payload["instructions"] == "You are a research agent."
+        assert payload["instructions"] == "You are a research agent.\n\nstatic placeholder"
         roles = [i["role"] for i in payload["input"] if isinstance(i, dict)]
         assert "system" not in roles
 
@@ -46,7 +46,7 @@ class TestSystemToInstructions:
         ]
         payload = llm._get_request_payload(messages)
 
-        assert payload["instructions"] == "Part one.\n\nPart two."
+        assert payload["instructions"] == "Part one.\n\nPart two.\n\nstatic placeholder"
         roles = [i["role"] for i in payload["input"] if isinstance(i, dict)]
         assert "system" not in roles
 
@@ -64,7 +64,7 @@ class TestSystemToInstructions:
 
         assert "instructions" not in payload
 
-    def test_system_overrides_static_instructions(self):
+    def test_system_merges_with_existing_instructions(self):
         llm = _make_llm()
         messages = [
             SystemMessage(content="Dynamic prompt"),
@@ -72,8 +72,7 @@ class TestSystemToInstructions:
         ]
         payload = llm._get_request_payload(messages)
 
-        assert payload["instructions"] == "Dynamic prompt"
-        assert payload["instructions"] != "static placeholder"
+        assert payload["instructions"] == "Dynamic prompt\n\nstatic placeholder"
 
 
 class TestStatelessIdSanitization:
