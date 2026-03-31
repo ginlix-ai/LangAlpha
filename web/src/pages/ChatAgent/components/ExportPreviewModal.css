@@ -148,8 +148,8 @@
   text-decoration: underline !important;
 }
 .export-preview-content .markdown-print-content pre {
-  background-color: #f5f5f5 !important;
-  border: 1px solid #e0e0e0 !important;
+  background-color: #f7f6f3 !important;
+  border: none !important;
   color: #1a1a1a !important;
 }
 .export-preview-content .markdown-print-content pre code,
@@ -408,6 +408,18 @@
   line-height: var(--print-line-height, 1.4) !important;
   font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace !important;
 }
+/* Strip per-token backgrounds, borders, and decorations from react-syntax-highlighter.
+   Each line gets <span style="display:flex; background-color:..."> with inline backgrounds
+   that create visible boxes/lines in the paginated output. */
+.print-preview-active pre code,
+.print-preview-active pre span {
+  background: transparent !important;
+  background-color: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  text-decoration: none !important;
+  outline: none !important;
+}
 /* Override rem-based table cell font-sizes + compact padding for print */
 .print-preview-active th,
 .print-preview-active td {
@@ -511,6 +523,14 @@
     font-size: 0.875em !important;
     line-height: var(--print-line-height, 1.4) !important;
   }
+  .markdown-print-content pre code, .markdown-print-content pre span {
+    background: transparent !important;
+    background-color: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    text-decoration: none !important;
+    outline: none !important;
+  }
 
   /* Light-mode colors */
   .markdown-print-content p, .markdown-print-content li,
@@ -531,8 +551,8 @@
 
   /* Code blocks */
   .markdown-print-content pre {
-    background-color: #f5f5f5 !important;
-    border: 1px solid #e0e0e0 !important;
+    background-color: #f7f6f3 !important;
+    border: none !important;
     color: #1a1a1a !important;
     page-break-inside: avoid;
     break-inside: avoid;
