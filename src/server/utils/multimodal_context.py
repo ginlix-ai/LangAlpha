@@ -33,22 +33,24 @@ def parse_multimodal_contexts(
 
     contexts = []
 
+    _multimodal_types = ("image", "pdf", "file")
+
     for ctx in additional_context:
         if isinstance(ctx, dict):
-            if ctx.get("type") == "image":
+            if ctx.get("type") in _multimodal_types:
                 contexts.append(
                     MultimodalContext(
-                        type="image",
+                        type=ctx.get("type", "image"),
                         data=ctx.get("data", ""),
                         description=ctx.get("description"),
                     )
                 )
         elif isinstance(ctx, MultimodalContext):
             contexts.append(ctx)
-        elif hasattr(ctx, "type") and ctx.type == "image":
+        elif hasattr(ctx, "type") and ctx.type in _multimodal_types:
             contexts.append(
                 MultimodalContext(
-                    type="image",
+                    type=ctx.type,
                     data=getattr(ctx, "data", ""),
                     description=getattr(ctx, "description", None),
                 )
@@ -71,10 +73,11 @@ async def build_attachment_metadata(
 
     async def _process(ctx: MultimodalContext) -> Dict[str, Any]:
         is_pdf = ctx.data.startswith("data:application/pdf")
+        is_image = ctx.data.startswith("data:image/")
         name = ctx.description or "file"
         meta: Dict[str, Any] = {
             "name": name,
-            "type": "pdf" if is_pdf else "image",
+            "type": "pdf" if is_pdf else "image" if is_image else "file",
             "size": len(ctx.data.split(",", 1)[1]) * 3 // 4 if "," in ctx.data else 0,
         }
         if is_storage_enabled():
@@ -94,53 +97,63 @@ async def build_attachment_metadata(
 def inject_multimodal_context(
     messages: List[Dict[str, Any]],
     multimodal_contexts: List[MultimodalContext],
+    file_paths: Optional[List[Optional[str]]] = None,
 ) -> List[Dict[str, Any]]:
-    """Inject a separate context message with image/PDF content before the user query.
+    """Merge image/PDF content blocks into the last user message.
 
-    Inserts a new user message containing the attachment(s) right before the last
-    user message, so the LLM sees the visual/document context first and the user's
-    question second.
+    Prepends content blocks before the user's text content so the LLM sees
+    the attachment context first. Non-image/non-PDF contexts are skipped
+    (they are handled via system-reminder with sandbox path only).
 
     Args:
         messages: List of message dicts (role + content)
         multimodal_contexts: List of MultimodalContext objects to inject
+        file_paths: Optional parallel list of sandbox virtual paths. When
+            provided, path references are included in the label text.
 
     Returns:
-        Modified messages list with context message inserted
+        Modified messages list with content blocks merged into user message
     """
     if not multimodal_contexts or not messages:
         return messages
 
-    # Build the context message content blocks
+    # Build content blocks from contexts
     blocks: List[Dict[str, Any]] = []
-    for ctx in multimodal_contexts:
+    for idx, ctx in enumerate(multimodal_contexts):
         data_url = ctx.data
         desc = ctx.description or "file"
+        path_note = ""
+        if file_paths and idx < len(file_paths) and file_paths[idx]:
+            path_note = f" (saved to {file_paths[idx]})"
 
         if data_url.startswith("data:application/pdf"):
-            # PDF: extract raw base64 and use file content block
             raw_b64 = data_url.split(",", 1)[1] if "," in data_url else data_url
-            blocks.append({"type": "text", "text": f"[Attached PDF: {desc}]"})
+            blocks.append({"type": "text", "text": f"[Attached PDF: {desc}{path_note}]"})
             blocks.append({
                 "type": "file",
                 "base64": raw_b64,
                 "mime_type": "application/pdf",
                 "filename": desc,
             })
-        else:
-            # Image: use correct nested image_url format
-            blocks.append({"type": "text", "text": f"[Attached image: {desc}]"})
+        elif data_url.startswith("data:image/"):
+            blocks.append({"type": "text", "text": f"[Attached image: {desc}{path_note}]"})
             blocks.append({"type": "image_url", "image_url": {"url": data_url}})
+        else:
+            # Non-image/non-PDF: skip content block injection.
+            # These are handled via system-reminder with sandbox path only.
+            continue
 
     if not blocks:
         return messages
 
-    context_message = {"role": "user", "content": blocks}
-
-    # Insert before the last user message
+    # Find last user message and prepend blocks into its content
     for i in range(len(messages) - 1, -1, -1):
         if messages[i].get("role") == "user":
-            messages.insert(i, context_message)
+            content = messages[i]["content"]
+            if isinstance(content, str):
+                messages[i]["content"] = blocks + [{"type": "text", "text": content}]
+            elif isinstance(content, list):
+                messages[i]["content"] = blocks + content
             break
 
     return messages
@@ -164,7 +177,7 @@ def build_unsupported_reminder(notes: list[str]) -> str:
     instructions, matching the ``build_directive_reminder`` pattern.
 
     Args:
-        notes: Per-file descriptions (e.g. from ``upload_unsupported_to_sandbox``
+        notes: Per-file descriptions (e.g. from the PTC workflow
             or a simple type summary for Flash mode).
 
     Returns:
@@ -180,9 +193,20 @@ def build_unsupported_reminder(notes: list[str]) -> str:
     )
 
 
+def build_file_reminder(notes: list[str]) -> str:
+    """Build a ``<system-reminder>`` for file-only attachments.
+
+    Unlike :func:`build_unsupported_reminder`, this does **not** include the
+    "cannot view" warning because no model can natively consume these file
+    types — they are always processed via sandbox + Python.
+    """
+    body = "\n".join(notes)
+    return f"\n\n<system-reminder>\n{body}\n</system-reminder>"
+
+
 # -- Capability-aware helpers ------------------------------------------------
 
-# Mapping from MIME type prefix to file extension
+# Mapping from MIME type to file extension
 _MIME_EXTENSIONS = {
     "application/pdf": ".pdf",
     "image/png": ".png",
@@ -192,18 +216,32 @@ _MIME_EXTENSIONS = {
     "image/svg+xml": ".svg",
     "image/bmp": ".bmp",
     "image/tiff": ".tiff",
+    "text/csv": ".csv",
+    "text/plain": ".txt",
+    "application/json": ".json",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
 }
+
+
+def _ext_from_desc(desc: str) -> str:
+    """Extract file extension from description/filename, or empty string."""
+    if "." in desc:
+        return "." + desc.rsplit(".", 1)[1].lower()[:10]
+    return ""
 
 
 def filter_multimodal_by_capability(
     contexts: list,
     modalities: list[str],
-) -> Tuple[list, list]:
+) -> Tuple[list, list, list]:
     """Filter multimodal contexts by model capabilities.
 
-    Each context item is classified as needing either ``"pdf"`` or ``"image"``
-    support.  Items whose required modality is present in *modalities* go into
-    the *supported* list; the rest go into *unsupported*.
+    Image and PDF items are checked against the model's supported modalities.
+    All other file types (xlsx, csv, etc.) bypass capability checking entirely
+    because no model can consume them natively — they always require sandbox
+    processing via Python.
 
     Args:
         contexts: List of MultimodalContext objects (or dicts with a ``data`` key).
@@ -211,62 +249,65 @@ def filter_multimodal_by_capability(
             ``["text", "image", "pdf"]``).
 
     Returns:
-        Tuple of (supported_contexts, unsupported_contexts).
+        Tuple of (supported, unsupported, file_only).
+
+        - **supported**: image/PDF items the model handles natively.
+        - **unsupported**: image/PDF items the model cannot handle.
+        - **file_only**: non-image/non-PDF items (always need sandbox + Python).
     """
     supported: list = []
     unsupported: list = []
+    file_only: list = []
     for ctx in contexts:
         data = ctx.data if hasattr(ctx, "data") else ctx.get("data", "")
-        needed = "pdf" if data.startswith("data:application/pdf") else "image"
-        if needed in modalities:
-            supported.append(ctx)
+        is_pdf = data.startswith("data:application/pdf")
+        is_image = data.startswith("data:image/")
+        if is_pdf or is_image:
+            needed = "pdf" if is_pdf else "image"
+            if needed in modalities:
+                supported.append(ctx)
+            else:
+                unsupported.append(ctx)
         else:
-            unsupported.append(ctx)
-    return supported, unsupported
+            file_only.append(ctx)
+    return supported, unsupported, file_only
 
 
-async def upload_unsupported_to_sandbox(
-    unsupported: list,
+async def upload_to_sandbox(
+    contexts: list,
     sandbox,
     upload_dir: str = "uploads",
-) -> List[str]:
-    """Upload unsupported multimodal files to the sandbox filesystem.
+) -> List[Optional[str]]:
+    """Upload multimodal files to the sandbox filesystem.
 
     For each context item the base64 payload is decoded and written into the
-    sandbox's ``work/{upload_dir}/`` directory.  A list of human-readable notes
-    describing the uploaded files is returned so the caller can inject them as
-    user messages.
+    sandbox's ``work/{upload_dir}/`` directory.
 
     Args:
-        unsupported: List of MultimodalContext objects that the model cannot
-            handle natively.
-        sandbox: The sandbox instance (must expose ``aupload_file_bytes`` and
-            ``normalize_path``).
+        contexts: List of MultimodalContext objects to upload.
+        sandbox: The sandbox instance (must expose ``aupload_file_bytes``,
+            ``normalize_path``, and optionally ``virtualize_path``).
         upload_dir: Sub-directory under ``work/`` to store uploads.
 
     Returns:
-        List of descriptive notes (one per context item).
+        List of virtual paths parallel to the input list (``None`` on failure).
     """
-    notes: List[str] = []
+    paths: List[Optional[str]] = []
 
-    for ctx in unsupported:
+    for ctx in contexts:
         data_url = ctx.data if hasattr(ctx, "data") else ctx.get("data", "")
         desc = (
             ctx.description if hasattr(ctx, "description") else ctx.get("description")
         ) or "file"
 
         try:
-            # Parse data URL: data:<mime>;base64,<content>
             header, b64_content = data_url.split(",", 1)
-            # header looks like "data:image/png;base64"
             mime_type = header.split(":")[1].split(";")[0] if ":" in header else ""
 
             file_bytes = base64.b64decode(b64_content)
 
-            # Build a unique filename
-            ext = _MIME_EXTENSIONS.get(mime_type, "")
+            ext = _MIME_EXTENSIONS.get(mime_type, _ext_from_desc(desc))
             unique_id = uuid.uuid4().hex[:8]
-            # Sanitise description for use in filename
             safe_desc = "".join(
                 c if c.isalnum() or c in "-_." else "_" for c in desc
             ).strip("_")[:60]
@@ -276,39 +317,18 @@ async def upload_unsupported_to_sandbox(
             abs_path = sandbox.normalize_path(rel_path)
 
             ok = await sandbox.aupload_file_bytes(abs_path, file_bytes)
-            if not ok:
-                raise RuntimeError("upload returned False")
-
-            # Build descriptive note (file facts only — agent instructions
-            # are added by build_unsupported_reminder in the caller).
-            # Use virtualize_path so the note shows the path the agent
-            # would use in read_file / execute_code.
-            if hasattr(sandbox, "virtualize_path"):
-                sandbox_display_path = sandbox.virtualize_path(abs_path)
+            if ok:
+                # Return relative path (agent convention per workspace_paths template)
+                paths.append(rel_path)
             else:
-                sandbox_display_path = abs_path
-            is_pdf = mime_type == "application/pdf"
-            if is_pdf:
-                notes.append(
-                    f"The user attached a PDF file ({desc}). "
-                    f"It has been saved to {sandbox_display_path}. "
-                    f"Use Python to read it (e.g., PyMuPDF, pdfplumber)."
-                )
-            else:
-                notes.append(
-                    f"The user attached an image file ({desc}). "
-                    f"It has been saved to {sandbox_display_path}. "
-                    f"Use Python to process it (e.g., PIL/Pillow for metadata)."
-                )
+                logger.warning(f"Upload returned False for '{desc}'")
+                paths.append(None)
 
         except Exception:
             logger.warning(
-                f"Failed to upload unsupported attachment '{desc}' to sandbox",
+                f"Failed to upload attachment '{desc}' to sandbox",
                 exc_info=True,
             )
-            notes.append(
-                "The user attached a file but it could not be uploaded to "
-                "the sandbox."
-            )
+            paths.append(None)
 
-    return notes
+    return paths

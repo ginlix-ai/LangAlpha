@@ -28,11 +28,11 @@ class SkillContext(AdditionalContextBase):
 
 
 class MultimodalContext(AdditionalContextBase):
-    """Context providing an image or PDF to inject into the conversation as native content blocks."""
+    """Context providing an image, PDF, or arbitrary file attachment."""
 
-    type: Literal["image"] = "image"
-    data: str = Field(..., description="Base64 data URL (data:image/...;base64,... or data:application/pdf;base64,...)")
-    description: Optional[str] = Field(None, description="Optional caption for the attachment")
+    type: Literal["image", "pdf", "file"] = "image"
+    data: str = Field(..., description="Base64 data URL (data:<mime>;base64,...)")
+    description: Optional[str] = Field(None, description="Filename or caption for the attachment")
 
 
 class DirectiveContext(AdditionalContextBase):
@@ -47,6 +47,8 @@ AdditionalContext = Annotated[
     Union[
         Annotated[SkillContext, Tag("skills")],
         Annotated[MultimodalContext, Tag("image")],
+        Annotated[MultimodalContext, Tag("pdf")],
+        Annotated[MultimodalContext, Tag("file")],
         Annotated[DirectiveContext, Tag("directive")],
     ],
     Discriminator(lambda v: v.get("type") if isinstance(v, dict) else getattr(v, "type", None)),
