@@ -82,6 +82,7 @@ async def update_portfolio_holding(
     quantity: Optional[Decimal] = None,
     average_cost: Optional[Decimal] = None,
     currency: Optional[str] = None,
+    account_name: Optional[str] = None,
     notes: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
     first_purchased_at: Optional[datetime] = None,
@@ -98,6 +99,7 @@ async def update_portfolio_holding(
         quantity: New quantity
         average_cost: New average cost
         currency: New currency
+        account_name: New account name
         notes: New notes
         metadata: New metadata
         first_purchased_at: New first purchase date
@@ -110,6 +112,7 @@ async def update_portfolio_holding(
     builder.add_field("quantity", quantity)
     builder.add_field("average_cost", average_cost)
     builder.add_field("currency", currency)
+    builder.add_field("account_name", account_name)
     builder.add_field("notes", notes)
     builder.add_field("metadata", metadata, is_json=True)
     builder.add_field("first_purchased_at", first_purchased_at)

@@ -6,16 +6,16 @@ This module contains middleware classes that handle tool input/output processing
 - Result normalization: Ensures all tool results are strings for LLM compatibility
 """
 
-from ptc_agent.agent.middleware.tool.argument_parsing import ToolArgumentParsingMiddleware
-from ptc_agent.agent.middleware.tool.code_validation import CodeValidationMiddleware
-from ptc_agent.agent.middleware.tool.empty_call_retry import EmptyToolCallRetryMiddleware
-from ptc_agent.agent.middleware.tool.error_handling import (
+from .argument_parsing import ToolArgumentParsingMiddleware
+from .code_validation import CodeValidationMiddleware
+from .empty_call_retry import EmptyToolCallRetryMiddleware
+from .error_handling import (
     ToolErrorHandlingMiddleware,
     simplify_tool_error,
 )
-from ptc_agent.agent.middleware.tool.leak_detection import LeakDetectionMiddleware
-from ptc_agent.agent.middleware.tool.protected_path import ProtectedPathMiddleware
-from ptc_agent.agent.middleware.tool.result_normalization import ToolResultNormalizationMiddleware
+from .leak_detection import LeakDetectionMiddleware
+from .protected_path import ProtectedPathMiddleware
+from .result_normalization import ToolResultNormalizationMiddleware
 
 __all__ = [
     "CodeValidationMiddleware",

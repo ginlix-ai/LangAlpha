@@ -223,7 +223,7 @@ class FlashAgent:
         main_middleware: list[Any] = []
 
         # Steering middleware (allows injecting steering messages from user)
-        from src.ptc_agent.agent.middleware.steering import SteeringMiddleware
+        from ptc_agent.agent.middleware.steering import SteeringMiddleware
 
         main_middleware.append(SteeringMiddleware())
 

@@ -411,6 +411,9 @@ class PortfolioHoldingUpdate(BaseModel):
     quantity: Optional[Decimal] = Field(None, description="Number of units held")
     average_cost: Optional[Decimal] = Field(None, description="Average cost per unit")
     currency: Optional[str] = Field(None, max_length=10, description="Currency")
+    account_name: Optional[str] = Field(
+        None, max_length=100, description="Account name (e.g., 'Robinhood')"
+    )
     notes: Optional[str] = Field(None, description="User notes")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
     first_purchased_at: Optional[datetime] = Field(

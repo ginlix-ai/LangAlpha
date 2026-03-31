@@ -159,6 +159,7 @@ async def update_portfolio_holding(
         quantity=request.quantity,
         average_cost=request.average_cost,
         currency=request.currency,
+        account_name=request.account_name,
         notes=request.notes,
         metadata=request.metadata,
         first_purchased_at=request.first_purchased_at,

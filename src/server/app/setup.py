@@ -104,13 +104,16 @@ async def lifespan(app: FastAPI):
     from src.config.settings import AUTH_ENABLED, LOCAL_DEV_USER_ID
 
     if not AUTH_ENABLED:
-        from src.server.database.user import create_user_from_auth
+        from src.server.database.user import get_user, create_user_from_auth
 
-        await create_user_from_auth(
-            user_id=LOCAL_DEV_USER_ID,
-            name="Local User",
-        )
-        logger.info(f"[auth] Local dev user provisioned: {LOCAL_DEV_USER_ID}")
+        # Only provision if name is missing or user doesn't exist
+        existing = await get_user(LOCAL_DEV_USER_ID)
+        if not existing or not existing.get("name"):
+            await create_user_from_auth(
+                user_id=LOCAL_DEV_USER_ID,
+                name="Local User",
+            )
+            logger.info(f"[auth] Local dev user provisioned: {LOCAL_DEV_USER_ID}")
 
     # Initialize Redis cache
     try:

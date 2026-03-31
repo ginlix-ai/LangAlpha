@@ -11,23 +11,23 @@ This module provides middleware for LangChain/LangGraph agents:
 """
 
 # Background subagent middleware
-from ptc_agent.agent.middleware.background_subagent import (
+from .background_subagent import (
     BackgroundSubagentMiddleware,
     BackgroundSubagentOrchestrator,
     ToolCallCounterMiddleware,
 )
 
 # Plan mode middleware
-from ptc_agent.agent.middleware.plan_mode import (
+from .plan_mode import (
     PlanModeMiddleware,
     create_plan_mode_interrupt_config,
 )
 
 # Ask user middleware
-from ptc_agent.agent.middleware.ask_user import AskUserMiddleware
+from .ask_user import AskUserMiddleware
 
 # Tool middleware (argument parsing, error handling, result normalization, leak detection, code validation, empty call retry)
-from ptc_agent.agent.middleware.tool import (
+from .tool import (
     CodeValidationMiddleware,
     EmptyToolCallRetryMiddleware,
     LeakDetectionMiddleware,
@@ -39,57 +39,57 @@ from ptc_agent.agent.middleware.tool import (
 )
 
 # Caching middleware
-from ptc_agent.agent.middleware.caching import (
+from .caching import (
     ToolResultCacheMiddleware,
     ToolResultCacheState,
 )
 
 # File operations middleware (includes MultimodalMiddleware for images/PDFs)
-from ptc_agent.agent.middleware.file_operations import (
+from .file_operations import (
     FileOperationMiddleware,
     FileOperationState,
     MultimodalMiddleware,
 )
 
 # Todo operations middleware
-from ptc_agent.agent.middleware.todo_operations import (
+from .todo_operations import (
     TodoWriteMiddleware,
 )
 
 # Summarization middleware
-from ptc_agent.agent.middleware.summarization import (
+from .summarization import (
     SummarizationMiddleware,
     DEFAULT_SUMMARY_PROMPT,
     count_tokens_tiktoken,
 )
 
 # Skills middleware (registry + dynamic loader)
-from ptc_agent.agent.middleware.skills import (
+from .skills import (
     SkillsMiddleware,
 )
 
 # Large result eviction middleware
-from ptc_agent.agent.middleware.large_result_eviction import (
+from .large_result_eviction import (
     LargeResultEvictionMiddleware,
 )
 
 # Steering middleware
-from ptc_agent.agent.middleware.steering import (
+from .steering import (
     SteeringMiddleware,
 )
 
 # Workspace context middleware (agent.md injection)
-from ptc_agent.agent.middleware.workspace_context import (
+from .workspace_context import (
     WorkspaceContextMiddleware,
 )
 
 # Subagent steering middleware
-from ptc_agent.agent.middleware.background_subagent.steering import (
+from .background_subagent.steering import (
     SubagentSteeringMiddleware,
 )
 
 # Subagent middleware
-from ptc_agent.agent.middleware.background_subagent.subagent import (
+from .background_subagent.subagent import (
     CompiledSubAgent,
     SubAgent,
     SubAgentMiddleware,

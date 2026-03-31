@@ -724,6 +724,17 @@ async def get_single_stock_snapshot(symbol: str, user_id: CurrentUserId) -> Snap
 
 
 @router.get(
+    "/status",
+    response_model=MarketStatusResponse,
+    summary="Get current market status (alias)",
+    description="Alias for /market-status for backward compatibility.",
+)
+async def get_market_status_alias(user_id: CurrentUserId) -> MarketStatusResponse:
+    """Alias for get_market_status."""
+    return await get_market_status(user_id)
+
+
+@router.get(
     "/market-status",
     response_model=MarketStatusResponse,
     summary="Get current market status",
