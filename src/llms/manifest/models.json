@@ -456,10 +456,7 @@
       "include": [
         "reasoning.encrypted_content"
       ],
-      "store": false,
-      "model_kwargs": {
-        "instructions": "You are a helpful AI assistant."
-      }
+      "store": false
     }
   },
   "gpt-5.3-codex-spark-oauth": {
@@ -475,10 +472,7 @@
       "include": [
         "reasoning.encrypted_content"
       ],
-      "store": false,
-      "model_kwargs": {
-        "instructions": "You are a helpful AI assistant."
-      }
+      "store": false
     }
   },
   "gpt-5.4-oauth": {
@@ -494,10 +488,7 @@
       "include": [
         "reasoning.encrypted_content"
       ],
-      "store": false,
-      "model_kwargs": {
-        "instructions": "You are a helpful AI assistant."
-      }
+      "store": false
     }
   },
   "gpt-5.4-mini-oauth": {
@@ -513,10 +504,7 @@
       "include": [
         "reasoning.encrypted_content"
       ],
-      "store": false,
-      "model_kwargs": {
-        "instructions": "You are a helpful AI assistant."
-      }
+      "store": false
     }
   },
   "claude-sonnet-4-6-oauth": {
