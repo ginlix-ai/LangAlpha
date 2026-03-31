@@ -389,7 +389,7 @@ async def resolve_llm_config(
                 )
             return client
         except Exception:
-            logger.warning("[CHAT] Failed to resolve model %s, skipping", model_name, exc_info=True)
+            logger.error("[CHAT] Failed to resolve model %s, skipping", model_name, exc_info=True)
             return None
 
     subsidiary_pairs = [(role, m) for role, m in [("summarization", config.llm.summarization), ("fetch", config.llm.fetch)] if m]
