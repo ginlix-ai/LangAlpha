@@ -993,7 +993,7 @@ function FilePanel({
   };
 
   const selectedExt = selectedFile ? getFileExtension(selectedFile.split('/').pop() || '') : '';
-  const canEdit = selectedFile
+  const canEdit = !!(selectedFile
     && !readOnly
     && EDITABLE_EXTENSIONS.has(selectedExt)
     && fileMime !== 'image'
@@ -1001,7 +1001,7 @@ function FilePanel({
     && fileMime !== 'pdf'
     && fileMime !== 'excel'
     && !['html', 'htm'].includes(selectedExt)
-    && !selectedFile.startsWith('/large_tool_results/');
+    && !selectedFile.startsWith('/large_tool_results/'));
 
   const hasUnsavedChanges = isEditing && editContent !== null && editContent !== fileContent;
 
