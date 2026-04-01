@@ -19,7 +19,7 @@ describe('useSetupGate', () => {
 
   it('returns needsSetup=false when user has_api_key=true', () => {
     mockUseUser.mockReturnValue({
-      user: { user_id: 'u-1', email: 'a@b.com', has_api_key: true, has_oauth_token: false, invitation_redeemed: false },
+      user: { user_id: 'u-1', email: 'a@b.com', has_api_key: true, has_oauth_token: false, access_tier: -1 },
       isLoading: false,
     });
 
@@ -31,7 +31,7 @@ describe('useSetupGate', () => {
 
   it('returns needsSetup=false when user has_oauth_token=true', () => {
     mockUseUser.mockReturnValue({
-      user: { user_id: 'u-1b', email: 'oauth@b.com', has_api_key: false, has_oauth_token: true, invitation_redeemed: false },
+      user: { user_id: 'u-1b', email: 'oauth@b.com', has_api_key: false, has_oauth_token: true, access_tier: -1 },
       isLoading: false,
     });
 
@@ -41,9 +41,9 @@ describe('useSetupGate', () => {
     expect(result.current.needsSetup).toBe(false);
   });
 
-  it('returns needsSetup=false when user invitation_redeemed=true', () => {
+  it('returns needsSetup=false when user has platform access (access_tier >= 0)', () => {
     mockUseUser.mockReturnValue({
-      user: { user_id: 'u-2', email: 'b@c.com', has_api_key: false, has_oauth_token: false, invitation_redeemed: true },
+      user: { user_id: 'u-2', email: 'b@c.com', has_api_key: false, has_oauth_token: false, access_tier: 0 },
       isLoading: false,
     });
 
@@ -55,7 +55,7 @@ describe('useSetupGate', () => {
 
   it('returns needsSetup=true when user has none of the three', () => {
     mockUseUser.mockReturnValue({
-      user: { user_id: 'u-3', email: 'c@d.com', has_api_key: false, has_oauth_token: false, invitation_redeemed: false },
+      user: { user_id: 'u-3', email: 'c@d.com', has_api_key: false, has_oauth_token: false, access_tier: -1 },
       isLoading: false,
     });
 
@@ -79,7 +79,7 @@ describe('useSetupGate', () => {
 
   it('returns needsSetup=false when setup was skipped via sessionStorage', () => {
     mockUseUser.mockReturnValue({
-      user: { user_id: 'u-skip', email: 'skip@b.com', has_api_key: false, has_oauth_token: false, invitation_redeemed: false },
+      user: { user_id: 'u-skip', email: 'skip@b.com', has_api_key: false, has_oauth_token: false, access_tier: -1 },
       isLoading: false,
     });
 

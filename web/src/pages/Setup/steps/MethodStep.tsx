@@ -7,6 +7,7 @@ import { api } from '@/api/client';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { useConfiguredProviders, type ConfiguredProvider } from '@/hooks/useConfiguredProviders';
+import { useUser } from '@/hooks/useUser';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useUpdatePreferences } from '@/hooks/useUpdatePreferences';
 import { deleteUserApiKey, disconnectCodexOAuth, disconnectClaudeOAuth } from '@/pages/Dashboard/utils/api';
@@ -139,6 +140,11 @@ export default function MethodStep() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { providers: configuredProviders, hasAny: hasConfigured } = useConfiguredProviders();
+  const { user, isLoading: userLoading } = useUser();
+  const [localRedeemed, setLocalRedeemed] = useState(false);
+  const hasPlatformAccess = (user?.access_tier ?? -1) >= 0 || localRedeemed;
+  // Wait for user data before using hasPlatformAccess to avoid flicker
+  const canSkip = hasConfigured || (!userLoading && hasPlatformAccess);
   const { preferences } = usePreferences();
   const updatePreferences = useUpdatePreferences();
 
@@ -206,13 +212,32 @@ export default function MethodStep() {
     setInvitationError(null);
 
     try {
-      await api.post('/api/v1/invitations/redeem', { code: invitationCode.trim() });
+      await api.post('/api/auth/invitations/redeem', { code: invitationCode.trim() });
+      setLocalRedeemed(true);
       await queryClient.invalidateQueries({ queryKey: queryKeys.user.me() });
       navigate('/setup/defaults');
     } catch (e: unknown) {
-      const err = e as { response?: { data?: { detail?: string } }; message?: string };
+      const err = e as {
+        response?: { status?: number; data?: { detail?: string | { message?: string; type?: string } } };
+        message?: string;
+      };
+      const status = err?.response?.status;
       const detail = err?.response?.data?.detail;
-      setInvitationError(typeof detail === 'string' ? detail : 'Invalid invitation code.');
+
+      if (status === 404) {
+        setInvitationError('Invalid invitation code.');
+      } else if (status === 410) {
+        setInvitationError('This code has expired or been fully used.');
+      } else if (status === 409) {
+        setInvitationError("You've already redeemed this code.");
+        queryClient.invalidateQueries({ queryKey: queryKeys.user.me() });
+      } else if (typeof detail === 'string') {
+        setInvitationError(detail);
+      } else if (detail && typeof detail === 'object' && 'message' in detail) {
+        setInvitationError(detail.message || 'Something went wrong. Please try again.');
+      } else {
+        setInvitationError('Something went wrong. Please try again.');
+      }
     } finally {
       setRedeemingInvitation(false);
     }
@@ -229,19 +254,40 @@ export default function MethodStep() {
         />
       )}
 
+      {/* Invitation-redeemed skip banner (when no other providers configured) */}
+      {!userLoading && hasPlatformAccess && !hasConfigured && (
+        <div
+          className="flex items-center justify-between gap-3 rounded-lg p-4"
+          style={{
+            background: 'var(--color-bg-surface)',
+            border: '1px solid var(--color-border-default)',
+          }}
+        >
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4 shrink-0" style={{ color: 'var(--color-gain)' }} />
+            <span className="text-sm" style={{ color: 'var(--color-text-primary)' }}>
+              Invitation redeemed. You can configure models now or add a provider.
+            </span>
+          </div>
+          <Button variant="outline" size="sm" onClick={handleSkipToDefaults} className="shrink-0 ml-3">
+            Next step
+          </Button>
+        </div>
+      )}
+
       {/* Section heading */}
       <div className="flex flex-col gap-1">
         <h2
           className="font-semibold"
           style={{ fontSize: '1.125rem', color: 'var(--color-text-primary)' }}
         >
-          {hasConfigured ? 'Add another provider' : 'How would you like to connect?'}
+          {canSkip ? 'Add another provider' : 'How would you like to connect?'}
         </h2>
         <p
           className="text-sm"
           style={{ color: 'var(--color-text-secondary)' }}
         >
-          {hasConfigured
+          {canSkip
             ? 'Connect an additional provider for more model options.'
             : 'Choose how you\u2019ll access AI models. You can add more providers later.'}
         </p>
@@ -298,8 +344,8 @@ export default function MethodStep() {
         })}
       </div>
 
-      {/* Invitation code section — hide when already configured */}
-      {!hasConfigured && (
+      {/* Invitation code section — hide when already configured or invitation redeemed */}
+      {!canSkip && (
         <>
           {!showInvitation ? (
             <button

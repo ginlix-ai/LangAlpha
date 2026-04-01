@@ -17,6 +17,10 @@ export const queryKeys = {
   models: {
     all: ['models'],
   },
+  platform: {
+    all:    ['platform'],
+    models: () => [...queryKeys.platform.all, 'models'],
+  },
   oauth: {
     all:    ['oauth'],
     codex:  () => [...queryKeys.oauth.all, 'codex'],

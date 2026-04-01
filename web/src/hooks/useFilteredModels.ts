@@ -1,6 +1,8 @@
 import { useMemo } from 'react';
 import type { ProviderModelsData } from '@/components/model/types';
 import type { ConfiguredProvider } from './useConfiguredProviders';
+import type { PlatformModelsResponse } from '@/types/platform';
+import { getModelAccess } from './usePlatformModels';
 
 /**
  * Model metadata entry as returned by the `/api/v1/models` endpoint.
@@ -11,6 +13,8 @@ export interface ModelMetadataEntry {
   access_type?: string;
   /** "true" when variant needs its own API key (different env_key from parent). */
   requires_own_key?: string;
+  /** Numeric tier for platform-served access. Absent = 0. */
+  tier?: number;
 }
 
 /**
@@ -77,6 +81,74 @@ export function buildConfiguredTypeMap(
   providers: ConfiguredProvider[],
 ): Map<string, string> {
   return new Map(providers.map((p) => [p.provider, p.type]));
+}
+
+/**
+ * Augment platform response with locally-known providers.
+ *
+ * The local app is the authority on BYOK keys and OAuth tokens, but
+ * the platform service may not reflect recent connections (OAuth tokens
+ * live in the local DB). Merging ensures the tier filter recognizes
+ * locally-configured providers.
+ */
+export function augmentPlatformWithLocal(
+  platform: PlatformModelsResponse,
+  configuredProviders: ConfiguredProvider[],
+): PlatformModelsResponse {
+  const localByok: string[] = [];
+  const localOAuth: string[] = [];
+  for (const p of configuredProviders) {
+    if (p.type === 'oauth') localOAuth.push(p.provider);
+    else localByok.push(p.provider);
+  }
+  return {
+    ...platform,
+    byok_providers: [...new Set([...platform.byok_providers, ...localByok])],
+    oauth_providers: [...new Set([...platform.oauth_providers, ...localOAuth])],
+  };
+}
+
+/**
+ * Pure function: remove models the user's tier doesn't cover.
+ *
+ * When `platform` is null (endpoint unavailable), no filtering is applied —
+ * all models pass through.
+ */
+export function filterByPlatformTier(
+  providerMap: Record<string, ProviderModelsData>,
+  metadata: Record<string, ModelMetadataEntry>,
+  platform: PlatformModelsResponse | null,
+): Record<string, ProviderModelsData> {
+  if (!platform) return providerMap;
+
+  const out: Record<string, ProviderModelsData> = {};
+
+  for (const [groupKey, data] of Object.entries(providerMap)) {
+    if (!data || typeof data !== 'object') continue;
+    const allModels = data.models ?? [];
+
+    const filtered = allModels.filter((m) => {
+      const meta = metadata[m];
+      const provider = meta?.provider ?? groupKey;
+      const hasTier = typeof meta?.tier === 'number';
+      const tier = hasTier ? meta!.tier! : 0;
+      const access = getModelAccess(tier, provider, platform);
+
+      // No explicit tier → not platform-supplied. Only show for BYOK/OAuth users.
+      if (!hasTier && access !== 'byok' && access !== 'oauth') return false;
+
+      return access !== 'locked';
+    });
+
+    if (filtered.length > 0) {
+      out[groupKey] = {
+        models: filtered,
+        display_name: data.display_name ?? groupKey,
+      };
+    }
+  }
+
+  return out;
 }
 
 /**

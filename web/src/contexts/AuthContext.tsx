@@ -89,8 +89,11 @@ function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
         });
         if (res.ok) {
           const data = await res.json();
-          // Seed React Query cache — instant, no extra fetch needed
-          queryClient.setQueryData(queryKeys.user.me(), data.user ?? data);
+          // Seed preferences cache (auth/sync is authoritative for these).
+          // Do NOT seed user.me() here — auth/sync omits fields like
+          // access_tier, and seeding would overwrite the correct value
+          // from the GET /users/me fetch already in-flight (triggered
+          // by invalidateQueries in the getSession() handler).
           if (data.preferences !== undefined) {
             queryClient.setQueryData(queryKeys.user.preferences(), data.preferences ?? null);
           }

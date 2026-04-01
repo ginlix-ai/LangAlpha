@@ -8,6 +8,7 @@ import { useAllModels } from '@/hooks/useAllModels';
 import { useConfiguredProviders } from '@/hooks/useConfiguredProviders';
 import { useFilteredModels } from '@/hooks/useFilteredModels';
 import type { ModelMetadataEntry } from '@/hooks/useFilteredModels';
+import { useModelAccessMap } from '@/hooks/usePlatformModels';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useUpdatePreferences } from '@/hooks/useUpdatePreferences';
 
@@ -17,7 +18,7 @@ import { useUpdatePreferences } from '@/hooks/useUpdatePreferences';
 
 export default function DefaultsStep() {
   const navigate = useNavigate();
-  const { models, isLoading: modelsLoading } = useAllModels();
+  const { models, platform, isLoading: modelsLoading } = useAllModels();
   const { providers: configuredProviders, isLoading: providersLoading } = useConfiguredProviders();
   const { preferences } = usePreferences();
   const updatePreferences = useUpdatePreferences();
@@ -48,7 +49,12 @@ export default function DefaultsStep() {
     return { providerMap: pm, metadata: rawMetadata };
   }, [models]);
 
-  const normalizedModels = useFilteredModels(providerMap, metadata, configuredProviders);
+  const accessFilteredModels = useFilteredModels(providerMap, metadata, configuredProviders);
+  // In platform mode, providerMap is already tier-filtered by useAllModels.
+  // In OSS mode, filter by configured providers.
+  const normalizedModels = platform ? providerMap : accessFilteredModels;
+
+  const modelAccessMap = useModelAccessMap(normalizedModels, metadata, platform);
 
   // System defaults from models response
   const systemDefaults = useMemo(() => {
@@ -203,6 +209,7 @@ export default function DefaultsStep() {
         advancedModels={advancedModels}
         onAdvancedModelsChange={handleAdvancedChange}
         systemDefaults={systemDefaults}
+        modelAccess={modelAccessMap}
       />
 
       {/* Error */}

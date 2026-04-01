@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Shield, X } from 'lucide-react';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useConfiguredProviders } from '@/hooks/useConfiguredProviders';
+import { useUser } from '@/hooks/useUser';
 import { skipSetup } from '@/hooks/useSetupGate';
 
 // Self-hosted / local dev: always allow exiting the wizard since keys are in .env
@@ -140,7 +141,9 @@ export default function SetupWizard() {
   const location = useLocation();
   const navigate = useNavigate();
   const { hasAny: hasProvider } = useConfiguredProviders();
-  const canExit = hasProvider || !AUTH_ENABLED;
+  const { user } = useUser();
+  const hasPlatformAccess = (user?.access_tier ?? -1) >= 0;
+  const canExit = hasProvider || hasPlatformAccess || !AUTH_ENABLED;
   const stepperLabels = STEPPER_KEYS.map((k) => t(`setup.${k}`));
 
   const current = routeIndex(location.pathname);

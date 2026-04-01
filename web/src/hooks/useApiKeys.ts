@@ -18,7 +18,8 @@ export function useApiKeys() {
 
 /**
  * Mutation hook for updating (setting / enabling) BYOK API keys.
- * Invalidates the apiKeys cache on success.
+ * Invalidates the apiKeys cache and platform models cache on success,
+ * since BYOK key changes affect which models are accessible via the platform.
  */
 export function useUpdateApiKeys() {
   const queryClient = useQueryClient();
@@ -26,13 +27,15 @@ export function useUpdateApiKeys() {
     mutationFn: updateUserApiKeys,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.user.apiKeys() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.platform.models() });
     },
   });
 }
 
 /**
  * Mutation hook for deleting a single provider's API key.
- * Invalidates the apiKeys cache on success.
+ * Invalidates the apiKeys cache and platform models cache on success,
+ * since removing a BYOK key may change which models are accessible.
  */
 export function useDeleteApiKey() {
   const queryClient = useQueryClient();
@@ -40,6 +43,7 @@ export function useDeleteApiKey() {
     mutationFn: deleteUserApiKey,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.user.apiKeys() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.platform.models() });
     },
   });
 }

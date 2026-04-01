@@ -16,9 +16,10 @@ import ConfirmDialog from './ConfirmDialog';
 import { ProviderManager } from '@/components/model/ProviderManager';
 import { ModelTierConfig } from '@/components/model/ModelTierConfig';
 import type { ByokProvider, ProviderModelsData } from '@/components/model/types';
-import { filterModelsByAccess, buildConfiguredTypeMap } from '@/hooks/useFilteredModels';
+import { filterModelsByAccess, filterByPlatformTier, augmentPlatformWithLocal, buildConfiguredTypeMap } from '@/hooks/useFilteredModels';
 import type { ModelMetadataEntry } from '@/hooks/useFilteredModels';
 import type { ConfiguredProvider } from '@/hooks/useConfiguredProviders';
+import { usePlatformModels, useModelAccessMap } from '@/hooks/usePlatformModels';
 
 type SettingsTab = 'userInfo' | 'preferences' | 'model';
 
@@ -70,6 +71,7 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
   const { user: authUser, isLoading: isUserLoading } = useUser();
   const { preferences: prefsData, isLoading: isPrefsLoading } = usePreferences();
   const updatePrefsMutation = useUpdatePreferences();
+  const rawPlatform = usePlatformModels();
   const queryClient = useQueryClient();
   const { theme: _theme, preference, setTheme: setThemePref } = useTheme();
   const { t, i18n } = useTranslation();
@@ -699,6 +701,11 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
     return result;
   }, [byokProviders, codexOAuthStatus, claudeOAuthStatus]);
 
+  const platform = useMemo(
+    () => rawPlatform ? augmentPlatformWithLocal(rawPlatform, localConfiguredProviders) : null,
+    [rawPlatform, localConfiguredProviders],
+  );
+
   // Normalize availableModels to the Record<string, ProviderModelsData> shape
   // expected by ModelTierConfig / ModelSelector (backend may return string[]).
   // Filters by access type to prevent OAuth/coding_plan variants from leaking.
@@ -711,11 +718,15 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
         out[provider] = pd as ProviderModelsData;
       }
     }
-    // Filter by access type to prevent OAuth/coding_plan variants from leaking
+    if (platform) {
+      // Platform mode: tier filter handles BYOK + OAuth + plan access in one pass.
+      return filterByPlatformTier(out, modelMetadata, platform);
+    }
+    // OSS mode: filter by configured providers only.
     const configuredSet = new Set(localConfiguredProviders.map(p => p.provider));
     const configuredTypeMap = buildConfiguredTypeMap(localConfiguredProviders);
     return filterModelsByAccess(out, modelMetadata, configuredSet, configuredTypeMap);
-  }, [availableModels, modelMetadata, localConfiguredProviders]);
+  }, [availableModels, modelMetadata, localConfiguredProviders, platform]);
 
   // Build provider manifest for ProviderManager from byokProviders list.
   const providerManifest = useMemo(() => {
@@ -724,6 +735,8 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
       display_name: p.display_name || p.provider,
     }));
   }, [byokProviders]);
+
+  const modelAccessMap = useModelAccessMap(normalizedModels, modelMetadata, platform);
 
   if (!isOpen) return null;
 
@@ -1110,6 +1123,7 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
                       onPrimaryModelChange={setPreferredModel}
                       flashModel={preferredFlashModel}
                       onFlashModelChange={setPreferredFlashModel}
+                      modelAccess={modelAccessMap}
                     />
 
                     {/* Quick-access models — compact strip */}
@@ -1183,15 +1197,14 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
                         </div>
                         {/* Provider groups */}
                         <div className="px-1 pb-1 max-h-[280px] overflow-y-auto">
-                          {Object.entries(availableModels).map(([provider, providerData]) => {
-                            const pd = providerData as string[] | ProviderModelsData;
-                            const models: string[] = Array.isArray(pd) ? pd : (pd?.models || []);
+                          {Object.entries(normalizedModels).map(([provider, providerData]) => {
+                            const models: string[] = providerData?.models || [];
                             const query = modelPickerSearch.toLowerCase();
                             const filtered = query
                               ? models.filter((m: string) => m.toLowerCase().includes(query))
                               : models;
                             if (filtered.length === 0) return null;
-                            const displayName = (!Array.isArray(pd) && pd?.display_name) || provider.charAt(0).toUpperCase() + provider.slice(1);
+                            const displayName = providerData?.display_name || provider.charAt(0).toUpperCase() + provider.slice(1);
                             return (
                               <div key={provider} className="mb-1">
                                 <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--color-text-tertiary)' }}>

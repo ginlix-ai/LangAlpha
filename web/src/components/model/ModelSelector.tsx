@@ -1,6 +1,14 @@
 import { useId, useMemo } from "react"
 import { Select } from "@/components/ui/select"
 import type { ProviderModelsData } from "./types"
+import type { ModelAccess } from "@/types/platform"
+
+const ACCESS_LABELS: Record<ModelAccess, string> = {
+  platform: "platform",
+  byok: "BYOK",
+  oauth: "OAuth",
+  locked: "locked",
+}
 
 export interface ModelSelectorProps {
   /** Label shown above the select */
@@ -19,6 +27,8 @@ export interface ModelSelectorProps {
   placeholder?: string
   /** Required field indicator */
   required?: boolean
+  /** Optional access map: model name → access type. When set, shows badge in option text. */
+  modelAccess?: Record<string, ModelAccess>
 }
 
 export function ModelSelector({
@@ -30,6 +40,7 @@ export function ModelSelector({
   filterProviders,
   placeholder = "Select a model...",
   required = false,
+  modelAccess,
 }: ModelSelectorProps) {
   const id = useId()
 
@@ -105,11 +116,15 @@ export function ModelSelector({
               provider.charAt(0).toUpperCase() + provider.slice(1)
             return (
               <optgroup key={provider} label={displayName}>
-                {modelList.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
+                {modelList.map((m) => {
+                  const access = modelAccess?.[m]
+                  const suffix = access ? ` (${ACCESS_LABELS[access]})` : ""
+                  return (
+                    <option key={m} value={m}>
+                      {m}{suffix}
+                    </option>
+                  )
+                })}
               </optgroup>
             )
           })}

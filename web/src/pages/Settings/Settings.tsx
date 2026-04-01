@@ -18,9 +18,10 @@ import { getFlashWorkspace } from '@/pages/ChatAgent/utils/api';
 import ConfirmDialog from '@/pages/Dashboard/components/ConfirmDialog';
 import { ModelTierConfig } from '@/components/model/ModelTierConfig';
 import type { ByokProvider, CustomModelEntry, CustomModelFormState, AddProviderFormState, ProviderModelsData } from '@/components/model/types';
-import { filterModelsByAccess, buildConfiguredTypeMap } from '@/hooks/useFilteredModels';
+import { filterModelsByAccess, filterByPlatformTier, augmentPlatformWithLocal, buildConfiguredTypeMap } from '@/hooks/useFilteredModels';
 import type { ModelMetadataEntry } from '@/hooks/useFilteredModels';
 import type { ConfiguredProvider } from '@/hooks/useConfiguredProviders';
+import { usePlatformModels, useModelAccessMap } from '@/hooks/usePlatformModels';
 import './Settings.css';
 
 interface CodexDeviceCode {
@@ -66,6 +67,7 @@ function Settings() {
   const updatePrefsMutation = useUpdatePreferences();
   const queryClient = useQueryClient();
   const { theme: _theme, preference, setTheme: setThemePref } = useTheme();
+  const rawPlatform = usePlatformModels();
   const { t, i18n } = useTranslation();
 
   const tabParam = searchParams.get('tab') || 'userInfo';
@@ -101,6 +103,7 @@ function Settings() {
   const [modelSaveSuccess, setModelSaveSuccess] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [modelPickerSearch, setModelPickerSearch] = useState('');
+  const modelPickerRef = useRef<HTMLDivElement>(null);
 
   // Other models state
   const [summarizationModel, setSummarizationModel] = useState('');
@@ -142,6 +145,18 @@ function Settings() {
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
+
+  // Close starred-model picker on click outside
+  useEffect(() => {
+    if (!showModelPicker) return;
+    const handler = (e: MouseEvent) => {
+      if (modelPickerRef.current && !modelPickerRef.current.contains(e.target as Node)) {
+        setShowModelPicker(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showModelPicker]);
 
   const timezones: TimezoneEntry[] = [
     { value: '', label: t('settings.selectTimezone') },
@@ -784,6 +799,11 @@ function Settings() {
     return result;
   }, [byokProviders, codexOAuthStatus, claudeOAuthStatus]);
 
+  const platform = useMemo(
+    () => rawPlatform ? augmentPlatformWithLocal(rawPlatform, localConfiguredProviders) : null,
+    [rawPlatform, localConfiguredProviders],
+  );
+
   // Normalize availableModels to the Record<string, ProviderModelsData> shape
   // expected by ModelTierConfig / ModelSelector (backend may return string[]).
   // Also merges custom models so they appear in the model dropdowns.
@@ -808,11 +828,17 @@ function Settings() {
         out[key].models!.push(cm.name);
       }
     }
-    // Filter by access type to prevent OAuth/coding_plan variants from leaking
+    if (platform) {
+      // Platform mode: tier filter handles BYOK + OAuth + plan access in one pass.
+      return filterByPlatformTier(out, modelMetadata, platform);
+    }
+    // OSS mode: filter by configured providers only.
     const configuredSet = new Set(localConfiguredProviders.map(p => p.provider));
     const configuredTypeMap = buildConfiguredTypeMap(localConfiguredProviders);
     return filterModelsByAccess(out, modelMetadata, configuredSet, configuredTypeMap);
-  }, [availableModels, customModels, modelMetadata, localConfiguredProviders]);
+  }, [availableModels, customModels, modelMetadata, localConfiguredProviders, platform]);
+
+  const modelAccessMap = useModelAccessMap(normalizedModels, modelMetadata, platform);
 
   // All valid model names for filtering stale references
   const allValidModels = useMemo(() => {
@@ -1216,10 +1242,12 @@ function Settings() {
                     fetch_model: systemDefaults.fetch_model as string | undefined,
                     fallback_models: systemDefaults.fallback_models as string[] | undefined,
                   }}
+                  modelAccess={modelAccessMap}
                 />
 
                 {/* Quick-access models — compact strip */}
-                <div className="flex flex-col gap-1.5" style={{ marginTop: '16px' }}>
+                <div ref={modelPickerRef} style={{ marginTop: '16px' }}>
+                <div className="flex flex-col gap-1.5">
                   <label className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
                     {t('settings.starredModels')}
                   </label>
@@ -1263,7 +1291,7 @@ function Settings() {
                   </div>
                 </div>
 
-                {/* Collapsible model picker — hidden by default */}
+                {/* Collapsible model picker — hidden by default (inside ref for click-outside) */}
                 {showModelPicker && (
                   <div
                     className="mt-3 rounded-lg overflow-hidden"
@@ -1290,14 +1318,14 @@ function Settings() {
                     </div>
                     {/* Provider groups */}
                     <div className="px-1 pb-1 max-h-[280px] overflow-y-auto">
-                      {Object.entries(availableModels).map(([provider, providerData]) => {
-                        const models: string[] = Array.isArray(providerData) ? providerData : (providerData as ProviderModelsData)?.models || [];
+                      {Object.entries(normalizedModels).map(([provider, providerData]) => {
+                        const models: string[] = providerData?.models || [];
                         const query = modelPickerSearch.toLowerCase();
                         const filtered = query
                           ? models.filter(m => m.toLowerCase().includes(query))
                           : models;
                         if (filtered.length === 0) return null;
-                        const displayName = (!Array.isArray(providerData) && (providerData as ProviderModelsData)?.display_name) || provider.charAt(0).toUpperCase() + provider.slice(1);
+                        const displayName = providerData?.display_name || provider.charAt(0).toUpperCase() + provider.slice(1);
                         return (
                           <div key={provider} className="mb-1">
                             <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--color-text-tertiary)' }}>
@@ -1331,6 +1359,7 @@ function Settings() {
                     </div>
                   </div>
                 )}
+                </div>
               </div>
 
               {/* Section 2: Connected Accounts */}

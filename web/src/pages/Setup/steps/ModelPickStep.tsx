@@ -311,7 +311,7 @@ export default function ModelPickStep() {
           <Input
             value={customModelId}
             onChange={(e) => setCustomModelId(e.target.value)}
-            placeholder="Enter model ID (e.g. gpt-4o)"
+            placeholder="Enter model ID (e.g. GPT-5.4)"
             className="flex-1"
             autoComplete="off"
             spellCheck={false}

@@ -34,8 +34,8 @@ export function useSetupGate(): { isLoading: boolean; needsSetup: boolean } {
 
   const hasApiKey = Boolean(user.has_api_key);
   const hasOAuth = Boolean(user.has_oauth_token);
-  const invitationRedeemed = Boolean(user.invitation_redeemed);
-  const needsSetup = !hasApiKey && !hasOAuth && !invitationRedeemed;
+  const hasPlatformAccess = (user.access_tier ?? -1) >= 0;
+  const needsSetup = !hasApiKey && !hasOAuth && !hasPlatformAccess;
 
   return { isLoading: false, needsSetup };
 }

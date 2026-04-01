@@ -11,7 +11,7 @@ export interface User {
   locale?: string | null;
   has_api_key?: boolean;
   has_oauth_token?: boolean;
-  invitation_redeemed?: boolean;
+  access_tier?: number;
   created_at?: string;
   updated_at?: string;
   [key: string]: unknown;

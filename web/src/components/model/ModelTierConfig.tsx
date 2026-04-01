@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { ChevronRight, Lightbulb, Search, Pin } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { ModelSelector } from "./ModelSelector"
 import type { ProviderModelsData } from "./types"
+import type { ModelAccess } from "@/types/platform"
 
 export interface ModelTierConfigProps {
   /** Available models grouped by provider */
@@ -39,6 +40,8 @@ export interface ModelTierConfigProps {
     fetch_model?: string
     fallback_models?: string[]
   }
+  /** Optional access map: model name → access type for badge display */
+  modelAccess?: Record<string, ModelAccess>
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +61,19 @@ function FallbackModelsPicker({
 }) {
   const [showAdd, setShowAdd] = useState(false)
   const [search, setSearch] = useState("")
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // Close on click outside
+  useEffect(() => {
+    if (!showAdd) return
+    const handler = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setShowAdd(false)
+      }
+    }
+    document.addEventListener("mousedown", handler)
+    return () => document.removeEventListener("mousedown", handler)
+  }, [showAdd])
 
   const selectedSet = useMemo(() => new Set(selected), [selected])
 
@@ -99,7 +115,7 @@ function FallbackModelsPicker({
   }, [models, filterProviders, search])
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div ref={containerRef} className="flex flex-col gap-1.5">
       <label
         className="text-sm font-medium"
         style={{ color: "var(--color-text-primary)" }}
@@ -256,6 +272,7 @@ export function ModelTierConfig({
   advancedModels,
   onAdvancedModelsChange,
   systemDefaults,
+  modelAccess,
 }: ModelTierConfigProps) {
   const [explainerOpen, setExplainerOpen] = useState(true)
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -419,6 +436,7 @@ export function ModelTierConfig({
         filterProviders={filterProviders}
         placeholder="Select primary model..."
         required
+        modelAccess={modelAccess}
       />
 
       {/* Flash Model selector */}
@@ -431,6 +449,7 @@ export function ModelTierConfig({
         filterProviders={filterProviders}
         placeholder="Select flash model..."
         required
+        modelAccess={modelAccess}
       />
 
       {/* Advanced section */}
@@ -473,6 +492,7 @@ export function ModelTierConfig({
                     models={models}
                     filterProviders={filterProviders}
                     placeholder="Defaults to flash model"
+                    modelAccess={modelAccess}
                   />
 
                   <ModelSelector
@@ -483,6 +503,7 @@ export function ModelTierConfig({
                     models={models}
                     filterProviders={filterProviders}
                     placeholder="Defaults to flash model"
+                    modelAccess={modelAccess}
                   />
 
                   {/* Fallback models (editable) */}
