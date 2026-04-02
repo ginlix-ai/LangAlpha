@@ -211,11 +211,11 @@ async def get_current_user(
     user_response = UserResponse.model_validate(result["user"])
 
     # Populate platform access tier (cached, SaaS mode only)
-    from src.server.dependencies.usage_limits import _fetch_platform_tier
+    from src.server.dependencies.usage_limits import _fetch_platform_tier, platform_tier_cache_key
     if refresh_tier:
         from src.utils.cache.redis_cache import get_cache_client
         cache = get_cache_client()
-        await cache.delete(f"platform_tier:{user_id}")
+        await cache.delete(platform_tier_cache_key(user_id))
     user_response.access_tier = await _fetch_platform_tier(user_id)
 
     preferences_response = None

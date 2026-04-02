@@ -390,6 +390,10 @@ async def enforce_workspace_limit(
 _PLATFORM_TIER_CACHE_TTL = 300  # 5 minutes
 
 
+def platform_tier_cache_key(user_id: str) -> str:
+    return f"platform_tier:{user_id}"
+
+
 async def _fetch_platform_tier(user_id: str) -> int:
     """Fetch the user's platform access tier.
 
@@ -403,7 +407,7 @@ async def _fetch_platform_tier(user_id: str) -> int:
     from src.utils.cache.redis_cache import get_cache_client
 
     cache = get_cache_client()
-    cache_key = f"platform_tier:{user_id}"
+    cache_key = platform_tier_cache_key(user_id)
     cached = await cache.get(cache_key)
     if cached is not None:
         return int(cached)
