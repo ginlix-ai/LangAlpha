@@ -109,9 +109,10 @@ async def web_search(
         return detailed_results, metadata
 
     except httpx.HTTPStatusError as e:
+        status = e.response.status_code if e.response is not None else "unknown"
         body = e.response.text if e.response is not None else "no response body"
-        logger.error(f"Serper API HTTP {e.response.status_code}: {body}")
-        error_message = f"Search failed (HTTP {e.response.status_code}): {body}"
+        logger.error(f"Serper API HTTP {status}: {body}")
+        error_message = f"Search failed (HTTP {status}): {body}"
         return error_message, {"error": error_message, "query": query}
     except httpx.HTTPError as e:
         logger.error(f"Serper search failed: {e}", exc_info=True)
