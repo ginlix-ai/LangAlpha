@@ -23,7 +23,10 @@ def _patch_langchain_anthropic_usage_metadata():
             cache_creation = getattr(anthropic_usage, "cache_creation", None)
             if cache_creation is not None:
                 for field in ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens"):
-                    if getattr(cache_creation, field, None) is None:
+                    if isinstance(cache_creation, dict):
+                        if cache_creation.get(field) is None:
+                            cache_creation[field] = 0
+                    elif getattr(cache_creation, field, None) is None:
                         object.__setattr__(cache_creation, field, 0)
             return original_fn(anthropic_usage)
 
