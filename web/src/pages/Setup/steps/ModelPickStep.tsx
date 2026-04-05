@@ -48,38 +48,39 @@ export default function ModelPickStep() {
   const displayName = state.displayName ?? provider;
   const brandKey = state.brandKey ?? provider;
 
-  const { models: modelsData, isLoading: modelsLoading } = useAllModels();
+  const { rawModels, metadata: allMetadata, isLoading: modelsLoading } = useAllModels();
   const { configuredSet } = useConfiguredProviders();
   const isConfigured = provider ? configuredSet.has(provider) : false;
 
-  // Get built-in models from the manifest for this provider
+  // Get built-in models from the manifest for this provider.
+  // Uses rawModels (pre-filter snapshot) so ALL models are visible
+  // regardless of the user's current access tier or configured keys.
   const builtInModels = useMemo<string[]>(() => {
-    if (!modelsData) return [];
-    const raw = modelsData as Record<string, unknown>;
-    const metadata = (raw.model_metadata ?? {}) as Record<string, { provider?: string }>;
-    const providerMap = (raw.models ?? {}) as Record<string, { models?: string[] }>;
-
     // Specific provider: get the brand group, then filter by exact flat provider key
-    if (brandKey && providerMap[brandKey]) {
-      const candidates = providerMap[brandKey].models ?? [];
+    if (brandKey && rawModels[brandKey]) {
+      const candidates = rawModels[brandKey].models ?? [];
       if (provider) {
-        return candidates.filter((m) => metadata[m]?.provider === provider);
+        return candidates.filter((m) => allMetadata[m]?.provider === provider);
       }
-      return candidates.filter((m) => metadata[m]);
+      return candidates.filter((m) => allMetadata[m]);
     }
+
+    // Brand group not found — provider has no models in the manifest.
+    // Return empty so the user can add custom models instead.
+    if (provider) return [];
 
     // No specific provider: show all configured providers' models
     const models: string[] = [];
-    for (const [, data] of Object.entries(providerMap)) {
+    for (const [, data] of Object.entries(rawModels)) {
       for (const m of data.models ?? []) {
-        const modelProvider = metadata[m]?.provider;
+        const modelProvider = allMetadata[m]?.provider;
         if (modelProvider && configuredSet.has(modelProvider)) {
           models.push(m);
         }
       }
     }
     return models;
-  }, [modelsData, provider, brandKey, configuredSet]);
+  }, [rawModels, allMetadata, provider, brandKey, configuredSet]);
 
   // User's custom models for this provider (from preferences)
   const existingCustomModels = useMemo<string[]>(() => {
@@ -101,12 +102,8 @@ export default function ModelPickStep() {
 
   const builtInSet = useMemo(() => new Set(builtInModels), [builtInModels]);
 
-  // Model metadata for display names
-  const modelMetadata = useMemo<Record<string, Record<string, unknown>>>(() => {
-    if (!modelsData) return {};
-    const raw = modelsData as Record<string, unknown>;
-    return (raw.model_metadata as Record<string, Record<string, unknown>>) ?? {};
-  }, [modelsData]);
+  // Model metadata for display names — use allMetadata from useAllModels directly
+  const modelMetadata = allMetadata as Record<string, Record<string, unknown>>;
 
   // Initialize starred from preferences or default to all
   const existingStarred = useMemo<string[]>(() => {

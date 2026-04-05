@@ -5,13 +5,18 @@ import { usePlatformModels, getModelAccess } from '../usePlatformModels';
 import type { PlatformModelsResponse } from '@/types/platform';
 
 // ---------------------------------------------------------------------------
-// Mock the shared API client
+// Mock the shared API client + host mode
 // ---------------------------------------------------------------------------
 
 vi.mock('@/api/client', () => ({
   api: {
     get: vi.fn(),
   },
+}));
+
+vi.mock('@/config/hostMode', () => ({
+  HOST_MODE: 'platform',
+  isPlatformMode: true,
 }));
 
 import { api } from '@/api/client';

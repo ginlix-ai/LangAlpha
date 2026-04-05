@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, User, LogOut, Trash2, HelpCircle, MessageSquareText, Sun, Moon, Monitor, Link2, Unlink, ExternalLink, Shield, ClipboardCopy, Plus, Pencil, Search, Pin } from 'lucide-react';
 import { Input } from '../../../components/ui/input';
 import { Select } from '../../../components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../../components/ui/dialog';
-import { updateCurrentUser, clearPreferences, uploadAvatar, getAvailableModels, getUserApiKeys, updateUserApiKeys, deleteUserApiKey, initiateCodexDevice, pollCodexDevice, getCodexOAuthStatus, disconnectCodexOAuth, initiateClaudeOAuth, submitClaudeCallback, getClaudeOAuthStatus, disconnectClaudeOAuth } from '../utils/api';
+import { updateCurrentUser, clearPreferences, uploadAvatar, getUserApiKeys, updateUserApiKeys, deleteUserApiKey, initiateCodexDevice, pollCodexDevice, getCodexOAuthStatus, disconnectCodexOAuth, initiateClaudeOAuth, submitClaudeCallback, getClaudeOAuthStatus, disconnectClaudeOAuth } from '../utils/api';
 import { useAuth } from '../../../contexts/AuthContext';
 import { useUser } from '../../../hooks/useUser';
 import { usePreferences } from '../../../hooks/usePreferences';
@@ -15,11 +15,8 @@ import { useTranslation } from 'react-i18next';
 import ConfirmDialog from './ConfirmDialog';
 import { ProviderManager } from '@/components/model/ProviderManager';
 import { ModelTierConfig } from '@/components/model/ModelTierConfig';
-import type { ByokProvider, ProviderModelsData } from '@/components/model/types';
-import { filterModelsByAccess, filterByPlatformTier, augmentPlatformWithLocal, buildConfiguredTypeMap } from '@/hooks/useFilteredModels';
-import type { ModelMetadataEntry } from '@/hooks/useFilteredModels';
-import type { ConfiguredProvider } from '@/hooks/useConfiguredProviders';
-import { usePlatformModels, useModelAccessMap } from '@/hooks/usePlatformModels';
+import type { ByokProvider } from '@/components/model/types';
+import { useAllModels } from '@/hooks/useAllModels';
 
 type SettingsTab = 'userInfo' | 'preferences' | 'model';
 
@@ -71,7 +68,7 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
   const { user: authUser, isLoading: isUserLoading } = useUser();
   const { preferences: prefsData, isLoading: isPrefsLoading } = usePreferences();
   const updatePrefsMutation = useUpdatePreferences();
-  const rawPlatform = usePlatformModels();
+  const { models: visibleModels, modelAccessMap, validModelNames } = useAllModels();
   const queryClient = useQueryClient();
   const { theme: _theme, preference, setTheme: setThemePref } = useTheme();
   const { t, i18n } = useTranslation();
@@ -87,8 +84,6 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
   const [preferences, setPreferences] = useState<PreferencesData | null>(null);
 
   // Model tab state
-  const [availableModels, setAvailableModels] = useState<Record<string, string[] | ProviderModelsData>>({});
-  const [modelMetadata, setModelMetadata] = useState<Record<string, ModelMetadataEntry>>({});
   const [preferredModel, setPreferredModel] = useState('');
   const [preferredFlashModel, setPreferredFlashModel] = useState('');
   const [starredModels, setStarredModels] = useState<string[]>([]);
@@ -230,20 +225,16 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
   const loadModelTabData = async () => {
     setModelTabError(null);
     try {
-      const [modelsRes, keysRes, codexStatus, claudeStatus] = await Promise.all([
-        getAvailableModels(),
+      const [keysRes, codexStatus, claudeStatus] = await Promise.all([
         getUserApiKeys(),
         getCodexOAuthStatus(),
         getClaudeOAuthStatus(),
       ]);
-      const modelsData = modelsRes as { models?: Record<string, string[] | ProviderModelsData>; model_metadata?: Record<string, { provider?: string; sdk?: string; access_type?: string }> };
       const keysData = keysRes as { byok_enabled?: boolean; providers?: ByokProvider[] };
-      setAvailableModels(modelsData?.models || {});
-      setModelMetadata(modelsData?.model_metadata || {});
       setByokEnabled(keysData?.byok_enabled || false);
       setByokProviders(keysData?.providers || []);
       const initialBaseUrls: Record<string, string> = {};
-      ((keysRes as { providers?: ByokProvider[] })?.providers || []).forEach((p: ByokProvider) => {
+      (keysData?.providers || []).forEach((p: ByokProvider) => {
         if (p.base_url) initialBaseUrls[p.provider] = p.base_url;
       });
       setBaseUrlInputs(initialBaseUrls);
@@ -301,6 +292,8 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
         const result = await updateUserApiKeys(payload) as { providers: ByokProvider[] };
         setByokProviders(result.providers);
         setKeyInputs({});
+        queryClient.invalidateQueries({ queryKey: queryKeys.user.apiKeys() });
+        queryClient.invalidateQueries({ queryKey: queryKeys.platform.models() });
       }
 
       setModelSaveSuccess(true);
@@ -319,6 +312,7 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
       const result = await updateUserApiKeys({ byok_enabled: newValue }) as { byok_enabled: boolean; providers: ByokProvider[] };
       setByokEnabled(result.byok_enabled);
       setByokProviders(result.providers);
+      queryClient.invalidateQueries({ queryKey: queryKeys.user.apiKeys() });
     } catch {
       setModelTabError(t('settings.failedToToggleByok'));
     }
@@ -330,6 +324,8 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
     try {
       const result = await deleteUserApiKey(provider) as { providers: ByokProvider[] };
       setByokProviders(result.providers);
+      queryClient.invalidateQueries({ queryKey: queryKeys.user.apiKeys() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.platform.models() });
     } catch {
       setModelTabError(t('settings.failedToDeleteKey', { provider }));
     } finally {
@@ -444,8 +440,7 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
     if (!form.model_id?.trim()) return t('settings.customModelIdRequired');
     if (!form.provider?.trim()) return t('settings.customModelProviderRequired');
     // Check collision with system models
-    const allSystemModels = Object.values(availableModels).flatMap(pd => Array.isArray(pd) ? pd as string[] : (pd as ProviderModelsData)?.models || []);
-    if (allSystemModels.includes(form.name.trim())) return t('settings.customModelNameConflict');
+    if (validModelNames.has(form.name.trim())) return t('settings.customModelNameConflict');
     // Check duplicate in custom models
     const dup = existingModels.findIndex((cm, i) => i !== editIdx && cm.name === form.name.trim());
     if (dup >= 0) return t('settings.customModelNameDuplicate');
@@ -522,6 +517,8 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
     try {
       await disconnectCodexOAuth();
       setCodexOAuthStatus({ connected: false, account_id: null, email: null, plan_type: null });
+      queryClient.invalidateQueries({ queryKey: queryKeys.oauth.codex() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.platform.models() });
     } catch {
       setModelTabError('Failed to disconnect Codex');
     } finally {
@@ -588,6 +585,8 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
     try {
       await disconnectClaudeOAuth();
       setClaudeOAuthStatus({ connected: false, account_id: null, email: null, plan_type: null });
+      queryClient.invalidateQueries({ queryKey: queryKeys.oauth.claude() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.platform.models() });
     } catch {
       setModelTabError('Failed to disconnect Claude');
     } finally {
@@ -688,73 +687,13 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
     onClose();
   };
 
-  // Build configured providers list from local state for access filtering
-  const localConfiguredProviders = useMemo<ConfiguredProvider[]>(() => {
-    const result: ConfiguredProvider[] = [];
-    for (const p of byokProviders) {
-      if (p.has_key) {
-        result.push({ provider: p.provider, display_name: p.display_name || p.provider, access_type: (p.access_type as ConfiguredProvider['access_type']) ?? 'api_key' });
-      }
-    }
-    if (codexOAuthStatus.connected) {
-      result.push({ provider: 'codex-oauth', display_name: 'ChatGPT Codex', access_type: 'oauth' });
-    }
-    if (claudeOAuthStatus.connected) {
-      result.push({ provider: 'claude-oauth', display_name: 'Claude (OAuth)', access_type: 'oauth' });
-    }
-    return result;
-  }, [byokProviders, codexOAuthStatus, claudeOAuthStatus]);
-
-  const platform = useMemo(
-    () => rawPlatform ? augmentPlatformWithLocal(rawPlatform, localConfiguredProviders) : null,
-    [rawPlatform, localConfiguredProviders],
-  );
-
-  // Normalize availableModels to the Record<string, ProviderModelsData> shape
-  // expected by ModelTierConfig / ModelSelector (backend may return string[]).
-  // Filters by access type to prevent OAuth/coding_plan variants from leaking.
-  const normalizedModels = useMemo<Record<string, ProviderModelsData>>(() => {
-    const out: Record<string, ProviderModelsData> = {};
-    for (const [provider, pd] of Object.entries(availableModels)) {
-      if (Array.isArray(pd)) {
-        out[provider] = { models: pd, display_name: provider.charAt(0).toUpperCase() + provider.slice(1) };
-      } else {
-        out[provider] = pd as ProviderModelsData;
-      }
-    }
-    // Merge custom models so they appear in model dropdowns
-    const augmentedMetadata = { ...modelMetadata };
-    for (const cm of customModels) {
-      const key = cm.provider;
-      if (!out[key]) {
-        out[key] = { models: [], display_name: key };
-      }
-      if (!out[key].models!.includes(cm.name)) {
-        out[key].models!.push(cm.name);
-      }
-      if (!augmentedMetadata[cm.name]) {
-        augmentedMetadata[cm.name] = { provider: cm.provider, is_custom_model: true };
-      }
-    }
-    if (platform) {
-      // Platform mode: tier filter handles BYOK + OAuth + plan access in one pass.
-      return filterByPlatformTier(out, augmentedMetadata, platform);
-    }
-    // OSS mode: filter by configured providers only.
-    const configuredSet = new Set(localConfiguredProviders.map(p => p.provider));
-    const configuredTypeMap = buildConfiguredTypeMap(localConfiguredProviders);
-    return filterModelsByAccess(out, augmentedMetadata, configuredSet, configuredTypeMap);
-  }, [availableModels, customModels, modelMetadata, localConfiguredProviders, platform]);
-
   // Build provider manifest for ProviderManager from byokProviders list.
-  const providerManifest = useMemo(() => {
+  const providerManifest = React.useMemo(() => {
     return byokProviders.filter(p => !p.is_custom).map(p => ({
       provider: p.provider,
       display_name: p.display_name || p.provider,
     }));
   }, [byokProviders]);
-
-  const modelAccessMap = useModelAccessMap(normalizedModels, modelMetadata, platform);
 
   if (!isOpen) return null;
 
@@ -1136,7 +1075,7 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
                   <div>
                     {/* Default + Flash model selectors */}
                     <ModelTierConfig
-                      models={normalizedModels}
+                      models={visibleModels}
                       primaryModel={preferredModel}
                       onPrimaryModelChange={setPreferredModel}
                       flashModel={preferredFlashModel}
@@ -1215,7 +1154,7 @@ function UserConfigPanel({ isOpen, onClose, onModifyPreferences, onStartOnboardi
                         </div>
                         {/* Provider groups */}
                         <div className="px-1 pb-1 max-h-[280px] overflow-y-auto">
-                          {Object.entries(normalizedModels).map(([provider, providerData]) => {
+                          {Object.entries(visibleModels).map(([provider, providerData]) => {
                             const models: string[] = providerData?.models || [];
                             const query = modelPickerSearch.toLowerCase();
                             const filtered = query

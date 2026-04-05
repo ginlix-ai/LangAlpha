@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, User, LogOut, Trash2, HelpCircle, MessageSquareText, Sun, Moon, Monitor, Link2, Unlink, ExternalLink, Shield, ClipboardCopy, Plus, Pencil, Search, Pin, Settings2 } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { updateCurrentUser, clearPreferences, uploadAvatar, getAvailableModels, getUserApiKeys, updateUserApiKeys, deleteUserApiKey, initiateCodexDevice, pollCodexDevice, getCodexOAuthStatus, disconnectCodexOAuth, initiateClaudeOAuth, submitClaudeCallback, getClaudeOAuthStatus, disconnectClaudeOAuth } from '@/pages/Dashboard/utils/api';
+import { updateCurrentUser, clearPreferences, uploadAvatar, getUserApiKeys, updateUserApiKeys, deleteUserApiKey, initiateCodexDevice, pollCodexDevice, getCodexOAuthStatus, disconnectCodexOAuth, initiateClaudeOAuth, submitClaudeCallback, getClaudeOAuthStatus, disconnectClaudeOAuth } from '@/pages/Dashboard/utils/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useUser } from '@/hooks/useUser';
 import { usePreferences } from '@/hooks/usePreferences';
@@ -17,11 +17,8 @@ import { useToast } from '@/components/ui/use-toast';
 import { getFlashWorkspace } from '@/pages/ChatAgent/utils/api';
 import ConfirmDialog from '@/pages/Dashboard/components/ConfirmDialog';
 import { ModelTierConfig } from '@/components/model/ModelTierConfig';
-import type { ByokProvider, CustomModelEntry, CustomModelFormState, AddProviderFormState, ProviderModelsData } from '@/components/model/types';
-import { filterModelsByAccess, filterByPlatformTier, augmentPlatformWithLocal, buildConfiguredTypeMap } from '@/hooks/useFilteredModels';
-import type { ModelMetadataEntry } from '@/hooks/useFilteredModels';
-import type { ConfiguredProvider } from '@/hooks/useConfiguredProviders';
-import { usePlatformModels, useModelAccessMap } from '@/hooks/usePlatformModels';
+import type { ByokProvider, CustomModelEntry, CustomModelFormState, AddProviderFormState } from '@/components/model/types';
+import { useAllModels } from '@/hooks/useAllModels';
 import './Settings.css';
 
 interface CodexDeviceCode {
@@ -67,7 +64,7 @@ function Settings() {
   const updatePrefsMutation = useUpdatePreferences();
   const queryClient = useQueryClient();
   const { theme: _theme, preference, setTheme: setThemePref } = useTheme();
-  const rawPlatform = usePlatformModels();
+  const { models: visibleModels, modelAccessMap, systemDefaults: hookSystemDefaults, validModelNames } = useAllModels();
   const { t, i18n } = useTranslation();
 
   const tabParam = searchParams.get('tab') || 'userInfo';
@@ -83,8 +80,6 @@ function Settings() {
   const [preferences, setPreferences] = useState<Preferences | null>(null);
 
   // Model tab state
-  const [availableModels, setAvailableModels] = useState<Record<string, string[] | ProviderModelsData>>({});
-  const [modelMetadata, setModelMetadata] = useState<Record<string, ModelMetadataEntry>>({});
   const [preferredModel, setPreferredModel] = useState('');
   const [preferredFlashModel, setPreferredFlashModel] = useState('');
   const [starredModels, setStarredModels] = useState<string[]>([]);
@@ -109,7 +104,6 @@ function Settings() {
   const [summarizationModel, setSummarizationModel] = useState('');
   const [fetchModel, setFetchModel] = useState('');
   const [fallbackModels, setFallbackModels] = useState<string[]>([]);
-  const [systemDefaults, setSystemDefaults] = useState<Record<string, unknown>>({});
 
   // Custom Models state
   const [customModels, setCustomModels] = useState<CustomModelEntry[]>([]);
@@ -258,16 +252,11 @@ function Settings() {
   const loadModelTabData = async () => {
     setModelTabError(null);
     try {
-      const [modelsRes, keysRes, codexStatus, claudeStatus] = await Promise.all([
-        getAvailableModels(),
+      const [keysRes, codexStatus, claudeStatus] = await Promise.all([
         getUserApiKeys(),
         getCodexOAuthStatus(),
         getClaudeOAuthStatus(),
-      ]) as [Record<string, unknown>, Record<string, unknown>, OAuthStatus, OAuthStatus];
-      setAvailableModels((modelsRes?.models as Record<string, string[] | ProviderModelsData>) || {});
-      setModelMetadata((modelsRes?.model_metadata as Record<string, { provider?: string; sdk?: string; access_type?: string }>) || {});
-      const defaults = (modelsRes?.system_defaults as Record<string, unknown>) || {};
-      setSystemDefaults(defaults);
+      ]) as [Record<string, unknown>, OAuthStatus, OAuthStatus];
       setByokEnabled(!!keysRes?.byok_enabled);
       setByokProviders((keysRes?.providers as ByokProvider[]) || []);
       const initialBaseUrls: Record<string, string> = {};
@@ -282,7 +271,7 @@ function Settings() {
       setCustomModels((otherPref?.custom_models as CustomModelEntry[]) || []);
       setSummarizationModel((otherPref?.summarization_model as string) || '');
       setFetchModel((otherPref?.fetch_model as string) || '');
-      setFallbackModels((otherPref?.fallback_models as string[]) || (defaults.fallback_models as string[]) || []);
+      setFallbackModels((otherPref?.fallback_models as string[]) || (hookSystemDefaults?.fallback_models as string[]) || []);
       setCodexOAuthStatus(codexStatus || { connected: false });
       setClaudeOAuthStatus(claudeStatus || { connected: false });
     } catch {
@@ -304,11 +293,11 @@ function Settings() {
           return entry;
         });
       // Clean stale references before saving
-      const cleanStarred = starredModels.filter(m => allValidModels.has(m));
-      const cleanFallback = fallbackModels.filter(m => allValidModels.has(m));
+      const cleanStarred = starredModels.filter(m => validModelNames.has(m));
+      const cleanFallback = fallbackModels.filter(m => validModelNames.has(m));
       const activeProviderKeys = new Set(byokProviders.filter(p => p.has_key).map(p => p.provider));
       const cleanCustomProviders = customProvidersList.filter(cp => activeProviderKeys.has(cp.name as string));
-      const cleanCustomModels = customModels.filter(cm => activeProviderKeys.has(cm.provider) || allValidModels.has(cm.name));
+      const cleanCustomModels = customModels.filter(cm => activeProviderKeys.has(cm.provider) || validModelNames.has(cm.name));
 
       await updatePrefsMutation.mutateAsync({
         other_preference: {
@@ -342,6 +331,8 @@ function Settings() {
         const result = await updateUserApiKeys(payload) as Record<string, unknown>;
         setByokProviders(result.providers as ByokProvider[]);
         setKeyInputs({});
+        queryClient.invalidateQueries({ queryKey: queryKeys.user.apiKeys() });
+        queryClient.invalidateQueries({ queryKey: queryKeys.platform.models() });
       }
 
       setModelSaveSuccess(true);
@@ -360,6 +351,7 @@ function Settings() {
       const result = await updateUserApiKeys({ byok_enabled: newValue }) as Record<string, unknown>;
       setByokEnabled(!!result.byok_enabled);
       setByokProviders(result.providers as ByokProvider[]);
+      queryClient.invalidateQueries({ queryKey: queryKeys.user.apiKeys() });
     } catch {
       setModelTabError(t('settings.failedToToggleByok'));
     }
@@ -371,6 +363,8 @@ function Settings() {
     try {
       const result = await deleteUserApiKey(provider) as Record<string, unknown>;
       setByokProviders(result.providers as ByokProvider[]);
+      queryClient.invalidateQueries({ queryKey: queryKeys.user.apiKeys() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.platform.models() });
     } catch {
       setModelTabError(t('settings.failedToDeleteKey', { provider }));
     } finally {
@@ -485,8 +479,7 @@ function Settings() {
     if (!form.model_id?.trim()) return t('settings.customModelIdRequired');
     if (!form.provider?.trim()) return t('settings.customModelProviderRequired');
     // Check collision with system models
-    const allSystemModels = Object.values(availableModels).flatMap(pd => Array.isArray(pd) ? pd : (pd as ProviderModelsData)?.models || []);
-    if (allSystemModels.includes(form.name.trim())) return t('settings.customModelNameConflict');
+    if (validModelNames.has(form.name.trim())) return t('settings.customModelNameConflict');
     // Check duplicate in custom models
     const dup = existingModels.findIndex((cm, i) => i !== editIdx && cm.name === form.name.trim());
     if (dup >= 0) return t('settings.customModelNameDuplicate');
@@ -576,6 +569,8 @@ function Settings() {
     try {
       await disconnectCodexOAuth();
       setCodexOAuthStatus({ connected: false, account_id: null, email: null, plan_type: null });
+      queryClient.invalidateQueries({ queryKey: queryKeys.oauth.codex() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.platform.models() });
     } catch {
       setModelTabError('Failed to disconnect Codex');
     } finally {
@@ -642,6 +637,8 @@ function Settings() {
     try {
       await disconnectClaudeOAuth();
       setClaudeOAuthStatus({ connected: false, account_id: null, email: null, plan_type: null });
+      queryClient.invalidateQueries({ queryKey: queryKeys.oauth.claude() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.platform.models() });
     } catch {
       setModelTabError('Failed to disconnect Claude');
     } finally {
@@ -786,86 +783,15 @@ function Settings() {
     }
   };
 
-  // Build configured providers list from local state for access filtering
-  const localConfiguredProviders = useMemo<ConfiguredProvider[]>(() => {
-    const result: ConfiguredProvider[] = [];
-    for (const p of byokProviders) {
-      if (p.has_key) {
-        result.push({ provider: p.provider, display_name: p.display_name || p.provider, access_type: (p.access_type as ConfiguredProvider['access_type']) ?? 'api_key' });
-      }
-    }
-    if (codexOAuthStatus.connected) {
-      result.push({ provider: 'codex-oauth', display_name: 'ChatGPT Codex', access_type: 'oauth' });
-    }
-    if (claudeOAuthStatus.connected) {
-      result.push({ provider: 'claude-oauth', display_name: 'Claude (OAuth)', access_type: 'oauth' });
-    }
-    return result;
-  }, [byokProviders, codexOAuthStatus, claudeOAuthStatus]);
-
-  const platform = useMemo(
-    () => rawPlatform ? augmentPlatformWithLocal(rawPlatform, localConfiguredProviders) : null,
-    [rawPlatform, localConfiguredProviders],
-  );
-
-  // Normalize availableModels to the Record<string, ProviderModelsData> shape
-  // expected by ModelTierConfig / ModelSelector (backend may return string[]).
-  // Also merges custom models so they appear in the model dropdowns.
-  // Finally filters by access type to prevent OAuth/coding_plan model leaks.
-  const normalizedModels = useMemo<Record<string, ProviderModelsData>>(() => {
-    const out: Record<string, ProviderModelsData> = {};
-    for (const [provider, pd] of Object.entries(availableModels)) {
-      if (Array.isArray(pd)) {
-        out[provider] = { models: [...pd], display_name: provider.charAt(0).toUpperCase() + provider.slice(1) };
-      } else {
-        const typed = pd as ProviderModelsData;
-        out[provider] = { ...typed, models: [...(typed.models ?? [])] };
-      }
-    }
-    // Append custom models grouped by their provider, and augment metadata
-    const augmentedMetadata = { ...modelMetadata };
-    for (const cm of customModels) {
-      const key = cm.provider;
-      if (!out[key]) {
-        out[key] = { models: [], display_name: key };
-      }
-      if (!out[key].models!.includes(cm.name)) {
-        out[key].models!.push(cm.name);
-      }
-      if (!augmentedMetadata[cm.name]) {
-        augmentedMetadata[cm.name] = { provider: cm.provider, is_custom_model: true };
-      }
-    }
-    if (platform) {
-      // Platform mode: tier filter handles BYOK + OAuth + plan access in one pass.
-      return filterByPlatformTier(out, augmentedMetadata, platform);
-    }
-    // OSS mode: filter by configured providers only.
-    const configuredSet = new Set(localConfiguredProviders.map(p => p.provider));
-    const configuredTypeMap = buildConfiguredTypeMap(localConfiguredProviders);
-    return filterModelsByAccess(out, augmentedMetadata, configuredSet, configuredTypeMap);
-  }, [availableModels, customModels, modelMetadata, localConfiguredProviders, platform]);
-
-  const modelAccessMap = useModelAccessMap(normalizedModels, modelMetadata, platform);
-
-  // All valid model names for filtering stale references
-  const allValidModels = useMemo(() => {
-    const s = new Set<string>();
-    for (const group of Object.values(normalizedModels)) {
-      if (group.models) group.models.forEach((m) => s.add(m));
-    }
-    return s;
-  }, [normalizedModels]);
-
   // Auto-clean stale starred/fallback models on load
   useEffect(() => {
-    if (allValidModels.size === 0) return;
-    const cleanS = starredModels.filter(m => allValidModels.has(m));
+    if (validModelNames.size === 0) return;
+    const cleanS = starredModels.filter(m => validModelNames.has(m));
     if (cleanS.length !== starredModels.length) setStarredModels(cleanS);
-    const cleanF = fallbackModels.filter(m => allValidModels.has(m));
+    const cleanF = fallbackModels.filter(m => validModelNames.has(m));
     if (cleanF.length !== fallbackModels.length) setFallbackModels(cleanF);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allValidModels]);
+  }, [validModelNames]);
 
   return (
     <div className="settings-page">
@@ -1227,7 +1153,7 @@ function Settings() {
               <div>
                 {/* Default + Flash model selectors */}
                 <ModelTierConfig
-                  models={normalizedModels}
+                  models={visibleModels}
                   primaryModel={preferredModel}
                   onPrimaryModelChange={setPreferredModel}
                   flashModel={preferredFlashModel}
@@ -1243,13 +1169,7 @@ function Settings() {
                     if (models.fetchModel !== undefined) setFetchModel(models.fetchModel);
                     if (models.fallbackModels !== undefined) setFallbackModels(models.fallbackModels);
                   }}
-                  systemDefaults={{
-                    default_model: systemDefaults.default_model as string | undefined,
-                    flash_model: systemDefaults.flash_model as string | undefined,
-                    summarization_model: systemDefaults.summarization_model as string | undefined,
-                    fetch_model: systemDefaults.fetch_model as string | undefined,
-                    fallback_models: systemDefaults.fallback_models as string[] | undefined,
-                  }}
+                  systemDefaults={hookSystemDefaults ?? undefined}
                   modelAccess={modelAccessMap}
                 />
 
@@ -1263,7 +1183,7 @@ function Settings() {
                     {t('settings.starredModelsDesc')}
                   </p>
                   <div className="flex flex-wrap items-center gap-1.5">
-                    {starredModels.filter(m => allValidModels.has(m)).map((key) => (
+                    {starredModels.filter(m => validModelNames.has(m)).map((key) => (
                       <span
                         key={key}
                         className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs"
@@ -1326,7 +1246,7 @@ function Settings() {
                     </div>
                     {/* Provider groups */}
                     <div className="px-1 pb-1 max-h-[280px] overflow-y-auto">
-                      {Object.entries(normalizedModels).map(([provider, providerData]) => {
+                      {Object.entries(visibleModels).map(([provider, providerData]) => {
                         const models: string[] = providerData?.models || [];
                         const query = modelPickerSearch.toLowerCase();
                         const filtered = query

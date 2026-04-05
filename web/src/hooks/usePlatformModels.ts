@@ -10,6 +10,7 @@ import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/api/client';
 import { queryKeys } from '@/lib/queryKeys';
+import { isPlatformMode } from '@/config/hostMode';
 import type { ProviderModelsData } from '@/components/model/types';
 import type { ModelMetadataEntry } from './useFilteredModels';
 import type { PlatformModelsResponse, ModelAccess } from '@/types/platform';
@@ -27,11 +28,12 @@ export function usePlatformModels(): PlatformModelsResponse | null {
       const res = await api.get<PlatformModelsResponse>('/api/auth/models');
       return res.data;
     },
+    // Skip entirely in OSS mode — there's no platform auth service.
+    enabled: isPlatformMode,
     staleTime: 5 * 60_000,
     gcTime: Infinity,
     retry: false,
     // Fail-open: swallow errors so the hook returns undefined (-> null below).
-    // Never surface to the UI — OSS mode and platform outages are expected.
     meta: { suppressError: true },
     throwOnError: false,
   });

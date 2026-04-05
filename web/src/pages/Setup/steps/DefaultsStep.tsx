@@ -1,14 +1,9 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loader2, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ModelTierConfig } from '@/components/model/ModelTierConfig';
-import type { ProviderModelsData } from '@/components/model/types';
 import { useAllModels } from '@/hooks/useAllModels';
-import { useConfiguredProviders } from '@/hooks/useConfiguredProviders';
-import { useFilteredModels } from '@/hooks/useFilteredModels';
-import type { ModelMetadataEntry } from '@/hooks/useFilteredModels';
-import { useModelAccessMap } from '@/hooks/usePlatformModels';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useUpdatePreferences } from '@/hooks/useUpdatePreferences';
 import { useTranslation } from 'react-i18next';
@@ -19,58 +14,10 @@ import { useTranslation } from 'react-i18next';
 
 export default function DefaultsStep() {
   const navigate = useNavigate();
-  const { models, platform, isLoading: modelsLoading } = useAllModels();
-  const { providers: configuredProviders } = useConfiguredProviders();
+  const { models, modelAccessMap, systemDefaults, isLoading } = useAllModels();
   const { preferences } = usePreferences();
   const updatePreferences = useUpdatePreferences();
   const { t } = useTranslation();
-
-  // ---------------------------------------------------------------------------
-  // Filter models to only those the user has access to.
-  //
-  // Uses the shared filterModelsByAccess logic which checks both the model's
-  // own provider (direct match) and the groupKey fallback (only when the
-  // configured provider's access_type matches the model's access_type).
-  // This prevents OAuth/coding_plan variants from leaking through groupKey.
-  // ---------------------------------------------------------------------------
-
-  const { providerMap, metadata } = useMemo(() => {
-    if (!models) return { providerMap: {} as Record<string, ProviderModelsData>, metadata: {} as Record<string, ModelMetadataEntry> };
-    const raw = models as Record<string, unknown>;
-    const rawProviderMap = (raw.models ?? raw) as Record<string, Record<string, unknown>>;
-    const rawMetadata = (raw.model_metadata ?? {}) as Record<string, ModelMetadataEntry>;
-
-    const pm: Record<string, ProviderModelsData> = {};
-    for (const [groupKey, data] of Object.entries(rawProviderMap)) {
-      if (!data || typeof data !== 'object') continue;
-      pm[groupKey] = {
-        models: (data.models as string[]) ?? [],
-        display_name: (data.display_name as string) ?? groupKey,
-      };
-    }
-    return { providerMap: pm, metadata: rawMetadata };
-  }, [models]);
-
-  const accessFilteredModels = useFilteredModels(providerMap, metadata, configuredProviders);
-  // In platform mode, providerMap is already tier-filtered by useAllModels.
-  // In OSS mode, filter by configured providers.
-  const normalizedModels = platform ? providerMap : accessFilteredModels;
-
-
-  const modelAccessMap = useModelAccessMap(normalizedModels, metadata, platform);
-
-  // System defaults from models response
-  const systemDefaults = useMemo(() => {
-    if (!models) return undefined;
-    const raw = models as Record<string, unknown>;
-    return raw.system_defaults as {
-      default_model?: string;
-      flash_model?: string;
-      summarization_model?: string;
-      fetch_model?: string;
-      fallback_models?: string[];
-    } | undefined;
-  }, [models]);
 
   // ---------------------------------------------------------------------------
   // Selection state — seed from existing preferences if available
@@ -149,13 +96,17 @@ export default function DefaultsStep() {
   // Render
   // ---------------------------------------------------------------------------
 
-  if (modelsLoading) {
+  if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
         <Loader2 className="h-5 w-5 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />
       </div>
     );
   }
+
+  // In platform mode, models are already tier-filtered by useAllModels.
+  // In OSS mode, they're filtered by configured providers.
+  // Either way, `models` is the correct set to display.
 
   return (
     <div className="flex flex-col gap-4 sm:gap-6">
@@ -195,9 +146,9 @@ export default function DefaultsStep() {
         </p>
       </div>
 
-      {/* Model tier config — no filterProviders needed, models are pre-filtered */}
+      {/* Model tier config */}
       <ModelTierConfig
-        models={normalizedModels}
+        models={models}
         primaryModel={primaryModel}
         onPrimaryModelChange={setPrimaryModel}
         flashModel={flashModel}
@@ -206,7 +157,7 @@ export default function DefaultsStep() {
         showAdvanced
         advancedModels={advancedModels}
         onAdvancedModelsChange={handleAdvancedChange}
-        systemDefaults={systemDefaults}
+        systemDefaults={systemDefaults ?? undefined}
         modelAccess={modelAccessMap}
       />
 
