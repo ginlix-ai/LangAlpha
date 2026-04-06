@@ -1,5 +1,23 @@
+diff --git a/dist/exceljs.bare.js b/dist/exceljs.bare.js
+index cbca4960becb7bd5d6c43a17457c4159df5cb6d6..4649568fbbf29621ac7ef55c8707e3f759e54b59 100644
+--- a/dist/exceljs.bare.js
++++ b/dist/exceljs.bare.js
+@@ -12365,10 +12365,11 @@ class WorkSheetXform extends BaseXform {
+     const rels = (model.relationships || []).reduce((h, rel) => {
+       h[rel.Id] = rel;
+       if (rel.Type === RelType.Comments) {
+-        model.comments = options.comments[rel.Target].comments;
++        model.comments = options.comments[rel.Target]?.comments ?? [];
+       }
+       if (rel.Type === RelType.VmlDrawing && model.comments && model.comments.length) {
+-        const vmlComment = options.vmlDrawings[rel.Target].comments;
++        const vmlDrawing = options.vmlDrawings[rel.Target];
++        const vmlComment = vmlDrawing?.comments ?? [];
+         model.comments.forEach((comment, index) => {
+           comment.note = Object.assign({}, comment.note, vmlComment[index]);
+         });
 diff --git a/lib/xlsx/xform/sheet/worksheet-xform.js b/lib/xlsx/xform/sheet/worksheet-xform.js
-index b38930042cbb05dccd01c46a9adacb7a9fc59dba..f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0 100644
+index b38930042cbb05dccd01c46a9adacb7a9fc59dba..1cb4d645ac6af98a3f7497c64a8646a041090d57 100644
 --- a/lib/xlsx/xform/sheet/worksheet-xform.js
 +++ b/lib/xlsx/xform/sheet/worksheet-xform.js
 @@ -450,10 +450,11 @@ class WorkSheetXform extends BaseXform {
@@ -16,3 +34,16 @@ index b38930042cbb05dccd01c46a9adacb7a9fc59dba..f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6
          model.comments.forEach((comment, index) => {
            comment.note = Object.assign({}, comment.note, vmlComment[index]);
          });
+diff --git a/package.json b/package.json
+index 7a70a5e13145a917b57806a6998b8d5e04f47acd..edafbaa30eaf2331ae9b259961f6eb830c4ec49d 100644
+--- a/package.json
++++ b/package.json
+@@ -16,7 +16,7 @@
+     "node": ">=8.3.0"
+   },
+   "main": "./excel.js",
+-  "browser": "./dist/exceljs.min.js",
++  "browser": "./dist/exceljs.bare.js",
+   "types": "./index.d.ts",
+   "files": [
+     "dist",
