@@ -64,7 +64,7 @@ function Settings() {
   const updatePrefsMutation = useUpdatePreferences();
   const queryClient = useQueryClient();
   const { theme: _theme, preference, setTheme: setThemePref } = useTheme();
-  const { models: visibleModels, modelAccessMap, systemDefaults: hookSystemDefaults, validModelNames } = useAllModels();
+  const { models: visibleModels, modelAccessMap, systemDefaults: hookSystemDefaults, validModelNames, isLoading: isModelsLoading } = useAllModels();
   const { t, i18n } = useTranslation();
 
   const tabParam = searchParams.get('tab') || 'userInfo';
@@ -224,13 +224,13 @@ function Settings() {
     }
   }, [authUser]);
 
-  // Load model tab data lazily when tab is selected
+  // Load model tab data lazily when tab is selected and hooks are ready
   useEffect(() => {
-    if (activeTab === 'model') {
+    if (activeTab === 'model' && !isModelsLoading) {
       loadModelTabData();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab]);
+  }, [activeTab, isModelsLoading]);
 
   // Cleanup device code polling on unmount
   useEffect(() => {

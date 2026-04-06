@@ -448,6 +448,9 @@ _SDK_TEST_DISPATCH: dict[str, tuple] = {
 }
 
 
+_SSRF_BLOCKED_HOSTS = frozenset({"localhost", "metadata.google.internal", "metadata.goog", "instance-data"})
+
+
 async def _check_ssrf(base_url: str) -> None:
     """Block private/internal IPs in platform mode. No-op in OSS mode."""
     if HOST_MODE != "platform" or not base_url:
@@ -458,9 +461,8 @@ async def _check_ssrf(base_url: str) -> None:
     import asyncio
 
     hostname = urlparse(base_url).hostname or ""
-    _BLOCKED_HOSTS = {"localhost", "metadata.google.internal", "metadata.goog", "instance-data"}
 
-    if hostname.rstrip(".").lower() in _BLOCKED_HOSTS or hostname.endswith(".internal"):
+    if hostname.rstrip(".").lower() in _SSRF_BLOCKED_HOSTS or hostname.endswith(".internal"):
         raise HTTPException(
             status_code=400,
             detail="Base URL cannot point to a private or internal address.",
