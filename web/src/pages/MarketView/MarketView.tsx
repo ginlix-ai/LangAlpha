@@ -334,7 +334,7 @@ function MarketViewInner() {
     const attachmentMeta = metaItems.length > 0 ? metaItems : null;
 
     if (mode === 'fast') {
-      handleFastModeSend(message, imageContext, attachmentMeta);
+      handleFastModeSend(message, imageContext, attachmentMeta, model);
     } else {
       // Deep mode: use selected workspace or fall back to default
       try {

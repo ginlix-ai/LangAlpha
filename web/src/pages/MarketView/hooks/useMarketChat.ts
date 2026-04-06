@@ -74,7 +74,7 @@ export interface UseMarketChatReturn {
   messages: MarketChatMessage[];
   isLoading: boolean;
   error: string | StructuredError | null;
-  handleSendMessage: (message: string, additionalContext?: unknown, attachmentMeta?: AttachmentMeta[] | null) => Promise<void>;
+  handleSendMessage: (message: string, additionalContext?: unknown, attachmentMeta?: AttachmentMeta[] | null, model?: string | null) => Promise<void>;
 }
 
 type MessageUpdater = (messages: MarketChatMessage[]) => MarketChatMessage[];
@@ -378,7 +378,7 @@ export function useMarketChat(): UseMarketChatReturn {
   /**
    * Handles sending a message in flash mode
    */
-  const handleSendMessage = async (message: string, additionalContext: unknown = null, attachmentMeta: AttachmentMeta[] | null = null): Promise<void> => {
+  const handleSendMessage = async (message: string, additionalContext: unknown = null, attachmentMeta: AttachmentMeta[] | null = null, model: string | null = null): Promise<void> => {
     if (!message.trim() || isLoading) {
       return;
     }
@@ -491,7 +491,8 @@ export function useMarketChat(): UseMarketChatReturn {
         },
         'en-US',
         'America/New_York',
-        additionalContext
+        additionalContext,
+        model
       );
 
       // Flush any remaining batched updates

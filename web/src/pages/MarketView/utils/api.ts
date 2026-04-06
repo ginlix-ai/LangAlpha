@@ -516,7 +516,8 @@ export async function sendFlashChatMessage(
   onEvent: (event: Record<string, unknown>) => void = () => {},
   locale: string = 'en-US',
   timezone: string = 'America/New_York',
-  additionalContext: unknown = null
+  additionalContext: unknown = null,
+  model: string | null = null
 ): Promise<void> {
   const body: Record<string, unknown> = {
     agent_mode: 'flash',
@@ -528,6 +529,9 @@ export async function sendFlashChatMessage(
   };
   if (additionalContext) {
     body.additional_context = additionalContext;
+  }
+  if (model) {
+    body.llm_model = model;
   }
 
   // Use /threads/{id}/messages for existing thread, /threads/messages for new
