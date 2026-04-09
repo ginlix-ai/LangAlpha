@@ -64,13 +64,15 @@ export function usePortfolioData() {
           const p = bySym[sym] || ({} as Partial<StockPrice>);
           const q = Number(h.quantity || 0);
           const ac = h.average_cost != null ? Number(h.average_cost) : null;
+          const meta = (h as Record<string, unknown>).metadata as Record<string, unknown> | null;
           // Use real-time price if available, fall back to Sharesight valuation price
-          const sharesightPrice = (h as Record<string, unknown>).metadata != null
-            ? Number(((h as Record<string, unknown>).metadata as Record<string, unknown>)?.sharesight_price || 0)
-            : 0;
+          const sharesightPrice = Number(meta?.sharesight_price || 0);
           const price = p.price || sharesightPrice;
           const marketValue = q * price;
-          const plPct = ac != null && ac > 0 ? ((price - ac) / ac) * 100 : null;
+          // Use Sharesight's capital gain % (handles cross-currency correctly)
+          const sharesightPl = meta?.capital_gain_pct != null ? Number(meta.capital_gain_pct) : null;
+          const calcPl = ac != null && ac > 0 ? ((price - ac) / ac) * 100 : null;
+          const plPct = sharesightPl ?? calcPl;
           return {
             user_portfolio_id: h.user_portfolio_id,
             symbol: sym,

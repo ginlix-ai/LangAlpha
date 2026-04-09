@@ -108,13 +108,9 @@ class SharesightClient:
         data = await self._api_get("/api/v2/portfolios.json")
         return data.get("portfolios", [])
 
-    async def get_holdings(self, portfolio_id: int) -> list[dict]:
-        data = await self._api_get(f"/api/v2/portfolios/{portfolio_id}/valuation.json")
+    async def get_performance(self, portfolio_id: int) -> list[dict]:
+        data = await self._api_get(f"/api/v2/portfolios/{portfolio_id}/performance.json")
         return data.get("holdings", [])
-
-    async def get_trades(self, portfolio_id: int) -> list[dict]:
-        data = await self._api_get(f"/api/v2/portfolios/{portfolio_id}/trades.json")
-        return data.get("trades", [])
 
     async def get_portfolio_holdings(self) -> list[dict]:
         """Fetch holdings from the configured portfolio and map to LangAlpha schema."""
@@ -130,44 +126,18 @@ class SharesightClient:
                 f"Available: {[p['name'] for p in portfolios]}"
             )
 
-        pid = portfolio["id"]
-        raw_holdings = await self.get_holdings(pid)
+        raw_holdings = await self.get_performance(portfolio["id"])
+        return [self._map_holding(h) for h in raw_holdings]
 
-        # Fetch trades to calculate average cost per holding
-        try:
-            trades = await self.get_trades(pid)
-            cost_by_holding = self._calc_avg_costs(trades)
-        except Exception:
-            logger.warning("Failed to fetch trades for cost basis, continuing without")
-            cost_by_holding = {}
-
-        return [self._map_holding(h, cost_by_holding) for h in raw_holdings]
-
-    @staticmethod
-    def _calc_avg_costs(trades: list[dict]) -> dict[int, Decimal]:
-        """Calculate weighted average cost per holding from trade history."""
-        from collections import defaultdict
-        totals: dict[int, dict] = defaultdict(lambda: {"qty": Decimal(0), "cost": Decimal(0)})
-        for t in trades:
-            hid = t.get("holding_id")
-            if not hid:
-                continue
-            qty = Decimal(str(t.get("quantity", 0) or 0))
-            price = Decimal(str(t.get("price", 0) or 0))
-            totals[hid]["qty"] += qty
-            totals[hid]["cost"] += qty * price
-        return {
-            hid: d["cost"] / d["qty"] if d["qty"] else Decimal(0)
-            for hid, d in totals.items()
-        }
-
-    def _map_holding(self, holding: dict, cost_by_holding: dict[int, Decimal] | None = None) -> dict:
+    def _map_holding(self, holding: dict) -> dict:
         quantity = Decimal(str(holding.get("quantity", 0)))
         value = Decimal(str(holding.get("value", 0)))
         sharesight_price = float(value / quantity) if quantity else 0.0
 
+        # Sharesight provides gain percentages with correct currency handling
+        capital_gain_pct = holding.get("capital_gain_percent")
+
         holding_id = holding.get("id", 0)
-        average_cost = (cost_by_holding or {}).get(holding_id)
         stable_uuid = uuid5(NAMESPACE_URL, f"sharesight:{holding_id}")
 
         return {
@@ -176,12 +146,17 @@ class SharesightClient:
             "symbol": holding.get("symbol", ""),
             "instrument_type": "stock",
             "quantity": quantity,
-            "average_cost": average_cost,
+            "average_cost": None,
             "exchange": holding.get("market"),
-            "currency": "USD",
+            "currency": "GBP",
             "account_name": self._portfolio_name,
             "notes": None,
-            "metadata": {"sharesight_price": sharesight_price, "sharesight_value": float(value)},
+            "metadata": {
+                "sharesight_price": sharesight_price,
+                "sharesight_value": float(value),
+                "capital_gain_pct": capital_gain_pct,
+                "total_gain_pct": holding.get("total_gain_percent"),
+            },
             "name": holding.get("name"),
             "first_purchased_at": None,
             "created_at": "2000-01-01T00:00:00Z",
