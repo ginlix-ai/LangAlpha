@@ -2,11 +2,8 @@ import { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ListFilter, Sparkles, X } from 'lucide-react';
 import { MobileBottomSheet } from '../../components/ui/mobile-bottom-sheet';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/dialog';
-import { Input } from '../../components/ui/input';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import DashboardHeader from './components/DashboardHeader';
-import ConfirmDialog from './components/ConfirmDialog';
 import IndexMovementCard from './components/IndexMovementCard';
 import AIDailyBriefCard from './components/AIDailyBriefCard';
 import NewsFeedCard from './components/NewsFeedCard';
@@ -16,20 +13,12 @@ import PortfolioWatchlistCard from './components/PortfolioWatchlistCard';
 import NewsDetailModal from './components/NewsDetailModal';
 import InsightDetailModal from './components/InsightDetailModal';
 import AddWatchlistItemDialog from './components/AddWatchlistItemDialog';
-import AddPortfolioHoldingDialog from './components/AddPortfolioHoldingDialog';
 import { useWatchlistData } from './hooks/useWatchlistData';
-import { usePortfolioData, type PortfolioRow } from './hooks/usePortfolioData';
+import { usePortfolioData } from './hooks/usePortfolioData';
 import { useTickerNews } from './hooks/useTickerNews';
 import { useDashboardData } from './hooks/useDashboardData';
 import { useOnboarding, snoozePersonalization } from './hooks/useOnboarding';
 import './Dashboard.css';
-
-interface DeleteConfirmState {
-  open: boolean;
-  title: string;
-  message: string;
-  onConfirm: (() => Promise<void>) | null;
-}
 
 function Dashboard() {
   const { t } = useTranslation();
@@ -69,25 +58,6 @@ function Dashboard() {
   const portfolioNews = useTickerNews(portfolio.rows, 'portfolio');
   const watchlistNews = useTickerNews(watchlist.rows, 'watchlist');
 
-  const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirmState>({
-    open: false,
-    title: '',
-    message: '',
-    onConfirm: null,
-  });
-
-  const handleDeletePortfolioItem = useCallback(
-    (holdingId: string) => {
-      setDeleteConfirm(portfolio.handleDelete(holdingId) as DeleteConfirmState);
-    },
-    [portfolio.handleDelete]
-  );
-
-  const runDeleteConfirm = useCallback(async () => {
-    if (deleteConfirm.onConfirm) await deleteConfirm.onConfirm();
-    setDeleteConfirm((p) => ({ ...p, open: false }));
-  }, [deleteConfirm.onConfirm]);
-
   const portfolioWatchlistProps = {
     watchlistRows: watchlist.rows,
     watchlistLoading: watchlist.loading,
@@ -96,9 +66,9 @@ function Dashboard() {
     portfolioRows: portfolio.rows,
     portfolioLoading: portfolio.loading,
     hasRealHoldings: portfolio.hasRealHoldings,
-    onPortfolioAdd: () => { setShowWatchlistSheet(false); portfolio.setModalOpen(true); },
-    onPortfolioDelete: (id: string) => { setShowWatchlistSheet(false); handleDeletePortfolioItem(id); },
-    onPortfolioEdit: (item: PortfolioRow) => { setShowWatchlistSheet(false); portfolio.openEdit(item); },
+    onPortfolioSync: portfolio.syncPortfolio,
+    portfolioSyncing: portfolio.isSyncing,
+    lastSyncedAt: portfolio.lastSyncedAt,
     marketStatus,
   };
 
@@ -229,83 +199,11 @@ function Dashboard() {
         onClose={() => setSelectedMarketInsightId(null)}
       />
 
-      {/* Dialogs */}
-      <ConfirmDialog
-        open={deleteConfirm.open}
-        title={deleteConfirm.title}
-        message={deleteConfirm.message}
-        confirmLabel={t('common.delete')}
-        onConfirm={runDeleteConfirm}
-        onOpenChange={(open) => !open && setDeleteConfirm((p) => ({ ...p, open: false }))}
-      />
-
-      {/* Personalization banner is rendered inline above the market overview */}
-
-      {/* Portfolio Edit Dialog */}
-      <Dialog open={!!portfolio.editRow} onOpenChange={(open) => !open && portfolio.openEdit(null)}>
-        <DialogContent className="sm:max-w-sm border" style={{ backgroundColor: 'var(--color-bg-elevated)', borderColor: 'var(--color-border-elevated)' }}>
-          <DialogHeader>
-            <DialogTitle className="title-font" style={{ color: 'var(--color-text-primary)' }}>Edit holding — {portfolio.editRow?.symbol}</DialogTitle>
-          </DialogHeader>
-          <div className="grid gap-3 py-2" onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); portfolio.handleUpdate?.(); } }}>
-            <div>
-              <label className="text-xs block mb-1" style={{ color: 'var(--color-text-secondary)' }}>Quantity *</label>
-              <Input
-                type="number"
-                min="0"
-                step="any"
-                placeholder="e.g. 10.5"
-                value={portfolio.editForm.quantity ?? ''}
-                onChange={(e) => portfolio.setEditForm?.({ ...portfolio.editForm, quantity: e.target.value })}
-                className="border"
-                style={{ backgroundColor: 'var(--color-bg-card)', borderColor: 'var(--color-border-default)', color: 'var(--color-text-primary)' }}
-              />
-            </div>
-            <div>
-              <label className="text-xs block mb-1" style={{ color: 'var(--color-text-secondary)' }}>Average Cost Per Share *</label>
-              <Input
-                type="number"
-                min="0"
-                step="any"
-                placeholder="e.g. 175.50"
-                value={portfolio.editForm.averageCost ?? ''}
-                onChange={(e) => portfolio.setEditForm?.({ ...portfolio.editForm, averageCost: e.target.value })}
-                className="border"
-                style={{ backgroundColor: 'var(--color-bg-card)', borderColor: 'var(--color-border-default)', color: 'var(--color-text-primary)' }}
-              />
-            </div>
-            <div>
-              <label className="text-xs block mb-1" style={{ color: 'var(--color-text-secondary)' }}>Notes</label>
-              <Input
-                placeholder="Optional"
-                value={portfolio.editForm.notes ?? ''}
-                onChange={(e) => portfolio.setEditForm?.({ ...portfolio.editForm, notes: e.target.value })}
-                className="border"
-                style={{ backgroundColor: 'var(--color-bg-card)', borderColor: 'var(--color-border-default)', color: 'var(--color-text-primary)' }}
-              />
-            </div>
-          </div>
-          <div className="flex justify-end gap-2 pt-2">
-            <button type="button" onClick={() => portfolio.openEdit(null)} className="px-3 py-1.5 rounded text-sm border hover:bg-foreground/10" style={{ color: 'var(--color-text-primary)', borderColor: 'var(--color-border-default)' }}>
-              Cancel
-            </button>
-            <button type="button" onClick={portfolio.handleUpdate} className="px-3 py-1.5 rounded text-sm font-medium hover:opacity-90" style={{ backgroundColor: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}>
-              Save
-            </button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
       <AddWatchlistItemDialog
         open={watchlist.modalOpen}
         onClose={() => watchlist.setModalOpen(false)}
         onAdd={watchlist.handleAdd as (...args: unknown[]) => void}
         watchlistId={watchlist.currentWatchlistId ?? undefined}
-      />
-      <AddPortfolioHoldingDialog
-        open={portfolio.modalOpen}
-        onClose={() => portfolio.setModalOpen(false)}
-        onAdd={portfolio.handleAdd as (...args: unknown[]) => void}
       />
 
       {/* Mobile watchlist/portfolio bottom sheet */}
