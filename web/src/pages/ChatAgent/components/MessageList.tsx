@@ -260,7 +260,7 @@ interface MessageListProps {
   readOnly?: boolean;
   allowFiles?: boolean;
   onOpenSubagentTask?: (info: SubagentInfo) => void;
-  onOpenFile?: (filePath: string) => void;
+  onOpenFile?: (filePath: string, workspaceId?: string) => void;
   onOpenDir?: (dirPath: string) => void;
   onToolCallDetailClick?: (proc: ToolCallProcessRecord) => void;
   onApprovePlan?: () => void;
@@ -404,7 +404,7 @@ interface MessageBubbleProps {
   readOnly?: boolean;
   allowFiles?: boolean;
   onOpenSubagentTask?: (info: SubagentInfo) => void;
-  onOpenFile?: (filePath: string) => void;
+  onOpenFile?: (filePath: string, workspaceId?: string) => void;
   onOpenDir?: (dirPath: string) => void;
   onToolCallDetailClick?: (proc: ToolCallProcessRecord) => void;
   onApprovePlan?: () => void;
@@ -866,7 +866,7 @@ interface MessageContentSegmentsProps {
   readOnly?: boolean;
   allowFiles?: boolean;
   onOpenSubagentTask?: (info: SubagentInfo) => void;
-  onOpenFile?: (filePath: string) => void;
+  onOpenFile?: (filePath: string, workspaceId?: string) => void;
   onOpenDir?: (dirPath: string) => void;
   onToolCallDetailClick?: (proc: ToolCallProcessRecord) => void;
   onApprovePlan?: () => void;

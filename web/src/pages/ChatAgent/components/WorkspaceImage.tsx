@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useWorkspaceId, useWorkspaceDownloadFile } from '../contexts/WorkspaceContext';
 import { downloadWorkspaceFile } from '../utils/api';
+import { parseWsPath } from './FileCard';
 import ImageLightbox from './ImageLightbox';
 
 // Module-level cache: key:path → blobUrl
@@ -23,10 +24,17 @@ interface WorkspaceImageProps extends React.ImgHTMLAttributes<HTMLImageElement> 
 
 function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
-  const workspaceId = useWorkspaceId();
+  const contextWorkspaceId = useWorkspaceId();
   const downloadFileFn = useWorkspaceDownloadFile();
-  const canFetch = !!(src && !isExternalUrl(src) && (workspaceId || downloadFileFn));
-  const normalizedPath = canFetch ? normalizeSandboxPath(src!) : '';
+
+  // Support __wsref__/{workspaceId}/path for cross-workspace file references
+  const wsRef = src ? parseWsPath(src) : null;
+  const workspaceId = wsRef?.workspaceId || contextWorkspaceId;
+  // For __wsref__ paths, don't use the context downloadFileFn (it's bound to the wrong workspace)
+  const effectiveDownloadFn = wsRef ? null : downloadFileFn;
+
+  const canFetch = !!(src && !isExternalUrl(src) && (workspaceId || effectiveDownloadFn));
+  const normalizedPath = canFetch ? (wsRef ? wsRef.path : normalizeSandboxPath(src!)) : '';
   const cacheKey = canFetch ? `${workspaceId || 'shared'}:${normalizedPath}` : '';
 
   const [state, setState] = useState<LoadState>(() =>
@@ -49,8 +57,8 @@ function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
     let cancelled = false;
     setState('loading');
 
-    const fetcher = downloadFileFn
-      ? downloadFileFn(normalizedPath)
+    const fetcher = effectiveDownloadFn
+      ? effectiveDownloadFn(normalizedPath)
       : downloadWorkspaceFile(workspaceId!, normalizedPath);
 
     (fetcher as Promise<string>)
@@ -66,10 +74,12 @@ function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
       });
 
     return () => { cancelled = true; };
-  }, [canFetch, cacheKey, workspaceId, normalizedPath, downloadFileFn]);
+  }, [canFetch, cacheKey, workspaceId, normalizedPath, effectiveDownloadFn]);
 
   // Pass through: no context, no src, or external URL
   if (!canFetch) {
+    // Don't render an empty src — browsers re-fetch the page
+    if (!src) return null;
     return (
       <>
         <img

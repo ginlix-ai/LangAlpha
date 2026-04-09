@@ -85,7 +85,7 @@ interface ActivityBlockProps {
   preparingToolCall?: PreparingToolCallData | null;
   isStreaming: boolean;
   onToolCallClick?: (item: ActivityItem) => void;
-  onOpenFile?: (path: string) => void;
+  onOpenFile?: (path: string, workspaceId?: string) => void;
 }
 
 /**
@@ -358,7 +358,7 @@ function renderCompletedItem(
   item: ActivityItem,
   idx: number,
   onToolCallClick?: (item: ActivityItem) => void,
-  onOpenFile?: (path: string) => void,
+  onOpenFile?: (path: string, workspaceId?: string) => void,
 ): React.ReactElement | null {
   if (item.type === 'reasoning') {
     return <ReasoningRow item={item} />;
@@ -607,7 +607,7 @@ const ToolCallRow = memo(function ToolCallRow({ item, onClick }: ToolCallRowProp
 
 interface EditToolRowProps {
   item: ActivityItem;
-  onOpenFile?: (path: string) => void;
+  onOpenFile?: (path: string, workspaceId?: string) => void;
 }
 
 const EditToolRow = memo(function EditToolRow({ item, onOpenFile }: EditToolRowProps): React.ReactElement {

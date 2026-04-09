@@ -456,6 +456,8 @@ interface FilePanelProps {
   filesError?: string | null;
   onRefreshFiles?: () => void;
   readOnly?: boolean;
+  /** Lock to a single file — back button closes the panel instead of returning to the file tree. */
+  singleFileMode?: boolean;
   apiAdapter?: ApiAdapter | null;
   onAddContext?: ((ctx: ContextPayload) => void) | null;
   showSystemFiles?: boolean;
@@ -475,6 +477,7 @@ function FilePanel({
   filesError = null,
   onRefreshFiles,
   readOnly = false,
+  singleFileMode = false,
   apiAdapter = null,
   onAddContext = null,
   showSystemFiles = false,
@@ -1006,6 +1009,11 @@ function FilePanel({
   const hasUnsavedChanges = isEditing && editContent !== null && editContent !== fileContent;
 
   const handleBack = () => {
+    // In single-file mode, back closes the panel instead of returning to file tree
+    if (singleFileMode) {
+      onClose();
+      return;
+    }
     if (hasUnsavedChanges) {
       if (!window.confirm(t('filePanel.discardUnsaved'))) return;
     }

@@ -2,11 +2,63 @@
 
 import json
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 MAX_OUTPUT_CHARS = 8000
+
+# File extensions recognized as workspace file references (mirrors frontend KNOWN_EXTS)
+_FILE_EXTS = (
+    r"md|txt|pdf|doc|docx|rtf|"
+    r"py|js|jsx|ts|tsx|html|css|sh|bash|sql|r|ipynb|"
+    r"csv|json|yaml|yml|xml|toml|ini|cfg|log|env|xlsx|xls|"
+    r"png|jpg|jpeg|gif|svg|webp|bmp|"
+    r"zip|tar|gz"
+)
+
+# Workspace-qualified path prefix: __wsref__/{workspace_id}/relative/path
+# Uses a path-based encoding instead of ws:// protocol to survive HTML sanitizers.
+_WSREF_PREFIX = "__wsref__"
+
+# Matches markdown links: [text](path) and ![text](path)
+# Captures: group(1)=prefix "![text](" or "[text](", group(2)=path, group(3)=")"
+# Path must be relative (no http/https/mailto/#), contain at least one "/",
+# and end with a known extension.
+_MD_LINK_RE = re.compile(
+    r"(!?\[[^\]]*\]\()"  # prefix: ![...]( or [...](
+    r"((?!https?://|mailto:|#|__wsref__/)"  # not external URL or already qualified
+    r"(?:/home/(?:workspace|daytona)/)?[a-zA-Z_][^\s)]*/"  # at least one dir segment
+    r"[^\s)]*\.(?:" + _FILE_EXTS + r"))"  # filename.ext
+    r"(\))",  # closing paren
+    re.IGNORECASE,
+)
+
+
+def _qualify_file_paths(text: str, workspace_id: str) -> str:
+    """Rewrite relative file paths in markdown links to __wsref__/{workspace_id}/path.
+
+    Transforms:
+        [report.md](results/report.md) → [report.md](__wsref__/{wid}/results/report.md)
+        ![chart](work/t/charts/r.png)  → ![chart](__wsref__/{wid}/work/t/charts/r.png)
+
+    Uses a path-based prefix instead of a protocol (ws://) because HTML sanitizers
+    strip non-standard URL protocols. The __wsref__ prefix looks like a relative path
+    to the sanitizer and passes through untouched.
+
+    Leaves external URLs and already-qualified __wsref__ paths untouched.
+    """
+    if not workspace_id or not text:
+        return text
+
+    def _rewrite(m: re.Match) -> str:
+        prefix, path, suffix = m.group(1), m.group(2), m.group(3)
+        # Strip sandbox absolute prefix if present
+        path = re.sub(r"^/home/(?:workspace|daytona)/", "", path)
+        return f"{prefix}{_WSREF_PREFIX}/{workspace_id}/{path}{suffix}"
+
+    return _MD_LINK_RE.sub(_rewrite, text)
 
 
 def _parse_sse_string(raw: str) -> tuple[str, dict] | None:
@@ -84,6 +136,10 @@ async def extract_text_from_thread(thread_id: str) -> dict[str, Any]:
         text = await _extract_from_redis(thread_id)
     else:
         text = await _extract_from_db(thread_id)
+
+    # Qualify relative file paths with workspace context so the flash
+    # agent (and its frontend) can resolve them across workspaces.
+    text = _qualify_file_paths(text, workspace_id)
 
     # Truncate if needed
     if len(text) > MAX_OUTPUT_CHARS:

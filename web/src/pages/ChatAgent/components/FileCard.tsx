@@ -19,19 +19,49 @@ export const KNOWN_EXTS = new Set([
   'zip', 'tar', 'gz',
 ]);
 
+/** Prefix used for cross-workspace file references: __wsref__/{workspaceId}/path */
+const WSREF_PREFIX = '__wsref__/';
+
+/**
+ * Parse a __wsref__/{workspaceId}/path reference.
+ * Returns { workspaceId, path } or null if not a workspace-qualified path.
+ */
+export function parseWsPath(href: string | undefined): { workspaceId: string; path: string } | null {
+  if (!href || !href.startsWith(WSREF_PREFIX)) return null;
+  const rest = href.slice(WSREF_PREFIX.length);
+  const slashIdx = rest.indexOf('/');
+  if (slashIdx < 1) return null;
+  return {
+    workspaceId: rest.slice(0, slashIdx),
+    path: rest.slice(slashIdx + 1).replace(/^\/home\/(?:workspace|daytona)\//, ''),
+  };
+}
+
 /**
  * Check if an href looks like a sandbox file path (not an external URL).
+ * Recognizes both relative paths and __wsref__/{workspaceId}/path references.
  */
 export function isFilePath(href: string | undefined): boolean {
-  if (!href || href.startsWith('http') || href.startsWith('//') || href.startsWith('mailto:') || href.startsWith('#')) return false;
+  if (!href) return false;
+  // Workspace-qualified path from cross-workspace references
+  if (href.startsWith(WSREF_PREFIX)) {
+    const parsed = parseWsPath(href);
+    if (!parsed) return false;
+    const ext = parsed.path.split('.').pop()?.split(/[?#]/)[0]?.toLowerCase();
+    return !!ext && KNOWN_EXTS.has(ext);
+  }
+  if (href.startsWith('http') || href.startsWith('//') || href.startsWith('mailto:') || href.startsWith('#')) return false;
   const ext = href.split('.').pop()?.split(/[?#]/)[0]?.toLowerCase();
   return !!ext && KNOWN_EXTS.has(ext);
 }
 
 /**
- * Normalize a sandbox file path: strip /home/workspace/ prefix.
+ * Normalize a sandbox file path: strip /home/workspace/ and __wsref__ prefixes.
+ * For __wsref__ paths, returns just the relative path (use parseWsPath for workspace context).
  */
 export function normalizeFilePath(path: string): string {
+  const ws = parseWsPath(path);
+  if (ws) return ws.path;
   return path.replace(/^\/home\/workspace\//, '');
 }
 
@@ -80,13 +110,16 @@ interface FileCardProps {
 }
 
 function FileCard({ path, onOpen }: FileCardProps): React.ReactElement {
-  const ext = path.split('.').pop()!.toLowerCase();
-  const fileName = path.split('/').pop();
-  const dirPath = path.split('/').slice(0, -1).join('/');
+  // Strip __wsref__/{workspaceId}/ prefix for display
+  const wsRef = parseWsPath(path);
+  const displayPath = wsRef ? wsRef.path : path;
+  const ext = displayPath.split('.').pop()!.toLowerCase();
+  const fileName = displayPath.split('/').pop();
+  const dirPath = displayPath.split('/').slice(0, -1).join('/');
   const Icon = EXT_ICONS[ext] || FileText;
 
   return (
-    <button className="file-mention-card" onClick={onOpen} title={`Open ${path}`}>
+    <button className="file-mention-card" onClick={onOpen} title={`Open ${displayPath}`}>
       <Icon className="file-mention-card-icon" />
       <div className="file-mention-card-info">
         <span className="file-mention-card-name">{fileName}</span>
@@ -118,8 +151,18 @@ function DirCard({ dir, fileCount, onOpen }: DirCardProps): React.ReactElement {
 
 interface FileMentionCardsProps {
   filePaths: string[] | null;
-  onOpenFile: (path: string) => void;
+  onOpenFile: (path: string, workspaceId?: string) => void;
   onOpenDir?: (dir: string) => void;
+}
+
+/** Open a file card — parses __wsref__ prefix to extract workspace context. */
+function openFileCard(path: string, onOpenFile: (path: string, workspaceId?: string) => void) {
+  const wsRef = parseWsPath(path);
+  if (wsRef) {
+    onOpenFile(wsRef.path, wsRef.workspaceId);
+  } else {
+    onOpenFile(path);
+  }
 }
 
 /**
@@ -134,17 +177,19 @@ export function FileMentionCards({ filePaths, onOpenFile, onOpenDir }: FileMenti
     return (
       <div className="file-mention-cards">
         {filePaths.map((path) => (
-          <FileCard key={path} path={path} onOpen={() => onOpenFile(path)} />
+          <FileCard key={path} path={path} onOpen={() => openFileCard(path, onOpenFile)} />
         ))}
       </div>
     );
   }
 
-  // Group by top-level directory
+  // Group by top-level directory (use display path for grouping)
   const groups: Record<string, string[]> = {};
   const rootFiles: string[] = [];
   for (const path of filePaths) {
-    const parts = path.split('/');
+    const wsRef = parseWsPath(path);
+    const displayPath = wsRef ? wsRef.path : path;
+    const parts = displayPath.split('/');
     if (parts.length > 1) {
       const dir = parts[0];
       if (!groups[dir]) groups[dir] = [];
@@ -166,14 +211,14 @@ export function FileMentionCards({ filePaths, onOpenFile, onOpenDir }: FileMenti
   return (
     <div className="file-mention-cards">
       {rootFiles.map((path) => (
-        <FileCard key={path} path={path} onOpen={() => onOpenFile(path)} />
+        <FileCard key={path} path={path} onOpen={() => openFileCard(path, onOpenFile)} />
       ))}
       {sortedDirs.map(([dir, files]) => (
         <DirCard
           key={dir}
           dir={dir}
           fileCount={files.length}
-          onOpen={() => onOpenDir ? onOpenDir(dir) : onOpenFile(files[0])}
+          onOpen={() => onOpenDir ? onOpenDir(dir) : openFileCard(files[0], onOpenFile)}
         />
       ))}
     </div>

@@ -8,7 +8,7 @@ interface TextMessageContentProps {
   content: string;
   isStreaming: boolean;
   hasError: boolean;
-  onOpenFile?: (path: string) => void;
+  onOpenFile?: (path: string, workspaceId?: string) => void;
 }
 
 /**

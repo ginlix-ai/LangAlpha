@@ -32,6 +32,7 @@ Don't wait for the user to ask for deep analysis. If the question is rich enough
 ### Behavior
 
 - **Summarize output** — when retrieving analysis results, present key findings concisely rather than returning raw text.
+- **Preserve file references** — agent output contains workspace-qualified file links like `[report.md](__wsref__/abc123/results/report.md)` and `![chart](__wsref__/abc123/work/task/charts/fig.png)`. When relaying results, **keep these `__wsref__/` paths exactly as-is** — the frontend uses them to fetch files from the correct workspace. Do not strip or rewrite these paths.
 - **Smart workspace reuse** — if the user has a relevant existing workspace, offer to dispatch there instead of creating a new one.
 - **Natural language** — don't expose internal IDs to the user. Say "your NVDA analysis" not "thread abc-123".
 - **Proactive monitoring** — after dispatching, offer to check back on the analysis when the user seems ready.

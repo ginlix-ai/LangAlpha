@@ -260,7 +260,7 @@ summarization:
 
 # Search API Configuration
 # Options: tavily, bocha, serper
-search_api: tavily
+search_api: serper
 
 # Crawler Configuration
 # Web crawling with SafeCrawlerWrapper for circuit breaker and fault tolerance.

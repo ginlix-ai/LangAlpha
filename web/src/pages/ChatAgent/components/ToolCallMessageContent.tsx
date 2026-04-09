@@ -174,7 +174,7 @@ interface ToolCallMessageContentProps {
   isInProgress: boolean;
   isComplete: boolean;
   isFailed?: boolean;
-  onOpenFile?: (path: string) => void;
+  onOpenFile?: (path: string, workspaceId?: string) => void;
   onDetailClick?: (process: ToolCallProcess) => void;
   mergedProcesses?: ToolCallProcess[];
 }

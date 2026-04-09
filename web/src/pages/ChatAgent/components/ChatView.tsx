@@ -294,6 +294,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const [workspaceName, setWorkspaceName] = useState(initialWorkspaceName || '');
   const [filePanelTargetFile, setFilePanelTargetFile] = useState<string | null>(null);
   const [filePanelTargetDir, setFilePanelTargetDir] = useState<string | null>(null);
+  // Cross-workspace file panel: in flash mode, files live in PTC workspaces.
+  // This tracks which workspace the file panel should fetch from.
+  const [filePanelWorkspaceId, setFilePanelWorkspaceId] = useState<string | null>(null);
   const isDraggingRef = useRef(false);
   const [isDragging, setIsDragging] = useState(false);
   // True for exactly one render after drag ends — forces transition duration:0
@@ -491,13 +494,15 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
 
   // Workspace files - shared between FilePanel and ChatInput
   // Must be declared before useChatMessages so refreshFiles can be passed as onFileArtifact
-  // Skip for flash mode — no sandbox
+  // For flash mode: use filePanelWorkspaceId (a PTC workspace) when set via cross-workspace file links.
+  // For PTC mode: always use the current workspaceId.
+  const effectiveFileWorkspaceId = isFlashMode ? filePanelWorkspaceId : workspaceId;
   const {
     files: workspaceFiles,
     loading: filesLoading,
     error: filesError,
     refresh: refreshFiles,
-  } = useWorkspaceFiles(isFlashMode ? null : workspaceId, { includeSystem: showSystemFiles });
+  } = useWorkspaceFiles(effectiveFileWorkspaceId, { includeSystem: showSystemFiles });
 
   // Navigation panel data — workspaces + threads for the overlay sidebar
   const {
@@ -948,7 +953,11 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     };
   }, []);
 
-  const handleOpenFileFromChat = useCallback((filePath: string) => {
+  const handleOpenFileFromChat = useCallback((filePath: string, targetWorkspaceId?: string) => {
+    // For cross-workspace file references (ws:// links from flash), switch the file panel workspace
+    if (targetWorkspaceId) {
+      setFilePanelWorkspaceId(targetWorkspaceId);
+    }
     setRightPanelWidth(clampPanelWidth(850));
     setRightPanelType('file');
     setFilePanelTargetDir(null);
@@ -1640,7 +1649,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
             {currentThreadId && currentThreadId !== '__default__' && (
               <ShareButton threadId={currentThreadId} initialIsShared={threadIsShared} />
             )}
-            {!isFlashMode && (
+            {(!isFlashMode || filePanelWorkspaceId) && (
               <button
                 onClick={handleToggleFilePanel}
                 className="p-2 rounded-md transition-colors"
@@ -2113,8 +2122,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
           >
             <div className="flex-shrink-0 h-full" style={{ width: '100%' }}>
               <Suspense fallback={null}>
+                <WorkspaceProvider workspaceId={effectiveFileWorkspaceId || workspaceId} downloadFile={null}>
                 <FilePanel
-                  workspaceId={workspaceId}
+                  workspaceId={effectiveFileWorkspaceId || workspaceId}
                   onClose={() => { setRightPanelType(null); popPanelHistory(); }}
                   targetFile={filePanelTargetFile}
                   onTargetFileHandled={() => setFilePanelTargetFile(null)}
@@ -2132,7 +2142,10 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                       return !v;
                     });
                   }}
+                  readOnly={isFlashMode}
+                  singleFileMode={isFlashMode && !!filePanelWorkspaceId}
                 />
+                </WorkspaceProvider>
               </Suspense>
             </div>
           </motion.div>
@@ -2162,8 +2175,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
               <div data-panel-inner className="flex-shrink-0 h-full" style={{ width: rightPanelWidth }}>
                 <Suspense fallback={null}>
                   {rightPanelType === 'file' ? (
+                    <WorkspaceProvider workspaceId={effectiveFileWorkspaceId || workspaceId} downloadFile={null}>
                     <FilePanel
-                      workspaceId={workspaceId}
+                      workspaceId={effectiveFileWorkspaceId || workspaceId}
                       onClose={() => { setRightPanelType(null); popPanelHistory(); }}
                       targetFile={filePanelTargetFile}
                       onTargetFileHandled={() => setFilePanelTargetFile(null)}
@@ -2181,7 +2195,10 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                           return !v;
                         });
                       }}
+                      readOnly={isFlashMode}
+                      singleFileMode={isFlashMode && !!filePanelWorkspaceId}
                     />
+                    </WorkspaceProvider>
                   ) : rightPanelType === 'detail' && (detailToolCall || detailPlanData) ? (
                     <DetailPanel
                       toolCallProcess={detailToolCall}

@@ -67,7 +67,7 @@ interface DetailPanelProps {
   toolCallProcess: ToolCallProcessRecord | null;
   planData?: PlanData | null;
   onClose: () => void;
-  onOpenFile?: (filePath: string) => void;
+  onOpenFile?: (filePath: string, workspaceId?: string) => void;
   onOpenSubagentTask?: (info: SubagentInfo) => void;
 }
 
@@ -453,7 +453,7 @@ interface ArtifactOrMarkdownProps {
   content: string | unknown;
   toolName: string;
   toolCallProcess: ToolCallProcessRecord;
-  onOpenFile?: (filePath: string) => void;
+  onOpenFile?: (filePath: string, workspaceId?: string) => void;
   scrollContainerRef?: React.RefObject<HTMLDivElement | null>;
 }
 
@@ -694,7 +694,7 @@ function WebSearchCards({ data }: WebSearchCardsProps): React.ReactElement {
 interface TruncatedResultMessageProps {
   filePath: string | null;
   preview: string | null;
-  onOpenFile?: (filePath: string) => void;
+  onOpenFile?: (filePath: string, workspaceId?: string) => void;
 }
 
 function TruncatedResultMessage({ filePath, preview, onOpenFile }: TruncatedResultMessageProps): React.ReactElement {

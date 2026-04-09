@@ -11,7 +11,7 @@ import SyntaxHighlighter, { oneDark, oneLight } from './SyntaxHighlighter';
 import { Copy, Check } from 'lucide-react';
 import { useTheme } from '@/contexts/ThemeContext';
 import WorkspaceImage from './WorkspaceImage';
-import { isFilePath, isImagePath, normalizeFilePath } from './FileCard';
+import { isFilePath, isImagePath, normalizeFilePath, parseWsPath } from './FileCard';
 import CitationBubble from './CitationBubble';
 
 // Sanitize schema: extends GitHub-style defaults to allow KaTeX output,
@@ -606,7 +606,8 @@ interface MarkdownProps {
   variant?: MarkdownVariant;
   className?: string;
   style?: React.CSSProperties;
-  onOpenFile?: (path: string) => void;
+  /** Called when a file link is clicked. workspaceId is set for cross-workspace (ws://) references. */
+  onOpenFile?: (path: string, workspaceId?: string) => void;
   /** Force code blocks to use a specific syntax theme regardless of app theme */
   codeTheme?: 'light' | 'dark';
 }
@@ -636,15 +637,18 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
     const fileAwareA = ({ node: _node, href, children, ...props }: MarkdownComponentProps) => {
       if (isFilePath(href)) {
         // Image file linked as [name](path.png) -- render as embedded image
+        // For ws:// paths, pass the full href so WorkspaceImage can extract the workspace
         if (isImagePath(href)) {
-          return <WorkspaceImage src={normalizeFilePath(href)} alt={typeof children === 'string' ? children : ''} />;
+          const wsRef = parseWsPath(href);
+          return <WorkspaceImage src={wsRef ? href : normalizeFilePath(href)} alt={typeof children === 'string' ? children : ''} />;
         }
         if (onOpenFile) {
+          const wsRef = parseWsPath(href);
           return (
             <a
               className="underline hover:opacity-80 transition-opacity cursor-pointer"
               style={{ color: 'var(--color-accent-primary)' }}
-              onClick={(e: React.MouseEvent) => { e.preventDefault(); onOpenFile(normalizeFilePath(href)); }}
+              onClick={(e: React.MouseEvent) => { e.preventDefault(); onOpenFile(normalizeFilePath(href), wsRef?.workspaceId); }}
               {...props}
             >{children}</a>
           );
