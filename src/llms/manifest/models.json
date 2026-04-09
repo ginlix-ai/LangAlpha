@@ -476,6 +476,20 @@
     ]
   },
   "minimax-m2.7": {
+    "model_id": "MiniMax-M2.7",
+    "provider": "minimax",
+    "visible": true,
+    "parameters": {
+      "max_tokens": 128000,
+      "thinking": {
+        "type": "enabled"
+      }
+    },
+    "input_modalities": [
+      "text"
+    ]
+  },
+  "minimax-m2.7-highspeed": {
     "model_id": "MiniMax-M2.7-highspeed",
     "provider": "minimax",
     "visible": true,
