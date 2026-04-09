@@ -1,13 +1,13 @@
 """
 Tests for the Portfolio API router (src/server/app/portfolio.py).
 
-Covers listing, adding, getting, updating, and deleting portfolio holdings.
+Covers the Sharesight-proxy GET list endpoint.
 """
 
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 import pytest_asyncio
@@ -25,7 +25,7 @@ HOLDING_ID = str(uuid.uuid4())
 
 def _holding(
     user_portfolio_id=None,
-    user_id="test-user-123",
+    user_id="sharesight",
     symbol="AAPL",
     instrument_type="stock",
     quantity="10.0",
@@ -38,15 +38,15 @@ def _holding(
         "instrument_type": instrument_type,
         "quantity": Decimal(quantity),
         "exchange": "NASDAQ",
-        "name": "Apple Inc.",
+        "name": None,
         "average_cost": Decimal("150.00"),
         "currency": "USD",
-        "account_name": None,
+        "account_name": "hunterbray",
         "notes": None,
         "metadata": {},
         "first_purchased_at": None,
-        "created_at": NOW,
-        "updated_at": NOW,
+        "created_at": "2000-01-01T00:00:00Z",
+        "updated_at": "2000-01-01T00:00:00Z",
     }
     data.update(overrides)
     return data
@@ -63,9 +63,6 @@ async def client():
         yield c
 
 
-DB = "src.server.app.portfolio"
-
-
 # ---------------------------------------------------------------------------
 # GET /api/v1/users/me/portfolio
 # ---------------------------------------------------------------------------
@@ -74,11 +71,11 @@ DB = "src.server.app.portfolio"
 @pytest.mark.asyncio
 async def test_list_portfolio(client):
     h = _holding()
-    with patch(
-        f"{DB}.db_get_user_portfolio",
-        new_callable=AsyncMock,
-        return_value=[h],
-    ):
+    configured_client = MagicMock()
+    configured_client.is_configured = True
+    configured_client.get_portfolio_holdings = AsyncMock(return_value=[h])
+
+    with patch("src.server.app.portfolio.sharesight_client", configured_client):
         resp = await client.get("/api/v1/users/me/portfolio")
 
     assert resp.status_code == 200
@@ -89,192 +86,112 @@ async def test_list_portfolio(client):
 
 @pytest.mark.asyncio
 async def test_list_portfolio_empty(client):
-    with patch(
-        f"{DB}.db_get_user_portfolio",
-        new_callable=AsyncMock,
-        return_value=[],
-    ):
+    configured_client = MagicMock()
+    configured_client.is_configured = True
+    configured_client.get_portfolio_holdings = AsyncMock(return_value=[])
+
+    with patch("src.server.app.portfolio.sharesight_client", configured_client):
         resp = await client.get("/api/v1/users/me/portfolio")
 
     assert resp.status_code == 200
     assert resp.json()["total"] == 0
 
 
-# ---------------------------------------------------------------------------
-# POST /api/v1/users/me/portfolio
-# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_list_portfolio_not_configured(client):
+    """Returns 503 when Sharesight credentials are not set."""
+    unconfigured_client = MagicMock()
+    unconfigured_client.is_configured = False
+
+    with patch("src.server.app.portfolio.sharesight_client", unconfigured_client):
+        resp = await client.get("/api/v1/users/me/portfolio")
+
+    assert resp.status_code == 503
+    assert "not configured" in resp.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
-async def test_add_portfolio_holding(client):
-    h = _holding()
-    with (
-        patch(
-            f"{DB}.db_upsert_portfolio_holding",
-            new_callable=AsyncMock,
-            return_value=(h, None),
-        ),
-        patch(
-            f"{DB}.maybe_complete_onboarding",
-            new_callable=AsyncMock,
-        ),
-    ):
-        resp = await client.post(
-            "/api/v1/users/me/portfolio",
-            json={
-                "symbol": "AAPL",
-                "instrument_type": "stock",
-                "quantity": 10,
-            },
-        )
-
-    assert resp.status_code == 201
-    assert resp.json()["symbol"] == "AAPL"
-
-
-@pytest.mark.asyncio
-async def test_add_portfolio_holding_merge(client):
-    h = _holding(quantity="30", average_cost=Decimal("193.33"))
-    merge_details = {
-        "previous": {"quantity": "10", "average_cost": "180.00"},
-        "added": {"quantity": "20", "average_cost": "200.00"},
-        "result": {"quantity": "30", "average_cost": "193.33"},
-    }
-    with (
-        patch(
-            f"{DB}.db_upsert_portfolio_holding",
-            new_callable=AsyncMock,
-            return_value=(h, merge_details),
-        ),
-        patch(
-            f"{DB}.maybe_complete_onboarding",
-            new_callable=AsyncMock,
-        ),
-    ):
-        resp = await client.post(
-            "/api/v1/users/me/portfolio",
-            json={
-                "symbol": "AAPL",
-                "instrument_type": "stock",
-                "quantity": 20,
-                "average_cost": 200.00,
-            },
-        )
-
-    assert resp.status_code == 200
-    assert resp.json()["quantity"] == "30"
-
-
-@pytest.mark.asyncio
-async def test_add_portfolio_holding_validation(client):
-    """Missing required fields should return 422."""
-    resp = await client.post(
-        "/api/v1/users/me/portfolio",
-        json={"symbol": "AAPL"},
+async def test_list_portfolio_portfolio_not_found(client):
+    """Returns 404 when the named portfolio does not exist in Sharesight."""
+    configured_client = MagicMock()
+    configured_client.is_configured = True
+    configured_client.get_portfolio_holdings = AsyncMock(
+        side_effect=ValueError("Portfolio 'hunterbray' not found")
     )
-    assert resp.status_code == 422
 
+    with patch("src.server.app.portfolio.sharesight_client", configured_client):
+        resp = await client.get("/api/v1/users/me/portfolio")
 
-# ---------------------------------------------------------------------------
-# GET /api/v1/users/me/portfolio/{holding_id}
-# ---------------------------------------------------------------------------
+    assert resp.status_code == 404
+    assert "not found" in resp.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
-async def test_get_portfolio_holding(client):
-    h = _holding()
-    with patch(
-        f"{DB}.db_get_portfolio_holding",
-        new_callable=AsyncMock,
-        return_value=h,
-    ):
-        resp = await client.get(
-            f"/api/v1/users/me/portfolio/{HOLDING_ID}"
-        )
+async def test_list_portfolio_auth_failure(client):
+    """Returns 502 when Sharesight authentication fails."""
+    configured_client = MagicMock()
+    configured_client.is_configured = True
+    configured_client.get_portfolio_holdings = AsyncMock(
+        side_effect=RuntimeError("Sharesight authentication failed (HTTP 401): Unauthorized")
+    )
+
+    with patch("src.server.app.portfolio.sharesight_client", configured_client):
+        resp = await client.get("/api/v1/users/me/portfolio")
+
+    assert resp.status_code == 502
+    assert "authentication failed" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_list_portfolio_runtime_error(client):
+    """Returns 502 when Sharesight is unreachable."""
+    configured_client = MagicMock()
+    configured_client.is_configured = True
+    configured_client.get_portfolio_holdings = AsyncMock(
+        side_effect=RuntimeError("Connection refused")
+    )
+
+    with patch("src.server.app.portfolio.sharesight_client", configured_client):
+        resp = await client.get("/api/v1/users/me/portfolio")
+
+    assert resp.status_code == 502
+    assert "sharesight" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_list_portfolio_unexpected_error(client):
+    """Returns 502 on any unexpected exception."""
+    configured_client = MagicMock()
+    configured_client.is_configured = True
+    configured_client.get_portfolio_holdings = AsyncMock(
+        side_effect=Exception("Unexpected failure")
+    )
+
+    with patch("src.server.app.portfolio.sharesight_client", configured_client):
+        resp = await client.get("/api/v1/users/me/portfolio")
+
+    assert resp.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_list_portfolio_multiple_holdings(client):
+    """Returns all holdings from Sharesight with correct total."""
+    holdings = [
+        _holding(symbol="AAPL"),
+        _holding(symbol="MSFT", quantity="5.0"),
+        _holding(symbol="GOOG", quantity="2.0"),
+    ]
+    configured_client = MagicMock()
+    configured_client.is_configured = True
+    configured_client.get_portfolio_holdings = AsyncMock(return_value=holdings)
+
+    with patch("src.server.app.portfolio.sharesight_client", configured_client):
+        resp = await client.get("/api/v1/users/me/portfolio")
 
     assert resp.status_code == 200
-    assert resp.json()["symbol"] == "AAPL"
-
-
-@pytest.mark.asyncio
-async def test_get_portfolio_holding_not_found(client):
-    fake_id = str(uuid.uuid4())
-    with patch(
-        f"{DB}.db_get_portfolio_holding",
-        new_callable=AsyncMock,
-        return_value=None,
-    ):
-        resp = await client.get(f"/api/v1/users/me/portfolio/{fake_id}")
-
-    assert resp.status_code == 404
-
-
-# ---------------------------------------------------------------------------
-# PUT /api/v1/users/me/portfolio/{holding_id}
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_update_portfolio_holding(client):
-    h = _holding()
-    updated = {**h, "notes": "Long hold"}
-    with patch(
-        f"{DB}.db_update_portfolio_holding",
-        new_callable=AsyncMock,
-        return_value=updated,
-    ):
-        resp = await client.put(
-            f"/api/v1/users/me/portfolio/{HOLDING_ID}",
-            json={"notes": "Long hold"},
-        )
-
-    assert resp.status_code == 200
-    assert resp.json()["notes"] == "Long hold"
-
-
-@pytest.mark.asyncio
-async def test_update_portfolio_holding_not_found(client):
-    fake_id = str(uuid.uuid4())
-    with patch(
-        f"{DB}.db_update_portfolio_holding",
-        new_callable=AsyncMock,
-        return_value=None,
-    ):
-        resp = await client.put(
-            f"/api/v1/users/me/portfolio/{fake_id}",
-            json={"notes": "X"},
-        )
-
-    assert resp.status_code == 404
-
-
-# ---------------------------------------------------------------------------
-# DELETE /api/v1/users/me/portfolio/{holding_id}
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_delete_portfolio_holding(client):
-    with patch(
-        f"{DB}.db_delete_portfolio_holding",
-        new_callable=AsyncMock,
-        return_value=True,
-    ):
-        resp = await client.delete(
-            f"/api/v1/users/me/portfolio/{HOLDING_ID}"
-        )
-
-    assert resp.status_code == 204
-
-
-@pytest.mark.asyncio
-async def test_delete_portfolio_holding_not_found(client):
-    fake_id = str(uuid.uuid4())
-    with patch(
-        f"{DB}.db_delete_portfolio_holding",
-        new_callable=AsyncMock,
-        return_value=False,
-    ):
-        resp = await client.delete(f"/api/v1/users/me/portfolio/{fake_id}")
-
-    assert resp.status_code == 404
+    body = resp.json()
+    assert body["total"] == 3
+    symbols = [h["symbol"] for h in body["holdings"]]
+    assert "AAPL" in symbols
+    assert "MSFT" in symbols
+    assert "GOOG" in symbols
