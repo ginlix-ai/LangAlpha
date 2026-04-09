@@ -64,7 +64,11 @@ export function usePortfolioData() {
           const p = bySym[sym] || ({} as Partial<StockPrice>);
           const q = Number(h.quantity || 0);
           const ac = h.average_cost != null ? Number(h.average_cost) : null;
-          const price = p.price ?? 0;
+          // Use real-time price if available, fall back to Sharesight valuation price
+          const sharesightPrice = (h as Record<string, unknown>).metadata != null
+            ? Number(((h as Record<string, unknown>).metadata as Record<string, unknown>)?.sharesight_price || 0)
+            : 0;
+          const price = p.price || sharesightPrice;
           const marketValue = q * price;
           const plPct = ac != null && ac > 0 ? ((price - ac) / ac) * 100 : null;
           return {

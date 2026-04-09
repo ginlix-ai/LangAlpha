@@ -132,8 +132,10 @@ class SharesightClient:
     def _map_holding(self, holding: dict) -> dict:
         quantity = Decimal(str(holding.get("quantity", 0)))
         value = Decimal(str(holding.get("value", 0)))
-        # Derive average cost from total value / quantity
-        average_cost = (value / quantity) if quantity else Decimal(0)
+        # Derive current price from valuation (value = quantity × current_price)
+        sharesight_price = float(value / quantity) if quantity else 0.0
+        # Valuation endpoint doesn't provide cost base, so average_cost is not available
+        average_cost = None
 
         holding_id = holding.get("id", 0)
         stable_uuid = uuid5(NAMESPACE_URL, f"sharesight:{holding_id}")
@@ -149,7 +151,7 @@ class SharesightClient:
             "currency": "USD",
             "account_name": self._portfolio_name,
             "notes": None,
-            "metadata": {},
+            "metadata": {"sharesight_price": sharesight_price, "sharesight_value": float(value)},
             "name": holding.get("name"),
             "first_purchased_at": None,
             "created_at": "2000-01-01T00:00:00Z",
