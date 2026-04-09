@@ -97,7 +97,7 @@ class SharesightClient:
         return data.get("portfolios", [])
 
     async def get_holdings(self, portfolio_id: int) -> list[dict]:
-        data = await self._api_get(f"/api/v2/portfolios/{portfolio_id}.json")
+        data = await self._api_get(f"/api/v2/portfolios/{portfolio_id}/valuation.json")
         return data.get("holdings", [])
 
     async def get_portfolio_holdings(self) -> list[dict]:
@@ -105,7 +105,7 @@ class SharesightClient:
         portfolios = await self.get_portfolios()
 
         portfolio = next(
-            (p for p in portfolios if p["name"] == self._portfolio_name),
+            (p for p in portfolios if p["name"].lower() == self._portfolio_name.lower()),
             None,
         )
         if not portfolio:
@@ -118,13 +118,10 @@ class SharesightClient:
         return [self._map_holding(h) for h in raw_holdings]
 
     def _map_holding(self, holding: dict) -> dict:
-        instrument = holding.get("instrument", {})
         quantity = Decimal(str(holding.get("quantity", 0)))
-        cost_base = Decimal(str(holding.get("cost_base", 0)))
-        average_cost = (cost_base / quantity) if quantity else Decimal(0)
-
-        sharesight_type = instrument.get("instrument_type", "CommonStock")
-        instrument_type = _INSTRUMENT_TYPE_MAP.get(sharesight_type, "stock")
+        value = Decimal(str(holding.get("value", 0)))
+        # Derive average cost from total value / quantity
+        average_cost = (value / quantity) if quantity else Decimal(0)
 
         holding_id = holding.get("id", 0)
         stable_uuid = uuid5(NAMESPACE_URL, f"sharesight:{holding_id}")
@@ -132,16 +129,16 @@ class SharesightClient:
         return {
             "user_portfolio_id": stable_uuid,
             "user_id": "sharesight",
-            "symbol": instrument.get("code", ""),
-            "instrument_type": instrument_type,
+            "symbol": holding.get("symbol", ""),
+            "instrument_type": "stock",
             "quantity": quantity,
             "average_cost": average_cost,
-            "exchange": instrument.get("market_code"),
-            "currency": holding.get("currency_code", "USD"),
+            "exchange": holding.get("market"),
+            "currency": "USD",
             "account_name": self._portfolio_name,
             "notes": None,
             "metadata": {},
-            "name": None,
+            "name": holding.get("name"),
             "first_purchased_at": None,
             "created_at": "2000-01-01T00:00:00Z",
             "updated_at": "2000-01-01T00:00:00Z",
