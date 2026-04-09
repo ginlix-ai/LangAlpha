@@ -219,23 +219,44 @@ class MarketDataProvider:
         asset_type: str = "stocks",
         user_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Fetch batch snapshots, trying providers in order."""
-        last_exc: Exception | None = None
+        """Fetch batch snapshots, trying providers in order.
+
+        Unlike other methods that fail over entirely, snapshots merge results
+        across providers: the first provider is tried for all symbols, then
+        any symbols missing from its results are retried with the next
+        provider, and so on.  This lets ginlix-data cover US stocks while
+        yfinance fills in international symbols automatically.
+        """
+        results: list[dict[str, Any]] = []
+        covered: set[str] = set()
+        remaining = [s.upper() for s in symbols]
+
         for entry in self.entries:
+            if not remaining:
+                break
             fn = getattr(entry.source, "get_snapshots", None)
             if fn is None:
                 continue
             try:
-                return await fn(symbols=symbols, asset_type=asset_type, user_id=user_id)
+                batch = await fn(symbols=remaining, asset_type=asset_type, user_id=user_id)
+                for item in batch:
+                    sym = str(item.get("symbol", "")).upper()
+                    if sym and sym not in covered:
+                        results.append(item)
+                        covered.add(sym)
+                remaining = [s for s in remaining if s not in covered]
+                if remaining:
+                    logger.info(
+                        "market_data.snapshot.partial | source=%s covered=%d remaining=%d symbols=%s",
+                        entry.name, len(covered), len(remaining), ",".join(remaining[:10]),
+                    )
             except Exception as exc:
                 logger.warning(
                     "market_data.snapshot.fallback | source=%s error=%s",
                     entry.name, exc,
                 )
-                last_exc = exc
-        if last_exc:
-            raise last_exc
-        raise RuntimeError("No data source supports get_snapshots")
+
+        return results
 
     async def get_market_status(
         self,

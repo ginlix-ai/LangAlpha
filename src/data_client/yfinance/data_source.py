@@ -82,17 +82,24 @@ def _fetch_history(
     return [_normalize_bar(idx, row) for idx, row in df.iterrows()]
 
 
-def _fetch_single_snapshot(sym: str) -> dict[str, Any] | None:
-    """Fetch snapshot for a single symbol. Returns None on failure."""
+# Yahoo Finance exchange suffixes to try when a plain symbol returns no data.
+# Order matters — most common international exchanges first.
+_YF_EXCHANGE_SUFFIXES = [".L", ".TO", ".V", ".SW", ".AS", ".PA", ".DE", ".HK", ".AX"]
+
+
+def _try_yf_snapshot(yf_sym: str, original_sym: str) -> dict[str, Any] | None:
+    """Attempt to fetch a snapshot for a single Yahoo Finance symbol."""
     try:
-        ticker = yf.Ticker(sym)
+        ticker = yf.Ticker(yf_sym)
         fi = ticker.fast_info
         price = float(fi.get("lastPrice", 0) or 0)
+        if price == 0:
+            return None
         prev = float(fi.get("previousClose", 0) or 0)
         change = price - prev if prev else 0.0
         change_pct = (change / prev * 100) if prev else 0.0
         return {
-            "symbol": sym,
+            "symbol": original_sym,
             "name": None,
             "price": round(price, 4),
             "change": round(change, 4),
@@ -107,8 +114,29 @@ def _fetch_single_snapshot(sym: str) -> dict[str, Any] | None:
             "late_trading_change_percent": None,
         }
     except Exception:
-        logger.warning("yfinance.snapshot.failed | symbol=%s", sym, exc_info=True)
         return None
+
+
+def _fetch_single_snapshot(sym: str) -> dict[str, Any] | None:
+    """Fetch snapshot for a single symbol.
+
+    Tries the plain symbol first.  If that returns no price data and the
+    symbol doesn't already contain a dot (exchange suffix), retries with
+    common Yahoo Finance exchange suffixes (.L, .TO, .V, .SW, etc.).
+    """
+    result = _try_yf_snapshot(sym, sym)
+    if result is not None:
+        return result
+
+    # Only try suffixes for plain symbols (no dot = no exchange already specified)
+    if "." not in sym:
+        for suffix in _YF_EXCHANGE_SUFFIXES:
+            result = _try_yf_snapshot(f"{sym}{suffix}", sym)
+            if result is not None:
+                return result
+
+    logger.warning("yfinance.snapshot.failed | symbol=%s (tried suffixes)", sym)
+    return None
 
 
 class YFinanceDataSource:
