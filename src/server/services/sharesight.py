@@ -40,12 +40,24 @@ class SharesightClient:
         client_secret: str | None = None,
         portfolio_name: str | None = None,
     ):
-        self._client_id = client_id or os.getenv("SHARESIGHT_CLIENT_ID", "")
-        self._client_secret = client_secret or os.getenv("SHARESIGHT_CLIENT_SECRET", "")
-        self._portfolio_name = portfolio_name or os.getenv("SHARESIGHT_PORTFOLIO_NAME", "hunterbray")
+        self._explicit_client_id = client_id
+        self._explicit_client_secret = client_secret
+        self._explicit_portfolio_name = portfolio_name
         self._access_token: str | None = None
         self._token_expires_at: float = 0
         self._http: httpx.AsyncClient | None = None
+
+    @property
+    def _client_id(self) -> str:
+        return self._explicit_client_id or os.getenv("SHARESIGHT_CLIENT_ID", "")
+
+    @property
+    def _client_secret(self) -> str:
+        return self._explicit_client_secret or os.getenv("SHARESIGHT_CLIENT_SECRET", "")
+
+    @property
+    def _portfolio_name(self) -> str:
+        return self._explicit_portfolio_name or os.getenv("SHARESIGHT_PORTFOLIO_NAME", "hunterbray")
 
     @property
     def is_configured(self) -> bool:
