@@ -87,6 +87,11 @@ def _fetch_history(
 _YF_EXCHANGE_SUFFIXES = [".L", ".TO", ".V", ".SW", ".AS", ".PA", ".DE", ".HK", ".AX"]
 
 
+# Suffixes where Yahoo returns prices in minor currency units (pence, cents)
+# that need dividing by 100 to get the major unit (pounds, dollars).
+_PENCE_SUFFIXES = {".L"}
+
+
 def _try_yf_snapshot(yf_sym: str, original_sym: str) -> dict[str, Any] | None:
     """Attempt to fetch a snapshot for a single Yahoo Finance symbol."""
     try:
@@ -95,19 +100,24 @@ def _try_yf_snapshot(yf_sym: str, original_sym: str) -> dict[str, Any] | None:
         price = float(fi.get("lastPrice", 0) or 0)
         if price == 0:
             return None
+
+        # LSE .L prices are in pence — convert to pounds
+        suffix = yf_sym[yf_sym.index("."):] if "." in yf_sym else ""
+        divisor = 100.0 if suffix in _PENCE_SUFFIXES else 1.0
+
         prev = float(fi.get("previousClose", 0) or 0)
         change = price - prev if prev else 0.0
         change_pct = (change / prev * 100) if prev else 0.0
         return {
             "symbol": original_sym,
             "name": None,
-            "price": round(price, 4),
-            "change": round(change, 4),
+            "price": round(price / divisor, 4),
+            "change": round(change / divisor, 4),
             "change_percent": round(change_pct, 4),
-            "previous_close": round(prev, 4),
-            "open": round(float(fi.get("open", 0) or 0), 4),
-            "high": round(float(fi.get("dayHigh", 0) or 0), 4),
-            "low": round(float(fi.get("dayLow", 0) or 0), 4),
+            "previous_close": round(prev / divisor, 4),
+            "open": round(float(fi.get("open", 0) or 0) / divisor, 4),
+            "high": round(float(fi.get("dayHigh", 0) or 0) / divisor, 4),
+            "low": round(float(fi.get("dayLow", 0) or 0) / divisor, 4),
             "volume": int(fi.get("lastVolume", 0) or 0),
             "market_status": None,
             "early_trading_change_percent": None,

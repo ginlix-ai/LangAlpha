@@ -112,6 +112,10 @@ class SharesightClient:
         data = await self._api_get(f"/api/v2/portfolios/{portfolio_id}/valuation.json")
         return data.get("holdings", [])
 
+    async def get_trades(self, portfolio_id: int) -> list[dict]:
+        data = await self._api_get(f"/api/v2/portfolios/{portfolio_id}/trades.json")
+        return data.get("trades", [])
+
     async def get_portfolio_holdings(self) -> list[dict]:
         """Fetch holdings from the configured portfolio and map to LangAlpha schema."""
         portfolios = await self.get_portfolios()
@@ -126,18 +130,44 @@ class SharesightClient:
                 f"Available: {[p['name'] for p in portfolios]}"
             )
 
-        raw_holdings = await self.get_holdings(portfolio["id"])
-        return [self._map_holding(h) for h in raw_holdings]
+        pid = portfolio["id"]
+        raw_holdings = await self.get_holdings(pid)
 
-    def _map_holding(self, holding: dict) -> dict:
+        # Fetch trades to calculate average cost per holding
+        try:
+            trades = await self.get_trades(pid)
+            cost_by_holding = self._calc_avg_costs(trades)
+        except Exception:
+            logger.warning("Failed to fetch trades for cost basis, continuing without")
+            cost_by_holding = {}
+
+        return [self._map_holding(h, cost_by_holding) for h in raw_holdings]
+
+    @staticmethod
+    def _calc_avg_costs(trades: list[dict]) -> dict[int, Decimal]:
+        """Calculate weighted average cost per holding from trade history."""
+        from collections import defaultdict
+        totals: dict[int, dict] = defaultdict(lambda: {"qty": Decimal(0), "cost": Decimal(0)})
+        for t in trades:
+            hid = t.get("holding_id")
+            if not hid:
+                continue
+            qty = Decimal(str(t.get("quantity", 0) or 0))
+            price = Decimal(str(t.get("price", 0) or 0))
+            totals[hid]["qty"] += qty
+            totals[hid]["cost"] += qty * price
+        return {
+            hid: d["cost"] / d["qty"] if d["qty"] else Decimal(0)
+            for hid, d in totals.items()
+        }
+
+    def _map_holding(self, holding: dict, cost_by_holding: dict[int, Decimal] | None = None) -> dict:
         quantity = Decimal(str(holding.get("quantity", 0)))
         value = Decimal(str(holding.get("value", 0)))
-        # Derive current price from valuation (value = quantity × current_price)
         sharesight_price = float(value / quantity) if quantity else 0.0
-        # Valuation endpoint doesn't provide cost base, so average_cost is not available
-        average_cost = None
 
         holding_id = holding.get("id", 0)
+        average_cost = (cost_by_holding or {}).get(holding_id)
         stable_uuid = uuid5(NAMESPACE_URL, f"sharesight:{holding_id}")
 
         return {
