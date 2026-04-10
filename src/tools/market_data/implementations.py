@@ -985,6 +985,251 @@ Error retrieving price data: {str(e)}"""
         return content, {"type": "stock_prices", "symbol": symbol, "error": str(e)}
 
 
+async def _yfinance_fallback_overview(
+    symbol: str, artifact: Dict[str, Any]
+) -> None:
+    """Fill missing Company Overview sections from YFinance when FMP returned sparse data.
+
+    Mutates *artifact* in-place. Skips entirely if YFinance is not installed or
+    if the primary provider was already YFinance.
+    """
+    from src.data_client.registry import _fmp_available, _eodhd_available, _yfinance_available
+
+    # Run fallback when FMP or EODHD is primary and YFinance is available
+    if not (_fmp_available() or _eodhd_available()) or not _yfinance_available():
+        return
+
+    # Determine which sections are missing or contain only zeros
+    def _is_empty_dict(d: Any) -> bool:
+        """True if dict is missing, None, empty, or all values are falsy/zero."""
+        if not d or not isinstance(d, dict):
+            return True
+        return all(not v for v in d.values())
+
+    missing_quote = _is_empty_dict(artifact.get("quote"))
+    missing_perf = _is_empty_dict(artifact.get("performance"))
+    missing_ratings = "analystRatings" not in artifact
+    missing_fundamentals = "quarterlyFundamentals" not in artifact
+    missing_earnings = "earningsSurprises" not in artifact
+    missing_cashflow = "cashFlow" not in artifact
+
+    if not any([
+        missing_quote, missing_perf, missing_ratings,
+        missing_fundamentals, missing_earnings, missing_cashflow,
+    ]):
+        return
+
+    try:
+        from src.data_client.yfinance.financial_source import YFinanceFinancialSource
+
+        yf_source = YFinanceFinancialSource()
+        # Fetch only what's missing, in parallel
+        tasks = {}
+        if missing_quote:
+            tasks["quote"] = yf_source.get_realtime_quote(symbol)
+        if missing_perf:
+            tasks["perf"] = yf_source.get_price_performance(symbol)
+        if missing_ratings:
+            tasks["ratings"] = yf_source.get_analyst_ratings(symbol)
+        if missing_fundamentals:
+            tasks["income"] = yf_source.get_income_statements(
+                symbol, period="quarter", limit=8
+            )
+        if missing_earnings:
+            tasks["earnings"] = yf_source.get_earnings_history(symbol, limit=10)
+        if missing_cashflow:
+            tasks["cashflow"] = yf_source.get_cash_flows(
+                symbol, period="quarter", limit=8
+            )
+
+        keys = list(tasks.keys())
+        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+        fetched = {k: _safe_result(v, []) for k, v in zip(keys, results)}
+
+        # Build fiscal period lookup from income statements (needed by multiple sections)
+        yf_income = fetched.get("income", [])
+        yf_fiscal_lookup = _build_fiscal_period_lookup(yf_income) if yf_income else {}
+
+        # Quote — only use if at least price or previousClose is non-zero
+        yf_quote = fetched.get("quote", [])
+        if yf_quote and len(yf_quote) > 0:
+            q = yf_quote[0]
+            if q.get("price") or q.get("previousClose"):
+                artifact["quote"] = {
+                    "price": q.get("price"),
+                    "change": q.get("change"),
+                    "changePct": q.get("changesPercentage"),
+                    "dayHigh": q.get("dayHigh"),
+                    "dayLow": q.get("dayLow"),
+                    "yearHigh": q.get("yearHigh"),
+                    "yearLow": q.get("yearLow"),
+                    "open": q.get("open"),
+                    "previousClose": q.get("previousClose"),
+                    "volume": q.get("volume"),
+                    "avgVolume": q.get("avgVolume"),
+                    "marketCap": q.get("marketCap"),
+                    "pe": q.get("pe"),
+                    "eps": q.get("eps"),
+                }
+
+        # Performance — filter out all-zero results (means provider had no data)
+        yf_perf = fetched.get("perf", [])
+        if yf_perf:
+            changes = yf_perf[0]
+            perf = {
+                k: changes.get(k)
+                for k in ["1D", "5D", "1M", "3M", "6M", "ytd", "1Y", "3Y", "5Y"]
+                if changes.get(k) is not None
+            }
+            # Only use if at least one non-zero value exists
+            if perf and any(v != 0 for v in perf.values()):
+                artifact["performance"] = perf
+
+        # Analyst ratings
+        yf_ratings = fetched.get("ratings", [])
+        if yf_ratings:
+            gs = yf_ratings[0]
+            artifact["analystRatings"] = {
+                "strongBuy": gs.get("strongBuy", 0),
+                "buy": gs.get("buy", 0),
+                "hold": gs.get("hold", 0),
+                "sell": gs.get("sell", 0),
+                "strongSell": gs.get("strongSell", 0),
+                "consensus": gs.get("consensus", "N/A"),
+            }
+
+        # Quarterly fundamentals
+        if yf_income:
+            artifact["quarterlyFundamentals"] = [
+                {
+                    "period": yf_fiscal_lookup.get(
+                        stmt.get("date"), stmt.get("date", "")
+                    ),
+                    "date": stmt.get("date"),
+                    "revenue": stmt.get("revenue"),
+                    "netIncome": stmt.get("netIncome"),
+                    "grossProfit": stmt.get("grossProfit"),
+                    "operatingIncome": stmt.get("operatingIncome"),
+                    "ebitda": stmt.get("ebitda"),
+                    "epsDiluted": stmt.get("epsdiluted"),
+                    "grossMargin": stmt.get("grossProfitRatio"),
+                    "operatingMargin": stmt.get("operatingIncomeRatio"),
+                    "netMargin": stmt.get("netIncomeRatio"),
+                }
+                for stmt in reversed(yf_income)
+            ]
+
+        # Earnings surprises
+        yf_earnings = fetched.get("earnings", [])
+        reported = [e for e in yf_earnings if e.get("eps") is not None]
+        if reported:
+            artifact["earningsSurprises"] = [
+                {
+                    "period": yf_fiscal_lookup.get(
+                        e.get("fiscalDateEnding"), e.get("date", "")
+                    ),
+                    "date": e.get("date"),
+                    "epsActual": e.get("eps"),
+                    "epsEstimate": e.get("epsEstimated"),
+                    "revenueActual": e.get("revenue"),
+                    "revenueEstimate": e.get("revenueEstimated"),
+                }
+                for e in reversed(reported)
+            ]
+
+        # Cash flow
+        yf_cashflow = fetched.get("cashflow", [])
+        if yf_cashflow:
+            artifact["cashFlow"] = [
+                {
+                    "period": yf_fiscal_lookup.get(
+                        cf.get("date"), cf.get("date", "")
+                    ),
+                    "date": cf.get("date"),
+                    "operatingCashFlow": cf.get("operatingCashFlow"),
+                    "capitalExpenditure": cf.get("capitalExpenditure"),
+                    "freeCashFlow": cf.get("freeCashFlow"),
+                }
+                for cf in reversed(yf_cashflow)
+            ]
+
+    except Exception:
+        logger.debug(
+            "yfinance fallback for company overview failed | symbol=%s",
+            symbol,
+            exc_info=True,
+        )
+
+    # If performance is still missing, compute from Alpaca/market-data daily bars
+    if "performance" not in artifact:
+        await _market_data_performance_fallback(symbol, artifact)
+
+
+async def _market_data_performance_fallback(
+    symbol: str, artifact: Dict[str, Any]
+) -> None:
+    """Compute price performance from MarketDataSource daily bars (Alpaca/Ginlix).
+
+    Used as a last resort when both FMP and YFinance lack performance data.
+    """
+    try:
+        provider = await get_market_data_provider()
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        start = (now - timedelta(days=1900)).strftime("%Y-%m-%d")
+        bars = await provider.get_daily(symbol, from_date=start)
+        if hasattr(bars, "bars"):
+            bars = bars.bars
+        if not bars or len(bars) < 2:
+            return
+
+        # Sort by time ascending
+        bars.sort(key=lambda b: b.get("time", 0))
+        latest_close = bars[-1].get("close")
+        if not latest_close:
+            return
+
+        def _pct_change(days: int) -> Optional[float]:
+            target_ts = (now - timedelta(days=days)).timestamp() * 1000
+            ref_bar = None
+            for b in bars:
+                if b.get("time", 0) <= target_ts:
+                    ref_bar = b
+                else:
+                    break
+            if ref_bar and ref_bar.get("close"):
+                ref = ref_bar["close"]
+                return round((latest_close - ref) / ref * 100, 2)
+            return None
+
+        # YTD
+        ytd_start = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+        ytd_days = (now - ytd_start).days
+
+        perf = {}
+        for label, days in [
+            ("1D", 1), ("5D", 5), ("1M", 30), ("3M", 90),
+            ("6M", 180), ("1Y", 365), ("3Y", 1095), ("5Y", 1825),
+        ]:
+            val = _pct_change(days)
+            if val is not None:
+                perf[label] = val
+        ytd_val = _pct_change(ytd_days)
+        if ytd_val is not None:
+            perf["ytd"] = ytd_val
+
+        if perf:
+            artifact["performance"] = perf
+
+    except Exception:
+        logger.debug(
+            "market data performance fallback failed | symbol=%s",
+            symbol,
+            exc_info=True,
+        )
+
+
 async def fetch_company_overview_data(symbol: str) -> Dict[str, Any]:
     """
     Fetch company overview data and return structured artifact dict.
@@ -1004,7 +1249,27 @@ async def fetch_company_overview_data(symbol: str) -> Dict[str, Any]:
 
     profile_data = await financial.get_company_profile(symbol)
     if not profile_data:
-        return {"type": "company_overview", "symbol": symbol}
+        # FMP has no profile — try YFinance fallback for the entire overview
+        artifact: Dict[str, Any] = {"type": "company_overview", "symbol": symbol}
+        await _yfinance_fallback_overview(symbol, artifact)
+        # Try to get the name from YFinance quote data
+        if "quote" in artifact and not artifact.get("name"):
+            from src.data_client.registry import _yfinance_available
+            if _yfinance_available():
+                try:
+                    from src.data_client.yfinance.financial_source import (
+                        YFinanceFinancialSource,
+                    )
+                    yf_profile = await YFinanceFinancialSource().get_company_profile(
+                        symbol
+                    )
+                    if yf_profile:
+                        artifact["name"] = yf_profile[0].get(
+                            "companyName", symbol
+                        )
+                except Exception:
+                    pass
+        return artifact
 
     profile = profile_data[0]
     company_name = profile.get("companyName", symbol)
@@ -1168,6 +1433,10 @@ async def fetch_company_overview_data(symbol: str) -> Dict[str, Any]:
             }
             for cf in reversed(cash_flow_data)
         ]
+
+    # === YFINANCE FALLBACK for missing sections ===
+    # If the primary provider (FMP) returned sparse data, try YFinance
+    await _yfinance_fallback_overview(symbol, artifact)
 
     return artifact
 
