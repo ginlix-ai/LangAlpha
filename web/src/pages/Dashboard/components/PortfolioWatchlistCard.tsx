@@ -198,7 +198,7 @@ function PortfolioItem({ item, index, valuesHidden, marketStatus }: PortfolioIte
       <div className="flex items-center gap-4">
         <div className="text-right">
           <div className="text-sm font-medium dashboard-mono" style={{ color: 'var(--color-text-primary)' }}>
-            {valuesHidden ? '******' : `$${Number(item.marketValue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            {valuesHidden ? '******' : `£${Number(item.marketValue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
           </div>
           <div className="text-xs dashboard-mono" style={{ color: 'var(--color-text-secondary)' }}>
             {valuesHidden ? '***' : `@${Number(extType && item.previousClose != null ? item.previousClose : item.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
@@ -447,7 +447,7 @@ function PortfolioWatchlistCard({
                     className="text-2xl font-bold mb-2 dashboard-mono"
                     style={{ color: 'var(--color-text-primary)' }}
                   >
-                    {valuesHidden ? '********' : `$${totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                    {valuesHidden ? '********' : `£${totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                   </div>
                   {!valuesHidden && (
                     <div
@@ -458,7 +458,7 @@ function PortfolioWatchlistCard({
                       }}
                     >
                       {isPlPositive ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
-                      {isPlPositive ? '+' : '-'}${Math.abs(totalPl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({totalPlPct.toFixed(1)}%)
+                      {isPlPositive ? '+' : '-'}£{Math.abs(totalPl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({totalPlPct.toFixed(1)}%)
                     </div>
                   )}
                 </div>

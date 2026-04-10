@@ -68,7 +68,10 @@ export function usePortfolioData() {
           // Use real-time price if available, fall back to Sharesight valuation price
           const sharesightPrice = Number(meta?.sharesight_price || 0);
           const price = p.price || sharesightPrice;
-          const marketValue = q * price;
+          // Use Sharesight's FX-adjusted value (portfolio currency) for NAV;
+          // only fall back to quantity × price if Sharesight value is missing
+          const sharesightValue = Number(meta?.sharesight_value || 0);
+          const marketValue = sharesightValue > 0 ? sharesightValue : q * price;
           // Use Sharesight's capital gain % (handles cross-currency correctly)
           const sharesightPl = meta?.capital_gain_pct != null ? Number(meta.capital_gain_pct) : null;
           const calcPl = ac != null && ac > 0 ? ((price - ac) / ac) * 100 : null;

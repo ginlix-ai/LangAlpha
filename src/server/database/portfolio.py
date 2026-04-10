@@ -39,6 +39,7 @@ async def get_user_portfolio(user_id: str) -> List[Dict[str, Any]]:
                     notes, metadata, first_purchased_at, created_at, updated_at
                 FROM user_portfolios
                 WHERE user_id = %s
+                  AND (quantity IS NULL OR quantity != 0)
                 ORDER BY created_at DESC
             """, (user_id,))
 

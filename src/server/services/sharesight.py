@@ -113,7 +113,11 @@ class SharesightClient:
         return data.get("holdings", [])
 
     async def get_portfolio_holdings(self) -> list[dict]:
-        """Fetch holdings from the configured portfolio and map to LangAlpha schema."""
+        """Fetch current holdings from the configured portfolio and map to LangAlpha schema.
+
+        Uses the performance endpoint (which has full data: value, gains, etc.)
+        but filters out sold positions (quantity == 0).
+        """
         portfolios = await self.get_portfolios()
 
         portfolio = next(
@@ -127,7 +131,11 @@ class SharesightClient:
             )
 
         raw_holdings = await self.get_performance(portfolio["id"])
-        return [self._map_holding(h) for h in raw_holdings]
+        return [
+            self._map_holding(h)
+            for h in raw_holdings
+            if Decimal(str(h.get("quantity", 0))) != 0
+        ]
 
     def _map_holding(self, holding: dict) -> dict:
         quantity = Decimal(str(holding.get("quantity", 0)))
