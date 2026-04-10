@@ -173,7 +173,7 @@ def _extract_structured_output(raw_text: str) -> dict:
     )
 
 
-async def _llm_extract_fallback(raw_text: str) -> dict:
+async def _llm_extract_fallback(raw_text: str, user_id: str | None = None) -> dict:
     """Extract structured insight data via a separate LLM call with response_schema.
 
     Uses make_api_call with response_schema for native structured output,
@@ -188,7 +188,20 @@ async def _llm_extract_fallback(raw_text: str) -> dict:
     config = setup.agent_config
     flash_model_name = config.llm.flash if config and config.llm else "claude-haiku-4-5-20251001"
 
-    llm = create_llm(flash_model_name)
+    llm = None
+    if user_id:
+        try:
+            from src.server.handlers.chat.llm_config import resolve_byok_llm_client, resolve_oauth_llm_client
+
+            llm = await resolve_oauth_llm_client(user_id, flash_model_name)
+            if not llm:
+                llm = await resolve_byok_llm_client(user_id, flash_model_name, is_byok=True)
+        except Exception:
+            logger.warning("[MARKET_INSIGHT] Could not resolve user LLM for extraction fallback")
+
+    if not llm:
+        llm = create_llm(flash_model_name)
+
     result = await make_api_call(
         llm,
         system_prompt=(
@@ -437,7 +450,7 @@ class InsightService:
                 _run_flash_agent(prompt + "\n\n" + _JSON_GUIDELINES, user_id=user_id),
                 timeout=self._generation_timeout,
             )
-            parsed = await self._extract_with_fallback(raw_text)
+            parsed = await self._extract_with_fallback(raw_text, user_id=user_id)
             elapsed_ms = int((time.monotonic() - start_time) * 1000)
 
             await insight_db.complete_market_insight(
@@ -509,28 +522,49 @@ class InsightService:
         except Exception as e:
             logger.warning(f"[MARKET_INSIGHT] Failed to fetch watchlists for {user_id}: {e}")
 
-        # Portfolio holdings
+        # Portfolio holdings (DB first, then Sharesight if DB is empty)
+        holdings: list[dict] = []
         try:
             holdings = await get_user_portfolio(user_id)
-            for h in holdings:
-                sym = h.get("symbol", "").upper()
-                if sym and sym not in seen_symbols and len(seen_symbols) < self._max_symbols:
-                    seen_symbols.add(sym)
-                    name = h.get("name", "")
-                    qty = h.get("quantity", "")
-                    avg_cost = h.get("average_cost", "")
+        except Exception as e:
+            logger.warning(f"[MARKET_INSIGHT] Failed to fetch DB portfolio for {user_id}: {e}")
+
+        if not holdings:
+            try:
+                from src.server.services.sharesight import sharesight_client
+
+                if sharesight_client.is_configured:
+                    holdings = await sharesight_client.get_portfolio_holdings()
+            except Exception as e:
+                logger.warning(f"[MARKET_INSIGHT] Failed to fetch Sharesight portfolio: {e}")
+
+        for h in holdings:
+            sym = h.get("symbol", "").upper()
+            if sym and sym not in seen_symbols and len(seen_symbols) < self._max_symbols:
+                seen_symbols.add(sym)
+                name = h.get("name", "")
+                qty = h.get("quantity", "")
+                avg_cost = h.get("average_cost", "")
+                if avg_cost:
                     lines.append(
                         f"- {sym} ({name}) [portfolio: {qty} shares @ ${avg_cost}]"
                     )
-                elif sym in seen_symbols:
-                    # Symbol already from watchlist — add portfolio info
-                    qty = h.get("quantity", "")
-                    avg_cost = h.get("average_cost", "")
+                else:
+                    lines.append(
+                        f"- {sym} ({name}) [portfolio: {qty} shares]"
+                    )
+            elif sym in seen_symbols:
+                # Symbol already from watchlist — add portfolio info
+                qty = h.get("quantity", "")
+                avg_cost = h.get("average_cost", "")
+                if avg_cost:
                     lines.append(
                         f"  ^ also in portfolio: {qty} shares @ ${avg_cost}"
                     )
-        except Exception as e:
-            logger.warning(f"[MARKET_INSIGHT] Failed to fetch portfolio for {user_id}: {e}")
+                else:
+                    lines.append(
+                        f"  ^ also in portfolio: {qty} shares"
+                    )
 
         return "\n".join(lines)
 
@@ -729,7 +763,7 @@ class InsightService:
                 _run_flash_agent(instruction + "\n\n" + _JSON_GUIDELINES, user_id=system_user_id),
                 timeout=self._generation_timeout,
             )
-            parsed = await self._extract_with_fallback(raw_text)
+            parsed = await self._extract_with_fallback(raw_text, user_id=system_user_id)
             elapsed_ms = int((time.monotonic() - start_time) * 1000)
 
             await insight_db.complete_market_insight(
@@ -774,13 +808,13 @@ class InsightService:
             except Exception:
                 logger.warning(f"[MARKET_INSIGHT] Failed to mark {insight_id} as failed")
 
-    async def _extract_with_fallback(self, raw_text: str) -> dict:
+    async def _extract_with_fallback(self, raw_text: str, user_id: str | None = None) -> dict:
         """Extract structured output from raw text, falling back to LLM if direct parse fails."""
         try:
             return _extract_structured_output(raw_text)
         except ValueError:
             logger.info("[MARKET_INSIGHT] Direct JSON parse failed, trying LLM fallback")
-            return await _llm_extract_fallback(raw_text)
+            return await _llm_extract_fallback(raw_text, user_id=user_id)
 
 
 class InsightAlreadyGeneratingError(Exception):

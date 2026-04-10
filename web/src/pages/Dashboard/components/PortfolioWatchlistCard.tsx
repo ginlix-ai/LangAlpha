@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Plus, ArrowUpRight, ArrowDownRight, Trash2, Pencil, Eye, EyeOff, Sunrise, Sunset, MoreVertical } from 'lucide-react';
+import { Plus, ArrowUpRight, ArrowDownRight, Trash2, Eye, EyeOff, Sunrise, Sunset, MoreVertical, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { getExtendedHoursInfo } from '@/lib/marketUtils';
@@ -153,27 +153,23 @@ function WatchlistItem({ item, index, onDelete, marketStatus, isMobile }: Watchl
 interface PortfolioItemProps {
   item: PortfolioRow;
   index: number;
-  onEdit?: (item: PortfolioRow) => void;
-  onDelete?: (id: string) => void;
   valuesHidden: boolean;
   marketStatus: MarketStatusData;
-  isMobile: boolean;
 }
 
-function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStatus, isMobile }: PortfolioItemProps) {
+function PortfolioItem({ item, index, valuesHidden, marketStatus }: PortfolioItemProps) {
   const navigate = useNavigate();
   const pos = item.isPositive;
   const plStr =
     item.unrealizedPlPercent != null
       ? (pos ? '+' : '') + Number(item.unrealizedPlPercent).toFixed(2) + '%'
       : '—';
-  const hasId = !!item.user_portfolio_id;
 
   // Extended hours
   const { extPct, extType, extPrice: _extPrice2 } = getExtendedHoursInfo(marketStatus, item, { shortLabels: true });
   const extColor = extType === 'pre' ? '#fbbf24' : '#3b82f6';
 
-  const rowContent = (
+  return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
@@ -202,7 +198,7 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStat
       <div className="flex items-center gap-4">
         <div className="text-right">
           <div className="text-sm font-medium dashboard-mono" style={{ color: 'var(--color-text-primary)' }}>
-            {valuesHidden ? '******' : `$${Number(item.marketValue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            {valuesHidden ? '******' : `£${Number(item.marketValue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
           </div>
           <div className="text-xs dashboard-mono" style={{ color: 'var(--color-text-secondary)' }}>
             {valuesHidden ? '***' : `@${Number(extType && item.previousClose != null ? item.previousClose : item.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
@@ -226,55 +222,9 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStat
             </div>
           )}
         </div>
-
-        {/* Mobile: visible menu button */}
-        {isMobile && hasId && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                className="p-1 -mr-1 rounded-md transition-colors"
-                style={{ color: 'var(--color-text-tertiary)' }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <MoreVertical size={16} />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => onEdit?.(item)}>
-                <Pencil className="h-3.5 w-3.5" />
-                Edit
-              </DropdownMenuItem>
-              <DropdownMenuItem variant="destructive" onSelect={() => onDelete?.(String(item.user_portfolio_id))}>
-                <Trash2 className="h-3.5 w-3.5" />
-                Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
       </div>
     </motion.div>
   );
-
-  // Desktop: wrap with right-click context menu
-  if (!isMobile && hasId) {
-    return (
-      <ContextMenu>
-        <ContextMenuTrigger asChild>{rowContent}</ContextMenuTrigger>
-        <ContextMenuContent>
-          <ContextMenuItem onSelect={() => onEdit?.(item)}>
-            <Pencil className="h-3.5 w-3.5" />
-            Edit
-          </ContextMenuItem>
-          <ContextMenuItem variant="destructive" onSelect={() => onDelete?.(String(item.user_portfolio_id))}>
-            <Trash2 className="h-3.5 w-3.5" />
-            Delete
-          </ContextMenuItem>
-        </ContextMenuContent>
-      </ContextMenu>
-    );
-  }
-
-  return rowContent;
 }
 
 interface AddNewButtonProps {
@@ -307,6 +257,18 @@ function AddNewButton({ label, onClick }: AddNewButtonProps) {
   );
 }
 
+function formatTimeAgo(date: Date | null): string {
+  if (!date) return '';
+  const diffMs = Date.now() - date.getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin === 1) return '1 min ago';
+  if (diffMin < 60) return `${diffMin} min ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr === 1) return '1 hr ago';
+  return `${diffHr} hr ago`;
+}
+
 type PWTabKey = 'watchlist' | 'portfolio';
 
 interface PortfolioWatchlistCardProps {
@@ -317,9 +279,9 @@ interface PortfolioWatchlistCardProps {
   portfolioRows?: PortfolioRow[];
   portfolioLoading?: boolean;
   hasRealHoldings?: boolean;
-  onPortfolioAdd?: () => void;
-  onPortfolioDelete?: (id: string) => void;
-  onPortfolioEdit?: (item: PortfolioRow) => void;
+  onPortfolioSync?: () => void;
+  portfolioSyncing?: boolean;
+  lastSyncedAt?: Date | null;
   marketStatus: MarketStatusData;
 }
 
@@ -331,9 +293,9 @@ function PortfolioWatchlistCard({
   portfolioRows = [],
   portfolioLoading = false,
   hasRealHoldings = false,
-  onPortfolioAdd,
-  onPortfolioDelete,
-  onPortfolioEdit,
+  onPortfolioSync,
+  portfolioSyncing = false,
+  lastSyncedAt = null,
   marketStatus,
 }: PortfolioWatchlistCardProps) {
   const isMobile = useIsMobile();
@@ -372,27 +334,43 @@ function PortfolioWatchlistCard({
         <h2 className="text-xl font-bold" style={{ color: 'var(--color-text-primary)' }}>
           {activeTab === 'watchlist' ? 'Watchlist' : 'Portfolio'}
         </h2>
-        <div className="flex rounded-xl p-1" style={{ backgroundColor: 'var(--color-bg-tag)' }}>
-          <button
-            onClick={() => setActiveTab('watchlist')}
-            className="px-3 py-1 text-xs font-medium rounded-lg transition-all"
-            style={{
-              backgroundColor: activeTab === 'watchlist' ? 'var(--color-bg-elevated)' : 'transparent',
-              color: activeTab === 'watchlist' ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
-            }}
-          >
-            Watch
-          </button>
-          <button
-            onClick={() => setActiveTab('portfolio')}
-            className="px-3 py-1 text-xs font-medium rounded-lg transition-all"
-            style={{
-              backgroundColor: activeTab === 'portfolio' ? 'var(--color-bg-elevated)' : 'transparent',
-              color: activeTab === 'portfolio' ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
-            }}
-          >
-            Holdings
-          </button>
+        <div className="flex items-center gap-2">
+          {/* Sync button — only shown on portfolio tab */}
+          {activeTab === 'portfolio' && (
+            <button
+              onClick={onPortfolioSync}
+              disabled={portfolioSyncing}
+              className="p-1.5 rounded-lg transition-colors disabled:opacity-50"
+              style={{ color: 'var(--color-text-secondary)' }}
+              onMouseEnter={(e) => { if (!portfolioSyncing) e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
+              title="Sync from Sharesight"
+            >
+              <RefreshCw size={14} className={portfolioSyncing ? 'animate-spin' : ''} />
+            </button>
+          )}
+          <div className="flex rounded-xl p-1" style={{ backgroundColor: 'var(--color-bg-tag)' }}>
+            <button
+              onClick={() => setActiveTab('watchlist')}
+              className="px-3 py-1 text-xs font-medium rounded-lg transition-all"
+              style={{
+                backgroundColor: activeTab === 'watchlist' ? 'var(--color-bg-elevated)' : 'transparent',
+                color: activeTab === 'watchlist' ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+              }}
+            >
+              Watch
+            </button>
+            <button
+              onClick={() => setActiveTab('portfolio')}
+              className="px-3 py-1 text-xs font-medium rounded-lg transition-all"
+              style={{
+                backgroundColor: activeTab === 'portfolio' ? 'var(--color-bg-elevated)' : 'transparent',
+                color: activeTab === 'portfolio' ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+              }}
+            >
+              Holdings
+            </button>
+          </div>
         </div>
       </div>
 
@@ -469,7 +447,7 @@ function PortfolioWatchlistCard({
                     className="text-2xl font-bold mb-2 dashboard-mono"
                     style={{ color: 'var(--color-text-primary)' }}
                   >
-                    {valuesHidden ? '********' : `$${totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                    {valuesHidden ? '********' : `£${totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                   </div>
                   {!valuesHidden && (
                     <div
@@ -480,7 +458,7 @@ function PortfolioWatchlistCard({
                       }}
                     >
                       {isPlPositive ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
-                      {isPlPositive ? '+' : '-'}${Math.abs(totalPl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({totalPlPct.toFixed(1)}%)
+                      {isPlPositive ? '+' : '-'}£{Math.abs(totalPl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({totalPlPct.toFixed(1)}%)
                     </div>
                   )}
                 </div>
@@ -506,14 +484,17 @@ function PortfolioWatchlistCard({
                       key={item.user_portfolio_id ?? item.symbol}
                       item={item}
                       index={i}
-                      onEdit={onPortfolioEdit}
-                      onDelete={onPortfolioDelete}
                       valuesHidden={valuesHidden}
                       marketStatus={marketStatus}
-                      isMobile={isMobile}
                     />
                   ))}
-              <AddNewButton label="Add Transaction" onClick={onPortfolioAdd} />
+
+              {/* Synced from Sharesight label */}
+              <div className="mt-2 text-center text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+                {lastSyncedAt
+                  ? `Synced from Sharesight · ${formatTimeAgo(lastSyncedAt)}`
+                  : 'Synced from Sharesight'}
+              </div>
             </motion.div>
           )}
         </AnimatePresence>

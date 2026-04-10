@@ -56,15 +56,33 @@ def _normalize_bar(idx, row: Any) -> dict[str, Any]:
     }
 
 
+def _try_yf_history(
+    yf_sym: str,
+    kwargs: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Attempt to fetch OHLCV history for a single Yahoo Finance symbol."""
+    try:
+        df = yf.Ticker(yf_sym).history(**kwargs)
+        if df is None or df.empty:
+            return []
+        df = df.copy()
+        return [_normalize_bar(idx, row) for idx, row in df.iterrows()]
+    except Exception:
+        return []
+
+
 def _fetch_history(
     symbol: str,
     interval: str,
     start: str | None,
     end: str | None,
 ) -> list[dict[str, Any]]:
-    """Synchronous helper — called via ``asyncio.to_thread``."""
-    ticker = yf.Ticker(symbol)
+    """Synchronous helper — called via ``asyncio.to_thread``.
 
+    Tries the plain symbol first.  If that returns no data and the symbol
+    doesn't already contain a dot (exchange suffix), retries with common
+    Yahoo Finance exchange suffixes (.L, .TO, .V, .SW, etc.).
+    """
     kwargs: dict[str, Any] = {"interval": interval, "auto_adjust": True}
     if start:
         kwargs["start"] = start
@@ -74,41 +92,85 @@ def _fetch_history(
         lookback = _DEFAULT_LOOKBACK.get(interval, timedelta(days=730))
         kwargs["start"] = (datetime.now(_ET) - lookback).strftime("%Y-%m-%d")
 
-    df = ticker.history(**kwargs)
-    if df is None or df.empty:
-        return []
+    bars = _try_yf_history(symbol, kwargs)
+    if bars:
+        return bars
 
-    df = df.copy()
-    return [_normalize_bar(idx, row) for idx, row in df.iterrows()]
+    # Only try suffixes for plain symbols (no dot = no exchange already specified)
+    if "." not in symbol:
+        for suffix in _YF_EXCHANGE_SUFFIXES:
+            bars = _try_yf_history(f"{symbol}{suffix}", kwargs)
+            if bars:
+                return bars
+
+    return []
 
 
-def _fetch_single_snapshot(sym: str) -> dict[str, Any] | None:
-    """Fetch snapshot for a single symbol. Returns None on failure."""
+# Yahoo Finance exchange suffixes to try when a plain symbol returns no data.
+# Order matters — most common international exchanges first.
+_YF_EXCHANGE_SUFFIXES = [".L", ".TO", ".V", ".SW", ".AS", ".PA", ".DE", ".HK", ".AX"]
+
+
+# Minor currency units that need dividing by 100 to get the major unit.
+# Yahoo returns "GBp" for pence, "ILA" for Israeli agorot, etc.
+_MINOR_CURRENCY_CODES = {"GBp", "ILA", "ZAc"}
+
+
+def _try_yf_snapshot(yf_sym: str, original_sym: str) -> dict[str, Any] | None:
+    """Attempt to fetch a snapshot for a single Yahoo Finance symbol."""
     try:
-        ticker = yf.Ticker(sym)
+        ticker = yf.Ticker(yf_sym)
         fi = ticker.fast_info
         price = float(fi.get("lastPrice", 0) or 0)
+        if price == 0:
+            return None
+
+        # Convert minor currency units (e.g., GBp pence) to major units (GBP pounds)
+        currency = fi.get("currency", "")
+        divisor = 100.0 if currency in _MINOR_CURRENCY_CODES else 1.0
+
         prev = float(fi.get("previousClose", 0) or 0)
         change = price - prev if prev else 0.0
         change_pct = (change / prev * 100) if prev else 0.0
         return {
-            "symbol": sym,
+            "symbol": original_sym,
             "name": None,
-            "price": round(price, 4),
-            "change": round(change, 4),
+            "price": round(price / divisor, 4),
+            "change": round(change / divisor, 4),
             "change_percent": round(change_pct, 4),
-            "previous_close": round(prev, 4),
-            "open": round(float(fi.get("open", 0) or 0), 4),
-            "high": round(float(fi.get("dayHigh", 0) or 0), 4),
-            "low": round(float(fi.get("dayLow", 0) or 0), 4),
+            "previous_close": round(prev / divisor, 4),
+            "open": round(float(fi.get("open", 0) or 0) / divisor, 4),
+            "high": round(float(fi.get("dayHigh", 0) or 0) / divisor, 4),
+            "low": round(float(fi.get("dayLow", 0) or 0) / divisor, 4),
             "volume": int(fi.get("lastVolume", 0) or 0),
             "market_status": None,
             "early_trading_change_percent": None,
             "late_trading_change_percent": None,
         }
     except Exception:
-        logger.warning("yfinance.snapshot.failed | symbol=%s", sym, exc_info=True)
         return None
+
+
+def _fetch_single_snapshot(sym: str) -> dict[str, Any] | None:
+    """Fetch snapshot for a single symbol.
+
+    Tries the plain symbol first.  If that returns no price data and the
+    symbol doesn't already contain a dot (exchange suffix), retries with
+    common Yahoo Finance exchange suffixes (.L, .TO, .V, .SW, etc.).
+    """
+    result = _try_yf_snapshot(sym, sym)
+    if result is not None:
+        return result
+
+    # Only try suffixes for plain symbols (no dot = no exchange already specified)
+    if "." not in sym:
+        for suffix in _YF_EXCHANGE_SUFFIXES:
+            result = _try_yf_snapshot(f"{sym}{suffix}", sym)
+            if result is not None:
+                return result
+
+    logger.warning("yfinance.snapshot.failed | symbol=%s (tried suffixes)", sym)
+    return None
 
 
 class YFinanceDataSource:

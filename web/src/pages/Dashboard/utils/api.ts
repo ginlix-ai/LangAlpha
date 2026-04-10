@@ -428,16 +428,10 @@ export async function getStockPrices(symbols: string[]): Promise<StockPrice[]> {
   }
 }
 
-// --- Portfolio (use CRUD module) ---
+// --- Portfolio (read-only Sharesight proxy) ---
 
 export const listPortfolio = portfolioApi.listPortfolio;
-export const updatePortfolioHolding = portfolioApi.updatePortfolioHolding;
-export const deletePortfolioHolding = portfolioApi.deletePortfolioHolding;
-
 export const getPortfolio = portfolioApi.listPortfolio;
-
-/** Add portfolio holding. Payload: symbol, instrument_type, quantity, average_cost?, ... */
-export const addPortfolioHolding = portfolioApi.addPortfolioHolding;
 
 // --- Models & BYOK API Keys (moved to shared api/model.ts) ---
 

@@ -37,6 +37,10 @@ def _fmp_available() -> bool:
     return bool(os.getenv("FMP_API_KEY"))
 
 
+def _eodhd_available() -> bool:
+    return bool(os.getenv("EODHD_API_KEY"))
+
+
 def _yfinance_available() -> bool:
     try:
         import yfinance  # noqa: F401
@@ -235,7 +239,16 @@ async def get_financial_data_provider() -> FinancialDataProvider:
         financial: FinancialDataSource | None = None
         intel: MarketIntelSource | None = None
 
-        if _fmp_available():
+        if _eodhd_available():
+            from .eodhd import get_eodhd_client
+            from .eodhd.financial_source import EODHDFinancialSource
+
+            eodhd_client = await get_eodhd_client()
+            financial = EODHDFinancialSource(eodhd_client)
+            logger.info(
+                "financial_data.source.registered | name=eodhd (FinancialDataSource)"
+            )
+        elif _fmp_available():
             from .fmp import get_fmp_client
             from .fmp.financial_source import FMPFinancialSource
 

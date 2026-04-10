@@ -47,6 +47,7 @@ from src.tools.market_data.tool import (
     get_sector_performance,
     screen_stocks,
 )
+from src.tools.portfolio import get_portfolio_holdings
 
 logger = structlog.get_logger(__name__)
 
@@ -132,6 +133,7 @@ class FlashAgent:
                 get_options_chain,
                 get_sector_performance,
                 screen_stocks,
+                get_portfolio_holdings,
             ]
         )
 

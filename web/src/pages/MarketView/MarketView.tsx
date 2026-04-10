@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useToast } from '@/components/ui/use-toast';
 import './MarketView.css';
@@ -119,6 +119,32 @@ function MarketViewInner() {
     setPreviousClose,
     setDayOpen
   });
+
+  // Enrich overview quote data with Alpaca real-time data when FMP returns zeros
+  const enrichedOverviewData = useMemo((): OverviewData | null => {
+    if (!overviewData) return null;
+    const od = overviewData as OverviewData;
+    const fmpQuote = od.quote;
+    // If FMP returned a zeroed-out quote, fill from Alpaca realTimePrice/snapshotData
+    const fmpEmpty = !fmpQuote || (!fmpQuote.price && !fmpQuote.previousClose && !fmpQuote.open);
+    if (fmpEmpty && (realTimePrice || snapshotData)) {
+      const rtp = realTimePrice;
+      const snap = snapshotData;
+      const merged: OverviewData['quote'] = {
+        ...fmpQuote,
+        price: rtp?.price ?? snap?.price ?? fmpQuote?.price ?? undefined,
+        change: rtp?.change ?? snap?.change ?? fmpQuote?.change,
+        changePct: rtp?.changePercent ?? snap?.change_percent ?? fmpQuote?.changePct,
+        open: rtp?.open ?? snap?.open ?? fmpQuote?.open,
+        previousClose: rtp?.previousClose ?? snap?.previous_close ?? fmpQuote?.previousClose,
+        dayHigh: rtp?.high ?? snap?.high ?? fmpQuote?.dayHigh,
+        dayLow: rtp?.low ?? snap?.low ?? fmpQuote?.dayLow,
+        volume: rtp?.volume ?? snap?.volume ?? fmpQuote?.volume,
+      };
+      return { ...od, quote: merged };
+    }
+    return od;
+  }, [overviewData, realTimePrice, snapshotData]);
 
   const [chartMeta, setChartMeta] = useState<Record<string, unknown> | null>(null);
   const [selectedInterval, setSelectedInterval] = useState<string>(() => loadPref('interval', '1day'));
@@ -285,7 +311,7 @@ function MarketViewInner() {
       parts.push(`Latest candle — O: ${c.open} H: ${c.high} L: ${c.low} C: ${c.close} Vol: ${c.volume?.toLocaleString()}`);
     }
 
-    const overview = overviewData as OverviewData | null;
+    const overview = enrichedOverviewData;
     if (overview?.quote) {
       if (overview.quote.yearHigh != null) parts.push(`52-week high: ${overview.quote.yearHigh}`);
       if (overview.quote.yearLow != null) parts.push(`52-week low: ${overview.quote.yearLow}`);
@@ -296,7 +322,7 @@ function MarketViewInner() {
     }
 
     setChartImageDesc(parts.join('\n'));
-  }, [selectedStock, selectedInterval, stockInfo, selectedStockDisplay, overviewData, displayPrice]);
+  }, [selectedStock, selectedInterval, stockInfo, selectedStockDisplay, enrichedOverviewData, displayPrice]);
 
   const handleSendMessage = useCallback(async (message: string, planMode: boolean, attachments: AttachmentItem[] = [], _slashCommands: string[] = [], { model, reasoningEffort }: { model?: string; reasoningEffort?: string } = {}) => {
     // Build additional_context from chart image + file attachments
@@ -440,7 +466,7 @@ function MarketViewInner() {
             wsHasData={!!wsPrices.get(selectedStock)}
             wsDataLevel={wsDataLevel}
             ginlixDataEnabled={ginlixDataEnabled}
-            quoteData={(overviewData as OverviewData | null)?.quote || null}
+            quoteData={enrichedOverviewData?.quote || null}
             marketStatus={marketStatus}
             snapshot={snapshotData}
           />
@@ -455,8 +481,8 @@ function MarketViewInner() {
               onCapture={handleCaptureChart}
               onStockMeta={handleStockMeta as any}
               onLatestBar={handleLatestBar}
-              quoteData={(overviewData as OverviewData | null)?.quote || null}
-              earningsData={(overviewData as OverviewData | null)?.earningsSurprises || null}
+              quoteData={enrichedOverviewData?.quote || null}
+              earningsData={enrichedOverviewData?.earningsSurprises || null}
               overlayData={overlayData as Record<string, unknown> | null}
               stockMeta={chartMeta}
               snapshot={snapshotData}
@@ -541,7 +567,7 @@ function MarketViewInner() {
               symbol={selectedStock}
               visible={true}
               onClose={() => setShowOverview(false)}
-              data={overviewData as OverviewData | null}
+              data={enrichedOverviewData}
               loading={overviewLoading}
             />
           </MobileBottomSheet>
@@ -561,7 +587,7 @@ function MarketViewInner() {
                 wsHasData={!!wsPrices.get(selectedStock)}
                 wsDataLevel={wsDataLevel}
                 ginlixDataEnabled={ginlixDataEnabled}
-                quoteData={(overviewData as OverviewData | null)?.quote || null}
+                quoteData={enrichedOverviewData?.quote || null}
                 marketStatus={marketStatus}
                 snapshot={snapshotData}
               />
@@ -571,7 +597,7 @@ function MarketViewInner() {
                     symbol={selectedStock}
                     visible={showOverview}
                     onClose={() => setShowOverview(false)}
-                    data={overviewData as OverviewData | null}
+                    data={enrichedOverviewData}
                     loading={overviewLoading}
                   />
                 )}
@@ -583,8 +609,8 @@ function MarketViewInner() {
                   onCapture={handleCaptureChart}
                   onStockMeta={handleStockMeta as any}
                   onLatestBar={handleLatestBar}
-                  quoteData={(overviewData as OverviewData | null)?.quote || null}
-                  earningsData={(overviewData as OverviewData | null)?.earningsSurprises || null}
+                  quoteData={enrichedOverviewData?.quote || null}
+                  earningsData={enrichedOverviewData?.earningsSurprises || null}
                   overlayData={overlayData as Record<string, unknown> | null}
                   stockMeta={chartMeta}
                   snapshot={snapshotData}
