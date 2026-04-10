@@ -926,7 +926,7 @@
             },
             {
               "max_tokens": 1000000,
-              "rate": 12.91
+              "rate": 6.452
             }
           ],
           "output_pricing_mode": "input_dependent",
