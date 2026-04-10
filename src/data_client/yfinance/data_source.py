@@ -56,15 +56,33 @@ def _normalize_bar(idx, row: Any) -> dict[str, Any]:
     }
 
 
+def _try_yf_history(
+    yf_sym: str,
+    kwargs: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Attempt to fetch OHLCV history for a single Yahoo Finance symbol."""
+    try:
+        df = yf.Ticker(yf_sym).history(**kwargs)
+        if df is None or df.empty:
+            return []
+        df = df.copy()
+        return [_normalize_bar(idx, row) for idx, row in df.iterrows()]
+    except Exception:
+        return []
+
+
 def _fetch_history(
     symbol: str,
     interval: str,
     start: str | None,
     end: str | None,
 ) -> list[dict[str, Any]]:
-    """Synchronous helper — called via ``asyncio.to_thread``."""
-    ticker = yf.Ticker(symbol)
+    """Synchronous helper — called via ``asyncio.to_thread``.
 
+    Tries the plain symbol first.  If that returns no data and the symbol
+    doesn't already contain a dot (exchange suffix), retries with common
+    Yahoo Finance exchange suffixes (.L, .TO, .V, .SW, etc.).
+    """
     kwargs: dict[str, Any] = {"interval": interval, "auto_adjust": True}
     if start:
         kwargs["start"] = start
@@ -74,12 +92,18 @@ def _fetch_history(
         lookback = _DEFAULT_LOOKBACK.get(interval, timedelta(days=730))
         kwargs["start"] = (datetime.now(_ET) - lookback).strftime("%Y-%m-%d")
 
-    df = ticker.history(**kwargs)
-    if df is None or df.empty:
-        return []
+    bars = _try_yf_history(symbol, kwargs)
+    if bars:
+        return bars
 
-    df = df.copy()
-    return [_normalize_bar(idx, row) for idx, row in df.iterrows()]
+    # Only try suffixes for plain symbols (no dot = no exchange already specified)
+    if "." not in symbol:
+        for suffix in _YF_EXCHANGE_SUFFIXES:
+            bars = _try_yf_history(f"{symbol}{suffix}", kwargs)
+            if bars:
+                return bars
+
+    return []
 
 
 # Yahoo Finance exchange suffixes to try when a plain symbol returns no data.
@@ -87,9 +111,9 @@ def _fetch_history(
 _YF_EXCHANGE_SUFFIXES = [".L", ".TO", ".V", ".SW", ".AS", ".PA", ".DE", ".HK", ".AX"]
 
 
-# Suffixes where Yahoo returns prices in minor currency units (pence, cents)
-# that need dividing by 100 to get the major unit (pounds, dollars).
-_PENCE_SUFFIXES = {".L"}
+# Minor currency units that need dividing by 100 to get the major unit.
+# Yahoo returns "GBp" for pence, "ILA" for Israeli agorot, etc.
+_MINOR_CURRENCY_CODES = {"GBp", "ILA", "ZAc"}
 
 
 def _try_yf_snapshot(yf_sym: str, original_sym: str) -> dict[str, Any] | None:
@@ -101,9 +125,9 @@ def _try_yf_snapshot(yf_sym: str, original_sym: str) -> dict[str, Any] | None:
         if price == 0:
             return None
 
-        # LSE .L prices are in pence — convert to pounds
-        suffix = yf_sym[yf_sym.index("."):] if "." in yf_sym else ""
-        divisor = 100.0 if suffix in _PENCE_SUFFIXES else 1.0
+        # Convert minor currency units (e.g., GBp pence) to major units (GBP pounds)
+        currency = fi.get("currency", "")
+        divisor = 100.0 if currency in _MINOR_CURRENCY_CODES else 1.0
 
         prev = float(fi.get("previousClose", 0) or 0)
         change = price - prev if prev else 0.0
