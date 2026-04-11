@@ -442,7 +442,7 @@ class DockerRuntime(SandboxRuntime):
 
         import asyncio
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             await loop.getaddrinfo("host.docker.internal", None)
             cls._server_side_host = "http://host.docker.internal"

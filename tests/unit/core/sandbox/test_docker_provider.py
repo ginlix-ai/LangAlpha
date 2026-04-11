@@ -870,7 +870,7 @@ class TestDockerRuntimePreviewUrl:
         DockerRuntime._server_side_host = None  # clear class cache
         mock_loop = AsyncMock()
         mock_loop.getaddrinfo = AsyncMock(return_value=[("", "", 0, "", ("127.0.0.1", 0))])
-        with patch("asyncio.get_event_loop", return_value=mock_loop):
+        with patch("asyncio.get_running_loop", return_value=mock_loop):
             info = await runtime.get_preview_link(8080)
         assert info.url == "http://host.docker.internal:13000"
         DockerRuntime._server_side_host = None  # cleanup
@@ -884,7 +884,7 @@ class TestDockerRuntimePreviewUrl:
         DockerRuntime._server_side_host = None  # clear class cache
         mock_loop = AsyncMock()
         mock_loop.getaddrinfo = AsyncMock(side_effect=OSError)
-        with patch("asyncio.get_event_loop", return_value=mock_loop):
+        with patch("asyncio.get_running_loop", return_value=mock_loop):
             info = await runtime.get_preview_link(8080)
         assert info.url == "http://localhost:13000"
         DockerRuntime._server_side_host = None  # cleanup
@@ -895,7 +895,7 @@ class TestDockerRuntimePreviewUrl:
         DockerRuntime._server_side_host = None
         mock_loop = AsyncMock()
         mock_loop.getaddrinfo = AsyncMock(side_effect=OSError)
-        with patch("asyncio.get_event_loop", return_value=mock_loop) as mock_get_loop:
+        with patch("asyncio.get_running_loop", return_value=mock_loop) as mock_get_loop:
             await DockerRuntime._resolve_server_side_host()
             await DockerRuntime._resolve_server_side_host()
             assert mock_loop.getaddrinfo.call_count == 1
