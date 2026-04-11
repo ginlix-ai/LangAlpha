@@ -239,3 +239,121 @@ print("two charts")
         assert result.exit_code == 0
         assert "no charts here" in result.stdout
         assert result.artifacts == []
+
+
+# ---------------------------------------------------------------------------
+# Preview URL support
+# ---------------------------------------------------------------------------
+
+
+class TestPreviewUrl:
+    """Test preview URL proxy port allocation and socat forwarding."""
+
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def runtime(self):
+        provider = DockerProvider(DockerConfig(
+            image=os.environ.get("DOCKER_SANDBOX_IMAGE", "langalpha-sandbox:latest"),
+            dev_mode=False,
+        ))
+        rt = await provider.create()
+        yield rt
+        try:
+            await rt.delete()
+        except Exception:
+            pass
+        await provider.close()
+
+    async def test_get_preview_url_returns_url(self, runtime: DockerRuntime):
+        """get_preview_url should return a valid URL with a host port."""
+        info = await runtime.get_preview_url(8080)
+        assert info.url.startswith("http")
+        # URL should contain a port number
+        port_str = info.url.rsplit(":", 1)[-1]
+        assert port_str.isdigit()
+
+    async def test_get_preview_url_reuses_port(self, runtime: DockerRuntime):
+        """Calling get_preview_url twice for the same port returns the same URL."""
+        info1 = await runtime.get_preview_url(8080)
+        info2 = await runtime.get_preview_url(8080)
+        assert info1.url == info2.url
+
+    async def test_different_ports_get_different_urls(self, runtime: DockerRuntime):
+        """Different target ports should get different proxy ports."""
+        info1 = await runtime.get_preview_url(8080)
+        info2 = await runtime.get_preview_url(9090)
+        assert info1.url != info2.url
+
+    async def test_get_preview_link_returns_url(self, runtime: DockerRuntime):
+        """get_preview_link should return a valid URL."""
+        info = await runtime.get_preview_link(8080)
+        assert info.url.startswith("http")
+
+    async def test_capabilities_include_preview(self, runtime: DockerRuntime):
+        """Docker runtime should report preview_url capability."""
+        assert "preview_url" in runtime.capabilities
+
+
+# ---------------------------------------------------------------------------
+# Session support
+# ---------------------------------------------------------------------------
+
+
+class TestSessions:
+    """Test session lifecycle (create, execute, logs, delete)."""
+
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def runtime(self):
+        provider = DockerProvider(DockerConfig(
+            image=os.environ.get("DOCKER_SANDBOX_IMAGE", "langalpha-sandbox:latest"),
+            dev_mode=False,
+        ))
+        rt = await provider.create()
+        yield rt
+        try:
+            await rt.delete()
+        except Exception:
+            pass
+        await provider.close()
+
+    async def test_session_lifecycle(self, runtime: DockerRuntime):
+        """Create a session, run a sync command, check logs, delete."""
+        await runtime.create_session("test-session")
+
+        # Sync execute
+        result = await runtime.session_execute(
+            "test-session", "echo hello-from-session", run_async=False
+        )
+        assert result.exit_code == 0
+        assert "hello-from-session" in result.stdout
+
+        # Delete
+        await runtime.delete_session("test-session")
+
+    async def test_async_session_execute(self, runtime: DockerRuntime):
+        """Async session execute should start a background process."""
+        import asyncio
+
+        await runtime.create_session("async-test")
+
+        result = await runtime.session_execute(
+            "async-test",
+            "echo async-output && sleep 0.5 && echo done",
+            run_async=True,
+        )
+        assert result.exit_code is None  # async, no exit code yet
+        assert result.cmd_id  # should have a command ID
+
+        # Wait for the command to finish
+        await asyncio.sleep(2)
+
+        # Check logs
+        logs = await runtime.session_command_logs("async-test", result.cmd_id)
+        assert logs.exit_code == 0
+        assert "async-output" in logs.stdout
+        assert "done" in logs.stdout
+
+        await runtime.delete_session("async-test")
+
+    async def test_capabilities_include_sessions(self, runtime: DockerRuntime):
+        """Docker runtime should report sessions capability."""
+        assert "sessions" in runtime.capabilities
