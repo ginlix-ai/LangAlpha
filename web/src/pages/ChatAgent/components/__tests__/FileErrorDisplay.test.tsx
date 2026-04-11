@@ -21,6 +21,11 @@ describe('FileErrorDisplay', () => {
     expect(screen.getByText('filePanel.error.retry')).toBeInTheDocument();
   });
 
+  it('shows retry button for sandbox_unavailable category', () => {
+    render(<FileErrorDisplay error={{ category: 'sandbox_unavailable' }} onRetry={vi.fn()} />);
+    expect(screen.getByText('filePanel.error.retry')).toBeInTheDocument();
+  });
+
   it('does not show retry button for not_found category', () => {
     render(<FileErrorDisplay error={{ category: 'not_found' }} onRetry={vi.fn()} />);
     expect(screen.queryByText('filePanel.error.retry')).not.toBeInTheDocument();

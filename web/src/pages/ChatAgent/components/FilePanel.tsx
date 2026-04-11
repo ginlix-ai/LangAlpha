@@ -511,7 +511,7 @@ export function FileErrorDisplay({ error, onRetry, onDownload }: FileErrorDispla
   const { t } = useTranslation();
   const key = ERROR_I18N_KEY[error.category];
 
-  const showRetry = error.category === 'sandbox_starting' || error.category === 'unknown';
+  const showRetry = error.category === 'sandbox_starting' || error.category === 'sandbox_unavailable' || error.category === 'unknown';
   const showDownload = error.category === 'binary_file';
 
   return (
