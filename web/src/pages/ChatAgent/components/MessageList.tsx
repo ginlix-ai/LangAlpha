@@ -21,6 +21,7 @@ import {
 import { InlineAutomationCard } from './charts/InlineAutomationCards';
 import { InlinePreviewCard } from './charts/InlinePreviewCard';
 import { extractFilePaths, FileMentionCards } from './FileCard';
+import { normalizeFileRefs } from '../utils/normalizeFileRefs';
 import { useUser } from '@/hooks/useUser';
 import ReasoningMessageContent from './ReasoningMessageContent';
 import PlanApprovalCard from './PlanApprovalCard';
@@ -272,7 +273,7 @@ interface MessageListProps {
   onRejectCreateWorkspace?: (proposalData: Record<string, unknown>) => void;
   onApproveStartQuestion?: (proposalData: Record<string, unknown>) => void;
   onRejectStartQuestion?: (proposalData: Record<string, unknown>) => void;
-  onApprovePTCAgent?: (proposalData: Record<string, unknown>) => void;
+  onApprovePTCAgent?: (proposalData: Record<string, unknown>, overrides?: { report_back?: boolean }) => void;
   onRejectPTCAgent?: (proposalData: Record<string, unknown>) => void;
   onApproveSecretaryAction?: (proposalData: Record<string, unknown>) => void;
   onRejectSecretaryAction?: (proposalData: Record<string, unknown>) => void;
@@ -416,7 +417,7 @@ interface MessageBubbleProps {
   onRejectCreateWorkspace?: (proposalData: Record<string, unknown>) => void;
   onApproveStartQuestion?: (proposalData: Record<string, unknown>) => void;
   onRejectStartQuestion?: (proposalData: Record<string, unknown>) => void;
-  onApprovePTCAgent?: (proposalData: Record<string, unknown>) => void;
+  onApprovePTCAgent?: (proposalData: Record<string, unknown>, overrides?: { report_back?: boolean }) => void;
   onRejectPTCAgent?: (proposalData: Record<string, unknown>) => void;
   onApproveSecretaryAction?: (proposalData: Record<string, unknown>) => void;
   onRejectSecretaryAction?: (proposalData: Record<string, unknown>) => void;
@@ -878,7 +879,7 @@ interface MessageContentSegmentsProps {
   onRejectCreateWorkspace?: (proposalData: Record<string, unknown>) => void;
   onApproveStartQuestion?: (proposalData: Record<string, unknown>) => void;
   onRejectStartQuestion?: (proposalData: Record<string, unknown>) => void;
-  onApprovePTCAgent?: (proposalData: Record<string, unknown>) => void;
+  onApprovePTCAgent?: (proposalData: Record<string, unknown>, overrides?: { report_back?: boolean }) => void;
   onRejectPTCAgent?: (proposalData: Record<string, unknown>) => void;
   onApproveSecretaryAction?: (proposalData: Record<string, unknown>) => void;
   onRejectSecretaryAction?: (proposalData: Record<string, unknown>) => void;
@@ -895,7 +896,7 @@ const MAX_IN_PROGRESS_MS = 15000; // max time a tool call can stay in-progress i
 /** Tools that should stay in the live zone for their entire duration (no MAX_IN_PROGRESS_MS cap) */
 const ALWAYS_LIVE_TOOLS = new Set(['TaskOutput', 'WebFetch']);
 /** Tool calls that are never rendered as visible activity items — they have dedicated UI or are internal */
-const HIDDEN_TOOL_CALL_NAMES = new Set(['TodoWrite', 'task', 'Task', 'SubmitPlan', 'AskUserQuestion', 'create_workspace', 'start_question', 'manage_workspaces', 'ptc_agent', 'agent_output', 'manage_threads', 'ShowWidget']);
+const HIDDEN_TOOL_CALL_NAMES = new Set(['TodoWrite', 'task', 'Task', 'SubmitPlan', 'AskUserQuestion', 'manage_workspaces', 'ptc_agent', 'agent_output', 'manage_threads', 'ShowWidget']);
 
 /** Render block types for the textOnly activity grouping */
 interface ActivityRenderBlock {
@@ -1244,7 +1245,7 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
     }
 
     const detectedFiles = isAssistant && !isStreaming
-      ? extractFilePaths(renderBlocks.filter(b => b.type === 'text').map(b => (b as TextRenderBlock).segment.content || '').join('\n'))
+      ? extractFilePaths(normalizeFileRefs(renderBlocks.filter(b => b.type === 'text').map(b => (b as TextRenderBlock).segment.content || '').join('\n')))
       : [];
 
     return (
@@ -1437,7 +1438,7 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
               <PTCAgentCard
                 key={block.key}
                 proposalData={pad as any}
-                onApprove={onApprovePTCAgent ? () => onApprovePTCAgent(pad) : undefined}
+                onApprove={onApprovePTCAgent ? (overrides?: { report_back?: boolean }) => onApprovePTCAgent(pad, overrides) : undefined}
                 onReject={onRejectPTCAgent ? () => onRejectPTCAgent(pad) : undefined}
                 flashContext={flashContext}
               />
@@ -1598,7 +1599,7 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
               <PTCAgentCard
                 key={`ptc-agent-${segment.proposalId}`}
                 proposalData={pad as any}
-                onApprove={onApprovePTCAgent ? () => onApprovePTCAgent(pad) : undefined}
+                onApprove={onApprovePTCAgent ? (overrides?: { report_back?: boolean }) => onApprovePTCAgent(pad, overrides) : undefined}
                 onReject={onRejectPTCAgent ? () => onRejectPTCAgent(pad) : undefined}
                 flashContext={flashContext}
               />

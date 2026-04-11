@@ -9,6 +9,7 @@ interface ProposalData {
   status: 'pending' | 'approved' | 'rejected';
   thread_id?: string;
   workspace_id?: string;
+  report_back?: boolean;
 }
 
 interface FlashContext {
@@ -18,7 +19,7 @@ interface FlashContext {
 
 interface PTCAgentCardProps {
   proposalData: ProposalData | null;
-  onApprove?: () => void;
+  onApprove?: (overrides?: { report_back?: boolean }) => void;
   onReject?: () => void;
   flashContext?: FlashContext | null;
 }
@@ -33,6 +34,7 @@ interface PTCAgentCardProps {
  */
 function PTCAgentCard({ proposalData, onApprove, onReject, flashContext }: PTCAgentCardProps) {
   const [collapsed, setCollapsed] = useState(true);
+  const [reportBack, setReportBack] = useState(proposalData?.report_back ?? true);
   const navigate = useNavigate();
 
   if (!proposalData) return null;
@@ -176,12 +178,36 @@ function PTCAgentCard({ proposalData, onApprove, onReject, flashContext }: PTCAg
         <div className="text-sm" style={{ color: 'var(--color-text-tertiary)' }}>
           {question}
         </div>
+        {/* Report-back toggle */}
+        <div
+          className="mt-2.5 -mx-4 px-4 pt-2.5"
+          style={{ borderTop: '1px solid var(--color-border-muted)' }}
+        >
+          <button
+            type="button"
+            className="flex items-center justify-between w-full cursor-pointer"
+            onClick={(e: React.MouseEvent) => { e.stopPropagation(); setReportBack((v) => !v); }}
+          >
+            <span className="text-[13px]" style={{ color: 'var(--color-text-tertiary)' }}>
+              Report back with summary
+            </span>
+            <div
+              className="relative w-8 h-[18px] rounded-full transition-colors"
+              style={{ background: reportBack ? 'var(--color-accent-light)' : 'rgba(255,255,255,0.12)' }}
+            >
+              <div
+                className="absolute top-[3px] left-[3px] w-3 h-3 rounded-full bg-white transition-transform"
+                style={{ transform: reportBack ? 'translateX(14px)' : 'translateX(0)' }}
+              />
+            </div>
+          </button>
+        </div>
       </div>
 
       {/* Actions */}
       <div className="pt-3 flex items-center gap-2">
         <motion.button
-          onClick={(e: React.MouseEvent) => { e.stopPropagation(); onApprove?.(); }}
+          onClick={(e: React.MouseEvent) => { e.stopPropagation(); onApprove?.({ report_back: reportBack }); }}
           className="flex items-center gap-1.5 text-sm px-4 py-2 rounded-md font-medium transition-colors hover:brightness-110"
           style={{ backgroundColor: 'var(--color-btn-primary-bg)', color: 'var(--color-btn-primary-text)' }}
           whileHover={{ scale: 1.02 }}

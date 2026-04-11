@@ -121,8 +121,10 @@ export function handleHistoryUserMessage({
       toolCallId: null,
     });
 
-    // Create user message bubble (skip for empty content, e.g. HITL resume pairs)
-    if (messageContent) {
+    // Create user message bubble (skip for empty content, HITL resume pairs,
+    // and system queries like report-back invocations)
+    const isSystemQuery = (event as Record<string, unknown>).query_type === 'system';
+    if (messageContent && !isSystemQuery) {
       const currentUserMessageId = `history-user-${pairIndex}-${Date.now()}`;
       const userMessage: MessageRecord = {
         id: currentUserMessageId,

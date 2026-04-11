@@ -316,11 +316,12 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
 
   // Clear the drag-just-ended flag after each render so future transitions animate normally.
   useEffect(() => { dragJustEndedRef.current = false; });
-  // Clear preview cache when workspace changes to avoid leaking old workspace data.
+  // Clear preview cache and cross-workspace state when workspace changes to avoid leaking old workspace data.
   useEffect(() => {
     previewMapRef.current.clear();
     activePreviewPortRef.current = null;
     setPreviewData(null);
+    setFilePanelWorkspaceId(null);
   }, [workspaceId]);
   // Active agent in main view (default: 'main', or from URL taskId)
   const [activeAgentId, setActiveAgentId] = useState(

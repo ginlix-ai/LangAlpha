@@ -202,6 +202,7 @@ export interface PTCAgentProposalState {
   thread_id?: string;
   question?: string;
   interruptId?: string;
+  report_back?: boolean;
 }
 
 export interface SecretaryActionProposalState {

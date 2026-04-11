@@ -25,6 +25,9 @@ const WSREF_PREFIX = '__wsref__/';
 /**
  * Parse a __wsref__/{workspaceId}/path reference.
  * Returns { workspaceId, path } or null if not a workspace-qualified path.
+ *
+ * Expects pre-normalized input (no file:// or /home/workspace/ inside the path).
+ * Use normalizeFileRefs() at the content level to clean paths before they reach here.
  */
 export function parseWsPath(href: string | undefined): { workspaceId: string; path: string } | null {
   if (!href || !href.startsWith(WSREF_PREFIX)) return null;
@@ -33,36 +36,41 @@ export function parseWsPath(href: string | undefined): { workspaceId: string; pa
   if (slashIdx < 1) return null;
   return {
     workspaceId: rest.slice(0, slashIdx),
-    path: rest.slice(slashIdx + 1).replace(/^\/home\/(?:workspace|daytona)\//, ''),
+    path: rest.slice(slashIdx + 1),
   };
 }
 
-/**
- * Check if an href looks like a sandbox file path (not an external URL).
- * Recognizes both relative paths and __wsref__/{workspaceId}/path references.
- */
-export function isFilePath(href: string | undefined): boolean {
-  if (!href) return false;
-  // Workspace-qualified path from cross-workspace references
-  if (href.startsWith(WSREF_PREFIX)) {
-    const parsed = parseWsPath(href);
-    if (!parsed) return false;
-    const ext = parsed.path.split('.').pop()?.split(/[?#]/)[0]?.toLowerCase();
-    return !!ext && KNOWN_EXTS.has(ext);
-  }
-  if (href.startsWith('http') || href.startsWith('//') || href.startsWith('mailto:') || href.startsWith('#')) return false;
-  const ext = href.split('.').pop()?.split(/[?#]/)[0]?.toLowerCase();
+function hasKnownExt(path: string): boolean {
+  const ext = path.split('.').pop()?.split(/[?#]/)[0]?.toLowerCase();
   return !!ext && KNOWN_EXTS.has(ext);
 }
 
 /**
- * Normalize a sandbox file path: strip /home/workspace/ and __wsref__ prefixes.
- * For __wsref__ paths, returns just the relative path (use parseWsPath for workspace context).
+ * Check if an href looks like a sandbox file path (not an external URL).
+ *
+ * Expects pre-normalized input (normalizeFileRefs already stripped file://
+ * and /home/workspace/ prefixes). Only needs to distinguish relative paths
+ * and __wsref__/ paths from external URLs.
+ */
+export function isFilePath(href: string | undefined): boolean {
+  if (!href) return false;
+  if (href.startsWith(WSREF_PREFIX)) {
+    const parsed = parseWsPath(href);
+    return !!parsed && hasKnownExt(parsed.path);
+  }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('//') || href.startsWith('#')) return false;
+  return hasKnownExt(href);
+}
+
+/**
+ * Normalize a file path for API calls: strip __wsref__ prefix, return relative path.
+ *
+ * Expects pre-normalized input (no file:// or /home/workspace/ prefixes).
  */
 export function normalizeFilePath(path: string): string {
   const ws = parseWsPath(path);
   if (ws) return ws.path;
-  return path.replace(/^\/home\/workspace\//, '');
+  return path;
 }
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp']);
@@ -77,31 +85,27 @@ export function isImagePath(href: string | undefined): boolean {
 }
 
 /**
- * Extract file paths from message text.
- * Matches patterns like dir/file.ext, dir/subdir/file.ext, /home/workspace/results/file.ext.
- * Requires at least one `/` and a known file extension to avoid false positives.
+ * Extract workspace-qualified file paths from message text.
+ *
+ * Only extracts __wsref__/ paths (backend-qualified, guaranteed real).
+ * General bare-text file detection is disabled to avoid false positives
+ * from hallucinated/system paths. This catches __wsref__ links even when
+ * the agent wraps them in backticks (code spans).
  */
 export function extractFilePaths(text: string | undefined): string[] {
   if (!text) return [];
-  // Match paths: must have at least one /, end with .extension
-  // Handles relative (dir/file.ext) and absolute (/home/workspace/file.ext) paths
-  // Handles paths in backticks, quotes, or bare
-  const regex = /(?:^|[\s`"'([])(\/[a-zA-Z_][^\s`"')\]<>]*\/[^\s`"')\]<>]*\.[a-zA-Z0-9]{1,10}|[a-zA-Z_][^\s`"')\]<>]*\/[^\s`"')\]<>]*\.[a-zA-Z0-9]{1,10})(?=[\s`"')\],:;!?|]|$)/gm;
-  const paths = new Set<string>();
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(text)) !== null) {
-    let path = match[1];
-    // Trim trailing punctuation
-    path = path.replace(/[,:;!?]+$/, '');
-    const ext = path.split('.').pop()!.toLowerCase();
-    if (!KNOWN_EXTS.has(ext)) continue;
-    // Skip URLs
-    if (path.startsWith('http') || path.startsWith('www.') || path.startsWith('//')) continue;
-    // Normalize absolute sandbox paths to relative
-    path = path.replace(/^\/home\/workspace\//, '');
-    paths.add(path);
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  const re = /\((__wsref__\/[^)\s]+)\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const p = m[1];
+    if (!seen.has(p)) {
+      seen.add(p);
+      paths.push(p);
+    }
   }
-  return Array.from(paths);
+  return paths;
 }
 
 interface FileCardProps {

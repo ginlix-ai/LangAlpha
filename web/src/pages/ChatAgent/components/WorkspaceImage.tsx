@@ -11,10 +11,6 @@ function isExternalUrl(src: string): boolean {
   return /^(https?:\/\/|data:|blob:)/i.test(src);
 }
 
-function normalizeSandboxPath(src: string): string {
-  return src.replace(/^\/home\/daytona\//, '');
-}
-
 type LoadState = 'idle' | 'loading' | 'loaded' | 'error';
 
 interface WorkspaceImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
@@ -34,7 +30,7 @@ function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
   const effectiveDownloadFn = wsRef ? null : downloadFileFn;
 
   const canFetch = !!(src && !isExternalUrl(src) && (workspaceId || effectiveDownloadFn));
-  const normalizedPath = canFetch ? (wsRef ? wsRef.path : normalizeSandboxPath(src!)) : '';
+  const normalizedPath = canFetch ? (wsRef ? wsRef.path : src!) : '';
   const cacheKey = canFetch ? `${workspaceId || 'shared'}:${normalizedPath}` : '';
 
   const [state, setState] = useState<LoadState>(() =>

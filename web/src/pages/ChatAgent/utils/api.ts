@@ -284,6 +284,60 @@ export async function getWorkflowStatus(threadId: string) {
 }
 
 /**
+ * Watch a thread for new workflow activity via SSE (Redis pub/sub backed).
+ * Returns an AbortController so the caller can close the connection.
+ * Calls onWorkflowStarted() when the backend signals a new workflow.
+ * @param {string} threadId - The thread ID to watch
+ * @param {Function} onWorkflowStarted - Callback when new workflow is detected
+ * @returns {{ abort: AbortController }} - Call abort.abort() to stop watching
+ */
+export function watchThread(
+  threadId: string,
+  onWorkflowStarted: () => void,
+): { abort: AbortController } {
+  const abort = new AbortController();
+
+  (async () => {
+    try {
+      const authHeaders = await getAuthHeaders();
+      const res = await fetch(`${baseURL}/api/v1/threads/${threadId}/watch`, {
+        method: 'GET',
+        headers: { ...authHeaders },
+        signal: abort.signal,
+      });
+
+      if (!res.ok || !res.body) return;
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // Check for workflow_started event
+        if (buffer.includes('event: workflow_started')) {
+          onWorkflowStarted();
+          break;
+        }
+        // Discard processed keepalive lines to prevent buffer growth
+        const lastNewline = buffer.lastIndexOf('\n\n');
+        if (lastNewline >= 0) {
+          buffer = buffer.slice(lastNewline + 2);
+        }
+      }
+    } catch (err: unknown) {
+      if ((err as Error).name !== 'AbortError') {
+        console.log('[Watch] Connection error:', (err as Error).message);
+      }
+    }
+  })();
+
+  return { abort };
+}
+
+/**
  * Reconnect to an in-progress workflow stream (replays buffered events, then live stream)
  * @param {string} threadId - The thread ID to reconnect to
  * @param {number|null} lastEventId - Last received event ID for deduplication
