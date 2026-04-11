@@ -1020,7 +1020,7 @@ class TestDockerRuntimeSessions:
         cmd = call_args[1].get("cmd", call_args[0][0] if call_args[0] else None)
         cmd_str = cmd[-1] if isinstance(cmd, list) else str(cmd)
         assert "base64" in cmd_str
-        assert "nohup" in cmd_str
+        assert "nohup setsid" in cmd_str
 
     @pytest.mark.asyncio
     async def test_session_execute_sync(self, runtime):
@@ -1065,7 +1065,7 @@ class TestDockerRuntimeSessions:
 
     @pytest.mark.asyncio
     async def test_delete_session(self, runtime):
-        """delete_session kills PIDs and removes directory."""
+        """delete_session kills process groups and removes directory."""
         runtime._container.exec = AsyncMock(
             return_value=_make_exec_mock(exit_code=0)
         )
@@ -1073,7 +1073,9 @@ class TestDockerRuntimeSessions:
         call_args = runtime._container.exec.call_args
         cmd = call_args[1].get("cmd", call_args[0][0] if call_args[0] else None)
         cmd_str = cmd[-1] if isinstance(cmd, list) else str(cmd)
-        assert "kill" in cmd_str
+        # Kills entire process group (negative PID) and the process itself
+        assert 'kill -- -"$pid"' in cmd_str
+        assert 'kill "$pid"' in cmd_str
         assert "rm -rf" in cmd_str
 
     @pytest.mark.asyncio
@@ -1123,8 +1125,8 @@ class TestDockerRuntimeUpdatedCapabilities:
 
 class TestDockerProviderPreviewConfig:
     @pytest.mark.asyncio
-    async def test_create_publishes_proxy_ports(self):
-        """Container creation includes PortBindings for proxy port range."""
+    async def test_create_publishes_proxy_ports_with_dynamic_host_ports(self):
+        """Container creation uses dynamic host ports (HostPort: '') for proxy ports."""
         config = DockerConfig(preview_proxy_ports="13000-13002")
         provider = DockerProvider(config, working_dir="/home/workspace")
 
@@ -1144,8 +1146,10 @@ class TestDockerProviderPreviewConfig:
 
         assert "PortBindings" in host_config
         assert "13000/tcp" in host_config["PortBindings"]
-        assert "13001/tcp" in host_config["PortBindings"]
-        assert "13002/tcp" in host_config["PortBindings"]
+        # Verify dynamic host ports (empty string = Docker picks)
+        assert host_config["PortBindings"]["13000/tcp"] == [{"HostPort": ""}]
+        assert host_config["PortBindings"]["13001/tcp"] == [{"HostPort": ""}]
+        assert host_config["PortBindings"]["13002/tcp"] == [{"HostPort": ""}]
 
         assert "ExposedPorts" in container_config
         assert "13000/tcp" in container_config["ExposedPorts"]
@@ -1219,3 +1223,72 @@ class TestDockerProviderPreviewConfig:
         runtime = await provider.get("docker-abc123")
         assert runtime._proxy_ports == [13000, 13001, 13002, 13003, 13004]
         assert runtime._preview_base_url is None
+
+    @pytest.mark.asyncio
+    async def test_create_reads_dynamic_host_ports(self):
+        """create() reads actual host port mappings from container inspect."""
+        config = DockerConfig(preview_proxy_ports="13000-13001")
+        provider = DockerProvider(config, working_dir="/home/workspace")
+
+        mock_container = _make_mock_container()
+        # After start, show() returns port mappings with dynamic host ports
+        mock_container.show = AsyncMock(return_value={
+            "State": {"Status": "running"},
+            "NetworkSettings": {
+                "Ports": {
+                    "13000/tcp": [{"HostIp": "0.0.0.0", "HostPort": "49152"}],
+                    "13001/tcp": [{"HostIp": "0.0.0.0", "HostPort": "49153"}],
+                }
+            },
+        })
+        mock_client = MagicMock()
+        mock_client.containers = MagicMock()
+        mock_client.containers.create = AsyncMock(return_value=mock_container)
+        mock_client.images = MagicMock()
+        mock_client.images.inspect = AsyncMock()
+        provider._client = mock_client
+
+        runtime = await provider.create()
+        assert runtime._host_port_map == {13000: 49152, 13001: 49153}
+
+    @pytest.mark.asyncio
+    async def test_preview_url_uses_dynamic_host_port(self):
+        """Preview URL uses the host port, not the container port."""
+        container = _make_mock_container()
+        runtime = DockerRuntime(
+            container,
+            runtime_id="docker-test",
+            working_dir="/home/workspace",
+            proxy_ports=[13000, 13001],
+            host_port_map={13000: 49152, 13001: 49153},
+        )
+        runtime._container.exec = AsyncMock(
+            return_value=_make_exec_mock(output="12345\n")
+        )
+        info = await runtime.get_preview_url(8080)
+        assert info.url == "http://localhost:49152"
+
+    @pytest.mark.asyncio
+    async def test_get_reads_dynamic_host_ports(self):
+        """get() reads host port mappings from running container inspect."""
+        config = DockerConfig(preview_proxy_ports="13000-13001")
+        provider = DockerProvider(config, working_dir="/home/workspace")
+
+        mock_container = _make_mock_container()
+        mock_container.show = AsyncMock(return_value={
+            "State": {"Status": "running"},
+            "Mounts": [],
+            "NetworkSettings": {
+                "Ports": {
+                    "13000/tcp": [{"HostIp": "0.0.0.0", "HostPort": "49200"}],
+                    "13001/tcp": [{"HostIp": "0.0.0.0", "HostPort": "49201"}],
+                }
+            },
+        })
+        mock_client = MagicMock()
+        mock_client.containers = MagicMock()
+        mock_client.containers.get = AsyncMock(return_value=mock_container)
+        provider._client = mock_client
+
+        runtime = await provider.get("docker-abc123")
+        assert runtime._host_port_map == {13000: 49200, 13001: 49201}

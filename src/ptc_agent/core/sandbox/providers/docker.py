@@ -107,6 +107,7 @@ class DockerRuntime(SandboxRuntime):
         dev_mode: bool = False,
         host_work_dir: str | None = None,
         proxy_ports: list[int] | None = None,
+        host_port_map: dict[int, int] | None = None,
         preview_base_url: str | None = None,
     ) -> None:
         self._container = container
@@ -116,8 +117,10 @@ class DockerRuntime(SandboxRuntime):
         self._host_work_dir = host_work_dir
         self._preview_base_url = preview_base_url
         self._proxy_ports: list[int] = proxy_ports or []
-        self._port_map: dict[int, int] = {}  # agent port → proxy port
-        self._forwarder_pids: dict[int, str] = {}  # proxy port → socat PID
+        # container port → host port (for dynamic port publishing)
+        self._host_port_map: dict[int, int] = host_port_map or {}
+        self._port_map: dict[int, int] = {}  # agent port → container proxy port
+        self._forwarder_pids: dict[int, str] = {}  # container proxy port → socat PID
 
     # -- Properties --
 
@@ -413,16 +416,27 @@ class DockerRuntime(SandboxRuntime):
         )
         return proxy_port
 
+    def _host_port_for(self, container_port: int) -> int:
+        """Return the host-side port for a given container proxy port.
+
+        When Docker publishes with dynamic host ports (``HostPort: ""``),
+        the actual host port differs from the container port.  Falls back
+        to the container port itself (static publishing or tests).
+        """
+        return self._host_port_map.get(container_port, container_port)
+
     async def get_preview_url(self, port: int, expires_in: int = 3600) -> PreviewInfo:
         proxy_port = await self._allocate_proxy_port(port)
+        host_port = self._host_port_for(proxy_port)
         base = (self._preview_base_url or "http://localhost").rstrip("/")
-        return PreviewInfo(url=f"{base}:{proxy_port}", token="")
+        return PreviewInfo(url=f"{base}:{host_port}", token="")
 
     async def get_preview_link(self, port: int) -> PreviewInfo:
         proxy_port = await self._allocate_proxy_port(port)
+        host_port = self._host_port_for(proxy_port)
         # Server-side: resolve host for health checks (may differ from browser URL)
         base = (self._preview_base_url or await self._resolve_server_side_host()).rstrip("/")
-        return PreviewInfo(url=f"{base}:{proxy_port}", token="")
+        return PreviewInfo(url=f"{base}:{host_port}", token="")
 
     _server_side_host: str | None = None  # class-level cache
 
@@ -475,8 +489,10 @@ class DockerRuntime(SandboxRuntime):
 
         if run_async:
             encoded = base64.b64encode(command.encode()).decode("ascii")
+            # Use setsid to create a new process group so delete_session
+            # can kill the entire tree (not just the wrapper).
             wrapped = (
-                f"nohup bash -c '"
+                f"nohup setsid bash -c '"
                 f"echo $$ > {session_dir}/{cmd_id}.pid; "
                 f"eval \"$(echo {encoded} | base64 -d)\"; "
                 f"echo $? > {session_dir}/{cmd_id}.exit"
@@ -528,9 +544,12 @@ class DockerRuntime(SandboxRuntime):
         if not _SESSION_ID_RE.match(session_id):
             raise ValueError(f"Invalid session_id: {session_id!r}")
         session_dir = f"/tmp/.sessions/{session_id}"
+        # Kill the entire process group (negative PID) so child processes
+        # spawned by the session command are also terminated.
         await self.exec(
             f"for f in {session_dir}/*.pid; do "
             f"  pid=$(cat \"$f\" 2>/dev/null | tr -cd '0-9'); "
+            f"  [ -n \"$pid\" ] && kill -- -\"$pid\" 2>/dev/null; "
             f"  [ -n \"$pid\" ] && kill \"$pid\" 2>/dev/null; "
             f"done; rm -rf {session_dir}",
             timeout=10,
@@ -664,10 +683,12 @@ class DockerProvider(SandboxProvider):
             "Init": True,  # tini as PID 1 for zombie reaping
         }
 
-        # Publish proxy ports so preview URLs are reachable from the host
+        # Publish proxy ports so preview URLs are reachable from the host.
+        # Use dynamic host ports (HostPort: "") so multiple containers can
+        # coexist without port conflicts.
         if proxy_ports:
             host_config["PortBindings"] = {
-                f"{p}/tcp": [{"HostPort": str(p)}] for p in proxy_ports
+                f"{p}/tcp": [{"HostPort": ""}] for p in proxy_ports
             }
 
         binds: list[str] = list(self._config.volumes)  # extra user-defined mounts
@@ -701,11 +722,25 @@ class DockerProvider(SandboxProvider):
         )
         await container_obj.start()
 
+        # Read actual host port mappings (dynamic ports picked by Docker)
+        host_port_map: dict[int, int] = {}
+        if proxy_ports:
+            info = await container_obj.show()
+            port_bindings = (
+                info.get("NetworkSettings", {})
+                .get("Ports", {})
+            )
+            for cp in proxy_ports:
+                bindings = port_bindings.get(f"{cp}/tcp", [])
+                if bindings and bindings[0].get("HostPort"):
+                    host_port_map[cp] = int(bindings[0]["HostPort"])
+
         logger.info(
             "Docker container started",
             container_name=container_name,
             runtime_id=runtime_id,
             image=self._config.image,
+            host_port_map=host_port_map or None,
         )
 
         runtime = DockerRuntime(
@@ -715,6 +750,7 @@ class DockerProvider(SandboxProvider):
             dev_mode=self._config.dev_mode,
             host_work_dir=host_work_dir,
             proxy_ports=proxy_ports,
+            host_port_map=host_port_map,
             preview_base_url=self._config.preview_base_url,
         )
 
@@ -755,13 +791,23 @@ class DockerProvider(SandboxProvider):
                 host_work_dir = mount.get("Source")
                 break
 
+        # Read actual host port mappings from running container
+        proxy_ports = _parse_proxy_port_range(self._config.preview_proxy_ports)
+        host_port_map: dict[int, int] = {}
+        port_bindings = info.get("NetworkSettings", {}).get("Ports", {})
+        for cp in proxy_ports:
+            bindings = port_bindings.get(f"{cp}/tcp", [])
+            if bindings and bindings[0].get("HostPort"):
+                host_port_map[cp] = int(bindings[0]["HostPort"])
+
         return DockerRuntime(
             container_obj,
             runtime_id=sandbox_id,
             working_dir=self._working_dir,
             dev_mode=dev_mode,
             host_work_dir=host_work_dir,
-            proxy_ports=_parse_proxy_port_range(self._config.preview_proxy_ports),
+            proxy_ports=proxy_ports,
+            host_port_map=host_port_map,
             preview_base_url=self._config.preview_base_url,
         )
 
