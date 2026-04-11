@@ -64,8 +64,48 @@ function buildSrcDoc(html: string, widgetData?: Record<string, string>): string 
     ? `<script>window.__WIDGET_DATA__ = ${JSON.stringify(widgetData).replace(/<\//g, '<\\/')};</script>\n`
     : '';
 
+  // Injected before any widget code runs:
+  // 1. Patch JSON.parse to handle NaN/Infinity from Python's json.dumps (not valid JSON).
+  // 2. Catch uncaught errors and unhandled rejections, display an inline error overlay.
+  const earlyScripts = `<script>
+(function(){
+  var _p=JSON.parse;
+  JSON.parse=function(t,r){
+    if(typeof t==='string')t=t.replace(/\\bNaN\\b/g,'null').replace(/\\b-?Infinity\\b/g,'null');
+    return _p.call(this,t,r);
+  };
+  var shown={};
+  function showError(msg){
+    if(shown[msg])return;
+    shown[msg]=1;
+    var root=document.body||document.documentElement;
+    var d=document.createElement('div');
+    d.style.cssText='margin:12px;padding:14px 16px;background:var(--color-bg-card);border:0.5px solid var(--color-border-muted);border-radius:10px;display:flex;align-items:center;gap:12px;';
+    var dot=document.createElement('span');
+    dot.style.cssText='flex-shrink:0;width:6px;height:6px;border-radius:50%;background:var(--color-loss);';
+    var mid=document.createElement('div');
+    mid.style.cssText='flex:1;min-width:0;';
+    var detail=document.createElement('div');
+    detail.style.cssText='font:13px/1.4 ui-monospace,SFMono-Regular,monospace;color:var(--color-text-muted);white-space:pre-wrap;word-break:break-word;';
+    detail.textContent=msg;
+    mid.appendChild(detail);
+    var b=document.createElement('button');
+    b.textContent='Fix';
+    b.style.cssText='flex-shrink:0;padding:6px 14px;border-radius:8px;border:0.5px solid var(--color-border-default);background:var(--color-bg-elevated);color:var(--color-text-primary);font:500 13px/1 -apple-system,sans-serif;cursor:pointer;transition:background 0.15s;';
+    b.onmouseover=function(){b.style.background='var(--color-bg-hover)';};
+    b.onmouseout=function(){b.style.background='var(--color-bg-elevated)';};
+    b.onclick=function(){window.sendPrompt('The widget threw an error: '+msg+'. Please fix the widget code and call ShowWidget again.');b.textContent='Sent';b.disabled=true;b.style.opacity='0.4';b.style.cursor='default';};
+    d.appendChild(dot);d.appendChild(mid);d.appendChild(b);
+    root.appendChild(d);
+    parent.postMessage({type:'widget:resize',height:root.scrollHeight},'*');
+  }
+  window.onerror=function(_,__,___,____,e){showError(e&&e.message||String(_));};
+  window.addEventListener('unhandledrejection',function(e){showError(e.reason&&e.reason.message||String(e.reason));});
+})();
+</script>\n`;
+
   return `<!DOCTYPE html><html><head>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' cdnjs.cloudflare.com cdn.jsdelivr.net unpkg.com esm.sh; style-src 'unsafe-inline'; img-src data: blob:; font-src cdnjs.cloudflare.com cdn.jsdelivr.net; connect-src cdnjs.cloudflare.com cdn.jsdelivr.net unpkg.com esm.sh;">
+${earlyScripts}<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' cdnjs.cloudflare.com cdn.jsdelivr.net unpkg.com esm.sh; style-src 'unsafe-inline'; img-src data: blob:; font-src cdnjs.cloudflare.com cdn.jsdelivr.net; connect-src cdnjs.cloudflare.com cdn.jsdelivr.net unpkg.com esm.sh;">
 <style>
 :root {
   ${themeCSS}
