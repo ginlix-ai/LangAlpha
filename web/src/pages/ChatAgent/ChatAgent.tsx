@@ -157,21 +157,50 @@ function ChatAgent(): React.ReactElement | null {
 
   const queryClient = useQueryClient();
 
+  // Track in-progress __default__ → real threadId resolutions.
+  // Bridges the gap between async cache.updateKey() and immediate navigate().
+  const resolvingRef = useRef(new Map<string, { workspaceId: string; newThreadId: string }>());
+
   // Ensure cache entry exists before first paint so chatViews is never empty
   // when threadId is set (same setState-during-render pattern as setResolvedWorkspaceId above).
   if (threadId && workspaceId && !cache.entries.some(e => e.workspaceId === workspaceId && e.threadId === threadId)) {
-    const cached = queryClient.getQueryData(queryKeys.workspaces.detail(workspaceId)) as Record<string, unknown> | undefined;
-    const wsName = (cached?.name as string) || state?.workspaceName || '';
-    cache.touch({ workspaceId, threadId, workspaceName: wsName, initialTaskId: taskId });
+    // Don't create a duplicate entry if an existing entry is resolving to this threadId
+    const isPendingResolution = Array.from(resolvingRef.current.values()).some(
+      v => v.workspaceId === workspaceId && v.newThreadId === threadId
+    );
+    if (!isPendingResolution) {
+      const cached = queryClient.getQueryData(queryKeys.workspaces.detail(workspaceId)) as Record<string, unknown> | undefined;
+      const wsName = (cached?.name as string) || state?.workspaceName || '';
+      cache.touch({ workspaceId, threadId, workspaceName: wsName, initialTaskId: taskId });
+    }
   }
 
   // Promote to MRU and update metadata (workspace name, taskId) on subsequent renders
   useEffect(() => {
     if (!threadId || !workspaceId) return;
+    // Don't touch if this threadId is pending resolution from an existing entry
+    const isPendingResolution = Array.from(resolvingRef.current.values()).some(
+      v => v.workspaceId === workspaceId && v.newThreadId === threadId
+    );
+    if (isPendingResolution) return;
     const cached = queryClient.getQueryData(queryKeys.workspaces.detail(workspaceId)) as Record<string, unknown> | undefined;
     const wsName = (cached?.name as string) || state?.workspaceName || '';
     cache.touch({ workspaceId, threadId, workspaceName: wsName, initialTaskId: taskId });
   }, [threadId, workspaceId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Clean resolvingRef once updateKey's setEntries commits
+  useEffect(() => {
+    if (resolvingRef.current.size === 0) return;
+    const resolved: string[] = [];
+    for (const [oldKey, { workspaceId: wsId, newThreadId }] of resolvingRef.current) {
+      if (cache.entries.some(e => e.workspaceId === wsId && e.threadId === newThreadId)) {
+        resolved.push(oldKey);
+      }
+    }
+    for (const key of resolved) {
+      resolvingRef.current.delete(key);
+    }
+  }, [cache.entries]);
 
   /**
    * Handles workspace selection from gallery
@@ -276,7 +305,10 @@ function ChatAgent(): React.ReactElement | null {
 
   // Cached ChatView instances — always rendered, visibility toggled via display
   const chatViews = cache.entries.map(entry => {
-    const isEntryActive = entry.workspaceId === workspaceId && entry.threadId === threadId && !!threadId && !accessDenied;
+    const pendingResolution = resolvingRef.current.get(`${entry.workspaceId}-${entry.threadId}`);
+    const isEntryActive = entry.workspaceId === workspaceId
+      && (entry.threadId === threadId || (!!pendingResolution && pendingResolution.newThreadId === threadId))
+      && !!threadId && !accessDenied;
     return (
       <div
         key={entry.instanceId}
@@ -294,6 +326,10 @@ function ChatAgent(): React.ReactElement | null {
           workspaceName={entry.workspaceName}
           isActive={isEntryActive}
           onThreadResolved={(oldTid, newTid) => {
+            resolvingRef.current.set(
+              `${entry.workspaceId}-${oldTid}`,
+              { workspaceId: entry.workspaceId, newThreadId: newTid },
+            );
             cache.updateKey(
               `${entry.workspaceId}-${oldTid}`,
               `${entry.workspaceId}-${newTid}`,
