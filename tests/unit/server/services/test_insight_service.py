@@ -156,7 +156,7 @@ class TestExtractWithFallback:
 
         assert result["headline"] == "Fallback headline"
         mock_extract.assert_called_once_with("bad raw text")
-        mock_fallback.assert_awaited_once_with("bad raw text")
+        mock_fallback.assert_awaited_once_with("bad raw text", user_id=None)
 
 
 # ---------------------------------------------------------------------------

@@ -36,18 +36,19 @@ RUN apt-get update \
     && npm install -g playwright docx pptxgenjs \
     && PLAYWRIGHT_BROWSERS_PATH=/usr/local/ms-playwright \
        npx playwright install --with-deps chromium \
-    # -- GitHub CLI --
-    && curl -fsSL https://github.com/cli/cli/releases/download/v2.87.3/gh_2.87.3_linux_amd64.tar.gz \
+    # -- GitHub CLI (architecture-aware) --
+    && GH_ARCH=$(dpkg --print-architecture) \
+    && curl -fsSL https://github.com/cli/cli/releases/download/v2.87.3/gh_2.87.3_linux_${GH_ARCH}.tar.gz \
         -o /tmp/gh.tar.gz \
     && tar -xzf /tmp/gh.tar.gz -C /tmp \
-    && mv /tmp/gh_2.87.3_linux_amd64/bin/gh /usr/local/bin/gh \
-    && rm -rf /tmp/gh.tar.gz /tmp/gh_2.87.3_linux_amd64 \
-    # -- Docker Engine (for interactive-dashboard complex tier) --
+    && mv /tmp/gh_2.87.3_linux_${GH_ARCH}/bin/gh /usr/local/bin/gh \
+    && rm -rf /tmp/gh.tar.gz /tmp/gh_2.87.3_linux_${GH_ARCH} \
+    # -- Docker Engine (architecture-aware) --
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
         -o /etc/apt/keyrings/docker.asc \
     && chmod a+r /etc/apt/keyrings/docker.asc \
-    && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
         https://download.docker.com/linux/ubuntu \
         $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
         > /etc/apt/sources.list.d/docker.list \

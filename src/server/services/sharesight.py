@@ -49,11 +49,15 @@ class SharesightClient:
 
     @property
     def _client_id(self) -> str:
-        return self._explicit_client_id or os.getenv("SHARESIGHT_CLIENT_ID", "")
+        if self._explicit_client_id is not None:
+            return self._explicit_client_id
+        return os.getenv("SHARESIGHT_CLIENT_ID", "")
 
     @property
     def _client_secret(self) -> str:
-        return self._explicit_client_secret or os.getenv("SHARESIGHT_CLIENT_SECRET", "")
+        if self._explicit_client_secret is not None:
+            return self._explicit_client_secret
+        return os.getenv("SHARESIGHT_CLIENT_SECRET", "")
 
     @property
     def _portfolio_name(self) -> str:
@@ -138,25 +142,40 @@ class SharesightClient:
         ]
 
     def _map_holding(self, holding: dict) -> dict:
+        # Support both performance endpoint (flat) and holdings endpoint (nested instrument)
+        instrument = holding.get("instrument", {})
+
+        symbol = holding.get("symbol") or instrument.get("code", "")
+        exchange = holding.get("market") or instrument.get("market_code")
+        raw_type = holding.get("instrument_type") or instrument.get("instrument_type", "")
+        instrument_type = _INSTRUMENT_TYPE_MAP.get(raw_type, "stock")
+        currency = holding.get("currency_code") or "GBP"
+
         quantity = Decimal(str(holding.get("quantity", 0)))
         value = Decimal(str(holding.get("value", 0)))
         sharesight_price = float(value / quantity) if quantity else 0.0
 
-        # Sharesight provides gain percentages with correct currency handling
-        capital_gain_pct = holding.get("capital_gain_percent")
+        # Compute average_cost from cost_base if provided, else None
+        cost_base_raw = holding.get("cost_base")
+        if cost_base_raw is not None:
+            cost_base = Decimal(str(cost_base_raw))
+            average_cost = cost_base / quantity if quantity else Decimal(0)
+        else:
+            average_cost = None
 
+        capital_gain_pct = holding.get("capital_gain_percent")
         holding_id = holding.get("id", 0)
         stable_uuid = uuid5(NAMESPACE_URL, f"sharesight:{holding_id}")
 
         return {
             "user_portfolio_id": stable_uuid,
             "user_id": "sharesight",
-            "symbol": holding.get("symbol", ""),
-            "instrument_type": "stock",
+            "symbol": symbol,
+            "instrument_type": instrument_type,
             "quantity": quantity,
-            "average_cost": None,
-            "exchange": holding.get("market"),
-            "currency": "GBP",
+            "average_cost": average_cost,
+            "exchange": exchange,
+            "currency": currency,
             "account_name": self._portfolio_name,
             "notes": None,
             "metadata": {
@@ -165,7 +184,7 @@ class SharesightClient:
                 "capital_gain_pct": capital_gain_pct,
                 "total_gain_pct": holding.get("total_gain_percent"),
             },
-            "name": holding.get("name"),
+            "name": holding.get("name") or instrument.get("name"),
             "first_purchased_at": None,
             "created_at": "2000-01-01T00:00:00Z",
             "updated_at": "2000-01-01T00:00:00Z",

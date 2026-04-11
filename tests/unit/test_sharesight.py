@@ -89,9 +89,9 @@ def mock_http_client():
 
 
 def _portfolio_then_holdings_side_effect(url: str, **kwargs):
-    if "portfolios.json" in url and "/42" not in url:
+    if "portfolios.json" in url:
         return _make_response(200, _PORTFOLIOS_RESPONSE)
-    elif "/42.json" in url:
+    elif "performance.json" in url:
         return _make_response(200, _HOLDINGS_RESPONSE)
     return _make_response(404, {"error": "not found"})
 
@@ -203,8 +203,8 @@ async def test_get_portfolios_returns_list(client_with_mock_http):
 
 @pytest.mark.asyncio
 async def test_get_holdings_returns_list(client_with_mock_http):
-    """get_holdings(portfolio_id) should return the raw holdings list."""
-    holdings = await client_with_mock_http.get_holdings(42)
+    """get_performance(portfolio_id) should return the raw holdings list."""
+    holdings = await client_with_mock_http.get_performance(42)
 
     assert isinstance(holdings, list)
     assert len(holdings) == 2

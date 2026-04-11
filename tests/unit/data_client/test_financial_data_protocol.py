@@ -300,6 +300,7 @@ class TestGetFinancialDataProviderFactory:
         mock_fmp_client = AsyncMock()
 
         with (
+            patch("src.data_client.registry._eodhd_available", return_value=False),
             patch("src.data_client.registry._fmp_available", return_value=True),
             patch("src.data_client.registry._ginlix_data_available", return_value=False),
             patch("src.data_client.fmp.get_fmp_client", return_value=mock_fmp_client),
@@ -320,6 +321,7 @@ class TestGetFinancialDataProviderFactory:
         mock_client = AsyncMock()
 
         with (
+            patch("src.data_client.registry._eodhd_available", return_value=False),
             patch("src.data_client.registry._fmp_available", return_value=False),
             patch("src.data_client.registry._yfinance_available", return_value=False),
             patch("src.data_client.registry._ginlix_data_available", return_value=True),
@@ -347,6 +349,7 @@ class TestGetFinancialDataProviderFactory:
         mock_fmp_client = AsyncMock()
 
         with (
+            patch("src.data_client.registry._eodhd_available", return_value=False),
             patch("src.data_client.registry._fmp_available", return_value=True),
             patch("src.data_client.registry._ginlix_data_available", return_value=True),
             patch("src.data_client.fmp.get_fmp_client", return_value=mock_fmp_client),
@@ -375,6 +378,7 @@ class TestGetFinancialDataProviderFactory:
         self._reset_singleton()
 
         with (
+            patch("src.data_client.registry._eodhd_available", return_value=False),
             patch("src.data_client.registry._fmp_available", return_value=False),
             patch("src.data_client.registry._yfinance_available", return_value=True),
             patch("src.data_client.registry._ginlix_data_available", return_value=False),
@@ -395,6 +399,7 @@ class TestGetFinancialDataProviderFactory:
         self._reset_singleton()
 
         with (
+            patch("src.data_client.registry._eodhd_available", return_value=False),
             patch("src.data_client.registry._fmp_available", return_value=False),
             patch("src.data_client.registry._yfinance_available", return_value=False),
             patch("src.data_client.registry._ginlix_data_available", return_value=False),
