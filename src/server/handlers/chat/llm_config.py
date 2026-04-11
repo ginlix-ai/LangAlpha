@@ -292,7 +292,7 @@ async def resolve_llm_config(
         config.llm = LLMConfig(
             name=resolved_name if mode == "ptc" else "placeholder",
             flash=resolved_name if mode == "flash" else model_pref.get("preferred_flash_model"),
-            summarization=model_pref.get("summarization_model"),
+            summarization=model_pref.get("summarization_model") or model_pref.get("preferred_flash_model"),
             fetch=model_pref.get("fetch_model"),
             fallback=model_pref.get("fallback_models"),
         )

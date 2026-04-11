@@ -560,9 +560,8 @@ class PTCAgent:
 
         # Custom SSE-enabled summarization emits 'summarization_signal' events
         # Pass backend for offloading conversation history to sandbox
-        summ_config = None
-        if self.config.llm.summarization:
-            summ_config = self.config.summarization.model_dump()
+        summ_config = self.config.summarization.model_dump()
+        if self.config.llm and self.config.llm.summarization:
             summ_config["llm"] = self.config.llm.summarization
             summ_client = self.config.subsidiary_llm_clients.get("summarization")
             if summ_client:
@@ -571,6 +570,9 @@ class PTCAgent:
                 # Deep-copy so SummarizationMiddleware.from_config() can set
                 # streaming=False without mutating the main agent's model.
                 summ_config["_llm_client"] = self.config.llm_client.model_copy()
+        elif self.config.llm_client:
+            # No dedicated summarization model; fall back to main agent LLM
+            summ_config["_llm_client"] = self.config.llm_client.model_copy()
         summarization = SummarizationMiddleware.from_config(config=summ_config, backend=backend)
 
         # Build model resilience middleware (retry + fallback)
