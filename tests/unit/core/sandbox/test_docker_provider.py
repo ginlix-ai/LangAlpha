@@ -30,6 +30,7 @@ from ptc_agent.core.sandbox.providers.docker import (
     DockerRuntime,
     _DOCKER_STATE_MAP,
     _parse_memory,
+    _parse_proxy_port_range,
 )
 from ptc_agent.core.sandbox.runtime import (
     ExecResult,
@@ -744,3 +745,449 @@ class TestDockerProviderLazyClient:
 
         assert client is mock_docker_instance
         assert p._client is mock_docker_instance
+
+
+# ---------------------------------------------------------------------------
+# _parse_proxy_port_range helper
+# ---------------------------------------------------------------------------
+
+
+class TestParseProxyPortRange:
+    def test_valid_range(self):
+        assert _parse_proxy_port_range("13000-13009") == list(range(13000, 13010))
+
+    def test_single_port(self):
+        assert _parse_proxy_port_range("8080-8080") == [8080]
+
+    def test_invalid_format(self):
+        with pytest.raises(ValueError, match="Invalid proxy port range"):
+            _parse_proxy_port_range("8080")
+
+    def test_start_greater_than_end(self):
+        with pytest.raises(ValueError, match="start.*>.*end"):
+            _parse_proxy_port_range("9000-8000")
+
+
+# ---------------------------------------------------------------------------
+# DockerRuntime — preview URLs (proxy port pool)
+# ---------------------------------------------------------------------------
+
+
+class TestDockerRuntimePreviewUrl:
+    @pytest.fixture
+    def container(self):
+        return _make_mock_container()
+
+    @pytest.fixture
+    def runtime(self, container):
+        return DockerRuntime(
+            container,
+            runtime_id="docker-test123",
+            working_dir="/home/workspace",
+            proxy_ports=[13000, 13001, 13002],
+        )
+
+    @pytest.mark.asyncio
+    async def test_allocates_proxy_port(self, runtime):
+        """get_preview_url allocates a proxy port and starts socat."""
+        runtime._container.exec = AsyncMock(
+            return_value=_make_exec_mock(output="12345\n")
+        )
+        info = await runtime.get_preview_url(8080)
+        assert info.url == "http://localhost:13000"
+        assert info.token == ""
+        assert runtime._port_map[8080] == 13000
+
+    @pytest.mark.asyncio
+    async def test_reuses_existing_mapping(self, runtime):
+        """Same target port returns same proxy port without re-allocating."""
+        runtime._container.exec = AsyncMock(
+            return_value=_make_exec_mock(output="12345\n")
+        )
+        info1 = await runtime.get_preview_url(8080)
+        call_count_after_first = runtime._container.exec.call_count
+        info2 = await runtime.get_preview_url(8080)
+        assert info1.url == info2.url
+        # No additional exec calls for the second request (cached)
+        assert runtime._container.exec.call_count == call_count_after_first
+
+    @pytest.mark.asyncio
+    async def test_multiple_ports_different_proxies(self, runtime):
+        """Different target ports get different proxy ports."""
+        runtime._container.exec = AsyncMock(
+            return_value=_make_exec_mock(output="12345\n")
+        )
+        info1 = await runtime.get_preview_url(8080)
+        info2 = await runtime.get_preview_url(3000)
+        assert info1.url == "http://localhost:13000"
+        assert info2.url == "http://localhost:13001"
+
+    @pytest.mark.asyncio
+    async def test_exhausted_pool_raises(self, runtime):
+        """RuntimeError when all proxy ports are allocated."""
+        runtime._container.exec = AsyncMock(
+            return_value=_make_exec_mock(output="12345\n")
+        )
+        await runtime.get_preview_url(8080)
+        await runtime.get_preview_url(8081)
+        await runtime.get_preview_url(8082)
+        with pytest.raises(RuntimeError, match="No free proxy ports"):
+            await runtime.get_preview_url(8083)
+
+    @pytest.mark.asyncio
+    async def test_explicit_base_url(self, container):
+        """preview_base_url overrides localhost."""
+        runtime = DockerRuntime(
+            container,
+            runtime_id="docker-test",
+            working_dir="/home/workspace",
+            proxy_ports=[13000],
+            preview_base_url="http://192.168.1.100",
+        )
+        runtime._container.exec = AsyncMock(
+            return_value=_make_exec_mock(output="12345\n")
+        )
+        info = await runtime.get_preview_url(8080)
+        assert info.url == "http://192.168.1.100:13000"
+
+    @pytest.mark.asyncio
+    async def test_get_preview_link_reuses_proxy_port(self, runtime):
+        """get_preview_link allocates the same proxy port as get_preview_url."""
+        runtime._container.exec = AsyncMock(
+            return_value=_make_exec_mock(output="12345\n")
+        )
+        url_info = await runtime.get_preview_url(8080)
+        link_info = await runtime.get_preview_link(8080)
+        # Same proxy port even if host may differ (server-side vs browser)
+        assert url_info.url.split(":")[-1] == link_info.url.split(":")[-1]
+
+    @pytest.mark.asyncio
+    async def test_preview_link_uses_docker_internal_when_available(self, runtime):
+        """get_preview_link uses host.docker.internal when DNS resolves."""
+        runtime._container.exec = AsyncMock(
+            return_value=_make_exec_mock(output="12345\n")
+        )
+        DockerRuntime._server_side_host = None  # clear class cache
+        with patch("socket.getaddrinfo", return_value=[("", "", 0, "", ("127.0.0.1", 0))]):
+            info = await runtime.get_preview_link(8080)
+        assert info.url == "http://host.docker.internal:13000"
+        DockerRuntime._server_side_host = None  # cleanup
+
+    @pytest.mark.asyncio
+    async def test_preview_link_falls_back_to_localhost(self, runtime):
+        """get_preview_link falls back to localhost when not in Docker."""
+        runtime._container.exec = AsyncMock(
+            return_value=_make_exec_mock(output="12345\n")
+        )
+        DockerRuntime._server_side_host = None  # clear class cache
+        import socket as _socket
+        with patch("socket.getaddrinfo", side_effect=_socket.gaierror):
+            info = await runtime.get_preview_link(8080)
+        assert info.url == "http://localhost:13000"
+        DockerRuntime._server_side_host = None  # cleanup
+
+    @pytest.mark.asyncio
+    async def test_resolve_server_side_host_is_cached(self, runtime):
+        """_resolve_server_side_host only does DNS once, then caches."""
+        DockerRuntime._server_side_host = None
+        import socket as _socket
+        with patch("socket.getaddrinfo", side_effect=_socket.gaierror) as mock_dns:
+            DockerRuntime._resolve_server_side_host()
+            DockerRuntime._resolve_server_side_host()
+            assert mock_dns.call_count == 1
+        DockerRuntime._server_side_host = None  # cleanup
+
+    @pytest.mark.asyncio
+    async def test_socat_exec_command(self, runtime):
+        """Verify the exec calls include fuser kill, socat start, and fuser check."""
+        runtime._container.exec = AsyncMock(
+            return_value=_make_exec_mock(output="12345\n")
+        )
+        await runtime.get_preview_url(8080)
+        # Collect all exec commands (write proxy script, fuser -k, socat nohup, fuser check)
+        all_cmds = []
+        for call in runtime._container.exec.call_args_list:
+            cmd = call[1].get("cmd", call[0][0] if call[0] else None)
+            cmd_str = cmd[-1] if isinstance(cmd, list) else str(cmd)
+            all_cmds.append(cmd_str)
+        # Should have: base64 write, fuser -k, socat nohup, fuser verify
+        assert any("fuser -k" in c and "13000" in c for c in all_cmds)
+        assert any("socat" in c and "13000" in c and "8080" in c for c in all_cmds)
+        assert any("fuser" in c and "13000" in c and "-k" not in c for c in all_cmds)
+
+    @pytest.mark.asyncio
+    async def test_kills_stale_forwarder_before_allocating(self, runtime):
+        """_allocate_proxy_port kills existing listeners before starting socat."""
+        exec_calls = []
+        async def capture_exec(*args, **kwargs):
+            cmd = kwargs.get("cmd", args[0] if args else None)
+            cmd_str = cmd[-1] if isinstance(cmd, list) else str(cmd)
+            exec_calls.append(cmd_str)
+            return _make_exec_mock(output="12345\n")
+        runtime._container.exec = AsyncMock(side_effect=capture_exec)
+        await runtime.get_preview_url(8080)
+        # fuser -k must come before the socat nohup
+        kill_idx = next(i for i, c in enumerate(exec_calls) if "fuser -k" in c)
+        socat_idx = next(i for i, c in enumerate(exec_calls) if "socat" in c)
+        assert kill_idx < socat_idx
+
+
+# ---------------------------------------------------------------------------
+# DockerRuntime — sessions
+# ---------------------------------------------------------------------------
+
+
+class TestDockerRuntimeSessions:
+    @pytest.fixture
+    def container(self):
+        return _make_mock_container()
+
+    @pytest.fixture
+    def runtime(self, container):
+        return DockerRuntime(
+            container,
+            runtime_id="docker-test123",
+            working_dir="/home/workspace",
+        )
+
+    @pytest.mark.asyncio
+    async def test_create_session(self, runtime):
+        """create_session creates the session directory."""
+        runtime._container.exec = AsyncMock(
+            return_value=_make_exec_mock(exit_code=1)  # dir doesn't exist
+        )
+        await runtime.create_session("preview-8080")
+        assert runtime._container.exec.call_count == 2  # test -d + mkdir -p
+
+    @pytest.mark.asyncio
+    async def test_create_session_already_exists(self, runtime):
+        """create_session raises when session dir already exists."""
+        runtime._container.exec = AsyncMock(
+            return_value=_make_exec_mock(exit_code=0)  # dir exists
+        )
+        with pytest.raises(RuntimeError, match="Session already exists"):
+            await runtime.create_session("preview-8080")
+
+    @pytest.mark.asyncio
+    async def test_create_session_invalid_id(self, runtime):
+        """create_session rejects invalid session IDs."""
+        with pytest.raises(ValueError, match="Invalid session_id"):
+            await runtime.create_session("../evil")
+
+    @pytest.mark.asyncio
+    async def test_session_execute_async(self, runtime):
+        """session_execute with run_async=True returns None exit_code."""
+        runtime._container.exec = AsyncMock(
+            return_value=_make_exec_mock(output="99999\n")
+        )
+        result = await runtime.session_execute("preview-8080", "python -m http.server 8080", run_async=True)
+        assert result.exit_code is None
+        assert result.cmd_id  # non-empty
+        # Verify base64 encoding is in the exec command
+        call_args = runtime._container.exec.call_args
+        cmd = call_args[1].get("cmd", call_args[0][0] if call_args[0] else None)
+        cmd_str = cmd[-1] if isinstance(cmd, list) else str(cmd)
+        assert "base64" in cmd_str
+        assert "nohup" in cmd_str
+
+    @pytest.mark.asyncio
+    async def test_session_execute_sync(self, runtime):
+        """session_execute with run_async=False returns actual exit code."""
+        runtime._container.exec = AsyncMock(
+            return_value=_make_exec_mock(output="hello\n", exit_code=0)
+        )
+        result = await runtime.session_execute("preview-8080", "echo hello", run_async=False)
+        assert result.exit_code == 0
+        assert result.stdout == "hello\n"
+
+    @pytest.mark.asyncio
+    async def test_session_command_logs_finished(self, runtime):
+        """session_command_logs returns exit code when process finished."""
+        # Mock three sequential exec calls: stdout, stderr, exit code
+        runtime._container.exec = AsyncMock(
+            side_effect=[
+                _make_exec_mock(output="output data\n", exit_code=0),
+                _make_exec_mock(output="", exit_code=0),
+                _make_exec_mock(output="0\n", exit_code=0),
+            ]
+        )
+        # Need to use the real exec method, so patch at container level
+        result = await runtime.session_command_logs("preview-8080", "abc12345")
+        assert result.exit_code == 0
+        assert result.cmd_id == "abc12345"
+
+    @pytest.mark.asyncio
+    async def test_session_command_logs_running(self, runtime):
+        """session_command_logs returns None exit_code when process still running."""
+        runtime._container.exec = AsyncMock(
+            side_effect=[
+                _make_exec_mock(output="", exit_code=0),   # stdout
+                _make_exec_mock(output="", exit_code=0),   # stderr
+                _make_exec_mock(output="", exit_code=1),   # exit file not found
+            ]
+        )
+        result = await runtime.session_command_logs("preview-8080", "abc12345")
+        assert result.exit_code is None
+
+    @pytest.mark.asyncio
+    async def test_session_command_logs_invalid_id(self, runtime):
+        """session_command_logs rejects invalid command IDs."""
+        with pytest.raises(ValueError, match="Invalid command_id"):
+            await runtime.session_command_logs("preview-8080", "../etc/passwd")
+
+    @pytest.mark.asyncio
+    async def test_delete_session(self, runtime):
+        """delete_session kills PIDs and removes directory."""
+        runtime._container.exec = AsyncMock(
+            return_value=_make_exec_mock(exit_code=0)
+        )
+        await runtime.delete_session("preview-8080")
+        call_args = runtime._container.exec.call_args
+        cmd = call_args[1].get("cmd", call_args[0][0] if call_args[0] else None)
+        cmd_str = cmd[-1] if isinstance(cmd, list) else str(cmd)
+        assert "kill" in cmd_str
+        assert "rm -rf" in cmd_str
+
+    @pytest.mark.asyncio
+    async def test_delete_session_invalid_id(self, runtime):
+        """delete_session rejects invalid session IDs."""
+        with pytest.raises(ValueError, match="Invalid session_id"):
+            await runtime.delete_session("../../etc")
+
+    @pytest.mark.asyncio
+    async def test_session_execute_invalid_id(self, runtime):
+        """session_execute rejects invalid session IDs."""
+        with pytest.raises(ValueError, match="Invalid session_id"):
+            await runtime.session_execute("../evil", "echo hi")
+
+    @pytest.mark.asyncio
+    async def test_session_command_logs_invalid_session_id(self, runtime):
+        """session_command_logs rejects invalid session IDs."""
+        with pytest.raises(ValueError, match="Invalid session_id"):
+            await runtime.session_command_logs("../evil", "abc12345")
+
+
+# ---------------------------------------------------------------------------
+# DockerRuntime — updated capabilities
+# ---------------------------------------------------------------------------
+
+
+class TestDockerRuntimeUpdatedCapabilities:
+    def test_capabilities_include_preview_and_sessions(self):
+        container = _make_mock_container()
+        runtime = DockerRuntime(
+            container,
+            runtime_id="docker-test",
+            working_dir="/home/workspace",
+        )
+        caps = runtime.capabilities
+        assert "preview_url" in caps
+        assert "sessions" in caps
+        assert "exec" in caps
+        assert "code_run" in caps
+        assert "file_io" in caps
+
+
+# ---------------------------------------------------------------------------
+# DockerProvider — container creation with proxy ports and Init
+# ---------------------------------------------------------------------------
+
+
+class TestDockerProviderPreviewConfig:
+    @pytest.mark.asyncio
+    async def test_create_publishes_proxy_ports(self):
+        """Container creation includes PortBindings for proxy port range."""
+        config = DockerConfig(preview_proxy_ports="13000-13002")
+        provider = DockerProvider(config, working_dir="/home/workspace")
+
+        mock_container = _make_mock_container()
+        mock_client = MagicMock()
+        mock_client.containers = MagicMock()
+        mock_client.containers.create = AsyncMock(return_value=mock_container)
+        mock_client.images = MagicMock()
+        mock_client.images.inspect = AsyncMock()
+        provider._client = mock_client
+
+        await provider.create()
+
+        create_call = mock_client.containers.create.call_args
+        container_config = create_call[1]["config"]
+        host_config = container_config["HostConfig"]
+
+        assert "PortBindings" in host_config
+        assert "13000/tcp" in host_config["PortBindings"]
+        assert "13001/tcp" in host_config["PortBindings"]
+        assert "13002/tcp" in host_config["PortBindings"]
+
+        assert "ExposedPorts" in container_config
+        assert "13000/tcp" in container_config["ExposedPorts"]
+
+    @pytest.mark.asyncio
+    async def test_create_includes_init(self):
+        """Container creation includes Init: True for zombie reaping."""
+        config = DockerConfig()
+        provider = DockerProvider(config, working_dir="/home/workspace")
+
+        mock_container = _make_mock_container()
+        mock_client = MagicMock()
+        mock_client.containers = MagicMock()
+        mock_client.containers.create = AsyncMock(return_value=mock_container)
+        mock_client.images = MagicMock()
+        mock_client.images.inspect = AsyncMock()
+        provider._client = mock_client
+
+        await provider.create()
+
+        create_call = mock_client.containers.create.call_args
+        host_config = create_call[1]["config"]["HostConfig"]
+        assert host_config.get("Init") is True
+
+    @pytest.mark.asyncio
+    async def test_create_passes_proxy_ports_to_runtime(self):
+        """Runtime receives proxy_ports from provider config."""
+        config = DockerConfig(preview_proxy_ports="13000-13002")
+        provider = DockerProvider(config, working_dir="/home/workspace")
+
+        mock_container = _make_mock_container()
+        mock_client = MagicMock()
+        mock_client.containers = MagicMock()
+        mock_client.containers.create = AsyncMock(return_value=mock_container)
+        mock_client.images = MagicMock()
+        mock_client.images.inspect = AsyncMock()
+        provider._client = mock_client
+
+        runtime = await provider.create()
+        assert runtime._proxy_ports == [13000, 13001, 13002]
+
+    @pytest.mark.asyncio
+    async def test_create_passes_preview_base_url(self):
+        """Runtime receives preview_base_url from provider config."""
+        config = DockerConfig(preview_base_url="http://10.0.0.1")
+        provider = DockerProvider(config, working_dir="/home/workspace")
+
+        mock_container = _make_mock_container()
+        mock_client = MagicMock()
+        mock_client.containers = MagicMock()
+        mock_client.containers.create = AsyncMock(return_value=mock_container)
+        mock_client.images = MagicMock()
+        mock_client.images.inspect = AsyncMock()
+        provider._client = mock_client
+
+        runtime = await provider.create()
+        assert runtime._preview_base_url == "http://10.0.0.1"
+
+    @pytest.mark.asyncio
+    async def test_get_passes_proxy_ports(self):
+        """get() passes proxy_ports from provider config to runtime."""
+        config = DockerConfig(preview_proxy_ports="13000-13004")
+        provider = DockerProvider(config, working_dir="/home/workspace")
+
+        mock_container = _make_mock_container()
+        mock_client = MagicMock()
+        mock_client.containers = MagicMock()
+        mock_client.containers.get = AsyncMock(return_value=mock_container)
+        provider._client = mock_client
+
+        runtime = await provider.get("docker-abc123")
+        assert runtime._proxy_ports == [13000, 13001, 13002, 13003, 13004]
+        assert runtime._preview_base_url is None

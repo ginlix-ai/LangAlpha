@@ -173,6 +173,8 @@ class DockerConfig(BaseModel):
     host_work_dir: str | None = None
     volumes: list[str] = Field(default_factory=list)
     network_mode: str = "bridge"
+    preview_proxy_ports: str = "13000-13009"
+    preview_base_url: str | None = None
 
 
 class SandboxConfig(BaseModel):

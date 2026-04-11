@@ -57,6 +57,12 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# ---------- socat (for preview URL port forwarding) ----------
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends socat \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 # Playwright browsers were installed to /usr/local/ms-playwright (as root).
 # Set the env var so the Python playwright package finds them at runtime
 # regardless of which user runs the sandbox.
