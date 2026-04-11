@@ -491,13 +491,16 @@ class DockerRuntime(SandboxRuntime):
             encoded = base64.b64encode(command.encode()).decode("ascii")
             # Use setsid to create a new process group so delete_session
             # can kill the entire tree (not just the wrapper).
+            # Note: there is a sub-millisecond window between exec returning
+            # and the .pid file being written. delete_session called in that
+            # window would miss the PID. In practice this is not an issue
+            # because sessions are long-lived (preview servers, etc.).
             wrapped = (
                 f"nohup setsid bash -c '"
                 f"echo $$ > {session_dir}/{cmd_id}.pid; "
                 f"eval \"$(echo {encoded} | base64 -d)\"; "
                 f"echo $? > {session_dir}/{cmd_id}.exit"
-                f"' > {session_dir}/{cmd_id}.stdout 2> {session_dir}/{cmd_id}.stderr &\n"
-                f"echo $!"
+                f"' > {session_dir}/{cmd_id}.stdout 2> {session_dir}/{cmd_id}.stderr &"
             )
             await self.exec(wrapped, timeout=10)
             return SessionCommandResult(cmd_id=cmd_id, exit_code=None, stdout="", stderr="")
