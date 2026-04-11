@@ -395,7 +395,27 @@
     "save": "保存 (Cmd+S)",
     "cancelEditing": "取消编辑",
     "close": "关闭",
-    "sortFiles": "排序文件"
+    "sortFiles": "排序文件",
+    "error": {
+      "notFound": "文件未找到",
+      "notFoundHint": "文件路径可能不正确，或文件已被删除。",
+      "notBackedUp": "备份中未找到文件",
+      "notBackedUpHint": "此文件可能在工作区停止前未被保存。请启动工作区以检查沙箱。",
+      "sandboxStarting": "沙箱正在启动",
+      "sandboxStartingHint": "沙箱仍在初始化中，请稍后重试。",
+      "sandboxUnavailable": "沙箱不可用",
+      "sandboxUnavailableHint": "沙箱当前不可用。请启动工作区以访问文件。",
+      "binaryFile": "无法预览此文件",
+      "binaryFileHint": "此文件类型无法在浏览器中显示，但可以下载。",
+      "noSandbox": "无可用沙箱",
+      "noSandboxHint": "Flash 模式工作区没有文件存储。",
+      "accessDenied": "访问被拒绝",
+      "accessDeniedHint": "此文件位于允许的目录之外。",
+      "unknown": "文件加载失败",
+      "unknownHint": "加载文件时发生意外错误。",
+      "retry": "重试",
+      "download": "改为下载"
+    }
   },
   "automation": {
     "automations": "自动化",

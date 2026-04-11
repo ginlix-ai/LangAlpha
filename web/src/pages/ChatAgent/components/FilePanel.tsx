@@ -442,6 +442,111 @@ function DocumentErrorFallback({ onDownload }: DocumentErrorFallbackProps): Reac
   );
 }
 
+// --- File error categorization ---
+
+type FileErrorCategory =
+  | 'not_found'
+  | 'not_backed_up'
+  | 'sandbox_starting'
+  | 'sandbox_unavailable'
+  | 'binary_file'
+  | 'no_sandbox'
+  | 'access_denied'
+  | 'unknown';
+
+interface FileError {
+  category: FileErrorCategory;
+  detail?: string;
+}
+
+const ERROR_I18N_KEY: Record<FileErrorCategory, string> = {
+  not_found: 'notFound',
+  not_backed_up: 'notBackedUp',
+  sandbox_starting: 'sandboxStarting',
+  sandbox_unavailable: 'sandboxUnavailable',
+  binary_file: 'binaryFile',
+  no_sandbox: 'noSandbox',
+  access_denied: 'accessDenied',
+  unknown: 'unknown',
+};
+
+export function categorizeFileError(err: unknown, wsStatus?: string): FileError {
+  const response = (err as any)?.response;
+  const status: number | undefined = response?.status;
+  const raw = response?.data?.detail;
+  const detail: string = typeof raw === 'string' ? raw : '';
+
+  switch (status) {
+    case 404:
+      if (wsStatus === 'stopped' || wsStatus === 'stopping') {
+        return { category: 'not_backed_up', detail };
+      }
+      return { category: 'not_found', detail };
+    case 415:
+      return { category: 'binary_file', detail };
+    case 503:
+      if (detail.toLowerCase().includes('starting')) {
+        return { category: 'sandbox_starting', detail };
+      }
+      return { category: 'sandbox_unavailable', detail };
+    case 400:
+      if (detail.toLowerCase().includes('flash')) {
+        return { category: 'no_sandbox', detail };
+      }
+      return { category: 'unknown', detail };
+    case 403:
+      return { category: 'access_denied', detail };
+    default:
+      return { category: 'unknown', detail };
+  }
+}
+
+interface FileErrorDisplayProps {
+  error: FileError;
+  onRetry?: () => void;
+  onDownload?: () => void;
+}
+
+export function FileErrorDisplay({ error, onRetry, onDownload }: FileErrorDisplayProps): React.ReactElement {
+  const { t } = useTranslation();
+  const key = ERROR_I18N_KEY[error.category];
+
+  const showRetry = error.category === 'sandbox_starting' || error.category === 'unknown';
+  const showDownload = error.category === 'binary_file';
+
+  return (
+    <div className="flex flex-col items-center justify-center gap-3 py-12">
+      <AlertTriangle className="h-6 w-6" style={{ color: 'var(--color-text-tertiary)' }} />
+      <p className="text-sm font-medium" style={{ color: 'var(--color-text-secondary)' }}>
+        {t(`filePanel.error.${key}`)}
+      </p>
+      <p className="text-xs text-center max-w-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+        {t(`filePanel.error.${key}Hint`)}
+      </p>
+      <div className="flex gap-2 mt-1">
+        {showRetry && onRetry && (
+          <button
+            className="text-xs px-3 py-1.5 rounded"
+            style={{ background: 'var(--color-accent-soft)', color: 'var(--color-accent-primary)', border: '1px solid var(--color-accent-overlay)' }}
+            onClick={onRetry}
+          >
+            {t('filePanel.error.retry')}
+          </button>
+        )}
+        {showDownload && onDownload && (
+          <button
+            className="text-xs px-3 py-1.5 rounded"
+            style={{ background: 'var(--color-accent-soft)', color: 'var(--color-accent-primary)', border: '1px solid var(--color-accent-overlay)' }}
+            onClick={onDownload}
+          >
+            {t('filePanel.error.download')}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // --- FilePanel ---
 
 interface FilePanelProps {
@@ -518,6 +623,7 @@ function FilePanel({
   const [fileMime, setFileMime] = useState<string | null>(null);
   const [imageLightboxOpen, setImageLightboxOpen] = useState(false);
   const [fileLoading, setFileLoading] = useState(false);
+  const [fileError, setFileError] = useState<FileError | null>(null);
 
   // Upload state
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
@@ -918,9 +1024,10 @@ function FilePanel({
 
   const handleFileClick = async (filePath: string) => {
     const ext = getFileExtension(filePath);
+    setFileError(null);
 
     // Binary files
-    if (['pdf', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'xlsx', 'docx', 'zip'].includes(ext)) {
+    if (['pdf', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'xlsx', 'xls', 'docx', 'zip'].includes(ext)) {
       if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) {
         if (fileMime === 'image' && fileContent) {
           URL.revokeObjectURL(fileContent);
@@ -933,9 +1040,9 @@ function FilePanel({
           setFileContent(blobUrl);
         } catch (err) {
           console.error('[FilePanel] Failed to download image:', err);
+          setFileError(categorizeFileError(err, wsData?.status));
           setFileContent(null);
-          setFileMime('text/plain');
-          setFileContent('Error: Failed to load image');
+          setFileMime(null);
         } finally {
           setFileLoading(false);
         }
@@ -950,7 +1057,8 @@ function FilePanel({
           setFileArrayBuffer(buf);
         } catch (err) {
           console.error('[FilePanel] Failed to load PDF:', err);
-          setFileMime('error');
+          setFileError(categorizeFileError(err, wsData?.status));
+          setFileMime(null);
         } finally {
           setFileLoading(false);
         }
@@ -965,7 +1073,8 @@ function FilePanel({
           setFileArrayBuffer(buf);
         } catch (err) {
           console.error('[FilePanel] Failed to load Excel file:', err);
-          setFileMime('error');
+          setFileError(categorizeFileError(err, wsData?.status));
+          setFileMime(null);
         } finally {
           setFileLoading(false);
         }
@@ -988,8 +1097,9 @@ function FilePanel({
       setFileMime(data.mime || 'text/plain');
     } catch (err) {
       console.error('[FilePanel] Failed to read file:', err);
-      setFileContent('Error: Failed to load file content');
-      setFileMime('text/plain');
+      setFileError(categorizeFileError(err, wsData?.status));
+      setFileContent(null);
+      setFileMime(null);
     } finally {
       setFileLoading(false);
     }
@@ -998,9 +1108,9 @@ function FilePanel({
   const selectedExt = selectedFile ? getFileExtension(selectedFile.split('/').pop() || '') : '';
   const canEdit = !!(selectedFile
     && !readOnly
+    && !fileError
     && EDITABLE_EXTENSIONS.has(selectedExt)
     && fileMime !== 'image'
-    && fileMime !== 'error'
     && fileMime !== 'pdf'
     && fileMime !== 'excel'
     && !['html', 'htm'].includes(selectedExt)
@@ -1024,6 +1134,7 @@ function FilePanel({
     setFileContent(null);
     setFileArrayBuffer(null);
     setFileMime(null);
+    setFileError(null);
     setExportModalOpen(false);
     setIsEditing(false);
     setEditContent(null);
@@ -1496,6 +1607,12 @@ function FilePanel({
                   <RefreshCw className="h-5 w-5 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />
                 </div>
               </div>
+            ) : fileError ? (
+              <FileErrorDisplay
+                error={fileError}
+                onRetry={() => handleFileClick(selectedFile)}
+                onDownload={() => triggerDownloadFn(workspaceId, selectedFile).catch((err: unknown) => console.error('[FilePanel] Download failed:', err))}
+              />
             ) : fileMime === 'pdf' ? (
               <Suspense fallback={<DocumentLoadingFallback />}>
                 <DocumentErrorBoundary fallback={<DocumentErrorFallback onDownload={() => triggerDownloadFn(workspaceId, selectedFile).catch((err: unknown) => console.error('[FilePanel] Download failed:', err))} />}>
@@ -1541,8 +1658,6 @@ function FilePanel({
                     <img src={fileContent!} alt={fileName} className="max-w-full rounded cursor-pointer" onClick={() => setImageLightboxOpen(true)} />
                     <ImageLightbox src={fileContent!} alt={fileName} open={imageLightboxOpen} onClose={() => setImageLightboxOpen(false)} />
                   </>
-                ) : fileMime === 'error' ? (
-                  <DocumentErrorFallback onDownload={() => triggerDownloadFn(workspaceId, selectedFile).catch((err: unknown) => console.error('[FilePanel] Download failed:', err))} />
                 ) : selectedFile?.startsWith('/large_tool_results/') ? (
                   <div className="markdown-print-content">
                     <Markdown variant="panel" content={stripLineNumbers(fileContent) ?? ''} className="text-sm" />
