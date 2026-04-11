@@ -396,7 +396,27 @@
     "save": "Save (Cmd+S)",
     "cancelEditing": "Cancel editing",
     "close": "Close",
-    "sortFiles": "Sort files"
+    "sortFiles": "Sort files",
+    "error": {
+      "notFound": "File not found",
+      "notFoundHint": "The file path may be incorrect, or the file has been deleted.",
+      "notBackedUp": "File not found in backup",
+      "notBackedUpHint": "This file may not have been saved before the workspace stopped. Start the workspace to check the sandbox.",
+      "sandboxStarting": "Sandbox is starting",
+      "sandboxStartingHint": "The sandbox is still initializing. Please try again shortly.",
+      "sandboxUnavailable": "Sandbox unavailable",
+      "sandboxUnavailableHint": "The sandbox is not available. Start the workspace to access files.",
+      "binaryFile": "Cannot preview this file",
+      "binaryFileHint": "This file type cannot be displayed in the browser, but you can download it.",
+      "noSandbox": "No sandbox available",
+      "noSandboxHint": "Flash mode workspaces do not have file storage.",
+      "accessDenied": "Access denied",
+      "accessDeniedHint": "This file is outside the allowed directories.",
+      "unknown": "Failed to load file",
+      "unknownHint": "An unexpected error occurred while loading the file.",
+      "retry": "Try again",
+      "download": "Download instead"
+    }
   },
   "automation": {
     "automations": "Automations",
