@@ -341,59 +341,69 @@ class DockerRuntime(SandboxRuntime):
             )
         proxy_port = free[0]
 
-        # Write a minimal Python TCP proxy as fallback when socat is unavailable
-        proxy_script = (
-            f"import socket as S,threading as T\n"
-            f"def f(a,b):\n"
-            f" try:\n"
-            f"  while True:\n"
-            f"   d=a.recv(4096)\n"
-            f"   if not d:break\n"
-            f"   b.sendall(d)\n"
-            f" except:pass\n"
-            f" finally:a.close();b.close()\n"
-            f"s=S.socket();s.setsockopt(S.SOL_SOCKET,S.SO_REUSEADDR,1)\n"
-            f"s.bind(('0.0.0.0',{proxy_port}));s.listen(5)\n"
-            f"while True:\n"
-            f" c,_=s.accept();d=S.socket();d.connect(('127.0.0.1',{target_port}))\n"
-            f" T.Thread(target=f,args=(c,d),daemon=True).start()\n"
-            f" T.Thread(target=f,args=(d,c),daemon=True).start()\n"
-        )
-        encoded_script = base64.b64encode(proxy_script.encode()).decode("ascii")
-        proxy_path = f"/tmp/.proxy_{proxy_port}.py"
-        await self.exec(
-            f"echo {encoded_script} | base64 -d > {proxy_path}", timeout=5
-        )
+        # Reserve immediately to prevent concurrent coroutines from picking
+        # the same proxy port (multiple awaits follow).
+        self._port_map[target_port] = proxy_port
+        self._forwarder_pids[proxy_port] = ""  # mark in-progress
 
-        # Kill any stale forwarder on this proxy port (survives Python-side
-        # reconnects while the container stays running).
-        await self.exec(
-            f"fuser -k {proxy_port}/tcp 2>/dev/null || true", timeout=5
-        )
-
-        # Start socat forwarder; fall back to Python proxy if socat is not installed
-        result = await self.exec(
-            f"nohup bash -c 'socat TCP-LISTEN:{proxy_port},fork,reuseaddr "
-            f"TCP:localhost:{target_port} 2>/dev/null "
-            f"|| python3 {proxy_path}' > /dev/null 2>&1 & echo $!",
-            timeout=10,
-        )
-        pid = result.stdout.strip()
-
-        # Verify the forwarder is actually listening
-        check = await self.exec(
-            f"sleep 0.2 && fuser {proxy_port}/tcp >/dev/null 2>&1", timeout=5
-        )
-        if check.exit_code != 0:
-            logger.warning(
-                "Proxy forwarder may not have started",
-                proxy_port=proxy_port,
-                target_port=target_port,
-                pid=pid,
+        try:
+            # Write a minimal Python TCP proxy as fallback when socat is unavailable
+            proxy_script = (
+                f"import socket as S,threading as T\n"
+                f"def f(a,b):\n"
+                f" try:\n"
+                f"  while True:\n"
+                f"   d=a.recv(4096)\n"
+                f"   if not d:break\n"
+                f"   b.sendall(d)\n"
+                f" except:pass\n"
+                f" finally:a.close();b.close()\n"
+                f"s=S.socket();s.setsockopt(S.SOL_SOCKET,S.SO_REUSEADDR,1)\n"
+                f"s.bind(('0.0.0.0',{proxy_port}));s.listen(5)\n"
+                f"while True:\n"
+                f" c,_=s.accept();d=S.socket();d.connect(('127.0.0.1',{target_port}))\n"
+                f" T.Thread(target=f,args=(c,d),daemon=True).start()\n"
+                f" T.Thread(target=f,args=(d,c),daemon=True).start()\n"
+            )
+            encoded_script = base64.b64encode(proxy_script.encode()).decode("ascii")
+            proxy_path = f"/tmp/.proxy_{proxy_port}.py"
+            await self.exec(
+                f"echo {encoded_script} | base64 -d > {proxy_path}", timeout=5
             )
 
-        self._port_map[target_port] = proxy_port
-        self._forwarder_pids[proxy_port] = pid
+            # Kill any stale forwarder on this proxy port (survives Python-side
+            # reconnects while the container stays running).
+            await self.exec(
+                f"fuser -k {proxy_port}/tcp 2>/dev/null || true", timeout=5
+            )
+
+            # Start socat forwarder; fall back to Python proxy if socat is not installed
+            result = await self.exec(
+                f"nohup bash -c 'socat TCP-LISTEN:{proxy_port},fork,reuseaddr "
+                f"TCP:localhost:{target_port} 2>/dev/null "
+                f"|| python3 {proxy_path}' > /dev/null 2>&1 & echo $!",
+                timeout=10,
+            )
+            pid = result.stdout.strip()
+
+            # Verify the forwarder is actually listening
+            check = await self.exec(
+                f"sleep 0.2 && fuser {proxy_port}/tcp >/dev/null 2>&1", timeout=5
+            )
+            if check.exit_code != 0:
+                logger.warning(
+                    "Proxy forwarder may not have started",
+                    proxy_port=proxy_port,
+                    target_port=target_port,
+                    pid=pid,
+                )
+
+            self._forwarder_pids[proxy_port] = pid
+        except Exception:
+            # Roll back reservation so the port is available for retry
+            del self._port_map[target_port]
+            del self._forwarder_pids[proxy_port]
+            raise
 
         logger.info(
             "Proxy port allocated",
@@ -411,13 +421,13 @@ class DockerRuntime(SandboxRuntime):
     async def get_preview_link(self, port: int) -> PreviewInfo:
         proxy_port = await self._allocate_proxy_port(port)
         # Server-side: resolve host for health checks (may differ from browser URL)
-        base = (self._preview_base_url or self._resolve_server_side_host()).rstrip("/")
+        base = (self._preview_base_url or await self._resolve_server_side_host()).rstrip("/")
         return PreviewInfo(url=f"{base}:{proxy_port}", token="")
 
     _server_side_host: str | None = None  # class-level cache
 
     @classmethod
-    def _resolve_server_side_host(cls) -> str:
+    async def _resolve_server_side_host(cls) -> str:
         """Resolve host for server-side requests to published proxy ports.
 
         When the backend itself runs inside Docker, ``localhost`` points to the
@@ -425,17 +435,18 @@ class DockerRuntime(SandboxRuntime):
         Docker Desktop exposes ``host.docker.internal`` for this purpose.
 
         Result is cached at the class level — it won't change during process
-        lifetime and avoids repeated blocking DNS lookups.
+        lifetime and avoids repeated DNS lookups.
         """
         if cls._server_side_host is not None:
             return cls._server_side_host
 
-        import socket
+        import asyncio
 
+        loop = asyncio.get_event_loop()
         try:
-            socket.getaddrinfo("host.docker.internal", None)
+            await loop.getaddrinfo("host.docker.internal", None)
             cls._server_side_host = "http://host.docker.internal"
-        except socket.gaierror:
+        except OSError:
             cls._server_side_host = "http://localhost"
         return cls._server_side_host
 
@@ -491,19 +502,26 @@ class DockerRuntime(SandboxRuntime):
         if not _SESSION_ID_RE.match(command_id):
             raise ValueError(f"Invalid command_id: {command_id!r}")
         session_dir = f"/tmp/.sessions/{session_id}"
-        stdout_r = await self.exec(f"cat {session_dir}/{command_id}.stdout 2>/dev/null", timeout=5)
-        stderr_r = await self.exec(f"cat {session_dir}/{command_id}.stderr 2>/dev/null", timeout=5)
-        exit_r = await self.exec(f"cat {session_dir}/{command_id}.exit 2>/dev/null", timeout=5)
-        exit_code = (
-            int(exit_r.stdout.strip())
-            if exit_r.exit_code == 0 and exit_r.stdout.strip().isdigit()
-            else None
+        # Single exec round-trip: emit all three files separated by a null byte
+        _SEP = "\\x00"
+        result = await self.exec(
+            f"cat {session_dir}/{command_id}.stdout 2>/dev/null; "
+            f"printf '{_SEP}'; "
+            f"cat {session_dir}/{command_id}.stderr 2>/dev/null; "
+            f"printf '{_SEP}'; "
+            f"cat {session_dir}/{command_id}.exit 2>/dev/null",
+            timeout=5,
         )
+        parts = result.stdout.split("\x00", 2)
+        stdout = parts[0] if len(parts) > 0 else ""
+        stderr = parts[1] if len(parts) > 1 else ""
+        exit_str = parts[2].strip() if len(parts) > 2 else ""
+        exit_code = int(exit_str) if exit_str.isdigit() else None
         return SessionCommandResult(
             cmd_id=command_id,
             exit_code=exit_code,
-            stdout=stdout_r.stdout,
-            stderr=stderr_r.stdout,
+            stdout=stdout,
+            stderr=stderr,
         )
 
     async def delete_session(self, session_id: str) -> None:

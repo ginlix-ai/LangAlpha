@@ -868,7 +868,9 @@ class TestDockerRuntimePreviewUrl:
             return_value=_make_exec_mock(output="12345\n")
         )
         DockerRuntime._server_side_host = None  # clear class cache
-        with patch("socket.getaddrinfo", return_value=[("", "", 0, "", ("127.0.0.1", 0))]):
+        mock_loop = AsyncMock()
+        mock_loop.getaddrinfo = AsyncMock(return_value=[("", "", 0, "", ("127.0.0.1", 0))])
+        with patch("asyncio.get_event_loop", return_value=mock_loop):
             info = await runtime.get_preview_link(8080)
         assert info.url == "http://host.docker.internal:13000"
         DockerRuntime._server_side_host = None  # cleanup
@@ -880,8 +882,9 @@ class TestDockerRuntimePreviewUrl:
             return_value=_make_exec_mock(output="12345\n")
         )
         DockerRuntime._server_side_host = None  # clear class cache
-        import socket as _socket
-        with patch("socket.getaddrinfo", side_effect=_socket.gaierror):
+        mock_loop = AsyncMock()
+        mock_loop.getaddrinfo = AsyncMock(side_effect=OSError)
+        with patch("asyncio.get_event_loop", return_value=mock_loop):
             info = await runtime.get_preview_link(8080)
         assert info.url == "http://localhost:13000"
         DockerRuntime._server_side_host = None  # cleanup
@@ -890,11 +893,12 @@ class TestDockerRuntimePreviewUrl:
     async def test_resolve_server_side_host_is_cached(self, runtime):
         """_resolve_server_side_host only does DNS once, then caches."""
         DockerRuntime._server_side_host = None
-        import socket as _socket
-        with patch("socket.getaddrinfo", side_effect=_socket.gaierror) as mock_dns:
-            DockerRuntime._resolve_server_side_host()
-            DockerRuntime._resolve_server_side_host()
-            assert mock_dns.call_count == 1
+        mock_loop = AsyncMock()
+        mock_loop.getaddrinfo = AsyncMock(side_effect=OSError)
+        with patch("asyncio.get_event_loop", return_value=mock_loop) as mock_get_loop:
+            await DockerRuntime._resolve_server_side_host()
+            await DockerRuntime._resolve_server_side_host()
+            assert mock_loop.getaddrinfo.call_count == 1
         DockerRuntime._server_side_host = None  # cleanup
 
     @pytest.mark.asyncio
@@ -930,6 +934,34 @@ class TestDockerRuntimePreviewUrl:
         kill_idx = next(i for i, c in enumerate(exec_calls) if "fuser -k" in c)
         socat_idx = next(i for i, c in enumerate(exec_calls) if "socat" in c)
         assert kill_idx < socat_idx
+
+    @pytest.mark.asyncio
+    async def test_concurrent_allocations_get_different_ports(self, runtime):
+        """Two concurrent _allocate_proxy_port calls get different proxy ports."""
+        import asyncio
+
+        runtime._container.exec = AsyncMock(
+            return_value=_make_exec_mock(output="12345\n")
+        )
+        p1, p2 = await asyncio.gather(
+            runtime._allocate_proxy_port(8080),
+            runtime._allocate_proxy_port(9090),
+        )
+        assert p1 != p2
+        assert {p1, p2} == {13000, 13001}
+
+    @pytest.mark.asyncio
+    async def test_allocate_proxy_port_rolls_back_on_failure(self, runtime):
+        """Port reservation is rolled back if exec raises a transient error."""
+        # "no such container" triggers SandboxTransientError (re-raised by exec)
+        runtime._container.exec = AsyncMock(
+            side_effect=RuntimeError("no such container")
+        )
+        with pytest.raises(SandboxTransientError):
+            await runtime._allocate_proxy_port(8080)
+        # Port should be released for retry
+        assert 8080 not in runtime._port_map
+        assert 13000 not in runtime._forwarder_pids
 
 
 # ---------------------------------------------------------------------------
@@ -1003,28 +1035,24 @@ class TestDockerRuntimeSessions:
     @pytest.mark.asyncio
     async def test_session_command_logs_finished(self, runtime):
         """session_command_logs returns exit code when process finished."""
-        # Mock three sequential exec calls: stdout, stderr, exit code
+        # Single exec returns stdout, stderr, exit code separated by null bytes
         runtime._container.exec = AsyncMock(
-            side_effect=[
-                _make_exec_mock(output="output data\n", exit_code=0),
-                _make_exec_mock(output="", exit_code=0),
-                _make_exec_mock(output="0\n", exit_code=0),
-            ]
+            return_value=_make_exec_mock(
+                output="output data\n\x00error data\n\x000\n", exit_code=0
+            ),
         )
-        # Need to use the real exec method, so patch at container level
         result = await runtime.session_command_logs("preview-8080", "abc12345")
         assert result.exit_code == 0
+        assert result.stdout == "output data\n"
+        assert result.stderr == "error data\n"
         assert result.cmd_id == "abc12345"
 
     @pytest.mark.asyncio
     async def test_session_command_logs_running(self, runtime):
         """session_command_logs returns None exit_code when process still running."""
+        # Exit file doesn't exist yet, so the exit segment is empty
         runtime._container.exec = AsyncMock(
-            side_effect=[
-                _make_exec_mock(output="", exit_code=0),   # stdout
-                _make_exec_mock(output="", exit_code=0),   # stderr
-                _make_exec_mock(output="", exit_code=1),   # exit file not found
-            ]
+            return_value=_make_exec_mock(output="\x00\x00", exit_code=0),
         )
         result = await runtime.session_command_logs("preview-8080", "abc12345")
         assert result.exit_code is None
