@@ -608,6 +608,26 @@ async def astream_ptc_workflow(
 
         manager = BackgroundTaskManager.get_instance()
 
+        # If the workspace was stopped since the last run, any old workflow
+        # holds stale sandbox references (closed Daytona client).  Cancel it
+        # cooperatively so the inner shielded task actually exits.
+        # Raw task.cancel() cannot penetrate asyncio.shield(), leaving the
+        # inner consumer running untracked against a dead sandbox.
+        if ws_status == "stopped":
+            await manager.cancel_workflow(thread_id)
+            # Also cancel the inner task directly so we don't have to wait
+            # for the next graph event to check cancel_event.
+            async with manager.task_lock:
+                stale = manager.tasks.get(thread_id)
+                if stale:
+                    if stale.inner_task and not stale.inner_task.done():
+                        stale.inner_task.cancel()
+                    stale_task = stale.task
+                else:
+                    stale_task = None
+            if stale_task and not stale_task.done():
+                done, _ = await asyncio.wait({stale_task}, timeout=10.0)
+
         # Wait for any soft-interrupted workflow to complete before starting new one
         ready, steering_event = await wait_or_steer(
             manager, thread_id, user_input, user_id

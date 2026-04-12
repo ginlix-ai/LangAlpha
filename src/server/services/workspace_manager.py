@@ -1295,6 +1295,12 @@ class WorkspaceManager:
         # Get running workspaces
         running_workspaces = await get_workspaces_by_status("running", limit=1000)
 
+        from src.server.services.background_task_manager import (
+            BackgroundTaskManager,
+        )
+
+        task_mgr = BackgroundTaskManager.get_instance()
+
         for workspace in running_workspaces:
             last_activity = workspace.get("last_activity_at")
             if not last_activity:
@@ -1309,6 +1315,15 @@ class WorkspaceManager:
 
             if idle_seconds > self.idle_timeout:
                 workspace_id = str(workspace["workspace_id"])
+
+                # Skip workspaces that still have an active agent workflow
+                if task_mgr.has_active_tasks_for_workspace(workspace_id):
+                    logger.info(
+                        f"Workspace {workspace_id} idle for {idle_seconds:.0f}s "
+                        "but has active workflow, skipping"
+                    )
+                    continue
+
                 logger.info(
                     f"Workspace {workspace_id} idle for {idle_seconds:.0f}s, stopping"
                 )

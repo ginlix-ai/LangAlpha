@@ -382,6 +382,14 @@ class DaytonaProvider(SandboxProvider):
     def is_transient_error(self, exc: Exception) -> bool:
         """Classify whether *exc* is a transient Daytona SDK error."""
         message = str(exc).lower()
+
+        # A closed HTTP client means the command never reached the server.
+        # The SDK wraps these as "Failed to execute command: Session is closed"
+        # so we must check BEFORE the execution-error guard.
+        client_dead_markers = ("session is closed", "client is closed")
+        if any(marker in message for marker in client_dead_markers):
+            return True
+
         # Execution errors are not transient — the command ran and the server
         # responded. Don't let "timeout" in the server message trigger
         # transient handling.

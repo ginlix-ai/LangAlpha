@@ -226,6 +226,21 @@ class BackgroundTaskManager:
         async with self.task_lock:
             return self.tasks.get(thread_id)
 
+    def has_active_tasks_for_workspace(self, workspace_id: str) -> bool:
+        """Check if any active tasks exist for a workspace.
+
+        Includes SOFT_INTERRUPTED because the workflow may still be
+        winding down (flushing checkpoints, writing final state).
+        """
+        active = (TaskStatus.RUNNING, TaskStatus.QUEUED, TaskStatus.SOFT_INTERRUPTED)
+        for info in self.tasks.values():
+            if (
+                info.metadata.get("workspace_id") == workspace_id
+                and info.status in active
+            ):
+                return True
+        return False
+
     async def start_cleanup_task(self):
         """Start periodic cleanup background task."""
         if self.cleanup_task is None or self.cleanup_task.done():

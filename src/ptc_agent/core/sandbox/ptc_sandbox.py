@@ -168,9 +168,6 @@ class PTCSandbox:
         self._init_task: asyncio.Task[None] | None = None
         self._init_error: Exception | None = None
 
-        # Set by stop_sandbox()/cleanup() to short-circuit retries and reconnects
-        self._stopped: bool = False
-
         # Cached skills manifest (populated after sync_sandbox_assets)
         self._skills_manifest: dict[str, Any] | None = None
 
@@ -262,6 +259,14 @@ class PTCSandbox:
             logger.info("Starting lazy sandbox init", sandbox_id=sandbox_id)
             await self.reconnect(sandbox_id)
             logger.info("Lazy sandbox init complete", sandbox_id=sandbox_id)
+        except asyncio.CancelledError:
+            # CancelledError is BaseException, not Exception — must be
+            # caught explicitly so _init_error is set.  Without this,
+            # _ready_event.set() in the finally block signals "ready"
+            # with no error, and concurrent _wait_ready() callers
+            # proceed with a None runtime.
+            logger.info("Lazy sandbox init cancelled", sandbox_id=sandbox_id)
+            self._init_error = asyncio.CancelledError("Sandbox init was cancelled")
         except Exception as e:
             logger.error("Lazy sandbox init failed", error=str(e))
             self._init_error = e
@@ -560,8 +565,6 @@ class PTCSandbox:
         Raises:
             SandboxGoneError: If sandbox cannot be found or is in an unrecoverable state
         """
-        self._stopped = False
-
         logger.info("Reconnecting to stopped sandbox", sandbox_id=sandbox_id)
 
         # Clear stale state — sessions and preview links don't survive stop/start
@@ -700,13 +703,8 @@ class PTCSandbox:
             sandbox_id=self.sandbox_id,
         )
 
-    async def stop_sandbox(self) -> None:
-        """Stop the sandbox without deleting it.
-
-        Used for session persistence - stops the sandbox so it can be
-        restarted quickly on the next session, rather than deleting it.
-        """
-        # Cancel any in-flight lazy init task before stopping
+    async def _cancel_init_task(self) -> None:
+        """Cancel any in-flight lazy init task and wait for it to finish."""
         if self._init_task is not None and not self._init_task.done():
             self._init_task.cancel()
             try:
@@ -715,8 +713,15 @@ class PTCSandbox:
                 pass
             self._init_task = None
 
+    async def stop_sandbox(self) -> None:
+        """Stop the sandbox without deleting it.
+
+        Used for session persistence - stops the sandbox so it can be
+        restarted quickly on the next session, rather than deleting it.
+        """
+        await self._cancel_init_task()
+
         if not self.runtime:
-            self._stopped = True
             return
 
         # Check state before stopping to avoid errors when already stopped
@@ -724,7 +729,6 @@ class PTCSandbox:
             state = await self.runtime.get_state()
             if state == RuntimeState.STOPPED:
                 logger.info("Sandbox already stopped", sandbox_id=self.sandbox_id)
-                self._stopped = True
                 return
         except Exception as e:
             # If state check fails, log and continue with stop attempt
@@ -745,8 +749,6 @@ class PTCSandbox:
                 sandbox_id=self.sandbox_id,
                 error=str(e),
             )
-        finally:
-            self._stopped = True
 
     async def _setup_workspace(self) -> None:
         """Create workspace directory structure."""
@@ -1455,17 +1457,13 @@ class PTCSandbox:
         return is_timeout, error_detail, stderr_msg
 
     async def _ensure_sandbox_connected(self) -> None:
-        if self._stopped:
-            raise SandboxGoneError(
-                self.sandbox_id or "unknown",
-                "sandbox was intentionally stopped",
-            )
         if self.sandbox_id is None:
             raise SandboxTransientError(
                 "Sandbox disconnected and no sandbox_id is available"
             )
 
-        # Coalesce concurrent reconnect attempts.
+        # Coalesce concurrent reconnect attempts (including transparent
+        # restart when the sandbox was stopped externally).
         async with self._reconnect_lock:
             if (
                 self._reconnect_inflight is not None
@@ -1473,6 +1471,16 @@ class PTCSandbox:
             ):
                 await self._reconnect_inflight
                 return
+
+            # Always recreate the provider.  This callback only fires after
+            # a transient error, so the existing client may be dead (closed
+            # by a concurrent stop_workspace) or degraded (stale connection).
+            # Creating a new AsyncDaytona is cheap — just an aiohttp session.
+            try:
+                await self.provider.close()
+            except Exception:
+                pass
+            self.provider = create_provider(self.config)
 
             loop = asyncio.get_running_loop()
             self._reconnect_inflight = loop.create_future()
@@ -1498,11 +1506,6 @@ class PTCSandbox:
         total_timeout: float = 120.0,
         **kwargs: Any,
     ) -> Any:
-        if self._stopped:
-            raise SandboxGoneError(
-                self.sandbox_id or "unknown",
-                "sandbox was intentionally stopped",
-            )
         on_transient = self._ensure_sandbox_connected if allow_reconnect else None
         return await async_retry_with_backoff(
             func,
@@ -3724,14 +3727,7 @@ except OSError as e:
 
     async def cleanup(self) -> None:
         """Clean up and destroy the sandbox."""
-        # Cancel any in-flight lazy init task before cleanup
-        if self._init_task is not None and not self._init_task.done():
-            self._init_task.cancel()
-            try:
-                await self._init_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            self._init_task = None
+        await self._cancel_init_task()
 
         logger.info("Cleaning up sandbox", sandbox_id=self.sandbox_id)
 
@@ -3759,7 +3755,6 @@ except OSError as e:
                 except Exception as e:
                     logger.error(f"Error deleting sandbox: {e}")
         finally:
-            self._stopped = True
             self.runtime = None
             self.sandbox_id = None
             await self.close()

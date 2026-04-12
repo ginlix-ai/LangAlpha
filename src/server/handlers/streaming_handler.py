@@ -363,6 +363,7 @@ class WorkflowStreamHandler:
                     await keepalive_queue.put(keepalive_event)
                     logger.debug(f"[KEEPALIVE] Sent for thread_id={self.thread_id}")
 
+
         except asyncio.CancelledError:
             logger.debug(f"[KEEPALIVE] Task cancelled for thread_id={self.thread_id}")
             raise
