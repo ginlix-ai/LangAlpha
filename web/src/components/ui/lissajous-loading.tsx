@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
-const PARTICLE_COUNT = 36;
+const PARTICLE_COUNT = 68;
 const TRAIL_SPAN = 0.34;
 const DURATION_MS = 6000;
 const PULSE_DURATION_MS = 5400;
