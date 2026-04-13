@@ -3,12 +3,6 @@ import { cn } from "@/lib/utils";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
-const containerSizes: Record<string, string> = {
-  sm: "w-4 h-4",
-  md: "w-6 h-6",
-  lg: "w-8 h-8",
-};
-
 const PARTICLE_COUNT = 68;
 const TRAIL_SPAN = 0.34;
 const DURATION_MS = 6000;
@@ -39,12 +33,10 @@ function point(progress: number, detailScale: number) {
 }
 
 interface LissajousLoadingProps {
-  size?: "sm" | "md" | "lg";
   className?: string;
 }
 
 export default function LissajousLoading({
-  size = "md",
   className,
 }: LissajousLoadingProps) {
   const groupRef = useRef<SVGGElement>(null);
@@ -96,7 +88,7 @@ export default function LissajousLoading({
   }, []);
 
   return (
-    <div className={cn("relative", containerSizes[size], className)}>
+    <div className={cn("relative", className)}>
       <svg
         viewBox="0 0 100 100"
         fill="none"
