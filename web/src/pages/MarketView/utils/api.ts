@@ -386,6 +386,12 @@ async function streamFetch(
       err.rateLimitInfo = (detail?.detail as Record<string, unknown>) || {};
       throw err;
     }
+    // Handle 413 (payload too large) with user-friendly message
+    if (res.status === 413) {
+      const err: StreamError = new Error('Files too large. Try smaller files or fewer attachments.');
+      err.status = 413;
+      throw err;
+    }
     let detail = '';
     let errorInfo: Record<string, unknown> | null = null;
     const text = await res.text().catch(() => '');

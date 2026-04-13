@@ -134,6 +134,12 @@ async function streamFetch(
       err.retryAfter = parseInt(res.headers.get('Retry-After') as string, 10) || null;
       throw err;
     }
+    // Handle 413 (payload too large) with user-friendly message
+    if (res.status === 413) {
+      const err: Error & { status?: number } = new Error('Files too large. Try smaller files or fewer attachments.');
+      err.status = 413;
+      throw err;
+    }
     // Handle 404 specifically for history replay (expected for new threads)
     if (res.status === 404 && url.includes('/replay')) {
       throw new Error(`HTTP error! status: ${res.status}`);
