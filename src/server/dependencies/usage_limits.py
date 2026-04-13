@@ -26,8 +26,8 @@ from src.server.utils.api import get_current_user_id
 logger = logging.getLogger(__name__)
 
 # Default burst limit when ginlix-auth doesn't specify one
-_DEFAULT_MAX_CONCURRENT = int(os.getenv("BURST_MAX_CONCURRENT", "10"))
-_BURST_COUNTER_TTL = int(os.getenv("BURST_COUNTER_TTL", "300"))  # seconds
+_DEFAULT_MAX_CONCURRENT = int(os.getenv("BURST_MAX_CONCURRENT") or "10")
+_BURST_COUNTER_TTL = int(os.getenv("BURST_COUNTER_TTL") or "300")  # seconds
 
 # Shared httpx client (created lazily, async-safe)
 _http_client: Optional[httpx.AsyncClient] = None

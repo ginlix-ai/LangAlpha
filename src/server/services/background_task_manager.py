@@ -65,6 +65,7 @@ from src.config.settings import (
     get_subagent_orphan_collector_timeout,
 )
 from src.utils.cache.redis_cache import get_cache_client
+from src.server.dependencies.usage_limits import release_burst_slot
 from src.server.utils.persistence_utils import (
     get_token_usage_from_callback,
     get_tool_usage_from_handler,
@@ -1353,7 +1354,6 @@ class BackgroundTaskManager:
 
         # Release burst slot for all completion paths (normal + interrupt)
         if user_id:
-            from src.server.dependencies.usage_limits import release_burst_slot
             await release_burst_slot(user_id)
 
         # Signal that persistence is done so callers (e.g. automation_executor)
@@ -1471,7 +1471,6 @@ class BackgroundTaskManager:
 
         # Release burst slot for failure path
         if user_id:
-            from src.server.dependencies.usage_limits import release_burst_slot
             await release_burst_slot(user_id)
 
     async def _mark_soft_interrupted(self, thread_id: str) -> None:
@@ -1584,7 +1583,6 @@ class BackgroundTaskManager:
 
         # Release burst slot for soft interrupt path
         if user_id:
-            from src.server.dependencies.usage_limits import release_burst_slot
             await release_burst_slot(user_id)
 
     async def _collect_subagent_results_after_interrupt(
@@ -1976,7 +1974,6 @@ class BackgroundTaskManager:
 
         # Release burst slot for cancellation path
         if user_id:
-            from src.server.dependencies.usage_limits import release_burst_slot
             await release_burst_slot(user_id)
 
     async def get_task_status(self, thread_id: str) -> Optional[TaskStatus]:
