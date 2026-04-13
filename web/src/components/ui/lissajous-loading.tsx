@@ -38,15 +38,6 @@ function point(progress: number, detailScale: number) {
   };
 }
 
-function buildPath(detailScale: number, steps = 480) {
-  const parts: string[] = [];
-  for (let i = 0; i <= steps; i++) {
-    const p = point(i / steps, detailScale);
-    parts.push(`${i === 0 ? "M" : "L"} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`);
-  }
-  return parts.join(" ");
-}
-
 interface LissajousLoadingProps {
   size?: "sm" | "md" | "lg";
   className?: string;
@@ -57,14 +48,12 @@ export default function LissajousLoading({
   className,
 }: LissajousLoadingProps) {
   const groupRef = useRef<SVGGElement>(null);
-  const pathRef = useRef<SVGPathElement>(null);
   const rafRef = useRef<number>(0);
   const startRef = useRef<number>(0);
 
   useEffect(() => {
     const group = groupRef.current;
-    const pathEl = pathRef.current;
-    if (!group || !pathEl) return;
+    if (!group) return;
 
     const particles: SVGCircleElement[] = [];
     for (let i = 0; i < PARTICLE_COUNT; i++) {
@@ -80,8 +69,6 @@ export default function LissajousLoading({
       const time = now - startRef.current;
       const progress = (time % DURATION_MS) / DURATION_MS;
       const detailScale = getDetailScale(time);
-
-      pathEl!.setAttribute("d", buildPath(detailScale));
 
       for (let i = 0; i < PARTICLE_COUNT; i++) {
         const tailOffset = i / (PARTICLE_COUNT - 1);
@@ -116,9 +103,7 @@ export default function LissajousLoading({
         className="w-full h-full overflow-visible"
         aria-hidden="true"
       >
-        <g ref={groupRef}>
-          <path ref={pathRef} style={{ display: "none" }} />
-        </g>
+        <g ref={groupRef} />
       </svg>
     </div>
   );
