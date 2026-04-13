@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
-const PARTICLE_COUNT = 68;
+const PARTICLE_COUNT = 36;
 const TRAIL_SPAN = 0.34;
 const DURATION_MS = 6000;
 const PULSE_DURATION_MS = 5400;
@@ -51,6 +51,13 @@ export default function LissajousLoading({
     for (let i = 0; i < PARTICLE_COUNT; i++) {
       const circle = document.createElementNS(SVG_NS, "circle");
       circle.setAttribute("fill", "currentColor");
+
+      // Radius and opacity depend only on trail position (index), not time.
+      // Set once to avoid per-frame setAttribute overhead.
+      const fade = Math.pow(1 - i / (PARTICLE_COUNT - 1), 0.56);
+      circle.setAttribute("r", (0.9 + fade * 2.7).toFixed(2));
+      circle.setAttribute("opacity", (0.04 + fade * 0.96).toFixed(3));
+
       group.appendChild(circle);
       particles.push(circle);
     }
@@ -63,17 +70,12 @@ export default function LissajousLoading({
       const detailScale = getDetailScale(time);
 
       for (let i = 0; i < PARTICLE_COUNT; i++) {
-        const tailOffset = i / (PARTICLE_COUNT - 1);
         const p = point(
-          normalizeProgress(progress - tailOffset * TRAIL_SPAN),
+          normalizeProgress(progress - (i / (PARTICLE_COUNT - 1)) * TRAIL_SPAN),
           detailScale,
         );
-        const fade = Math.pow(1 - tailOffset, 0.56);
-
         particles[i].setAttribute("cx", p.x.toFixed(2));
         particles[i].setAttribute("cy", p.y.toFixed(2));
-        particles[i].setAttribute("r", (0.9 + fade * 2.7).toFixed(2));
-        particles[i].setAttribute("opacity", (0.04 + fade * 0.96).toFixed(3));
       }
 
       rafRef.current = requestAnimationFrame(render);
