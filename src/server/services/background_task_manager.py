@@ -1352,7 +1352,6 @@ class BackgroundTaskManager:
                         )
 
         # Release burst slot for all completion paths (normal + interrupt)
-        user_id = metadata.get("user_id")
         if user_id:
             from src.server.dependencies.usage_limits import release_burst_slot
             await release_burst_slot(user_id)
@@ -1471,7 +1470,6 @@ class BackgroundTaskManager:
                 )
 
         # Release burst slot for failure path
-        user_id = metadata.get("user_id")
         if user_id:
             from src.server.dependencies.usage_limits import release_burst_slot
             await release_burst_slot(user_id)
@@ -1585,7 +1583,6 @@ class BackgroundTaskManager:
                 )
 
         # Release burst slot for soft interrupt path
-        user_id = metadata.get("user_id")
         if user_id:
             from src.server.dependencies.usage_limits import release_burst_slot
             await release_burst_slot(user_id)
@@ -1978,7 +1975,6 @@ class BackgroundTaskManager:
                 )
 
         # Release burst slot for cancellation path
-        user_id = metadata.get("user_id") if metadata else None
         if user_id:
             from src.server.dependencies.usage_limits import release_burst_slot
             await release_burst_slot(user_id)

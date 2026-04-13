@@ -813,10 +813,15 @@ async def astream_ptc_workflow(
     except (asyncio.CancelledError, GeneratorExit):
         if slot_owned:
             await release_burst_slot(user_id)
-        logger.warning(
-            f"[PTC_CHAT] Generator cancelled (client disconnect?) before "
-            f"workflow started: thread_id={thread_id} workspace_id={workspace_id}"
-        )
+            logger.warning(
+                f"[PTC_CHAT] Generator cancelled before workflow started: "
+                f"thread_id={thread_id} workspace_id={workspace_id}"
+            )
+        else:
+            logger.warning(
+                f"[PTC_CHAT] Generator cancelled (client disconnect?): "
+                f"thread_id={thread_id} workspace_id={workspace_id}"
+            )
         raise
 
     except Exception as e:

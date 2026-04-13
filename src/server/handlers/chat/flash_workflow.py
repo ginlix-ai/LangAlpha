@@ -486,10 +486,15 @@ async def astream_flash_workflow(
     except (asyncio.CancelledError, GeneratorExit):
         if slot_owned:
             await release_burst_slot(user_id)
-        logger.warning(
-            f"[FLASH_CHAT] Generator cancelled before workflow started: "
-            f"thread_id={thread_id}"
-        )
+            logger.warning(
+                f"[FLASH_CHAT] Generator cancelled before workflow started: "
+                f"thread_id={thread_id}"
+            )
+        else:
+            logger.warning(
+                f"[FLASH_CHAT] Generator cancelled (client disconnect?): "
+                f"thread_id={thread_id}"
+            )
         raise
 
     except Exception as e:
