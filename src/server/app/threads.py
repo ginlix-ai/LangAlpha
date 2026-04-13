@@ -383,118 +383,115 @@ async def _handle_send_message(
     agent_mode = request.agent_mode or "ptc"
     workspace_id = request.workspace_id
 
-    # 403 guard: require BYOK, OAuth, or platform access (tier >= 0).
-    # All flags are pre-checked by enforce_chat_limit — no DB calls here.
-    from src.config.settings import HOST_MODE
-    if HOST_MODE == "platform" and not auth.is_byok and not auth.has_oauth and auth.access_tier < 0:
-        from src.server.dependencies.usage_limits import release_burst_slot
-        await release_burst_slot(user_id)
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "message": "No provider configured. Set up an API key or connect via OAuth.",
-                "type": "no_provider",
-                "link": {"url": "/setup/method", "label": "Set up provider"},
-            },
-        )
+    from src.server.dependencies.usage_limits import release_burst_slot
 
-    # Resolve workspace_id from thread if not provided
-    if not workspace_id and thread_id:
-        thread_record = await get_thread_by_id(thread_id)
-        if thread_record:
-            workspace_id = str(thread_record["workspace_id"])
-            logger.info(
-                f"[CHAT] Resolved workspace_id={workspace_id} from thread_id={thread_id}"
-            )
-
-    # Validate that agent_config is initialized
-    if not hasattr(setup, "agent_config") or setup.agent_config is None:
-        raise HTTPException(
-            status_code=503,
-            detail="PTC Agent not initialized. Check server startup logs.",
-        )
-
-    # Validate workspace_id for ptc mode
-    if agent_mode == "ptc" and not workspace_id:
-        raise HTTPException(
-            status_code=400,
-            detail="workspace_id is required for 'ptc' agent mode. Create workspace first via POST /workspaces, or use agent_mode='flash' for lightweight queries.",
-        )
-
-    # For flash mode, resolve workspace_id to the shared flash workspace
-    if agent_mode == "flash" and not workspace_id:
-        flash_ws = await get_or_create_flash_workspace(user_id)
-        workspace_id = str(flash_ws["workspace_id"])
-
-    # Auto-detect flash workspaces: if the workspace is flash, override agent_mode
-    # so follow-up messages (HITL responses, etc.) route correctly even if
-    # the client doesn't send agent_mode='flash'
-    if agent_mode != "flash" and workspace_id:
-        ws = await get_workspace(workspace_id)
-        if ws and ws.get("status") == "flash":
-            agent_mode = "flash"
-            logger.info(
-                f"[CHAT] Auto-detected flash workspace {workspace_id}, "
-                f"overriding agent_mode to 'flash'"
-            )
-
-    # Extract user input
-    user_input = ""
-    if request.messages:
-        last_msg = request.messages[-1]
-        if isinstance(last_msg.content, str):
-            user_input = last_msg.content
-        elif isinstance(last_msg.content, list):
-            for item in last_msg.content:
-                if hasattr(item, "text") and item.text:
-                    user_input = item.text
-                    break
-
-    logger.info(
-        f"[{'FLASH' if agent_mode == 'flash' else 'PTC'}_CHAT] New request: "
-        f"workspace_id={workspace_id} thread_id={thread_id} user_id={user_id} "
-        f"mode={agent_mode}"
-    )
-
-    # Resolve LLM config eagerly — credit check must happen before SSE stream starts
-    from src.server.handlers.chat import resolve_llm_config
-    from src.server.dependencies.usage_limits import (
-        enforce_credit_limit,
-        release_burst_slot,
-    )
-
-    config = await resolve_llm_config(
-        setup.agent_config,
-        user_id,
-        request.llm_model,
-        is_byok,
-        mode=agent_mode,
-        reasoning_effort=getattr(request, "reasoning_effort", None),
-        fast_mode=getattr(request, "fast_mode", None),
-    )
-
-    # is_byok reflects whether THIS request actually uses a user-provided key
-    # (BYOK, custom model via BYOK, or OAuth), not just whether the toggle is on
-    is_byok = config.llm_client is not None
-
-    # Credit check: always enforce.
-    # - Platform-served (is_byok=False): block when daily limit reached.
-    # - BYOK/OAuth (is_byok=True): block only on negative balance (outstanding
-    #   debt from past platform usage, e.g. fallback routing).
     try:
+        # 403 guard: require BYOK, OAuth, or platform access (tier >= 0).
+        # All flags are pre-checked by enforce_chat_limit — no DB calls here.
+        from src.config.settings import HOST_MODE
+        if HOST_MODE == "platform" and not auth.is_byok and not auth.has_oauth and auth.access_tier < 0:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "message": "No provider configured. Set up an API key or connect via OAuth.",
+                    "type": "no_provider",
+                    "link": {"url": "/setup/method", "label": "Set up provider"},
+                },
+            )
+
+        # Resolve workspace_id from thread if not provided
+        if not workspace_id and thread_id:
+            thread_record = await get_thread_by_id(thread_id)
+            if thread_record:
+                workspace_id = str(thread_record["workspace_id"])
+                logger.info(
+                    f"[CHAT] Resolved workspace_id={workspace_id} from thread_id={thread_id}"
+                )
+
+        # Validate that agent_config is initialized
+        if not hasattr(setup, "agent_config") or setup.agent_config is None:
+            raise HTTPException(
+                status_code=503,
+                detail="PTC Agent not initialized. Check server startup logs.",
+            )
+
+        # Validate workspace_id for ptc mode
+        if agent_mode == "ptc" and not workspace_id:
+            raise HTTPException(
+                status_code=400,
+                detail="workspace_id is required for 'ptc' agent mode. Create workspace first via POST /workspaces, or use agent_mode='flash' for lightweight queries.",
+            )
+
+        # For flash mode, resolve workspace_id to the shared flash workspace
+        if agent_mode == "flash" and not workspace_id:
+            flash_ws = await get_or_create_flash_workspace(user_id)
+            workspace_id = str(flash_ws["workspace_id"])
+
+        # Auto-detect flash workspaces: if the workspace is flash, override agent_mode
+        # so follow-up messages (HITL responses, etc.) route correctly even if
+        # the client doesn't send agent_mode='flash'
+        if agent_mode != "flash" and workspace_id:
+            ws = await get_workspace(workspace_id)
+            if ws and ws.get("status") == "flash":
+                agent_mode = "flash"
+                logger.info(
+                    f"[CHAT] Auto-detected flash workspace {workspace_id}, "
+                    f"overriding agent_mode to 'flash'"
+                )
+
+        # Extract user input
+        user_input = ""
+        if request.messages:
+            last_msg = request.messages[-1]
+            if isinstance(last_msg.content, str):
+                user_input = last_msg.content
+            elif isinstance(last_msg.content, list):
+                for item in last_msg.content:
+                    if hasattr(item, "text") and item.text:
+                        user_input = item.text
+                        break
+
+        logger.info(
+            f"[{'FLASH' if agent_mode == 'flash' else 'PTC'}_CHAT] New request: "
+            f"workspace_id={workspace_id} thread_id={thread_id} user_id={user_id} "
+            f"mode={agent_mode}"
+        )
+
+        # Resolve LLM config eagerly — credit check must happen before SSE stream starts
+        from src.server.handlers.chat import resolve_llm_config
+        from src.server.dependencies.usage_limits import enforce_credit_limit
+
+        config = await resolve_llm_config(
+            setup.agent_config,
+            user_id,
+            request.llm_model,
+            is_byok,
+            mode=agent_mode,
+            reasoning_effort=getattr(request, "reasoning_effort", None),
+            fast_mode=getattr(request, "fast_mode", None),
+        )
+
+        # is_byok reflects whether THIS request actually uses a user-provided key
+        # (BYOK, custom model via BYOK, or OAuth), not just whether the toggle is on
+        is_byok = config.llm_client is not None
+
+        # Credit check: always enforce.
+        # - Platform-served (is_byok=False): block when daily limit reached.
+        # - BYOK/OAuth (is_byok=True): block only on negative balance (outstanding
+        #   debt from past platform usage, e.g. fallback routing).
         await enforce_credit_limit(user_id, byok=is_byok)
-    except HTTPException:
+
+        # Only honour X-Dispatch: background for internal service-to-service calls.
+        _req_token = (raw_request.headers.get("X-Service-Token", "") if raw_request else "")
+        _svc_token = _get_service_token()
+        is_internal = bool(_svc_token and _req_token and hmac.compare_digest(_req_token, _svc_token))
+
+        # Strip query_type from non-internal requests (prevent spoofing system messages)
+        if not is_internal and request.query_type:
+            request = request.model_copy(update={"query_type": None})
+    except BaseException:
         await release_burst_slot(user_id)
         raise
-
-    # Only honour X-Dispatch: background for internal service-to-service calls.
-    _req_token = (raw_request.headers.get("X-Service-Token", "") if raw_request else "")
-    _svc_token = _get_service_token()
-    is_internal = bool(_svc_token and _req_token and hmac.compare_digest(_req_token, _svc_token))
-
-    # Strip query_type from non-internal requests (prevent spoofing system messages)
-    if not is_internal and request.query_type:
-        request = request.model_copy(update={"query_type": None})
 
     # Route to appropriate streaming function based on agent mode
     if agent_mode == "flash":

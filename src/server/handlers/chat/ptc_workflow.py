@@ -205,6 +205,7 @@ async def astream_ptc_workflow(
     ExecutionTracker.start_tracking()
     logger.debug("PTC execution tracking started")
 
+    slot_owned = True
     try:
         # Validate agent_config is available
         if not setup.agent_config:
@@ -638,6 +639,8 @@ async def astream_ptc_workflow(
             manager, thread_id, user_input, user_id
         )
         if not ready:
+            slot_owned = False
+            await release_burst_slot(user_id)
             if steering_event:
                 yield steering_event
             return
@@ -762,9 +765,6 @@ async def astream_ptc_workflow(
                     f"[PTC_CHAT] Background completion persistence failed for {thread_id}: {e}",
                     exc_info=True,
                 )
-            finally:
-                # Release burst slot so it doesn't block future requests
-                await release_burst_slot(user_id)
 
         # Start workflow in background with event buffering
         await manager.start_workflow(
@@ -791,6 +791,7 @@ async def astream_ptc_workflow(
             completion_callback=on_background_workflow_complete,
             graph=ptc_graph,  # Pass graph for state queries in completion/error handlers
         )
+        slot_owned = False  # Manager owns burst slot release from here
 
         # Stream live SSE events to the client
         async for event in stream_live_events(
@@ -810,8 +811,8 @@ async def astream_ptc_workflow(
             yield event
 
     except (asyncio.CancelledError, GeneratorExit):
-        # Client disconnected before start_workflow() shielded the task.
-        # Log so the silent failure is diagnosable.
+        if slot_owned:
+            await release_burst_slot(user_id)
         logger.warning(
             f"[PTC_CHAT] Generator cancelled (client disconnect?) before "
             f"workflow started: thread_id={thread_id} workspace_id={workspace_id}"

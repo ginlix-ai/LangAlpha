@@ -1,6 +1,6 @@
 """
-Tests for usage_limits dependency — service-to-service auth headers
-and credit limit enforcement (platform + BYOK paths).
+Tests for usage_limits dependency — service-to-service auth headers,
+credit limit enforcement (platform + BYOK paths), and burst guard.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,6 +11,157 @@ from fastapi import HTTPException
 
 
 MODULE = "src.server.dependencies.usage_limits"
+
+
+# ===================================================================
+# Burst guard tests (_check_burst_guard + release_burst_slot)
+# ===================================================================
+
+
+def _mock_redis_cache(enabled=True, pipeline_results=None, decr_result=0):
+    """Return a mock Redis cache for burst guard tests."""
+    cache = MagicMock()
+    cache.enabled = enabled
+    cache.client = MagicMock() if enabled else None
+
+    if enabled and cache.client:
+        pipe = AsyncMock()
+        pipe.incr = MagicMock(return_value=pipe)
+        pipe.expire = MagicMock(return_value=pipe)
+        pipe.execute = AsyncMock(return_value=pipeline_results or [1])
+        cache.client.pipeline = MagicMock(return_value=pipe)
+        cache.client.decr = AsyncMock(return_value=decr_result)
+        cache.client.set = AsyncMock()
+
+    return cache
+
+
+class TestCheckBurstGuard:
+    """Tests for _check_burst_guard Redis INCR/DECR logic."""
+
+    @pytest.mark.asyncio
+    async def test_under_limit_allowed(self):
+        """Request under the limit returns allowed=True with correct count."""
+        cache = _mock_redis_cache(pipeline_results=[3])
+
+        with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
+            from src.server.dependencies.usage_limits import _check_burst_guard
+
+            result = await _check_burst_guard("user-1", max_concurrent=10)
+
+        assert result["allowed"] is True
+        assert result["current"] == 3
+        assert result["limit"] == 10
+
+    @pytest.mark.asyncio
+    async def test_at_limit_allowed(self):
+        """Request at exactly max_concurrent is still allowed."""
+        cache = _mock_redis_cache(pipeline_results=[10])
+
+        with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
+            from src.server.dependencies.usage_limits import _check_burst_guard
+
+            result = await _check_burst_guard("user-1", max_concurrent=10)
+
+        assert result["allowed"] is True
+        assert result["current"] == 10
+
+    @pytest.mark.asyncio
+    async def test_over_limit_rollback(self):
+        """Request over limit triggers DECR rollback and returns allowed=False."""
+        cache = _mock_redis_cache(pipeline_results=[11])
+
+        with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
+            from src.server.dependencies.usage_limits import _check_burst_guard
+
+            result = await _check_burst_guard("user-1", max_concurrent=10)
+
+        assert result["allowed"] is False
+        assert result["current"] == 10
+        assert result["limit"] == 10
+        cache.client.decr.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_redis_disabled_fail_open(self):
+        """When Redis is disabled, burst guard allows the request."""
+        cache = _mock_redis_cache(enabled=False)
+        cache.client = None
+
+        with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
+            from src.server.dependencies.usage_limits import _check_burst_guard
+
+            result = await _check_burst_guard("user-1", max_concurrent=10)
+
+        assert result["allowed"] is True
+        assert "current" not in result
+
+    @pytest.mark.asyncio
+    async def test_redis_error_fail_open(self):
+        """When Redis raises an exception, burst guard allows the request."""
+        cache = _mock_redis_cache(pipeline_results=[1])
+        pipe = cache.client.pipeline()
+        pipe.execute = AsyncMock(side_effect=ConnectionError("Redis down"))
+
+        with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
+            from src.server.dependencies.usage_limits import _check_burst_guard
+
+            result = await _check_burst_guard("user-1", max_concurrent=10)
+
+        assert result["allowed"] is True
+
+
+class TestReleaseBurstSlot:
+    """Tests for release_burst_slot Redis DECR logic."""
+
+    @pytest.mark.asyncio
+    async def test_decr_to_positive(self):
+        """Normal release: DECR to a positive value, no clamping."""
+        cache = _mock_redis_cache(decr_result=2)
+
+        with (
+            patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
+            patch(f"{MODULE}.HOST_MODE", "platform"),
+        ):
+            from src.server.dependencies.usage_limits import release_burst_slot
+
+            await release_burst_slot("user-1")
+
+        cache.client.decr.assert_awaited_once()
+        cache.client.set.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_decr_to_negative_clamps_to_zero(self):
+        """When DECR goes negative, clamp the key to 0."""
+        cache = _mock_redis_cache(decr_result=-1)
+
+        with (
+            patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
+            patch(f"{MODULE}.HOST_MODE", "platform"),
+        ):
+            from src.server.dependencies.usage_limits import release_burst_slot
+
+            await release_burst_slot("user-1")
+
+        cache.client.decr.assert_awaited_once()
+        cache.client.set.assert_awaited_once()
+        # Verify it sets to 0
+        set_args = cache.client.set.call_args
+        assert set_args[0][1] == 0
+
+    @pytest.mark.asyncio
+    async def test_redis_error_swallowed(self):
+        """Redis errors during release are swallowed (no exception raised)."""
+        cache = _mock_redis_cache()
+        cache.client.decr = AsyncMock(side_effect=ConnectionError("Redis down"))
+
+        with (
+            patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
+            patch(f"{MODULE}.HOST_MODE", "platform"),
+        ):
+            from src.server.dependencies.usage_limits import release_burst_slot
+
+            # Should not raise
+            await release_burst_slot("user-1")
 
 
 def _mock_cache_miss():

@@ -1351,6 +1351,12 @@ class BackgroundTaskManager:
                             name=f"subagent-collector-{thread_id}-post-tail",
                         )
 
+        # Release burst slot for all completion paths (normal + interrupt)
+        user_id = metadata.get("user_id")
+        if user_id:
+            from src.server.dependencies.usage_limits import release_burst_slot
+            await release_burst_slot(user_id)
+
         # Signal that persistence is done so callers (e.g. automation_executor)
         # can safely read persisted data from the DB.
         async with self.task_lock:
@@ -1464,6 +1470,12 @@ class BackgroundTaskManager:
                     exc_info=True
                 )
 
+        # Release burst slot for failure path
+        user_id = metadata.get("user_id")
+        if user_id:
+            from src.server.dependencies.usage_limits import release_burst_slot
+            await release_burst_slot(user_id)
+
     async def _mark_soft_interrupted(self, thread_id: str) -> None:
         """Mark workflow as soft-interrupted (ESC).
 
@@ -1571,6 +1583,12 @@ class BackgroundTaskManager:
                     f"[WorkflowPersistence] Failed to persist soft interrupt for {thread_id}: {persist_error}",
                     exc_info=True
                 )
+
+        # Release burst slot for soft interrupt path
+        user_id = metadata.get("user_id")
+        if user_id:
+            from src.server.dependencies.usage_limits import release_burst_slot
+            await release_burst_slot(user_id)
 
     async def _collect_subagent_results_after_interrupt(
         self,
@@ -1958,6 +1976,12 @@ class BackgroundTaskManager:
                     f"[WorkflowPersistence] Failed to persist cancellation for {thread_id}: {persist_error}",
                     exc_info=True
                 )
+
+        # Release burst slot for cancellation path
+        user_id = metadata.get("user_id") if metadata else None
+        if user_id:
+            from src.server.dependencies.usage_limits import release_burst_slot
+            await release_burst_slot(user_id)
 
     async def get_task_status(self, thread_id: str) -> Optional[TaskStatus]:
         """

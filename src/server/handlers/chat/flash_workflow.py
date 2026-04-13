@@ -10,6 +10,7 @@ external tools (web search, market data, SEC filings).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from datetime import datetime
@@ -110,6 +111,7 @@ async def astream_flash_workflow(
     ExecutionTracker.start_tracking()
     logger.info(f"[FLASH_CHAT] Starting flash workflow: thread_id={thread_id}")
 
+    slot_owned = True
     try:
         # Validate agent_config is available
         if not setup.agent_config:
@@ -343,6 +345,8 @@ async def astream_flash_workflow(
             manager, thread_id, user_input, user_id
         )
         if not ready:
+            slot_owned = False
+            await release_burst_slot(user_id)
             if steering_event:
                 yield steering_event
             return
@@ -409,8 +413,6 @@ async def astream_flash_workflow(
                     f"[FLASH_CHAT] Background completion persistence failed: {e}",
                     exc_info=True,
                 )
-            finally:
-                await release_burst_slot(user_id)
 
         # Start workflow in background
         try:
@@ -439,9 +441,10 @@ async def astream_flash_workflow(
         except RuntimeError:
             # Race condition: another request registered first -- queue the
             # message
-            await release_burst_slot(user_id)
             result = await steer_thread(thread_id, user_input, user_id)
             if result:
+                slot_owned = False
+                await release_burst_slot(user_id)
                 event_data = json.dumps(
                     {
                         "thread_id": thread_id,
@@ -460,6 +463,8 @@ async def astream_flash_workflow(
                     "or /cancel to stop it."
                 ),
             )
+        else:
+            slot_owned = False  # Manager owns burst slot release from here
 
         # Stream live events from background task to client
         async for event in stream_live_events(
@@ -477,6 +482,15 @@ async def astream_flash_workflow(
             log_prefix="FLASH_CHAT",
         ):
             yield event
+
+    except (asyncio.CancelledError, GeneratorExit):
+        if slot_owned:
+            await release_burst_slot(user_id)
+        logger.warning(
+            f"[FLASH_CHAT] Generator cancelled before workflow started: "
+            f"thread_id={thread_id}"
+        )
+        raise
 
     except Exception as e:
         async for event in handle_workflow_error(

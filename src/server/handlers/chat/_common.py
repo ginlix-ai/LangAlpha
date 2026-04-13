@@ -211,7 +211,6 @@ async def _handle_sse_disconnect(
                 logger.error(f"[CHAT] Failed to persist cancellation: {persist_error}")
 
             await manager.cancel_workflow(thread_id)
-            await release_burst_slot(user_id)
 
             registry_store = BackgroundRegistryStore.get_instance()
             await registry_store.cancel_and_clear(thread_id, force=True)
