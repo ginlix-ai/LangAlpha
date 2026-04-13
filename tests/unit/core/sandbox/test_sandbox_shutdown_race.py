@@ -81,11 +81,13 @@ def mock_provider(mock_runtime):
 class TestHasActiveTasksForWorkspace:
     """BackgroundTaskManager.has_active_tasks_for_workspace returns correct results."""
 
-    def test_no_tasks(self):
+    @pytest.mark.asyncio
+    async def test_no_tasks(self):
         mgr = BackgroundTaskManager()
-        assert mgr.has_active_tasks_for_workspace("ws-1") is False
+        assert await mgr.has_active_tasks_for_workspace("ws-1") is False
 
-    def test_running_task_matches(self):
+    @pytest.mark.asyncio
+    async def test_running_task_matches(self):
         mgr = BackgroundTaskManager()
         mgr.tasks["thread-1"] = TaskInfo(
             thread_id="thread-1",
@@ -93,9 +95,10 @@ class TestHasActiveTasksForWorkspace:
             created_at=datetime.now(),
             metadata={"workspace_id": "ws-1"},
         )
-        assert mgr.has_active_tasks_for_workspace("ws-1") is True
+        assert await mgr.has_active_tasks_for_workspace("ws-1") is True
 
-    def test_queued_task_matches(self):
+    @pytest.mark.asyncio
+    async def test_queued_task_matches(self):
         mgr = BackgroundTaskManager()
         mgr.tasks["thread-1"] = TaskInfo(
             thread_id="thread-1",
@@ -103,9 +106,10 @@ class TestHasActiveTasksForWorkspace:
             created_at=datetime.now(),
             metadata={"workspace_id": "ws-1"},
         )
-        assert mgr.has_active_tasks_for_workspace("ws-1") is True
+        assert await mgr.has_active_tasks_for_workspace("ws-1") is True
 
-    def test_completed_task_does_not_match(self):
+    @pytest.mark.asyncio
+    async def test_completed_task_does_not_match(self):
         mgr = BackgroundTaskManager()
         mgr.tasks["thread-1"] = TaskInfo(
             thread_id="thread-1",
@@ -113,9 +117,10 @@ class TestHasActiveTasksForWorkspace:
             created_at=datetime.now(),
             metadata={"workspace_id": "ws-1"},
         )
-        assert mgr.has_active_tasks_for_workspace("ws-1") is False
+        assert await mgr.has_active_tasks_for_workspace("ws-1") is False
 
-    def test_soft_interrupted_task_matches(self):
+    @pytest.mark.asyncio
+    async def test_soft_interrupted_task_matches(self):
         mgr = BackgroundTaskManager()
         mgr.tasks["thread-1"] = TaskInfo(
             thread_id="thread-1",
@@ -123,9 +128,10 @@ class TestHasActiveTasksForWorkspace:
             created_at=datetime.now(),
             metadata={"workspace_id": "ws-1"},
         )
-        assert mgr.has_active_tasks_for_workspace("ws-1") is True
+        assert await mgr.has_active_tasks_for_workspace("ws-1") is True
 
-    def test_different_workspace_does_not_match(self):
+    @pytest.mark.asyncio
+    async def test_different_workspace_does_not_match(self):
         mgr = BackgroundTaskManager()
         mgr.tasks["thread-1"] = TaskInfo(
             thread_id="thread-1",
@@ -133,7 +139,7 @@ class TestHasActiveTasksForWorkspace:
             created_at=datetime.now(),
             metadata={"workspace_id": "ws-other"},
         )
-        assert mgr.has_active_tasks_for_workspace("ws-1") is False
+        assert await mgr.has_active_tasks_for_workspace("ws-1") is False
 
 
 class TestCleanupIdleWorkspacesGuard:
@@ -167,7 +173,7 @@ class TestCleanupIdleWorkspacesGuard:
             ) as mock_get_instance,
         ):
             mock_instance = MagicMock()
-            mock_instance.has_active_tasks_for_workspace.return_value = True
+            mock_instance.has_active_tasks_for_workspace = AsyncMock(return_value=True)
             mock_get_instance.return_value = mock_instance
 
             stopped = await mgr.cleanup_idle_workspaces()
@@ -202,7 +208,7 @@ class TestCleanupIdleWorkspacesGuard:
             ) as mock_get_instance,
         ):
             mock_instance = MagicMock()
-            mock_instance.has_active_tasks_for_workspace.return_value = False
+            mock_instance.has_active_tasks_for_workspace = AsyncMock(return_value=False)
             mock_get_instance.return_value = mock_instance
 
             stopped = await mgr.cleanup_idle_workspaces()

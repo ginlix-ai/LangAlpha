@@ -1315,7 +1315,7 @@ class WorkspaceManager:
                 workspace_id = str(workspace["workspace_id"])
 
                 # Skip workspaces that still have an active agent workflow
-                if task_mgr.has_active_tasks_for_workspace(workspace_id):
+                if await task_mgr.has_active_tasks_for_workspace(workspace_id):
                     logger.info(
                         f"Workspace {workspace_id} idle for {idle_seconds:.0f}s "
                         "but has active workflow, skipping"

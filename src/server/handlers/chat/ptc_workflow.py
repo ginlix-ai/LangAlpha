@@ -626,7 +626,12 @@ async def astream_ptc_workflow(
                 else:
                     stale_task = None
             if stale_task and not stale_task.done():
-                await asyncio.wait({stale_task}, timeout=10.0)
+                done, _ = await asyncio.wait({stale_task}, timeout=10.0)
+                if not done:
+                    logger.warning(
+                        "Stale workflow did not exit within 10s after cancellation",
+                        thread_id=thread_id,
+                    )
 
         # Wait for any soft-interrupted workflow to complete before starting new one
         ready, steering_event = await wait_or_steer(
