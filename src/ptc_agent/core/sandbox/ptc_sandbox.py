@@ -166,7 +166,7 @@ class PTCSandbox:
         # Lazy initialization support
         self._ready_event: asyncio.Event | None = None
         self._init_task: asyncio.Task[None] | None = None
-        self._init_error: Exception | None = None
+        self._init_error: BaseException | None = None
 
         # Cached skills manifest (populated after sync_sandbox_assets)
         self._skills_manifest: dict[str, Any] | None = None
@@ -711,7 +711,7 @@ class PTCSandbox:
                 await self._init_task
             except (asyncio.CancelledError, Exception):
                 pass
-            self._init_task = None
+        self._init_task = None
 
     async def stop_sandbox(self) -> None:
         """Stop the sandbox without deleting it.
