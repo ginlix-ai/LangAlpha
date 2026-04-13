@@ -199,7 +199,7 @@ function FileHeaderActions({
 
   return (
     <>
-      <DropdownMenu>
+      <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
           <button
             className="file-panel-icon-btn"

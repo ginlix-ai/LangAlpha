@@ -27,7 +27,7 @@ const AvatarDropdown: React.FC = () => {
 
   return (
     <>
-      <DropdownMenu>
+      <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
           <button
             className="flex items-center gap-2 text-sm font-medium transition-colors hover:text-[var(--color-text-primary)]"

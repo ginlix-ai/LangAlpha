@@ -110,7 +110,7 @@ function WatchlistItem({ item, index, onDelete, marketStatus, isMobile }: Watchl
 
         {/* Mobile: visible menu button */}
         {isMobile && hasId && (
-          <DropdownMenu>
+          <DropdownMenu modal={false}>
             <DropdownMenuTrigger asChild>
               <button
                 className="p-1 -mr-1 rounded-md transition-colors"
@@ -229,7 +229,7 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStat
 
         {/* Mobile: visible menu button */}
         {isMobile && hasId && (
-          <DropdownMenu>
+          <DropdownMenu modal={false}>
             <DropdownMenuTrigger asChild>
               <button
                 className="p-1 -mr-1 rounded-md transition-colors"

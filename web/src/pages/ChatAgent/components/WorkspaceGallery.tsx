@@ -71,7 +71,7 @@ function CardMenu({ workspace, onTogglePin, onDelete }: CardMenuProps) {
   const { t } = useTranslation();
 
   return (
-    <DropdownMenu>
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <button
           onPointerDown={(e) => e.stopPropagation()}
