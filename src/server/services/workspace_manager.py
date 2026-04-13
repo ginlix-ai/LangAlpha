@@ -23,6 +23,8 @@ from ptc_agent.config import AgentConfig
 from ptc_agent.core.sandbox.runtime import SandboxGoneError
 from ptc_agent.core.session import Session, SessionManager
 
+from src.server.services.background_task_manager import BackgroundTaskManager
+
 from src.server.database.workspace import (
     create_workspace as db_create_workspace,
     delete_workspace as db_delete_workspace,
@@ -1294,10 +1296,6 @@ class WorkspaceManager:
 
         # Get running workspaces
         running_workspaces = await get_workspaces_by_status("running", limit=1000)
-
-        from src.server.services.background_task_manager import (
-            BackgroundTaskManager,
-        )
 
         task_mgr = BackgroundTaskManager.get_instance()
 
