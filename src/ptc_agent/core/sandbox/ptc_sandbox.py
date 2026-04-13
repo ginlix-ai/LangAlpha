@@ -166,7 +166,7 @@ class PTCSandbox:
         # Lazy initialization support
         self._ready_event: asyncio.Event | None = None
         self._init_task: asyncio.Task[None] | None = None
-        self._init_error: BaseException | None = None
+        self._init_error: Exception | None = None
 
         # Cached skills manifest (populated after sync_sandbox_assets)
         self._skills_manifest: dict[str, Any] | None = None
@@ -266,7 +266,7 @@ class PTCSandbox:
             # with no error, and concurrent _wait_ready() callers
             # proceed with a None runtime.
             logger.info("Lazy sandbox init cancelled", sandbox_id=sandbox_id)
-            self._init_error = asyncio.CancelledError("Sandbox init was cancelled")
+            self._init_error = RuntimeError("Sandbox init was cancelled")
         except Exception as e:
             logger.error("Lazy sandbox init failed", error=str(e))
             self._init_error = e
