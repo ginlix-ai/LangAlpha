@@ -1,3 +1,6 @@
+// Currently unused — replaced by LissajousLoading in the chat streaming indicator.
+// Kept as an alternative loading animation. Uses CSS keyframes (morph-0 to morph-3)
+// defined in index.css.
 import { cn } from "@/lib/utils";
 
 const containerSizes: Record<string, string> = {
