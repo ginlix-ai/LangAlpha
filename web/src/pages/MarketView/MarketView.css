@@ -68,7 +68,7 @@
 
 .market-resize-handle:hover,
 .market-resize-handle:active {
-  background: rgba(97, 85, 245, 0.5);
+  background: hsl(var(--primary) / 0.5);
 }
 
 body.col-resizing {
@@ -131,7 +131,7 @@ body.col-resizing * {
 
 .market-quick-query-card {
   background: var(--color-accent-soft);
-  border: 1px solid rgba(97, 85, 245, 0.25);
+  border: 1px solid hsl(var(--primary) / 0.25);
   border-radius: 10px;
   padding: 10px 14px;
   color: var(--color-text-primary);
@@ -144,8 +144,8 @@ body.col-resizing * {
 }
 
 .market-quick-query-card:hover {
-  background: rgba(97, 85, 245, 0.18);
-  border-color: rgba(97, 85, 245, 0.45);
+  background: hsl(var(--primary) / 0.18);
+  border-color: hsl(var(--primary) / 0.45);
 }
 
 .market-quick-query-shuffle {
@@ -156,16 +156,16 @@ body.col-resizing * {
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  border: 1px solid rgba(97, 85, 245, 0.2);
-  background: rgba(97, 85, 245, 0.06);
+  border: 1px solid hsl(var(--primary) / 0.2);
+  background: hsl(var(--primary) / 0.06);
   color: var(--color-text-secondary);
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 
 .market-quick-query-shuffle:hover {
-  background: rgba(97, 85, 245, 0.18);
-  border-color: rgba(97, 85, 245, 0.4);
+  background: hsl(var(--primary) / 0.18);
+  border-color: hsl(var(--primary) / 0.4);
   color: var(--color-text-primary);
 }
 

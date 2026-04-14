@@ -189,7 +189,7 @@
 
 .market-sidebar-row--active {
   border-left-color: var(--color-accent-primary);
-  background: rgba(97, 85, 245, 0.06);
+  background: hsl(var(--primary) / 0.06);
 }
 
 .market-sidebar-row-symbol {

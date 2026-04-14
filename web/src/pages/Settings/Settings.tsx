@@ -869,8 +869,8 @@ function Settings() {
                 <div
                   className="rounded-lg px-4 py-4 flex items-center justify-between gap-3"
                   style={{
-                    backgroundColor: 'rgba(97, 85, 245, 0.08)',
-                    border: '1px solid rgba(97, 85, 245, 0.2)',
+                    backgroundColor: 'hsl(var(--primary) / 0.08)',
+                    border: '1px solid hsl(var(--primary) / 0.2)',
                   }}
                 >
                   <div>

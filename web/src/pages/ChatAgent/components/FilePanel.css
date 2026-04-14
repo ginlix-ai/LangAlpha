@@ -373,8 +373,8 @@
   }
 
   [data-theme="light"] .file-panel-edit-hint {
-    background-color: rgba(85, 72, 217, 0.06);
-    border-bottom-color: rgba(85, 72, 217, 0.15);
+    background-color: hsl(var(--primary) / 0.06);
+    border-bottom-color: hsl(var(--primary) / 0.15);
   }
 
   /* ====== Selection Tooltip ("Add to context") ====== */

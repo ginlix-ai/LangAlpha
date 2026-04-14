@@ -57,15 +57,15 @@
   --Labels-Tertiary: rgba(255, 255, 255, 0.45);
   --Labels-Quaternary: rgba(255, 255, 255, 0.4);
 
-  --color-accent-primary: #6155F5;
-  --color-accent-soft: rgba(97, 85, 245, 0.2);
-  --color-accent-disabled: rgba(97, 85, 245, 0.5);
-  --color-accent-overlay: rgba(108, 97, 243, 0.5);
-  --color-accent-gradient: linear-gradient(90deg, #6155F5 0%, #8F88EC 28.85%, #39328F 100%);
+  --color-accent-primary: #4161A4;
+  --color-accent-soft: rgba(65, 97, 164, 0.2);
+  --color-accent-disabled: rgba(65, 97, 164, 0.5);
+  --color-accent-overlay: rgba(75, 107, 174, 0.5);
+  --color-accent-gradient: linear-gradient(90deg, #4161A4 0%, #7089C0 28.85%, #2A4278 100%);
 
-  --color-slash-icon: rgb(139, 92, 246);
-  --color-slash-pill-bg: rgba(139, 92, 246, 0.1);
-  --color-slash-pill-border: rgba(139, 92, 246, 0.3);
+  --color-slash-icon: rgb(86, 119, 182);
+  --color-slash-pill-bg: rgba(86, 119, 182, 0.1);
+  --color-slash-pill-border: rgba(86, 119, 182, 0.3);
 
   --color-profit: #0FEDBE;
   --color-profit-soft: rgba(74, 222, 128, 0.2);
@@ -83,7 +83,7 @@
   --color-info-soft: rgba(59, 130, 246, 0.12);
   --color-success: #22c55e;
   --color-success-soft: rgba(34, 197, 94, 0.12);
-  --color-accent-light: #a89afb;
+  --color-accent-light: #7F9BCA;
   --color-btn-primary-bg: #FFFFFF;
   --color-btn-primary-text: #1a1b2e;
   --color-btn-danger: #dc2626;
@@ -106,19 +106,19 @@
   --card-foreground: 0 0% 98%;
   --popover: 0 0% 0%;
   --popover-foreground: 0 0% 98%;
-  --primary: 260 82% 70%;
+  --primary: 221 43% 45%;
   --primary-foreground: 0 0% 98%;
   --secondary: 0 0% 10%;
   --secondary-foreground: 0 0% 98%;
   --muted: 0 0% 65%;
   --muted-foreground: 0 0% 100% / 0.60;
-  --accent: 260 82% 70%;
+  --accent: 221 43% 45%;
   --accent-foreground: 0 0% 98%;
   --destructive: 0 84% 60%;
   --destructive-foreground: 0 0% 98%;
   --border: 0 0% 100% / 0.08;
   --input: 0 0% 4%;
-  --ring: 260 82% 70%;
+  --ring: 221 43% 45%;
   --radius: 0.5rem;
   --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.5);
 
@@ -130,13 +130,13 @@
   --color-up-soft: 160 80% 50% / 0.16;
   --color-down: 359 80% 60%;
   --color-down-soft: 359 80% 60% / 0.16;
-  --accent-fin: 260 82% 70%;
+  --accent-fin: 221 43% 45%;
   --sidebar-bg: 0 0% 0%;
   --sidebar-border: 0 0% 100% / 0.08;
   --sidebar-hover: 0 0% 100% / 0.06;
-  --sidebar-active: 260 82% 70% / 0.15;
+  --sidebar-active: 221 43% 45% / 0.15;
   --sidebar-icon: 0 0% 100% / 0.60;
-  --sidebar-icon-active: 260 82% 70%;
+  --sidebar-icon-active: 221 43% 45%;
 }
 
 /* ---------- Light theme overrides ---------- */
@@ -176,15 +176,15 @@
   --Labels-Tertiary: rgba(45, 43, 40, 0.45);
   --Labels-Quaternary: rgba(45, 43, 40, 0.4);
 
-  --color-accent-primary: #5548D9;
-  --color-accent-soft: rgba(85, 72, 217, 0.10);
-  --color-accent-disabled: rgba(85, 72, 217, 0.35);
-  --color-accent-overlay: rgba(85, 72, 217, 0.25);
-  --color-accent-gradient: linear-gradient(135deg, #F0EDFF 0%, #E8E4FC 50%, #F5EDE3 100%);
+  --color-accent-primary: #37528B;
+  --color-accent-soft: rgba(55, 82, 139, 0.10);
+  --color-accent-disabled: rgba(55, 82, 139, 0.35);
+  --color-accent-overlay: rgba(55, 82, 139, 0.25);
+  --color-accent-gradient: linear-gradient(135deg, #EDF1F8 0%, #E0E8F4 50%, #F0EDE3 100%);
 
-  --color-slash-icon: rgb(109, 40, 217);
-  --color-slash-pill-bg: rgba(109, 40, 217, 0.08);
-  --color-slash-pill-border: rgba(109, 40, 217, 0.2);
+  --color-slash-icon: rgb(55, 82, 139);
+  --color-slash-pill-bg: rgba(55, 82, 139, 0.08);
+  --color-slash-pill-border: rgba(55, 82, 139, 0.2);
 
   --color-profit: #16A34A;
   --color-profit-soft: rgba(22, 163, 74, 0.08);
@@ -202,7 +202,7 @@
   --color-info-soft: rgba(37, 99, 235, 0.08);
   --color-success: #16a34a;
   --color-success-soft: rgba(22, 163, 74, 0.08);
-  --color-accent-light: #7C73E8;
+  --color-accent-light: #6080B5;
   --color-btn-primary-bg: #2D2B28;
   --color-btn-primary-text: #FFFCF9;
   --color-btn-danger: #dc2626;
@@ -226,19 +226,19 @@
   --card-foreground: 30 5% 16%;
   --popover: 0 0% 100%;
   --popover-foreground: 30 5% 16%;
-  --primary: 249 66% 57%;
+  --primary: 221 43% 38%;
   --primary-foreground: 0 0% 100%;
   --secondary: 30 15% 91%;
   --secondary-foreground: 30 8% 22%;
   --muted: 30 5% 52%;
   --muted-foreground: 30 5% 16% / 0.55;
-  --accent: 249 66% 57%;
+  --accent: 221 43% 38%;
   --accent-foreground: 0 0% 100%;
   --destructive: 0 72% 51%;
   --destructive-foreground: 0 0% 100%;
   --border: 30 10% 16% / 0.08;
   --input: 30 15% 91%;
-  --ring: 249 66% 57%;
+  --ring: 221 43% 38%;
   --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.04), 0 4px 14px rgba(0, 0, 0, 0.06);
 
   --bg-main: 30 25% 93%;
@@ -249,13 +249,13 @@
   --color-up-soft: 152 69% 31% / 0.08;
   --color-down: 0 72% 51%;
   --color-down-soft: 0 72% 51% / 0.08;
-  --accent-fin: 249 66% 57%;
+  --accent-fin: 221 43% 38%;
   --sidebar-bg: 33 50% 99%;
   --sidebar-border: 30 10% 16% / 0.06;
   --sidebar-hover: 30 10% 16% / 0.04;
-  --sidebar-active: 249 66% 57% / 0.08;
+  --sidebar-active: 221 43% 38% / 0.08;
   --sidebar-icon: 30 5% 16% / 0.45;
-  --sidebar-icon-active: 249 66% 57%;
+  --sidebar-icon-active: 221 43% 38%;
 }
 
 @layer base {
@@ -286,7 +286,7 @@
 @layer utilities {
   .bg-app {
     background: radial-gradient(1200px 600px at 20% 0%, rgba(255, 255, 255, 0.03), transparent),
-                radial-gradient(900px 500px at 85% 15%, rgba(124, 58, 237, 0.06), transparent),
+                radial-gradient(900px 500px at 85% 15%, hsl(var(--primary) / 0.06), transparent),
                 hsl(var(--bg-main));
   }
 

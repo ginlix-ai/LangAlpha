@@ -28,18 +28,18 @@ interface ThemePalette {
 
 const darkPalette: ThemePalette = {
   completed: { node: "#7BAE8E", conn: "rgba(123,174,142,0.6)", status: "#7BAE8E" },
-  in_progress: { node: "#3D5A99", conn: "rgba(61,90,153,0.6)", status: "#3D5A99", glow: "rgba(61,90,153,0.25)", size: 9 },
+  in_progress: { node: "var(--color-accent-primary)", conn: "hsl(var(--primary) / 0.6)", status: "var(--color-accent-primary)", glow: "hsl(var(--primary) / 0.25)", size: 9 },
   stale: { node: "#B8A07A", conn: "rgba(184,160,122,0.5)", status: "#B8A07A" },
   pending: { node: "transparent", border: "var(--color-border-muted)", conn: "var(--color-border-muted)", status: "var(--color-text-quaternary)" },
-  indicator: "#3D5A99",
+  indicator: "var(--color-accent-primary)",
 };
 
 const lightPalette: ThemePalette = {
   completed: { node: "#4E8A64", conn: "rgba(78,138,100,0.5)", status: "#4E8A64" },
-  in_progress: { node: "#2E4A87", conn: "rgba(46,74,135,0.55)", status: "#2E4A87", glow: "rgba(46,74,135,0.18)", size: 9 },
+  in_progress: { node: "var(--color-accent-primary)", conn: "hsl(var(--primary) / 0.55)", status: "var(--color-accent-primary)", glow: "hsl(var(--primary) / 0.18)", size: 9 },
   stale: { node: "#9A7F58", conn: "rgba(154,127,88,0.45)", status: "#9A7F58" },
   pending: { node: "transparent", border: "var(--color-border-muted)", conn: "var(--color-border-muted)", status: "var(--color-text-quaternary)" },
-  indicator: "#2E4A87",
+  indicator: "var(--color-accent-primary)",
 };
 
 function usePalette(): ThemePalette {

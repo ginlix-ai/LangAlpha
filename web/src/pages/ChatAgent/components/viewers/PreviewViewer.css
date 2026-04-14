@@ -138,7 +138,7 @@
   width: 24px;
   height: 24px;
   border: 2.5px solid var(--color-border-muted, #e5e7eb);
-  border-top-color: var(--color-accent-primary, #6366f1);
+  border-top-color: var(--color-accent-primary, #4161A4);
   border-radius: 50%;
   animation: preview-spinner 0.8s linear infinite;
 }
