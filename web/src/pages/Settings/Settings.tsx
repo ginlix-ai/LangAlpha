@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { User, LogOut, Trash2, MessageSquareText, Sun, Moon, Monitor, Link2, Unlink, ExternalLink, Shield, ClipboardCopy, Search, Pin, Settings2 } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { updateCurrentUser, clearPreferences, uploadAvatar, getUserApiKeys, updateUserApiKeys, initiateCodexDevice, pollCodexDevice, getCodexOAuthStatus, disconnectCodexOAuth, initiateClaudeOAuth, submitClaudeCallback, getClaudeOAuthStatus, disconnectClaudeOAuth } from '@/pages/Dashboard/utils/api';
+import { updateCurrentUser, clearPreferences, uploadAvatar, getUserApiKeys, initiateCodexDevice, pollCodexDevice, getCodexOAuthStatus, disconnectCodexOAuth, initiateClaudeOAuth, submitClaudeCallback, getClaudeOAuthStatus, disconnectClaudeOAuth } from '@/pages/Dashboard/utils/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useUser } from '@/hooks/useUser';
 import { usePreferences } from '@/hooks/usePreferences';
@@ -19,6 +19,7 @@ import ConfirmDialog from '@/pages/Dashboard/components/ConfirmDialog';
 import { ModelTierConfig } from '@/components/model/ModelTierConfig';
 import type { ByokProvider, CustomModelEntry } from '@/components/model/types';
 import { useAllModels } from '@/hooks/useAllModels';
+import { useDebouncedSave } from '@/hooks/useDebouncedSave';
 import './Settings.css';
 
 interface CodexDeviceCode {
@@ -84,10 +85,7 @@ function Settings() {
   const [preferredFlashModel, setPreferredFlashModel] = useState('');
   const [starredModels, setStarredModels] = useState<string[]>([]);
   const [byokProviders, setByokProviders] = useState<ByokProvider[]>([]);
-  const [keyInputs, setKeyInputs] = useState<Record<string, string>>({});
-  const [baseUrlInputs, setBaseUrlInputs] = useState<Record<string, string>>({});
   const [modelTabError, setModelTabError] = useState<string | null>(null);
-  const [modelSaveSuccess, setModelSaveSuccess] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [modelPickerSearch, setModelPickerSearch] = useState('');
   const modelPickerRef = useRef<HTMLDivElement>(null);
@@ -120,10 +118,8 @@ function Settings() {
   const [claudeError, setClaudeError] = useState<string | null>(null);
   const [isSubmittingClaudeCallback, setIsSubmittingClaudeCallback] = useState(false);
 
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const isLoading = isUserLoading || isPrefsLoading;
   const [error, setError] = useState<string | null>(null);
-  const [saveSuccess, setSaveSuccess] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
@@ -246,11 +242,6 @@ function Settings() {
         getClaudeOAuthStatus(),
       ]) as [Record<string, unknown>, OAuthStatus, OAuthStatus];
       setByokProviders((keysRes?.providers as ByokProvider[]) || []);
-      const initialBaseUrls: Record<string, string> = {};
-      ((keysRes?.providers as ByokProvider[]) || []).forEach(p => {
-        if (p.base_url) initialBaseUrls[p.provider] = p.base_url;
-      });
-      setBaseUrlInputs(initialBaseUrls);
       const otherPref = (prefsData as Preferences | null)?.other_preference as Record<string, unknown> | undefined;
       setPreferredModel((otherPref?.preferred_model as string) || '');
       setPreferredFlashModel((otherPref?.preferred_flash_model as string) || '');
@@ -266,73 +257,48 @@ function Settings() {
     }
   };
 
-  const handleModelTabSave = async () => {
-    setModelTabError(null);
-    setModelSaveSuccess(false);
-    setIsSubmitting(true);
-    try {
-      // 1. Save model preferences (including custom models + custom providers)
-      const customProvidersList = byokProviders
-        .filter(p => p.is_custom)
-        .map(p => {
-          const entry: Record<string, unknown> = { name: p.provider, parent_provider: p.parent_provider };
-          if (p.use_response_api) entry.use_response_api = true;
-          return entry;
-        });
-      // Clean stale references before saving
-      const cleanStarred = starredModels.filter(m => validModelNames.has(m));
-      const cleanFallback = fallbackModels.filter(m => validModelNames.has(m));
-      const activeProviderKeys = new Set(byokProviders.filter(p => p.has_key).map(p => p.provider));
-      const cleanCustomProviders = customProvidersList.filter(cp => activeProviderKeys.has(cp.name as string));
-      const cleanCustomModels = customModels.filter(cm => activeProviderKeys.has(cm.provider) || validModelNames.has(cm.name));
-
-      // Clear subsidiary model fields if they reference models no longer valid
-      const cleanModelRef = (val: string) => validModelNames.has(val) ? val : null;
-
-      await updatePrefsMutation.mutateAsync({
-        other_preference: {
-          preferred_model: preferredModel ? cleanModelRef(preferredModel) : null,
-          preferred_flash_model: preferredFlashModel ? cleanModelRef(preferredFlashModel) : null,
-          starred_models: cleanStarred.length > 0 ? cleanStarred : null,
-          custom_models: cleanCustomModels.length > 0 ? cleanCustomModels : null,
-          custom_providers: cleanCustomProviders.length > 0 ? cleanCustomProviders : null,
-          summarization_model: summarizationModel ? cleanModelRef(summarizationModel) : null,
-          fetch_model: fetchModel ? cleanModelRef(fetchModel) : null,
-          fallback_models: cleanFallback,
-        },
-      });
-
-      // 2. Save any pending API key inputs and base URL changes
-      const pendingKeys = Object.entries(keyInputs).filter(([, v]) => v?.trim());
-      const pendingBaseUrls: Record<string, string | null> = {};
-      for (const [provider, url] of Object.entries(baseUrlInputs)) {
-        const original = byokProviders.find(p => p.provider === provider)?.base_url || '';
-        if (url !== original) pendingBaseUrls[provider] = url || null;
-      }
-
-      if (pendingKeys.length > 0 || Object.keys(pendingBaseUrls).length > 0) {
-        const payload: Record<string, unknown> = {};
-        if (pendingKeys.length > 0) {
-          payload.api_keys = Object.fromEntries(pendingKeys.map(([p, k]) => [p, k.trim()]));
-        }
-        if (Object.keys(pendingBaseUrls).length > 0) {
-          payload.base_urls = pendingBaseUrls;
-        }
-        const result = await updateUserApiKeys(payload) as Record<string, unknown>;
-        setByokProviders(result.providers as ByokProvider[]);
-        setKeyInputs({});
-        queryClient.invalidateQueries({ queryKey: queryKeys.user.apiKeys() });
-        queryClient.invalidateQueries({ queryKey: queryKeys.platform.models() });
-      }
-
-      setModelSaveSuccess(true);
-      setTimeout(() => setModelSaveSuccess(false), 3000);
-    } catch {
-      setModelTabError(t('settings.failedToSaveSettings'));
-    } finally {
-      setIsSubmitting(false);
-    }
+  // Refs to hold latest model state for the debounced save callback
+  const modelStateRef = useRef({
+    preferredModel, preferredFlashModel, starredModels, customModels,
+    summarizationModel, fetchModel, fallbackModels, byokProviders,
+  });
+  modelStateRef.current = {
+    preferredModel, preferredFlashModel, starredModels, customModels,
+    summarizationModel, fetchModel, fallbackModels, byokProviders,
   };
+
+  const saveModelPrefs = useCallback(async () => {
+    const s = modelStateRef.current;
+    const customProvidersList = s.byokProviders
+      .filter(p => p.is_custom)
+      .map(p => {
+        const entry: Record<string, unknown> = { name: p.provider, parent_provider: p.parent_provider };
+        if (p.use_response_api) entry.use_response_api = true;
+        return entry;
+      });
+    const cleanStarred = s.starredModels.filter(m => validModelNames.has(m));
+    const cleanFallback = s.fallbackModels.filter(m => validModelNames.has(m));
+    const activeProviderKeys = new Set(s.byokProviders.filter(p => p.has_key).map(p => p.provider));
+    const cleanCustomProviders = customProvidersList.filter(cp => activeProviderKeys.has(cp.name as string));
+    const cleanCustomModels = s.customModels.filter(cm => activeProviderKeys.has(cm.provider) || validModelNames.has(cm.name));
+    const cleanModelRef = (val: string) => validModelNames.has(val) ? val : null;
+
+    await updatePrefsMutation.mutateAsync({
+      other_preference: {
+        preferred_model: s.preferredModel ? cleanModelRef(s.preferredModel) : null,
+        preferred_flash_model: s.preferredFlashModel ? cleanModelRef(s.preferredFlashModel) : null,
+        starred_models: cleanStarred.length > 0 ? cleanStarred : null,
+        custom_models: cleanCustomModels.length > 0 ? cleanCustomModels : null,
+        custom_providers: cleanCustomProviders.length > 0 ? cleanCustomProviders : null,
+        summarization_model: s.summarizationModel ? cleanModelRef(s.summarizationModel) : null,
+        fetch_model: s.fetchModel ? cleanModelRef(s.fetchModel) : null,
+        fallback_models: cleanFallback,
+      },
+    });
+  }, [validModelNames, updatePrefsMutation]);
+
+  const { trigger: triggerModelSave, status: modelSaveStatus } = useDebouncedSave(saveModelPrefs, 500);
+
 
   const handleCodexConnectClick = () => {
     setShowCodexDisclaimer(true);
@@ -491,13 +457,44 @@ function Settings() {
     }
   };
 
+  // Auto-save user info: use refs so the debounced callback always reads latest state
+  const userInfoRef = useRef({ name, timezone, locale });
+  userInfoRef.current = { name, timezone, locale };
+
+  const saveUserInfo = useCallback(async () => {
+    setError(null);
+    const s = userInfoRef.current;
+    const userData: Record<string, string> = {};
+    if (s.name.trim()) userData.name = s.name.trim();
+    if (s.timezone) userData.timezone = s.timezone;
+    if (s.locale) userData.locale = s.locale;
+    if (Object.keys(userData).length > 0) {
+      await updateCurrentUser(userData);
+      queryClient.invalidateQueries({ queryKey: queryKeys.user.me() });
+    }
+  }, [queryClient]);
+
+  const { trigger: triggerUserInfoSave, flush: flushUserInfoSave, status: userInfoSaveStatus } = useDebouncedSave(saveUserInfo, 800);
+
+  const handleNameChange = (value: string) => {
+    setName(value);
+    triggerUserInfoSave();
+  };
+
+  const handleTimezoneChange = (value: string) => {
+    setTimezone(value);
+    userInfoRef.current = { ...userInfoRef.current, timezone: value };
+    flushUserInfoSave();
+  };
+
   const handleLocaleChange = (newLocale: string) => {
     setLocale(newLocale);
-    // Also switch i18n language for supported UI locales
     if (newLocale === 'en-US' || newLocale === 'zh-CN') {
       i18n.changeLanguage(newLocale);
       localStorage.setItem('locale', newLocale);
     }
+    userInfoRef.current = { ...userInfoRef.current, locale: newLocale };
+    flushUserInfoSave();
   };
 
   const handleVoiceInputToggle = async () => {
@@ -516,29 +513,6 @@ function Settings() {
         title: t('common.error'),
         description: t('settings.failedToSaveSettings'),
       });
-    }
-  };
-
-  const handleUserInfoSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setIsSubmitting(true);
-    setError(null);
-    setSaveSuccess(false);
-    try {
-      const userData: Record<string, string> = {};
-      if (name.trim()) userData.name = name.trim();
-      if (timezone) userData.timezone = timezone;
-      if (locale) userData.locale = locale;
-      if (Object.keys(userData).length > 0) {
-        await updateCurrentUser(userData);
-        queryClient.invalidateQueries({ queryKey: queryKeys.user.me() });
-      }
-      setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 3000);
-    } catch (err: unknown) {
-      setError((err as Error).message || t('settings.failedToUpdateUser'));
-    } finally {
-      setIsSubmitting(false);
     }
   };
 
@@ -604,15 +578,6 @@ function Settings() {
     }
   };
 
-  // Prevent Enter key in text inputs from submitting the enclosing <form>.
-  // Only the explicit submit button should trigger form submission.
-  const preventEnterSubmit = (e: React.KeyboardEvent<HTMLFormElement>) => {
-    const target = e.target as HTMLElement;
-    if (e.key === 'Enter' && target.tagName === 'INPUT' && (target as HTMLInputElement).type !== 'submit') {
-      e.preventDefault();
-    }
-  };
-
   // Auto-clean stale starred/fallback models on load
   useEffect(() => {
     if (validModelNames.size === 0) return;
@@ -671,10 +636,10 @@ function Settings() {
           )}
 
           {!isLoading && activeTab === 'userInfo' && (
-            <form onSubmit={handleUserInfoSubmit} onKeyDown={preventEnterSubmit} className="space-y-5">
+            <div className="space-y-5">
               <div className="flex items-center gap-4 mb-6 pb-6" style={{ borderBottom: '1px solid var(--color-border-muted)' }}>
                 <div
-                  className="h-16 w-16 rounded-full flex items-center justify-center cursor-pointer overflow-hidden"
+                  className="h-16 w-16 rounded-full flex items-center justify-center cursor-pointer overflow-hidden flex-shrink-0"
                   style={{ backgroundColor: 'var(--color-accent-soft)' }}
                   onClick={() => fileInputRef.current?.click()}
                 >
@@ -693,6 +658,16 @@ function Settings() {
                   </button>
                 </div>
                 <input type="file" ref={fileInputRef} onChange={handleAvatarChange} accept="image/png,image/jpeg,image/gif,image/webp" style={{ display: 'none' }} />
+                <div className="ml-auto">
+                  <button
+                    type="button"
+                    onClick={() => setShowLogoutConfirm(true)}
+                    className="flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors"
+                    style={{ color: 'var(--color-loss)', backgroundColor: 'transparent', border: '1px solid var(--color-loss)' }}
+                  >
+                    <LogOut className="h-4 w-4" /> {t('settings.logout')}
+                  </button>
+                </div>
               </div>
 
               <div>
@@ -717,7 +692,7 @@ function Settings() {
                 <Input
                   type="text"
                   value={name}
-                  onChange={(e) => setName(e.target.value)}
+                  onChange={(e) => handleNameChange(e.target.value)}
                   placeholder={t('auth.enterName')}
                   className="w-full"
                   style={{
@@ -725,7 +700,6 @@ function Settings() {
                     border: '1px solid var(--color-border-muted)',
                     color: 'var(--color-text-primary)',
                   }}
-                  disabled={isSubmitting}
                 />
               </div>
 
@@ -733,8 +707,7 @@ function Settings() {
                 <label className="block text-sm font-medium mb-2" style={{ color: 'var(--color-text-primary)' }}>{t('settings.timezone')}</label>
                 <Select
                   value={timezone}
-                  onChange={(e) => setTimezone(e.target.value)}
-                  disabled={isSubmitting}
+                  onChange={(e) => handleTimezoneChange(e.target.value)}
                 >
                   {timezones.map((item, i) => (
                     'value' in item ? (
@@ -755,7 +728,6 @@ function Settings() {
                 <Select
                   value={locale}
                   onChange={(e) => handleLocaleChange(e.target.value)}
-                  disabled={isSubmitting}
                 >
                   {locales.map((item, i) => (
                     <option key={i} value={item.value}>{item.label}</option>
@@ -763,33 +735,11 @@ function Settings() {
                 </Select>
               </div>
 
-              {/* Voice Input Toggle */}
+              {/* Theme Toggle */}
               <div className="flex items-center justify-between p-3 rounded-lg" style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}>
                 <div className="space-y-0.5">
-                  <label className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{t('settings.voiceInput')}</label>
-                  <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('settings.voiceInputDesc')}</p>
+                  <label className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{t('settings.theme')}</label>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleVoiceInputToggle}
-                  className="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
-                  style={{
-                    backgroundColor: (prefsData as any)?.other_preference?.voice_input_enabled ? 'var(--color-accent-primary)' : 'var(--color-bg-elevated)',
-                    borderColor: 'var(--color-border-muted)',
-                  }}
-                >
-                  <span
-                    className="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
-                    style={{
-                      transform: (prefsData as any)?.other_preference?.voice_input_enabled ? 'translateX(16px)' : 'translateX(0)',
-                    }}
-                  />
-                </button>
-              </div>
-
-              {/* Theme Toggle */}
-              <div>
-                <label className="block text-sm font-medium mb-2" style={{ color: 'var(--color-text-primary)' }}>{t('settings.theme')}</label>
                 <div className="inline-flex rounded-lg overflow-hidden" style={{ border: '1px solid var(--color-border-muted)' }}>
                   <button
                     type="button"
@@ -830,37 +780,50 @@ function Settings() {
                 </div>
               </div>
 
+              {/* Voice Input Toggle */}
+              <div className="flex items-center justify-between p-3 rounded-lg" style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}>
+                <div className="space-y-0.5">
+                  <label className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{t('settings.voiceInput')}</label>
+                  <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('settings.voiceInputDesc')}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleVoiceInputToggle}
+                  className="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+                  style={{
+                    backgroundColor: (prefsData as any)?.other_preference?.voice_input_enabled ? 'var(--color-accent-primary)' : 'var(--color-bg-elevated)',
+                    borderColor: 'var(--color-border-muted)',
+                  }}
+                >
+                  <span
+                    className="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
+                    style={{
+                      transform: (prefsData as any)?.other_preference?.voice_input_enabled ? 'translateX(16px)' : 'translateX(0)',
+                    }}
+                  />
+                </button>
+              </div>
+
               {error && (
                 <div className="p-3 rounded-md" style={{ backgroundColor: 'var(--color-loss-soft)', border: '1px solid var(--color-border-loss)' }}>
                   <p className="text-sm" style={{ color: 'var(--color-loss)' }}>{error}</p>
                 </div>
               )}
 
-              <div className="flex gap-3 justify-between pt-4">
-                <button
-                  type="button"
-                  onClick={() => setShowLogoutConfirm(true)}
-                  className="flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors"
-                  style={{ color: 'var(--color-loss)', backgroundColor: 'transparent', border: '1px solid var(--color-loss)' }}
-                >
-                  <LogOut className="h-4 w-4" /> {t('settings.logout')}
-                </button>
-                <div className="flex items-center gap-3">
-                  {saveSuccess && (
+              {userInfoSaveStatus !== 'idle' && (
+                <div className="flex items-center justify-end pt-2">
+                  {userInfoSaveStatus === 'saving' && (
+                    <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('common.saving')}</span>
+                  )}
+                  {userInfoSaveStatus === 'saved' && (
                     <span className="text-xs" style={{ color: 'var(--color-success)' }}>{t('common.saved')}</span>
                   )}
-                  <button type="submit" disabled={isSubmitting}
-                    className="px-4 py-2 rounded-md text-sm font-medium"
-                    style={{
-                      backgroundColor: isSubmitting ? 'var(--color-accent-disabled)' : 'var(--color-accent-primary)',
-                      color: 'var(--color-text-on-accent)',
-                    }}
-                  >
-                    {isSubmitting ? t('common.saving') : t('common.save')}
-                  </button>
+                  {userInfoSaveStatus === 'error' && (
+                    <span className="text-xs" style={{ color: 'var(--color-loss)' }}>{t('settings.failedToSaveSettings')}</span>
+                  )}
                 </div>
-              </div>
-            </form>
+              )}
+            </div>
           )}
 
           {!isLoading && activeTab === 'preferences' && (
@@ -985,9 +948,9 @@ function Settings() {
                 <ModelTierConfig
                   models={visibleModels}
                   primaryModel={preferredModel}
-                  onPrimaryModelChange={setPreferredModel}
+                  onPrimaryModelChange={(v) => { setPreferredModel(v); triggerModelSave(); }}
                   flashModel={preferredFlashModel}
-                  onFlashModelChange={setPreferredFlashModel}
+                  onFlashModelChange={(v) => { setPreferredFlashModel(v); triggerModelSave(); }}
                   showAdvanced
                   advancedModels={{
                     summarizationModel: summarizationModel,
@@ -998,6 +961,7 @@ function Settings() {
                     if (models.summarizationModel !== undefined) setSummarizationModel(models.summarizationModel);
                     if (models.fetchModel !== undefined) setFetchModel(models.fetchModel);
                     if (models.fallbackModels !== undefined) setFallbackModels(models.fallbackModels);
+                    triggerModelSave();
                   }}
                   systemDefaults={hookSystemDefaults ?? undefined}
                   modelAccess={modelAccessMap}
@@ -1026,7 +990,7 @@ function Settings() {
                         {key}
                         <button
                           type="button"
-                          onClick={() => setStarredModels(prev => prev.filter(k => k !== key))}
+                          onClick={() => { setStarredModels(prev => prev.filter(k => k !== key)); triggerModelSave(); }}
                           className="ml-0.5 hover:opacity-70"
                           style={{ color: 'var(--color-text-tertiary)' }}
                           aria-label={`Remove ${key}`}
@@ -1095,9 +1059,9 @@ function Settings() {
                                 <button
                                   key={m}
                                   type="button"
-                                  onClick={() => setStarredModels(prev =>
+                                  onClick={() => { setStarredModels(prev =>
                                     prev.includes(m) ? prev.filter(k => k !== m) : [...prev, m]
-                                  )}
+                                  ); triggerModelSave(); }}
                                   className="w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs transition-colors"
                                   style={{
                                     color: isStarred ? 'var(--color-accent-light)' : 'var(--color-text-primary)',
@@ -1395,23 +1359,19 @@ function Settings() {
                 </div>
               )}
 
-              <div className="flex items-center gap-3 justify-end pt-4" style={{ borderTop: '1px solid var(--color-border-muted)', marginTop: '8px', paddingTop: '16px' }}>
-                {modelSaveSuccess && (
-                  <span className="text-xs" style={{ color: 'var(--color-success)' }}>{t('common.saved')}</span>
-                )}
-                <button
-                  type="button"
-                  onClick={handleModelTabSave}
-                  disabled={isSubmitting}
-                  className="px-4 py-2 rounded-md text-sm font-medium"
-                  style={{
-                    backgroundColor: isSubmitting ? 'var(--color-accent-disabled)' : 'var(--color-accent-primary)',
-                    color: 'var(--color-text-on-accent)',
-                  }}
-                >
-                  {isSubmitting ? t('common.saving') : t('common.save')}
-                </button>
-              </div>
+              {modelSaveStatus !== 'idle' && (
+                <div className="flex items-center justify-end pt-2">
+                  {modelSaveStatus === 'saving' && (
+                    <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('common.saving')}</span>
+                  )}
+                  {modelSaveStatus === 'saved' && (
+                    <span className="text-xs" style={{ color: 'var(--color-success)' }}>{t('common.saved')}</span>
+                  )}
+                  {modelSaveStatus === 'error' && (
+                    <span className="text-xs" style={{ color: 'var(--color-loss)' }}>{t('settings.failedToSaveSettings')}</span>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
