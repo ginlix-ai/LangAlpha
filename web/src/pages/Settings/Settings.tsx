@@ -693,6 +693,7 @@ function Settings() {
                   type="text"
                   value={name}
                   onChange={(e) => handleNameChange(e.target.value)}
+                  onBlur={() => flushUserInfoSave()}
                   placeholder={t('auth.enterName')}
                   className="w-full"
                   style={{

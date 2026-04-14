@@ -19,6 +19,7 @@ export function useDebouncedSave(
   saveFnRef.current = saveFn;
   const runningRef = useRef(false);
   const pendingRef = useRef(false);
+  const mountedRef = useRef(true);
 
   const execute = useCallback(async () => {
     if (runningRef.current) {
@@ -34,19 +35,24 @@ export function useDebouncedSave(
       clearTimeout(savedTimerRef.current);
       savedTimerRef.current = null;
     }
+    if (!mountedRef.current) { runningRef.current = false; pendingRef.current = false; return; }
     setStatus('saving');
     try {
       await saveFnRef.current();
+      if (!mountedRef.current) return;
       setStatus('saved');
       savedTimerRef.current = setTimeout(() => setStatus('idle'), 2000);
     } catch {
+      if (!mountedRef.current) return;
       setStatus('error');
       savedTimerRef.current = setTimeout(() => setStatus('idle'), 3000);
     } finally {
       runningRef.current = false;
-      if (pendingRef.current) {
+      if (pendingRef.current && mountedRef.current) {
         pendingRef.current = false;
         execute();
+      } else {
+        pendingRef.current = false;
       }
     }
   }, []);
@@ -62,6 +68,7 @@ export function useDebouncedSave(
 
   useEffect(() => {
     return () => {
+      mountedRef.current = false;
       if (timerRef.current) clearTimeout(timerRef.current);
       if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
     };
