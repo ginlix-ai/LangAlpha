@@ -17,8 +17,15 @@ export function useDebouncedSave(
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveFnRef = useRef(saveFn);
   saveFnRef.current = saveFn;
+  const runningRef = useRef(false);
+  const pendingRef = useRef(false);
 
   const execute = useCallback(async () => {
+    if (runningRef.current) {
+      pendingRef.current = true;
+      return;
+    }
+    runningRef.current = true;
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
@@ -35,6 +42,12 @@ export function useDebouncedSave(
     } catch {
       setStatus('error');
       savedTimerRef.current = setTimeout(() => setStatus('idle'), 3000);
+    } finally {
+      runningRef.current = false;
+      if (pendingRef.current) {
+        pendingRef.current = false;
+        execute();
+      }
     }
   }, []);
 

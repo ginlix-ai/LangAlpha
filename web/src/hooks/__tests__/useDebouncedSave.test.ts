@@ -64,6 +64,26 @@ describe('useDebouncedSave', () => {
     expect(result.current.status).toBe('idle');
   });
 
+  it('queues a re-save when flush is called during an in-flight save', async () => {
+    let resolveFirst!: () => void;
+    const saveFn = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>(r => { resolveFirst = r; }))
+      .mockResolvedValue(undefined);
+    const { result } = renderHook(() => useDebouncedSave(saveFn, 500));
+
+    // Start first save
+    act(() => { result.current.flush(); });
+    expect(saveFn).toHaveBeenCalledTimes(1);
+
+    // Second flush while first is in-flight — should queue, not start
+    act(() => { result.current.flush(); });
+    expect(saveFn).toHaveBeenCalledTimes(1);
+
+    // Complete first save — queued save should fire
+    await act(async () => { resolveFirst(); });
+    expect(saveFn).toHaveBeenCalledTimes(2);
+  });
+
   it('cleans up timers on unmount', async () => {
     const saveFn = vi.fn().mockResolvedValue(undefined);
     const { result, unmount } = renderHook(() => useDebouncedSave(saveFn, 500));
