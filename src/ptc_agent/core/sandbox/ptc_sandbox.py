@@ -704,11 +704,10 @@ class PTCSandbox:
                 f"unrecoverable state: {state_value}",
             )
 
-        # Use the default working dir from config (already set in __init__).
-        # Avoids a Daytona API round-trip — the working dir is immutable
-        # after sandbox creation, and DaytonaRuntime already knows it via
-        # default_working_dir passed by the provider.
-        self._work_dir = self.runtime.working_dir
+        # Fetch the actual working dir from the sandbox. The config default
+        # may differ from the real dir (e.g. /home/workspace vs /home/daytona)
+        # when the sandbox was created under a previous config.
+        self._work_dir = await self.runtime.fetch_working_dir()
         _mark_rc("fetch_workdir")
 
         total = sum(_rc_phases.values())
