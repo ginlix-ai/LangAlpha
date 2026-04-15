@@ -275,12 +275,13 @@ async def delete_thread_endpoint(thread_id: str, x_user_id: CurrentUserId):
         await delete_thread(thread_id)
 
         # Invalidate existence cache
+        from src.server.database.conversation import thread_exists_key
         from src.utils.cache.redis_cache import get_cache_client
 
         cache = get_cache_client()
         if cache.enabled and cache.client:
             try:
-                await cache.client.delete(f"thread_exists:{thread_id}")
+                await cache.client.delete(thread_exists_key(thread_id))
             except Exception:
                 pass
 

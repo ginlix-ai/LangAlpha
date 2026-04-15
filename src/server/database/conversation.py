@@ -17,6 +17,19 @@ from psycopg_pool import AsyncConnectionPool
 
 logger = logging.getLogger(__name__)
 
+# Cache key helpers — single source of truth for key format.
+# Invalidation sites import these instead of hardcoding the prefix.
+_EXISTS_TTL = 86400  # 24h — freshness via explicit invalidation
+
+
+def ws_exists_key(workspace_id: str) -> str:
+    return f"ws_exists:{workspace_id}"
+
+
+def thread_exists_key(thread_id: str) -> str:
+    return f"thread_exists:{thread_id}"
+
+
 # Module-level connection pool cache for conversation database operations
 # This ensures we reuse connections across operations, reducing connection overhead
 _conversation_db_pool_cache = {}
@@ -493,12 +506,11 @@ async def ensure_thread_exists(
     """
     from src.utils.cache.redis_cache import get_cache_client
 
-    _EXISTS_TTL = 86400  # 24h — freshness via explicit invalidation
     cache = get_cache_client()
 
     async with get_db_connection() as conn:
         # Step 1: Verify workspace exists (cached — immutable after creation)
-        ws_key = f"ws_exists:{workspace_id}"
+        ws_key = ws_exists_key(workspace_id)
         ws_cached = False
         if cache.enabled and cache.client:
             try:
@@ -527,7 +539,7 @@ async def ensure_thread_exists(
                     pass
 
         # Step 2: Check if thread already exists (cached — immutable after creation)
-        thread_key = f"thread_exists:{conversation_thread_id}"
+        thread_key = thread_exists_key(conversation_thread_id)
         thread_cached = False
         if cache.enabled and cache.client:
             try:

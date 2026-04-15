@@ -533,9 +533,12 @@ class PTCSandbox:
         await self._wait_ready()
 
         assert self.runtime is not None
-        # Use sync property — working dir is already known from config
-        # (default_working_dir passed by provider). Avoids an API round-trip.
-        self._work_dir = self.runtime.working_dir
+        # Only set from config default when _work_dir is unset (fresh sandbox).
+        # reconnect() may have already fetched the real dir from the sandbox
+        # API — don't clobber it with the config default which can differ
+        # (e.g. /home/workspace vs /home/daytona after a config change).
+        if not self._work_dir:
+            self._work_dir = self.runtime.working_dir
 
     async def refresh_tools(self, **kwargs: Any) -> dict[str, Any]:
         """Force-rebuild all sandbox tool modules and packages.
