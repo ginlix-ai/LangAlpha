@@ -219,6 +219,6 @@ async def parse_structured_output(llm: object, text: str, schema_class: Optional
         try:
             data = json.loads(content)
             return schema_class(**data)
-        except:
+        except Exception:
             raise e
     

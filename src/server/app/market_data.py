@@ -457,7 +457,7 @@ async def search_stocks(
         raise
     except Exception as e:
         logger.error(f"Error searching stocks for query '{query}': {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to search stocks: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to search stocks. Please try again later.")
 
 
 # =============================================================================
@@ -510,7 +510,7 @@ async def get_company_overview(symbol: str, user_id: CurrentUserId) -> CompanyOv
         raise
     except Exception as e:
         logger.error(f"Error fetching company overview for {symbol}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch company overview: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch company overview. Please try again later.")
 
 
 # =============================================================================
@@ -606,7 +606,7 @@ async def get_analyst_data(
         raise
     except Exception as e:
         logger.error(f"Error fetching analyst data for {symbol}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch analyst data: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch analyst data. Please try again later.")
 
 
 # =============================================================================

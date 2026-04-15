@@ -78,7 +78,7 @@ temp/
 *.tmp
 
 CLAUDE.md
-.cluade/
+.claude/
 WARP.md
 
 posts/

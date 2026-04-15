@@ -169,7 +169,7 @@ mcp:
       args: ["mcp"]
       env: {}
 
-    # Not enabled in Porduction or maintained by us
+    # Not enabled in Production or maintained by us
     - name: "alphavantage"
       enabled: false
       description: "Financial market data API for stocks, forex, crypto, and economic indicators"
