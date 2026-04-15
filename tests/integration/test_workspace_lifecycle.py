@@ -160,8 +160,8 @@ class TestUpdateWorkspace:
         ws_id = str(seed_workspace["workspace_id"])
         updated = await update_workspace_activity(ws_id)
 
-        assert updated is not None
-        assert updated["last_activity_at"] is not None
+        # update_workspace_activity returns bool (True if row was updated)
+        assert updated is True
 
 
 class TestDeleteWorkspace:

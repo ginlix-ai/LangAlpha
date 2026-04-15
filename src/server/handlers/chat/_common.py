@@ -129,23 +129,25 @@ async def _setup_fork_and_persistence(
     # Fork cleanup: truncate app DB when branching from a checkpoint
     is_fork = request.fork_from_turn is not None and request.checkpoint_id
     if is_fork:
-        deleted = await qr_db.truncate_thread_from_turn(
-            thread_id,
-            request.fork_from_turn,
-            preserve_query_at_fork=is_checkpoint_replay,
+        # Parallelize the two DB operations (different tables, no dependency)
+        deleted, _ = await asyncio.gather(
+            qr_db.truncate_thread_from_turn(
+                thread_id,
+                request.fork_from_turn,
+                preserve_query_at_fork=is_checkpoint_replay,
+            ),
+            qr_db.update_thread_checkpoint_id(thread_id, request.checkpoint_id),
         )
         logger.info(
             f"[{log_prefix}] Truncated {deleted} rows from turn_index>={request.fork_from_turn} "
             f"thread_id={thread_id} checkpoint_id={request.checkpoint_id}"
         )
-        # Clear Redis event buffer (stale events from old branch)
+        # Clear Redis event buffer (stale events from old branch) — fault-tolerant
         try:
             manager = BackgroundTaskManager.get_instance()
             await manager.clear_event_buffer(thread_id)
         except Exception as e:
             logger.warning(f"[{log_prefix}] Failed to clear event buffer: {e}")
-        # Update branch tip to fork checkpoint
-        await qr_db.update_thread_checkpoint_id(thread_id, request.checkpoint_id)
 
     # Initialize persistence service
     persistence_service = ConversationPersistenceService.get_instance(
@@ -566,7 +568,7 @@ async def persist_or_skip_replay(
             else await persistence_service.get_or_calculate_turn_index()
         )
         persistence_service.mark_query_persisted(turn_to_mark)
-        logger.info(
+        logger.debug(
             f"[{log_prefix}] Skipped query persist (checkpoint replay): "
             f"thread_id={thread_id} turn_index={turn_to_mark}"
         )

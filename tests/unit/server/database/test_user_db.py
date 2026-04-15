@@ -4,10 +4,11 @@ Tests for src/server/database/user.py
 Verifies user CRUD, upsert, preferences, and get_user_with_preferences.
 """
 
+import json
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -335,3 +336,115 @@ async def test_delete_user_preferences_not_found(user_mock_db, mock_cursor):
 
     result = await delete_user_preferences("user-1")
     assert result is False
+
+
+# ===========================================================================
+# get_user_preferences cache behavior
+# ===========================================================================
+
+
+def _make_cache(enabled=True, get_return=None):
+    """Create a mock RedisCacheClient with async get/set/delete."""
+    cache = MagicMock()
+    cache.enabled = enabled
+    cache.client = AsyncMock()
+    cache.client.get = AsyncMock(return_value=get_return)
+    cache.client.set = AsyncMock()
+    cache.client.delete = AsyncMock()
+    return cache
+
+
+@pytest.mark.asyncio
+async def test_get_user_preferences_cache_hit():
+    """Cache returns JSON bytes -> parsed dict returned without DB call."""
+    prefs = _prefs_row()
+    cached_bytes = json.dumps(prefs, default=str).encode()
+    cache = _make_cache(get_return=cached_bytes)
+
+    cursor = AsyncMock()
+    cursor.execute = AsyncMock()
+    conn = AsyncMock()
+
+    @asynccontextmanager
+    async def _cursor_cm(**kwargs):
+        yield cursor
+
+    conn.cursor = _cursor_cm
+
+    @asynccontextmanager
+    async def _fake_db():
+        yield conn
+
+    with patch(
+        "src.utils.cache.redis_cache.get_cache_client", return_value=cache
+    ), patch(
+        "src.server.database.user.get_db_connection", new=_fake_db
+    ):
+        from src.server.database.user import get_user_preferences
+
+        result = await get_user_preferences("user-1")
+
+    assert result is not None
+    assert result["user_id"] == "user-1"
+    cache.client.get.assert_awaited_once_with("user_prefs:user-1")
+    # DB should NOT have been called
+    cursor.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_user_preferences_cache_miss():
+    """Cache miss -> DB queried, cache.set called with JSON, returns dict."""
+    cache = _make_cache(get_return=None)
+    prefs = _prefs_row()
+
+    cursor = AsyncMock()
+    cursor.execute = AsyncMock()
+    cursor.fetchone = AsyncMock(return_value=prefs)
+    conn = AsyncMock()
+
+    @asynccontextmanager
+    async def _cursor_cm(**kwargs):
+        yield cursor
+
+    conn.cursor = _cursor_cm
+
+    @asynccontextmanager
+    async def _fake_db():
+        yield conn
+
+    with patch(
+        "src.utils.cache.redis_cache.get_cache_client", return_value=cache
+    ), patch(
+        "src.server.database.user.get_db_connection", new=_fake_db
+    ):
+        from src.server.database.user import get_user_preferences
+
+        result = await get_user_preferences("user-1")
+
+    assert result is not None
+    assert result["user_id"] == "user-1"
+    # DB was queried
+    cursor.execute.assert_awaited_once()
+    # Cache was populated with JSON
+    cache.client.set.assert_awaited_once()
+    set_call = cache.client.set.call_args
+    assert set_call[0][0] == "user_prefs:user-1"
+    # The second positional arg is JSON; verify it round-trips
+    stored = json.loads(set_call[0][1])
+    assert stored["user_id"] == "user-1"
+    assert set_call[1]["ex"] == 86400
+
+
+@pytest.mark.asyncio
+async def test_invalidate_user_prefs_cache():
+    """invalidate_user_prefs_cache deletes the correct cache key."""
+    cache = _make_cache()
+
+    with patch(
+        "src.utils.cache.redis_cache.get_cache_client", return_value=cache
+    ):
+        from src.server.database.user import invalidate_user_prefs_cache
+
+        await invalidate_user_prefs_cache("user1")
+
+    cache.client.delete.assert_awaited_once_with("user_prefs:user1")

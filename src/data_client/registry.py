@@ -144,11 +144,11 @@ async def get_market_data_provider() -> MarketDataSource:
             if reg and reg[0]():  # availability check
                 source = await reg[1]()
                 entries.append(ProviderEntry(name=name, source=source, markets=markets))
-                logger.info(
+                logger.debug(
                     "market_data.source.registered | name=%s markets=%s", name, markets
                 )
             else:
-                logger.info("market_data.source.skipped | name=%s (unavailable)", name)
+                logger.debug("market_data.source.skipped | name=%s (unavailable)", name)
 
         if not entries:
             raise RuntimeError(
@@ -196,9 +196,9 @@ async def get_news_data_provider():
             if reg and reg[0]():  # availability check
                 source = await reg[1]()
                 sources.append((name, source))
-                logger.info("news_data.source.registered | name=%s", name)
+                logger.debug("news_data.source.registered | name=%s", name)
             else:
-                logger.info("news_data.source.skipped | name=%s (unavailable)", name)
+                logger.debug("news_data.source.skipped | name=%s (unavailable)", name)
 
         if not sources:
             raise RuntimeError(
@@ -241,14 +241,14 @@ async def get_financial_data_provider() -> FinancialDataProvider:
 
             fmp_client = await get_fmp_client()
             financial = FMPFinancialSource(fmp_client)
-            logger.info(
+            logger.debug(
                 "financial_data.source.registered | name=fmp (FinancialDataSource)"
             )
         elif _yfinance_available():
             from .yfinance.financial_source import YFinanceFinancialSource
 
             financial = YFinanceFinancialSource()
-            logger.info(
+            logger.debug(
                 "financial_data.source.registered | name=yfinance (FinancialDataSource)"
             )
 
@@ -258,7 +258,7 @@ async def get_financial_data_provider() -> FinancialDataProvider:
 
             client = await get_ginlix_data_client()
             intel = GinlixMarketIntelSource(client)
-            logger.info(
+            logger.debug(
                 "financial_data.source.registered | name=ginlix-data (MarketIntelSource)"
             )
 

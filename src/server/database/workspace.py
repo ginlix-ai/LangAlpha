@@ -349,7 +349,7 @@ async def update_workspace(
                     result = await _execute(cur)
 
         if result:
-            logger.info(f"Updated workspace: {workspace_id}")
+            logger.debug(f"Updated workspace: {workspace_id}")
             return dict(result)
         return None
 
@@ -436,7 +436,7 @@ async def update_workspace_status(
                     result = await _execute(cur)
 
         if result:
-            logger.info(f"Updated workspace {workspace_id} status to: {status}")
+            logger.debug(f"Updated workspace {workspace_id} status to: {status}")
             return dict(result)
         return None
 
@@ -448,16 +448,19 @@ async def update_workspace_status(
 async def update_workspace_activity(
     workspace_id: str,
     conn=None,
-) -> Optional[Dict[str, Any]]:
+) -> bool:
     """
-    Update workspace last_activity_at timestamp.
+    Update workspace last_activity_at timestamp (conditional).
+
+    Only writes if the last update was > 60 seconds ago, avoiding a full
+    UPDATE on every message.  Process-safe via SQL WHERE clause.
 
     Args:
         workspace_id: Workspace UUID
         conn: Optional database connection to reuse
 
     Returns:
-        Updated workspace record, or None if not found
+        True if the row was updated, False if skipped (within cooldown)
     """
     try:
         now = datetime.now(timezone.utc)
@@ -467,14 +470,14 @@ async def update_workspace_activity(
                 """
                 UPDATE workspaces
                 SET last_activity_at = %s, updated_at = %s
-                WHERE workspace_id = %s AND status != 'deleted'
-                RETURNING workspace_id, user_id, name, description, sandbox_id,
-                          status, created_at, updated_at, last_activity_at, stopped_at, config, artifacts,
-                          is_pinned, sort_order
+                WHERE workspace_id = %s
+                  AND status != 'deleted'
+                  AND (last_activity_at IS NULL
+                       OR last_activity_at < %s - INTERVAL '60 seconds')
                 """,
-                (now, now, workspace_id),
+                (now, now, workspace_id, now),
             )
-            return await cur.fetchone()
+            return cur.rowcount > 0
 
         if conn:
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -484,9 +487,7 @@ async def update_workspace_activity(
                 async with conn.cursor(row_factory=dict_row) as cur:
                     result = await _execute(cur)
 
-        if result:
-            return dict(result)
-        return None
+        return result
 
     except Exception as e:
         logger.error(f"Error updating workspace {workspace_id} activity: {e}")

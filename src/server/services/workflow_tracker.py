@@ -179,7 +179,7 @@ class WorkflowTracker:
             success = await self.cache.set(key, status_obj)
 
             if success:
-                logger.info(f"[WorkflowTracker] Marked workflow as active: {thread_id}")
+                logger.debug(f"[WorkflowTracker] Marked workflow as active: {thread_id}")
 
             return success
 
@@ -250,7 +250,7 @@ class WorkflowTracker:
         )
 
         if success:
-            logger.info(
+            logger.debug(
                 f"[WorkflowTracker] Marked workflow as completed: {thread_id} "
                 f"(TTL: {ttl}s)"
             )

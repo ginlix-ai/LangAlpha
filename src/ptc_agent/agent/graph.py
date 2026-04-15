@@ -22,8 +22,15 @@ from ptc_agent.core.session import Session
 logger = logging.getLogger(__name__)
 
 
+_USER_PROFILE_TTL = 86400  # 24h — freshness via explicit invalidation
+
+
 async def get_user_profile_for_prompt(user_id: str) -> dict[str, Any] | None:
-    """Fetch user profile data for system prompt injection.
+    """Fetch user profile data for system prompt injection (cached in Redis).
+
+    Result is cached for up to ``_USER_PROFILE_TTL`` seconds.  The cache
+    is explicitly invalidated by ``invalidate_user_profile_cache`` whenever
+    the user profile or preferences are updated.
 
     Args:
         user_id: The user's unique identifier
@@ -31,6 +38,24 @@ async def get_user_profile_for_prompt(user_id: str) -> dict[str, Any] | None:
     Returns:
         Dict with name, timezone, locale, agent_preference if found, None otherwise
     """
+    import json as _json
+
+    cache_key = f"user_profile_prompt:{user_id}"
+    try:
+        from src.utils.cache.redis_cache import get_cache_client
+
+        cache = get_cache_client()
+        if cache.enabled and cache.client:
+            try:
+                cached = await cache.client.get(cache_key)
+                if cached is not None:
+                    return _json.loads(cached) if cached != b"null" else None
+            except Exception:
+                pass
+    except Exception:
+        cache = None
+
+    profile = None
     try:
         from src.server.database import user as user_db
 
@@ -38,7 +63,7 @@ async def get_user_profile_for_prompt(user_id: str) -> dict[str, Any] | None:
         if result:
             user = result.get("user", {})
             preferences = result.get("preferences", {}) or {}
-            return {
+            profile = {
                 "name": user.get("name"),
                 "timezone": user.get("timezone"),
                 "locale": user.get("locale"),
@@ -46,7 +71,31 @@ async def get_user_profile_for_prompt(user_id: str) -> dict[str, Any] | None:
             }
     except Exception as e:
         logger.warning(f"Failed to fetch user profile for {user_id}: {e}")
-    return None
+        return None
+
+    if cache and cache.enabled and cache.client:
+        try:
+            await cache.client.set(
+                cache_key,
+                _json.dumps(profile) if profile else b"null",
+                ex=_USER_PROFILE_TTL,
+            )
+        except Exception:
+            pass
+
+    return profile
+
+
+async def invalidate_user_profile_cache(user_id: str) -> None:
+    """Delete the cached ``get_user_profile_for_prompt`` result."""
+    try:
+        from src.utils.cache.redis_cache import get_cache_client
+
+        cache = get_cache_client()
+        if cache.enabled and cache.client:
+            await cache.client.delete(f"user_profile_prompt:{user_id}")
+    except Exception:
+        pass
 
 
 @runtime_checkable
@@ -126,7 +175,7 @@ async def build_ptc_graph(
         async for event in ptc_graph.astream(input_state, config):
             process_event(event)
     """
-    logger.info(f"Building PTC graph for conversation: {conversation_id}")
+    logger.debug(f"Building PTC graph for conversation: {conversation_id}")
 
     # Get session from provider
     session = await session_provider.get_or_create_session(
@@ -156,7 +205,7 @@ async def build_ptc_graph(
         on_signed_url=on_signed_url,
     )
 
-    logger.info(
+    logger.debug(
         f"Created PTC agent for {conversation_id} with "
         f"subagents: {subagent_names or config.subagents.enabled} "
         f"(checkpointer={'enabled' if checkpointer else 'disabled'})"
@@ -211,22 +260,24 @@ async def build_ptc_graph_with_session(
             process_event(event)
     """
     workspace_id = session.conversation_id
-    logger.info(f"Building PTC graph with session for workspace: {workspace_id}")
+    logger.debug(f"Building PTC graph with session for workspace: {workspace_id}")
 
     if not session.sandbox or not session.mcp_registry:
         raise RuntimeError(
             f"Session for workspace {workspace_id} is not properly initialized"
         )
 
-    # Fetch user profile for prompt injection
-    user_profile = None
+    # Fetch user profile + create PTCAgent in parallel (independent I/O)
     if user_id:
-        user_profile = await get_user_profile_for_prompt(user_id)
+        user_profile, ptc_agent = await asyncio.gather(
+            get_user_profile_for_prompt(user_id),
+            asyncio.to_thread(PTCAgent, config),
+        )
         if user_profile:
             logger.debug(f"Loaded user profile for {user_id}: {user_profile}")
-
-    # Create PTCAgent instance (blocking I/O wrapped in thread)
-    ptc_agent = await asyncio.to_thread(PTCAgent, config)
+    else:
+        user_profile = None
+        ptc_agent = await asyncio.to_thread(PTCAgent, config)
 
     # Create the inner agent with the session's sandbox.
     # IMPORTANT: pass the server checkpointer into the deepagent so that partial
@@ -251,7 +302,7 @@ async def build_ptc_graph_with_session(
         vault_secrets=vault_secrets,
     )
 
-    logger.info(
+    logger.debug(
         f"Created PTC agent for workspace {workspace_id} with "
         f"subagents: {subagent_names or config.subagents.enabled} "
         f"(checkpointer={'enabled' if checkpointer else 'disabled'})"

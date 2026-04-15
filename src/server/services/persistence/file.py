@@ -411,7 +411,7 @@ class FilePersistenceService:
 
             result["total_size"] = await get_workspace_total_size(workspace_id)
 
-            logger.info(
+            logger.debug(
                 f"File sync completed for workspace {workspace_id}: "
                 f"synced={result['synced']}, skipped={result['skipped']}, "
                 f"deleted={result['deleted']}, errors={result['errors']}"

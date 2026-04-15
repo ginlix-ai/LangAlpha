@@ -54,11 +54,12 @@ async def fetch_all_user_data(user_id: str) -> dict[str, Any]:
     Returns:
         Dict with profile, preferences, watchlists, portfolio
     """
-    # Fetch all data in parallel
-    user_data, preferences, watchlists, portfolio = await asyncio.gather(
+    # Fetch all data in parallel (single query per table, no N+1)
+    user_data, preferences, watchlists, all_items, portfolio = await asyncio.gather(
         user_db.get_user(user_id),
         user_db.get_user_preferences(user_id),
         watchlist_db.get_user_watchlists(user_id),
+        watchlist_db.get_all_user_watchlist_items(user_id),
         portfolio_db.get_user_portfolio(user_id),
         return_exceptions=True,
     )
@@ -67,27 +68,19 @@ async def fetch_all_user_data(user_id: str) -> dict[str, Any]:
     user_data = _handle_result(user_data, None, "user data")
     preferences = _handle_result(preferences, None, "preferences")
     watchlists = _handle_result(watchlists, [], "watchlists")
+    all_items = _handle_result(all_items, {}, "watchlist items")
     portfolio = _handle_result(portfolio, [], "portfolio")
 
-    # Fetch watchlist items for each watchlist
-    watchlists_with_items = []
-    if watchlists:
-        async def get_watchlist_with_items(wl: dict[str, Any]) -> dict[str, Any]:
-            try:
-                items = await watchlist_db.get_watchlist_items(wl["watchlist_id"], user_id)
-                return {**wl, "items": items}
-            except Exception as e:
-                logger.warning(f"Failed to fetch watchlist items: {e}")
-                return {**wl, "items": []}
-
-        watchlists_with_items = await asyncio.gather(
-            *[get_watchlist_with_items(wl) for wl in watchlists]
-        )
+    # Attach items to their watchlists
+    watchlists_with_items = [
+        {**wl, "items": all_items.get(str(wl["watchlist_id"]), [])}
+        for wl in watchlists
+    ]
 
     return {
         "profile": user_data,
         "preferences": preferences,
-        "watchlists": list(watchlists_with_items),
+        "watchlists": watchlists_with_items,
         "portfolio": portfolio,
     }
 
@@ -263,9 +256,9 @@ async def _sync_file_if_changed(sandbox: Any, path: str, new_content: str) -> bo
         # File doesn't exist or error reading - will write
         logger.debug(f"[sync_user_data] File read failed (will create): {path} - {e}")
 
-    logger.info(f"[sync_user_data] Writing file: {path} ({len(new_content)} bytes)")
+    logger.debug(f"[sync_user_data] Writing file: {path} ({len(new_content)} bytes)")
     success = await sandbox.awrite_file_text(path, new_content)
-    logger.info(f"[sync_user_data] Write result for {path}: {success}")
+    logger.debug(f"[sync_user_data] Write result for {path}: {success}")
     return success if success is not None else True
 
 
@@ -285,14 +278,14 @@ async def sync_user_data_to_sandbox(
     Returns:
         Dict with file names as keys and bool (True if updated) as values
     """
-    logger.info(f"[sync_user_data] Starting sync for user_id={user_id}")
+    logger.debug(f"[sync_user_data] Starting sync for user_id={user_id}")
 
     # Fetch all data
     data = await fetch_all_user_data(user_id)
-    logger.info(f"[sync_user_data] Fetched data: profile={data.get('profile') is not None}, "
-                f"preferences={data.get('preferences') is not None}, "
-                f"watchlists={len(data.get('watchlists', []))}, "
-                f"portfolio={len(data.get('portfolio', []))}")
+    logger.debug(f"[sync_user_data] Fetched data: profile={data.get('profile') is not None}, "
+                 f"preferences={data.get('preferences') is not None}, "
+                 f"watchlists={len(data.get('watchlists', []))}, "
+                 f"portfolio={len(data.get('portfolio', []))}")
 
     # Format markdown
     preference_md = format_preferences_md(data)
@@ -305,7 +298,7 @@ async def sync_user_data_to_sandbox(
 
     # Ensure directory exists
     try:
-        logger.info(f"[sync_user_data] Creating directory: {user_data_path}")
+        logger.debug(f"[sync_user_data] Creating directory: {user_data_path}")
         await sandbox.execute_bash_command(f"mkdir -p {user_data_path}")
     except Exception as e:
         logger.warning(f"Failed to create user data directory: {e}")
@@ -342,7 +335,7 @@ async def sync_user_data_to_sandbox(
 
     updated_count = sum(1 for v in sync_results.values() if v)
     if updated_count > 0:
-        logger.info(
+        logger.debug(
             f"[sync_user_data] Synced {updated_count} files for user {user_id}"
         )
     else:

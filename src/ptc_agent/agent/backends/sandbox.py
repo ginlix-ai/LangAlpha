@@ -54,7 +54,7 @@ class SandboxBackend:
         self.root_dir = (root_dir or sandbox.config.filesystem.working_directory).rstrip("/")
         self.virtual_mode = virtual_mode
         self.operation_callback = operation_callback
-        logger.info("Initialized SandboxBackend", root_dir=self.root_dir, virtual_mode=self.virtual_mode)
+        logger.debug("Initialized SandboxBackend", root_dir=self.root_dir, virtual_mode=self.virtual_mode)
 
     @property
     def id(self) -> str:

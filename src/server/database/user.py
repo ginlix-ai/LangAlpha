@@ -364,9 +364,16 @@ async def upsert_user(
 # ==================== User Preferences Operations ====================
 
 
+_USER_PREFS_TTL = 86400  # 24h — freshness via explicit invalidation
+
+
 async def get_user_preferences(user_id: str) -> Optional[Dict[str, Any]]:
     """
-    Get user preferences.
+    Get user preferences (cached in Redis).
+
+    Result is cached for up to ``_USER_PREFS_TTL`` seconds.  The cache is
+    explicitly invalidated by ``invalidate_user_prefs_cache`` whenever
+    preferences are written or deleted.
 
     Args:
         user_id: User ID
@@ -374,6 +381,19 @@ async def get_user_preferences(user_id: str) -> Optional[Dict[str, Any]]:
     Returns:
         Preferences dict or None if not found
     """
+    import json as _json
+    from src.utils.cache.redis_cache import get_cache_client
+
+    cache_key = f"user_prefs:{user_id}"
+    cache = get_cache_client()
+    if cache.enabled and cache.client:
+        try:
+            cached = await cache.client.get(cache_key)
+            if cached is not None:
+                return _json.loads(cached) if cached != b"null" else None
+        except Exception:
+            pass  # Redis down — fall through to DB
+
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute("""
@@ -386,8 +406,32 @@ async def get_user_preferences(user_id: str) -> Optional[Dict[str, Any]]:
                 WHERE user_id = %s
             """, (user_id,))
 
-            result = await cur.fetchone()
-            return dict(result) if result else None
+            row = await cur.fetchone()
+            result = dict(row) if row else None
+
+    if cache.enabled and cache.client:
+        try:
+            await cache.client.set(
+                cache_key,
+                _json.dumps(result, default=str) if result else b"null",
+                ex=_USER_PREFS_TTL,
+            )
+        except Exception:
+            pass
+
+    return result
+
+
+async def invalidate_user_prefs_cache(user_id: str) -> None:
+    """Delete the cached ``get_user_preferences`` result so the next call hits the DB."""
+    from src.utils.cache.redis_cache import get_cache_client
+
+    cache = get_cache_client()
+    if cache.enabled and cache.client:
+        try:
+            await cache.client.delete(f"user_prefs:{user_id}")
+        except Exception:
+            pass
 
 
 def _split_updates_and_deletes(data: Optional[Dict[str, Any]]) -> tuple[Dict[str, Any], list[str]]:

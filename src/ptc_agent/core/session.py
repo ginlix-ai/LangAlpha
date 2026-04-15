@@ -1,6 +1,7 @@
 """Session Management - Handle conversation lifecycle and sandbox persistence."""
 
 import asyncio
+import time
 from types import TracebackType
 
 import structlog
@@ -33,7 +34,7 @@ class Session:
         self._agent_md_cache: str | None = None
         self._agent_md_dirty: bool = True
 
-        logger.info("Created session", conversation_id=conversation_id)
+        logger.debug("Created session", conversation_id=conversation_id)
 
     async def get_agent_md(self) -> str | None:
         """Read agent.md from sandbox, with session-level caching.
@@ -78,7 +79,7 @@ class Session:
             )
             return
 
-        logger.info(
+        logger.debug(
             "Initializing session",
             conversation_id=self.conversation_id,
             reconnecting=sandbox_id is not None,
@@ -112,7 +113,7 @@ class Session:
 
             self.sandbox.mcp_registry = self.mcp_registry
 
-            logger.info(
+            logger.debug(
                 "Reconnected to existing sandbox",
                 conversation_id=self.conversation_id,
                 sandbox_id=sandbox_id,
@@ -147,7 +148,7 @@ class Session:
 
         self._initialized = True
 
-        logger.info("Session initialized", conversation_id=self.conversation_id)
+        logger.debug("Session initialized", conversation_id=self.conversation_id)
 
     async def initialize_lazy(self, sandbox_id: str) -> None:
         """Initialize session with lazy sandbox startup.
@@ -164,25 +165,33 @@ class Session:
             )
             return
 
-        logger.info(
+        logger.debug(
             "Lazy initializing session",
             conversation_id=self.conversation_id,
             sandbox_id=sandbox_id,
         )
 
-        # Initialize MCP registry (required for system prompt)
+        _t0 = time.time()
+
+        # Create sandbox and fire Daytona reconnect in background FIRST —
+        # reconnect() is pure Daytona API calls, doesn't need the MCP registry.
+        # This lets the sandbox start while MCP subprocesses are connecting.
+        self.sandbox = PTCSandbox(self.config, mcp_registry=None)
+        self.sandbox.start_lazy_init(sandbox_id)
+
+        # Initialize MCP registry (required for system prompt) — runs in
+        # parallel with the Daytona sandbox start above.
         self.mcp_registry = MCPRegistry(self.config)
         await self.mcp_registry.connect_all()
+        mcp_ms = (time.time() - _t0) * 1000
 
-        # Create sandbox and start lazy init
-        self.sandbox = PTCSandbox(self.config, self.mcp_registry)
-        self.sandbox.start_lazy_init(sandbox_id)
+        # Attach registry to sandbox (needed later for sync_sandbox_assets)
+        self.sandbox.mcp_registry = self.mcp_registry
 
         self._initialized = True
 
         logger.info(
-            "Session lazy-initialized (sandbox starting in background)",
-            conversation_id=self.conversation_id,
+            f"[LAZY_INIT] sandbox_id={sandbox_id} mcp_connect={mcp_ms:.0f}ms",
         )
 
     async def get_sandbox(self) -> PTCSandbox | None:
@@ -314,7 +323,7 @@ class SessionManager:
             Session instance
         """
         if conversation_id not in cls._sessions:
-            logger.info("Creating new session", conversation_id=conversation_id)
+            logger.debug("Creating new session", conversation_id=conversation_id)
             cls._sessions[conversation_id] = Session(conversation_id, config)
         else:
             logger.debug("Returning existing session", conversation_id=conversation_id)

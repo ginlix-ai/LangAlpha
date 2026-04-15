@@ -310,7 +310,7 @@ def create_show_widget_tool(sandbox: Any = None) -> BaseTool:
                 "payload": stream_payload,
             })
 
-        logger.info("Rendered inline widget", widget_id=widget_id, title=display_title)
+        logger.debug("Rendered inline widget", widget_id=widget_id, title=display_title)
 
         content = f"Widget rendered: {display_title or widget_id}"
         return content, artifact

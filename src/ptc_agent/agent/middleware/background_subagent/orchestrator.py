@@ -91,12 +91,6 @@ class BackgroundSubagentOrchestrator:
         while iteration < self.max_iterations:
             iteration += 1
 
-            logger.info(
-                "Orchestrator invoking agent",
-                iteration=iteration,
-                has_messages=bool(current_state and "messages" in current_state),
-            )
-
             # Invoke the agent - agent turn ends here
             result = await self.agent.ainvoke(current_state, config)
 
@@ -161,10 +155,6 @@ class BackgroundSubagentOrchestrator:
                 current_state = None
                 continue
 
-            logger.debug(
-                "No pending background tasks, returning",
-                iteration=iteration,
-            )
             return result
 
         logger.warning(
@@ -234,13 +224,6 @@ class BackgroundSubagentOrchestrator:
 
         while iteration < self.max_iterations:
             iteration += 1
-
-            logger.info(
-                "Orchestrator streaming agent",
-                iteration=iteration,
-                stream_mode=stream_mode,
-                subgraphs=subgraphs,
-            )
 
             # Stream the agent with all parameters - agent turn ends after streaming
             async for event in self.agent.astream(

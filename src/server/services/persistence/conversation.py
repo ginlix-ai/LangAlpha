@@ -137,7 +137,7 @@ class ConversationPersistenceService:
         """
         self._clear_tracking_state()
         self._turn_index_cache = fork_turn_index
-        logger.info(
+        logger.debug(
             f"[ConversationPersistence] Reset for fork at turn_index={fork_turn_index} "
             f"thread_id={self.thread_id}"
         )
@@ -564,7 +564,7 @@ class ConversationPersistenceService:
             self._persisted_completions.add(turn_index)
             self._current_response_id = response_id
 
-            logger.info(
+            logger.debug(
                 f"[ConversationPersistence] Persisted completion for thread_id={self.thread_id} "
                 f"turn_index={turn_index} response_id={response_id}"
             )

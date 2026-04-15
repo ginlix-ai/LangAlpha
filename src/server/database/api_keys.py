@@ -120,7 +120,7 @@ async def get_key_for_provider(user_id: str, provider: str) -> Optional[str]:
             return row["api_key"] if row else None
 
 
-_BYOK_ACTIVE_TTL = 60  # seconds — safety net; primary invalidation is explicit
+_BYOK_ACTIVE_TTL = 86400  # 24h — freshness via explicit invalidation
 
 async def is_byok_active(user_id: str) -> bool:
     """

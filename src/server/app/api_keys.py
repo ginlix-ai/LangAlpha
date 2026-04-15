@@ -325,8 +325,8 @@ class TestApiKeyRequest(BaseModel):
     def validate_key(cls, v: str) -> str:
         if not v:
             return v  # Allow empty for local providers (lm-studio, vllm, ollama)
-        if len(v) > 256:
-            raise ValueError("API key must be under 256 characters")
+        if len(v) > 4096:
+            raise ValueError("API key must be under 4096 characters")
         if not v.isascii():
             raise ValueError("API key must contain only ASCII characters")
         return v
@@ -356,7 +356,7 @@ async def _test_anthropic_key(
     async with httpx.AsyncClient(timeout=timeout) as client:
         # Strategy 1: list models
         resp = await client.get(f"{base}/v1/models?limit=5", headers=headers)
-        if resp.status_code not in (404, 405):
+        if resp.status_code not in (404, 405, 422):
             resp.raise_for_status()
             data = resp.json()
             models = data.get("data", [])
@@ -543,6 +543,12 @@ async def test_api_key(body: TestApiKeyRequest, user_id: CurrentUserId):
         dispatch = _SDK_TEST_DISPATCH["openai"]
 
     test_fn, default_model = dispatch
+
+    # Prefer a model from this specific provider's model list
+    provider_models = mc.manifest.get("models", {}).get(body.provider, [])
+    if provider_models:
+        default_model = provider_models[0].get("id", default_model)
+
     base_url = body.base_url or provider_info.get("base_url") if provider_info else body.base_url
 
     await _check_ssrf(base_url)

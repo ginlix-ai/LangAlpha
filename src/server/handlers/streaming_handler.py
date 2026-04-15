@@ -562,7 +562,7 @@ class WorkflowStreamHandler:
 
                             action = event_data.get("action", "")
                             signal = event_data.get("signal", "")
-                            logger.info(
+                            logger.debug(
                                 f"[CONTEXT_WINDOW] Emitting {action}/{signal} "
                                 f"(thread_id={self.thread_id})"
                             )
@@ -607,7 +607,7 @@ class WorkflowStreamHandler:
                                 "payload": payload,
                             }
 
-                            logger.info(
+                            logger.debug(
                                 f"[ARTIFACT_CUSTOM] Emitting {artifact_type} artifact "
                                 f"(agent={agent_name}, status={artifact_event.get('status')})"
                             )
@@ -727,7 +727,7 @@ class WorkflowStreamHandler:
                         total_credits=total_credits
                     )
 
-                    logger.info(
+                    logger.debug(
                         f"[Credit SSE] Emitted credit_usage event: "
                         f"{total_credits:.2f} credits for thread_id={self.thread_id}"
                     )
@@ -1489,7 +1489,7 @@ class WorkflowStreamHandler:
         # Cache result for future calls (enables cross-context access)
         if tool_usage is not None:
             self._tool_usage_result = tool_usage
-            logger.info(
+            logger.debug(
                 f"[WorkflowStreamHandler] Retrieved and cached tool usage for thread_id={self.thread_id}: "
                 f"{len(tool_usage)} tool types, {sum(tool_usage.values())} total calls - {tool_usage}"
             )

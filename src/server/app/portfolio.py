@@ -16,6 +16,7 @@ import logging
 from fastapi import APIRouter
 from fastapi.responses import Response
 
+from src.server.services.workspace_manager import WorkspaceManager
 from src.server.database.portfolio import (
     delete_portfolio_holding as db_delete_portfolio_holding,
     get_portfolio_holding as db_get_portfolio_holding,
@@ -92,6 +93,7 @@ async def add_portfolio_holding(
     )
 
     await maybe_complete_onboarding(user_id)
+    WorkspaceManager.mark_user_data_stale(user_id)
 
     if merge_details:
         response.status_code = 200
@@ -168,6 +170,7 @@ async def update_portfolio_holding(
     if not holding:
         raise_not_found("Portfolio holding")
 
+    WorkspaceManager.mark_user_data_stale(user_id)
     logger.info(f"Updated portfolio holding {holding_id} for user {user_id}")
     return PortfolioHoldingResponse.model_validate(holding)
 
@@ -196,5 +199,6 @@ async def delete_portfolio_holding(
     if not deleted:
         raise_not_found("Portfolio holding")
 
+    WorkspaceManager.mark_user_data_stale(user_id)
     logger.info(f"Deleted portfolio holding {holding_id} for user {user_id}")
     return Response(status_code=204)

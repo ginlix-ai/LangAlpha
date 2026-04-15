@@ -18,6 +18,7 @@ import httpx
 
 from src.server.database.oauth_tokens import (
     get_oauth_tokens,
+    invalidate_oauth_active_cache,
     upsert_oauth_tokens,
 )
 
@@ -254,7 +255,12 @@ async def get_valid_token(user_id: str) -> dict | None:
             expires_at=new_expires,
         )
 
-        logger.info(f"[codex_oauth] Refreshed tokens for user_id={user_id}")
+        try:
+            await invalidate_oauth_active_cache(user_id)
+        except Exception:
+            pass
+
+        logger.debug(f"[codex_oauth] Refreshed tokens for user_id={user_id}")
         return {
             "access_token": new["access_token"],
             "account_id": account_id,

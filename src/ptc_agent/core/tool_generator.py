@@ -25,7 +25,7 @@ class ToolFunctionGenerator:
         Returns:
             Complete Python module code as string
         """
-        logger.info(
+        logger.debug(
             "Generating tool module",
             server=server_name,
             tool_count=len(tools),
@@ -425,7 +425,7 @@ except ImportError:
                     # Keep uv run, just fix the path to sandbox
                     command = "uv"
                     args = ["run", "python", f"{working_dir}/mcp_servers/{filename}"]
-                    logger.info(
+                    logger.debug(
                         "Transformed MCP server command for sandbox",
                         server=server.name,
                         original_command=server.command,

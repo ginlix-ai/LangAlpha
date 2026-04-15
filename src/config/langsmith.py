@@ -28,6 +28,7 @@ _BASE64_RE = re.compile(r"[A-Za-z0-9+/=]+\Z")
 _DEFAULT_MIN_BYTES = 1_000
 _client_lock = threading.Lock()
 _cached_client: Optional[Any] = None
+_cached_project: Optional[str] = None
 _min_bytes_cache: Optional[int] = None
 
 logger = logging.getLogger(__name__)
@@ -141,7 +142,13 @@ def get_filtered_langsmith_tracer() -> Optional[Any]:
     or when filtering is disabled via ``LANGSMITH_TRACE_FILTER=false``.
     When filtering is off but tracing is on, the SDK auto-tracer still
     runs (unfiltered), so returning ``None`` is correct.
+
+    The client and project name are cached at module level. A fresh tracer
+    is returned each call because ``LangChainTracer`` holds mutable per-run
+    state (``run_map``, ``order_map``, ``latest_run``) that must not be
+    shared across concurrent workflows.
     """
+    global _cached_project
     if os.environ.get("LANGSMITH_TRACING", "").lower() != "true":
         return None
 
@@ -151,5 +158,6 @@ def get_filtered_langsmith_tracer() -> Optional[Any]:
     from langchain_core.tracers import LangChainTracer
 
     client = _get_or_create_client()
-    project = os.environ.get("LANGSMITH_PROJECT", "langalpha")
-    return LangChainTracer(client=client, project_name=project)
+    if _cached_project is None:
+        _cached_project = os.environ.get("LANGSMITH_PROJECT", "langalpha")
+    return LangChainTracer(client=client, project_name=_cached_project)

@@ -297,21 +297,21 @@ async def resolve_llm_config(
             fallback=model_pref.get("fallback_models"),
         )
         config.llm_client = None
-        logger.info(f"[CHAT] No system default LLM; bootstrapped from user preferences: {resolved_name}")
+        logger.debug(f"[CHAT] No system default LLM; bootstrapped from user preferences: {resolved_name}")
     elif request_model:
         config = config.model_copy(deep=True)
         setattr(config.llm, model_field, request_model)
         config.llm_client = None
-        logger.info(f"[CHAT] Using per-request LLM model: {request_model}")
+        logger.debug(f"[CHAT] Using per-request LLM model: {request_model}")
     else:
         preferred = model_pref.get(pref_key)
         if preferred:
             config = config.model_copy(deep=True)
             setattr(config.llm, model_field, preferred)
             config.llm_client = None
-            logger.info(f"[CHAT] Using {pref_key}: {preferred}")
+            logger.debug(f"[CHAT] Using {pref_key}: {preferred}")
         else:
-            logger.info(
+            logger.debug(
                 f"[CHAT] No {pref_key} set, using system default: {getattr(config.llm, model_field, None) or config.llm.name}"
             )
 
@@ -405,7 +405,7 @@ async def resolve_llm_config(
         config.llm_client = create_llm(
             effective_model, reasoning_effort=effective_reasoning
         )
-        logger.info(
+        logger.debug(
             f"[CHAT] Applied reasoning_effort={effective_reasoning} to {effective_model}"
         )
 
@@ -462,7 +462,7 @@ async def resolve_llm_config(
                 config = config.model_copy(deep=True)
             config.fallback_llm_clients = merged_fallbacks
             if byok_count:
-                logger.info(
+                logger.debug(
                     f"[CHAT] Resolved {byok_count}/{len(fallback_models)} fallback models via OAuth/BYOK"
                 )
 

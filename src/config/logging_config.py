@@ -42,6 +42,7 @@ THIRD_PARTY_LIBRARIES = [
     'litellm',
     'edgar',  # SEC EDGAR library (verbose cache/request logs)
     'httpxthrottlecache',  # HTTP cache/throttle library used by edgar
+    'mcp',  # MCP SDK library (verbose ListToolsRequest logs)
 ]
 
 # LangChain ecosystem libraries

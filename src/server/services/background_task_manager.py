@@ -462,7 +462,11 @@ class BackgroundTaskManager:
                     existing.completion_callback = completion_callback
                     existing.graph = graph
                     existing.task = asyncio.create_task(
-                        self._run_workflow_shielded(thread_id, workflow_generator)
+                        self._run_workflow_shielded(
+                            thread_id, workflow_generator,
+                            cancel_event=existing.cancel_event,
+                            soft_interrupt_event=existing.soft_interrupt_event,
+                        )
                     )
                     existing.status = TaskStatus.RUNNING
                     existing.started_at = datetime.now()
@@ -483,7 +487,7 @@ class BackgroundTaskManager:
                         f"Use wait_for_soft_interrupted() before starting a new workflow."
                     )
                 # Remove completed task to allow re-run
-                logger.info(
+                logger.debug(
                     f"[BackgroundTaskManager] Removing completed task {thread_id} "
                     f"to start new execution"
                 )
@@ -512,7 +516,11 @@ class BackgroundTaskManager:
 
             # Start background task
             task_info.task = asyncio.create_task(
-                self._run_workflow_shielded(thread_id, workflow_generator)
+                self._run_workflow_shielded(
+                    thread_id, workflow_generator,
+                    cancel_event=task_info.cancel_event,
+                    soft_interrupt_event=task_info.soft_interrupt_event,
+                )
             )
             task_info.status = TaskStatus.RUNNING
             task_info.started_at = datetime.now()
@@ -530,7 +538,9 @@ class BackgroundTaskManager:
     async def _run_workflow_shielded(
         self,
         thread_id: str,
-        workflow_generator: Any
+        workflow_generator: Any,
+        cancel_event: asyncio.Event,
+        soft_interrupt_event: asyncio.Event,
     ):
         """
         Run workflow with shield protection and cooperative cancellation.
@@ -541,32 +551,13 @@ class BackgroundTaskManager:
         Args:
             thread_id: Workflow thread identifier
             workflow_generator: Async generator from graph.astream()
+            cancel_event: Event signaling explicit cancellation
+            soft_interrupt_event: Event signaling soft interrupt (pause)
         """
         try:
             # Define the workflow consumer coroutine with cooperative cancellation
             async def consume_workflow(wf_gen):
                 """Consume workflow generator with cancellation/soft-interrupt checks."""
-                # Get cancellation + soft-interrupt event references
-                async with self.task_lock:
-                    task_info = self.tasks.get(thread_id)
-                    cancel_event = task_info.cancel_event if task_info else None
-                    soft_interrupt_event = task_info.soft_interrupt_event if task_info else None
-
-                if not cancel_event:
-                    logger.warning(
-                        f"[BackgroundTaskManager] No cancel_event found for {thread_id}, "
-                        f"running without cancellation support"
-                    )
-                    async for event in wf_gen:
-                        if soft_interrupt_event and soft_interrupt_event.is_set():
-                            with suppress(Exception):
-                                await wf_gen.aclose()
-                            raise SoftInterruptError("Soft-interrupted by user")
-
-                        if self.enable_storage:
-                            await self._buffer_event_redis(thread_id, event)
-                    return
-
                 async for event in wf_gen:
                     if cancel_event.is_set():
                         with suppress(Exception):
@@ -2178,7 +2169,7 @@ class BackgroundTaskManager:
                 await cache.delete(events_key)
                 await cache.delete(meta_key)
 
-                logger.info(f"[EventBuffer] Cleared Redis event buffer for {thread_id}")
+                logger.debug(f"[EventBuffer] Cleared Redis event buffer for {thread_id}")
 
             # Also clear in-memory buffer (fallback or dual-mode)
             async with self.task_lock:
@@ -2274,6 +2265,43 @@ class BackgroundTaskManager:
             task_info.explicit_cancel = True
             logger.debug(f"[BackgroundTaskManager] Cancellation signaled: {thread_id}")
             return True
+
+    async def cancel_stale_workflow(self, thread_id: str, timeout: float = 10.0) -> bool:
+        """Cancel a stale workflow whose sandbox is dead.
+
+        Unlike cancel_workflow(), this also cancels the inner shielded task
+        and waits for the outer task to exit.  No-ops silently if no workflow
+        exists.  Only use for dead-sandbox cleanup, not user-initiated
+        cancellation.
+
+        Handles QUEUED, RUNNING, and SOFT_INTERRUPTED states (all stale when
+        the sandbox is gone).
+
+        Returns True if a workflow was found and cancelled.
+        """
+        async with self.task_lock:
+            task_info = self.tasks.get(thread_id)
+            if not task_info or task_info.status not in (
+                TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.SOFT_INTERRUPTED
+            ):
+                return False
+
+            task_info.cancel_event.set()
+            task_info.explicit_cancel = True
+
+            if task_info.inner_task and not task_info.inner_task.done():
+                task_info.inner_task.cancel()
+            stale_task = task_info.task
+
+        # Wait OUTSIDE the lock — _mark_completed/_mark_failed re-enter task_lock
+        if stale_task and not stale_task.done():
+            done, _ = await asyncio.wait({stale_task}, timeout=timeout)
+            if not done:
+                logger.warning(
+                    f"[BackgroundTaskManager] Stale workflow {thread_id} "
+                    f"did not exit within {timeout}s"
+                )
+        return True
 
     async def soft_interrupt_workflow(self, thread_id: str) -> Dict[str, Any]:
         """

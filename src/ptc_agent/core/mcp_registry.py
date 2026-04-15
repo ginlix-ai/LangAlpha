@@ -15,6 +15,12 @@ from ptc_agent.config.core import CoreConfig, MCPServerConfig
 
 logger = structlog.get_logger(__name__)
 
+# Discard MCP subprocess stderr — noisy INFO logs (e.g. "Processing request
+# of type ListToolsRequest") and failures surface as connection errors in
+# our process instead.  Needs a real FD because the MCP SDK passes it as
+# stderr to subprocess.Popen.
+_devnull = open(os.devnull, "w")  # noqa: SIM115
+
 
 class MCPToolInfo:
     """Information about an MCP tool."""
@@ -138,7 +144,7 @@ class MCPServerConnector:
         self._disconnect_event: asyncio.Event = asyncio.Event()
         self._connection_error: Exception | None = None
 
-        logger.info("Initialized MCPServerConnector", server=config.name)
+        logger.debug("Initialized MCPServerConnector", server=config.name)
 
     # Env vars safe to forward to MCP server subprocesses.
     # Prevents leaking host secrets (ANTHROPIC_API_KEY, DB_PASSWORD, etc.)
@@ -226,7 +232,7 @@ class MCPServerConnector:
         Returns:
             Self for use in async with statement
         """
-        logger.info("Connecting to MCP server", server=self.config.name)
+        logger.debug("Connecting to MCP server", server=self.config.name)
 
         # Start background task that keeps nested contexts alive
         self._connection_task = asyncio.create_task(
@@ -240,7 +246,7 @@ class MCPServerConnector:
             # Connection failed, raise the error
             raise self._connection_error
 
-        logger.info(
+        logger.debug(
             "Connected to MCP server",
             server=self.config.name,
             tool_count=len(self.tools),
@@ -331,7 +337,7 @@ class MCPServerConnector:
                 )
 
                 # Proper nested async with pattern (MCP SDK best practice)
-                async with stdio_client(server_params) as (read_stream, write_stream):
+                async with stdio_client(server_params, errlog=_devnull) as (read_stream, write_stream):
                     async with ClientSession(read_stream, write_stream) as session:
                         self.session = session
 
@@ -391,7 +397,7 @@ class MCPServerConnector:
                 )
                 self.tools.append(tool_info)
 
-            logger.info(
+            logger.debug(
                 "Discovered tools",
                 server=self.config.name,
                 tools=[t.name for t in self.tools],
@@ -442,7 +448,7 @@ class MCPServerConnector:
                 )
                 self.tools.append(tool_info)
 
-            logger.info(
+            logger.debug(
                 "Discovered tools via HTTP",
                 server=self.config.name,
                 tool_count=len(self.tools),
@@ -642,7 +648,7 @@ class MCPRegistry:
         self.config = config
         self.connectors: dict[str, MCPServerConnector] = {}
 
-        logger.info("Initialized MCPRegistry")
+        logger.debug("Initialized MCPRegistry")
 
     async def connect_all(self) -> None:
         """Connect to all configured MCP servers.
@@ -657,12 +663,12 @@ class MCPRegistry:
 
         if disabled_count > 0:
             disabled_names = [s.name for s in self.config.mcp.servers if not s.enabled]
-            logger.info(
+            logger.debug(
                 "Skipping disabled MCP servers",
                 disabled_servers=disabled_names,
             )
 
-        logger.info(
+        logger.debug(
             "Connecting to MCP servers",
             server_count=len(enabled_servers),
         )
@@ -688,7 +694,7 @@ class MCPRegistry:
                 errors=[str(e) for e in errors],
             )
 
-        logger.info("MCP servers connected", servers=list(self.connectors.keys()))
+        logger.debug("MCP servers connected", servers=list(self.connectors.keys()))
 
     async def disconnect_all(self) -> None:
         """Disconnect from all MCP servers.

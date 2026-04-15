@@ -104,7 +104,7 @@ class WorkspaceContextMiddleware(AgentMiddleware):
             from src.server.database.workspace import update_workspace
 
             await update_workspace(workspace_id=self._workspace_id, **updates)
-            logger.info(
+            logger.debug(
                 "Synced agent.md front matter to workspace DB",
                 workspace_id=self._workspace_id,
                 updates=list(updates.keys()),

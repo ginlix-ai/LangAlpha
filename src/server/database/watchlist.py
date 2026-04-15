@@ -275,6 +275,40 @@ async def get_or_create_default_watchlist(user_id: str) -> Dict[str, Any]:
 # =============================================================================
 
 
+async def get_all_user_watchlist_items(user_id: str) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Get all watchlist items for a user, grouped by watchlist_id.
+
+    Single query replaces N per-watchlist queries.
+
+    Args:
+        user_id: User ID
+
+    Returns:
+        Dict mapping watchlist_id to list of item dicts
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("""
+                SELECT
+                    wi.watchlist_item_id, wi.watchlist_id, wi.user_id, wi.symbol,
+                    wi.instrument_type, wi.exchange, wi.name, wi.notes,
+                    wi.alert_settings, wi.metadata,
+                    wi.created_at, wi.updated_at
+                FROM watchlist_items wi
+                INNER JOIN watchlists w ON wi.watchlist_id = w.watchlist_id
+                WHERE w.user_id = %s
+                ORDER BY wi.created_at DESC
+            """, (user_id,))
+
+            results = await cur.fetchall()
+            grouped: Dict[str, List[Dict[str, Any]]] = {}
+            for row in results:
+                wl_id = str(row["watchlist_id"])
+                grouped.setdefault(wl_id, []).append(dict(row))
+            return grouped
+
+
 async def get_watchlist_items(
     watchlist_id: str,
     user_id: str

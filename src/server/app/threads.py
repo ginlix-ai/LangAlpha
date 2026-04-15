@@ -274,6 +274,17 @@ async def delete_thread_endpoint(thread_id: str, x_user_id: CurrentUserId):
         await require_thread_owner(thread_id, x_user_id)
         await delete_thread(thread_id)
 
+        # Invalidate existence cache
+        from src.server.database.conversation import thread_exists_key
+        from src.utils.cache.redis_cache import get_cache_client
+
+        cache = get_cache_client()
+        if cache.enabled and cache.client:
+            try:
+                await cache.client.delete(thread_exists_key(thread_id))
+            except Exception:
+                pass
+
         logger.info(f"Successfully deleted thread thread_id={thread_id}")
         return ThreadDeleteResponse(
             success=True,
@@ -404,7 +415,7 @@ async def _handle_send_message(
             thread_record = await get_thread_by_id(thread_id)
             if thread_record:
                 workspace_id = str(thread_record["workspace_id"])
-                logger.info(
+                logger.debug(
                     f"[CHAT] Resolved workspace_id={workspace_id} from thread_id={thread_id}"
                 )
 
@@ -429,15 +440,19 @@ async def _handle_send_message(
 
         # Auto-detect flash workspaces: if the workspace is flash, override agent_mode
         # so follow-up messages (HITL responses, etc.) route correctly even if
-        # the client doesn't send agent_mode='flash'
+        # the client doesn't send agent_mode='flash'.
+        # Skip the DB query when a ready session exists (PTC workspace, common path).
         if agent_mode != "flash" and workspace_id:
-            ws = await get_workspace(workspace_id)
-            if ws and ws.get("status") == "flash":
-                agent_mode = "flash"
-                logger.info(
-                    f"[CHAT] Auto-detected flash workspace {workspace_id}, "
-                    f"overriding agent_mode to 'flash'"
-                )
+            from src.server.services.workspace_manager import WorkspaceManager
+            _wm = WorkspaceManager.get_instance()
+            if not _wm.has_ready_session(workspace_id):
+                ws = await get_workspace(workspace_id)
+                if ws and ws.get("status") == "flash":
+                    agent_mode = "flash"
+                    logger.debug(
+                        f"[CHAT] Auto-detected flash workspace {workspace_id}, "
+                        f"overriding agent_mode to 'flash'"
+                    )
 
         # Extract user input
         user_input = ""

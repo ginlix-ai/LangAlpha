@@ -1021,9 +1021,9 @@ class SummarizationMiddleware(AgentMiddleware):
             payload.update(kwargs)
             stream_writer(payload)
             if signal == "start":
-                logger.info(f"[Summarization] Emitted {action} start signal")
+                logger.debug(f"[Summarization] Emitted {action} start signal")
             elif signal == "complete":
-                logger.info(f"[Summarization] Emitted {action} complete signal")
+                logger.debug(f"[Summarization] Emitted {action} complete signal")
             elif signal == "error":
                 logger.warning(
                     f"[Summarization] Emitted {action} error signal: {kwargs.get('error')}"

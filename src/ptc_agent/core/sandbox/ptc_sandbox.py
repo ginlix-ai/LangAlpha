@@ -34,6 +34,10 @@ from ..tool_generator import ToolFunctionGenerator
 
 logger = structlog.get_logger(__name__)
 
+# Lock entry fields excluded from skills manifest hash — these timestamps
+# change on every computation and would force needless re-uploads.
+_LOCK_VOLATILE_KEYS: frozenset[str] = frozenset({"installedAt", "updatedAt"})
+
 
 @dataclass
 class ChartData:
@@ -177,7 +181,7 @@ class PTCSandbox:
         # Cached standard preview link info per port (avoids repeated Daytona API calls)
         self._preview_link_cache: dict[int, PreviewInfo] = {}
 
-        logger.info("Initialized PTCSandbox")
+        logger.debug("Initialized PTCSandbox")
 
     @property
     def working_dir(self) -> str:
@@ -256,16 +260,16 @@ class PTCSandbox:
     async def _lazy_reconnect(self, sandbox_id: str) -> None:
         """Background task for lazy reconnection."""
         try:
-            logger.info("Starting lazy sandbox init", sandbox_id=sandbox_id)
+            logger.debug("Starting lazy sandbox init", sandbox_id=sandbox_id)
             await self.reconnect(sandbox_id)
-            logger.info("Lazy sandbox init complete", sandbox_id=sandbox_id)
+            logger.debug("Lazy sandbox init complete", sandbox_id=sandbox_id)
         except asyncio.CancelledError:
             # CancelledError is BaseException, not Exception — must be
             # caught explicitly so _init_error is set.  Without this,
             # _ready_event.set() in the finally block signals "ready"
             # with no error, and concurrent _wait_ready() callers
             # proceed with a None runtime.
-            logger.info("Lazy sandbox init cancelled", sandbox_id=sandbox_id)
+            logger.debug("Lazy sandbox init cancelled", sandbox_id=sandbox_id)
             self._init_error = RuntimeError("Sandbox init was cancelled")
         except Exception as e:
             logger.error("Lazy sandbox init failed", error=str(e))
@@ -484,7 +488,7 @@ class PTCSandbox:
                 self._token_file_path,
                 retry_policy=RetryPolicy.SAFE,
             )
-            logger.info("Uploaded sandbox token file", path=self._token_file_path)
+            logger.debug("Uploaded sandbox token file", path=self._token_file_path)
         except Exception as e:
             logger.warning("Failed to upload sandbox token file", error=str(e))
 
@@ -529,7 +533,12 @@ class PTCSandbox:
         await self._wait_ready()
 
         assert self.runtime is not None
-        self._work_dir = await self.runtime.fetch_working_dir()
+        # Only set from config default when _work_dir is unset (fresh sandbox).
+        # reconnect() may have already fetched the real dir from the sandbox
+        # API — don't clobber it with the config default which can differ
+        # (e.g. /home/workspace vs /home/daytona after a config change).
+        if not self._work_dir:
+            self._work_dir = self.runtime.working_dir
 
     async def refresh_tools(self, **kwargs: Any) -> dict[str, Any]:
         """Force-rebuild all sandbox tool modules and packages.
@@ -565,7 +574,16 @@ class PTCSandbox:
         Raises:
             SandboxGoneError: If sandbox cannot be found or is in an unrecoverable state
         """
-        logger.info("Reconnecting to stopped sandbox", sandbox_id=sandbox_id)
+        logger.debug("Reconnecting to stopped sandbox", sandbox_id=sandbox_id)
+
+        _t0 = time.time()
+        _rc_phases: dict[str, float] = {}
+
+        def _mark_rc(name: str) -> None:
+            nonlocal _t0
+            now = time.time()
+            _rc_phases[name] = (now - _t0) * 1000
+            _t0 = now
 
         # Clear stale state — sessions and preview links don't survive stop/start
         self._bg_sessions.clear()
@@ -582,6 +600,7 @@ class PTCSandbox:
             )
         except Exception as e:
             raise SandboxGoneError(sandbox_id, f"not found: {e}") from e
+        _mark_rc("provider_get")
 
         assert self.runtime is not None
         self.sandbox_id = sandbox_id
@@ -589,13 +608,14 @@ class PTCSandbox:
         # Check sandbox state before attempting to start
         state = await self.runtime.get_state()
         state_value = state.value
+        _mark_rc("get_state")
 
         if state_value == "running":
-            logger.info(
+            logger.debug(
                 "Sandbox already started, skipping start", sandbox_id=sandbox_id
             )
         elif state_value == "stopped":
-            logger.info(
+            logger.debug(
                 "Starting stopped sandbox", sandbox_id=sandbox_id, state=state_value
             )
             await self._runtime_call(
@@ -603,9 +623,10 @@ class PTCSandbox:
                 timeout=60,
                 retry_policy=RetryPolicy.SAFE,
             )
+            _mark_rc("start")
         elif state_value == "starting":
             # Sandbox is already transitioning — wait for it to reach 'running'.
-            logger.info(
+            logger.debug(
                 "Sandbox is starting, waiting for ready",
                 sandbox_id=sandbox_id,
             )
@@ -626,6 +647,7 @@ class PTCSandbox:
                     sandbox_id,
                     f"stuck in state '{state_value}', expected 'running'",
                 )
+            _mark_rc("wait_starting")
         elif state_value == "stopping":
             # Wait for sandbox to finish stopping, then start it.
             logger.info(
@@ -659,6 +681,7 @@ class PTCSandbox:
                     sandbox_id,
                     f"stuck in state '{state_value}', expected 'stopped'",
                 )
+            _mark_rc("wait_stopping")
         elif state_value == "archived":
             logger.info(
                 "Starting archived sandbox (restore may take longer)",
@@ -669,6 +692,7 @@ class PTCSandbox:
                 timeout=300,
                 retry_policy=RetryPolicy.SAFE,
             )
+            _mark_rc("start_archived")
         elif state_value == "error":
             # Sandbox hit an internal error — attempt recovery via start().
             logger.warning(
@@ -680,15 +704,25 @@ class PTCSandbox:
                 timeout=120,
                 retry_policy=RetryPolicy.SAFE,
             )
+            _mark_rc("start_error_recovery")
         else:
             raise SandboxGoneError(
                 sandbox_id,
                 f"unrecoverable state: {state_value}",
             )
 
-        # Get work directory reference
+        # Fetch the actual working dir from the sandbox. The config default
+        # may differ from the real dir (e.g. /home/workspace vs /home/daytona)
+        # when the sandbox was created under a previous config.
         self._work_dir = await self.runtime.fetch_working_dir()
-        logger.info(f"Sandbox working directory: {self._work_dir}")
+        _mark_rc("fetch_workdir")
+
+        total = sum(_rc_phases.values())
+        phases = " ".join(f"{k}={v:.0f}ms" for k, v in _rc_phases.items())
+        logger.info(
+            f"[RECONNECT] sandbox_id={sandbox_id} state={state_value} "
+            f"total={total:.0f}ms ({phases})"
+        )
 
         # SKIP: _setup_workspace() - directories already exist
         # SKIP: _upload_mcp_server_files() - files already uploaded
@@ -698,7 +732,7 @@ class PTCSandbox:
         self.mcp_server_sessions: dict[str, Any] = {}
         await self._start_internal_mcp_servers()
 
-        logger.info(
+        logger.debug(
             "Sandbox started from stopped state",
             sandbox_id=self.sandbox_id,
         )
@@ -845,7 +879,7 @@ class PTCSandbox:
             batch,
             retry_policy=RetryPolicy.SAFE,
         )
-        logger.info(
+        logger.debug(
             "Uploaded internal packages to sandbox",
             uploaded_files=len(files),
             sandbox_root=str(internal_root),
@@ -863,9 +897,31 @@ class PTCSandbox:
                 vault_dest,
                 retry_policy=RetryPolicy.SAFE,
             )
-            logger.info("Uploaded vault helper module", path=vault_dest)
+            logger.debug("Uploaded vault helper module", path=vault_dest)
         except Exception as e:
             logger.warning("Failed to upload vault helper module", error=str(e))
+
+    async def _upload_user_data_files(self, files: dict[str, str]) -> None:
+        """Upload pre-formatted user data markdown files to sandbox."""
+        work_dir = self._work_dir
+        user_data_path = f"{work_dir}/.agents/user"
+
+        assert self.runtime is not None
+        await self._runtime_call(
+            self.runtime.exec,
+            f"mkdir -p {user_data_path}",
+            retry_policy=RetryPolicy.SAFE,
+        )
+        batch: list[tuple[bytes, str]] = [
+            (content.encode("utf-8"), f"{user_data_path}/{name}")
+            for name, content in files.items()
+        ]
+        await self._runtime_call(
+            self.runtime.upload_files,
+            batch,
+            retry_policy=RetryPolicy.SAFE,
+        )
+        logger.debug("Uploaded user data files", file_count=len(files))
 
     # ── Unified manifest helpers ────────────────────────────────────────
 
@@ -965,12 +1021,16 @@ class PTCSandbox:
 
             version = _hash_dict(files)
 
-            # Include lock entries in version hash so manifest detects ownership changes
+            # Include lock entries in version hash so manifest detects ownership changes.
+            # Exclude volatile timestamp fields (installedAt, updatedAt) — they change
+            # on every manifest computation and would force a full skills re-upload
+            # on every workspace restart even when no skill files changed.
             lock_hash_parts = []
             for name in sorted(skills_metadata):
                 entry = skills_metadata[name].get("lock_entry")
                 if entry:
-                    lock_hash_parts.append(f"{name}:{json.dumps(entry, sort_keys=True)}")
+                    stable = {k: v for k, v in entry.items() if k not in _LOCK_VOLATILE_KEYS}
+                    lock_hash_parts.append(f"{name}:{json.dumps(stable, sort_keys=True)}")
             if lock_hash_parts:
                 lock_payload = "\n".join(lock_hash_parts)
                 combined = f"{version}\n{lock_payload}"
@@ -987,6 +1047,7 @@ class PTCSandbox:
         tokens: dict | None = None,
         user_id: str | None = None,
         workspace_id: str | None = None,
+        user_data_hash: str | None = None,
     ) -> dict[str, Any]:
         """Compute the unified local manifest for all sandbox asset modules."""
         modules: dict[str, Any] = {}
@@ -1057,6 +1118,10 @@ class PTCSandbox:
                 "user_id": user_id or "",
                 "workspace_id": workspace_id or "",
             }
+
+        # ── Module: user_data ──
+        if user_data_hash:
+            modules["user_data"] = {"version": user_data_hash}
 
         return {
             "schema_version": 1,
@@ -1219,6 +1284,7 @@ class PTCSandbox:
         tokens: dict | None = None,
         user_id: str | None = None,
         workspace_id: str | None = None,
+        user_data_files: dict[str, str] | None = None,
         on_progress: Callable[[str], None] | None = None,
     ) -> SyncResult:
         """Sync all sandbox assets using a single unified manifest.
@@ -1244,11 +1310,28 @@ class PTCSandbox:
         async with self._tool_refresh_lock:
             await self.ensure_sandbox_ready()
 
+            _t0 = time.time()
+            _sync_phases: dict[str, float] = {}
+
+            def _mark_sync(name: str) -> None:
+                nonlocal _t0
+                now = time.time()
+                _sync_phases[name] = (now - _t0) * 1000
+                _t0 = now
+
             # Steps 0+1+2: all three are independent — parallelize
             # _prune_disabled_tool_modules → sandbox rm (disjoint from manifest paths)
             # _compute_sandbox_manifest → local CPU/disk only
             # _read_unified_manifest → sandbox HTTP GET
             skill_roots = [d for d, _ in skill_dirs] if skill_dirs else None
+            # Compute user_data hash from pre-formatted content (if provided)
+            ud_hash: str | None = None
+            if user_data_files:
+                combined = "\n".join(
+                    f"{k}:{v}" for k, v in sorted(user_data_files.items())
+                )
+                ud_hash = hashlib.sha256(combined.encode()).hexdigest()
+
             _, local_manifest, remote_manifest = await asyncio.gather(
                 self._prune_disabled_tool_modules(),
                 self._compute_sandbox_manifest(
@@ -1256,9 +1339,11 @@ class PTCSandbox:
                     tokens=tokens,
                     user_id=user_id,
                     workspace_id=workspace_id,
+                    user_data_hash=ud_hash,
                 ),
                 self._read_unified_manifest(),
             )
+            _mark_sync("manifest")
 
             # 2b. Run layout migrations if needed (zero cost when current)
             remote_layout = (remote_manifest or {}).get("layout_version", 1)
@@ -1344,10 +1429,17 @@ class PTCSandbox:
                 if on_progress:
                     on_progress("Uploading tokens...")
                 parallel_uploads.append(("tokens", self.upload_token_file(tokens)))
+            if "user_data" in changed_modules and user_data_files:
+                if on_progress:
+                    on_progress("Syncing user data...")
+                parallel_uploads.append(
+                    ("user_data", self._upload_user_data_files(user_data_files))
+                )
 
             if parallel_uploads:
                 await asyncio.gather(*[coro for _, coro in parallel_uploads])
                 refreshed.extend(name for name, _ in parallel_uploads)
+            _mark_sync("uploads")
 
             # Group 2: tool_modules AFTER mcp_servers (intent: derived from MCP definitions)
             if "tool_modules" in changed_modules:
@@ -1355,10 +1447,12 @@ class PTCSandbox:
                     on_progress("Regenerating tool modules...")
                 await self._install_tool_modules()
                 refreshed.append("tool_modules")
+                _mark_sync("tool_modules")
                 try:
                     await self._start_internal_mcp_servers()
                 except Exception as e:
                     logger.warning("Failed to refresh MCP servers", error=str(e))
+                _mark_sync("mcp_start")
 
             # Cache skills metadata (only if not already set by _build_complete_skills_cache,
             # which includes user-installed skills from the lock file)
@@ -1370,11 +1464,13 @@ class PTCSandbox:
                 self._write_unified_manifest(local_manifest),
                 self._cleanup_legacy_manifests(),
             )
+            _mark_sync("finalize")
 
+            total = sum(_sync_phases.values())
+            phases = " ".join(f"{k}={v:.0f}ms" for k, v in _sync_phases.items())
             logger.info(
-                "Sandbox asset sync complete",
-                refreshed=refreshed,
-                forced=force_refresh,
+                f"[ASSET_SYNC] total={total:.0f}ms ({phases}) "
+                f"changed={','.join(sorted(refreshed)) or 'none'}"
             )
             return SyncResult(refreshed_modules=refreshed, forced=force_refresh)
 
@@ -1955,7 +2051,7 @@ except OSError as e:
         if upload_coros:
             await asyncio.gather(*upload_coros)
 
-        logger.info(
+        logger.debug(
             "Uploaded skills to sandbox",
             skill_count=len(final_skills),
             file_count=len(manifest.get("files", {})),
@@ -1989,7 +2085,7 @@ except OSError as e:
                 lock_path,
                 retry_policy=RetryPolicy.SAFE,
             )
-            logger.info(
+            logger.debug(
                 "Skills lock file written",
                 path=lock_path,
                 platform_count=len(platform_entries),
@@ -2053,7 +2149,7 @@ except OSError as e:
 
     async def _install_tool_modules(self) -> None:
         """Generate and install tool modules from MCP servers."""
-        logger.info("Installing tool modules")
+        logger.debug("Installing tool modules")
 
         # Get work directory (set by _setup_workspace)
         work_dir = self._work_dir
@@ -2165,13 +2261,19 @@ except OSError as e:
         for _, _, log_info in uploads:
             if log_info:
                 msg, kwargs = log_info
-                logger.info(msg, **kwargs)
+                logger.debug(msg, **kwargs)
 
-        logger.info("Tool modules installation complete")
+        server_count = len(tools_by_server)
+        tool_count = sum(len(t) for t in tools_by_server.values())
+        logger.info(
+            "Tool modules installed",
+            servers=server_count,
+            tools=tool_count,
+        )
 
     async def _start_internal_mcp_servers(self) -> None:
         """Start MCP servers as background processes inside sandbox."""
-        logger.info("Starting internal MCP servers")
+        logger.debug("Starting internal MCP servers")
 
         # Track server sessions for lifecycle management
         self.mcp_server_sessions = {}
@@ -2207,7 +2309,7 @@ except OSError as e:
                 # Create PTY session for the MCP server
                 session_name = f"mcp-{server.name}"
 
-                logger.info(
+                logger.debug(
                     "Creating MCP server session",
                     server=server.name,
                     session=session_name,
@@ -2223,7 +2325,7 @@ except OSError as e:
                     "started": False,
                 }
 
-                logger.info(
+                logger.debug(
                     "MCP server session configured",
                     server=server.name,
                     session=session_name,
@@ -2236,7 +2338,7 @@ except OSError as e:
                     error=str(e),
                 )
 
-        logger.info(
+        logger.debug(
             "Internal MCP server configuration complete",
             servers=list(self.mcp_server_sessions.keys()),
         )
@@ -2329,7 +2431,7 @@ except OSError as e:
         execution_id = f"exec_{self.execution_count:04d}"
         code_hash = hashlib.sha256(code.encode()).hexdigest()[:16]
 
-        logger.info(
+        logger.debug(
             "Executing code",
             execution_id=execution_id,
             code_hash=code_hash,
@@ -2406,9 +2508,6 @@ except OSError as e:
                         elements=[],
                     )
                 )
-            if charts:
-                logger.info(f"Captured {len(charts)} chart(s) from artifacts")
-
             # Get files after execution
             files_after = await self._list_result_files()
 
@@ -2788,7 +2887,6 @@ except OSError as e:
                     logger.debug("Stale bg session cleanup failed, reusing", session_id=session_id)
             else:
                 raise
-        logger.info("Background session ready", session_id=session_id)
         return session_id
 
     async def get_background_command_status(self, cmd_id: str) -> dict[str, Any]:
@@ -2968,7 +3066,7 @@ except OSError as e:
 
             timestamp = datetime.now(tz=UTC).isoformat()
 
-            logger.info(
+            logger.debug(
                 "Executing bash command",
                 bash_id=bash_id,
                 command_hash=command_hash,
@@ -3051,7 +3149,7 @@ except OSError as e:
                 # Replace sentinel with real cmd_id key
                 self._bg_sessions.pop(sentinel_key, None)
                 self._bg_sessions[result.cmd_id] = session_id
-                logger.info(
+                logger.debug(
                     "Background command started",
                     bash_id=bash_id,
                     cmd_id=result.cmd_id,

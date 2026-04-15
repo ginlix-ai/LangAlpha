@@ -39,6 +39,7 @@ from src.server.services.claude_oauth import (
 from src.server.database.oauth_tokens import (
     delete_oauth_tokens,
     get_oauth_status,
+    invalidate_oauth_active_cache,
     upsert_oauth_tokens,
 )
 
@@ -148,6 +149,11 @@ async def codex_device_poll(user_id: CurrentUserId):
             expires_at=expires_at,
         )
 
+        try:
+            await invalidate_oauth_active_cache(user_id)
+        except Exception:
+            pass
+
         # Clean up Redis
         await cache.client.delete(f"oauth:device:{user_id}")
 
@@ -182,6 +188,10 @@ async def codex_status(user_id: CurrentUserId):
 async def codex_disconnect(user_id: CurrentUserId):
     """Delete stored OAuth tokens."""
     await delete_oauth_tokens(user_id, CODEX_PROVIDER)
+    try:
+        await invalidate_oauth_active_cache(user_id)
+    except Exception:
+        pass
     logger.info(f"[oauth] Codex disconnected for user_id={user_id}")
     return {"success": True}
 
@@ -278,6 +288,11 @@ async def claude_callback(user_id: CurrentUserId, body: ClaudeCallbackRequest):
             expires_at=expires_at,
         )
 
+        try:
+            await invalidate_oauth_active_cache(user_id)
+        except Exception:
+            pass
+
         # Clean up Redis
         await cache.client.delete(f"oauth:claude:{user_id}")
 
@@ -304,5 +319,9 @@ async def claude_status(user_id: CurrentUserId):
 async def claude_disconnect(user_id: CurrentUserId):
     """Delete stored Claude OAuth tokens."""
     await delete_oauth_tokens(user_id, CLAUDE_PROVIDER)
+    try:
+        await invalidate_oauth_active_cache(user_id)
+    except Exception:
+        pass
     logger.info(f"[oauth] Claude disconnected for user_id={user_id}")
     return {"success": True}

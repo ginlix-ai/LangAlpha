@@ -484,6 +484,17 @@ async def delete_workspace(workspace_id: str, x_user_id: CurrentUserId):
         manager = WorkspaceManager.get_instance()
         await manager.delete_workspace(workspace_id)
 
+        # Invalidate existence cache
+        from src.server.database.conversation import ws_exists_key
+        from src.utils.cache.redis_cache import get_cache_client
+
+        cache = get_cache_client()
+        if cache.enabled and cache.client:
+            try:
+                await cache.client.delete(ws_exists_key(workspace_id))
+            except Exception:
+                pass
+
         logger.info(f"Deleted workspace {workspace_id}")
         # Return 204 No Content
 

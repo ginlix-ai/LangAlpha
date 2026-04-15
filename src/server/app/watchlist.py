@@ -25,6 +25,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
+from src.server.services.workspace_manager import WorkspaceManager
 from src.server.database.watchlist import (
     create_watchlist as db_create_watchlist,
     create_watchlist_item as db_create_watchlist_item,
@@ -131,6 +132,7 @@ async def create_watchlist(
         display_order=request.display_order,
     )
 
+    WorkspaceManager.mark_user_data_stale(user_id)
     logger.info(f"Created watchlist {watchlist['watchlist_id']} for user {user_id}")
     return WatchlistResponse.model_validate(watchlist)
 
@@ -214,6 +216,7 @@ async def update_watchlist(
     if not watchlist:
         raise_not_found("Watchlist")
 
+    WorkspaceManager.mark_user_data_stale(user_id)
     logger.info(f"Updated watchlist {resolved_id} for user {user_id}")
     return WatchlistResponse.model_validate(watchlist)
 
@@ -243,6 +246,7 @@ async def delete_watchlist(
     if not deleted:
         raise_not_found("Watchlist")
 
+    WorkspaceManager.mark_user_data_stale(user_id)
     logger.info(f"Deleted watchlist {resolved_id} for user {user_id}")
     return Response(status_code=204)
 
@@ -336,6 +340,7 @@ async def add_watchlist_item(
         raise HTTPException(status_code=409, detail=str(e))
 
     await maybe_complete_onboarding(user_id)
+    WorkspaceManager.mark_user_data_stale(user_id)
 
     logger.info(
         f"Added item {item['watchlist_item_id']} to watchlist {resolved_id} for user {user_id}"
@@ -427,6 +432,7 @@ async def update_watchlist_item(
     if not item:
         raise_not_found("Watchlist item")
 
+    WorkspaceManager.mark_user_data_stale(user_id)
     logger.info(f"Updated item {item_id} in watchlist {resolved_id} for user {user_id}")
     return WatchlistItemResponse.model_validate(item)
 
@@ -462,5 +468,6 @@ async def delete_watchlist_item(
     if not deleted:
         raise_not_found("Watchlist item")
 
+    WorkspaceManager.mark_user_data_stale(user_id)
     logger.info(f"Deleted item {item_id} from watchlist {resolved_id} for user {user_id}")
     return Response(status_code=204)

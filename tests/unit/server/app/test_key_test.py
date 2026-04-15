@@ -32,14 +32,14 @@ def test_empty_key_allowed():
 
 
 def test_key_too_long():
-    """Key longer than 256 chars raises validation error."""
+    """Key longer than 4096 chars raises validation error."""
     from src.server.app.api_keys import TestApiKeyRequest
 
     with pytest.raises(ValidationError) as exc_info:
-        TestApiKeyRequest(provider="openai", api_key="k" * 257)
+        TestApiKeyRequest(provider="openai", api_key="k" * 4097)
 
     errors = exc_info.value.errors()
-    assert any("256" in str(e["msg"]) for e in errors)
+    assert any("4096" in str(e["msg"]) for e in errors)
 
 
 def test_non_ascii_key():

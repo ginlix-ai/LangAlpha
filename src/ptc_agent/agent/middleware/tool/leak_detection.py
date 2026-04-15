@@ -87,7 +87,7 @@ class LeakDetectionMiddleware(AgentMiddleware):
         self._secrets = sorted(secrets.items(), key=lambda kv: len(kv[1]), reverse=True)
 
         if self._secrets:
-            logger.info(
+            logger.debug(
                 "LeakDetectionMiddleware initialized",
                 secret_count=len(self._secrets),
                 names=[name for name, _ in self._secrets],

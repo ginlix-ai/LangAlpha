@@ -145,7 +145,7 @@ class SkillsMiddleware(AgentMiddleware):
         else:
             self.tools = [self._create_load_skill_tool()]
 
-        logger.info(
+        logger.debug(
             "SkillsMiddleware initialized",
             mode=mode,
             skill_count=len(self.skill_registry),

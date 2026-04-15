@@ -103,7 +103,7 @@ async def bulk_upsert_files(
             async with get_db_connection() as c:
                 await _execute(c)
 
-        logger.info(
+        logger.debug(
             f"Bulk upserted {count} files for workspace {workspace_id}"
         )
         return count
@@ -412,7 +412,7 @@ async def bulk_update_file_mtimes(
             async with get_db_connection() as c:
                 await _execute(c)
 
-        logger.info(
+        logger.debug(
             f"Bulk updated mtimes for {len(updates)} files in workspace {workspace_id}"
         )
         return len(updates)

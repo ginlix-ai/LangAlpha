@@ -48,7 +48,7 @@ def create_execute_bash_tool(sandbox: Any, thread_id: str = "") -> BaseTool:
         Paths: Quote paths with spaces. Use /home/workspace/ for workspace files.
         """
         try:
-            logger.info(
+            logger.debug(
                 "Executing bash command",
                 command=command[:100],
                 working_dir=working_dir,
@@ -79,14 +79,14 @@ def create_execute_bash_tool(sandbox: Any, thread_id: str = "") -> BaseTool:
                     output += f"\n{stderr}" if output else stderr
 
                 if output:
-                    logger.info(
+                    logger.debug(
                         "Bash command executed successfully",
                         command=command[:50],
                         output_length=len(output),
                     )
                     return output
                 # Command succeeded but no output (e.g., mkdir)
-                logger.info(
+                logger.debug(
                     "Bash command executed successfully (no output)",
                     command=command[:50],
                 )

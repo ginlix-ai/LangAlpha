@@ -146,24 +146,6 @@ class PTCAgent:
             str, Any
         ] = {}  # Populated in create_agent() for introspection
 
-        # Get provider/model info for logging
-        if config.llm_definition is not None:
-            provider = config.llm_definition.provider
-            model = config.llm_definition.model_id
-        else:
-            # LLM client was passed directly via AgentConfig.create()
-            # Try to extract info from the LLM instance
-            provider = getattr(self.llm, "_llm_type", "unknown")
-            model = getattr(
-                self.llm, "model", getattr(self.llm, "model_name", "unknown")
-            )
-
-        logger.info(
-            "Initialized PTCAgent with deepagent",
-            provider=provider,
-            model=model,
-        )
-
     def _build_system_prompt(
         self,
         tool_summary: str,
@@ -217,7 +199,7 @@ class PTCAgent:
                     get_llm_by_type(name) for name in self.config.llm.fallback
                 ]
             middleware.append(ModelFallbackMiddleware(*fallback_instances))
-            logger.info(
+            logger.debug(
                 "Model fallback middleware enabled",
                 fallback_models=self.config.llm.fallback,
             )
@@ -549,7 +531,7 @@ class PTCAgent:
         # Store native tools info for introspection (used by print_agent_config)
         self.native_tools = [t.name if hasattr(t, "name") else str(t) for t in tools]
 
-        logger.info(
+        logger.debug(
             "Creating agent with custom middleware stack",
             tool_count=len(tools),
             subagent_count=len(subagents),

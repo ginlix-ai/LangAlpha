@@ -587,6 +587,44 @@ class TestHasFailed:
 
 
 # ---------------------------------------------------------------------------
+# has_ready_session
+# ---------------------------------------------------------------------------
+
+class TestHasReadySession:
+    """Test WorkspaceManager.has_ready_session() quick pre-check."""
+
+    def setup_method(self):
+        WorkspaceManager.reset_instance()
+
+    def teardown_method(self):
+        WorkspaceManager.reset_instance()
+
+    def test_has_ready_session_no_cache(self):
+        """workspace_id not in _sessions returns False."""
+        config = _make_config()
+        wm = WorkspaceManager(config)
+        assert wm.has_ready_session("ws-nonexistent") is False
+
+    def test_has_ready_session_ready(self):
+        """Initialized session with ready sandbox returns True."""
+        config = _make_config()
+        wm = WorkspaceManager(config)
+        session = _make_mock_session(initialized=True, has_sandbox=True)
+        session.sandbox.is_ready = MagicMock(return_value=True)
+        wm._sessions["ws-1"] = session
+        assert wm.has_ready_session("ws-1") is True
+
+    def test_has_ready_session_not_ready(self):
+        """Initialized session with non-ready sandbox returns False."""
+        config = _make_config()
+        wm = WorkspaceManager(config)
+        session = _make_mock_session(initialized=True, has_sandbox=True)
+        session.sandbox.is_ready = MagicMock(return_value=False)
+        wm._sessions["ws-1"] = session
+        assert wm.has_ready_session("ws-1") is False
+
+
+# ---------------------------------------------------------------------------
 # Sandbox recovery — Gap 1 & Gap 2 fixes
 # ---------------------------------------------------------------------------
 

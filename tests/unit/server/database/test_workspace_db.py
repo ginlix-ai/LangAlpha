@@ -344,26 +344,26 @@ async def test_get_workspaces_by_status(ws_mock_db, mock_cursor):
 
 @pytest.mark.asyncio
 async def test_update_workspace_activity(ws_mock_db, mock_cursor):
-    """update_workspace_activity sets last_activity_at and updated_at."""
+    """update_workspace_activity uses conditional UPDATE (skip if <60s)."""
     from src.server.database.workspace import update_workspace_activity
 
-    row = _workspace_row()
-    mock_cursor.fetchone.return_value = row
+    mock_cursor.rowcount = 1
 
     result = await update_workspace_activity("ws-1")
 
-    assert result is not None
+    assert result is True
     sql = mock_cursor.execute.call_args[0][0]
     assert "last_activity_at" in sql
     assert "status != 'deleted'" in sql
+    assert "INTERVAL" in sql  # conditional: skip if <60s
 
 
 @pytest.mark.asyncio
 async def test_update_workspace_activity_not_found(ws_mock_db, mock_cursor):
-    """update_workspace_activity returns None when workspace not found."""
+    """update_workspace_activity returns False when workspace not found (conditional UPDATE, no rows matched)."""
     from src.server.database.workspace import update_workspace_activity
 
-    mock_cursor.fetchone.return_value = None
+    mock_cursor.rowcount = 0
 
     result = await update_workspace_activity("nonexistent")
-    assert result is None
+    assert result is False

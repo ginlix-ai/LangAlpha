@@ -75,6 +75,9 @@ class WorkspaceManager:
 
         # Track which sessions have had user data synced (to avoid syncing every request)
         self._user_data_synced: set[str] = set()
+        # Bidirectional maps: workspace_id ↔ user_id (for mark_user_data_stale)
+        self._workspace_to_user: dict[str, str] = {}
+        self._user_to_workspaces: dict[str, set[str]] = {}
 
         # Track workspaces that used lazy init and still need skills/assets synced
         # Once sandbox is ready and sync completes, workspace is removed from this set
@@ -125,6 +128,19 @@ class WorkspaceManager:
     def reset_instance(cls) -> None:
         """Reset singleton instance (for testing)."""
         cls._instance = None
+
+    @classmethod
+    def mark_user_data_stale(cls, user_id: str) -> None:
+        """Clear user data sync flag for all workspaces owned by a user.
+
+        Safe to call before the singleton is initialized (no-ops).
+        Next message to each affected workspace will re-sync user data.
+        """
+        inst = cls._instance
+        if inst is None:
+            return
+        for ws_id in inst._user_to_workspaces.get(user_id, ()):
+            inst._user_data_synced.discard(ws_id)
 
     async def _get_workspace_lock(self, workspace_id: str) -> asyncio.Lock:
         """Get or create a per-workspace lock."""
@@ -184,7 +200,7 @@ class WorkspaceManager:
 
         secrets = await get_workspace_secrets_decrypted(workspace_id)
         await sandbox.upload_vault_secrets(secrets)
-        logger.info(
+        logger.debug(
             f"[vault] Pushed {len(secrets)} secret(s) to sandbox",
             extra={"workspace_id": workspace_id},
         )
@@ -221,6 +237,35 @@ class WorkspaceManager:
             )
             return {}
 
+    @staticmethod
+    async def _prepare_user_data_files(user_id: str) -> dict[str, str] | None:
+        """Fetch user data from DB and format as markdown files.
+
+        Returns a dict of {filename: markdown_content} for the manifest-based
+        sync, or None if the fetch fails. The actual upload is handled by
+        PTCSandbox._upload_user_data_files when the manifest hash differs.
+        """
+        try:
+            from src.server.services.sync_user_data import (
+                PORTFOLIO_FILE,
+                PREFERENCE_FILE,
+                WATCHLIST_FILE,
+                fetch_all_user_data,
+                format_portfolio_md,
+                format_preferences_md,
+                format_watchlist_md,
+            )
+
+            data = await fetch_all_user_data(user_id)
+            return {
+                PREFERENCE_FILE: format_preferences_md(data),
+                WATCHLIST_FILE: format_watchlist_md(data),
+                PORTFOLIO_FILE: format_portfolio_md(data),
+            }
+        except Exception as e:
+            logger.warning(f"Failed to prepare user data files: {e}")
+            return None
+
     async def _sync_user_data_if_needed(
         self,
         workspace_id: str,
@@ -244,6 +289,8 @@ class WorkspaceManager:
         try:
             await sync_user_data_to_sandbox(sandbox, user_id)
             self._user_data_synced.add(workspace_id)
+            self._workspace_to_user[workspace_id] = user_id
+            self._user_to_workspaces.setdefault(user_id, set()).add(workspace_id)
             logger.debug(f"User data synced for workspace {workspace_id}")
         except Exception as e:
             logger.warning(f"User data sync failed for workspace {workspace_id}: {e}")
@@ -269,49 +316,78 @@ class WorkspaceManager:
         if not sandbox:
             return
 
-        tasks = []
-
         # Unified asset sync (skills + tools + data_client + tokens)
         skill_dirs = (
             self.config.skills.local_skill_dirs_with_sandbox()
             if self.config.skills.enabled
             else None
         )
-        # Only mint tokens on reconnect — new sandboxes get tokens during
-        # session.initialize() → setup_tools_and_mcp() which writes the
-        # initial unified manifest with token info.
-        tokens = {}
-        if reusing_sandbox and user_id:
-            tokens = await self._mint_sandbox_tokens(user_id, workspace_id)
-        tasks.append(
-            sandbox.sync_sandbox_assets(
+
+        # All sync tasks run in parallel. Token minting and user data fetching
+        # are bundled with the manifest sync so their results feed into the
+        # unified hash comparison — only upload if content actually changed.
+        _sync_t0 = time.time()
+        _sync_times: dict[str, float] = {}
+
+        async def _timed(name: str, coro: Any) -> Any:
+            t0 = time.time()
+            try:
+                return await coro
+            finally:
+                _sync_times[name] = (time.time() - t0) * 1000
+
+        _ud_files_ok = False  # set inside closure when user data was prepared
+
+        async def _mint_and_sync_assets() -> Any:
+            nonlocal _ud_files_ok
+            tokens = {}
+            if reusing_sandbox and user_id:
+                tokens = await self._mint_sandbox_tokens(user_id, workspace_id)
+
+            # Fetch + format user data for manifest hash comparison.
+            # The actual upload only happens if the hash differs from the
+            # sandbox manifest (same pattern as tokens, skills, etc.).
+            user_data_files = None
+            if user_id:
+                user_data_files = await self._prepare_user_data_files(user_id)
+                _ud_files_ok = user_data_files is not None
+
+            return await sandbox.sync_sandbox_assets(
                 skill_dirs=skill_dirs,
                 reusing_sandbox=reusing_sandbox,
                 tokens=tokens or None,
                 user_id=user_id,
                 workspace_id=workspace_id,
+                user_data_files=user_data_files,
             )
-        )
+
+        tasks: list[Any] = [_timed("mint+manifest", _mint_and_sync_assets())]
 
         # Vault secrets — piggyback on existing parallel gather so
         # secrets are available after stop/start and sandbox recovery.
         # Pass sandbox directly: session may not be in self._sessions yet.
-        tasks.append(self.push_vault_secrets(workspace_id, sandbox=sandbox))
+        tasks.append(_timed("vault", self.push_vault_secrets(workspace_id, sandbox=sandbox)))
 
-        # User data sync task
-        if user_id:
-            tasks.append(sync_user_data_to_sandbox(sandbox, user_id))
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning(f"Asset sync failed for {workspace_id}: {result}")
 
-        if tasks:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for result in results:
-                if isinstance(result, Exception):
-                    logger.warning(f"Asset sync failed for {workspace_id}: {result}")
-
-            # Track user data sync completion — only if user data task succeeded
-            # (user data task is always appended last when user_id is truthy)
-            if user_id and len(results) >= 2 and not isinstance(results[-1], Exception):
+        # Always maintain workspace↔user mapping (needed for mark_user_data_stale).
+        # Only mark user data as synced if the files were actually prepared —
+        # a transient DB failure in _prepare_user_data_files should retry on
+        # the next message, not be permanently suppressed.
+        if user_id and results and not isinstance(results[0], Exception):
+            self._workspace_to_user[workspace_id] = user_id
+            self._user_to_workspaces.setdefault(user_id, set()).add(workspace_id)
+            if _ud_files_ok:
                 self._user_data_synced.add(workspace_id)
+
+        total = (time.time() - _sync_t0) * 1000
+        parts = " ".join(f"{k}={v:.0f}ms" for k, v in _sync_times.items())
+        logger.info(
+            f"[SYNC_DETAIL] workspace_id={workspace_id} total={total:.0f}ms ({parts})"
+        )
 
     @staticmethod
     async def _seed_agent_md(
@@ -411,7 +487,7 @@ class WorkspaceManager:
             result = await FilePersistenceService.sync_to_db(
                 workspace_id, session.sandbox
             )
-            logger.info(f"File backup completed for {workspace_id}: {result}")
+            logger.debug(f"File backup completed for {workspace_id}: {result}")
         except Exception as e:
             logger.warning(f"File backup failed for {workspace_id}: {e}")
 
@@ -687,6 +763,17 @@ class WorkspaceManager:
                 )
                 raise
 
+    def has_ready_session(self, workspace_id: str) -> bool:
+        """Check if a ready session exists in cache (no I/O).
+
+        Used by callers that need a quick pre-check before committing
+        to the full get_session_for_workspace() path.
+        """
+        session = self._sessions.get(workspace_id)
+        if session is None or not session._initialized or not session.sandbox:
+            return False
+        return session.sandbox.is_ready()
+
     async def get_session_for_workspace(
         self,
         workspace_id: str,
@@ -706,10 +793,14 @@ class WorkspaceManager:
             ValueError: If workspace not found
             RuntimeError: If workspace is in error/deleted state
         """
-        logger.debug(
-            f"get_session_for_workspace called: workspace_id={workspace_id}, user_id={user_id}, "
-            f"in_cache={workspace_id in self._sessions}, already_synced={workspace_id in self._user_data_synced}"
-        )
+        _t0 = time.time()
+        _session_phases: dict[str, float] = {}
+
+        def _mark(name: str) -> None:
+            nonlocal _t0
+            now = time.time()
+            _session_phases[name] = (now - _t0) * 1000
+            _t0 = now
 
         # ── Phase 1: Read/mutate session cache under per-workspace lock ──
         session: Session | None = None
@@ -718,29 +809,7 @@ class WorkspaceManager:
         workspace_user_id = user_id
 
         async with self._acquire_workspace_lock(workspace_id):
-            # Get workspace from DB
-            workspace = await db_get_workspace(workspace_id)
-            if not workspace:
-                raise ValueError(f"Workspace {workspace_id} not found")
-
-            status = workspace["status"]
-            sandbox_id_from_db = workspace.get("sandbox_id")
-            # Use workspace owner's user_id for syncing (don't rely on endpoint passing it)
-            workspace_user_id = workspace.get("user_id") or user_id
-            logger.debug(
-                f"Workspace {workspace_id} from DB: status={status}, sandbox_id={sandbox_id_from_db}, user_id={workspace_user_id}"
-            )
-
-            # Check for invalid states
-            if status == "deleted":
-                raise RuntimeError(f"Workspace {workspace_id} has been deleted")
-            if status == "error":
-                raise RuntimeError(
-                    f"Workspace {workspace_id} is in error state. "
-                    "Please delete and recreate."
-                )
-
-            # Check cache first
+            # ── Fast path: check session cache before any DB call ──
             if workspace_id in self._sessions:
                 session = self._sessions[workspace_id]
                 logger.debug(
@@ -786,6 +855,26 @@ class WorkspaceManager:
                     if not needs_sync:
                         # Cooldown active, skip expensive Daytona calls
                         return session
+
+            # ── Slow path: need DB to determine what to do ──
+            workspace = await db_get_workspace(workspace_id)
+            if not workspace:
+                raise ValueError(f"Workspace {workspace_id} not found")
+
+            status = workspace["status"]
+            sandbox_id_from_db = workspace.get("sandbox_id")
+            workspace_user_id = workspace.get("user_id") or user_id
+            logger.debug(
+                f"Workspace {workspace_id} from DB: status={status}, sandbox_id={sandbox_id_from_db}, user_id={workspace_user_id}"
+            )
+
+            if status == "deleted":
+                raise RuntimeError(f"Workspace {workspace_id} has been deleted")
+            if status == "error":
+                raise RuntimeError(
+                    f"Workspace {workspace_id} is in error state. "
+                    "Please delete and recreate."
+                )
 
             # No usable cached session — handle based on status
             if session is None:
@@ -971,12 +1060,14 @@ class WorkspaceManager:
         # Wrapped in try/except because a concurrent stop_workspace could invalidate
         # the session while we're syncing. The session is already cached and usable;
         # sync is best-effort — next request will retry if it failed.
+        _mark("lock_and_init")
         if needs_sync and session and session.sandbox:
             try:
                 await session.sandbox.ensure_sandbox_ready()
+                _mark("sandbox_ready")
 
                 if needs_deferred_sync:
-                    logger.info(
+                    logger.debug(
                         f"Completing deferred sync for lazy-init workspace {workspace_id}"
                     )
                     await self._sync_sandbox_assets(
@@ -985,12 +1076,25 @@ class WorkspaceManager:
                         session.sandbox,
                         reusing_sandbox=True,
                     )
+                    _mark("asset_sync")
                     await self._maybe_restore_files(workspace_id, session.sandbox)
+                    _mark("file_restore")
                     self._pending_lazy_sync.discard(workspace_id)
 
-                await self._sync_user_data_if_needed(
-                    workspace_id, workspace_user_id, session.sandbox
-                )
+                # User data is now handled by the unified manifest inside
+                # _sync_sandbox_assets (hash comparison + upload if changed).
+                # _sync_sandbox_assets already manages _user_data_synced with
+                # proper gating (_ud_files_ok), so we only maintain the
+                # workspace↔user mappings here as a safety net.
+                if needs_deferred_sync and workspace_user_id:
+                    self._workspace_to_user[workspace_id] = workspace_user_id
+                    self._user_to_workspaces.setdefault(workspace_user_id, set()).add(workspace_id)
+
+                if not needs_deferred_sync:
+                    await self._sync_user_data_if_needed(
+                        workspace_id, workspace_user_id, session.sandbox
+                    )
+                _mark("user_data_sync")
                 self._record_sync(workspace_id)
             except SandboxGoneError as e:
                 logger.warning(
@@ -1016,6 +1120,13 @@ class WorkspaceManager:
                     f"Phase 2 sync failed for workspace {workspace_id} "
                     f"(will retry next request): {e}"
                 )
+
+        if _session_phases:
+            total = sum(_session_phases.values())
+            phases = " ".join(f"{k}={v:.0f}ms" for k, v in _session_phases.items())
+            logger.info(
+                f"[SESSION_TIMING] workspace_id={workspace_id} total={total:.0f}ms ({phases})"
+            )
 
         return session
 
@@ -1057,7 +1168,7 @@ class WorkspaceManager:
             )
             lazy_init = False
 
-        logger.info(
+        logger.debug(
             f"Reconnecting to sandbox {sandbox_id} for workspace {workspace_id}",
             extra={"lazy_init": lazy_init},
         )
@@ -1074,12 +1185,12 @@ class WorkspaceManager:
                 if lazy_init:
                     await session.initialize_lazy(sandbox_id=sandbox_id)
                     self._pending_lazy_sync.add(workspace_id)
-                    logger.info(
+                    logger.debug(
                         f"Session lazy-initialized for workspace {workspace_id}"
                     )
                 else:
                     await session.initialize(sandbox_id=sandbox_id)
-                    logger.info(f"Session initialized for workspace {workspace_id}")
+                    logger.debug(f"Session initialized for workspace {workspace_id}")
             except SandboxGoneError as e:
                 sandbox_gone = True
                 SessionManager.remove_session(workspace_id)
@@ -1172,6 +1283,9 @@ class WorkspaceManager:
 
                 # Clear user data sync tracking (will re-sync on restart)
                 self._user_data_synced.discard(workspace_id)
+                uid = self._workspace_to_user.pop(workspace_id, None)
+                if uid:
+                    self._user_to_workspaces.get(uid, set()).discard(workspace_id)
                 self._pending_lazy_sync.discard(workspace_id)
                 self._last_sync_at.pop(workspace_id, None)
 
@@ -1260,6 +1374,9 @@ class WorkspaceManager:
 
                 # Clear user data sync tracking
                 self._user_data_synced.discard(workspace_id)
+                uid = self._workspace_to_user.pop(workspace_id, None)
+                if uid:
+                    self._user_to_workspaces.get(uid, set()).discard(workspace_id)
                 self._pending_lazy_sync.discard(workspace_id)
                 self._last_sync_at.pop(workspace_id, None)
 
@@ -1376,6 +1493,8 @@ class WorkspaceManager:
         # Clear session cache (don't stop workspaces on shutdown)
         self._sessions.clear()
         self._user_data_synced.clear()
+        self._workspace_to_user.clear()
+        self._user_to_workspaces.clear()
         self._pending_lazy_sync.clear()
         self._last_sync_at.clear()
         self._workspace_locks.clear()

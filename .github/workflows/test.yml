@@ -57,6 +57,9 @@ jobs:
       DB_USER: postgres
       DB_PASSWORD: postgres
       REDIS_URL: redis://localhost:6379
+      SANDBOX_TEST_PROVIDER: daytona
+      DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+      DAYTONA_BASE_URL: ${{ secrets.DAYTONA_BASE_URL }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -70,6 +73,27 @@ jobs:
         with:
           name: backend-integration-results
           path: test-results/
+
+  hotpath-comment:
+    runs-on: ubuntu-latest
+    needs: backend-integration
+    if: always() && github.event_name == 'pull_request' && needs.backend-integration.result != 'skipped'
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: backend-integration-results
+          path: test-results/
+      - name: Generate hot path comment
+        run: python3 scripts/ci/hotpath_comment.py test-results/backend-integration.xml > comment_body.md
+      - name: Post sticky PR comment
+        if: hashFiles('comment_body.md') != ''
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: hotpath-metrics
+          path: comment_body.md
 
   frontend-unit:
     runs-on: ubuntu-latest

@@ -58,7 +58,7 @@ class ProtectedPathMiddleware(AgentMiddleware):
         self._fragments = tuple(sorted(fragments, key=len, reverse=True))
 
         if self._fragments:
-            logger.info(
+            logger.debug(
                 "ProtectedPathMiddleware initialized",
                 fragments=self._fragments,
             )
