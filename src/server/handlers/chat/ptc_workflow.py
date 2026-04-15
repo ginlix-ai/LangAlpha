@@ -331,7 +331,6 @@ async def astream_ptc_workflow(
         # =====================================================================
 
         # Resolve LLM config (pre-resolved by route handler, fallback for standalone use)
-        _mark_phase("pre_session")
         if config is None:
             config = await resolve_llm_config(
                 setup.agent_config, user_id, request.llm_model, is_byok, mode="ptc",
@@ -341,6 +340,8 @@ async def astream_ptc_workflow(
 
         # Propagate fetch model override to tool context
         apply_fetch_override(config)
+
+        _mark_phase("pre_session")
 
         subagents = request.subagents_enabled or config.subagents.enabled
         sandbox_id = None

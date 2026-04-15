@@ -508,16 +508,35 @@ async def ensure_thread_exists(
 
     cache = get_cache_client()
 
-    async with get_db_connection() as conn:
-        # Step 1: Verify workspace exists (cached — immutable after creation)
-        ws_key = ws_exists_key(workspace_id)
-        ws_cached = False
-        if cache.enabled and cache.client:
-            try:
-                ws_cached = (await cache.client.get(ws_key)) == b"1"
-            except Exception:
-                pass
+    # Pre-flight cache reads — no DB connection needed on full cache hit
+    ws_key = ws_exists_key(workspace_id)
+    thread_key = thread_exists_key(conversation_thread_id)
+    ws_cached = False
+    thread_cached = False
+    if cache.enabled and cache.client:
+        try:
+            ws_cached = (await cache.client.get(ws_key)) == b"1"
+        except Exception:
+            pass
+        try:
+            thread_cached = (await cache.client.get(thread_key)) == b"1"
+        except Exception:
+            pass
 
+    # Fast path: both cached and thread exists → just update status, no pool checkout
+    # needed for existence checks
+    if ws_cached and thread_cached:
+        await update_thread_status(
+            conversation_thread_id, initial_status
+        )
+        logger.debug(
+            f"Resumed thread {conversation_thread_id}, updated status to {initial_status}"
+        )
+        return
+
+    # Slow path: at least one cache miss — need a connection
+    async with get_db_connection() as conn:
+        # Step 1: Verify workspace exists
         if not ws_cached:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
@@ -538,15 +557,7 @@ async def ensure_thread_exists(
                 except Exception:
                     pass
 
-        # Step 2: Check if thread already exists (cached — immutable after creation)
-        thread_key = thread_exists_key(conversation_thread_id)
-        thread_cached = False
-        if cache.enabled and cache.client:
-            try:
-                thread_cached = (await cache.client.get(thread_key)) == b"1"
-            except Exception:
-                pass
-
+        # Step 2: Check if thread already exists
         thread_exists = thread_cached
         if not thread_cached:
             async with conn.cursor(row_factory=dict_row) as cur:
