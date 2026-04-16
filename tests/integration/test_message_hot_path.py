@@ -194,22 +194,33 @@ class TestColdWarmSessionPath:
     """Test the cold → warm session transition with real DB and sandbox."""
 
     async def test_cold_path_has_ready_session_returns_false(
-        self, workspace_manager, running_workspace
+        self, workspace_manager, running_workspace, metrics_collector
     ):
         """Before any session is created, has_ready_session must be False."""
         ws_id = str(running_workspace["workspace_id"])
-        assert workspace_manager.has_ready_session(ws_id) is False
+
+        async with metrics_collector.timed(
+            provider=_PROVIDER, category="session", operation="cold_has_ready",
+            test_name="cold_path_has_ready_session_returns_false",
+        ):
+            result = workspace_manager.has_ready_session(ws_id)
+
+        assert result is False
 
     async def test_cold_path_creates_initialized_session(
-        self, workspace_manager, running_workspace
+        self, workspace_manager, running_workspace, metrics_collector
     ):
         """First call to get_session_for_workspace creates and initializes a session."""
         ws_id = str(running_workspace["workspace_id"])
         user_id = running_workspace["user_id"]
 
-        session = await workspace_manager.get_session_for_workspace(
-            ws_id, user_id=user_id
-        )
+        async with metrics_collector.timed(
+            provider=_PROVIDER, category="session", operation="cold_create",
+            test_name="cold_path_creates_initialized_session",
+        ):
+            session = await workspace_manager.get_session_for_workspace(
+                ws_id, user_id=user_id
+            )
 
         assert session is not None
         assert session._initialized is True
@@ -217,7 +228,7 @@ class TestColdWarmSessionPath:
         assert session.sandbox.is_ready()
 
     async def test_warm_path_has_ready_session_returns_true(
-        self, workspace_manager, running_workspace
+        self, workspace_manager, running_workspace, metrics_collector
     ):
         """After cold path, has_ready_session must be True."""
         ws_id = str(running_workspace["workspace_id"])
@@ -225,10 +236,16 @@ class TestColdWarmSessionPath:
 
         await workspace_manager.get_session_for_workspace(ws_id, user_id=user_id)
 
-        assert workspace_manager.has_ready_session(ws_id) is True
+        async with metrics_collector.timed(
+            provider=_PROVIDER, category="session", operation="warm_has_ready",
+            test_name="warm_path_has_ready_session_returns_true",
+        ):
+            result = workspace_manager.has_ready_session(ws_id)
+
+        assert result is True
 
     async def test_warm_path_returns_same_session_object(
-        self, workspace_manager, running_workspace
+        self, workspace_manager, running_workspace, metrics_collector
     ):
         """Warm path returns the exact same session (identity check)."""
         ws_id = str(running_workspace["workspace_id"])
@@ -237,14 +254,19 @@ class TestColdWarmSessionPath:
         session1 = await workspace_manager.get_session_for_workspace(
             ws_id, user_id=user_id
         )
-        session2 = await workspace_manager.get_session_for_workspace(
-            ws_id, user_id=user_id
-        )
+
+        async with metrics_collector.timed(
+            provider=_PROVIDER, category="session", operation="warm_get_session",
+            test_name="warm_path_returns_same_session_object",
+        ):
+            session2 = await workspace_manager.get_session_for_workspace(
+                ws_id, user_id=user_id
+            )
 
         assert session1 is session2
 
     async def test_warm_path_zero_db_queries(
-        self, workspace_manager, running_workspace
+        self, workspace_manager, running_workspace, metrics_collector
     ):
         """Within sync cooldown, warm path makes zero db_get_workspace calls.
 
@@ -267,27 +289,35 @@ class TestColdWarmSessionPath:
             "src.server.services.workspace_manager.db_get_workspace",
             new_callable=AsyncMock,
         ) as mock_db:
-            session = await workspace_manager.get_session_for_workspace(
-                ws_id, user_id=user_id
-            )
+            async with metrics_collector.timed(
+                provider=_PROVIDER, category="session", operation="warm_zero_db",
+                test_name="warm_path_zero_db_queries",
+            ):
+                session = await workspace_manager.get_session_for_workspace(
+                    ws_id, user_id=user_id
+                )
 
             mock_db.assert_not_called()
             assert session is not None
 
     async def test_cold_path_populates_user_mappings(
-        self, workspace_manager, running_workspace
+        self, workspace_manager, running_workspace, metrics_collector
     ):
         """Cold path records workspace-user bidirectional mappings."""
         ws_id = str(running_workspace["workspace_id"])
         user_id = running_workspace["user_id"]
 
-        await workspace_manager.get_session_for_workspace(ws_id, user_id=user_id)
+        async with metrics_collector.timed(
+            provider=_PROVIDER, category="session", operation="cold_mappings",
+            test_name="cold_path_populates_user_mappings",
+        ):
+            await workspace_manager.get_session_for_workspace(ws_id, user_id=user_id)
 
         assert workspace_manager._workspace_to_user.get(ws_id) == user_id
         assert ws_id in workspace_manager._user_to_workspaces.get(user_id, set())
 
     async def test_sync_cooldown_respected(
-        self, workspace_manager, running_workspace
+        self, workspace_manager, running_workspace, metrics_collector
     ):
         """Session returned immediately when sync cooldown is active."""
         ws_id = str(running_workspace["workspace_id"])
@@ -297,18 +327,22 @@ class TestColdWarmSessionPath:
         await workspace_manager.get_session_for_workspace(ws_id, user_id=user_id)
 
         # Warm — measure time. Should be sub-millisecond (no I/O).
-        t0 = time.monotonic()
-        session = await workspace_manager.get_session_for_workspace(
-            ws_id, user_id=user_id
-        )
-        elapsed_ms = (time.monotonic() - t0) * 1000
+        t0 = time.perf_counter()
+        async with metrics_collector.timed(
+            provider=_PROVIDER, category="session", operation="warm_cooldown",
+            test_name="sync_cooldown_respected",
+        ):
+            session = await workspace_manager.get_session_for_workspace(
+                ws_id, user_id=user_id
+            )
+        elapsed_ms = (time.perf_counter() - t0) * 1000
 
         assert session is not None
         # Warm path should be under 5ms (just dict lookups + lock acquire)
         assert elapsed_ms < 50, f"Warm path took {elapsed_ms:.1f}ms — expected < 50ms"
 
     async def test_cooldown_expired_triggers_sync(
-        self, workspace_manager, running_workspace
+        self, workspace_manager, running_workspace, metrics_collector
     ):
         """After cooldown expires, get_session_for_workspace re-syncs."""
         ws_id = str(running_workspace["workspace_id"])
@@ -324,16 +358,21 @@ class TestColdWarmSessionPath:
         with patch.object(
             workspace_manager, "_sync_sandbox_assets", new_callable=AsyncMock
         ):
-            session = await workspace_manager.get_session_for_workspace(
-                ws_id, user_id=user_id
-            )
+            async with metrics_collector.timed(
+                provider=_PROVIDER, category="session", operation="expired_resync",
+                test_name="cooldown_expired_triggers_sync",
+            ):
+                session = await workspace_manager.get_session_for_workspace(
+                    ws_id, user_id=user_id
+                )
 
             # _sync_user_data_if_needed is called during Phase 2 re-sync
             # (not _sync_sandbox_assets, because needs_deferred_sync is False)
             assert session is not None
 
     async def test_multiple_workspaces_independent_sessions(
-        self, workspace_manager, seed_user, patched_get_db_connection
+        self, workspace_manager, seed_user, patched_get_db_connection,
+        metrics_collector,
     ):
         """Each workspace gets its own independent session."""
         from src.server.database.workspace import create_workspace
@@ -349,12 +388,20 @@ class TestColdWarmSessionPath:
         ws2_id = str(ws2["workspace_id"])
         user_id = seed_user["user_id"]
 
-        session1 = await workspace_manager.get_session_for_workspace(
-            ws1_id, user_id=user_id
-        )
-        session2 = await workspace_manager.get_session_for_workspace(
-            ws2_id, user_id=user_id
-        )
+        async with metrics_collector.timed(
+            provider=_PROVIDER, category="session", operation="cold_create_ws1",
+            test_name="multiple_workspaces_independent_sessions",
+        ):
+            session1 = await workspace_manager.get_session_for_workspace(
+                ws1_id, user_id=user_id
+            )
+        async with metrics_collector.timed(
+            provider=_PROVIDER, category="session", operation="cold_create_ws2",
+            test_name="multiple_workspaces_independent_sessions",
+        ):
+            session2 = await workspace_manager.get_session_for_workspace(
+                ws2_id, user_id=user_id
+            )
 
         assert session1 is not session2
         assert workspace_manager.has_ready_session(ws1_id)
