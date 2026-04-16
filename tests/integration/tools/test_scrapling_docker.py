@@ -11,11 +11,13 @@ Requires: Docker daemon running.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import pytest
 
 pytestmark = [pytest.mark.integration]
 
+_GHCR_IMAGE = "ghcr.io/ginlix-ai/langalpha/sandbox:latest"
 _IMAGE = "langalpha-sandbox:test-scrapling"
 _DOCKERFILE = "Dockerfile.sandbox"
 _TIMEOUT = 120  # seconds per container command
@@ -41,15 +43,42 @@ def _run_in_container(cmd: str, timeout: int = _TIMEOUT) -> subprocess.Completed
 
 @pytest.fixture(scope="module")
 def docker_image():
-    """Build the sandbox Docker image once for all tests in this module."""
+    """Resolve the sandbox Docker image once for all tests in this module.
+
+    Prefers the pre-built GHCR image (fast pull) and falls back to a local
+    ``docker build`` when the registry image is unavailable.  Set
+    ``DOCKER_SANDBOX_IMAGE`` to force a specific image tag.
+    """
     if not _docker_available():
         pytest.skip("Docker not available")
 
+    # Allow CI or the user to pin a specific image.
+    explicit = os.environ.get("DOCKER_SANDBOX_IMAGE")
+    if explicit:
+        # Tag locally so _run_in_container always uses _IMAGE.
+        subprocess.run(
+            ["docker", "tag", explicit, _IMAGE],
+            capture_output=True, check=False,
+        )
+        yield _IMAGE
+        return
+
+    # Try pulling the pre-built GHCR image first (~30s vs ~20min build).
+    pull = subprocess.run(
+        ["docker", "pull", _GHCR_IMAGE],
+        capture_output=True, text=True, timeout=120,
+    )
+    if pull.returncode == 0:
+        subprocess.run(["docker", "tag", _GHCR_IMAGE, _IMAGE], check=True)
+        yield _IMAGE
+        return
+
+    # Fallback: build locally.
     result = subprocess.run(
         ["docker", "build", "-f", _DOCKERFILE, "-t", _IMAGE, "."],
         capture_output=True,
         text=True,
-        timeout=600,
+        timeout=1800,
         cwd=subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
             capture_output=True, text=True, check=True,

@@ -2,14 +2,17 @@
 """Generate a GitHub PR comment body from hot path integration test JUnit XML.
 
 Usage:
-    python scripts/ci/hotpath_comment.py test-results/backend-integration.xml
+    python scripts/ci/hotpath_comment.py test-results/backend-integration.xml [--metrics test-results/session_metrics.json]
 
 Reads the JUnit XML produced by pytest, filters for test_message_hot_path
-tests, and prints a Markdown comment to stdout.
+tests, and prints a Markdown comment to stdout.  When --metrics is provided,
+includes actual operation timings from the sandbox metrics collector alongside
+pytest's total test durations.
 """
 
 from __future__ import annotations
 
+import json
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -67,8 +70,11 @@ class CategorySummary:
 
 
 def _fmt_duration(seconds: float) -> str:
-    if seconds < 0.01:
-        return f"{seconds * 1000:.0f}ms"
+    if seconds < 0.001:
+        us = seconds * 1_000_000
+        if us < 1:
+            return f"{us:.2f}\u00b5s"
+        return f"{us:.0f}\u00b5s"
     if seconds < 1.0:
         return f"{seconds * 1000:.0f}ms"
     return f"{seconds:.2f}s"
@@ -77,6 +83,37 @@ def _fmt_duration(seconds: float) -> str:
 def _humanize_test_name(name: str) -> str:
     """Convert test_cold_path_creates_session to 'cold path creates session'."""
     return name.removeprefix("test_").replace("_", " ")
+
+
+@dataclass
+class OperationTiming:
+    operation: str
+    test_name: str
+    duration_s: float
+    success: bool
+
+
+def parse_session_metrics(path: str) -> list[OperationTiming]:
+    """Parse the sandbox metrics JSON and extract session category operations."""
+    with open(path) as f:
+        data = json.load(f)
+
+    timings: list[OperationTiming] = []
+    for op in data.get("operations", []):
+        if op.get("category") != "session":
+            continue
+        timings.append(OperationTiming(
+            operation=op["operation"],
+            test_name=op.get("test_name", ""),
+            duration_s=op.get("duration_s", 0.0),
+            success=op.get("success", True),
+        ))
+    return timings
+
+
+def _fmt_operation_name(name: str) -> str:
+    """Format operation name for display: cold_create -> cold create."""
+    return name.replace("_", " ")
 
 
 def parse_junit_xml(path: str) -> list[TestResult]:
@@ -148,7 +185,10 @@ def group_by_category(results: list[TestResult]) -> list[CategorySummary]:
     return ordered
 
 
-def generate_comment(results: list[TestResult]) -> str:
+def generate_comment(
+    results: list[TestResult],
+    timings: list[OperationTiming] | None = None,
+) -> str:
     """Generate the markdown comment body."""
     if not results:
         return ""
@@ -158,9 +198,31 @@ def generate_comment(results: list[TestResult]) -> str:
     total_passed = sum(c.passed for c in categories)
     total_duration = sum(c.total_duration_s for c in categories)
 
+    # Build a lookup from test_name to total test duration for the timings table
+    test_durations: dict[str, float] = {}
+    for r in results:
+        test_durations[r.name.removeprefix("test_")] = r.duration_s
+
     lines: list[str] = []
     lines.append("## Hot Path Integration Test Results")
     lines.append("")
+
+    # Operation timings table (actual metrics, not pytest durations)
+    if timings:
+        lines.append("### :stopwatch: Operation Timings")
+        lines.append(
+            "<sub>Actual operation duration vs pytest total"
+            " (which includes fixture setup and cold path prerequisites)</sub>"
+        )
+        lines.append("")
+        lines.append("| Operation | Actual | Test Total |")
+        lines.append("|-----------|--------|------------|")
+        for t in timings:
+            actual = _fmt_duration(t.duration_s)
+            total = _fmt_duration(test_durations[t.test_name]) if t.test_name in test_durations else "—"
+            op_name = _fmt_operation_name(t.operation)
+            lines.append(f"| {op_name} | **{actual}** | {total} |")
+        lines.append("")
 
     for cat in categories:
         status = ":white_check_mark:" if cat.failed == 0 else ":x:"
@@ -195,13 +257,26 @@ def generate_comment(results: list[TestResult]) -> str:
 def main():
     if len(sys.argv) < 2:
         print(
-            f"Usage: {sys.argv[0]} <junit.xml> [junit2.xml ...]",
+            f"Usage: {sys.argv[0]} <junit.xml> [--metrics <session_metrics.json>]",
             file=sys.stderr,
         )
         sys.exit(1)
 
+    # Parse args: positional JUnit XML paths + optional --metrics flag
+    xml_paths: list[str] = []
+    metrics_path: str | None = None
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == "--metrics" and i + 1 < len(args):
+            metrics_path = args[i + 1]
+            i += 2
+        else:
+            xml_paths.append(args[i])
+            i += 1
+
     all_results: list[TestResult] = []
-    for path in sys.argv[1:]:
+    for path in xml_paths:
         if not Path(path).exists():
             print(f"Warning: {path} not found, skipping", file=sys.stderr)
             continue
@@ -211,7 +286,11 @@ def main():
         print("No hot path test results found in JUnit XML.", file=sys.stderr)
         sys.exit(1)
 
-    comment = generate_comment(all_results)
+    timings: list[OperationTiming] | None = None
+    if metrics_path and Path(metrics_path).exists():
+        timings = parse_session_metrics(metrics_path)
+
+    comment = generate_comment(all_results, timings=timings)
     print(comment)
 
 

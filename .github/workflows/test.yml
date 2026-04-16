@@ -67,7 +67,7 @@ jobs:
           version: "latest"
       - run: uv sync --group dev --extra test
       - run: sudo apt-get install -y ripgrep
-      - run: uv run pytest tests/integration/ -v --tb=short -m integration --junitxml=test-results/backend-integration.xml
+      - run: uv run pytest tests/integration/ -v --tb=short -m integration --junitxml=test-results/backend-integration.xml --sandbox-metrics --sandbox-metrics-file test-results/session_metrics.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -87,7 +87,7 @@ jobs:
           name: backend-integration-results
           path: test-results/
       - name: Generate hot path comment
-        run: python3 scripts/ci/hotpath_comment.py test-results/backend-integration.xml > comment_body.md
+        run: python3 scripts/ci/hotpath_comment.py test-results/backend-integration.xml --metrics test-results/session_metrics.json > comment_body.md
       - name: Post sticky PR comment
         if: hashFiles('comment_body.md') != ''
         uses: marocchino/sticky-pull-request-comment@v2

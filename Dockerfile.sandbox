@@ -9,6 +9,8 @@
 # Run (manually, for debugging):
 #   docker run --rm -it langalpha-sandbox:latest bash
 
+ARG NODE_VERSION=24.14.1
+
 FROM ubuntu:24.04
 
 # ---------- System packages ----------
@@ -29,9 +31,12 @@ RUN apt-get update \
     # -- uv (Python package manager) --
     && curl -LsSf https://astral.sh/uv/install.sh | sh \
     && mv /root/.local/bin/uv /usr/local/bin/uv \
-    # -- Node.js 24 --
-    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
-    && apt-get install -y nodejs \
+    # -- Node.js (direct binary — avoids apt mirror flakiness) --
+    && NODE_ARCH=$([ "$(dpkg --print-architecture)" = "arm64" ] && echo "arm64" || echo "x64") \
+    && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
+        -o /tmp/node.tar.xz \
+    && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
+    && rm /tmp/node.tar.xz \
     # -- NPM global packages --
     && npm install -g playwright docx pptxgenjs \
     && PLAYWRIGHT_BROWSERS_PATH=/usr/local/ms-playwright \

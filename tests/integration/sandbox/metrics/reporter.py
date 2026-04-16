@@ -140,7 +140,7 @@ def write_json_report(collector: MetricsCollector, output_path: str) -> None:
 # Terminal summary
 # ---------------------------------------------------------------------------
 
-_CATEGORIES_FOR_TABLE = ("exec", "code_run", "file_io")
+_CATEGORIES_FOR_TABLE = ("exec", "code_run", "file_io", "session")
 
 
 def print_terminal_summary(collector: MetricsCollector) -> None:
@@ -163,9 +163,11 @@ def print_terminal_summary(collector: MetricsCollector) -> None:
     lines.append(
         f"{'Provider':<11}| {'Ops':>4} | {'Duration':>8} | {'Success':>7} "
         f"| {'Exec (p50)':>10} | {'CodeRun (p50)':>13} | {'FileIO (p50)':>12}"
+        f" | {'Session (p50)':>13}"
     )
     lines.append(
-        "-----------+------+----------+---------+------------+---------------+-------------"
+        "-----------+------+----------+---------+------------+---------------+"
+        "-------------+---------------"
     )
 
     for provider in sorted(ops_by_provider.keys()):
@@ -187,6 +189,7 @@ def print_terminal_summary(collector: MetricsCollector) -> None:
         lines.append(
             f"{provider:<11}| {total_ops:>4} | {total_dur:>7.1f}s | {success_pct:>6.1f}% "
             f"| {cat_p50['exec']:>10} | {cat_p50['code_run']:>13} | {cat_p50['file_io']:>12}"
+            f" | {cat_p50['session']:>13}"
         )
 
     lines.append("")
