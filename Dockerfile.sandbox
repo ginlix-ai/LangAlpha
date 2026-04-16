@@ -9,7 +9,7 @@
 # Run (manually, for debugging):
 #   docker run --rm -it langalpha-sandbox:latest bash
 
-ARG NODE_VERSION=24.0.0
+ARG NODE_VERSION=24.14.1
 
 FROM ubuntu:24.04
 
