@@ -495,3 +495,67 @@ class TestEventCounter:
         assert "id: 42\n" in e1
         assert "id: 43\n" in e2
         assert counter.next.call_count == 2
+
+
+class TestToolAgentReasoningSuppression:
+    """Tool-node inner LLM reasoning must not surface as user-facing reasoning;
+    subagents (task:*/research:*) and the main model must still emit it."""
+
+    def _handler(self):
+        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+        return WorkflowStreamHandler(thread_id="t-tool-gate")
+
+    def _chunk(self, content, kwargs=None):
+        from langchain_core.messages import AIMessageChunk
+        return AIMessageChunk(
+            content=content,
+            id="msg-1",
+            additional_kwargs=kwargs or {},
+            response_metadata={},
+        )
+
+    async def _drain(self, agen):
+        return [ev async for ev in agen]
+
+    def test_tool_agent_reasoning_content_suppressed(self):
+        handler = self._handler()
+        chunk = self._chunk(
+            [{"type": "text", "text": "internal CoT"}],
+            kwargs={"reasoning_content": "internal CoT"},
+        )
+        events = asyncio.run(self._drain(handler._process_message_chunk(chunk, "tools:abc")))
+        assert not any("reasoning_signal" in e for e in events)
+        assert not any('"content_type": "reasoning"' in e for e in events)
+        assert "tools:abc" not in handler.reasoning_active
+
+    def test_model_agent_reasoning_still_emitted(self):
+        handler = self._handler()
+        chunk = self._chunk(
+            [{"type": "text", "text": "thinking out loud"}],
+            kwargs={"reasoning_content": "thinking out loud"},
+        )
+        events = asyncio.run(self._drain(handler._process_message_chunk(chunk, "model:xyz")))
+        assert any("reasoning_signal" in e and '"content": "start"' in e for e in events)
+        assert any('"content_type": "reasoning"' in e for e in events)
+
+    def test_subagent_reasoning_still_emitted(self):
+        handler = self._handler()
+        chunk = self._chunk(
+            [{"type": "text", "text": "subagent thought"}],
+            kwargs={"reasoning_content": "subagent thought"},
+        )
+        events = asyncio.run(
+            self._drain(handler._process_message_chunk(chunk, "task:7d0e9f"))
+        )
+        assert any("reasoning_signal" in e and '"content": "start"' in e for e in events)
+        assert any('"content_type": "reasoning"' in e for e in events)
+
+    def test_bare_tools_agent_name_suppressed(self):
+        """The LangGraph default tool node name "tools" (no colon) is also gated."""
+        handler = self._handler()
+        chunk = self._chunk(
+            [{"type": "text", "text": "x"}],
+            kwargs={"reasoning_content": "x"},
+        )
+        events = asyncio.run(self._drain(handler._process_message_chunk(chunk, "tools")))
+        assert not any("reasoning_signal" in e for e in events)

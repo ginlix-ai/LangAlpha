@@ -838,21 +838,28 @@ class WorkflowStreamHandler:
         """Process a single message chunk and yield SSE events."""
         message_id = message_chunk.id or "unknown"
 
+        # Tool-node inner LLM reasoning (e.g. WebFetch's summarization model)
+        # is internal and should not surface as user-facing reasoning — the
+        # tool's output already arrives via tool_call_result. Subagents use
+        # "task:*"/"research:*"/etc. namespaces and are unaffected.
+        is_tool_agent = agent_name == "tools" or agent_name.startswith("tools:")
+
         # Check for thinking/reasoning status signals in main content
         status_info = is_thinking_status_signal(message_chunk.content)
         if status_info:
-            if status_info.get("status") == "completed":
-                # Reasoning completed - emit completion signal
-                if agent_name in self.reasoning_active:
-                    yield self._format_reasoning_signal(agent_name, message_id, "complete")
-                    self.reasoning_active.discard(agent_name)
-                self._reasoning_block_index.pop(agent_name, None)
-                self._reasoning_separator_pending.discard(agent_name)
-            else:
-                # Reasoning started - emit start signal
-                if agent_name not in self.reasoning_active:
-                    yield self._format_reasoning_signal(agent_name, message_id, "start")
-                    self.reasoning_active.add(agent_name)
+            if not is_tool_agent:
+                if status_info.get("status") == "completed":
+                    # Reasoning completed - emit completion signal
+                    if agent_name in self.reasoning_active:
+                        yield self._format_reasoning_signal(agent_name, message_id, "complete")
+                        self.reasoning_active.discard(agent_name)
+                    self._reasoning_block_index.pop(agent_name, None)
+                    self._reasoning_separator_pending.discard(agent_name)
+                else:
+                    # Reasoning started - emit start signal
+                    if agent_name not in self.reasoning_active:
+                        yield self._format_reasoning_signal(agent_name, message_id, "start")
+                        self.reasoning_active.add(agent_name)
             return  # Don't process status signals as regular content
 
         # Check for thinking status in reasoning_content field as well
@@ -864,18 +871,19 @@ class WorkflowStreamHandler:
         if reasoning_content_from_kwargs:
             reasoning_status = is_thinking_status_signal(reasoning_content_from_kwargs)
             if reasoning_status:
-                if reasoning_status.get("status") == "completed":
-                    # Reasoning completed - emit completion signal if agent was actively streaming
-                    if agent_name in self.reasoning_active:
-                        yield self._format_reasoning_signal(agent_name, message_id, "complete")
-                        self.reasoning_active.discard(agent_name)
-                    self._reasoning_block_index.pop(agent_name, None)
-                    self._reasoning_separator_pending.discard(agent_name)
-                else:
-                    # Reasoning started - emit start signal
-                    if agent_name not in self.reasoning_active:
-                        yield self._format_reasoning_signal(agent_name, message_id, "start")
-                        self.reasoning_active.add(agent_name)
+                if not is_tool_agent:
+                    if reasoning_status.get("status") == "completed":
+                        # Reasoning completed - emit completion signal if agent was actively streaming
+                        if agent_name in self.reasoning_active:
+                            yield self._format_reasoning_signal(agent_name, message_id, "complete")
+                            self.reasoning_active.discard(agent_name)
+                        self._reasoning_block_index.pop(agent_name, None)
+                        self._reasoning_separator_pending.discard(agent_name)
+                    else:
+                        # Reasoning started - emit start signal
+                        if agent_name not in self.reasoning_active:
+                            yield self._format_reasoning_signal(agent_name, message_id, "start")
+                            self.reasoning_active.add(agent_name)
                 return  # Don't process status signals as regular content
 
         # Check for function_call in content (Response API tool call streaming)
@@ -1031,8 +1039,10 @@ class WorkflowStreamHandler:
             "role": "assistant",
         }
 
-        # Add text content if present (can be regular text or reasoning)
-        if text_content and content_type:
+        # Add text content if present (can be regular text or reasoning).
+        # Drop reasoning content from tool-node inner LLMs — it's internal and
+        # the tool's user-facing output arrives via tool_call_result.
+        if text_content and content_type and not (is_tool_agent and content_type == "reasoning"):
             # Check if we need to emit reasoning completion signal
             if content_type != "reasoning" and agent_name in self.reasoning_active:
                 # Reasoning completed, emit completion signal before this content
