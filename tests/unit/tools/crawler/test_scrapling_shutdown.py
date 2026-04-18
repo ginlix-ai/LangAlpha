@@ -76,6 +76,32 @@ class TestFetchWithSession:
         assert status == 200
 
     @pytest.mark.asyncio
+    async def test_fetch_kwargs_forwarded_to_session(self):
+        """solve_cloudflare (Tier 3) and other fetch kwargs must reach session.fetch().
+
+        Regression guard: the refactor from StealthyFetcher.async_fetch() to
+        AsyncStealthySession.fetch() moved solve_cloudflare from the fetcher
+        classmethod to the session's fetch() kwargs. If _fetch_with_session
+        ever stopped threading **fetch_kwargs through, Cloudflare bypass
+        would silently degrade.
+        """
+        crawler = ScraplingCrawler()
+        fake_page = MagicMock()
+        fake_page.body = b"<html>ok</html>"
+        fake_page.encoding = "utf-8"
+        fake_page.status = 200
+        session = _make_session()
+        session.fetch.return_value = fake_page
+
+        await crawler._fetch_with_session(
+            session, "http://x", solve_cloudflare=True, timeout=42
+        )
+
+        session.fetch.assert_awaited_once_with(
+            "http://x", solve_cloudflare=True, timeout=42
+        )
+
+    @pytest.mark.asyncio
     async def test_cancellation_during_start_forces_close(self):
         """REGRESSION: cancel during session.start() must still trigger teardown.
 

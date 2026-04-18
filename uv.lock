@@ -3497,7 +3497,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "scikit-learn" },
     { name = "scipy" },
-    { name = "scrapling", extras = ["fetchers"], specifier = ">=0.4.2" },
+    { name = "scrapling", extras = ["fetchers"], specifier = "==0.4.7" },
     { name = "seaborn" },
     { name = "setuptools" },
     { name = "sqlalchemy", specifier = ">=2.0.0" },

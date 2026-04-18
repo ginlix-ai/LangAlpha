@@ -116,6 +116,27 @@ class TestBufferEventRedisFallback:
         assert "lost-if-broken" in task_info.result_buffer[0]
 
     @pytest.mark.asyncio
+    async def test_cache_client_raises_falls_back_to_in_memory(self):
+        """REGRESSION: if get_cache_client() itself throws, event still lands in deque.
+
+        Pre-fix, the getter call sat outside the try/except. A misconfigured
+        singleton would leak an exception out of _buffer_event_redis and kill
+        the streaming handler for the thread. Now it's guarded — getter
+        failure falls back to in-memory just like a pipeline failure.
+        """
+        btm = _make_btm(fallback=True)
+        task_info = _register_task(btm)
+
+        with patch(
+            "src.server.services.background_task_manager.get_cache_client",
+            side_effect=RuntimeError("cache singleton init failed"),
+        ):
+            await btm._buffer_event_redis("thread-1", "id: 42\ndata: must-survive\n\n")
+
+        assert len(task_info.result_buffer) == 1
+        assert "must-survive" in task_info.result_buffer[0]
+
+    @pytest.mark.asyncio
     async def test_pipeline_failure_fallback_disabled_drops_event(self):
         """When fallback disabled, event is dropped but does not raise."""
         btm = _make_btm(fallback=False)

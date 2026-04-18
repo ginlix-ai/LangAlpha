@@ -689,7 +689,18 @@ class BackgroundTaskManager:
         # The Redis path is one atomic pipeline (see cache.pipelined_event_buffer)
         # — previously this was ~9 sequential awaits per event, which saturated
         # the pool under workflow bursts. See fix plan 2026-04-18.
-        cache = get_cache_client()
+        # get_cache_client() is a module-level singleton in practice, but guard
+        # anyway so a misconfigured client never escapes as an uncaught error;
+        # the in-memory fallback keeps the SSE stream flowing.
+        try:
+            cache = get_cache_client()
+        except Exception as e:
+            logger.warning(
+                f"[EventBuffer] get_cache_client() failed for {thread_id}: {e}; "
+                "falling back to in-memory"
+            )
+            await self._append_to_in_memory_buffer(thread_id, event)
+            return
         use_redis = self.event_storage_backend == "redis" and cache.enabled
 
         if not use_redis:

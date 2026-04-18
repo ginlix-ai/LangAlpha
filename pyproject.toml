@@ -22,7 +22,12 @@ dependencies = [
     "langgraph-checkpoint-postgres>=2.0.0",
     # Other dependencies
     "python-dotenv>=1.0.1",
-    "scrapling[fetchers]>=0.4.2",
+    # Pinned: we import from scrapling.engines._browsers._controllers /
+    # ._stealth (private modules) for shielded session teardown. The leading
+    # underscore means scrapling can rename/move these without a semver bump,
+    # so a range pin would let `uv lock --upgrade` silently break browser
+    # fetches. Bump deliberately after verifying the private API still exists.
+    "scrapling[fetchers]==0.4.7",
     "html2text>=2024.2.26",
     "pdfplumber>=0.10.0",
     "pypdf>=4.0.0",
