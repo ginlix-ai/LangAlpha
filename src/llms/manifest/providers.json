@@ -103,12 +103,12 @@
     ],
     "anthropic": [
       {
-        "id": "claude-opus-4-6",
-        "name": "Claude 4.6 Opus",
+        "id": "claude-opus-4-7",
+        "name": "Claude 4.7 Opus",
         "is_reasoning": true,
-        "description": "Claude 4.6 Opus model",
+        "description": "Claude 4.7 Opus model",
         "alias": [
-          "claude-opus-4.6"
+          "claude-opus-4.7"
         ],
         "pricing": {
           "input": 5.0,
@@ -727,42 +727,33 @@
         }
       },
       {
-        "id": "qwen3.5-flash",
-        "name": "Qwen3.5 Flash",
+        "id": "qwen3.6-flash",
+        "name": "Qwen3.6 Flash",
         "is_reasoning": true,
-        "description": "Alibaba's Qwen3.5 Flash — fastest and most cost-efficient in the series, 1M context",
+        "description": "Alibaba's Qwen3.6 Flash — native vision-language model with agentic coding, math, and spatial reasoning improvements over 3.5-Flash",
         "context_window": 1000000,
         "max_output": 65536,
         "pricing": {
           "input_tiers": [
             {
-              "max_tokens": 128000,
-              "rate": 0.029,
-              "cached_input": 0.006
-            },
-            {
               "max_tokens": 256000,
-              "rate": 0.115,
-              "cached_input": 0.023
+              "rate": 0.172,
+              "cached_input": 0.017
             },
             {
               "max_tokens": 1000000,
-              "rate": 0.172,
-              "cached_input": 0.034
+              "rate": 0.689,
+              "cached_input": 0.069
             }
           ],
           "output_tiers": [
             {
-              "max_tokens": 128000,
-              "rate": 0.287
-            },
-            {
               "max_tokens": 256000,
-              "rate": 1.147
+              "rate": 1.033
             },
             {
               "max_tokens": 1000000,
-              "rate": 1.72
+              "rate": 4.132
             }
           ],
           "output_pricing_mode": "input_dependent",
@@ -966,31 +957,33 @@
         }
       },
       {
-        "id": "qwen3.5-flash",
-        "name": "Qwen3.5 Flash (SG)",
+        "id": "qwen3.6-flash",
+        "name": "Qwen3.6 Flash (SG)",
         "is_reasoning": true,
-        "description": "Alibaba's Qwen3.5 Flash — Singapore international region",
+        "description": "Alibaba's Qwen3.6 Flash — Singapore international region",
         "context_window": 1000000,
         "max_output": 65536,
         "pricing": {
           "input_tiers": [
             {
               "max_tokens": 256000,
-              "rate": 0.053
+              "rate": 0.269,
+              "cached_input": 0.027
             },
             {
               "max_tokens": 1000000,
-              "rate": 0.263
+              "rate": 1.075,
+              "cached_input": 0.108
             }
           ],
           "output_tiers": [
             {
               "max_tokens": 256000,
-              "rate": 0.421
+              "rate": 1.613
             },
             {
               "max_tokens": 1000000,
-              "rate": 2.103
+              "rate": 6.451
             }
           ],
           "output_pricing_mode": "input_dependent",

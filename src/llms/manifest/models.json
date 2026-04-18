@@ -50,8 +50,8 @@
       }
     }
   },
-  "claude-opus-4-6": {
-    "model_id": "claude-opus-4-6",
+  "claude-opus-4-7": {
+    "model_id": "claude-opus-4-7",
     "provider": "anthropic",
     "visible": true,
     "input_modalities": [
@@ -540,8 +540,8 @@
       "pdf"
     ]
   },
-  "qwen3.5-flash": {
-    "model_id": "qwen3.5-flash",
+  "qwen3.6-flash": {
+    "model_id": "qwen3.6-flash",
     "provider": "dashscope",
     "visible": true,
     "input_modalities": [
@@ -580,8 +580,8 @@
       "enable_thinking": true
     }
   },
-  "qwen3.5-flash-intl": {
-    "model_id": "qwen3.5-flash",
+  "qwen3.6-flash-intl": {
+    "model_id": "qwen3.6-flash",
     "provider": "dashscope-intl",
     "visible": true,
     "input_modalities": [
@@ -764,8 +764,8 @@
       }
     }
   },
-  "claude-opus-4-6-oauth": {
-    "model_id": "claude-opus-4-6",
+  "claude-opus-4-7-oauth": {
+    "model_id": "claude-opus-4-7",
     "provider": "claude-oauth",
     "visible": true,
     "input_modalities": [
@@ -819,8 +819,8 @@
       "dimensions": 1536
     }
   },
-  "claude-opus-4-6-oauth-1m": {
-    "model_id": "claude-opus-4-6",
+  "claude-opus-4-7-oauth-1m": {
+    "model_id": "claude-opus-4-7",
     "provider": "claude-oauth",
     "visible": true,
     "input_modalities": [
