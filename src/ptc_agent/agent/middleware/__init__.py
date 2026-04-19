@@ -14,7 +14,7 @@ This module provides middleware for LangChain/LangGraph agents:
 from .background_subagent import (
     BackgroundSubagentMiddleware,
     BackgroundSubagentOrchestrator,
-    ToolCallCounterMiddleware,
+    SubagentEventCaptureMiddleware,
 )
 
 # Plan mode middleware
@@ -109,7 +109,7 @@ __all__ = [
     # Background subagent
     "BackgroundSubagentMiddleware",
     "BackgroundSubagentOrchestrator",
-    "ToolCallCounterMiddleware",
+    "SubagentEventCaptureMiddleware",
     # Plan mode
     "PlanModeMiddleware",
     "create_plan_mode_interrupt_config",

@@ -80,10 +80,17 @@ logger = logging.getLogger(__name__)
 
 
 def drain_task_captured_events(task, cursor: int):
-    """Yield new captured_events from a single task since cursor position.
+    """Return new captured_events from a single task since cursor position.
 
-    Generator that yields (event_dict, agent_id) tuples for events
-    that have accumulated since the given cursor position.
+    Snapshots ``task.captured_events`` once, then returns the (event, agent_id,
+    snapshot_index) triples at indices ``[cursor, snapshot_len)`` along with the
+    snapshot length so the caller can advance cursor to exactly what was
+    returned — not ``len(task.captured_events)`` after the loop, which would
+    skip events appended concurrently during the yield/await cycle.
+
+    The ``snapshot_index`` is stable across writer handovers: the same event
+    always has the same index regardless of which SSE consumer is emitting it,
+    which lets callers derive a globally monotonic SSE ``id:`` from it.
 
     Handles cursor reset when captured_events is cleared (len < cursor).
 
@@ -91,17 +98,28 @@ def drain_task_captured_events(task, cursor: int):
         task: A BackgroundTask with captured_events list
         cursor: Last-read position in captured_events
 
-    Yields:
-        (event_dict, agent_id) tuples for each new event
+    Returns:
+        (items, new_cursor): ``items`` is a list of ``(event, agent_id,
+        snapshot_index)`` tuples; ``new_cursor`` is the snapshot length to
+        assign back to the caller's cursor after iteration.
     """
+    # Bind to a local reference. The collector replaces the list via
+    # ``task.captured_events = []``, so our local binding continues to point
+    # at the OLD list (safe). ``list.append`` is atomic under the GIL, so
+    # concurrent appends during the len()/slice reads below are consistent.
+    # We snapshot only the LENGTH here so the slice below is O(delta) — not
+    # O(history) — even for long-running subagents.
     events = task.captured_events
+    snapshot_len = len(events)
     # Reset cursor if captured_events was cleared (e.g. by collector)
-    if cursor > 0 and len(events) < cursor:
+    if cursor > 0 and snapshot_len < cursor:
         cursor = 0
-    if len(events) > cursor:
-        agent_id = f"task:{task.task_id}"
-        for ev in events[cursor:]:
-            yield ev, agent_id
+    agent_id = f"task:{task.task_id}"
+    items = [
+        (ev, agent_id, idx)
+        for idx, ev in enumerate(events[cursor:snapshot_len], start=cursor)
+    ]
+    return items, snapshot_len
 
 
 class TaskStatus(str, Enum):
@@ -1043,7 +1061,7 @@ class BackgroundTaskManager:
 
             # Snapshot current activity state per pending task
             last_activity: dict[asyncio.Task, tuple[float, int]] = {
-                at: (t.last_update_time, len(t.captured_events))
+                at: (t.last_updated_at, len(t.captured_events))
                 for at, t in pending.items()
             }
             last_progress_time = time.time()
@@ -1100,7 +1118,7 @@ class BackgroundTaskManager:
                         prev_update, prev_events = last_activity.get(
                             asyncio_task, (0.0, 0)
                         )
-                        cur_update = task.last_update_time
+                        cur_update = task.last_updated_at
                         cur_events = len(task.captured_events)
                         if cur_update > prev_update or cur_events > prev_events:
                             last_progress_time = time.time()
@@ -1743,7 +1761,7 @@ class BackgroundTaskManager:
         """Clean and persist main + subagent events to DB.
 
         Subagent events are already in correct sequential order from
-        counter.py's await-based capture (append_captured_event under lock).
+        event_capture.py's await-based capture (append_captured_event under lock).
         We preserve this insertion order rather than sorting by timestamp,
         which can reorder events captured in tight loops with identical
         time.time() values.

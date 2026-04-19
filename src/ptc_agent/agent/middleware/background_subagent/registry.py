@@ -71,8 +71,25 @@ class BackgroundTask:
     current_tool: str = ""
     """Name of the tool currently being executed."""
 
-    last_update_time: float = field(default_factory=time.time)
-    """Timestamp of last metrics update."""
+    last_checked_at: float = field(default_factory=time.time)
+    """Epoch seconds. Bumped whenever the agent inspects this task via the
+    Task tool (status/list/update/resume/cancel actions) or via TaskOutput.
+    Surfaced to the LLM so it can gauge how recently it polled, independent
+    of whether anything changed."""
+
+    last_updated_at: float = field(default_factory=time.time)
+    """Epoch seconds. Bumped only on meaningful transitions:
+
+    - Task completion (via asyncio done_callback, covers success / failure /
+      cancellation).
+    - Explicit ``cancelled = True``.
+    - A follow-up message queued via the ``update`` action.
+    - A user-visible text ``message_chunk`` event is captured.
+
+    Reasoning, reasoning-signal, tool_calls, and tool_call_result events
+    are deliberately excluded — they're high-volume pacing noise. The
+    OrphanCollector liveness check falls back to ``cur_events > prev_events``
+    for tool-only progression, so idle detection still works."""
 
     agent_id: str = ""
     """Stable unique identity: '{subagent_type}:{uuid4}'."""
@@ -100,6 +117,22 @@ class BackgroundTask:
     """Set by stream_subagent_task_events after its final drain.
     The collector awaits this before clearing captured_events so that
     live SSE consumers are guaranteed to have emitted all events."""
+
+    new_event_signal: asyncio.Event = field(default_factory=asyncio.Event)
+    """Set by append_captured_event and task done_callbacks to wake any
+    per-task SSE consumer that is waiting for new output. The consumer
+    clears before draining and then awaits, so a set() issued during or
+    after drain stays visible for the next wait."""
+
+    sse_consumer_count: int = 0
+    """Number of active SSE consumers for this task. sse_drain_complete is
+    only set when the last consumer finishes, preventing the collector from
+    clearing captured_events while another consumer is still draining."""
+
+    sse_redis_writer_claimed: bool = False
+    """Whether an SSE consumer has claimed the Redis write role. Only the
+    first consumer writes replay buffer entries; subsequent consumers still
+    yield SSE but skip Redis to avoid duplicate `id:` sequences."""
 
     @property
     def display_id(self) -> str:
@@ -301,7 +334,7 @@ class BackgroundTaskRegistry:
     ) -> None:
         """Append a captured SSE event to a background task.
 
-        Called by ToolCallCounterMiddleware to capture events for
+        Called by SubagentEventCaptureMiddleware to capture events for
         post-interrupt persistence.
 
         Args:
@@ -312,11 +345,20 @@ class BackgroundTaskRegistry:
             task = self._tasks.get(tool_call_id)
             if task:
                 task.captured_events.append(event)
+                task.new_event_signal.set()
+                # Bump last_updated_at only on user-visible text output.
+                # reasoning_signal / reasoning / tool_calls / tool_call_result
+                # events are excluded — they're pacing noise.
+                if (
+                    event.get("event") == "message_chunk"
+                    and event.get("data", {}).get("content_type") == "text"
+                ):
+                    task.last_updated_at = time.time()
 
     async def update_metrics(self, tool_call_id: str, tool_name: str) -> None:
         """Update tool call metrics for a task.
 
-        Called by ToolCallCounterMiddleware when a subagent makes a tool call.
+        Called by SubagentEventCaptureMiddleware when a subagent makes a tool call.
 
         Args:
             tool_call_id: The task's tool_call_id
@@ -330,7 +372,6 @@ class BackgroundTaskRegistry:
                 )
                 task.total_tool_calls += 1
                 task.current_tool = tool_name
-                task.last_update_time = time.time()
                 logger.debug(
                     "Updated task metrics",
                     tool_call_id=tool_call_id,
@@ -600,6 +641,7 @@ class BackgroundTaskRegistry:
                     task.completed = True
                     task.cancelled = True
                     task.error = "Cancelled"
+                    task.last_updated_at = time.time()
                     task.result = {
                         "success": False,
                         "error": "Cancelled",

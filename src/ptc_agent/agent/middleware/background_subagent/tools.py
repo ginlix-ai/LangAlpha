@@ -86,6 +86,7 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
 
             # Sync completion status from asyncio task
             _sync_task_completion(task)
+            task.last_checked_at = time.time()
 
             # If already completed, return immediately regardless of timeout
             if task.completed:
@@ -112,6 +113,7 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
             task = await registry.get_by_task_id(task_id)
 
             if task:
+                task.last_checked_at = time.time()
                 if isinstance(result, dict) and result.get("status") == "interrupted":
                     return (
                         f"Wait interrupted: new user steering received. "
@@ -137,8 +139,10 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
             if not all_tasks:
                 return "No background tasks have been assigned yet."
 
+            now = time.time()
             for task in all_tasks:
                 _sync_task_completion(task)
+                task.last_checked_at = now
 
             pending_count = sum(1 for t in all_tasks if not t.completed)
             completed_count = len(all_tasks) - pending_count
@@ -295,6 +299,16 @@ def _format_result(result: dict[str, Any] | Any) -> str:
     return f"**{content}**"
 
 
+def _fmt_ago(ts: float) -> str:
+    """Format a past timestamp as a coarse 'Xs/m/h ago' string."""
+    delta = max(0.0, time.time() - ts)
+    if delta < 60:
+        return f"{int(delta)}s ago"
+    if delta < 3600:
+        return f"{int(delta / 60)}m ago"
+    return f"{int(delta / 3600)}h ago"
+
+
 def _format_task_progress(task: BackgroundTask) -> str:
     """Format progress info for a single task.
 
@@ -322,8 +336,15 @@ def _format_task_progress(task: BackgroundTask) -> str:
     if not task.completed and task.current_tool:
         activity = f"\n  Currently executing: `{task.current_tool}`"
 
+    # Staleness summary — surfaces how long since the agent last polled vs.
+    # how long since anything meaningful changed (see Part 5 in plan).
+    staleness = (
+        f"\n  _checked {_fmt_ago(task.last_checked_at)} · "
+        f"last changed {_fmt_ago(task.last_updated_at)}_"
+    )
+
     return (
         f"### {task.display_id}: {task.subagent_type}\n"
-        f"  Status: {status} | Elapsed: {elapsed:.1f}s{tool_summary}{activity}\n"
+        f"  Status: {status} | Elapsed: {elapsed:.1f}s{tool_summary}{activity}{staleness}\n"
         f"  Task: {task.description[:100]}{'...' if len(task.description) > 100 else ''}"
     )
