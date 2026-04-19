@@ -150,7 +150,7 @@ async def stream_subagent_task_events(
     max_wait, waited = get_subagent_task_max_wait(), 0
     # Poll cadence for the pre-registry / pre-task startup window. Once the
     # task exists the loop is event-driven via new_event_signal.
-    _STARTUP_POLL_INTERVAL_S = 0.5
+    startup_poll_interval = 0.5
 
     def _format_sse(seq_id: int, event_type: str, data: dict) -> str:
         result = f"id: {seq_id}\nevent: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -198,16 +198,16 @@ async def stream_subagent_task_events(
             if not registry:
                 if waited >= max_wait:
                     break
-                waited += _STARTUP_POLL_INTERVAL_S
-                await asyncio.sleep(_STARTUP_POLL_INTERVAL_S)
+                waited += startup_poll_interval
+                await asyncio.sleep(startup_poll_interval)
                 continue
 
             task = await registry.get_task_by_task_id(task_id)
             if not task:
                 if waited >= max_wait:
                     break
-                waited += _STARTUP_POLL_INTERVAL_S
-                await asyncio.sleep(_STARTUP_POLL_INTERVAL_S)
+                waited += startup_poll_interval
+                await asyncio.sleep(startup_poll_interval)
                 continue
 
             # Reset wait counter once we find the task

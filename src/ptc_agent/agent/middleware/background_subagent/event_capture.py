@@ -41,10 +41,7 @@ def _truncate_content(content: str) -> str:
     Measures UTF-8 byte length so the cap is deterministic regardless of
     which non-ASCII characters the subagent emits.
     """
-    try:
-        encoded = content.encode("utf-8")
-    except Exception:
-        return content
+    encoded = content.encode("utf-8")
     if len(encoded) <= _MAX_CAPTURED_CONTENT_BYTES:
         return content
     truncated = encoded[:_MAX_CAPTURED_CONTENT_BYTES].decode("utf-8", errors="ignore")
