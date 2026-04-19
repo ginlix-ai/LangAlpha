@@ -1,11 +1,15 @@
-"""Tool call counter middleware for tracking subagent tool usage.
+"""Subagent event capture middleware.
 
-This middleware is injected into subagents to count their tool calls and
-report metrics back to the BackgroundTaskRegistry.
+Injected into subagents running in the background. It:
 
-It also emits a `subagent_identity` custom stream event on the first model
-call so the streaming handler can map LangGraph namespace UUIDs to our
-stable background task identities.
+- Captures LLM output events (message_chunk/tool_calls/tool_call_result) into
+  ``BackgroundTask.captured_events`` for post-interrupt persistence and per-task
+  SSE replay.
+- Emits a ``subagent_identity`` custom stream event on the first model call so
+  the streaming handler can map LangGraph namespace UUIDs to stable background
+  task identities.
+- Reports tool-call metrics (``total_tool_calls``, ``tool_call_counts``,
+  ``current_tool``) back to the ``BackgroundTaskRegistry``.
 """
 
 import time
@@ -23,18 +27,68 @@ from ptc_agent.agent.middleware.background_subagent.registry import BackgroundTa
 
 logger = structlog.get_logger(__name__)
 
+# Hard cap on per-event captured content. Captured events live in memory on
+# BackgroundTask.captured_events until task completion; a single huge tool
+# result (e.g., bash dumping a multi-MB file) would otherwise sit in RAM for
+# the rest of the task lifetime. The LLM sees the full result via the normal
+# LangGraph message flow — this cap only affects the SSE display copy.
+_MAX_CAPTURED_CONTENT_BYTES = 256 * 1024
 
-class ToolCallCounterMiddleware(AgentMiddleware):
-    """Middleware to count tool calls and report to BackgroundTaskRegistry.
 
-    This middleware is designed to be injected into subagents running in the
-    background. It tracks how many tool calls each subagent makes and what
-    tools are being used.
+def _truncate_content(content: str) -> str:
+    """Cap captured event content to ``_MAX_CAPTURED_CONTENT_BYTES``.
 
-    It also emits a ``subagent_identity`` custom stream event on the first
-    model call.  The streaming handler receives this event *with* the
-    LangGraph namespace tuple attached, which lets it register the mapping
-    from opaque ``tools:<uuid>`` namespace to our stable ``agent_id``.
+    Measures UTF-8 byte length so the cap is deterministic regardless of
+    which non-ASCII characters the subagent emits.
+    """
+    try:
+        encoded = content.encode("utf-8")
+    except Exception:
+        return content
+    if len(encoded) <= _MAX_CAPTURED_CONTENT_BYTES:
+        return content
+    truncated = encoded[:_MAX_CAPTURED_CONTENT_BYTES].decode("utf-8", errors="ignore")
+    return (
+        truncated
+        + f"\n\n[...truncated, {len(encoded) - _MAX_CAPTURED_CONTENT_BYTES} more bytes]"
+    )
+
+
+def _tool_message_to_event_data(msg: ToolMessage, agent_id: str) -> dict:
+    """Build the ``data`` payload for a captured ``tool_call_result`` event.
+
+    Shared by the direct-ToolMessage branch and the Command-wrapped branch in
+    ``awrap_tool_call``. Keeps artifact handling and content stringification in
+    one place so the two code paths can't drift.
+    """
+    content = msg.content if isinstance(msg.content, str) else str(msg.content)
+    data: dict = {
+        "agent": agent_id,
+        "id": getattr(msg, "id", ""),
+        "role": "assistant",
+        "tool_call_id": msg.tool_call_id,
+        "content": _truncate_content(content),
+        "content_type": "text",
+    }
+    if getattr(msg, "artifact", None) is not None:
+        data["artifact"] = msg.artifact
+    return data
+
+
+class SubagentEventCaptureMiddleware(AgentMiddleware):
+    """Middleware to capture subagent events and report metrics to BackgroundTaskRegistry.
+
+    Responsibilities:
+
+    - Capture LLM output events (reasoning, text, tool_calls, tool_call_result)
+      into ``BackgroundTask.captured_events`` so they can be replayed to SSE
+      clients that connect (or reconnect) to a per-task stream.
+    - Emit a ``subagent_identity`` custom stream event on the first model call.
+      The streaming handler receives this event *with* the LangGraph namespace
+      tuple attached, which lets it register the mapping from opaque
+      ``tools:<uuid>`` namespace to our stable ``agent_id``.
+    - Report tool-call metrics (count, top tools, current tool) so the main
+      agent's ``TaskOutput`` tool can show meaningful progress.
 
     The middleware uses a contextvar (current_background_tool_call_id) to identify
     which background task it belongs to. Contextvars properly propagate across
@@ -42,15 +96,15 @@ class ToolCallCounterMiddleware(AgentMiddleware):
     execute in different execution contexts.
 
     Usage:
-        # Create counter middleware with shared registry
-        counter = ToolCallCounterMiddleware(registry=background_middleware.registry)
+        # Create event capture middleware with shared registry
+        event_capture = SubagentEventCaptureMiddleware(registry=background_middleware.registry)
 
         # Inject into subagent specs
-        subagent_spec["middleware"] = [counter]
+        subagent_spec["middleware"] = [event_capture]
     """
 
     def __init__(self, registry: BackgroundTaskRegistry) -> None:
-        """Initialize the counter middleware.
+        """Initialize the event capture middleware.
 
         Args:
             registry: The BackgroundTaskRegistry to report metrics to
@@ -150,7 +204,7 @@ class ToolCallCounterMiddleware(AgentMiddleware):
                                     "agent": agent_id,
                                     "id": msg_id,
                                     "role": "assistant",
-                                    "content": formatted["reasoning"],
+                                    "content": _truncate_content(formatted["reasoning"]),
                                     "content_type": "reasoning",
                                     "finish_reason": None,
                                 },
@@ -182,7 +236,7 @@ class ToolCallCounterMiddleware(AgentMiddleware):
                                     "agent": agent_id,
                                     "id": msg_id,
                                     "role": "assistant",
-                                    "content": formatted["text"],
+                                    "content": _truncate_content(formatted["text"]),
                                     "content_type": "text",
                                     "finish_reason": "tool_calls"
                                     if tool_calls
@@ -215,8 +269,14 @@ class ToolCallCounterMiddleware(AgentMiddleware):
                                 "ts": time.time(),
                             },
                         )
-            except Exception:
-                pass  # Never break the agent for capture failures
+            except Exception as e:
+                # Never break the agent for capture failures, but leave a
+                # breadcrumb so capture regressions are debuggable.
+                logger.debug(
+                    "Failed to capture model output events",
+                    tool_call_id=tool_call_id,
+                    error=str(e),
+                )
 
         return response
 
@@ -272,26 +332,11 @@ class ToolCallCounterMiddleware(AgentMiddleware):
             try:
                 agent_id = self._get_agent_id(tool_call_id)
                 if isinstance(result, ToolMessage):
-                    content = (
-                        result.content
-                        if isinstance(result.content, str)
-                        else str(result.content)
-                    )
-                    event_data: dict = {
-                        "agent": agent_id,
-                        "id": getattr(result, "id", ""),
-                        "role": "assistant",
-                        "tool_call_id": result.tool_call_id,
-                        "content": content,
-                        "content_type": "text",
-                    }
-                    if hasattr(result, 'artifact') and result.artifact is not None:
-                        event_data["artifact"] = result.artifact
                     await self.registry.append_captured_event(
                         tool_call_id,
                         {
                             "event": "tool_call_result",
-                            "data": event_data,
+                            "data": _tool_message_to_event_data(result, agent_id),
                             "ts": time.time(),
                         },
                     )
@@ -299,30 +344,21 @@ class ToolCallCounterMiddleware(AgentMiddleware):
                     msgs = (result.update or {}).get("messages", [])
                     for msg in msgs:
                         if isinstance(msg, ToolMessage):
-                            content = (
-                                msg.content
-                                if isinstance(msg.content, str)
-                                else str(msg.content)
-                            )
-                            event_data_cmd: dict = {
-                                "agent": agent_id,
-                                "id": getattr(msg, "id", ""),
-                                "role": "assistant",
-                                "tool_call_id": msg.tool_call_id,
-                                "content": content,
-                                "content_type": "text",
-                            }
-                            if hasattr(msg, 'artifact') and msg.artifact is not None:
-                                event_data_cmd["artifact"] = msg.artifact
                             await self.registry.append_captured_event(
                                 tool_call_id,
                                 {
                                     "event": "tool_call_result",
-                                    "data": event_data_cmd,
+                                    "data": _tool_message_to_event_data(msg, agent_id),
                                     "ts": time.time(),
                                 },
                             )
-            except Exception:
-                pass  # Never break the agent for capture failures
+            except Exception as e:
+                # Never break the agent for capture failures, but leave a
+                # breadcrumb so capture regressions are debuggable.
+                logger.debug(
+                    "Failed to capture tool_call_result event",
+                    tool_call_id=tool_call_id,
+                    error=str(e),
+                )
 
         return result

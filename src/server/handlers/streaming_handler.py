@@ -524,7 +524,7 @@ class WorkflowStreamHandler:
                         event_type = event_data.get("type")
 
                         # Handle subagent identity registration
-                        # Emitted by ToolCallCounterMiddleware on first model call.
+                        # Emitted by SubagentEventCaptureMiddleware on first model call.
                         # The namespace_tuple from the streaming infrastructure tells us
                         # which LangGraph UUID corresponds to which background task.
                         if event_type == "subagent_identity":

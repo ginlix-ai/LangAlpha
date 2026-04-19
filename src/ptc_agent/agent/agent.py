@@ -23,7 +23,7 @@ from ptc_agent.agent.middleware import (
     BackgroundSubagentMiddleware,
     BackgroundSubagentOrchestrator,
     PlanModeMiddleware,
-    ToolCallCounterMiddleware,
+    SubagentEventCaptureMiddleware,
     MultimodalMiddleware,
     create_plan_mode_interrupt_config,
     # Tool middleware
@@ -427,17 +427,17 @@ class PTCAgent:
         # before any other middleware runs)
         main_only_middleware.append(SteeringMiddleware())
 
-        # Create counter middleware for tracking subagent tool calls
+        # Create event capture middleware for subagent streaming and metrics
         # (Created early so it can be passed to BackgroundSubagentMiddleware)
         _bg_registry = background_registry or BackgroundTaskRegistry()
-        counter_middleware = ToolCallCounterMiddleware(registry=_bg_registry)
+        event_capture_middleware = SubagentEventCaptureMiddleware(registry=_bg_registry)
 
         # Create background subagent middleware (must be created before subagents)
         background_middleware = BackgroundSubagentMiddleware(
             timeout=background_timeout,
             enabled=True,
             registry=_bg_registry,
-            counter_middleware=counter_middleware,
+            event_capture_middleware=event_capture_middleware,
             checkpointer=checkpointer,
         )
         main_only_middleware.append(background_middleware)
@@ -493,7 +493,7 @@ class PTCAgent:
             registry=subagent_registry,
             enabled_names=subagent_names,
             compiler=subagent_compiler,
-            counter_middleware=counter_middleware,
+            event_capture_middleware=event_capture_middleware,
         )
 
         if additional_subagents:

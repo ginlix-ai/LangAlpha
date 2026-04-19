@@ -4,7 +4,9 @@ This module provides async/background execution for subagent tasks,
 allowing the main agent to continue working while subagents run.
 """
 
-from ptc_agent.agent.middleware.background_subagent.counter import ToolCallCounterMiddleware
+from ptc_agent.agent.middleware.background_subagent.event_capture import (
+    SubagentEventCaptureMiddleware,
+)
 from ptc_agent.agent.middleware.background_subagent.middleware import (
     BackgroundSubagentMiddleware,
     current_background_agent_id,
@@ -30,7 +32,7 @@ __all__ = [
     "BackgroundTask",
     "BackgroundTaskRegistry",
     "SubagentSteeringMiddleware",
-    "ToolCallCounterMiddleware",
+    "SubagentEventCaptureMiddleware",
     "create_task_output_tool",
     "current_background_agent_id",
     "current_background_tool_call_id",

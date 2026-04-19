@@ -7,6 +7,7 @@ allowing the main agent to continue working without blocking.
 import asyncio
 import contextvars
 import json
+import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -26,10 +27,12 @@ from ptc_agent.agent.middleware.background_subagent.tools import (
 from src.utils.tracking.per_call_token_tracker import PerCallTokenTracker
 
 if TYPE_CHECKING:
-    from ptc_agent.agent.middleware.background_subagent.counter import ToolCallCounterMiddleware
+    from ptc_agent.agent.middleware.background_subagent.event_capture import (
+        SubagentEventCaptureMiddleware,
+    )
 
 # This ContextVar propagates tool_call_id to subagent tool calls, used by
-# ToolCallCounterMiddleware to track which background task a tool call
+# SubagentEventCaptureMiddleware to track which background task a tool call
 # belongs to.
 current_background_tool_call_id: contextvars.ContextVar[str | None] = (
     contextvars.ContextVar("current_background_tool_call_id", default=None)
@@ -48,6 +51,21 @@ current_background_token_tracker: contextvars.ContextVar[PerCallTokenTracker | N
 )
 
 logger = structlog.get_logger(__name__)
+
+
+def _make_task_done_callback(task: BackgroundTask) -> Callable[[asyncio.Task], None]:
+    """Build a done_callback that wakes per-task SSE consumers and bumps
+    ``last_updated_at`` when the asyncio.Task finishes.
+
+    Covers all completion paths (success, failure, cancellation) without
+    having to instrument every ``task.completed = True`` site.
+    """
+
+    def _on_task_done(_t: asyncio.Task) -> None:
+        task.new_event_signal.set()
+        task.last_updated_at = time.time()
+
+    return _on_task_done
 
 
 def _truncate_description(description: str, max_sentences: int = 2) -> str:
@@ -165,7 +183,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         *,
         enabled: bool = True,
         registry: BackgroundTaskRegistry | None = None,
-        counter_middleware: "ToolCallCounterMiddleware | None" = None,
+        event_capture_middleware: "SubagentEventCaptureMiddleware | None" = None,
         checkpointer: Any | None = None,
     ) -> None:
         """Initialize the middleware.
@@ -174,14 +192,15 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             timeout: Maximum time to wait for background tasks (seconds)
             enabled: Whether background execution is enabled
             registry: Optional shared registry for background tasks
-            counter_middleware: Optional counter middleware for clearing identity on resume
+            event_capture_middleware: Optional event capture middleware for clearing
+                identity on resume
             checkpointer: Optional LangGraph checkpointer for hydrating tasks from stored state
         """
         super().__init__()
         self.registry = registry or BackgroundTaskRegistry()
         self.timeout = timeout
         self.enabled = enabled
-        self.counter_middleware = counter_middleware
+        self.event_capture_middleware = event_capture_middleware
         self.checkpointer = checkpointer
 
         # Create native tools for this middleware
@@ -230,6 +249,46 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 "Failed to queue follow-up to Redis", task_id=task_id, error=str(e)
             )
             return False
+
+    async def _resolve_or_error(
+        self,
+        target_task_id: str | None,
+        parent_thread_id: str,
+        tool_call_id: str,
+        action_name: str | None = None,
+    ) -> "BackgroundTask | ToolMessage":
+        """Resolve a task by id with hydration fallback, or return a not-found ToolMessage.
+
+        Strips whitespace from ``target_task_id`` — LLMs occasionally emit
+        trailing whitespace or newlines when copying IDs from prior tool messages.
+
+        When ``action_name`` is supplied, the "task_id required" error includes
+        it for clearer output (e.g. "Error: task_id is required for 'update'
+        action.").
+        """
+        tid = (target_task_id or "").strip()
+        if not tid:
+            required_msg = (
+                f"Error: task_id is required for '{action_name}' action."
+                if action_name
+                else "Error: task_id is required."
+            )
+            return ToolMessage(
+                content=required_msg,
+                tool_call_id=tool_call_id,
+                name="Task",
+            )
+
+        task = await self.registry.get_by_task_id(tid)
+        if task is None:
+            task = await self._hydrate_from_checkpoint(tid, parent_thread_id)
+        if task is None:
+            return ToolMessage(
+                content=f"Error: Task-{tid} not found.",
+                tool_call_id=tool_call_id,
+                name="Task",
+            )
+        return task
 
     async def _hydrate_from_checkpoint(
         self, task_id: str, parent_thread_id: str
@@ -332,27 +391,18 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         # --- Action-based routing ---
         if action == "update":
             # --- UPDATE: Instruct a running task via Redis ---
-            if not target_task_id:
-                return ToolMessage(
-                    content="Error: task_id is required for 'update' action.",
-                    tool_call_id=tool_call_id,
-                    name="Task",
-                )
+            resolved = await self._resolve_or_error(
+                target_task_id,
+                parent_thread_id,
+                tool_call_id,
+                action_name="update",
+            )
+            if isinstance(resolved, ToolMessage):
+                return resolved
+            task = resolved
 
-            task = await self.registry.get_by_task_id(target_task_id)
-
-            # Hydration fallback: reconstruct from checkpoint if registry lost the task
-            if task is None:
-                task = await self._hydrate_from_checkpoint(
-                    target_task_id, parent_thread_id
-                )
-
-            if task is None:
-                return ToolMessage(
-                    content=f"Error: Task-{target_task_id} not found.",
-                    tool_call_id=tool_call_id,
-                    name="Task",
-                )
+            # The agent just looked at this task — bump last_checked_at.
+            task.last_checked_at = time.time()
 
             if task.cancelled:
                 return ToolMessage(
@@ -380,6 +430,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 task.tool_call_id, prompt
             )
             if success:
+                task.last_updated_at = time.time()
                 logger.info(
                     "Queued follow-up for running task",
                     task_id=target_task_id,
@@ -407,27 +458,18 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
 
         elif action == "resume":
             # --- RESUME: Reset a completed task and respawn ---
-            if not target_task_id:
-                return ToolMessage(
-                    content="Error: task_id is required for 'resume' action.",
-                    tool_call_id=tool_call_id,
-                    name="Task",
-                )
+            resolved = await self._resolve_or_error(
+                target_task_id,
+                parent_thread_id,
+                tool_call_id,
+                action_name="resume",
+            )
+            if isinstance(resolved, ToolMessage):
+                return resolved
+            task = resolved
 
-            task = await self.registry.get_by_task_id(target_task_id)
-
-            # Hydration fallback: reconstruct from checkpoint if registry lost the task
-            if task is None:
-                task = await self._hydrate_from_checkpoint(
-                    target_task_id, parent_thread_id
-                )
-
-            if task is None:
-                return ToolMessage(
-                    content=f"Error: Task-{target_task_id} not found.",
-                    tool_call_id=tool_call_id,
-                    name="Task",
-                )
+            # The agent just looked at this task — bump last_checked_at.
+            task.last_checked_at = time.time()
 
             if task.cancelled:
                 return ToolMessage(
@@ -466,13 +508,24 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             task.captured_events = []
             task.collector_response_id = None  # Allow next collector to claim
             task.sse_drain_complete = asyncio.Event()  # Fresh event for new SSE stream
+            # Wake any consumer still awaiting the prior Event before we
+            # drop the reference — otherwise they'd sit on the stale event
+            # until the 5s safety timeout.
+            task.new_event_signal.set()
+            task.new_event_signal = asyncio.Event()  # Fresh wake signal
+            task.sse_consumer_count = 0
+            task.sse_redis_writer_claimed = False
+            # Reset timestamps so the LLM sees honest staleness for the
+            # resumed run (not leftover values from the prior asyncio.Task).
+            task.last_checked_at = time.time()
+            task.last_updated_at = time.time()
 
             # Clear stale namespace mappings so new ones can be registered
             self.registry.clear_namespaces_for_task(task.tool_call_id)
 
             # Allow re-emission of subagent_identity event
-            if self.counter_middleware:
-                self.counter_middleware.clear_identity(task.tool_call_id)
+            if self.event_capture_middleware:
+                self.event_capture_middleware.clear_identity(task.tool_call_id)
 
             # Set ContextVars for the resumed task
             current_background_tool_call_id.set(task.tool_call_id)
@@ -493,6 +546,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 name=f"background_subagent_resume_{task.display_id}",
             )
             task.asyncio_task = asyncio_task
+            asyncio_task.add_done_callback(_make_task_done_callback(task))
 
             short_description = _truncate_description(description, max_sentences=2)
             pseudo_result = (
@@ -557,6 +611,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
 
             # Update the task with the asyncio task reference
             task.asyncio_task = asyncio_task
+            asyncio_task.add_done_callback(_make_task_done_callback(task))
 
             # Return immediate pseudo-result with Task-N format
             short_description = _truncate_description(description, max_sentences=2)

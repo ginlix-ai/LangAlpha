@@ -13,14 +13,14 @@ import json
 import logging
 import secrets
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Annotated, Optional
 from uuid import uuid4
 
 import asyncio
 import hmac
 import os
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.server.utils.api import (
@@ -913,7 +913,7 @@ async def retry_thread(
 @router.get("/{thread_id}/tasks/{task_id}")
 async def stream_subagent_task(
     thread_id: str,
-    task_id: str,
+    task_id: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,12}$")],
     x_user_id: CurrentUserId,
     last_event_id: Optional[int] = Query(
         None, description="Last received event ID for reconnect"
@@ -933,7 +933,7 @@ async def stream_subagent_task(
 @router.post("/{thread_id}/tasks/{task_id}/messages")
 async def send_subagent_message(
     thread_id: str,
-    task_id: str,
+    task_id: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,12}$")],
     request: SubagentMessageRequest,
     x_user_id: CurrentUserId,
 ):
