@@ -188,7 +188,7 @@ interface ContextWindowCallbacks {
   setMessages: SetMessages;
   setTokenUsage: React.Dispatch<React.SetStateAction<TokenUsage | null>>;
   setIsCompacting: ((v: string | false) => void) | null;
-  insertNotification: (text: string) => void;
+  insertNotification: (text: string, variant?: 'info' | 'success' | 'warning', detail?: string) => void;
   t: (key: string, opts?: Record<string, unknown>) => string;
   offloadBatch: React.MutableRefObject<OffloadBatch>;
 }
@@ -324,6 +324,7 @@ function handleContextWindowEvent(event: SSEEvent, { getMsgId, nextOrder, setMes
     if (setIsCompacting) setIsCompacting(false);
     if (event.signal === 'complete') {
       const text = t('chat.compactedNotification', { from: event.original_message_count });
+      const detail = (event.summary_text as string | undefined) || undefined;
       const msgId = getMsgId();
       if (msgId) {
         const order = nextOrder();
@@ -332,11 +333,11 @@ function handleContextWindowEvent(event: SSEEvent, { getMsgId, nextOrder, setMes
           const aMsg = msg as AssistantMessage;
           return {
             ...aMsg,
-            contentSegments: [...(aMsg.contentSegments || []), { type: 'notification' as const, content: text, order }],
+            contentSegments: [...(aMsg.contentSegments || []), { type: 'notification' as const, content: text, order, detail }],
           };
         }));
       } else {
-        insertNotification(text);
+        insertNotification(text, 'info', detail);
       }
     }
     return;
@@ -709,6 +710,15 @@ export function useChatMessages(
         // Track last event ID so reconnectToStream can deduplicate
         if (event._eventId != null) {
           lastEventIdRef.current = event._eventId;
+        }
+
+        // compaction_chunk is the side channel for LLM output from the
+        // compaction middleware (bracketed by context_window summarize
+        // start/complete events). Drop here so it never merges into the
+        // assistant message — future UI can subscribe separately to show
+        // what was summarized.
+        if (eventType === 'compaction_chunk') {
+          return;
         }
 
         // Check if this is a subagent event - filter it out from main chat view
@@ -1628,6 +1638,12 @@ export function useChatMessages(
               const eventType = event.event;
               const contentType = event.content_type;
 
+              // Side channel for compaction-middleware LLM output; drop so
+              // it does not mingle with the subagent's own messages.
+              if (eventType === 'compaction_chunk') {
+                continue;
+              }
+
               // Detect resume boundary: turn_index transitions to a resume turn
               const eventTurnIndex = event.turn_index;
               if (eventTurnIndex != null && eventTurnIndex !== lastTurnIndex && resumeByTurnIndex.has(eventTurnIndex)) {
@@ -1745,8 +1761,10 @@ export function useChatMessages(
                   // Skip — no per-subagent token display
                 } else {
                   let text;
+                  let detail: string | undefined;
                   if (action === 'summarize' && event.signal === 'complete') {
                     text = t('chat.compactedNotification', { from: event.original_message_count });
+                    detail = (event.summary_text as string | undefined) || undefined;
                   } else if (action === 'offload' && event.signal === 'complete') {
                     const args = event.offloaded_args || 0;
                     const reads = event.offloaded_reads || 0;
@@ -1763,7 +1781,7 @@ export function useChatMessages(
                       const taskMsg = taskRefsLocal.messages[msgIdx];
                       if (taskMsg.role === 'assistant') {
                         const aMsg = taskMsg as unknown as AssistantMessage;
-                        taskRefsLocal.messages[msgIdx] = { ...aMsg, contentSegments: [...(aMsg.contentSegments || []), { type: 'notification' as const, content: text, order }] } as unknown as Record<string, unknown>;
+                        taskRefsLocal.messages[msgIdx] = { ...aMsg, contentSegments: [...(aMsg.contentSegments || []), { type: 'notification' as const, content: text, order, detail }] } as unknown as Record<string, unknown>;
                       }
                     }
                   }
@@ -2482,6 +2500,14 @@ export function useChatMessages(
         lastEventIdRef.current = event._eventId;
       }
 
+      // compaction_chunk is the side channel for LLM output from the
+      // compaction middleware; swallow so it does not leak into the
+      // assistant message stream. The context_window summarize
+      // start/complete/error events already surface compaction state.
+      if (eventType === 'compaction_chunk') {
+        return;
+      }
+
       // Debug: Log all events to see what we're receiving
       if (event.artifact_type || eventType === 'artifact') {
         console.log('[Stream] Artifact event detected:', { eventType, event, artifact_type: event.artifact_type });
@@ -2682,8 +2708,10 @@ export function useChatMessages(
           if (taskId && event.action !== 'token_usage') {
             const action = event.action;
             let text;
+            let detail: string | undefined;
             if (action === 'summarize' && event.signal === 'complete') {
               text = t('chat.compactedNotification', { from: event.original_message_count });
+              detail = (event.summary_text as string | undefined) || undefined;
             } else if (action === 'offload' && event.signal === 'complete') {
               const args = event.offloaded_args || 0;
               const reads = event.offloaded_reads || 0;
@@ -2700,7 +2728,7 @@ export function useChatMessages(
               if (msgIdx !== -1) {
                 const existingMsg = updatedMessages[msgIdx];
                 const segs = (existingMsg.contentSegments || []) as Record<string, unknown>[];
-                updatedMessages[msgIdx] = { ...existingMsg, contentSegments: [...segs, { type: 'notification', content: text, order }] };
+                updatedMessages[msgIdx] = { ...existingMsg, contentSegments: [...segs, { type: 'notification', content: text, order, detail }] };
               }
               taskRefs.messages = updatedMessages;
               updateSubagentCard(taskId, { messages: updatedMessages });
@@ -3945,9 +3973,12 @@ export function useChatMessages(
     resumeWithHitlResponse({ [pendingInterrupt.interruptId!]: { decisions: [{ type: 'reject' }] } }, false);
   }, [pendingInterrupt, resumeWithHitlResponse, resolveProposal]);
 
-  const insertNotification = useCallback((text: string, variant: 'info' | 'success' | 'warning' = 'info') => {
-    setMessages((prev) => appendMessage(prev, createNotificationMessage(text, variant)));
-  }, []);
+  const insertNotification = useCallback(
+    (text: string, variant: 'info' | 'success' | 'warning' = 'info', detail?: string) => {
+      setMessages((prev) => appendMessage(prev, createNotificationMessage(text, variant, detail)));
+    },
+    [],
+  );
 
   // =====================================================================
   // Edit / Regenerate / Retry handlers

@@ -170,7 +170,29 @@
     "claudeOpenAgain": "Open authorize page again",
     "starredModels": "Quick-access models",
     "starredModelsDesc": "Starred models appear in the chat input for quick switching",
-    "addModels": "Add"
+    "addModels": "Add",
+    "compactionProfile": "Compaction Profile",
+    "compactionProfileDesc": "Bundled preset for compaction trigger and retention. Leave on system default unless you have a reason to tune it.",
+    "compactionProfileUseDefault": "Use system default",
+    "compactionProfilePreset": "{{tokens}}k tokens · keep {{keep}} · trim@{{trim}}",
+    "compactionProfiles": {
+      "aggressive": {
+        "label": "Aggressive",
+        "description": "Compact early. Safe for any model; summaries may feel more frequent."
+      },
+      "moderate": {
+        "label": "Moderate",
+        "description": "Balanced. Good default for 200k-context models."
+      },
+      "extended": {
+        "label": "Extended",
+        "description": "Preserve more context. Best for 400k–1M context models."
+      },
+      "relaxed": {
+        "label": "Relaxed",
+        "description": "Maximum context. Best for 1M-context models."
+      }
+    }
   },
   "dashboard": {
     "title": "LangAlpha",
@@ -317,10 +339,13 @@
       "report-issueDesc": "Report issues and propose fixes to improve agent capabilities"
     },
     "compactedNotification": "Context compacted · {{from}} messages → summary",
+    "viewSummary": "View summary",
+    "hideSummary": "Hide summary",
     "offloadedArgsNotification": "Tool arguments offloaded · {{count}} tools",
     "offloadedReadsNotification": "Stale read results offloaded · {{count}} reads",
     "offloadedNotification": "Context offloaded · {{args}} tool args, {{reads}} reads",
     "compactionError": "Context compaction failed",
+    "compactBusy": "Can only compact when the current turn has finished streaming.",
     "modelSelector": {
       "manageModels": "Manage models",
       "moreModels": "More models",

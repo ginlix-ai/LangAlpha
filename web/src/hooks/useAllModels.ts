@@ -16,6 +16,16 @@ interface SystemDefaults {
   fallback_models?: string[];
 }
 
+export interface CompactionProfilePreset {
+  token_threshold: number;
+  truncate_args_trigger_messages: number;
+  keep_messages: number;
+}
+
+export type CompactionProfileName = 'aggressive' | 'moderate' | 'extended' | 'relaxed';
+
+export type CompactionProfileCatalog = Record<CompactionProfileName, CompactionProfilePreset>;
+
 export interface UseAllModelsResult {
   /** Filtered models the user can access (grouped by provider). */
   models: Record<string, ProviderModelsData>;
@@ -33,6 +43,8 @@ export interface UseAllModelsResult {
   customModels: CustomModelEntry[];
   /** Flat set of all model names in the filtered result. */
   validModelNames: Set<string>;
+  /** Compaction profile catalog from the models API (name → preset values). */
+  compactionProfiles: CompactionProfileCatalog | null;
   /** Raw models API response (for callers that need the full shape). */
   rawApiResponse: Record<string, unknown> | null;
   /** True while any upstream query is still loading. */
@@ -98,6 +110,13 @@ export function useAllModels(): UseAllModelsResult {
     return (raw.system_defaults as SystemDefaults) ?? null;
   }, [modelsData]);
 
+  /** Compaction profile catalog from the models API */
+  const compactionProfiles = useMemo<CompactionProfileCatalog | null>(() => {
+    if (!modelsData) return null;
+    const raw = modelsData as Record<string, unknown>;
+    return (raw.compaction_profiles as CompactionProfileCatalog) ?? null;
+  }, [modelsData]);
+
   /** Run the full pipeline: normalize → merge custom → filter */
   const visible = useMemo<BuildVisibleModelsResult>(() => {
     if (!modelsData) {
@@ -128,6 +147,7 @@ export function useAllModels(): UseAllModelsResult {
     systemDefaults,
     customModels,
     validModelNames: visible.validModelNames,
+    compactionProfiles,
     rawApiResponse: modelsData ? (modelsData as Record<string, unknown>) : null,
     isLoading: modelsLoading || prefsLoading || configuredLoading,
   };

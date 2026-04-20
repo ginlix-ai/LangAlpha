@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Bot, User, FileText, ImageIcon, Pencil, RefreshCw, RotateCcw, Copy, Check, Info, ThumbsUp, ThumbsDown } from 'lucide-react';
 import { useIsMobile } from '@/hooks/useIsMobile';
 
@@ -63,6 +64,8 @@ interface ContentSegmentRecord {
   questionId?: string;
   proposalId?: string;
   widgetId?: string;
+  /** Notification-only: longer text (compaction summary) shown under toggle. */
+  detail?: string;
 }
 
 /** Subagent info for opening subagent task tabs */
@@ -224,27 +227,58 @@ function AttachmentCard({ attachment }: AttachmentCardProps): React.ReactElement
 interface NotificationDividerProps {
   message?: MessageRecord;
   content?: string;
+  detail?: string;
 }
 
 /**
  * NotificationDivider -- centered inline divider for system events
- * (e.g. compaction, offload). Renders as a muted horizontal rule
- * with text, similar to date dividers in chat apps.
+ * (e.g. compaction, offload). Renders as a muted horizontal rule with
+ * text, similar to date dividers in chat apps. When ``detail`` is set
+ * (e.g. the compaction summary), a "View summary" toggle reveals the
+ * full text in a muted panel below the divider.
  */
-function NotificationDivider({ message, content }: NotificationDividerProps): React.ReactElement {
+function NotificationDivider({ message, content, detail }: NotificationDividerProps): React.ReactElement {
+  const { t } = useTranslation();
   const text = content ?? (message?.content as string | undefined);
+  const effectiveDetail =
+    detail ?? ((message as { detail?: string } | undefined)?.detail);
+  const hasDetail = typeof effectiveDetail === 'string' && effectiveDetail.trim().length > 0;
+  const [expanded, setExpanded] = useState(false);
+
   return (
-    <div
-      className="flex items-center gap-3 py-2 my-1"
-    >
-      <div className="flex-1" style={{ borderTop: '1px solid var(--color-border-muted)' }} />
-      <span
-        className="text-xs whitespace-nowrap"
-        style={{ color: 'var(--color-text-tertiary)' }}
-      >
-        {text}
-      </span>
-      <div className="flex-1" style={{ borderTop: '1px solid var(--color-border-muted)' }} />
+    <div className="my-1">
+      <div className="flex items-center gap-3 py-2">
+        <div className="flex-1" style={{ borderTop: '1px solid var(--color-border-muted)' }} />
+        <span
+          className="text-xs whitespace-nowrap"
+          style={{ color: 'var(--color-text-tertiary)' }}
+        >
+          {text}
+        </span>
+        {hasDetail && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="text-xs underline-offset-2 hover:underline whitespace-nowrap"
+            style={{ color: 'var(--color-text-tertiary)' }}
+          >
+            {expanded ? t('chat.hideSummary') : t('chat.viewSummary')}
+          </button>
+        )}
+        <div className="flex-1" style={{ borderTop: '1px solid var(--color-border-muted)' }} />
+      </div>
+      {hasDetail && expanded && (
+        <div
+          className="mt-1 mb-2 mx-auto max-w-3xl rounded-md px-3 py-2 text-sm whitespace-pre-wrap"
+          style={{
+            color: 'var(--color-text-secondary)',
+            background: 'var(--color-bg-subtle)',
+            border: '1px solid var(--color-border-muted)',
+          }}
+        >
+          {effectiveDetail}
+        </div>
+      )}
     </div>
   );
 }
@@ -1317,8 +1351,9 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
           }
 
           if (block.type === 'notification') {
+            const notifSeg = (block as NotificationRenderBlock).segment;
             return (
-              <NotificationDivider key={block.key} content={(block as NotificationRenderBlock).segment.content} />
+              <NotificationDivider key={block.key} content={notifSeg.content} detail={notifSeg.detail} />
             );
           }
 
@@ -1621,7 +1656,7 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
           return null;
         } else if (segment.type === 'notification') {
           return (
-            <NotificationDivider key={`notification-${segment.order}-${index}`} content={segment.content} />
+            <NotificationDivider key={`notification-${segment.order}-${index}`} content={segment.content} detail={segment.detail} />
           );
         }
         return null;

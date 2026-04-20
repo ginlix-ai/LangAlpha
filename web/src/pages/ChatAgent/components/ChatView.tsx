@@ -678,24 +678,51 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     const tid = currentThreadId || threadId;
     if (!tid || tid === '__default__') return;
 
+    // Surface backend errors from /compact + /offload. Backend may return
+    // detail as a structured object ({code, verb, message}) — the 409
+    // "workflow_active" case comes through this path when the user fires
+    // /compact mid-stream, and we upgrade it to a warning banner.
+    const surfaceActionError = (err: unknown, fallbackKey: string) => {
+      const resp = (err as { response?: { status?: number; data?: unknown } } | undefined)?.response;
+      const data = (resp?.data ?? undefined) as { detail?: unknown } | undefined;
+      const detail = data?.detail;
+      // `typeof null === 'object'` and arrays are objects in JS, so guard both.
+      if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+        const obj = detail as { code?: string; message?: string };
+        if (obj.code === 'workflow_active') {
+          insertNotification(t('chat.compactBusy'), 'warning');
+          return;
+        }
+        if (typeof obj.message === 'string' && obj.message.length > 0) {
+          insertNotification(obj.message, 'warning');
+          return;
+        }
+        insertNotification(t(fallbackKey), 'warning');
+        return;
+      }
+      if (typeof detail === 'string' && detail.length > 0) {
+        insertNotification(detail, 'warning');
+        return;
+      }
+      insertNotification(t(fallbackKey), 'warning');
+    };
+
     if (cmd.name === 'compact') {
       // SSE wire action value "summarize" is preserved as a protocol contract.
       setIsCompacting('summarize');
       summarizeThread(tid)
         .then((data: Record<string, unknown>) => {
           setIsCompacting(false);
+          const detail = (data.summary_text as string | undefined) || undefined;
           insertNotification(
             t('chat.compactedNotification', { from: data.original_message_count }),
+            'info',
+            detail,
           );
         })
         .catch((err: unknown) => {
           console.error('[ChatView] Compaction failed:', err);
-          const detail = (err as Record<string, unknown>)?.response
-            ? ((err as Record<string, unknown>).response as Record<string, unknown>)?.data
-              ? (((err as Record<string, unknown>).response as Record<string, unknown>).data as Record<string, unknown>)?.detail as string | undefined
-              : undefined
-            : undefined;
-          insertNotification(detail || t('chat.compactionError'));
+          surfaceActionError(err, 'chat.compactionError');
           setIsCompacting(false);
         });
     } else if (cmd.name === 'offload') {
@@ -712,12 +739,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
         })
         .catch((err: unknown) => {
           console.error('[ChatView] Offload failed:', err);
-          const detail = (err as Record<string, unknown>)?.response
-            ? ((err as Record<string, unknown>).response as Record<string, unknown>)?.data
-              ? (((err as Record<string, unknown>).response as Record<string, unknown>).data as Record<string, unknown>)?.detail as string | undefined
-              : undefined
-            : undefined;
-          insertNotification(detail || t('chat.compactionError'));
+          surfaceActionError(err, 'chat.compactionError');
           setIsCompacting(false);
         });
     }

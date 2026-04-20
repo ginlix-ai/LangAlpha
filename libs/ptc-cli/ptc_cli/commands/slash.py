@@ -754,11 +754,28 @@ async def handle_command(
         except httpx.HTTPStatusError as e:
             from ptc_cli.utils.http_helpers import parse_error_detail
 
+            # Default so we still surface something if parse_error_detail raises
+            # on a malformed response body.
+            detail_text = str(e)
+            try:
+                detail = parse_error_detail(e.response)
+            except Exception:
+                detail = None
+            # The server may return detail as a structured dict
+            # ({code, verb, message}) for workflow-active conflicts.
+            if isinstance(detail, dict):
+                msg = detail.get("message")
+                detail_text = msg if isinstance(msg, str) and msg else str(detail)
+            elif isinstance(detail, str) and detail:
+                detail_text = detail
+
             if e.response.status_code == 400:
-                detail = parse_error_detail(e.response) or str(e)
-                console.print(f"[yellow]{detail}[/yellow]")
+                console.print(f"[yellow]{detail_text}[/yellow]")
             elif e.response.status_code == 404:
                 console.print("[yellow]Thread not found[/yellow]")
+            elif e.response.status_code == 409:
+                # Workflow is still streaming on this thread.
+                console.print(f"[yellow]{detail_text}[/yellow]")
             else:
                 console.print(f"[yellow]Could not compact: {e}[/yellow]")
         except Exception as e:

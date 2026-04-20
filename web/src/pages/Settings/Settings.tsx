@@ -19,6 +19,7 @@ import ConfirmDialog from '@/pages/Dashboard/components/ConfirmDialog';
 import { ModelTierConfig } from '@/components/model/ModelTierConfig';
 import type { ByokProvider, CustomModelEntry } from '@/components/model/types';
 import { useAllModels } from '@/hooks/useAllModels';
+import type { CompactionProfileName } from '@/hooks/useAllModels';
 import { useDebouncedSave } from '@/hooks/useDebouncedSave';
 import './Settings.css';
 
@@ -65,7 +66,7 @@ function Settings() {
   const updatePrefsMutation = useUpdatePreferences();
   const queryClient = useQueryClient();
   const { theme: _theme, preference, setTheme: setThemePref } = useTheme();
-  const { models: visibleModels, modelAccessMap, systemDefaults: hookSystemDefaults, validModelNames, isLoading: isModelsLoading } = useAllModels();
+  const { models: visibleModels, modelAccessMap, systemDefaults: hookSystemDefaults, validModelNames, compactionProfiles, isLoading: isModelsLoading } = useAllModels();
   const { t, i18n } = useTranslation();
 
   const tabParam = searchParams.get('tab') || 'userInfo';
@@ -94,6 +95,7 @@ function Settings() {
   const [compactionModel, setCompactionModel] = useState('');
   const [fetchModel, setFetchModel] = useState('');
   const [fallbackModels, setFallbackModels] = useState<string[]>([]);
+  const [compactionProfile, setCompactionProfile] = useState<CompactionProfileName | ''>('');
 
   // Custom Models state
   const [customModels, setCustomModels] = useState<CustomModelEntry[]>([]);
@@ -250,6 +252,15 @@ function Settings() {
       setCompactionModel((otherPref?.compaction_model as string) || '');
       setFetchModel((otherPref?.fetch_model as string) || '');
       setFallbackModels((otherPref?.fallback_models as string[]) || (hookSystemDefaults?.fallback_models as string[]) || []);
+      const rawProfile = otherPref?.compaction_profile;
+      setCompactionProfile(
+        rawProfile === 'aggressive' ||
+          rawProfile === 'moderate' ||
+          rawProfile === 'extended' ||
+          rawProfile === 'relaxed'
+          ? rawProfile
+          : '',
+      );
       setCodexOAuthStatus(codexStatus || { connected: false });
       setClaudeOAuthStatus(claudeStatus || { connected: false });
     } catch {
@@ -261,10 +272,12 @@ function Settings() {
   const modelStateRef = useRef({
     preferredModel, preferredFlashModel, starredModels, customModels,
     compactionModel, fetchModel, fallbackModels, byokProviders,
+    compactionProfile,
   });
   modelStateRef.current = {
     preferredModel, preferredFlashModel, starredModels, customModels,
     compactionModel, fetchModel, fallbackModels, byokProviders,
+    compactionProfile,
   };
 
   const saveModelPrefs = useCallback(async () => {
@@ -291,8 +304,12 @@ function Settings() {
         custom_models: cleanCustomModels.length > 0 ? cleanCustomModels : null,
         custom_providers: cleanCustomProviders.length > 0 ? cleanCustomProviders : null,
         compaction_model: s.compactionModel ? cleanModelRef(s.compactionModel) : null,
+        // Retire the legacy key so the back-compat shim in resolve_llm_config
+        // can't resurrect a stale value when the user clears compaction_model.
+        summarization_model: null,
         fetch_model: s.fetchModel ? cleanModelRef(s.fetchModel) : null,
         fallback_models: cleanFallback,
+        compaction_profile: s.compactionProfile || null,
       },
     });
   }, [validModelNames, updatePrefsMutation]);
@@ -957,15 +974,18 @@ function Settings() {
                     compactionModel: compactionModel,
                     fetchModel: fetchModel,
                     fallbackModels: fallbackModels,
+                    compactionProfile: compactionProfile,
                   }}
                   onAdvancedModelsChange={(models) => {
                     if (models.compactionModel !== undefined) setCompactionModel(models.compactionModel);
                     if (models.fetchModel !== undefined) setFetchModel(models.fetchModel);
                     if (models.fallbackModels !== undefined) setFallbackModels(models.fallbackModels);
+                    if (models.compactionProfile !== undefined) setCompactionProfile(models.compactionProfile);
                     triggerModelSave();
                   }}
                   systemDefaults={hookSystemDefaults ?? undefined}
                   modelAccess={modelAccessMap}
+                  compactionProfiles={compactionProfiles}
                 />
 
                 {/* Quick-access models — compact strip */}
