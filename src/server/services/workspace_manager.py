@@ -1013,6 +1013,11 @@ class WorkspaceManager:
                                     workspace_id=workspace_id,
                                     status=corrected,
                                 )
+                                # Fresh last_activity_at so the idle sweep does
+                                # not immediately stop a just-corrected workspace
+                                # on a stale timestamp. Mirrors _recover_sandbox
+                                # and _restart_workspace.
+                                await update_workspace_activity(workspace_id)
                                 if corrected == "stopped":
                                     session = await self._restart_workspace(
                                         workspace,
@@ -1258,6 +1263,11 @@ class WorkspaceManager:
 
             # Cache session
             self._sessions[workspace_id] = session
+
+            # Stamp last_activity_at so the idle sweep cannot pick this workspace
+            # up using a stale timestamp during the remainder of the request
+            # lifetime. Mirrors _recover_sandbox.
+            await update_workspace_activity(workspace_id)
 
             logger.info(f"Workspace {workspace_id} restarted successfully")
             return session

@@ -916,6 +916,62 @@ class TestSandboxRecovery:
         mock_session_mgr.remove_session.assert_called_with(ws_id)
         assert result is not None
 
+    @pytest.mark.asyncio
+    @patch("src.server.services.workspace_manager.SessionManager")
+    @patch("src.server.services.workspace_manager.update_workspace_status")
+    @patch("src.server.services.workspace_manager.update_workspace_activity")
+    async def test_restart_workspace_stamps_activity_after_status(
+        self, mock_activity, mock_status, mock_session_mgr
+    ):
+        """REGRESSION: _restart_workspace must await update_workspace_activity
+        after flipping status to 'running'. Without this, an idle sweep firing
+        during the sandbox restore reads a stale last_activity_at and stops the
+        workspace mid-request, surfacing to the user as
+        'Session for workspace ... is not properly initialized'.
+        Mirrors _recover_sandbox.
+        """
+        manager = self._make_manager()
+        ws_id = str(uuid.uuid4())
+        workspace = _make_workspace(workspace_id=ws_id, status="stopped")
+
+        session = _make_mock_session()
+        mock_session_mgr.get_session.return_value = session
+
+        # Patch non-focus internals so execution reaches the final
+        # status + activity block on the happy reconnect path.
+        manager._sync_sandbox_assets = AsyncMock()
+        manager._maybe_restore_files = AsyncMock()
+        manager._maybe_migrate_sandbox = AsyncMock(return_value=None)
+
+        # Record relative order of the two awaited writes.
+        call_order: list[str] = []
+
+        async def record_status(**kwargs):
+            call_order.append("status")
+
+        async def record_activity(workspace_id):
+            call_order.append("activity")
+
+        mock_status.side_effect = record_status
+        mock_activity.side_effect = record_activity
+
+        result = await manager._restart_workspace(
+            workspace, user_id="user-1", lazy_init=False
+        )
+
+        assert result is session
+
+        mock_status.assert_awaited_once()
+        status_kwargs = mock_status.await_args.kwargs
+        assert status_kwargs["status"] == "running"
+        assert status_kwargs["workspace_id"] == ws_id
+        mock_activity.assert_awaited_once_with(ws_id)
+
+        # Ordering must match _recover_sandbox: status flip first, then
+        # activity stamp. Reversing the order would leave a larger window
+        # where cleanup_idle_workspaces could stop the workspace.
+        assert call_order == ["status", "activity"]
+
 
 # ---------------------------------------------------------------------------
 # on_state_observed forwarding — pin the kwarg threads through every
