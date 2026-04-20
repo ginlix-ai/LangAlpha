@@ -698,7 +698,8 @@ export function handleHistoryTodoUpdate({ assistantMessageId, artifactType, arti
     return false;
   }
 
-  const { todos, total, completed, in_progress, pending } = payload;
+  const { total, completed, in_progress, pending } = payload;
+  const todos = Array.isArray(payload.todos) ? payload.todos : [];
 
   // Use artifactId as the base todoListId to track updates to the same logical todo list
   // But create a unique segmentId for each event to preserve chronological order

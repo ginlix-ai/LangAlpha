@@ -541,7 +541,8 @@ export function handleTodoUpdate({ assistantMessageId, artifactType, artifactId,
     return false;
   }
 
-  const { todos, total, completed, in_progress, pending } = payload;
+  const { total, completed, in_progress, pending } = payload;
+  const todos = Array.isArray(payload.todos) ? payload.todos : [];
   if (import.meta.env.DEV) {
     console.log('[handleTodoUpdate] Extracted data:', { todos, total, completed, in_progress, pending });
   }

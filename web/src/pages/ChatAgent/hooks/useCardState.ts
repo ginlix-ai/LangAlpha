@@ -316,7 +316,7 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
   const finalizePendingTodos = () => {
     setCards((prev) => {
       const card = prev['todo-list-card'];
-      if (!card?.todoData?.todos) return prev;
+      if (!Array.isArray(card?.todoData?.todos)) return prev;
 
       const hasIncomplete = card.todoData.todos.some(
         (t) => t.status !== 'completed' && t.status !== 'stale'

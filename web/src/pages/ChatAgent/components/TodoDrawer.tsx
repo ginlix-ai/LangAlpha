@@ -58,7 +58,7 @@ function TodoDrawer({ todoData }: { todoData: TodoData | null }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const wasAllCompleted = useRef(false);
 
-  const todos = todoData?.todos;
+  const todos = Array.isArray(todoData?.todos) ? todoData.todos : undefined;
   const total = todoData?.total || 0;
   const completed = todoData?.completed || 0;
 
