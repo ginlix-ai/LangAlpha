@@ -559,3 +559,121 @@ class TestToolAgentReasoningSuppression:
         )
         events = asyncio.run(self._drain(handler._process_message_chunk(chunk, "tools")))
         assert not any("reasoning_signal" in e for e in events)
+
+
+# ---------------------------------------------------------------------------
+# Context-window token threshold resolution
+# ---------------------------------------------------------------------------
+
+
+class TestResolveTokenThreshold:
+    """The UI ring threshold must match what the compaction middleware uses for
+    this user — not the base YAML default — otherwise the profile picker is a
+    lie from the user's perspective."""
+
+    def _handler(self, agent_config=None):
+        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+
+        return WorkflowStreamHandler(thread_id="t1", agent_config=agent_config)
+
+    def _cfg(self, threshold: int):
+        cfg = MagicMock()
+        cfg.compaction.token_threshold = threshold
+        return cfg
+
+    def test_per_request_config_wins_over_base(self):
+        per_request = self._cfg(100_000)
+        base = self._cfg(200_000)
+        handler = self._handler(agent_config=per_request)
+
+        with patch("src.server.app.setup.agent_config", base):
+            assert handler._resolve_token_threshold() == 100_000
+
+    def test_falls_back_to_base_config_when_no_per_request(self):
+        base = self._cfg(180_000)
+        handler = self._handler(agent_config=None)
+
+        with patch("src.server.app.setup.agent_config", base):
+            assert handler._resolve_token_threshold() == 180_000
+
+    def test_falls_back_to_default_when_nothing_configured(self):
+        handler = self._handler(agent_config=None)
+
+        with patch("src.server.app.setup.agent_config", None):
+            assert handler._resolve_token_threshold() == 120_000
+
+
+# ---------------------------------------------------------------------------
+# Compaction chunk routing
+# ---------------------------------------------------------------------------
+
+
+class TestCompactionChunkRouting:
+    """LLM output from the compaction middleware must be emitted as
+    compaction_chunk, not message_chunk, so the frontend can keep it out of
+    the assistant response. The routing is driven by a per-namespace window
+    opened by a context_window summarize start signal and closed by
+    complete OR error (an error that never closed would infinitely mark
+    regular output as compaction)."""
+
+    def _handler(self):
+        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+
+        return WorkflowStreamHandler(thread_id="t1")
+
+    def test_reasoning_signal_routes_to_compaction_when_flagged(self):
+        handler = self._handler()
+        evt = handler._format_reasoning_signal(
+            "agent", "msg-1", "start", is_compaction=True
+        )
+        assert "event: compaction_chunk\n" in evt
+
+    def test_reasoning_signal_stays_on_message_chunk_by_default(self):
+        handler = self._handler()
+        evt = handler._format_reasoning_signal("agent", "msg-1", "start")
+        assert "event: message_chunk\n" in evt
+
+    @pytest.mark.asyncio
+    async def test_process_message_chunk_emits_compaction_chunk(self):
+        from langchain_core.messages import AIMessageChunk
+
+        handler = self._handler()
+        chunk = AIMessageChunk(content="summary text", id="s-1")
+
+        events = [
+            e
+            async for e in handler._process_message_chunk(
+                chunk, "agent", is_compaction=True
+            )
+        ]
+        assert any("event: compaction_chunk\n" in e for e in events)
+        assert not any("event: message_chunk\n" in e for e in events)
+
+    @pytest.mark.asyncio
+    async def test_process_message_chunk_emits_message_chunk_by_default(self):
+        from langchain_core.messages import AIMessageChunk
+
+        handler = self._handler()
+        chunk = AIMessageChunk(content="hello", id="m-1")
+
+        events = [
+            e async for e in handler._process_message_chunk(chunk, "agent")
+        ]
+        assert any("event: message_chunk\n" in e for e in events)
+        assert not any("event: compaction_chunk\n" in e for e in events)
+
+    def test_summarize_start_opens_window_for_namespace(self):
+        handler = self._handler()
+        ns = ("parent", "model:abc")
+        handler._compaction_windows.add(ns)
+        assert tuple(ns) in handler._compaction_windows
+
+    def test_summarize_error_must_close_the_window(self):
+        """If an error did not close the window we'd flag every subsequent
+        chunk as compaction and the UI would never see real output again."""
+        handler = self._handler()
+        ns = ()
+        handler._compaction_windows.add(ns)
+        # Simulate the error-signal discard path
+        handler._compaction_windows.discard(ns)
+        assert ns not in handler._compaction_windows

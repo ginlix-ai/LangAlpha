@@ -44,6 +44,38 @@ class CompactionConfig(BaseModel):
     truncate_args_max_length: int = 2000
 
 
+# Named presets that bundle the three user-facing compaction knobs
+# (token_threshold, truncate_args_trigger_messages, keep_messages). Applied at
+# request time in ``resolve_llm_config`` when the user selects a profile.
+#
+# Thresholds are chosen to leave healthy headroom under common model context
+# windows: 100k (<=200k models), 130k (200k models), 200k (400k/1M models),
+# 300k (1M models). The other two knobs scale with the threshold so that
+# relaxed profiles also keep more recent history and truncate tool args later.
+COMPACTION_PROFILES: dict[str, dict[str, int]] = {
+    "aggressive": {
+        "token_threshold": 100000,
+        "truncate_args_trigger_messages": 30,
+        "keep_messages": 5,
+    },
+    "moderate": {
+        "token_threshold": 130000,
+        "truncate_args_trigger_messages": 40,
+        "keep_messages": 8,
+    },
+    "extended": {
+        "token_threshold": 200000,
+        "truncate_args_trigger_messages": 60,
+        "keep_messages": 10,
+    },
+    "relaxed": {
+        "token_threshold": 300000,
+        "truncate_args_trigger_messages": 70,
+        "keep_messages": 15,
+    },
+}
+
+
 class FlashConfig(BaseModel):
     """Flash agent configuration.
 

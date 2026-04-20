@@ -122,6 +122,18 @@ class TestListModelsResponse:
         assert defaults["compaction_model"] == "claude-haiku-4-5"
         assert defaults["fetch_model"] == "claude-haiku-4-5"
         assert defaults["fallback_models"] == ["gpt-4o"]
+        # Profile catalog exposed separately from system_defaults
+        profiles = body["compaction_profiles"]
+        assert set(profiles.keys()) == {"aggressive", "moderate", "extended", "relaxed"}
+        for preset in profiles.values():
+            assert "token_threshold" in preset
+            assert "truncate_args_trigger_messages" in preset
+            assert "keep_messages" in preset
+        # Thresholds should be strictly increasing from aggressive to relaxed
+        order = ["aggressive", "moderate", "extended", "relaxed"]
+        thresholds = [profiles[name]["token_threshold"] for name in order]
+        assert thresholds == sorted(thresholds)
+        assert len(set(thresholds)) == len(thresholds)
 
     @pytest.mark.asyncio
     async def test_multiple_providers(self, client):

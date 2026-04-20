@@ -27,6 +27,10 @@ from ptc_agent.agent.middleware.compaction.utils import (
     truncate_message_args,
     truncate_read_results,
 )
+from ptc_agent.agent.middleware.compaction.middleware import (
+    _build_summary_request,
+    _maybe_disable_streaming,
+)
 from ptc_agent.agent.middleware.compaction.offloading import (
     aoffload_base64_content,
     aoffload_to_backend,
@@ -44,6 +48,7 @@ async def compact_messages(
     backend: Any | None = None,
     previous_event: CompactionEvent | None = None,
     compaction_config: CompactionConfig | None = None,
+    llm_client: BaseChatModel | None = None,
 ) -> dict[str, Any]:
     """
     Compact conversation messages with two-tier context management.
@@ -66,6 +71,7 @@ async def compact_messages(
         backend: Optional SandboxBackend for offloading to sandbox filesystem.
         previous_event: Previous CompactionEvent for chained compactions.
         compaction_config: Optional CompactionConfig override.
+        llm_client: Pre-built OAuth/BYOK client. When None, built from model_name.
 
     Returns:
         Dict with:
@@ -152,9 +158,11 @@ async def compact_messages(
     file_path = await aoffload_to_backend(backend, messages_to_summarize)
 
     # ---- Generate summary ----
-    compaction_model: BaseChatModel = get_llm_by_type(model_name)
-    if hasattr(compaction_model, "streaming"):
-        compaction_model.streaming = False
+    if llm_client is not None:
+        compaction_model: BaseChatModel = llm_client
+    else:
+        compaction_model = get_llm_by_type(model_name)
+    _maybe_disable_streaming(compaction_model)
 
     token_threshold = config.get("token_threshold", 120000)
     trim_limit = token_threshold + 50000
@@ -185,22 +193,25 @@ async def compact_messages(
         backend, messages_to_summarize
     )
 
+    # Manual /compact MUST fail loudly on LLM error. Swallowing the exception
+    # and fabricating a fake summary would corrupt state (a "compacted" cutoff
+    # with garbage summary text) while reporting HTTP 200 to the client.
+    # trigger_compaction's outer except converts the raise into HTTP 500.
     try:
         response = await compaction_model.ainvoke(
-            DEFAULT_SUMMARY_PROMPT.format(messages=messages_to_summarize)
+            _build_summary_request(DEFAULT_SUMMARY_PROMPT, messages_to_summarize)
         )
-
-        content = response.content if hasattr(response, "content") else response
-        additional_kwargs = getattr(response, "additional_kwargs", None)
-        formatted = format_llm_content(content, additional_kwargs)
-        summary_text = formatted.get("text", "").strip()
-
-        if not summary_text:
-            summary_text = "Previous conversation context (summary unavailable)."
-
     except Exception as e:
-        logger.error(f"Error generating summary: {e}")
-        summary_text = f"Previous conversation context (error: {e})"
+        logger.error(f"[Compaction] manual compact LLM call failed: {e}")
+        raise
+
+    content = response.content if hasattr(response, "content") else response
+    additional_kwargs = getattr(response, "additional_kwargs", None)
+    formatted = format_llm_content(content, additional_kwargs)
+    summary_text = formatted.get("text", "").strip()
+
+    if not summary_text:
+        raise RuntimeError("Compaction LLM returned empty summary")
 
     # Build summary message using shared utility
     summary_message = build_summary_message(summary_text, file_path)

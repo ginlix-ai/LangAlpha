@@ -557,15 +557,19 @@ def build_summary_message(
 # Prompt template
 # =============================================================================
 
-# Financial research summarization prompt with recency weighting and locale awareness
+# Financial research summarization prompt. Instructions only — the conversation
+# history is delivered in a separate HumanMessage so the system channel stays
+# bounded and cacheable, and so BaseChatModel.format() doesn't try to interpret
+# message content as further format placeholders.
 DEFAULT_SUMMARY_PROMPT = """<role>
 Financial Research Context Summarizer
 </role>
 
 <context>
-You're nearing your input token limit. The conversation history below will be
-replaced with the context you extract. This is critical - ensure you capture
-all important information so you can continue the research without losing progress.
+You're nearing your input token limit. The conversation history in the user
+message will be replaced with the context you extract. This is critical -
+ensure you capture all important information so you can continue the research
+without losing progress.
 </context>
 
 <objective>
@@ -611,8 +615,4 @@ Make sure you maintain the user original query and goal.
 
 Then organize naturally using markdown headers.
 Write as if briefing a colleague who needs to continue your work without repeating what's done.
-</output_format>
-
-<messages>
-{messages}
-</messages>"""
+</output_format>"""

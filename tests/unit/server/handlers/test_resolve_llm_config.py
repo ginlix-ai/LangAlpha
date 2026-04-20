@@ -302,6 +302,92 @@ class TestOtherModelPreferences:
             config = await resolve_llm_config(base_config, "user-1", None, False)
         assert config.llm.fallback == ["model-a", "model-b"]
 
+    @pytest.mark.asyncio
+    async def test_compaction_profile_aggressive_applies_preset(self, base_config):
+        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from ptc_agent.config.agent import COMPACTION_PROFILES
+
+        mock_mc = _mock_model_config()
+        with (
+            patch(
+                f"{HANDLER}.get_model_preference",
+                new_callable=AsyncMock,
+                return_value={"compaction_profile": "aggressive"},
+            ),
+            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        ):
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+        preset = COMPACTION_PROFILES["aggressive"]
+        assert config.compaction.token_threshold == preset["token_threshold"]
+        assert config.compaction.truncate_args_trigger_messages == preset["truncate_args_trigger_messages"]
+        assert config.compaction.keep_messages == preset["keep_messages"]
+
+    @pytest.mark.asyncio
+    async def test_compaction_profile_extended_applies_preset(self, base_config):
+        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from ptc_agent.config.agent import COMPACTION_PROFILES
+
+        mock_mc = _mock_model_config()
+        with (
+            patch(
+                f"{HANDLER}.get_model_preference",
+                new_callable=AsyncMock,
+                return_value={"compaction_profile": "extended"},
+            ),
+            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        ):
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+        preset = COMPACTION_PROFILES["extended"]
+        assert config.compaction.token_threshold == preset["token_threshold"]
+        assert config.compaction.truncate_args_trigger_messages == preset["truncate_args_trigger_messages"]
+        assert config.compaction.keep_messages == preset["keep_messages"]
+
+    @pytest.mark.asyncio
+    async def test_compaction_profile_relaxed_applies_preset(self, base_config):
+        """Relaxed profile targets 1M-context models with a 300k threshold."""
+        from src.server.handlers.chat.llm_config import resolve_llm_config
+        from ptc_agent.config.agent import COMPACTION_PROFILES
+
+        mock_mc = _mock_model_config()
+        with (
+            patch(
+                f"{HANDLER}.get_model_preference",
+                new_callable=AsyncMock,
+                return_value={"compaction_profile": "relaxed"},
+            ),
+            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        ):
+            config = await resolve_llm_config(base_config, "user-1", None, False)
+        preset = COMPACTION_PROFILES["relaxed"]
+        assert config.compaction.token_threshold == preset["token_threshold"]
+        assert config.compaction.truncate_args_trigger_messages == preset["truncate_args_trigger_messages"]
+        assert config.compaction.keep_messages == preset["keep_messages"]
+
+    @pytest.mark.asyncio
+    async def test_compaction_profile_invalid_falls_through_to_yaml(self, base_config):
+        """Unknown strings and non-string values leave compaction config unchanged."""
+        from src.server.handlers.chat.llm_config import resolve_llm_config
+
+        baseline = base_config.compaction.model_copy(deep=True)
+        mock_mc = _mock_model_config()
+        for bad in ("nonsense", "", 123, None, {"aggressive": True}):
+            with (
+                patch(
+                    f"{HANDLER}.get_model_preference",
+                    new_callable=AsyncMock,
+                    return_value={"compaction_profile": bad},
+                ),
+                patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+                patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+            ):
+                config = await resolve_llm_config(base_config, "user-1", None, False)
+            assert config.compaction.token_threshold == baseline.token_threshold
+            assert config.compaction.truncate_args_trigger_messages == baseline.truncate_args_trigger_messages
+            assert config.compaction.keep_messages == baseline.keep_messages
+
 
 # ---------------------------------------------------------------------------
 # Reasoning effort priority

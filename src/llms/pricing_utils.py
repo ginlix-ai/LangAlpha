@@ -57,13 +57,17 @@ def extract_base_model(model_name: str) -> str:
     return model_name
 
 
-def detect_provider_for_model(model_name: str) -> Optional[str]:
+def detect_provider_for_model(model_name: str, billing_type: str = "platform") -> Optional[str]:
     """
-    Detect provider by reverse-looking up models.json.
+    Detect provider by reverse-looking up models.json, with billing-type awareness.
 
-    Searches models.json to find which provider a model_id belongs to.
-    Uses case-insensitive matching to handle mismatches between API responses
-    and configuration (e.g., "MiniMax-M2" vs "minimax-m2").
+    For platform billing, returns system_provider when available — that's the actual
+    routing provider whose rates determine credit costs. For BYOK/OAuth, returns the
+    base provider since the user pays that provider directly.
+
+    This handles mixed-billing conversations correctly: each per-call record carries
+    its own billing_type, so platform calls resolve to system_provider pricing while
+    BYOK calls in the same conversation resolve to base provider pricing.
 
     Searches both:
     - Custom model names (keys in models.json)
@@ -71,17 +75,18 @@ def detect_provider_for_model(model_name: str) -> Optional[str]:
 
     Args:
         model_name: Model name from token usage (e.g., "MiniMax-M2", "gpt-5-0905")
+        billing_type: "platform", "byok", or "oauth" (default: "platform")
 
     Returns:
         Provider name if found in models.json, None otherwise
 
     Examples:
-        >>> detect_provider_for_model("MiniMax-M2")  # Case mismatch
-        "minimax"
+        >>> detect_provider_for_model("glm-5", billing_type="platform")
+        "z-ai-dashscope"
+        >>> detect_provider_for_model("glm-5", billing_type="byok")
+        "z-ai"
         >>> detect_provider_for_model("gpt-5")
         "openai"
-        >>> detect_provider_for_model("unknown-model")
-        None
     """
     from .llm import LLM
 
@@ -101,18 +106,15 @@ def detect_provider_for_model(model_name: str) -> Optional[str]:
     # Search through all custom model configurations
     for custom_name, config in config_data.items():
         # Check 1: Match against custom name (the key in models.json)
-        if custom_name.lower() == model_name_lower:
-            provider = config.get("provider")
-            if provider:
-                logger.debug(f"Provider detected for '{model_name}' via custom_name: {provider}")
-                return provider
-
         # Check 2: Match against model_id field (case-insensitive)
         model_id = config.get("model_id", "")
-        if model_id.lower() == model_name_lower:
-            provider = config.get("provider")
+        if custom_name.lower() == model_name_lower or model_id.lower() == model_name_lower:
+            if billing_type == "platform":
+                provider = config.get("system_provider") or config.get("provider")
+            else:
+                provider = config.get("provider")
             if provider:
-                logger.debug(f"Provider detected for '{model_name}' via model_id: {provider}")
+                logger.debug(f"Provider detected for '{model_name}' (billing={billing_type}): {provider}")
                 return provider
 
     # Not found in models.json

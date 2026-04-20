@@ -69,6 +69,40 @@ from ptc_agent.agent.middleware.compaction.offloading import (
 logger = logging.getLogger(__name__)
 
 
+_COMPACTION_USER_NUDGE = "Generate the summary now."
+
+
+def _build_summary_request(
+    summary_prompt: str, trimmed_messages: list[AnyMessage]
+) -> list[AnyMessage]:
+    """System = instructions, Human = nudge + rendered history.
+
+    Splitting the two channels keeps the system prompt small and cacheable,
+    lets Codex OAuth populate its ``instructions`` field cleanly, and avoids
+    Python repr inflation by rendering messages via ``get_buffer_string``.
+    """
+    from langchain_core.messages import get_buffer_string
+    from src.llms.api_call import create_messages
+
+    history = get_buffer_string(trimmed_messages)
+    user_prompt = f"{_COMPACTION_USER_NUDGE}\n\n<messages>\n{history}\n</messages>"
+
+    return create_messages(
+        system_prompt=summary_prompt,
+        user_prompt=user_prompt,
+    )
+
+
+def _maybe_disable_streaming(model: BaseChatModel) -> None:
+    """Set streaming=False unless the provider rejects non-streaming (Codex)."""
+    from src.llms.extension.codex import ChatCodexOpenAI
+
+    if isinstance(model, ChatCodexOpenAI):
+        return
+    if hasattr(model, "streaming"):
+        model.streaming = False
+
+
 class CompactionMiddleware(AgentMiddleware):
     """
     Custom compaction middleware that emits SSE events for frontend visibility.
@@ -1111,22 +1145,31 @@ class CompactionMiddleware(AgentMiddleware):
         # Strip base64 blobs so the summarization LLM doesn't receive them
         trimmed_messages = strip_base64_from_messages(trimmed_messages)
 
+        # Start is outside the try: if it fails, the window was never opened
+        # so nothing needs closing. Inside the try we catch BaseException (not
+        # just Exception) so CancelledError also closes the window before
+        # propagating — otherwise a cancelled stream would leave an orphan
+        # start event with no terminator.
+        self._emit_context_signal("summarize", "start")
         try:
-            self._emit_context_signal("summarize", "start")
             response = self.model.invoke(
-                self.summary_prompt.format(messages=trimmed_messages)
+                _build_summary_request(self.summary_prompt, trimmed_messages)
             )
             summary = self._extract_summary_text(response)
-            self._emit_context_signal(
-                "summarize",
-                "complete",
-                summary_length=len(summary),
-                original_message_count=original_count,
-            )
-            return summary
-        except Exception as e:
+        except BaseException as e:
             self._emit_context_signal("summarize", "error", error=str(e))
-            return f"Error generating summary: {e!s}"
+            if isinstance(e, Exception):
+                return f"Error generating summary: {e!s}"
+            raise
+
+        self._emit_context_signal(
+            "summarize",
+            "complete",
+            summary_length=len(summary),
+            original_message_count=original_count,
+            summary_text=summary,
+        )
+        return summary
 
     async def _acreate_summary(
         self, messages_to_summarize: list[AnyMessage], *, original_count: int = 0
@@ -1144,26 +1187,36 @@ class CompactionMiddleware(AgentMiddleware):
             self._backend, trimmed_messages
         )
 
+        # Start is outside the try: if it fails, the window was never opened
+        # so nothing needs closing. Inside the try we catch BaseException (not
+        # just Exception) so CancelledError also closes the window before
+        # propagating — otherwise a cancelled stream would leave an orphan
+        # start event with no terminator.
+        self._emit_context_signal("summarize", "start")
         try:
-            self._emit_context_signal("summarize", "start")
-
-            # Use ainvoke (non-streaming) to avoid duplicate events
-            # The model should have streaming=False set in factory
+            # Use ainvoke (non-streaming) to avoid duplicate events.
+            # The model should have streaming=False set in factory.
+            # The bracketing context_window summarize start/complete/error
+            # events tell the SSE handler to re-route chunks emitted between
+            # them to the compaction_chunk channel.
             response = await self.model.ainvoke(
-                self.summary_prompt.format(messages=trimmed_messages)
+                _build_summary_request(self.summary_prompt, trimmed_messages)
             )
-
             summary = self._extract_summary_text(response)
-            self._emit_context_signal(
-                "summarize",
-                "complete",
-                summary_length=len(summary),
-                original_message_count=original_count,
-            )
-            return summary
-        except Exception as e:
+        except BaseException as e:
             self._emit_context_signal("summarize", "error", error=str(e))
-            return f"Error generating summary: {e!s}"
+            if isinstance(e, Exception):
+                return f"Error generating summary: {e!s}"
+            raise
+
+        self._emit_context_signal(
+            "summarize",
+            "complete",
+            summary_length=len(summary),
+            original_message_count=original_count,
+            summary_text=summary,
+        )
+        return summary
 
     def _trim_messages_for_summary(
         self, messages: list[AnyMessage]
@@ -1238,10 +1291,8 @@ class CompactionMiddleware(AgentMiddleware):
             model_name = config.get("llm", "")
             compaction_model: BaseChatModel = get_llm_by_type(model_name)
 
-        # Disable streaming to prevent normal message_chunk events
-        # This ensures only our custom context_window events are emitted
-        if hasattr(compaction_model, "streaming"):
-            compaction_model.streaming = False
+        # Suppress normal message_chunk emission where the provider permits it.
+        _maybe_disable_streaming(compaction_model)
 
         # Get configuration values
         token_threshold = config.get("token_threshold", 120000)

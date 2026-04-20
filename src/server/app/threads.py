@@ -840,7 +840,7 @@ async def summarize_thread(
     await require_thread_owner(thread_id, x_user_id)
     from src.server.handlers.workflow_handler import trigger_compaction
 
-    return await trigger_compaction(thread_id, keep_messages)
+    return await trigger_compaction(thread_id, keep_messages, user_id=x_user_id)
 
 
 @router.post("/{thread_id}/offload", status_code=200)

@@ -342,6 +342,24 @@ async def resolve_llm_config(
             config = config.model_copy(deep=True)
         config.llm.fallback = user_fallback
 
+    # Compaction profile: a named preset (aggressive/moderate/extended/relaxed)
+    # that bundles token_threshold, truncate_args_trigger_messages, and
+    # keep_messages. Unknown/missing values fall through to the YAML-configured
+    # defaults.
+    from ptc_agent.config.agent import COMPACTION_PROFILES
+
+    compaction_profile = model_pref.get("compaction_profile")
+    preset = (
+        COMPACTION_PROFILES.get(compaction_profile)
+        if isinstance(compaction_profile, str)
+        else None
+    )
+    if preset:
+        if config is base_config:
+            config = config.model_copy(deep=True)
+        for field, value in preset.items():
+            setattr(config.compaction, field, value)
+
     # Resolve the effective model from whichever field we just set
     effective_model = getattr(config.llm, model_field, None) or config.llm.name
 
