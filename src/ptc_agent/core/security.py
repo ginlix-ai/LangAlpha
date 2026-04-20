@@ -12,6 +12,8 @@ logger = structlog.get_logger(__name__)
 class ExecutionMonitor:
     """Monitors code execution for security and performance."""
 
+    MAX_HISTORY = 1000
+
     def __init__(self) -> None:
         """Initialize execution monitor."""
         self.execution_history: list[dict[str, Any]] = []
@@ -78,6 +80,9 @@ class ExecutionMonitor:
 
         # Move to history
         self.execution_history.append(execution_info)
+        # Prune oldest entries to prevent unbounded memory growth
+        if len(self.execution_history) > self.MAX_HISTORY:
+            self.execution_history = self.execution_history[-self.MAX_HISTORY:]
         del self.active_executions[execution_id]
 
         logger.info(
@@ -252,6 +257,8 @@ class ResourceMonitor:
 class SecurityLogger:
     """Specialized logger for security events."""
 
+    MAX_EVENTS = 1000
+
     def __init__(self) -> None:
         """Initialize security logger."""
         self.security_events: list[dict[str, Any]] = []
@@ -278,6 +285,8 @@ class SecurityLogger:
         }
 
         self.security_events.append(event)
+        if len(self.security_events) > self.MAX_EVENTS:
+            self.security_events = self.security_events[-self.MAX_EVENTS:]
 
         logger.warning(
             "Code validation failed",
@@ -301,6 +310,8 @@ class SecurityLogger:
         }
 
         self.security_events.append(event)
+        if len(self.security_events) > self.MAX_EVENTS:
+            self.security_events = self.security_events[-self.MAX_EVENTS:]
 
         logger.error("Execution timeout", execution_id=execution_id, duration=duration)
 
@@ -323,6 +334,8 @@ class SecurityLogger:
         }
 
         self.security_events.append(event)
+        if len(self.security_events) > self.MAX_EVENTS:
+            self.security_events = self.security_events[-self.MAX_EVENTS:]
 
         logger.warning("Suspicious activity detected", activity_type=activity_type, details=details)
 

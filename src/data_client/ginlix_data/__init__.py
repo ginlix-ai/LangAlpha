@@ -7,6 +7,7 @@ ginlix-data market data proxy service.
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Optional
 
 from .client import GinlixDataClient
@@ -36,7 +37,7 @@ async def get_ginlix_data_client() -> GinlixDataClient:
         if _client is None:
             from src.config.settings import GINLIX_DATA_URL
 
-            service_token = __import__("os").getenv("INTERNAL_SERVICE_TOKEN", "")
+            service_token = os.getenv("INTERNAL_SERVICE_TOKEN", "")
             _client = GinlixDataClient(base_url=GINLIX_DATA_URL, service_token=service_token)
         return _client
 
