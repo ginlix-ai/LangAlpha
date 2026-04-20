@@ -326,6 +326,7 @@ async def astream_flash_workflow(
             thread_id=thread_id,
             token_callback=token_callback,
             tool_tracker=tool_tracker,
+            agent_config=config,
         )
 
         # Track steering messages injected mid-workflow for post-completion backfill

@@ -54,7 +54,7 @@ In practice, you create a workspace per research goal ("Q2 rebalance", "data cen
 - **Secretary** — Flash agent doubles as a secretary: create and manage workspaces, dispatch deep PTC analyses in the background, monitor running tasks, and retrieve results — all through conversational commands with human-in-the-loop approval.
 - **Agent swarm** — Parallel async subagents with isolated context windows, preloaded toolset/skills, mid-execution steering, checkpoint-based resume, and live progress monitoring in the UI.
 - **Live steering** — Send follow-up messages while the agent/subagent is working to course-correct, clarify, or redirect without waiting for it to finish.
-- **Middleware stack** — 24 composable layers handling skill loading, plan mode, multimodal input, auto-summarization, and context management support long-running agent sessions.
+- **Middleware stack** — 24 composable layers handling skill loading, plan mode, multimodal input, auto-compaction, and context management support long-running agent sessions.
 - **Security & workspace vault** — Encryption at rest via pgcrypto, automatic credential leak detection and redaction, sandboxed execution, and per-workspace secret storage for safe agent access
 - **Channel integrations** — Use LangAlpha from Slack, Discord with complete feature support.
 - **Production-ready infrastructure** — SSE-streamed agent activity with Redis-buffered reconnection replay, background execution decoupled from HTTP connections, and PostgreSQL-backed state persistence.
@@ -274,7 +274,7 @@ flowchart TB
         MW1["Tool Safety<br/>Leak Detection<br/>Protected Paths<br/>Error Handling"]
         MW2["Context & Skills<br/>agent.md Injection<br/>Skill Loading<br/>Multimodal"]
         MW3["Coordination<br/>HITL · Plan Mode<br/>Steering<br/>Subagent Dispatch"]
-        MW4["Resilience<br/>Summarization<br/>Retry + Fallback<br/>Prompt Caching"]
+        MW4["Resilience<br/>Compaction<br/>Retry + Fallback<br/>Prompt Caching"]
     end
 
     Agent -- "wraps model + tool calls" --> Middleware
@@ -324,8 +324,8 @@ The agent ships with a middleware stack, including:
 - **Dynamic skill loading** via a `LoadSkill` tool that lets the agent discover and activate skill toolsets on demand, keeping the default tool surface lean while making specialized capabilities available when needed
 - **Multimodal** intercepts file reads for images and PDFs, downloads content from the sandbox or URLs, and injects it as base64 into the conversation so multimodal models can interpret them natively
 - **Plan mode** with human-in-the-loop interrupts lets you review and approve the agent's strategy before execution
-- **Auto-summarization** compresses conversation history when approaching token limits, preserving key context while freeing space
-- **Context management** automatically offloads tool results exceeding 40,000 tokens to the workspace filesystem, keeping a truncated preview in context. For very long sessions, a two-tier summarization system first truncates old tool arguments, then LLM-summarizes the conversation history while offloading the full transcript to the workspace for recovery. Research sessions can run indefinitely without hitting token limits.
+- **Auto-compaction** compresses conversation history when approaching token limits, preserving key context while freeing space
+- **Context management** automatically offloads tool results exceeding 40,000 tokens to the workspace filesystem, keeping a truncated preview in context. For very long sessions, a two-tier compaction system first truncates old tool arguments, then LLM-summarizes the conversation history while offloading the full transcript to the workspace for recovery. Research sessions can run indefinitely without hitting token limits.
 
 See [`src/ptc_agent/agent/middleware/`](src/ptc_agent/agent/middleware/) for the full set.
 

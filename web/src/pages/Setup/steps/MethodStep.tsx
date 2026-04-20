@@ -215,6 +215,7 @@ export default function MethodStep() {
           custom_models: remainingModels.length > 0 ? remainingModels : null,
         };
         // Clear subsidiary/preferred model fields if they reference a removed model
+        if (cleanModelPref(otherPref.compaction_model) === null) prefUpdate.compaction_model = null;
         if (cleanModelPref(otherPref.summarization_model) === null) prefUpdate.summarization_model = null;
         if (cleanModelPref(otherPref.fetch_model) === null) prefUpdate.fetch_model = null;
         if (cleanModelPref(otherPref.preferred_model) === null) prefUpdate.preferred_model = null;

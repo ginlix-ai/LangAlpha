@@ -1,14 +1,14 @@
-"""SummarizationMiddleware — two-tier context management for LangGraph agents.
+"""CompactionMiddleware — two-tier context management for LangGraph agents.
 
 Based on deepagent's SummarizationMiddleware but modified to:
 - Emit unified 'context_window' SSE events (discriminated by action field)
 - Use get_stream_writer() for lifecycle signaling
 - Use wrap_model_call for non-destructive context management (preserves checkpoint)
-- Two-tier context management: tool arg truncation + summarization
+- Two-tier context management: tool arg truncation + LLM summarization
 
-Actions emitted via context_window events:
+Actions emitted via context_window events (values preserved as wire protocol):
 - token_usage: after each model call (input/output/total tokens)
-- summarize: start/complete/error signals during summarization
+- summarize: start/complete/error signals during LLM summarization
 - offload: complete signal after Tier 1 tool arg truncation
 """
 
@@ -36,20 +36,20 @@ from langchain.chat_models import BaseChatModel, init_chat_model
 
 from src.llms.content_utils import format_llm_content
 from src.llms.token_counter import extract_token_usage
-from ptc_agent.config.agent import SummarizationConfig
+from ptc_agent.config.agent import CompactionConfig
 from src.llms import get_llm_by_type
 
-from ptc_agent.agent.middleware.summarization.types import (
+from ptc_agent.agent.middleware.compaction.types import (
+    CompactionEvent,
+    CompactionState,
     ContextSize,
-    SummarizationEvent,
-    SummarizationState,
     TruncateArgsSettings,
     TokenCounter,
     _DEFAULT_FALLBACK_MESSAGE_COUNT,
     _DEFAULT_MESSAGES_TO_KEEP,
     _DEFAULT_TRIM_TOKEN_LIMIT,
 )
-from ptc_agent.agent.middleware.summarization.utils import (
+from ptc_agent.agent.middleware.compaction.utils import (
     DEFAULT_SUMMARY_PROMPT,
     build_summary_message,
     compute_absolute_cutoff,
@@ -59,7 +59,7 @@ from ptc_agent.agent.middleware.summarization.utils import (
     truncate_message_args,
     truncate_read_results,
 )
-from ptc_agent.agent.middleware.summarization.offloading import (
+from ptc_agent.agent.middleware.compaction.offloading import (
     aoffload_base64_content,
     aoffload_to_backend,
     aoffload_truncated_args,
@@ -69,17 +69,55 @@ from ptc_agent.agent.middleware.summarization.offloading import (
 logger = logging.getLogger(__name__)
 
 
-class SummarizationMiddleware(AgentMiddleware):
+_COMPACTION_USER_NUDGE = "Generate the summary now."
+
+
+def _build_summary_request(
+    summary_prompt: str, trimmed_messages: list[AnyMessage]
+) -> list[AnyMessage]:
+    """System = instructions, Human = nudge + rendered history.
+
+    Splitting the two channels keeps the system prompt small and cacheable,
+    lets Codex OAuth populate its ``instructions`` field cleanly, and avoids
+    Python repr inflation by rendering messages via ``get_buffer_string``.
     """
-    Custom summarization middleware that emits SSE events for frontend visibility.
+    from langchain_core.messages import get_buffer_string
+    from src.llms.api_call import create_messages
+
+    history = get_buffer_string(trimmed_messages)
+    user_prompt = f"{_COMPACTION_USER_NUDGE}\n\n<messages>\n{history}\n</messages>"
+
+    return create_messages(
+        system_prompt=summary_prompt,
+        user_prompt=user_prompt,
+    )
+
+
+def _maybe_disable_streaming(model: BaseChatModel) -> None:
+    """Set streaming=False unless the provider rejects non-streaming (Codex)."""
+    from src.llms.extension.codex import ChatCodexOpenAI
+
+    if isinstance(model, ChatCodexOpenAI):
+        return
+    if hasattr(model, "streaming"):
+        model.streaming = False
+
+
+class CompactionMiddleware(AgentMiddleware):
+    """
+    Custom compaction middleware that emits SSE events for frontend visibility.
+
+    Manages the full context window lifecycle: token counting, tool-arg
+    truncation, Read-result deduplication, base64 offloading, sandbox
+    persistence of evicted messages, and LLM-based summarization.
 
     Uses wrap_model_call to reconstruct the message list on-the-fly without
     modifying the LangGraph checkpoint — preserving full history, enabling
-    recovery, and supporting chained summarization.
+    recovery, and supporting chained compactions.
 
     Two-tier context management:
     - Tier 1: Tool arg truncation (cheap, fires early at message count threshold)
-    - Tier 2: Full summarization (expensive, fires at token count threshold)
+    - Tier 2: Full LLM summarization (expensive, fires at token count threshold)
 
     Key differences from LangChain's SummarizationMiddleware:
     - Emits unified 'context_window' events via get_stream_writer()
@@ -87,7 +125,7 @@ class SummarizationMiddleware(AgentMiddleware):
     - Does NOT stream intermediate chunks (to avoid duplicate events)
     """
 
-    state_schema = SummarizationState
+    state_schema = CompactionState
 
     def __init__(
         self,
@@ -103,12 +141,12 @@ class SummarizationMiddleware(AgentMiddleware):
         **deprecated_kwargs: Any,
     ) -> None:
         """
-        Initialize custom summarization middleware.
+        Initialize custom compaction middleware.
 
         Args:
             model: The language model to use for generating summaries.
-            trigger: Threshold(s) that trigger summarization.
-            keep: How much context to retain after summarization.
+            trigger: Threshold(s) that trigger full compaction (summarization).
+            keep: How much context to retain after compaction.
             token_counter: Function to count tokens in messages.
             summary_prompt: Prompt template for generating summaries.
             trim_tokens_to_summarize: Max tokens to keep for summarization call.
@@ -222,7 +260,7 @@ class SummarizationMiddleware(AgentMiddleware):
         # 1. Read all per-invocation state from graph state into locals.
         #    No self._ mutations — keeps the middleware instance stateless and
         #    safe to share across concurrent invocations.
-        previous_event: SummarizationEvent | None = request.state.get(
+        previous_event: CompactionEvent | None = request.state.get(
             "_summarization_event"
         )
         offloaded_tool_call_ids = set(
@@ -283,13 +321,13 @@ class SummarizationMiddleware(AgentMiddleware):
                 )
                 if skipped_count:
                     logger.info(
-                        "[Summarization] Offloaded %d new tool args, skipped %d already-offloaded",
+                        "[Compaction] Offloaded %d new tool args, skipped %d already-offloaded",
                         len(new_originals),
                         skipped_count,
                     )
             elif skipped_count:
                 logger.debug(
-                    "[Summarization] Tier 1 args: %d truncated in-memory, all already offloaded",
+                    "[Compaction] Tier 1 args: %d truncated in-memory, all already offloaded",
                     skipped_count,
                 )
 
@@ -316,7 +354,7 @@ class SummarizationMiddleware(AgentMiddleware):
                 )
             else:
                 logger.debug(
-                    "[Summarization] Tier 1 reads: %d truncated in-memory, all already offloaded",
+                    "[Compaction] Tier 1 reads: %d truncated in-memory, all already offloaded",
                     len(read_offloaded_ids),
                 )
 
@@ -346,7 +384,7 @@ class SummarizationMiddleware(AgentMiddleware):
             except ContextOverflowError:
                 # Fall through to summarization as emergency fallback
                 logger.warning(
-                    "[Summarization] ContextOverflowError caught, triggering emergency summarization"
+                    "[Compaction] ContextOverflowError caught, triggering emergency summarization"
                 )
 
         # 6. Summarization needed
@@ -393,7 +431,7 @@ class SummarizationMiddleware(AgentMiddleware):
         state_cutoff_index = self._compute_absolute_cutoff(cutoff_index, previous_event)
 
         # Create summarization event for state
-        new_event: SummarizationEvent = {
+        new_event: CompactionEvent = {
             "cutoff_index": state_cutoff_index,
             "summary_message": summary_message,
             "file_path": file_path,
@@ -438,7 +476,7 @@ class SummarizationMiddleware(AgentMiddleware):
     ) -> ModelResponse | ExtendedModelResponse:
         """Sync fallback — same flow as awrap_model_call but skips backend offloading."""
         # 1. Load all per-invocation state from graph state into locals
-        previous_event: SummarizationEvent | None = request.state.get(
+        previous_event: CompactionEvent | None = request.state.get(
             "_summarization_event"
         )
         offloaded_tool_call_ids = set(
@@ -519,7 +557,7 @@ class SummarizationMiddleware(AgentMiddleware):
                 )
             except ContextOverflowError:
                 logger.warning(
-                    "[Summarization] ContextOverflowError caught, triggering emergency summarization"
+                    "[Compaction] ContextOverflowError caught, triggering emergency summarization"
                 )
 
         cutoff_index = self._determine_cutoff_index(truncated_messages)
@@ -557,7 +595,7 @@ class SummarizationMiddleware(AgentMiddleware):
         summary_message = self._build_summary_message(summary, file_path)
         state_cutoff_index = self._compute_absolute_cutoff(cutoff_index, previous_event)
 
-        new_event: SummarizationEvent = {
+        new_event: CompactionEvent = {
             "cutoff_index": state_cutoff_index,
             "summary_message": summary_message,
             "file_path": file_path,
@@ -593,7 +631,7 @@ class SummarizationMiddleware(AgentMiddleware):
     @staticmethod
     def _get_effective_messages(
         messages: list[AnyMessage],
-        event: SummarizationEvent | None,
+        event: CompactionEvent | None,
     ) -> list[AnyMessage]:
         """Delegate to shared utility."""
         return get_effective_messages(messages, event)
@@ -601,7 +639,7 @@ class SummarizationMiddleware(AgentMiddleware):
     @staticmethod
     def _compute_absolute_cutoff(
         effective_cutoff: int,
-        previous_event: SummarizationEvent | None,
+        previous_event: CompactionEvent | None,
     ) -> int:
         """Delegate to shared utility."""
         return compute_absolute_cutoff(effective_cutoff, previous_event)
@@ -633,7 +671,7 @@ class SummarizationMiddleware(AgentMiddleware):
 
             if input_tokens > 0:
                 logger.debug(
-                    f"[Summarization] Token usage: "
+                    f"[Compaction] Token usage: "
                     f"input={input_tokens}, output={output_tokens}"
                 )
 
@@ -861,7 +899,7 @@ class SummarizationMiddleware(AgentMiddleware):
                 return True
             if kind == "tokens" and total_tokens >= value:
                 logger.info(
-                    f"[Summarization] Triggered: {total_tokens} >= {value} tokens"
+                    f"[Compaction] Triggered: {total_tokens} >= {value} tokens"
                 )
                 return True
             if kind == "fraction":
@@ -989,7 +1027,7 @@ class SummarizationMiddleware(AgentMiddleware):
         # Log if reasoning was discarded
         if formatted.get("reasoning"):
             logger.debug(
-                f"[Summarization] Discarded reasoning content "
+                f"[Compaction] Discarded reasoning content "
                 f"(length={len(formatted.get('reasoning', ''))})"
             )
 
@@ -1021,12 +1059,12 @@ class SummarizationMiddleware(AgentMiddleware):
             payload.update(kwargs)
             stream_writer(payload)
             if signal == "start":
-                logger.debug(f"[Summarization] Emitted {action} start signal")
+                logger.debug(f"[Compaction] Emitted {action} start signal")
             elif signal == "complete":
-                logger.debug(f"[Summarization] Emitted {action} complete signal")
+                logger.debug(f"[Compaction] Emitted {action} complete signal")
             elif signal == "error":
                 logger.warning(
-                    f"[Summarization] Emitted {action} error signal: {kwargs.get('error')}"
+                    f"[Compaction] Emitted {action} error signal: {kwargs.get('error')}"
                 )
         except Exception as e:
             logger.debug(f"Could not emit context_window {action}/{signal} signal: {e}")
@@ -1107,22 +1145,31 @@ class SummarizationMiddleware(AgentMiddleware):
         # Strip base64 blobs so the summarization LLM doesn't receive them
         trimmed_messages = strip_base64_from_messages(trimmed_messages)
 
+        # Start is outside the try: if it fails, the window was never opened
+        # so nothing needs closing. Inside the try we catch BaseException (not
+        # just Exception) so CancelledError also closes the window before
+        # propagating — otherwise a cancelled stream would leave an orphan
+        # start event with no terminator.
+        self._emit_context_signal("summarize", "start")
         try:
-            self._emit_context_signal("summarize", "start")
             response = self.model.invoke(
-                self.summary_prompt.format(messages=trimmed_messages)
+                _build_summary_request(self.summary_prompt, trimmed_messages)
             )
             summary = self._extract_summary_text(response)
-            self._emit_context_signal(
-                "summarize",
-                "complete",
-                summary_length=len(summary),
-                original_message_count=original_count,
-            )
-            return summary
-        except Exception as e:
+        except BaseException as e:
             self._emit_context_signal("summarize", "error", error=str(e))
-            return f"Error generating summary: {e!s}"
+            if isinstance(e, Exception):
+                return f"Error generating summary: {e!s}"
+            raise
+
+        self._emit_context_signal(
+            "summarize",
+            "complete",
+            summary_length=len(summary),
+            original_message_count=original_count,
+            summary_text=summary,
+        )
+        return summary
 
     async def _acreate_summary(
         self, messages_to_summarize: list[AnyMessage], *, original_count: int = 0
@@ -1140,26 +1187,36 @@ class SummarizationMiddleware(AgentMiddleware):
             self._backend, trimmed_messages
         )
 
+        # Start is outside the try: if it fails, the window was never opened
+        # so nothing needs closing. Inside the try we catch BaseException (not
+        # just Exception) so CancelledError also closes the window before
+        # propagating — otherwise a cancelled stream would leave an orphan
+        # start event with no terminator.
+        self._emit_context_signal("summarize", "start")
         try:
-            self._emit_context_signal("summarize", "start")
-
-            # Use ainvoke (non-streaming) to avoid duplicate events
-            # The model should have streaming=False set in factory
+            # Use ainvoke (non-streaming) to avoid duplicate events.
+            # The model should have streaming=False set in factory.
+            # The bracketing context_window summarize start/complete/error
+            # events tell the SSE handler to re-route chunks emitted between
+            # them to the compaction_chunk channel.
             response = await self.model.ainvoke(
-                self.summary_prompt.format(messages=trimmed_messages)
+                _build_summary_request(self.summary_prompt, trimmed_messages)
             )
-
             summary = self._extract_summary_text(response)
-            self._emit_context_signal(
-                "summarize",
-                "complete",
-                summary_length=len(summary),
-                original_message_count=original_count,
-            )
-            return summary
-        except Exception as e:
+        except BaseException as e:
             self._emit_context_signal("summarize", "error", error=str(e))
-            return f"Error generating summary: {e!s}"
+            if isinstance(e, Exception):
+                return f"Error generating summary: {e!s}"
+            raise
+
+        self._emit_context_signal(
+            "summarize",
+            "complete",
+            summary_length=len(summary),
+            original_message_count=original_count,
+            summary_text=summary,
+        )
+        return summary
 
     def _trim_messages_for_summary(
         self, messages: list[AnyMessage]
@@ -1190,14 +1247,14 @@ class SummarizationMiddleware(AgentMiddleware):
             # fall back to keeping the last N messages instead of failing
             if not trimmed:
                 logger.warning(
-                    f"[Summarization] trim_tokens_to_summarize={self.trim_tokens_to_summarize} "
+                    f"[Compaction] trim_tokens_to_summarize={self.trim_tokens_to_summarize} "
                     f"is too restrictive, falling back to last {_DEFAULT_FALLBACK_MESSAGE_COUNT} messages"
                 )
                 return messages[-_DEFAULT_FALLBACK_MESSAGE_COUNT:]
 
             return trimmed
         except Exception as e:
-            logger.warning(f"[Summarization] trim_messages failed: {e}, using fallback")
+            logger.warning(f"[Compaction] trim_messages failed: {e}, using fallback")
             return messages[-_DEFAULT_FALLBACK_MESSAGE_COUNT:]
 
     # =========================================================================
@@ -1209,35 +1266,33 @@ class SummarizationMiddleware(AgentMiddleware):
         cls,
         config: dict | None = None,
         backend: Any | None = None,
-    ) -> "SummarizationMiddleware | None":
+    ) -> "CompactionMiddleware | None":
         """Create a configured instance from agent_config.yaml settings.
 
         Args:
-            config: Optional config override (defaults to SummarizationConfig defaults).
+            config: Optional config override (defaults to CompactionConfig defaults).
             backend: Backend for offloading conversation history (SandboxBackend
                 for PTC, None for flash). When None, no filesystem ops are attempted.
 
         Returns:
-            Configured SummarizationMiddleware or None if disabled.
+            Configured CompactionMiddleware or None if disabled.
         """
         if config is None:
-            config = SummarizationConfig().model_dump()
+            config = CompactionConfig().model_dump()
 
         if not config.get("enabled", False):
             return None
 
-        # Get summarization model from config (prefer pre-built OAuth/BYOK client)
+        # Get compaction model from config (prefer pre-built OAuth/BYOK client)
         llm_client = config.get("_llm_client")
         if llm_client is not None:
-            summarization_model: BaseChatModel = llm_client
+            compaction_model: BaseChatModel = llm_client
         else:
             model_name = config.get("llm", "")
-            summarization_model: BaseChatModel = get_llm_by_type(model_name)
+            compaction_model: BaseChatModel = get_llm_by_type(model_name)
 
-        # Disable streaming to prevent normal message_chunk events
-        # This ensures only our custom context_window events are emitted
-        if hasattr(summarization_model, "streaming"):
-            summarization_model.streaming = False
+        # Suppress normal message_chunk emission where the provider permits it.
+        _maybe_disable_streaming(compaction_model)
 
         # Get configuration values
         token_threshold = config.get("token_threshold", 120000)
@@ -1256,7 +1311,7 @@ class SummarizationMiddleware(AgentMiddleware):
             )
 
         return cls(
-            model=summarization_model,
+            model=compaction_model,
             trigger=("tokens", token_threshold),
             keep=("messages", keep_messages),
             trim_tokens_to_summarize=token_threshold + 50000,

@@ -33,7 +33,7 @@ def _full_config_dict(**overrides) -> dict:
         "llm": {
             "name": "test-model",
             "flash": "test-flash",
-            "summarization": "test-summary",
+            "compaction": "test-summary",
             "fetch": "test-fetch",
             "fallback": ["fallback-1"],
         },
@@ -71,7 +71,7 @@ class TestLoadFromDictLLM:
         config = load_from_dict(_full_config_dict())
         assert config.llm.name == "test-model"
         assert config.llm.flash == "test-flash"
-        assert config.llm.summarization == "test-summary"
+        assert config.llm.compaction == "test-summary"
         assert config.llm.fetch == "test-fetch"
         assert config.llm.fallback == ["fallback-1"]
 
@@ -81,7 +81,7 @@ class TestLoadFromDictLLM:
         config = load_from_dict(data)
         assert config.llm.name == "claude-sonnet-4-5"
         assert config.llm.flash is None
-        assert config.llm.summarization is None
+        assert config.llm.compaction is None
         assert config.llm.fetch is None
         assert config.llm.fallback is None
 
@@ -119,7 +119,7 @@ class TestLoadFromDictLLM:
         config = load_from_dict(data)
         assert config.llm.name == "gpt-4o"
         assert config.llm.flash is None
-        assert config.llm.summarization is None
+        assert config.llm.compaction is None
 
 
 # ---------------------------------------------------------------------------
@@ -303,20 +303,20 @@ class TestLoadFromDictSecurity:
 
 
 # ---------------------------------------------------------------------------
-# load_from_dict — summarization + search_api
+# load_from_dict — compaction + search_api
 # ---------------------------------------------------------------------------
 
 
-class TestLoadFromDictSummarization:
-    def test_default_summarization(self):
-        """No summarization section should produce defaults."""
+class TestLoadFromDictCompaction:
+    def test_default_compaction(self):
+        """No compaction section should produce defaults."""
         config = load_from_dict(_full_config_dict())
-        assert config.summarization.enabled is True
-        assert config.summarization.token_threshold == 120000
-        assert config.summarization.keep_messages == 5
+        assert config.compaction.enabled is True
+        assert config.compaction.token_threshold == 120000
+        assert config.compaction.keep_messages == 5
 
-    def test_custom_summarization(self):
-        data = _full_config_dict(summarization={
+    def test_custom_compaction(self):
+        data = _full_config_dict(compaction={
             "enabled": False,
             "token_threshold": 80000,
             "keep_messages": 3,
@@ -325,17 +325,17 @@ class TestLoadFromDictSummarization:
             "truncate_args_max_length": 1000,
         })
         config = load_from_dict(data)
-        assert config.summarization.enabled is False
-        assert config.summarization.token_threshold == 80000
-        assert config.summarization.keep_messages == 3
-        assert config.summarization.truncate_args_trigger_messages == 15
+        assert config.compaction.enabled is False
+        assert config.compaction.token_threshold == 80000
+        assert config.compaction.keep_messages == 3
+        assert config.compaction.truncate_args_trigger_messages == 15
 
-    def test_partial_summarization(self):
-        """Partial summarization section uses defaults for missing fields."""
-        data = _full_config_dict(summarization={"enabled": True, "keep_messages": 10})
+    def test_partial_compaction(self):
+        """Partial compaction section uses defaults for missing fields."""
+        data = _full_config_dict(compaction={"enabled": True, "keep_messages": 10})
         config = load_from_dict(data)
-        assert config.summarization.keep_messages == 10
-        assert config.summarization.token_threshold == 120000  # default
+        assert config.compaction.keep_messages == 10
+        assert config.compaction.token_threshold == 120000  # default
 
     def test_default_search_api(self):
         config = load_from_dict(_full_config_dict())

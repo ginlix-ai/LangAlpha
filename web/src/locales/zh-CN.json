@@ -170,7 +170,29 @@
     "claudeOpenAgain": "重新打开授权页面",
     "starredModels": "快速切换模型",
     "starredModelsDesc": "标星的模型会显示在聊天输入框中方便快速切换",
-    "addModels": "添加"
+    "addModels": "添加",
+    "compactionProfile": "压缩预设",
+    "compactionProfileDesc": "用于控制压缩触发与保留的预设组合。除非有特殊需求，否则建议保持系统默认。",
+    "compactionProfileUseDefault": "使用系统默认",
+    "compactionProfilePreset": "{{tokens}}k tokens · 保留 {{keep}} 条 · 第 {{trim}} 条起截断",
+    "compactionProfiles": {
+      "aggressive": {
+        "label": "激进",
+        "description": "尽早压缩。适用于任何模型；摘要出现频率较高。"
+      },
+      "moderate": {
+        "label": "中等",
+        "description": "均衡。适合 200k 上下文窗口的模型。"
+      },
+      "extended": {
+        "label": "扩展",
+        "description": "保留更多上下文。适合 400k–1M 上下文模型。"
+      },
+      "relaxed": {
+        "label": "宽松",
+        "description": "最大化上下文。适合 1M 上下文模型。"
+      }
+    }
   },
   "dashboard": {
     "title": "LangAlpha",
@@ -285,7 +307,7 @@
     "letsGo": "开始",
     "skip": "跳过",
     "workspaceStarting": "正在启动工作区...",
-    "summarizing": "正在总结对话...",
+    "compacting": "正在压缩对话...",
     "offloading": "正在转存上下文...",
     "placeholderDefault": "输入 / 调用技能，@ 引用文件",
     "placeholderPendingRejection": "说说希望怎么调整...",
@@ -295,8 +317,8 @@
     "slashCommand": {
       "subagentName": "subagent",
       "subagentDesc": "使用子代理完成此任务",
-      "summarizeName": "summarize",
-      "summarizeDesc": "压缩对话上下文以释放 token 空间",
+      "compactName": "compact",
+      "compactDesc": "压缩对话上下文以释放 token 空间",
       "offloadDesc": "将大型工具参数转存至沙箱文件系统",
       "noMatching": "无匹配命令",
       "comps-analysisDesc": "可比公司分析：经营指标、估值倍数、同业对标",
@@ -316,11 +338,14 @@
       "initiating-coverageDesc": "全面研究启动：公司研究、财务模型、估值、图表、30-50 页报告",
       "report-issueDesc": "报告问题并提出改进建议以提升代理能力"
     },
-    "summarizedNotification": "上下文已压缩 · {{from}} 条消息 → 摘要",
+    "compactedNotification": "上下文已压缩 · {{from}} 条消息 → 摘要",
+    "viewSummary": "查看摘要",
+    "hideSummary": "隐藏摘要",
     "offloadedArgsNotification": "工具参数已转存 · {{count}} 个工具",
     "offloadedReadsNotification": "过期读取结果已转存 · {{count}} 个读取",
     "offloadedNotification": "上下文已转存 · {{args}} 个工具参数, {{reads}} 个读取",
     "compactionError": "上下文压缩失败",
+    "compactBusy": "当前轮次还在流式输出中，请等结束后再压缩。",
     "modelSelector": {
       "manageModels": "管理模型",
       "moreModels": "更多模型",

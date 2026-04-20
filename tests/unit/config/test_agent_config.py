@@ -26,7 +26,7 @@ from ptc_agent.config.agent import (
     SkillsConfig,
     SubagentConfig,
     SubagentsConfig,
-    SummarizationConfig,
+    CompactionConfig,
 )
 from ptc_agent.config.core import (
     CoreConfig,
@@ -69,7 +69,7 @@ class TestLLMConfig:
         cfg = LLMConfig(name="gpt-4o")
         assert cfg.name == "gpt-4o"
         assert cfg.flash is None
-        assert cfg.summarization is None
+        assert cfg.compaction is None
         assert cfg.fetch is None
         assert cfg.fallback is None
 
@@ -77,7 +77,7 @@ class TestLLMConfig:
         cfg = LLMConfig(
             name="claude-sonnet-4-5",
             flash="claude-haiku-4-5",
-            summarization="claude-haiku-4-5",
+            compaction="claude-haiku-4-5",
             fetch="claude-haiku-4-5",
             fallback=["gpt-4o", "gpt-4o-mini"],
         )
@@ -334,13 +334,13 @@ class TestLLMDefinition:
 
 
 # ---------------------------------------------------------------------------
-# SummarizationConfig
+# CompactionConfig
 # ---------------------------------------------------------------------------
 
 
-class TestSummarizationConfig:
+class TestCompactionConfig:
     def test_defaults(self):
-        cfg = SummarizationConfig()
+        cfg = CompactionConfig()
         assert cfg.enabled is True
         assert cfg.token_threshold == 120000
         assert cfg.keep_messages == 5
@@ -349,7 +349,7 @@ class TestSummarizationConfig:
         assert cfg.truncate_args_max_length == 2000
 
     def test_custom_values(self):
-        cfg = SummarizationConfig(
+        cfg = CompactionConfig(
             enabled=False,
             token_threshold=80000,
             keep_messages=3,
@@ -362,28 +362,28 @@ class TestSummarizationConfig:
 
 
 # ---------------------------------------------------------------------------
-# AgentConfig — summarization + search_api fields
+# AgentConfig — compaction + search_api fields
 # ---------------------------------------------------------------------------
 
 
 class TestAgentConfigNewFields:
-    def test_default_summarization(self):
-        """AgentConfig should have SummarizationConfig with defaults."""
+    def test_default_compaction(self):
+        """AgentConfig should have CompactionConfig with defaults."""
         config = _minimal_config()
-        assert isinstance(config.summarization, SummarizationConfig)
-        assert config.summarization.enabled is True
-        assert config.summarization.token_threshold == 120000
+        assert isinstance(config.compaction, CompactionConfig)
+        assert config.compaction.enabled is True
+        assert config.compaction.token_threshold == 120000
 
     def test_default_search_api(self):
         """AgentConfig should have search_api defaulting to 'tavily'."""
         config = _minimal_config()
         assert config.search_api == "tavily"
 
-    def test_custom_summarization(self):
-        summarization = SummarizationConfig(enabled=False, token_threshold=50000)
-        config = _minimal_config(summarization=summarization)
-        assert config.summarization.enabled is False
-        assert config.summarization.token_threshold == 50000
+    def test_custom_compaction(self):
+        compaction = CompactionConfig(enabled=False, token_threshold=50000)
+        config = _minimal_config(compaction=compaction)
+        assert config.compaction.enabled is False
+        assert config.compaction.token_threshold == 50000
 
     def test_custom_search_api(self):
         config = _minimal_config(search_api="serper")

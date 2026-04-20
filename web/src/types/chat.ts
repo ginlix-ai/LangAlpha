@@ -39,6 +39,9 @@ export interface NotificationSegment {
   type: 'notification';
   content: string;
   order: number;
+  /** Optional longer text (e.g. the compaction summary) shown in an
+   *  expandable panel beneath the notification label. */
+  detail?: string;
 }
 
 export interface UserQuestionSegment {
@@ -265,6 +268,9 @@ export interface NotificationMessage {
   content: string;
   variant: NotificationVariant;
   timestamp: Date;
+  /** Optional longer text (e.g. a compaction summary) surfaced via the
+   *  notification's expand toggle. */
+  detail?: string;
 }
 
 export type ChatMessage = UserMessage | AssistantMessage | NotificationMessage;

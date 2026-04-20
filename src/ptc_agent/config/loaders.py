@@ -27,12 +27,12 @@ from typing import Any
 
 from ptc_agent.config.agent import (
     AgentConfig,
+    CompactionConfig,
     FlashConfig,
     LLMConfig,
     SkillsConfig,
     SubagentConfig,
     SubagentsConfig,
-    SummarizationConfig,
 )
 from ptc_agent.config.core import CoreConfig, create_default_security_config
 from ptc_agent.config.utils import (
@@ -258,7 +258,7 @@ def load_from_dict(
         llm_config = LLMConfig(
             name=llm_name,
             flash=llm_data.get("flash"),
-            summarization=llm_data.get("summarization"),
+            compaction=llm_data.get("compaction"),
             fetch=llm_data.get("fetch"),
             fallback=llm_data.get("fallback"),
         )
@@ -323,15 +323,15 @@ def load_from_dict(
     )
 
     # Load Flash configuration (optional section)
-    # Flash LLM is now in llm.flash, summarization uses main summarization config
+    # Flash LLM is now in llm.flash; compaction uses main compaction config
     flash_data = config_data.get("flash") or {}
     flash_config = FlashConfig(
         enabled=flash_data.get("enabled", True),
     )
 
-    # Load Summarization configuration (optional section)
-    summarization_data = config_data.get("summarization") or {}
-    summarization_config = SummarizationConfig(**summarization_data) if summarization_data else SummarizationConfig()
+    # Load Compaction configuration (optional section)
+    compaction_data = config_data.get("compaction") or {}
+    compaction_config = CompactionConfig(**compaction_data) if compaction_data else CompactionConfig()
 
     # Search API provider
     search_api = config_data.get("search_api", "tavily")
@@ -348,7 +348,7 @@ def load_from_dict(
         flash=flash_config,
         enable_view_image=enable_view_image,
         subagents=subagents_config,
-        summarization=summarization_config,
+        compaction=compaction_config,
         search_api=search_api,
         background_auto_wait=background_auto_wait,
     )
@@ -376,7 +376,7 @@ cli:
 llm:
   name: "your-model-name"       # Required: primary model from models.json
   # flash: "your-flash-model"   # Optional: model for flash agent
-  # summarization: "your-model" # Optional: model for conversation summarization
+  # compaction: "your-model"    # Optional: model for context compaction
   # fetch: "your-model"         # Optional: model for web content extraction
   # fallback:                   # Optional: fallback models when primary fails
   #   - "fallback-model"

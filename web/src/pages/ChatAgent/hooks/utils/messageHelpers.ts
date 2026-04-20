@@ -101,14 +101,20 @@ export function appendMessage<T extends { id: string }>(messages: T[], newMessag
 }
 
 /**
- * Creates a notification message for inline dividers (e.g. summarization, offload)
+ * Creates a notification message for inline dividers (e.g. compaction, offload).
+ * ``detail`` is the optional expandable text (e.g. the compaction summary).
  */
-export function createNotificationMessage(text: string, variant: NotificationVariant = 'info'): NotificationMessage {
+export function createNotificationMessage(
+  text: string,
+  variant: NotificationVariant = 'info',
+  detail?: string,
+): NotificationMessage {
   return {
     id: `notification-${Date.now()}-${_notifSeq++}`,
     role: 'notification',
     content: text,
     variant,
     timestamp: new Date(),
+    detail,
   };
 }

@@ -114,7 +114,7 @@ Use this to identify the right module when filing issues or proposing fixes.
 | `mcp_servers/` | MCP server implementations (yfinance, fundamentals, macro, price_data) | `yfinance_mcp_server.py` returns malformed data, a fundamentals endpoint is missing a field, macro data has wrong units |
 | `src/tools/` | External tool implementations (web fetch, crawl, search, SEC, market data) | `fetch.py` times out on certain URLs, SEC filing parser fails on 10-K amendments, search returns stale results |
 | `src/ptc_agent/agent/tools/` | Core sandbox tools (ExecuteCode, Bash, file ops, grep, glob, think, todo) | `code_execution.py` mishandles large stdout, `bash.py` doesn't escape special chars, `file_ops.py` fails on binary files |
-| `src/ptc_agent/agent/middleware/` | Middleware stack (skills, subagents, plan mode, summarization, memory, caching) | Skill loading fails silently, subagent doesn't inherit context, summarization truncates important content |
+| `src/ptc_agent/agent/middleware/` | Middleware stack (skills, subagents, plan mode, compaction, memory, caching) | Skill loading fails silently, subagent doesn't inherit context, compaction truncates important content |
 | `src/ptc_agent/agent/prompts/` | System prompt templates (Jinja2) and config | Redundant or wrongful instructions in `system.md.j2`, useful tips and experience worth persisting into prompts |
 
 ## Label Convention

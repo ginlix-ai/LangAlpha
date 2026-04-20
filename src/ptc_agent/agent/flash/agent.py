@@ -17,7 +17,7 @@ from ptc_agent.agent.middleware import (
     ToolArgumentParsingMiddleware,
     ToolErrorHandlingMiddleware,
     ToolResultNormalizationMiddleware,
-    SummarizationMiddleware,
+    CompactionMiddleware,
     SkillsMiddleware,
     AskUserMiddleware,
 )
@@ -231,24 +231,24 @@ class FlashAgent:
         tools.extend(ask_user_middleware.tools)
         logger.info("AskUserQuestion tool enabled for Flash agent")
 
-        # Optional summarization (shares config with main agent)
-        summ_config = None
-        if self.config.llm.summarization:
-            summ_config = self.config.summarization.model_dump()
-            summ_config["llm"] = self.config.llm.summarization
-            summ_client = self.config.subsidiary_llm_clients.get("summarization")
-            if summ_client:
-                summ_config["_llm_client"] = summ_client
+        # Optional compaction (shares config with main agent)
+        compaction_config = None
+        if self.config.llm.compaction:
+            compaction_config = self.config.compaction.model_dump()
+            compaction_config["llm"] = self.config.llm.compaction
+            compaction_client = self.config.subsidiary_llm_clients.get("compaction")
+            if compaction_client:
+                compaction_config["_llm_client"] = compaction_client
             elif self.config.llm_client:
-                # Deep-copy so SummarizationMiddleware.from_config() can set
+                # Deep-copy so CompactionMiddleware.from_config() can set
                 # streaming=False without mutating the main agent's model.
-                summ_config["_llm_client"] = self.config.llm_client.model_copy()
-        summarization = SummarizationMiddleware.from_config(config=summ_config, backend=None)
-        if summarization is not None:
-            main_middleware.append(summarization)
+                compaction_config["_llm_client"] = self.config.llm_client.model_copy()
+        compaction = CompactionMiddleware.from_config(config=compaction_config, backend=None)
+        if compaction is not None:
+            main_middleware.append(compaction)
             logger.info(
-                "Summarization enabled",
-                threshold=self.config.summarization.token_threshold,
+                "Compaction enabled",
+                threshold=self.config.compaction.token_threshold,
             )
 
         # Model resilience middleware (retry + fallback)

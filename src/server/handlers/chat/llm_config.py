@@ -292,7 +292,11 @@ async def resolve_llm_config(
         config.llm = LLMConfig(
             name=resolved_name if mode == "ptc" else "placeholder",
             flash=resolved_name if mode == "flash" else model_pref.get("preferred_flash_model"),
-            summarization=model_pref.get("summarization_model") or model_pref.get("preferred_flash_model"),
+            compaction=(
+                model_pref.get("compaction_model")
+                or model_pref.get("summarization_model")
+                or model_pref.get("preferred_flash_model")
+            ),
             fetch=model_pref.get("fetch_model"),
             fallback=model_pref.get("fallback_models"),
         )
@@ -315,9 +319,14 @@ async def resolve_llm_config(
                 f"[CHAT] No {pref_key} set, using system default: {getattr(config.llm, model_field, None) or config.llm.name}"
             )
 
-    # Apply other model overrides from user preferences
+    # Apply other model overrides from user preferences.
+    # Both "compaction_model" (new) and "summarization_model" (legacy) map to
+    # the renamed ``compaction`` config field; legacy key is read so existing
+    # rows in the platform-service DB keep working. Order matters: legacy is
+    # applied first so the new key wins when both are present.
     _other_model_keys = [
-        ("summarization_model", "summarization"),
+        ("summarization_model", "compaction"),
+        ("compaction_model", "compaction"),
         ("fetch_model", "fetch"),
     ]
     for pref_key_other, config_field in _other_model_keys:
@@ -332,6 +341,24 @@ async def resolve_llm_config(
         if config is base_config:
             config = config.model_copy(deep=True)
         config.llm.fallback = user_fallback
+
+    # Compaction profile: a named preset (aggressive/moderate/extended/relaxed)
+    # that bundles token_threshold, truncate_args_trigger_messages, and
+    # keep_messages. Unknown/missing values fall through to the YAML-configured
+    # defaults.
+    from ptc_agent.config.agent import COMPACTION_PROFILES
+
+    compaction_profile = model_pref.get("compaction_profile")
+    preset = (
+        COMPACTION_PROFILES.get(compaction_profile)
+        if isinstance(compaction_profile, str)
+        else None
+    )
+    if preset:
+        if config is base_config:
+            config = config.model_copy(deep=True)
+        for field, value in preset.items():
+            setattr(config.compaction, field, value)
 
     # Resolve the effective model from whichever field we just set
     effective_model = getattr(config.llm, model_field, None) or config.llm.name
@@ -425,7 +452,7 @@ async def resolve_llm_config(
             logger.error("[CHAT] Failed to resolve model %s, skipping", model_name, exc_info=True)
             return None
 
-    subsidiary_pairs = [(role, m) for role, m in [("summarization", config.llm.summarization), ("fetch", config.llm.fetch)] if m]
+    subsidiary_pairs = [(role, m) for role, m in [("compaction", config.llm.compaction), ("fetch", config.llm.fetch)] if m]
     fallback_models = config.llm.fallback or []
 
     all_models = [m for _, m in subsidiary_pairs] + list(fallback_models)

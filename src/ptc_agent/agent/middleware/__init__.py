@@ -7,7 +7,7 @@ This module provides middleware for LangChain/LangGraph agents:
 - tool/: Tool argument parsing, error handling, result normalization
 - caching/: Tool result caching with SSE events
 - file_operations/: File operation SSE event emission and vision middleware
-- summarization/: SSE-enabled summarization
+- compaction/: SSE-enabled context window compaction
 """
 
 # Background subagent middleware
@@ -56,9 +56,9 @@ from .todo_operations import (
     TodoWriteMiddleware,
 )
 
-# Summarization middleware
-from .summarization import (
-    SummarizationMiddleware,
+# Compaction middleware
+from .compaction import (
+    CompactionMiddleware,
     DEFAULT_SUMMARY_PROMPT,
     count_tokens_tiktoken,
 )
@@ -134,8 +134,8 @@ __all__ = [
     "FileOperationState",
     # Todo operations
     "TodoWriteMiddleware",
-    # Summarization
-    "SummarizationMiddleware",
+    # Compaction
+    "CompactionMiddleware",
     "DEFAULT_SUMMARY_PROMPT",
     "count_tokens_tiktoken",
     # Skills

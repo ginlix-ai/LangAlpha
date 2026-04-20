@@ -29,8 +29,12 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
 
-class SummarizationConfig(BaseModel):
-    """Conversation summarization settings."""
+class CompactionConfig(BaseModel):
+    """Context compaction settings.
+
+    Controls the two-tier context window lifecycle: token-threshold-based LLM
+    summarization (Tier 2) and message-count-based tool-arg truncation (Tier 1).
+    """
 
     enabled: bool = True
     token_threshold: int = 120000
@@ -38,6 +42,38 @@ class SummarizationConfig(BaseModel):
     truncate_args_trigger_messages: int | None = None
     truncate_args_keep_messages: int = 20
     truncate_args_max_length: int = 2000
+
+
+# Named presets that bundle the three user-facing compaction knobs
+# (token_threshold, truncate_args_trigger_messages, keep_messages). Applied at
+# request time in ``resolve_llm_config`` when the user selects a profile.
+#
+# Thresholds are chosen to leave healthy headroom under common model context
+# windows: 100k (<=200k models), 130k (200k models), 200k (400k/1M models),
+# 300k (1M models). The other two knobs scale with the threshold so that
+# relaxed profiles also keep more recent history and truncate tool args later.
+COMPACTION_PROFILES: dict[str, dict[str, int]] = {
+    "aggressive": {
+        "token_threshold": 100000,
+        "truncate_args_trigger_messages": 30,
+        "keep_messages": 5,
+    },
+    "moderate": {
+        "token_threshold": 130000,
+        "truncate_args_trigger_messages": 40,
+        "keep_messages": 8,
+    },
+    "extended": {
+        "token_threshold": 200000,
+        "truncate_args_trigger_messages": 60,
+        "keep_messages": 10,
+    },
+    "relaxed": {
+        "token_threshold": 300000,
+        "truncate_args_trigger_messages": 70,
+        "keep_messages": 15,
+    },
+}
 
 
 class FlashConfig(BaseModel):
@@ -139,7 +175,7 @@ class LLMConfig(BaseModel):
 
     name: str  # Name/alias from src/llms/manifest/models.json
     flash: str | None = None  # LLM for flash agent, defaults to main llm if None
-    summarization: str | None = None  # LLM for conversation summarization
+    compaction: str | None = None  # LLM for context compaction (summarization step)
     fetch: str | None = None  # LLM for web content extraction (fetch tool)
     fallback: list[str] | None = None  # Fallback model names for retry exhaustion
 
@@ -177,8 +213,8 @@ class AgentConfig(BaseModel):
     # Subagent configuration
     subagents: SubagentsConfig = Field(default_factory=SubagentsConfig)
 
-    # Summarization middleware configuration
-    summarization: SummarizationConfig = Field(default_factory=SummarizationConfig)
+    # Compaction middleware configuration
+    compaction: CompactionConfig = Field(default_factory=CompactionConfig)
 
     # Search API provider (tavily, bocha, serper)
     search_api: str = "tavily"
@@ -188,7 +224,7 @@ class AgentConfig(BaseModel):
     # If False (default), return immediately and show status of running tasks
     background_auto_wait: bool = False
 
-    # Note: deep-agent automatically enables middlewares (TodoList, Summarization, etc.)
+    # Note: deep-agent automatically enables middlewares (TodoList, Compaction, etc.)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

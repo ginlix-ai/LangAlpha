@@ -629,6 +629,7 @@ async def astream_ptc_workflow(
             token_callback=token_callback,
             tool_tracker=tool_tracker,
             background_registry=background_registry,
+            agent_config=config,
         )
 
         # Track steering messages injected mid-workflow for post-completion backfill

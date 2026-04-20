@@ -703,56 +703,83 @@ async def handle_command(
         except Exception:
             pass
 
-    elif cmd_lower == "/summarize" or cmd_lower.startswith("/summarize "):
-        # Manually trigger conversation summarization
+    elif (
+        cmd_lower == "/compact"
+        or cmd_lower.startswith("/compact ")
+        or cmd_lower == "/summarize"
+        or cmd_lower.startswith("/summarize ")
+    ):
+        # Manually trigger context compaction
+        # /summarize is kept as an alias for backward compatibility
         if not client.thread_id:
-            console.print("[yellow]No active conversation to summarize[/yellow]")
+            console.print("[yellow]No active conversation to compact[/yellow]")
             console.print()
             return "handled"
 
-        # Parse optional keep_messages argument: /summarize keep=10
+        # Strip the command prefix so we can parse optional args uniformly.
+        if cmd_lower.startswith("/compact"):
+            remainder = cmd[len("/compact"):].strip()
+        else:
+            remainder = cmd[len("/summarize"):].strip()
+
         keep_messages = 5  # default
-        if cmd_lower.startswith("/summarize "):
-            args = cmd[11:].strip()  # after "/summarize "
-            if args.startswith("keep="):
+        if remainder:
+            if remainder.startswith("keep="):
                 try:
-                    keep_messages = int(args[5:])
+                    keep_messages = int(remainder[5:])
                     if keep_messages < 1 or keep_messages > 20:
                         console.print("[yellow]keep must be between 1 and 20[/yellow]")
                         console.print()
                         return "handled"
                 except ValueError:
-                    console.print("[yellow]Invalid keep value. Usage: /summarize keep=5[/yellow]")
+                    console.print("[yellow]Invalid keep value. Usage: /compact keep=5[/yellow]")
                     console.print()
                     return "handled"
-            elif args:
-                console.print("[yellow]Usage: /summarize [keep=N] (N between 1-20)[/yellow]")
+            else:
+                console.print("[yellow]Usage: /compact [keep=N] (N between 1-20)[/yellow]")
                 console.print()
                 return "handled"
 
-        console.print(f"[dim]Summarizing conversation (keeping {keep_messages} recent messages)...[/dim]")
+        console.print(f"[dim]Compacting conversation (keeping {keep_messages} recent messages)...[/dim]")
         try:
             result = await client.summarize_thread(client.thread_id, keep_messages=keep_messages)
             if result.get("success"):
                 orig = result.get("original_message_count", 0)
                 new = result.get("new_message_count", 0)
                 summary_len = result.get("summary_length", 0)
-                console.print("[green]Summarization complete[/green]")
+                console.print("[green]Compaction complete[/green]")
                 console.print(f"[dim]Messages: {orig} → {new} (summary: {summary_len} chars)[/dim]")
             else:
-                console.print("[yellow]Summarization did not complete successfully[/yellow]")
+                console.print("[yellow]Compaction did not complete successfully[/yellow]")
         except httpx.HTTPStatusError as e:
             from ptc_cli.utils.http_helpers import parse_error_detail
 
+            # Default so we still surface something if parse_error_detail raises
+            # on a malformed response body.
+            detail_text = str(e)
+            try:
+                detail = parse_error_detail(e.response)
+            except Exception:
+                detail = None
+            # The server may return detail as a structured dict
+            # ({code, verb, message}) for workflow-active conflicts.
+            if isinstance(detail, dict):
+                msg = detail.get("message")
+                detail_text = msg if isinstance(msg, str) and msg else str(detail)
+            elif isinstance(detail, str) and detail:
+                detail_text = detail
+
             if e.response.status_code == 400:
-                detail = parse_error_detail(e.response) or str(e)
-                console.print(f"[yellow]{detail}[/yellow]")
+                console.print(f"[yellow]{detail_text}[/yellow]")
             elif e.response.status_code == 404:
                 console.print("[yellow]Thread not found[/yellow]")
+            elif e.response.status_code == 409:
+                # Workflow is still streaming on this thread.
+                console.print(f"[yellow]{detail_text}[/yellow]")
             else:
-                console.print(f"[yellow]Could not summarize: {e}[/yellow]")
+                console.print(f"[yellow]Could not compact: {e}[/yellow]")
         except Exception as e:
-            console.print(f"[yellow]Could not summarize: {e}[/yellow]")
+            console.print(f"[yellow]Could not compact: {e}[/yellow]")
         console.print()
 
     elif cmd_lower == "/conversation":
@@ -896,7 +923,7 @@ async def handle_command(
         # Unknown command
         console.print(f"[yellow]Unknown command: {command}[/yellow]")
         console.print(
-            "[dim]Available: /help, /new, /workspace, /conversation, /tokens, /model, /status, /cancel, /summarize, /reconnect, /onboarding, /exit[/dim]"
+            "[dim]Available: /help, /new, /workspace, /conversation, /tokens, /model, /status, /cancel, /compact, /reconnect, /onboarding, /exit[/dim]"
         )
 
     return "handled"

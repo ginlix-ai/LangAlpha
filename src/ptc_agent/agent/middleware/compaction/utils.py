@@ -1,4 +1,4 @@
-"""Token counting, prompt template, and truncation utilities for summarization."""
+"""Token counting, prompt template, and truncation utilities for compaction."""
 
 import logging
 import re
@@ -17,10 +17,10 @@ from langchain_core.messages import (
 from langchain_core.messages.human import HumanMessage
 from langchain_core.messages.utils import convert_to_messages
 
-from ptc_agent.agent.middleware.summarization.types import (
+from ptc_agent.agent.middleware.compaction.types import (
     CONTEXT_SUMMARY_PREFIX,
     NON_CRITICAL_READ_PREFIXES,
-    SummarizationEvent,
+    CompactionEvent,
     TRUNCATABLE_TOOLS,
 )
 
@@ -474,23 +474,23 @@ def truncate_read_results(
 
 
 # =============================================================================
-# Shared summarization helpers (used by both middleware and manual triggers)
+# Shared compaction helpers (used by both middleware and manual triggers)
 # =============================================================================
 
 
 def get_effective_messages(
     messages: list[AnyMessage],
-    event: SummarizationEvent | None,
+    event: CompactionEvent | None,
 ) -> list[AnyMessage]:
-    """Reconstruct the effective message list from a previous summarization event.
+    """Reconstruct the effective message list from a previous compaction event.
 
-    After summarization, the checkpoint still contains ALL messages. This function
+    After compaction, the checkpoint still contains ALL messages. This function
     reconstructs what the model should see: the summary message plus messages
     after the cutoff index.
 
     Args:
         messages: Full message list from state.
-        event: Previous summarization event, or None if no summarization occurred.
+        event: Previous compaction event, or None if no compaction occurred.
 
     Returns:
         Effective message list for the model.
@@ -505,16 +505,16 @@ def get_effective_messages(
 
 def compute_absolute_cutoff(
     effective_cutoff: int,
-    previous_event: SummarizationEvent | None,
+    previous_event: CompactionEvent | None,
 ) -> int:
     """Convert effective message cutoff to absolute state index for chaining.
 
-    When chained summarization occurs, the effective message list starts with
+    When chained compaction occurs, the effective message list starts with
     the previous summary message at index 0. The -1 accounts for this.
 
     Args:
         effective_cutoff: Cutoff index in the effective message list.
-        previous_event: Previous summarization event, or None.
+        previous_event: Previous compaction event, or None.
 
     Returns:
         Absolute cutoff index in the state message list.
@@ -557,15 +557,19 @@ def build_summary_message(
 # Prompt template
 # =============================================================================
 
-# Financial research summarization prompt with recency weighting and locale awareness
+# Financial research summarization prompt. Instructions only — the conversation
+# history is delivered in a separate HumanMessage so the system channel stays
+# bounded and cacheable, and so BaseChatModel.format() doesn't try to interpret
+# message content as further format placeholders.
 DEFAULT_SUMMARY_PROMPT = """<role>
 Financial Research Context Summarizer
 </role>
 
 <context>
-You're nearing your input token limit. The conversation history below will be
-replaced with the context you extract. This is critical - ensure you capture
-all important information so you can continue the research without losing progress.
+You're nearing your input token limit. The conversation history in the user
+message will be replaced with the context you extract. This is critical -
+ensure you capture all important information so you can continue the research
+without losing progress.
 </context>
 
 <objective>
@@ -611,8 +615,4 @@ Make sure you maintain the user original query and goal.
 
 Then organize naturally using markdown headers.
 Write as if briefing a colleague who needs to continue your work without repeating what's done.
-</output_format>
-
-<messages>
-{messages}
-</messages>"""
+</output_format>"""

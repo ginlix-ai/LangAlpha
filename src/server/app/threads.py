@@ -832,11 +832,15 @@ async def summarize_thread(
         default=5, ge=1, le=20, description="Number of recent messages to preserve"
     ),
 ):
-    """Manually trigger conversation summarization for a thread."""
-    await require_thread_owner(thread_id, x_user_id)
-    from src.server.handlers.workflow_handler import trigger_summarization
+    """Manually trigger context compaction for a thread.
 
-    return await trigger_summarization(thread_id, keep_messages)
+    Endpoint path ``/summarize`` and function name preserved for REST contract
+    compatibility — clients may call the older URL.
+    """
+    await require_thread_owner(thread_id, x_user_id)
+    from src.server.handlers.workflow_handler import trigger_compaction
+
+    return await trigger_compaction(thread_id, keep_messages, user_id=x_user_id)
 
 
 @router.post("/{thread_id}/offload", status_code=200)

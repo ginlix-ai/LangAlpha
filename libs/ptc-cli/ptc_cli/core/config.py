@@ -103,7 +103,7 @@ COMMANDS = {
     "cancel": "Cancel running workflow",
     "reconnect": "Reconnect to a paused workflow",
     "workspace": "List/switch/start/stop workspaces",
-    "summarize": "Summarize conversation: /summarize [keep=5]",
+    "compact": "Compact conversation context: /compact [keep=5]",
     "exit": "Exit the CLI",
 }
 

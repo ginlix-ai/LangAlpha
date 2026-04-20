@@ -9,7 +9,7 @@ llm:
   # Model name from src/llms/manifest/models.json
   name: "qwen3.5-plus"
   flash: "qwen3.6-flash"
-  summarization: "qwen3.6-flash" # defaults to flash model
+  compaction: "qwen3.6-flash" # defaults to flash model
   fetch: "qwen3.6-flash"         # defaults to flash model
   fallback:
     - "kimi-k2.5"
@@ -244,12 +244,12 @@ subagents:
   #       data_processing: true
   #       visualizations: true
 
-# Summarization Middleware Configuration
-# Automatically summarizes conversation history when approaching token limits
-summarization:
-  enabled: true # Enable/disable conversation summarization
-  token_threshold: 120000 # Trigger summarization when messages exceed this token count
-  keep_messages: 10 # Preserve last N messages after summarization
+# Compaction Middleware Configuration
+# Automatically compacts conversation context when approaching token limits
+compaction:
+  enabled: true # Enable/disable context compaction
+  token_threshold: 120000 # Trigger full compaction when messages exceed this token count
+  keep_messages: 10 # Preserve last N messages after compaction
   truncate_args_trigger_messages: 40 # Truncate tool args when >= N messages (Tier 1)
   truncate_args_keep_messages: 10 # Protect last N messages from arg truncation
   truncate_args_max_length: 2000 # Per-arg-value max chars before truncation

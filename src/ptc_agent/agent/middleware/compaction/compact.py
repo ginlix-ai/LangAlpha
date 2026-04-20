@@ -1,4 +1,4 @@
-"""Standalone functions for manual summarization and offloading triggers."""
+"""Standalone functions for manual compaction and offloading triggers."""
 
 import logging
 import uuid
@@ -11,14 +11,14 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langchain.chat_models import BaseChatModel
 
 from src.llms.content_utils import format_llm_content
-from ptc_agent.config.agent import SummarizationConfig
+from ptc_agent.config.agent import CompactionConfig
 from src.llms import get_llm_by_type
 
-from ptc_agent.agent.middleware.summarization.types import (
-    SummarizationEvent,
+from ptc_agent.agent.middleware.compaction.types import (
+    CompactionEvent,
     _DEFAULT_FALLBACK_MESSAGE_COUNT,
 )
-from ptc_agent.agent.middleware.summarization.utils import (
+from ptc_agent.agent.middleware.compaction.utils import (
     DEFAULT_SUMMARY_PROMPT,
     build_summary_message,
     compute_absolute_cutoff,
@@ -27,7 +27,11 @@ from ptc_agent.agent.middleware.summarization.utils import (
     truncate_message_args,
     truncate_read_results,
 )
-from ptc_agent.agent.middleware.summarization.offloading import (
+from ptc_agent.agent.middleware.compaction.middleware import (
+    _build_summary_request,
+    _maybe_disable_streaming,
+)
+from ptc_agent.agent.middleware.compaction.offloading import (
     aoffload_base64_content,
     aoffload_to_backend,
     aoffload_truncated_args,
@@ -37,18 +41,19 @@ from ptc_agent.agent.middleware.summarization.offloading import (
 logger = logging.getLogger(__name__)
 
 
-async def summarize_messages(
+async def compact_messages(
     messages: list[AnyMessage],
     keep_messages: int = 5,
     model_name: str = "",
     backend: Any | None = None,
-    previous_event: SummarizationEvent | None = None,
-    summarization_config: SummarizationConfig | None = None,
+    previous_event: CompactionEvent | None = None,
+    compaction_config: CompactionConfig | None = None,
+    llm_client: BaseChatModel | None = None,
 ) -> dict[str, Any]:
     """
-    Summarize conversation messages with two-tier context management.
+    Compact conversation messages with two-tier context management.
 
-    Produces a ``SummarizationEvent`` that the middleware can use to
+    Produces a ``CompactionEvent`` that the middleware can use to
     reconstruct the effective message list on subsequent model calls,
     without destructively replacing checkpoint messages.
 
@@ -60,27 +65,30 @@ async def summarize_messages(
     still occur.
 
     Args:
-        messages: List of conversation messages to summarize (full state).
+        messages: List of conversation messages to compact (full state).
         keep_messages: Number of recent messages to preserve (default: 5).
         model_name: LLM model name for generating summaries (default: gpt-5-nano).
         backend: Optional SandboxBackend for offloading to sandbox filesystem.
-        previous_event: Previous SummarizationEvent for chained summarization.
+        previous_event: Previous CompactionEvent for chained compactions.
+        compaction_config: Optional CompactionConfig override.
+        llm_client: Pre-built OAuth/BYOK client. When None, built from model_name.
 
     Returns:
         Dict with:
-        - "event": SummarizationEvent to write to state
+        - "event": CompactionEvent to write to state (under preserved
+          ``_summarization_event`` key)
         - "summary_text": The generated summary text
-        - "original_count": Number of effective messages before summarization
+        - "original_count": Number of effective messages before compaction
         - "preserved_count": Number of preserved messages + summary message
         - "offloaded_arg_ids": Set of tool call IDs whose args were truncated/offloaded
         - "offloaded_read_ids": Set of tool call IDs whose Read results were truncated
 
     Example:
-        result = await summarize_messages(messages, previous_event=prev_event)
+        result = await compact_messages(messages, previous_event=prev_event)
         await graph.aupdate_state(config, {"_summarization_event": result["event"]})
     """
     if not messages:
-        raise ValueError("No messages to summarize")
+        raise ValueError("No messages to compact")
 
     # Ensure all messages have IDs
     for msg in messages:
@@ -91,7 +99,7 @@ async def summarize_messages(
     effective = get_effective_messages(messages, previous_event)
 
     # ---- Tier 1: Truncate large tool args + stale Read results in old messages ----
-    config = (summarization_config or SummarizationConfig()).model_dump()
+    config = (compaction_config or CompactionConfig()).model_dump()
     truncate_trigger_messages = config.get("truncate_args_trigger_messages")
     offloaded_arg_ids: set[str] = set()
     offloaded_read_ids: set[str] = set()
@@ -128,7 +136,7 @@ async def summarize_messages(
     # ---- Determine cutoff for summarization ----
     if len(effective) <= keep_messages:
         raise ValueError(
-            f"Not enough messages to summarize. Have {len(effective)}, "
+            f"Not enough messages to compact. Have {len(effective)}, "
             f"need more than {keep_messages} to preserve."
         )
 
@@ -141,7 +149,7 @@ async def summarize_messages(
         cutoff_index += 1
 
     if cutoff_index <= 0:
-        raise ValueError("Cannot determine valid cutoff point for summarization")
+        raise ValueError("Cannot determine valid cutoff point for compaction")
 
     messages_to_summarize = effective[:cutoff_index]
     preserved = effective[cutoff_index:]
@@ -150,9 +158,11 @@ async def summarize_messages(
     file_path = await aoffload_to_backend(backend, messages_to_summarize)
 
     # ---- Generate summary ----
-    summarization_model: BaseChatModel = get_llm_by_type(model_name)
-    if hasattr(summarization_model, "streaming"):
-        summarization_model.streaming = False
+    if llm_client is not None:
+        compaction_model: BaseChatModel = llm_client
+    else:
+        compaction_model = get_llm_by_type(model_name)
+    _maybe_disable_streaming(compaction_model)
 
     token_threshold = config.get("token_threshold", 120000)
     trim_limit = token_threshold + 50000
@@ -183,22 +193,25 @@ async def summarize_messages(
         backend, messages_to_summarize
     )
 
+    # Manual /compact MUST fail loudly on LLM error. Swallowing the exception
+    # and fabricating a fake summary would corrupt state (a "compacted" cutoff
+    # with garbage summary text) while reporting HTTP 200 to the client.
+    # trigger_compaction's outer except converts the raise into HTTP 500.
     try:
-        response = await summarization_model.ainvoke(
-            DEFAULT_SUMMARY_PROMPT.format(messages=messages_to_summarize)
+        response = await compaction_model.ainvoke(
+            _build_summary_request(DEFAULT_SUMMARY_PROMPT, messages_to_summarize)
         )
-
-        content = response.content if hasattr(response, "content") else response
-        additional_kwargs = getattr(response, "additional_kwargs", None)
-        formatted = format_llm_content(content, additional_kwargs)
-        summary_text = formatted.get("text", "").strip()
-
-        if not summary_text:
-            summary_text = "Previous conversation context (summary unavailable)."
-
     except Exception as e:
-        logger.error(f"Error generating summary: {e}")
-        summary_text = f"Previous conversation context (error: {e})"
+        logger.error(f"[Compaction] manual compact LLM call failed: {e}")
+        raise
+
+    content = response.content if hasattr(response, "content") else response
+    additional_kwargs = getattr(response, "additional_kwargs", None)
+    formatted = format_llm_content(content, additional_kwargs)
+    summary_text = formatted.get("text", "").strip()
+
+    if not summary_text:
+        raise RuntimeError("Compaction LLM returned empty summary")
 
     # Build summary message using shared utility
     summary_message = build_summary_message(summary_text, file_path)
@@ -207,7 +220,7 @@ async def summarize_messages(
     absolute_cutoff = compute_absolute_cutoff(cutoff_index, previous_event)
 
     return {
-        "event": SummarizationEvent(
+        "event": CompactionEvent(
             cutoff_index=absolute_cutoff,
             summary_message=summary_message,
             file_path=file_path,
@@ -224,7 +237,7 @@ async def offload_tool_args(
     messages: list[AnyMessage],
     backend: Any | None = None,
     already_offloaded: set[str] | None = None,
-    summarization_config: SummarizationConfig | None = None,
+    compaction_config: CompactionConfig | None = None,
 ) -> dict[str, Any]:
     """Offload large tool args and stale read results (Tier 1 only).
 
@@ -263,7 +276,7 @@ async def offload_tool_args(
         if msg.id is None:
             msg.id = str(uuid.uuid4())
 
-    config = (summarization_config or SummarizationConfig()).model_dump()
+    config = (compaction_config or CompactionConfig()).model_dump()
 
     # Use truncation settings, applying reasonable defaults for manual trigger
     truncate_keep = int(config.get("truncate_args_keep_messages", 20))

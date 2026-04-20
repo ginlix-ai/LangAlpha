@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage, AnyMessage
 from langchain_core.messages.human import HumanMessage
 from langgraph.config import get_config
 
-from ptc_agent.agent.middleware.summarization.utils import (
+from ptc_agent.agent.middleware.compaction.utils import (
     _extract_text_from_content,
     strip_base64_from_messages,
 )

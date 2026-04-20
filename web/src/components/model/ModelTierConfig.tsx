@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useTranslation } from "react-i18next"
 import { motion, AnimatePresence } from "framer-motion"
 import { ChevronRight, Lightbulb, Search, Pin } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { ModelSelector } from "./ModelSelector"
 import type { ProviderModelsData } from "./types"
 import type { ModelAccess } from "@/types/platform"
+import type { CompactionProfileCatalog, CompactionProfileName } from "@/hooks/useAllModels"
 
 export interface ModelTierConfigProps {
   /** Available models grouped by provider */
@@ -19,27 +21,32 @@ export interface ModelTierConfigProps {
   onFlashModelChange: (model: string) => void
   /** Whether to show the "Two ways to research" explainer */
   showExplainer?: boolean
-  /** Whether to show the Advanced section (summarization, fetch, fallback) */
+  /** Whether to show the Advanced section (compaction, fetch, fallback) */
   showAdvanced?: boolean
   /** Advanced model selections (optional, for Settings page) */
   advancedModels?: {
-    summarizationModel?: string
+    compactionModel?: string
     fetchModel?: string
     fallbackModels?: string[]
+    /** Empty string = use system default; otherwise a named profile */
+    compactionProfile?: CompactionProfileName | ""
   }
   onAdvancedModelsChange?: (models: {
-    summarizationModel?: string
+    compactionModel?: string
     fetchModel?: string
     fallbackModels?: string[]
+    compactionProfile?: CompactionProfileName | ""
   }) => void
   /** System defaults for fallback */
   systemDefaults?: {
     default_model?: string
     flash_model?: string
-    summarization_model?: string
+    compaction_model?: string
     fetch_model?: string
     fallback_models?: string[]
   }
+  /** Compaction profile catalog (from the models endpoint). */
+  compactionProfiles?: CompactionProfileCatalog | null
   /** Optional access map: model name → access type for badge display */
   modelAccess?: Record<string, ModelAccess>
 }
@@ -257,6 +264,115 @@ function FallbackModelsPicker({
 }
 
 // ---------------------------------------------------------------------------
+// Compaction Profile picker — bundles token_threshold, keep_messages, and
+// truncate_args_trigger_messages into three named presets.
+// ---------------------------------------------------------------------------
+
+const COMPACTION_PROFILE_ORDER: CompactionProfileName[] = [
+  "aggressive",
+  "moderate",
+  "extended",
+  "relaxed",
+]
+
+function CompactionProfilePicker({
+  value,
+  onChange,
+  profiles,
+}: {
+  value: CompactionProfileName | ""
+  onChange: (v: CompactionProfileName | "") => void
+  profiles: CompactionProfileCatalog | null | undefined
+}) {
+  const { t } = useTranslation()
+  const available = useMemo(
+    () => COMPACTION_PROFILE_ORDER.filter((name) => profiles?.[name]),
+    [profiles],
+  )
+
+  if (!profiles || available.length === 0) return null
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-1">
+        <label
+          className="text-sm font-medium"
+          style={{ color: "var(--color-text-primary)" }}
+        >
+          {t("settings.compactionProfile")}
+        </label>
+        <p className="text-xs" style={{ color: "var(--color-text-tertiary)" }}>
+          {t("settings.compactionProfileDesc")}
+        </p>
+      </div>
+
+      <div
+        role="radiogroup"
+        aria-label={t("settings.compactionProfile")}
+        className="grid gap-2"
+        style={{ gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }}
+      >
+        {available.map((name) => {
+          const preset = profiles[name]
+          const selected = value === name
+          return (
+            <button
+              key={name}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              onClick={() => onChange(selected ? "" : name)}
+              className={cn(
+                "flex flex-col items-start rounded-md p-3 text-left transition-colors",
+                "hover:border-[var(--color-border-hover,var(--color-border-default))]",
+              )}
+              style={{
+                background: selected
+                  ? "var(--color-bg-muted, var(--color-bg-surface))"
+                  : "var(--color-bg-surface)",
+                border: `1px solid ${selected ? "var(--color-text-primary)" : "var(--color-border-default)"}`,
+                color: "var(--color-text-primary)",
+              }}
+            >
+              <span className="text-sm font-medium">
+                {t(`settings.compactionProfiles.${name}.label`)}
+              </span>
+              <span
+                className="mt-0.5 text-[11px]"
+                style={{ color: "var(--color-text-tertiary)" }}
+              >
+                {t(`settings.compactionProfiles.${name}.description`)}
+              </span>
+              <span
+                className="mt-2 text-[11px] tabular-nums"
+                style={{ color: "var(--color-text-secondary, var(--color-text-tertiary))" }}
+              >
+                {t("settings.compactionProfilePreset", {
+                  tokens: Math.round(preset.token_threshold / 1000),
+                  keep: preset.keep_messages,
+                  trim: preset.truncate_args_trigger_messages,
+                })}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+
+      {value !== "" && (
+        <button
+          type="button"
+          onClick={() => onChange("")}
+          className="self-start text-xs underline-offset-2 hover:underline"
+          style={{ color: "var(--color-text-tertiary)" }}
+        >
+          {t("settings.compactionProfileUseDefault")}
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // ModelTierConfig
 // ---------------------------------------------------------------------------
 
@@ -271,8 +387,8 @@ export function ModelTierConfig({
   showAdvanced = false,
   advancedModels,
   onAdvancedModelsChange,
-  systemDefaults,
   modelAccess,
+  compactionProfiles,
 }: ModelTierConfigProps) {
   const [explainerOpen, setExplainerOpen] = useState(true)
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -331,7 +447,7 @@ export function ModelTierConfig({
   }, [autoDefaultFlashModel, primaryModel, flashModel, onFlashModelChange])
 
   const handleAdvancedChange = useCallback(
-    (field: string, value: string | string[]) => {
+    (field: string, value: string | string[] | CompactionProfileName | "") => {
       if (!onAdvancedModelsChange || !advancedModels) return
       onAdvancedModelsChange({
         ...advancedModels,
@@ -485,17 +601,6 @@ export function ModelTierConfig({
                   style={{ gap: "24px" }}
                 >
                   <ModelSelector
-                    label="Summarization Model"
-                    description="Used for summarizing long content"
-                    value={advancedModels.summarizationModel ?? ""}
-                    onChange={(v) => handleAdvancedChange("summarizationModel", v)}
-                    models={models}
-                    filterProviders={filterProviders}
-                    placeholder="Defaults to flash model"
-                    modelAccess={modelAccess}
-                  />
-
-                  <ModelSelector
                     label="Web Fetch Model"
                     description="Used for web page extraction"
                     value={advancedModels.fetchModel ?? ""}
@@ -504,6 +609,23 @@ export function ModelTierConfig({
                     filterProviders={filterProviders}
                     placeholder="Defaults to flash model"
                     modelAccess={modelAccess}
+                  />
+
+                  <ModelSelector
+                    label="Compaction Model"
+                    description="Used for compacting long conversation context"
+                    value={advancedModels.compactionModel ?? ""}
+                    onChange={(v) => handleAdvancedChange("compactionModel", v)}
+                    models={models}
+                    filterProviders={filterProviders}
+                    placeholder="Defaults to flash model"
+                    modelAccess={modelAccess}
+                  />
+
+                  <CompactionProfilePicker
+                    value={advancedModels.compactionProfile ?? ""}
+                    onChange={(v) => handleAdvancedChange("compactionProfile", v)}
+                    profiles={compactionProfiles}
                   />
 
                   {/* Fallback models (editable) */}

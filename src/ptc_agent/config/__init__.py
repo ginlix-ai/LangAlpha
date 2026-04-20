@@ -30,7 +30,7 @@ from ptc_agent.config.agent import (
     FlashConfig,
     LLMConfig,
     LLMDefinition,
-    SummarizationConfig,
+    CompactionConfig,
 )
 from ptc_agent.config.core import (
     CoreConfig,
@@ -84,7 +84,7 @@ __all__ = [
     "MCPServerConfig",
     "SandboxConfig",
     "SecurityConfig",
-    "SummarizationConfig",
+    "CompactionConfig",
     # Utilities
     "configure_logging",  # backward compat alias
     "configure_structlog",

@@ -766,6 +766,8 @@ async def list_models():
 
     models = get_configured_llm_models()
     config = LLM.get_model_config()
+    from ptc_agent.config.agent import COMPACTION_PROFILES
+
     llm_cfg = setup.agent_config.llm if setup.agent_config and setup.agent_config.llm else None
     return {
         "models": {
@@ -779,9 +781,13 @@ async def list_models():
         "system_defaults": {
             "default_model": llm_cfg.name if llm_cfg else "",
             "flash_model": (llm_cfg.flash or "") if llm_cfg else "",
-            "summarization_model": (llm_cfg.summarization or "") if llm_cfg else "",
+            "compaction_model": (llm_cfg.compaction or "") if llm_cfg else "",
+            # Legacy alias for cached frontend bundles / third-party clients that
+            # still read the pre-rename key. Remove once clients have cycled.
+            "summarization_model": (llm_cfg.compaction or "") if llm_cfg else "",
             "fetch_model": (llm_cfg.fetch or "") if llm_cfg else "",
             "fallback_models": (llm_cfg.fallback or []) if llm_cfg else [],
         },
+        "compaction_profiles": COMPACTION_PROFILES,
         "provider_catalog": _build_provider_catalog(),
     }

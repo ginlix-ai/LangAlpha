@@ -33,11 +33,11 @@ export default function DefaultsStep() {
     () => (otherPref.preferred_flash_model as string) ?? '',
   );
   const [advancedModels, setAdvancedModels] = useState<{
-    summarizationModel: string;
+    compactionModel: string;
     fetchModel: string;
     fallbackModels: string[];
   }>({
-    summarizationModel: (otherPref.summarization_model as string) ?? '',
+    compactionModel: (otherPref.compaction_model as string) ?? '',
     fetchModel: (otherPref.fetch_model as string) ?? '',
     fallbackModels: (otherPref.fallback_models as string[]) ?? [],
   });
@@ -55,7 +55,7 @@ export default function DefaultsStep() {
   }, [navigate]);
 
   const handleAdvancedChange = useCallback(
-    (updated: { summarizationModel?: string; fetchModel?: string; fallbackModels?: string[] }) => {
+    (updated: { compactionModel?: string; fetchModel?: string; fallbackModels?: string[] }) => {
       setAdvancedModels((prev) => ({ ...prev, ...updated }));
     },
     [],
@@ -68,15 +68,15 @@ export default function DefaultsStep() {
     setError(null);
 
     try {
-      // Summarization + fetch default to flash model if not explicitly set
-      const summarization = advancedModels.summarizationModel || flashModel;
+      // Compaction + fetch default to flash model if not explicitly set
+      const compaction = advancedModels.compactionModel || flashModel;
       const fetchModel = advancedModels.fetchModel || flashModel;
 
       await updatePreferences.mutateAsync({
         other_preference: {
           preferred_model: primaryModel,
           preferred_flash_model: flashModel,
-          summarization_model: summarization,
+          compaction_model: compaction,
           fetch_model: fetchModel,
           fallback_models: advancedModels.fallbackModels,
         },

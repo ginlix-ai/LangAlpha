@@ -664,7 +664,9 @@ export async function updateThreadSharing(threadId: string, body: Record<string,
   return data;
 }
 
-// --- Summarization ---
+// --- Compaction ---
+// The endpoint path `/summarize` and the `summarizeThread` function name are
+// preserved for REST contract compatibility.
 
 export async function summarizeThread(threadId: string, keepMessages: number = 5) {
   if (!threadId) throw new Error('Thread ID is required');

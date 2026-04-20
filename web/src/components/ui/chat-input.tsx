@@ -171,7 +171,7 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_FILES = 5;
 const BUILTIN_SLASH_COMMANDS = [
   { type: 'subagent', name: 'subagent' },
-  { type: 'action', name: 'summarize', aliases: ['compaction', 'compact'] },
+  { type: 'action', name: 'compact', aliases: ['compaction', 'summarize'] },
   { type: 'action', name: 'offload', aliases: ['truncate'] },
 ];
 
@@ -256,7 +256,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   onClearPrefill = null,
   // Token usage (context window progress)
   tokenUsage = null,
-  // Action commands (e.g. /summarize) — fired immediately on selection
+  // Action commands (e.g. /compact) — fired immediately on selection
   onAction = null,
   // Model selector
   initialModel = null,

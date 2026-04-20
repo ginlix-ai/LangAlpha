@@ -302,14 +302,10 @@ async def get_workflow_status(thread_id: str) -> dict:
         )
 
 
-async def _resolve_graph_and_state(thread_id: str, verb: str) -> tuple:
+async def _resolve_graph_and_state(thread_id: str, verb: str, config=None) -> tuple:
     """Validate thread, build graph, get state, build backend.
 
-    Shared setup boilerplate for trigger_summarization and trigger_offload.
-
-    Args:
-        thread_id: Thread to resolve.
-        verb: Operation verb for error messages ("summarize" / "offload").
+    ``config`` is the resolved AgentConfig; defaults to ``setup.agent_config``.
 
     Returns:
         (graph, lg_config, state, messages, backend)
@@ -341,14 +337,15 @@ async def _resolve_graph_and_state(thread_id: str, verb: str) -> tuple:
 
     # Graph
     checkpointer = get_checkpointer()
-    if not setup.agent_config:
+    effective_config = config if config is not None else setup.agent_config
+    if not effective_config:
         raise HTTPException(
             status_code=500, detail="Agent configuration not initialized"
         )
     from src.server.app.workspace_sandbox import _set_cached_signed_url
 
     graph = await build_ptc_graph_with_session(
-        session=session, config=setup.agent_config, checkpointer=checkpointer,
+        session=session, config=effective_config, checkpointer=checkpointer,
         on_signed_url=_set_cached_signed_url,
     )
 
@@ -392,51 +389,166 @@ async def _update_graph_state(
         )
 
 
-async def trigger_summarization(thread_id: str, keep_messages: int = 5) -> dict:
+async def _require_no_active_workflow(thread_id: str, verb: str) -> None:
+    """Reject manual compact/offload while a workflow is running on the thread.
+
+    Both /compact and /offload perform read-modify-write on LangGraph state and
+    on ``conversation_responses.sse_events``. Running them concurrently with an
+    in-flight chat workflow races the workflow's own writes (can clobber SSE
+    events mid-stream, or overwrite checkpoint state the middleware just
+    updated). Gate at the edge with a clear 409 so the UI can surface a
+    "wait for the current turn to finish" banner instead of silently
+    corrupting state.
+
+    Raises HTTPException(409) for ACTIVE / DISCONNECTED / INTERRUPTED. Allows
+    None / COMPLETED / CANCELLED.
     """
-    Manually trigger conversation summarization for a thread.
+    from src.server.services.workflow_tracker import (
+        WorkflowStatus,
+        WorkflowTracker,
+    )
 
-    Args:
-        thread_id: The thread/conversation ID to summarize
-        keep_messages: Number of recent messages to preserve (1-20, default 5)
+    tracker = WorkflowTracker.get_instance()
+    # When Redis is unavailable the tracker returns enabled=False and get_status
+    # yields None, which would silently bypass this gate. Log a warning so the
+    # operator knows the protection is off; fail open because chat workflows are
+    # also degraded under a Redis outage and admin actions should remain usable.
+    if not getattr(tracker, "enabled", True):
+        logger.warning(
+            f"[{verb}] WorkflowTracker disabled (Redis unavailable); "
+            f"workflow-active gate bypassed for thread {thread_id}"
+        )
+        return
+    # Transient Redis errors during a healthy session would otherwise bubble up
+    # through trigger_compaction's broad except and surface as 500. Fail open
+    # (same as tracker.enabled=False) with a warning so admin actions stay
+    # usable and the operator can see that the gate was bypassed.
+    try:
+        status = await tracker.get_status(thread_id)
+    except Exception as e:
+        logger.warning(
+            f"[{verb}] WorkflowTracker.get_status failed for thread {thread_id}: "
+            f"{e}; workflow-active gate bypassed"
+        )
+        return
+    if not status:
+        return
+    raw = status.get("status")
+    # WorkflowStatus(str, Enum) makes enum instances compare equal to their
+    # string values, so a single set membership check covers both the in-memory
+    # enum form and the Redis-round-tripped string form.
+    blocking = {
+        WorkflowStatus.ACTIVE,
+        WorkflowStatus.DISCONNECTED,
+        WorkflowStatus.INTERRUPTED,
+    }
+    if raw in blocking:
+        # code kept short + stable so the frontend can branch on it
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "workflow_active",
+                "verb": verb,
+                "message": (
+                    f"Cannot {verb} while a response is streaming on this "
+                    "thread. Wait for the current turn to finish, then try "
+                    "again."
+                ),
+            },
+        )
 
-    Returns:
-        Dict with success, original_message_count, new_message_count, summary_length
+
+async def trigger_compaction(
+    thread_id: str,
+    keep_messages: int = 5,
+    *,
+    user_id: str | None = None,
+) -> dict:
+    """Manually trigger context compaction for a thread.
+
+    When ``user_id`` is set, applies that user's compaction_model + profile
+    so manual /compact matches the auto path.
     """
     try:
-        from ptc_agent.agent.middleware.summarization import summarize_messages
+        from ptc_agent.agent.middleware.compaction import compact_messages
         from src.server.app import setup
 
+        # Gate FIRST — before any graph state reads or writes. Otherwise we can
+        # clobber the running workflow's sse_events or checkpoint state.
+        await _require_no_active_workflow(thread_id, "compact")
+
+        agent_cfg = setup.agent_config
+        if user_id and agent_cfg is not None:
+            try:
+                from src.server.database.api_keys import is_byok_active
+                from src.server.handlers.chat.llm_config import resolve_llm_config
+
+                is_byok = await is_byok_active(user_id)
+                agent_cfg = await resolve_llm_config(
+                    setup.agent_config,
+                    user_id,
+                    request_model=None,
+                    is_byok=is_byok,
+                    mode="ptc",
+                )
+            except HTTPException:
+                # 402 insufficient credits, 403 revoked key, etc. are intentional
+                # user-facing signals — don't silently downgrade to platform config.
+                raise
+            except Exception as e:
+                logger.warning(
+                    f"[compact] resolve_llm_config failed for user {user_id}: {e}; "
+                    "falling back to base agent_config"
+                )
+                agent_cfg = setup.agent_config
+
         graph, lg_config, state, messages, backend = await _resolve_graph_and_state(
-            thread_id, "summarize"
+            thread_id, "compact", config=agent_cfg
         )
 
         original_count = len(messages)
 
-        agent_cfg = setup.agent_config
-        summ_cfg = agent_cfg.summarization if agent_cfg else None
-        model_name = (agent_cfg.llm.summarization or "") if agent_cfg and agent_cfg.llm else ""
+        compaction_cfg = agent_cfg.compaction if agent_cfg else None
+        model_name = (agent_cfg.llm.compaction or "") if agent_cfg and agent_cfg.llm else ""
 
-        # Read previous event from state (for chained summarization)
+        # Mirror PTCAgent.create_agent client priority: subsidiary → main → factory.
+        # Deep-copy before handing the client to compact_messages — it calls
+        # _maybe_disable_streaming which sets streaming=False in-place. Without
+        # the copy, the fallback path (agent_cfg == setup.agent_config) would
+        # permanently mutate the shared main-agent client and break SSE
+        # streaming for every subsequent chat workflow.
+        compaction_client = None
+        if agent_cfg is not None:
+            subsidiary = agent_cfg.subsidiary_llm_clients.get("compaction")
+            if subsidiary is not None:
+                compaction_client = subsidiary.model_copy()
+            elif agent_cfg.llm_client is not None:
+                compaction_client = agent_cfg.llm_client.model_copy()
+
+        # Read previous event from state (for chained compactions).
+        # The state key "_summarization_event" is preserved as a wire/storage
+        # contract (values live in the LangGraph checkpointer DB).
         previous_event = state.values.get("_summarization_event")
 
         try:
-            result = await summarize_messages(
+            result = await compact_messages(
                 messages=messages,
                 keep_messages=keep_messages,
                 model_name=model_name,
                 backend=backend,
                 previous_event=previous_event,
-                summarization_config=summ_cfg,
+                compaction_config=compaction_cfg,
+                llm_client=compaction_client,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-        # Merge any Tier 1 offloaded IDs from summarize_messages into existing state
+        # Merge any Tier 1 offloaded IDs from compact_messages into existing state
         existing_arg_ids = set(state.values.get("_offloaded_tool_call_ids") or ())
         existing_read_ids = set(state.values.get("_offloaded_read_result_ids") or ())
 
-        # Write SummarizationEvent + offloaded IDs + reset batch counter
+        # Write CompactionEvent + offloaded IDs + reset batch counter.
+        # State key "_summarization_event" preserved for DB compatibility.
         await _update_graph_state(
             graph,
             lg_config,
@@ -451,18 +563,22 @@ async def trigger_summarization(thread_id: str, keep_messages: int = 5) -> dict:
                 ),
             },
             thread_id,
-            "summarize",
+            "compact",
         )
 
         new_message_count = result["preserved_count"]
-        summary_length = len(result.get("summary_text", ""))
+        summary_text = result.get("summary_text", "")
+        summary_length = len(summary_text)
 
         logger.info(
-            f"Manual summarization completed for thread {thread_id}: "
+            f"Manual compaction completed for thread {thread_id}: "
             f"{original_count} -> {new_message_count} messages"
         )
 
-        # Persist context_window event to last response for replay
+        # Persist context_window event to last response for replay.
+        # Action value "summarize" preserved as SSE wire protocol.
+        # summary_text is stored so the history-replay view can show the
+        # collapsible "View summary" panel just like the live-stream path.
         await _persist_context_window_event(
             thread_id,
             {
@@ -471,6 +587,7 @@ async def trigger_summarization(thread_id: str, keep_messages: int = 5) -> dict:
                 "original_message_count": original_count,
                 "new_message_count": new_message_count,
                 "summary_length": summary_length,
+                "summary_text": summary_text,
             },
         )
 
@@ -480,14 +597,15 @@ async def trigger_summarization(thread_id: str, keep_messages: int = 5) -> dict:
             "original_message_count": original_count,
             "new_message_count": new_message_count,
             "summary_length": summary_length,
+            "summary_text": summary_text,
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"Error triggering summarization for thread {thread_id}: {e}")
+        logger.exception(f"Error triggering compaction for thread {thread_id}: {e}")
         raise HTTPException(
-            status_code=500, detail=f"Failed to trigger summarization: {str(e)}"
+            status_code=500, detail=f"Failed to trigger compaction: {str(e)}"
         )
 
 
@@ -505,7 +623,11 @@ async def trigger_offload(thread_id: str) -> dict:
         Dict with success, thread_id, message_count, offloaded_args, offloaded_reads
     """
     try:
-        from ptc_agent.agent.middleware.summarization import offload_tool_args
+        from ptc_agent.agent.middleware.compaction import offload_tool_args
+
+        # Same gate as /compact — /offload also writes checkpoint state and
+        # could race a running workflow's _offloaded_tool_call_ids updates.
+        await _require_no_active_workflow(thread_id, "offload")
 
         graph, lg_config, state, messages, backend = await _resolve_graph_and_state(
             thread_id, "offload"
@@ -525,13 +647,13 @@ async def trigger_offload(thread_id: str) -> dict:
             )
 
         # Call offload_tool_args (Tier 1 only)
-        summ_cfg = setup.agent_config.summarization if setup.agent_config else None
+        compaction_cfg = setup.agent_config.compaction if setup.agent_config else None
         try:
             result = await offload_tool_args(
                 messages=messages,
                 backend=backend,
                 already_offloaded=already_offloaded,
-                summarization_config=summ_cfg,
+                compaction_config=compaction_cfg,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))

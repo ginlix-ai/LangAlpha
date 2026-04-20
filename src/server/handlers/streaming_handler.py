@@ -252,6 +252,7 @@ class WorkflowStreamHandler:
         workflow_timeout: Optional[int] = None,
         background_registry: Optional[Any] = None,
         merged_stream_chunk_max_bytes: int = MERGED_STREAM_CHUNK_MAX_BYTES_DEFAULT,
+        agent_config: Optional[Any] = None,
     ):
         """
         Initialize the workflow stream handler.
@@ -264,12 +265,14 @@ class WorkflowStreamHandler:
             workflow_timeout: Maximum workflow execution time in seconds (default from env)
             background_registry: BackgroundTaskRegistry instance for background task status (optional)
             merged_stream_chunk_max_bytes: Max bytes per merged stored stream chunk
+            agent_config: Resolved AgentConfig; drives the ``threshold`` on token_usage events.
         """
         self.thread_id = thread_id
         self.token_callback = token_callback
         self.tool_tracker = tool_tracker
         self.keepalive_interval = keepalive_interval or SSE_KEEPALIVE_INTERVAL
         self.workflow_timeout = workflow_timeout or WORKFLOW_TIMEOUT
+        self.agent_config = agent_config
 
         # Cache for tool usage result (for cross-context access)
         self._tool_usage_result: Optional[Dict[str, int]] = None
@@ -329,6 +332,15 @@ class WorkflowStreamHandler:
 
         # When True, skip all subagent-related emission (drain, status) — tail handles it
         self.skip_subagent_events: bool = False
+
+        # Namespace tuples currently inside a "summarize" window. Opened on
+        # the context_window summarize start signal, closed on complete OR
+        # error. Keyed by the raw namespace (not the resolved agent display
+        # name) so main-agent root events (namespace == ()) match consistently
+        # between the custom and messages streams. Any messages-stream chunks
+        # whose namespace is in this set are emitted as compaction_chunk
+        # instead of message_chunk.
+        self._compaction_windows: set[tuple] = set()
 
     async def _keepalive_loop(self, keepalive_queue: asyncio.Queue):
         """
@@ -540,28 +552,37 @@ class WorkflowStreamHandler:
 
                         # Handle unified context_window events (token_usage, summarize, offload)
                         if event_type == "context_window":
+                            cw_agent = self._extract_agent_name(agent_from_stream, event_data)
                             cw_data = {
                                 "thread_id": self.thread_id,
-                                "agent": self._extract_agent_name(agent_from_stream, event_data),
+                                "agent": cw_agent,
                             }
                             # Forward all relevant fields from middleware payload
                             for key in ("action", "signal", "input_tokens", "output_tokens",
-                                        "total_tokens", "summary_length", "original_message_count",
+                                        "total_tokens", "summary_length", "summary_text",
+                                        "original_message_count",
                                         "truncated_count", "error",
                                         "kind", "offloaded_args", "offloaded_reads"):
                                 if key in event_data:
                                     cw_data[key] = event_data[key]
-                            # Inject threshold for token_usage action
                             if event_data.get("action") == "token_usage":
-                                from src.server.app import setup
-                                cw_data["threshold"] = (
-                                    setup.agent_config.summarization.token_threshold
-                                    if setup.agent_config
-                                    else 120000
-                                )
+                                cw_data["threshold"] = self._resolve_token_threshold()
 
                             action = event_data.get("action", "")
                             signal = event_data.get("signal", "")
+
+                            # Open/close the per-namespace compaction window so
+                            # the messages stream can retag chunks emitted in
+                            # between. "error" must also close the window, or
+                            # we'd keep flagging regular output after a failed
+                            # compaction.
+                            if action == "summarize":
+                                ns_key = tuple(agent_from_stream or ())
+                                if signal == "start":
+                                    self._compaction_windows.add(ns_key)
+                                elif signal in ("complete", "error"):
+                                    self._compaction_windows.discard(ns_key)
+
                             logger.debug(
                                 f"[CONTEXT_WINDOW] Emitting {action}/{signal} "
                                 f"(thread_id={self.thread_id})"
@@ -648,6 +669,14 @@ class WorkflowStreamHandler:
                 # Extract agent identity from namespace tuple (subgraphs) and metadata (parent graph)
                 agent_name = self._extract_agent_name(agent_from_stream, message_metadata)
 
+                # Chunks emitted between this namespace's "summarize" start
+                # and complete/error signals are re-routed to compaction_chunk.
+                # Keyed by the raw namespace so an in-flight subagent
+                # compaction never swallows the main agent's regular output.
+                is_compaction_chunk = (
+                    tuple(agent_from_stream or ()) in self._compaction_windows
+                )
+
                 # Log metadata for debugging (guarded to avoid eager f-string evaluation)
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
@@ -669,8 +698,9 @@ class WorkflowStreamHandler:
                         )
 
                 # Track message for persistence (if tracking is active)
-                # Only track complete messages (AIMessage, ToolMessage), not chunks
-                if isinstance(message_chunk, (AIMessage, ToolMessage)):
+                # Only track complete messages (AIMessage, ToolMessage), not chunks.
+                # Compaction chunks are internal — don't persist them as turns.
+                if isinstance(message_chunk, (AIMessage, ToolMessage)) and not is_compaction_chunk:
                     ExecutionTracker.update_context(
                         agent_name=agent_name,
                         messages=message_chunk
@@ -680,6 +710,7 @@ class WorkflowStreamHandler:
                 async for event in self._process_message_chunk(
                     message_chunk,
                     agent_name,
+                    is_compaction=is_compaction_chunk,
                 ):
                     # Update last event time for each yielded event
                     self._last_event_time = time.time()
@@ -834,9 +865,17 @@ class WorkflowStreamHandler:
         self,
         message_chunk: BaseMessage,
         agent_name: str,
+        *,
+        is_compaction: bool = False,
     ) -> AsyncGenerator[str, None]:
-        """Process a single message chunk and yield SSE events."""
+        """Process a single message chunk and yield SSE events.
+
+        When ``is_compaction`` is True, text / reasoning / finish events are
+        emitted as ``compaction_chunk`` instead of ``message_chunk`` so the UI
+        can render them in a dedicated channel.
+        """
         message_id = message_chunk.id or "unknown"
+        chunk_event_type = "compaction_chunk" if is_compaction else "message_chunk"
 
         # Tool-node inner LLM reasoning (e.g. WebFetch's summarization model)
         # is internal and should not surface as user-facing reasoning — the
@@ -851,14 +890,14 @@ class WorkflowStreamHandler:
                 if status_info.get("status") == "completed":
                     # Reasoning completed - emit completion signal
                     if agent_name in self.reasoning_active:
-                        yield self._format_reasoning_signal(agent_name, message_id, "complete")
+                        yield self._format_reasoning_signal(agent_name, message_id, "complete", is_compaction=is_compaction)
                         self.reasoning_active.discard(agent_name)
                     self._reasoning_block_index.pop(agent_name, None)
                     self._reasoning_separator_pending.discard(agent_name)
                 else:
                     # Reasoning started - emit start signal
                     if agent_name not in self.reasoning_active:
-                        yield self._format_reasoning_signal(agent_name, message_id, "start")
+                        yield self._format_reasoning_signal(agent_name, message_id, "start", is_compaction=is_compaction)
                         self.reasoning_active.add(agent_name)
             return  # Don't process status signals as regular content
 
@@ -875,14 +914,14 @@ class WorkflowStreamHandler:
                     if reasoning_status.get("status") == "completed":
                         # Reasoning completed - emit completion signal if agent was actively streaming
                         if agent_name in self.reasoning_active:
-                            yield self._format_reasoning_signal(agent_name, message_id, "complete")
+                            yield self._format_reasoning_signal(agent_name, message_id, "complete", is_compaction=is_compaction)
                             self.reasoning_active.discard(agent_name)
                         self._reasoning_block_index.pop(agent_name, None)
                         self._reasoning_separator_pending.discard(agent_name)
                     else:
                         # Reasoning started - emit start signal
                         if agent_name not in self.reasoning_active:
-                            yield self._format_reasoning_signal(agent_name, message_id, "start")
+                            yield self._format_reasoning_signal(agent_name, message_id, "start", is_compaction=is_compaction)
                             self.reasoning_active.add(agent_name)
                 return  # Don't process status signals as regular content
 
@@ -1046,7 +1085,7 @@ class WorkflowStreamHandler:
             # Check if we need to emit reasoning completion signal
             if content_type != "reasoning" and agent_name in self.reasoning_active:
                 # Reasoning completed, emit completion signal before this content
-                yield self._format_reasoning_signal(agent_name, message_id, "complete")
+                yield self._format_reasoning_signal(agent_name, message_id, "complete", is_compaction=is_compaction)
                 self.reasoning_active.discard(agent_name)
                 self._reasoning_block_index.pop(agent_name, None)
                 self._reasoning_separator_pending.discard(agent_name)
@@ -1059,7 +1098,7 @@ class WorkflowStreamHandler:
                 # Emit start signal if this is the first reasoning content
                 # This handles providers that send content directly without status signal
                 if agent_name not in self.reasoning_active:
-                    yield self._format_reasoning_signal(agent_name, message_id, "start")
+                    yield self._format_reasoning_signal(agent_name, message_id, "start", is_compaction=is_compaction)
                     self.reasoning_active.add(agent_name)
 
         # Handle finish_reason/stop_reason - emit reasoning completion if needed
@@ -1120,7 +1159,7 @@ class WorkflowStreamHandler:
 
             # If finishing while reasoning is active, emit completion signal
             if agent_name in self.reasoning_active:
-                yield self._format_reasoning_signal(agent_name, message_id, "complete")
+                yield self._format_reasoning_signal(agent_name, message_id, "complete", is_compaction=is_compaction)
                 self.reasoning_active.discard(agent_name)
                 self._reasoning_block_index.pop(agent_name, None)
                 self._reasoning_separator_pending.discard(agent_name)
@@ -1283,7 +1322,7 @@ class WorkflowStreamHandler:
                 if has_content:
                     if is_chunk and event_stream_message.get("content"):
                         self._streamed_content_ids.add(message_id)
-                    yield self._format_sse_event("message_chunk", event_stream_message)
+                    yield self._format_sse_event(chunk_event_type, event_stream_message)
 
     def _filter_tool_calls(self, tool_calls: list) -> list:
         """
@@ -1344,10 +1383,13 @@ class WorkflowStreamHandler:
         agent_name: str,
         message_id: str,
         signal_type: str,
+        *,
+        is_compaction: bool = False,
     ) -> str:
         """Format a reasoning lifecycle signal event."""
+        event_type = "compaction_chunk" if is_compaction else "message_chunk"
         return self._format_sse_event(
-            "message_chunk",
+            event_type,
             {
                 "thread_id": self.thread_id,
                 "agent": agent_name,
@@ -1472,6 +1514,19 @@ class WorkflowStreamHandler:
         """Return merged SSE events for persistence."""
         events = self._stream_event_accumulator.get_events()
         return events or None
+
+    _DEFAULT_TOKEN_THRESHOLD = 120000
+
+    def _resolve_token_threshold(self) -> int:
+        """Per-request config → base config → default. Drives the UI ring."""
+        cfg = self.agent_config
+        if cfg is None:
+            from src.server.app import setup
+
+            cfg = setup.agent_config
+        if cfg is None:
+            return self._DEFAULT_TOKEN_THRESHOLD
+        return cfg.compaction.token_threshold
 
     def get_tool_usage(self) -> Optional[Dict[str, int]]:
         """

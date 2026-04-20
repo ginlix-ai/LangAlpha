@@ -562,10 +562,12 @@ class SSEStreamClient:
 
     async def summarize_thread(self, thread_id: str, keep_messages: int = 5) -> Dict[str, Any]:
         """
-        Manually trigger conversation summarization for a thread.
+        Manually trigger context compaction for a thread.
 
-        This summarizes the conversation history and updates the thread state,
-        preserving the last `keep_messages` messages.
+        Method name and ``/summarize`` endpoint path preserved as a REST
+        contract; under the hood this runs the compaction middleware, which
+        compresses conversation history while preserving the last
+        ``keep_messages`` messages.
 
         Args:
             thread_id: Thread identifier

@@ -40,8 +40,8 @@ from ptc_agent.agent.middleware import (
     TodoWriteMiddleware,
     # Skills middleware
     SkillsMiddleware,
-    # Summarization middleware
-    SummarizationMiddleware,
+    # Compaction middleware
+    CompactionMiddleware,
     # Large result eviction middleware
     LargeResultEvictionMiddleware,
     # Steering middleware
@@ -543,22 +543,22 @@ class PTCAgent:
 
         # --- Build final middleware stacks ---
 
-        # Custom SSE-enabled summarization emits 'summarization_signal' events
+        # Custom SSE-enabled compaction emits 'context_window' events
         # Pass backend for offloading conversation history to sandbox
-        summ_config = self.config.summarization.model_dump()
-        if self.config.llm and self.config.llm.summarization:
-            summ_config["llm"] = self.config.llm.summarization
-            summ_client = self.config.subsidiary_llm_clients.get("summarization")
-            if summ_client:
-                summ_config["_llm_client"] = summ_client
+        compaction_config = self.config.compaction.model_dump()
+        if self.config.llm and self.config.llm.compaction:
+            compaction_config["llm"] = self.config.llm.compaction
+            compaction_client = self.config.subsidiary_llm_clients.get("compaction")
+            if compaction_client:
+                compaction_config["_llm_client"] = compaction_client
             elif self.config.llm_client:
-                # Deep-copy so SummarizationMiddleware.from_config() can set
+                # Deep-copy so CompactionMiddleware.from_config() can set
                 # streaming=False without mutating the main agent's model.
-                summ_config["_llm_client"] = self.config.llm_client.model_copy()
+                compaction_config["_llm_client"] = self.config.llm_client.model_copy()
         elif self.config.llm_client:
-            # No dedicated summarization model; fall back to main agent LLM
-            summ_config["_llm_client"] = self.config.llm_client.model_copy()
-        summarization = SummarizationMiddleware.from_config(config=summ_config, backend=backend)
+            # No dedicated compaction model; fall back to main agent LLM
+            compaction_config["_llm_client"] = self.config.llm_client.model_copy()
+        compaction = CompactionMiddleware.from_config(config=compaction_config, backend=backend)
 
         # Build model resilience middleware (retry + fallback)
         model_resilience = self._build_model_resilience_middleware()
@@ -574,7 +574,7 @@ class PTCAgent:
                     backend=backend, eviction_dir=eviction_dir
                 ),
                 *shared_middleware,
-                summarization,
+                compaction,
                 *model_resilience,
                 AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
                 EmptyToolCallRetryMiddleware(),
@@ -620,7 +620,7 @@ class PTCAgent:
                 ),
                 *shared_middleware,
                 *main_only_middleware,
-                summarization,
+                compaction,
                 *model_resilience,
                 AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
                 EmptyToolCallRetryMiddleware(),

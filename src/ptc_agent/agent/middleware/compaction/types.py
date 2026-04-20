@@ -1,4 +1,4 @@
-"""Types, constants, and defaults for the summarization middleware."""
+"""Types, constants, and defaults for the compaction middleware."""
 
 from collections.abc import Callable, Iterable
 from typing import Annotated, Literal, NotRequired
@@ -19,12 +19,12 @@ CONTEXT_SUMMARY_PREFIX = (
 
 
 # =============================================================================
-# Types for wrap_model_call summarization tracking
+# Types for wrap_model_call compaction tracking
 # =============================================================================
 
 
-class SummarizationEvent(TypedDict):
-    """Represents a summarization event for chained tracking.
+class CompactionEvent(TypedDict):
+    """Represents a compaction event for chained tracking.
 
     Stored in private state so the middleware can reconstruct the effective
     message list on subsequent model calls without modifying the checkpoint.
@@ -51,16 +51,20 @@ class TruncateArgsSettings(TypedDict, total=False):
     truncation_text: str
 
 
-class SummarizationState(AgentState):
-    """State for the summarization middleware.
+class CompactionState(AgentState):
+    """State for the compaction middleware.
 
-    Extends AgentState with private fields for tracking summarization events,
+    Extends AgentState with private fields for tracking compaction events,
     offloaded tool call IDs, and batch truncation state.
     The PrivateStateAttr annotation hides them from input/output schemas.
+
+    Note: The ``_summarization_event`` field name is preserved because values are
+    stored under that key in the LangGraph checkpointer — renaming it would
+    orphan existing persisted state.
     """
 
     _summarization_event: Annotated[
-        NotRequired[SummarizationEvent | None], PrivateStateAttr
+        NotRequired[CompactionEvent | None], PrivateStateAttr
     ]
     _truncation_batch_count: Annotated[NotRequired[int], PrivateStateAttr]
     _offloaded_tool_call_ids: Annotated[NotRequired[set[str]], PrivateStateAttr]

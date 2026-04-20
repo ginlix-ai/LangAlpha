@@ -69,7 +69,7 @@ ensure_llm_block() {
         sed 's/^llm: null$/llm:\
   name: ""\
   flash: ""\
-  summarization: ""\
+  compaction: ""\
   fetch: ""\
   fallback: []/' "$CONFIG" > "$tmp" && mv "$tmp" "$CONFIG"
     fi
@@ -185,14 +185,14 @@ case $llm in
             b)
                 set_llm_field "name" "gpt-5.4-oauth"
                 set_llm_field "flash" "gpt-5.4-mini-oauth"
-                set_llm_field "summarization" "gpt-5.4-mini-oauth"
+                set_llm_field "compaction" "gpt-5.4-mini-oauth"
                 set_llm_field "fetch" "gpt-5.4-mini-oauth"
                 success "ChatGPT OAuth — connect your subscription in the UI after starting"
                 ;;
             *)
                 set_llm_field "name" "claude-sonnet-4-6-oauth"
                 set_llm_field "flash" "claude-haiku-4-5-oauth"
-                set_llm_field "summarization" "claude-haiku-4-5-oauth"
+                set_llm_field "compaction" "claude-haiku-4-5-oauth"
                 set_llm_field "fetch" "claude-haiku-4-5-oauth"
                 success "Claude OAuth — connect your subscription in the UI after starting"
                 ;;
@@ -233,7 +233,7 @@ case $llm in
         elif [ ${#_models[@]} -eq 1 ]; then
             set_llm_field "name" "${_models[0]}"
             set_llm_field "flash" "${_models[0]}"
-            set_llm_field "summarization" "${_models[0]}"
+            set_llm_field "compaction" "${_models[0]}"
             set_llm_field "fetch" "${_models[0]}"
             success "$_sel_display — ${_models[0]}"
         else
@@ -250,7 +250,7 @@ case $llm in
 
             set_llm_field "name" "$main_model"
             set_llm_field "flash" "$flash_model"
-            set_llm_field "summarization" "$flash_model"
+            set_llm_field "compaction" "$flash_model"
             set_llm_field "fetch" "$flash_model"
             success "$_sel_display — $main_model (main), $flash_model (flash)"
         fi

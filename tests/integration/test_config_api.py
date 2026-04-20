@@ -111,7 +111,7 @@ class TestModelsEndpointIntegration:
             llm=LLMConfig(
                 name="claude-sonnet-4-5",
                 flash="claude-haiku-4-5",
-                summarization="claude-haiku-4-5",
+                compaction="claude-haiku-4-5",
                 fallback=["gpt-4o"],
             ),
             security=SecurityConfig(),

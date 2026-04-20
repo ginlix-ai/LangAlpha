@@ -949,8 +949,10 @@ def calculate_cost_from_per_call_records(
         model_name = record["model_name"]
         usage = record["usage"]
 
-        # Detect provider for this model
-        provider = detect_provider_for_model(model_name)
+        # Detect provider for pricing — uses system_provider for platform billing,
+        # base provider for BYOK/OAuth
+        billing_type = record.get("billing_type", "platform")
+        provider = detect_provider_for_model(model_name, billing_type=billing_type)
 
         # Extract token counts from this specific call
         input_tokens = usage.get('input_tokens', 0)

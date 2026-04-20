@@ -28,7 +28,7 @@ def show_help() -> None:
   /model <name>                 Switch to model by name (e.g., /model gpt-5.2)
   /status                       Show workflow and background task status
   /cancel                       Cancel running workflow
-  /summarize [keep=N]           Summarize conversation (keep N recent messages)
+  /compact [keep=N]             Compact conversation context (keep N recent messages)
   /workspace                    List/switch/start/stop workspaces
   /conversation                 List/open past conversations
   /reconnect                    Reconnect to running workflow after ESC
