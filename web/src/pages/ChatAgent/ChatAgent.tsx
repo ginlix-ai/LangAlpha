@@ -160,6 +160,7 @@ function ChatAgent(): React.ReactElement | null {
   // Track in-progress __default__ → real threadId resolutions.
   // Bridges the gap between async cache.updateKey() and immediate navigate().
   const resolvingRef = useRef(new Map<string, { workspaceId: string; newThreadId: string }>());
+  const resolvingKey = (wsId: string, tid: string) => `${wsId}-${tid}`;
 
   // Ensure cache entry exists before first paint so chatViews is never empty
   // when threadId is set (same setState-during-render pattern as setResolvedWorkspaceId above).
@@ -174,7 +175,7 @@ function ChatAgent(): React.ReactElement | null {
       Array.from(resolvingRef.current.values()).some(
         v => v.workspaceId === workspaceId && v.newThreadId === threadId
       ) ||
-      resolvingRef.current.has(`${workspaceId}-${threadId}`);
+      resolvingRef.current.has(resolvingKey(workspaceId, threadId));
     if (!isPendingResolution) {
       const cached = queryClient.getQueryData(queryKeys.workspaces.detail(workspaceId)) as Record<string, unknown> | undefined;
       const wsName = (cached?.name as string) || state?.workspaceName || '';
@@ -315,7 +316,7 @@ function ChatAgent(): React.ReactElement | null {
 
   // Cached ChatView instances — always rendered, visibility toggled via display
   const chatViews = cache.entries.map(entry => {
-    const pendingResolution = resolvingRef.current.get(`${entry.workspaceId}-${entry.threadId}`);
+    const pendingResolution = resolvingRef.current.get(resolvingKey(entry.workspaceId, entry.threadId));
     // After cache.updateKey renames an entry from oldTid → newTid, its lookup key is
     // the new one — so the direct pendingResolution above will miss it. Detect the
     // symmetric case (entry was renamed FROM the URL's threadId) so the renamed entry
@@ -325,7 +326,7 @@ function ChatAgent(): React.ReactElement | null {
           ([oldKey, v]) =>
             v.workspaceId === entry.workspaceId
             && v.newThreadId === entry.threadId
-            && oldKey === `${workspaceId}-${threadId}`,
+            && oldKey === resolvingKey(workspaceId, threadId),
         )
       : false;
     const isEntryActive = entry.workspaceId === workspaceId
@@ -353,12 +354,12 @@ function ChatAgent(): React.ReactElement | null {
           isActive={isEntryActive}
           onThreadResolved={(oldTid, newTid) => {
             resolvingRef.current.set(
-              `${entry.workspaceId}-${oldTid}`,
+              resolvingKey(entry.workspaceId, oldTid),
               { workspaceId: entry.workspaceId, newThreadId: newTid },
             );
             cache.updateKey(
-              `${entry.workspaceId}-${oldTid}`,
-              `${entry.workspaceId}-${newTid}`,
+              resolvingKey(entry.workspaceId, oldTid),
+              resolvingKey(entry.workspaceId, newTid),
               { threadId: newTid },
             );
           }}
