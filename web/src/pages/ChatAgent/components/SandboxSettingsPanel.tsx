@@ -902,7 +902,13 @@ function SecretsTab({ workspaceId }: { workspaceId: string }) {
     }
   }
 
-  useEffect(() => { load(); }, [workspaceId]);
+  useEffect(() => {
+    // Reset form state before reloading: a half-filled add form from the
+    // previous workspace must not carry over and silently target the new one.
+    closeAddForm();
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId]);
 
   // Safe regex compile for the active preset blueprint. Invalid patterns from a
   // misconfigured agent_config.yaml must not crash the UI — on failure we just

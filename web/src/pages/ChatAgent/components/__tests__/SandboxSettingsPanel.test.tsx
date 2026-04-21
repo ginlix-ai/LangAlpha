@@ -262,6 +262,33 @@ describe('SecretsTab — load generation guard', () => {
   });
 });
 
+describe('SecretsTab — workspace change resets form', () => {
+  it('closes the open add form when workspaceId changes mid-flow', async () => {
+    mockGetVaultBlueprints
+      .mockResolvedValueOnce({ blueprints: [X_BLUEPRINT], remaining_slots: 20 })
+      .mockResolvedValueOnce({ blueprints: [], remaining_slots: 20 });
+
+    const { rerender } = render(<SandboxSettingsContent workspaceId="ws-1" />);
+    fireEvent.click(screen.getByRole('button', { name: /vault/i }));
+
+    // Open the add form on ws-1 and type a value
+    await waitFor(() => expect(screen.getByText('Set up')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Set up'));
+    const valueInput = screen.getByPlaceholderText('Secret value');
+    fireEvent.change(valueInput, { target: { value: 'partially-typed-secret' } });
+    expect((valueInput as HTMLInputElement).value).toBe('partially-typed-secret');
+
+    // Swap workspaces mid-flow
+    rerender(<SandboxSettingsContent workspaceId="ws-2" />);
+
+    // Form must be gone: no lingering value input, no ws-1 pre-fill visible
+    await waitFor(() => {
+      expect(screen.queryByPlaceholderText('Secret value')).not.toBeInTheDocument();
+    });
+    expect(screen.queryByDisplayValue('partially-typed-secret')).not.toBeInTheDocument();
+  });
+});
+
 describe('SecretsTab — blueprint lifecycle', () => {
   it('refetches blueprints after successful create', async () => {
     mockGetVaultBlueprints
