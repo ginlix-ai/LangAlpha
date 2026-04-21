@@ -67,7 +67,21 @@ class TodoWriteMiddleware(AgentMiddleware):
 
         tool_call_id = tool_call.get("id", "unknown")
         tool_args = tool_call.get("args", {})
-        todos = tool_args.get("todos", [])
+        raw_todos = tool_args.get("todos", [])
+
+        # Defensive: the tool signature now enforces List[TodoItem] via pydantic,
+        # so a valid handler return implies a proper list. But the failed-event
+        # branch below calls len(todos) on the raw LLM input — a None or int
+        # payload would crash the error path and swallow the original
+        # ValidationError. Coerce to [] so both branches are safe.
+        if isinstance(raw_todos, list):
+            todos = raw_todos
+        else:
+            logger.warning(
+                f"[TODO_MIDDLEWARE] Non-list todos payload "
+                f"(type={type(raw_todos).__name__}); coercing to []"
+            )
+            todos = []
 
         logger.debug(f"[TODO_MIDDLEWARE] Intercepting {tool_name} (id: {tool_call_id})")
 
