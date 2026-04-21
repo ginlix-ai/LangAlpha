@@ -73,7 +73,8 @@ class VaultBlueprint(BaseModel):
 
     # Same regex as CreateSecretRequest in src/server/app/vault.py:37.
     # Blueprint name becomes a vault key, so it must satisfy the same rule.
-    name: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,63}$", max_length=64)
+    # The regex's {0,63} already caps length at 64 — no separate max_length needed.
+    name: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
     label: str = Field(..., min_length=1, max_length=80)
     # max_length matches CreateSecretRequest.description in src/server/app/vault.py
     # so that pre-filling the add-secret form from a blueprint never produces a
