@@ -83,6 +83,22 @@ async def get_workspace_secrets_decrypted(workspace_id: str) -> dict[str, str]:
             return {r["name"]: r["plaintext"] for r in rows}
 
 
+async def get_workspace_secret_names(workspace_id: str) -> set[str]:
+    """Return the set of secret names for a workspace. No decryption.
+
+    Used by the vault-blueprints endpoint to compute which declared credentials
+    are not yet set without paying the pgcrypto cost of the masking query.
+    """
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT name FROM workspace_vault_secrets WHERE workspace_id = %s",
+                (workspace_id,),
+            )
+            rows = await cur.fetchall()
+            return {r["name"] for r in rows}
+
+
 async def create_secret(
     workspace_id: str, name: str, value: str, description: str = ""
 ) -> None:

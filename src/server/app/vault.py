@@ -9,6 +9,7 @@ Endpoints:
 - PUT    /api/v1/workspaces/{workspace_id}/vault/secrets/{name}
 - GET    /api/v1/workspaces/{workspace_id}/vault/secrets/{name}/reveal
 - DELETE /api/v1/workspaces/{workspace_id}/vault/secrets/{name}
+- GET    /api/v1/workspaces/{workspace_id}/vault/blueprints
 """
 
 from __future__ import annotations
@@ -20,8 +21,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from src.server.database.vault_secrets import (
+    MAX_SECRETS_PER_WORKSPACE,
     create_secret as create_secret_db,
     delete_secret,
+    get_workspace_secret_names,
     get_workspace_secrets,
     reveal_secret as reveal_secret_db,
     update_secret,
@@ -154,3 +157,55 @@ async def delete_secret_endpoint(
 
     await _push_to_sandbox(workspace_id)
     return {"ok": True}
+
+
+@router.get("/{workspace_id}/vault/blueprints")
+@handle_api_exceptions("list vault blueprints", logger)
+async def list_blueprints(workspace_id: str, user_id: CurrentUserId):
+    """Return the 'recommended but not yet set' credential blueprints.
+
+    Blueprints are declared inline on each MCP server entry in agent_config.yaml
+    (`vault_blueprints:` block). This endpoint walks all enabled servers, dedupes
+    by name, and subtracts credentials the workspace already has.
+
+    Note: agent_config is loaded once at server startup. Changes to
+    agent_config.yaml require a server restart to take effect here.
+    """
+    workspace = await db_get_workspace(workspace_id)
+    require_workspace_owner(workspace, user_id=user_id)
+
+    # Lazy import to avoid circular dependency between `setup` module and router
+    # registration. `setup.agent_config` is populated in `lifespan()` at startup.
+    from src.server.app import setup
+
+    existing_names = await get_workspace_secret_names(workspace_id)
+    remaining_slots = max(0, MAX_SECRETS_PER_WORKSPACE - len(existing_names))
+
+    if setup.agent_config is None:
+        # Startup race: request landed before lifespan completed.
+        return {"blueprints": [], "remaining_slots": remaining_slots}
+
+    # First-declaration wins on metadata; duplicate blueprint names across
+    # servers are treated as aliases: the second server's description/docs_url/
+    # regex are discarded, but its name is appended to `sources` so the UI can
+    # show which integrations share the credential.
+    collected: dict[str, dict] = {}
+    for server in setup.agent_config.mcp.servers:
+        if not server.enabled:
+            continue
+        for bp in server.vault_blueprints:
+            existing = collected.get(bp.name)
+            if existing is None:
+                collected[bp.name] = {
+                    "name": bp.name,
+                    "label": bp.label,
+                    "description": bp.description,
+                    "docs_url": bp.docs_url,
+                    "regex": bp.regex,
+                    "sources": [server.name],
+                }
+            else:
+                existing["sources"].append(server.name)
+
+    blueprints = [bp for name, bp in collected.items() if name not in existing_names]
+    return {"blueprints": blueprints, "remaining_slots": remaining_slots}
