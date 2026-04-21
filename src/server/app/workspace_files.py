@@ -265,7 +265,7 @@ async def list_workspace_files(
     work_dir = _get_work_dir()
 
     # DB fallback for stopped workspaces (unless auto_start requested)
-    if not auto_start and workspace.get("status") in ("stopped", "stopping"):
+    if not auto_start and workspace.get("status") in ("stopped", "stopping", "starting"):
         file_tree = await FilePersistenceService.get_file_tree(workspace_id)
         # Filter by path prefix if specified
         normalized_path = _normalize_requested_path(path, work_dir)
@@ -381,7 +381,7 @@ async def read_workspace_file(
         )
 
     # DB fallback for stopped workspaces
-    if workspace.get("status") in ("stopped", "stopping"):
+    if workspace.get("status") in ("stopped", "stopping", "starting"):
         work_dir = _get_work_dir()
         normalized_path = _normalize_requested_path(path, work_dir)
         if not normalized_path:
@@ -502,10 +502,10 @@ async def write_workspace_file(
             status_code=400, detail="Flash workspaces do not have a sandbox"
         )
 
-    if workspace.get("status") in ("stopped", "stopping"):
+    if workspace.get("status") in ("stopped", "stopping", "starting"):
         raise HTTPException(
             status_code=409,
-            detail="Cannot write files while workspace is stopped. Start the workspace first.",
+            detail=f"Cannot write files — workspace is {workspace.get('status')}. Wait for it to be running.",
         )
 
     content_bytes = body.content.encode("utf-8")
@@ -588,7 +588,7 @@ async def download_workspace_file(
         )
 
     # DB fallback for stopped workspaces
-    if workspace.get("status") in ("stopped", "stopping"):
+    if workspace.get("status") in ("stopped", "stopping", "starting"):
         work_dir = _get_work_dir()
         normalized_path = _normalize_requested_path(path, work_dir)
         if not normalized_path:
@@ -668,10 +668,10 @@ async def upload_workspace_file(
             status_code=400, detail="Flash workspaces do not have a sandbox"
         )
 
-    if workspace.get("status") in ("stopped", "stopping"):
+    if workspace.get("status") in ("stopped", "stopping", "starting"):
         raise HTTPException(
             status_code=409,
-            detail="Cannot upload files while workspace is stopped. Start the workspace first.",
+            detail=f"Cannot upload files — workspace is {workspace.get('status')}. Wait for it to be running.",
         )
 
     sandbox = await _acquire_sandbox(workspace_id, x_user_id)
@@ -724,10 +724,10 @@ async def backup_workspace_files(
             status_code=400, detail="Flash workspaces do not have a sandbox"
         )
 
-    if workspace.get("status") in ("stopped", "stopping"):
+    if workspace.get("status") in ("stopped", "stopping", "starting"):
         raise HTTPException(
             status_code=409,
-            detail="Cannot backup files while workspace is stopped.",
+            detail=f"Cannot backup files — workspace is {workspace.get('status')}.",
         )
 
     sandbox = await _acquire_sandbox(workspace_id, x_user_id)
@@ -779,7 +779,7 @@ async def get_backup_status(
     db_meta = await get_file_metadata_for_sync(workspace_id)
 
     # If sandbox is stopped, everything in DB is "backed_up", nothing else
-    if workspace.get("status") in ("stopped", "stopping"):
+    if workspace.get("status") in ("stopped", "stopping", "starting"):
         total_size = await get_workspace_total_size(workspace_id)
         return {
             "workspace_id": workspace_id,
@@ -867,10 +867,10 @@ async def delete_workspace_files(
             status_code=400, detail="Flash workspaces do not have a sandbox"
         )
 
-    if workspace.get("status") in ("stopped", "stopping"):
+    if workspace.get("status") in ("stopped", "stopping", "starting"):
         raise HTTPException(
             status_code=409,
-            detail="Cannot delete files while workspace is stopped. Start the workspace first.",
+            detail=f"Cannot delete files — workspace is {workspace.get('status')}. Wait for it to be running.",
         )
 
     sandbox = await _acquire_sandbox(workspace_id, x_user_id)
