@@ -32,7 +32,10 @@ _MAX_QUERY_LEN_ALL = 1024
 _MAX_PAGE_SIZE_ALL = 500
 
 _TWEET_FIELDS = "created_at,public_metrics,lang,author_id,conversation_id"
-_USER_FIELDS = "username,name,verified,public_metrics,description,created_at"
+# Only the four fields _enrich_post surfaces onto each post's `author` object —
+# anything else would just pad the response. get_user_by_username asks for the
+# fuller profile via _USER_LOOKUP_FIELDS.
+_USER_FIELDS = "username,name,verified"
 _EXPANSIONS = "author_id"
 _USER_LOOKUP_FIELDS = "verified,public_metrics,description,created_at"
 
