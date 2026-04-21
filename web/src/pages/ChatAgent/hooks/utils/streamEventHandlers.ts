@@ -557,7 +557,7 @@ export function handleTodoUpdate({ assistantMessageId, artifactType, artifactId,
     }
     updateTodoListCard(
       {
-        todos: todos || [],
+        todos,
         total: total || 0,
         completed: completed || 0,
         in_progress: in_progress || 0,
@@ -606,7 +606,7 @@ export function handleTodoUpdate({ assistantMessageId, artifactType, artifactId,
       // If this is an update to an existing logical todo list (same artifactId),
       // we still create a new segment but can reference the base ID for data updates
       todoListProcesses[segmentId] = {
-        todos: todos || [],
+        todos,
         total: total || 0,
         completed: completed || 0,
         in_progress: in_progress || 0,

@@ -67,7 +67,19 @@ class TodoWriteMiddleware(AgentMiddleware):
 
         tool_call_id = tool_call.get("id", "unknown")
         tool_args = tool_call.get("args", {})
-        todos = tool_args.get("todos", [])
+        raw_todos = tool_args.get("todos", [])
+
+        # Some LLMs emit `todos` as a stringified JSON blob (sometimes malformed).
+        # Iterating that as a list gives character-by-character garbage and persists
+        # a broken payload to conversation_responses.sse_events — normalize at source.
+        if isinstance(raw_todos, list):
+            todos = raw_todos
+        else:
+            logger.warning(
+                f"[TODO_MIDDLEWARE] Non-list todos payload "
+                f"(type={type(raw_todos).__name__}); coercing to []"
+            )
+            todos = []
 
         logger.debug(f"[TODO_MIDDLEWARE] Intercepting {tool_name} (id: {tool_call_id})")
 
