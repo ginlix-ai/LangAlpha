@@ -1078,7 +1078,7 @@ function SecretsTab({ workspaceId }: { workspaceId: string }) {
               <button
                 key={bp.name}
                 type="button"
-                onClick={() => !disabled && openAddForBlueprint(bp)}
+                onClick={() => openAddForBlueprint(bp)}
                 disabled={disabled}
                 className="flex flex-col items-start gap-0.5 p-3 rounded-lg text-left transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 style={{

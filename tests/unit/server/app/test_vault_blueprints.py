@@ -369,6 +369,19 @@ def test_blueprint_rejects_malformed_regex():
         VaultBlueprint(name="OK_NAME", label="ok", regex="[unterminated")
 
 
+def test_blueprint_rejects_non_http_docs_url_schemes():
+    # docs_url renders into an <a href>; javascript:/data: would execute on click.
+    for bad in ("javascript:alert(1)", "data:text/html,x", "file:///etc/passwd", "ftp://x"):
+        with pytest.raises(ValidationError):
+            VaultBlueprint(name="OK_NAME", label="ok", docs_url=bad)
+
+
+def test_blueprint_accepts_http_and_https_docs_url():
+    for good in ("https://console.x.com/", "http://localhost:8080/docs"):
+        bp = VaultBlueprint(name="OK_NAME", label="ok", docs_url=good)
+        assert bp.docs_url == good
+
+
 def test_blueprint_accepts_minimal_valid_input():
     bp = VaultBlueprint(name="MY_KEY", label="My Key")
     assert bp.name == "MY_KEY"

@@ -97,6 +97,17 @@ class VaultBlueprint(BaseModel):
             raise ValueError(f"vault_blueprint regex is not a valid pattern: {exc}")
         return v
 
+    @field_validator("docs_url")
+    @classmethod
+    def _validate_docs_url_scheme(cls, v: str | None) -> str | None:
+        # docs_url renders directly into an <a href>; rel=noopener noreferrer
+        # does not block javascript:/data: schemes, so reject them at load time.
+        if v is None:
+            return v
+        if not (v.startswith("https://") or v.startswith("http://")):
+            raise ValueError("vault_blueprint docs_url must start with https:// or http://")
+        return v
+
 
 class MCPServerConfig(BaseModel):
     """Configuration for a single MCP server."""
