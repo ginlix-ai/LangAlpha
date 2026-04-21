@@ -31,7 +31,16 @@ class TestWorkspaceStatus:
     """Verify enum members and string compatibility."""
 
     def test_all_expected_values(self):
-        expected = {"creating", "running", "stopping", "stopped", "error", "deleted"}
+        expected = {
+            "creating",
+            "starting",
+            "running",
+            "stopping",
+            "stopped",
+            "error",
+            "deleted",
+            "flash",
+        }
         actual = {s.value for s in WorkspaceStatus}
         assert actual == expected
 

@@ -21,7 +21,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from ptc_agent.config import AgentConfig
-from ptc_agent.core.sandbox.runtime import SandboxGoneError
+from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
 from ptc_agent.core.session import Session, SessionManager
 
 from src.server.services.background_task_manager import BackgroundTaskManager
@@ -175,6 +175,36 @@ class WorkspaceManager:
     def _record_sync(self, workspace_id: str) -> None:
         """Record that a sync was performed for this workspace."""
         self._last_sync_at[workspace_id] = time.monotonic()
+
+    async def _clear_session(
+        self,
+        workspace_id: str,
+        *,
+        evict_session: "Session | None" = None,
+    ) -> None:
+        """Remove all traces of a broken session and proactively release its
+        resources (MCP connections + provider aiohttp client) instead of
+        waiting for GC.
+
+        ``cleanup_session`` awaits ``session.cleanup()``, so a concurrent
+        request can install a replacement in ``self._sessions[workspace_id]``
+        while we're yielded. When the caller passes the session object it
+        intended to evict, we identity-check before popping — so the
+        replacement survives. Callers inside the workspace lock can omit
+        ``evict_session`` (the lock already prevents the race).
+
+        Safe to call when the workspace is not present — idempotent.
+        """
+        try:
+            await SessionManager.cleanup_session(workspace_id)
+        except Exception as e:
+            logger.warning(
+                "Error during session cleanup (continuing)",
+                extra={"workspace_id": workspace_id, "error": str(e)},
+            )
+        if evict_session is None or self._sessions.get(workspace_id) is evict_session:
+            self._sessions.pop(workspace_id, None)
+        self._pending_lazy_sync.discard(workspace_id)
 
     async def push_vault_secrets(
         self, workspace_id: str, sandbox: "PTCSandbox | None" = None,
@@ -837,9 +867,7 @@ class WorkspaceManager:
                             f"Lazy init failed for workspace {workspace_id}: "
                             f"{init_err}. Clearing session for recovery."
                         )
-                        SessionManager.remove_session(workspace_id)
-                        del self._sessions[workspace_id]
-                        self._pending_lazy_sync.discard(workspace_id)
+                        await self._clear_session(workspace_id)
 
                         if isinstance(init_err, SandboxGoneError):
                             core_config = self.config.to_core_config()
@@ -887,8 +915,14 @@ class WorkspaceManager:
 
             # No usable cached session — handle based on status
             if session is None:
-                if status == "stopped":
-                    logger.info(f"Restarting stopped workspace {workspace_id}")
+                if status in ("stopped", "starting"):
+                    # "starting" means a prior lazy init is either in flight or
+                    # failed after clearing the cached session; re-entering the
+                    # restart flow is idempotent — it resets status to
+                    # "starting" (no-op) and kicks off a fresh lazy init.
+                    logger.info(
+                        f"Restarting workspace {workspace_id} from status={status}"
+                    )
                     session = await self._restart_workspace(
                         workspace,
                         user_id=workspace_user_id,
@@ -912,7 +946,7 @@ class WorkspaceManager:
                                 on_state_observed=on_state_observed,
                             )
                         except SandboxGoneError as e:
-                            SessionManager.remove_session(workspace_id)
+                            await self._clear_session(workspace_id)
                             logger.warning(
                                 f"Sandbox {sandbox_id} unavailable for workspace "
                                 f"{workspace_id} ({e}). Creating fresh sandbox."
@@ -1054,7 +1088,7 @@ class WorkspaceManager:
                                     e,
                                 )
                                 core_config = self.config.to_core_config()
-                                SessionManager.remove_session(workspace_id)
+                                await self._clear_session(workspace_id)
                                 return await self._recover_sandbox(
                                     workspace_id, workspace_user_id, core_config
                                 )
@@ -1092,6 +1126,16 @@ class WorkspaceManager:
                 _mark("sandbox_ready")
 
                 if needs_deferred_sync:
+                    # Only promote when a lazy init actually happened (row is
+                    # still in _pending_lazy_sync). A forced non-lazy restart
+                    # already flipped status to running + stamped activity
+                    # inside _restart_workspace — no-op here.
+                    if workspace_id in self._pending_lazy_sync:
+                        await update_workspace_status(
+                            workspace_id=workspace_id,
+                            status="running",
+                        )
+                        await update_workspace_activity(workspace_id)
                     logger.debug(
                         f"Completing deferred sync for lazy-init workspace {workspace_id}"
                     )
@@ -1126,9 +1170,14 @@ class WorkspaceManager:
                     f"Sandbox gone for workspace {workspace_id} during "
                     f"Phase 2: {e}. Recovering."
                 )
-                SessionManager.remove_session(workspace_id)
-                self._sessions.pop(workspace_id, None)
-                self._pending_lazy_sync.discard(workspace_id)
+                # Identity check: a concurrent request may have already
+                # installed a replacement session while we were running
+                # Phase 2 outside the lock. Clearing that healthy session
+                # would tear down its MCP+provider and double-spawn Daytona.
+                # Pass evict_session so the pop inside _clear_session is
+                # also identity-guarded across its own await boundary.
+                if self._sessions.get(workspace_id) is session:
+                    await self._clear_session(workspace_id, evict_session=session)
 
                 async with self._acquire_workspace_lock(workspace_id):
                     # Guard: another request may have recovered while we
@@ -1140,6 +1189,29 @@ class WorkspaceManager:
                     return await self._recover_sandbox(
                         workspace_id, workspace_user_id, core_config
                     )
+            except SandboxTransientError as e:
+                # Narrow: if lazy init exhausted retries the session is
+                # marked failed — clearing it removes the zombie so the
+                # next request starts fresh. Post-init transient (asset
+                # sync etc.) leaves sandbox healthy; best-effort retry.
+                if session.sandbox.has_failed():
+                    logger.warning(
+                        f"Phase 2 init exhausted retries for {workspace_id}: "
+                        f"{e}. Clearing session for fresh recovery."
+                    )
+                    # Identity check: a concurrent request may have already
+                    # observed has_failed() in its own Phase 1, cleared this
+                    # session, and installed a replacement. Clearing again
+                    # would tear down the healthy replacement's MCP+provider.
+                    # Pass evict_session so the pop inside _clear_session is
+                    # also identity-guarded across its own await boundary.
+                    if self._sessions.get(workspace_id) is session:
+                        await self._clear_session(workspace_id, evict_session=session)
+                    raise
+                logger.warning(
+                    f"Phase 2 sync transient for workspace {workspace_id} "
+                    f"(will retry next request): {e}"
+                )
             except Exception as e:
                 logger.warning(
                     f"Phase 2 sync failed for workspace {workspace_id} "
@@ -1228,7 +1300,7 @@ class WorkspaceManager:
                     logger.debug(f"Session initialized for workspace {workspace_id}")
             except SandboxGoneError as e:
                 sandbox_gone = True
-                SessionManager.remove_session(workspace_id)
+                await self._clear_session(workspace_id)
                 logger.warning(
                     f"Sandbox {sandbox_id} unavailable for workspace "
                     f"{workspace_id} ({e}). Creating fresh sandbox."
@@ -1255,21 +1327,33 @@ class WorkspaceManager:
                 if migrated is not None:
                     return migrated
 
-            # Update status to running
-            await update_workspace_status(
-                workspace_id=workspace_id,
-                status="running",
-            )
-
-            # Cache session
-            self._sessions[workspace_id] = session
-
-            # Stamp last_activity_at so the idle sweep cannot pick this workspace
-            # up using a stale timestamp during the remainder of the request
-            # lifetime. Mirrors _recover_sandbox.
-            await update_workspace_activity(workspace_id)
-
-            logger.info(f"Workspace {workspace_id} restarted successfully")
+            # Update DB status. Lazy path stops at "starting" so downstream
+            # read-side callers (workspace_files.py, public.py) use DB/safe
+            # fallbacks while Phase 2 resolves; Phase 2 promotes to "running"
+            # and stamps activity once the sandbox is actually ready.
+            # Non-lazy path completes synchronously here — keep the
+            # stopped → running transition plus activity stamp (PR #152).
+            if lazy_init:
+                await update_workspace_status(
+                    workspace_id=workspace_id,
+                    status="starting",
+                )
+                # Cache session
+                self._sessions[workspace_id] = session
+                # No activity stamp: cleanup_idle_workspaces only sweeps
+                # status="running", so "starting" rows are immune.
+                logger.info(f"Workspace {workspace_id} restart initiated (lazy)")
+            else:
+                await update_workspace_status(
+                    workspace_id=workspace_id,
+                    status="running",
+                )
+                # Cache session
+                self._sessions[workspace_id] = session
+                # Stamp last_activity_at so the idle sweep cannot pick this
+                # workspace up using a stale timestamp. Mirrors _recover_sandbox.
+                await update_workspace_activity(workspace_id)
+                logger.info(f"Workspace {workspace_id} restarted successfully")
             return session
 
         except Exception as e:

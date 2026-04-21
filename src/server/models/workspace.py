@@ -17,11 +17,13 @@ class WorkspaceStatus(str, Enum):
     """Workspace lifecycle states."""
 
     CREATING = "creating"
+    STARTING = "starting"
     RUNNING = "running"
     STOPPING = "stopping"
     STOPPED = "stopped"
     ERROR = "error"
     DELETED = "deleted"
+    FLASH = "flash"
 
 
 class WorkspaceCreate(BaseModel):
@@ -80,7 +82,10 @@ class WorkspaceResponse(BaseModel):
         description="Daytona sandbox ID (null if not yet created)",
     )
     status: str = Field(
-        description="Workspace status: creating, running, stopping, stopped, error, deleted"
+        description=(
+            "Workspace status: creating, starting, running, stopping, stopped, "
+            "error, deleted, flash"
+        )
     )
     created_at: datetime = Field(description="Creation timestamp")
     updated_at: datetime = Field(description="Last update timestamp")

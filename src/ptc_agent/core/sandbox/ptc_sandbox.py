@@ -7,7 +7,7 @@ import json
 import shlex
 import textwrap
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
@@ -154,7 +154,6 @@ class PTCSandbox:
 
         self._reconnect_lock = asyncio.Lock()
         self._tool_refresh_lock = asyncio.Lock()
-        self._reconnect_inflight: asyncio.Future[None] | None = None
         self._download_semaphore = asyncio.Semaphore(4)
 
         # Track per-thread code dirs that have been created (avoids repeated mkdir)
@@ -1590,38 +1589,19 @@ class PTCSandbox:
                 "Sandbox disconnected and no sandbox_id is available"
             )
 
-        # Coalesce concurrent reconnect attempts (including transparent
-        # restart when the sandbox was stopped externally).
+        # Serialize concurrent reconnect attempts. asyncio.Lock is held
+        # across internal awaits, so a second caller that acquires the lock
+        # runs after the first's reconnect has fully resolved (success or
+        # exception propagated). No explicit coalescing primitive needed.
         async with self._reconnect_lock:
-            if (
-                self._reconnect_inflight is not None
-                and not self._reconnect_inflight.done()
-            ):
-                await self._reconnect_inflight
-                return
-
-            # Always recreate the provider.  This callback only fires after
-            # a transient error, so the existing client may be dead (closed
-            # by a concurrent stop_workspace) or degraded (stale connection).
-            # Creating a new AsyncDaytona is cheap — just an aiohttp session.
+            # Always recreate the provider. This callback only fires after
+            # a transient error, so the existing client may be dead or stale.
             try:
                 await self.provider.close()
             except Exception:
                 pass
             self.provider = create_provider(self.config)
-
-            loop = asyncio.get_running_loop()
-            self._reconnect_inflight = loop.create_future()
-            inflight = self._reconnect_inflight
-
-            try:
-                await self.reconnect(self.sandbox_id)
-                inflight.set_result(None)
-            except Exception as e:
-                inflight.set_exception(e)
-                raise
-            finally:
-                self._reconnect_inflight = None
+            await self.reconnect(self.sandbox_id)
 
     async def _runtime_call(
         self,
@@ -3603,6 +3583,43 @@ except OSError as e:
             return True
         except Exception as e:
             logger.debug("Failed to create directory", dirpath=dirpath, error=str(e))
+            return False
+
+    async def acreate_directories(self, dirpaths: Iterable[str]) -> bool:
+        """Create multiple directories in a single ``mkdir -p`` exec call.
+
+        Much faster than N separate ``acreate_directory`` calls for bulk
+        setup (e.g. file restore), collapsing N round-trips into one.
+        ``mkdir -p`` is idempotent. Returns False if any validation or
+        exec fails; callers can fall back to per-dir creates.
+        """
+        paths = [p for p in dirpaths if p]
+        if not paths:
+            return True
+
+        await self._wait_ready()
+
+        if self.config.filesystem.enable_path_validation:
+            for p in paths:
+                if not self.validate_path(p):
+                    logger.error(f"Access denied: {p} is not in allowed directories")
+                    return False
+
+        try:
+            assert self.runtime is not None
+            quoted = " ".join(shlex.quote(p) for p in paths)
+            await self._runtime_call(
+                self.runtime.exec,
+                f"mkdir -p {quoted}",
+                retry_policy=RetryPolicy.SAFE,
+            )
+            return True
+        except Exception as e:
+            logger.debug(
+                "Failed to bulk-create directories",
+                count=len(paths),
+                error=str(e),
+            )
             return False
 
     async def aedit_file_text(

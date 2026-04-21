@@ -282,6 +282,94 @@ class TestEnsureSandboxConnectedRecreatesProvider:
         assert mock_create_provider.call_count == 2
 
 
+class TestEnsureSandboxConnectedNoFutureLeak:
+    """After Fix 3, _ensure_sandbox_connected has no asyncio.Future coalescing
+    primitive, so a failing reconnect cannot produce a 'Future exception was
+    never retrieved' warning. Serialization is still enforced via the lock."""
+
+    @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
+    @pytest.mark.asyncio
+    async def test_no_future_leak_on_reconnect_failure(
+        self, mock_create_provider, mock_provider, mock_runtime, caplog
+    ):
+        import gc
+        import logging
+        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+
+        mock_create_provider.return_value = mock_provider
+        sandbox = PTCSandbox(config=_make_config())
+        sandbox.runtime = mock_runtime
+        sandbox.sandbox_id = "existing-sandbox"
+
+        fresh_provider = AsyncMock(spec=SandboxProvider)
+        fresh_provider.close = AsyncMock()
+        mock_create_provider.return_value = fresh_provider
+
+        sandbox.reconnect = AsyncMock(
+            side_effect=RuntimeError("reconnect bombed")
+        )
+
+        caplog.set_level(logging.WARNING, logger="asyncio")
+
+        with pytest.raises(RuntimeError, match="reconnect bombed"):
+            await sandbox._ensure_sandbox_connected()
+
+        # Force GC; if there were a stranded Future with an unretrieved
+        # exception, the asyncio debug machinery would log here.
+        gc.collect()
+        await asyncio.sleep(0)
+
+        assert not any(
+            "Future exception was never retrieved" in rec.getMessage()
+            for rec in caplog.records
+        ), "Fix 3 regression: Future coalescing primitive reintroduced"
+
+        # No private state survives the failed attempt.
+        assert not hasattr(sandbox, "_reconnect_inflight")
+
+    @patch("ptc_agent.core.sandbox.ptc_sandbox.create_provider")
+    @pytest.mark.asyncio
+    async def test_concurrent_callers_serialized_by_lock(
+        self, mock_create_provider, mock_provider, mock_runtime
+    ):
+        """Two concurrent _ensure_sandbox_connected calls each invoke reconnect
+        serially (the lock was the only real serializer — Fix 3 removed the
+        dead Future that pretended to coalesce)."""
+        from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
+
+        mock_create_provider.return_value = mock_provider
+        sandbox = PTCSandbox(config=_make_config())
+        sandbox.runtime = mock_runtime
+        sandbox.sandbox_id = "existing-sandbox"
+
+        fresh_provider = AsyncMock(spec=SandboxProvider)
+        fresh_provider.close = AsyncMock()
+        mock_create_provider.return_value = fresh_provider
+
+        running = 0
+        peak_concurrency = 0
+
+        async def tracked_reconnect(sid):
+            nonlocal running, peak_concurrency
+            running += 1
+            peak_concurrency = max(peak_concurrency, running)
+            await asyncio.sleep(0.01)
+            running -= 1
+
+        sandbox.reconnect = AsyncMock(side_effect=tracked_reconnect)
+
+        await asyncio.gather(
+            sandbox._ensure_sandbox_connected(),
+            sandbox._ensure_sandbox_connected(),
+        )
+
+        assert sandbox.reconnect.await_count == 2
+        assert peak_concurrency == 1, (
+            "Lock must serialize concurrent reconnects; saw "
+            f"peak_concurrency={peak_concurrency}"
+        )
+
+
 class TestInitTaskCancellation:
     """_init_task is cancelled during stop_sandbox() and cleanup()."""
 

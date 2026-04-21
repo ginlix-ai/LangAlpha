@@ -289,6 +289,13 @@ async def start_workspace(
                 message="Workspace is already running",
             )
 
+        if workspace["status"] == "starting":
+            return WorkspaceActionResponse(
+                workspace_id=workspace_id,
+                status="starting",
+                message="Workspace is already starting",
+            )
+
         if workspace["status"] != "stopped":
             raise HTTPException(
                 status_code=400,

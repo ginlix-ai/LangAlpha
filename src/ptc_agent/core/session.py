@@ -360,15 +360,29 @@ class SessionManager:
     async def cleanup_session(cls, conversation_id: str) -> None:
         """Clean up a specific session.
 
+        Safe under concurrent callers: the final pop is identity-guarded
+        so a second caller does not tear down a replacement session that
+        another request installed while we were inside ``session.cleanup()``.
+
         Args:
             conversation_id: Conversation identifier
         """
-        if conversation_id in cls._sessions:
-            session = cls._sessions[conversation_id]
-            await session.cleanup()
-            del cls._sessions[conversation_id]
+        session = cls._sessions.get(conversation_id)
+        if session is None:
+            return
 
+        await session.cleanup()
+        # Identity-guarded pop: if a concurrent request replaced the entry
+        # with a fresh session while we were awaiting cleanup(), leave the
+        # replacement in place instead of evicting it.
+        if cls._sessions.get(conversation_id) is session:
+            cls._sessions.pop(conversation_id, None)
             logger.info("Session removed", conversation_id=conversation_id)
+        else:
+            logger.info(
+                "Session cleaned up (replacement retained)",
+                conversation_id=conversation_id,
+            )
 
     @classmethod
     async def cleanup_all(cls) -> None:

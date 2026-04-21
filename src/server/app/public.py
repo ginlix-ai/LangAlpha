@@ -242,7 +242,7 @@ async def list_shared_files(
         return {"path": path, "files": files, "source": "database"}
 
     # Try live sandbox if DB has no files
-    if workspace.get("status") not in ("stopped", "stopping"):
+    if workspace.get("status") not in ("stopped", "stopping", "starting"):
         try:
             manager = WorkspaceManager.get_instance()
             session = await manager.get_session_for_workspace(workspace_id)
@@ -313,7 +313,7 @@ async def read_shared_file(
         }
 
     # Try live sandbox — vault secrets from session cache (instant)
-    if workspace.get("status") not in ("stopped", "stopping"):
+    if workspace.get("status") not in ("stopped", "stopping", "starting"):
         try:
             manager = WorkspaceManager.get_instance()
             session = await manager.get_session_for_workspace(workspace_id)
@@ -410,7 +410,7 @@ async def download_shared_file(
         )
 
     # Try live sandbox — vault secrets from session cache (instant)
-    if workspace.get("status") not in ("stopped", "stopping"):
+    if workspace.get("status") not in ("stopped", "stopping", "starting"):
         try:
             manager = WorkspaceManager.get_instance()
             session = await manager.get_session_for_workspace(workspace_id)

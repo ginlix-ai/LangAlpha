@@ -397,8 +397,10 @@ async def astream_ptc_workflow(
 
                 logger.info(
                     "[WS_STATUS] state observation",
-                    workspace_id=workspace_id,
-                    sandbox_state=state_box["value"],
+                    extra={
+                        "workspace_id": workspace_id,
+                        "sandbox_state": state_box["value"],
+                    },
                 )
 
                 if state_box["value"] == "archived":

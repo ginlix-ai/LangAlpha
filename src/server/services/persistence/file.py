@@ -430,6 +430,11 @@ class FilePersistenceService:
         """
         Restore workspace files from DB to sandbox.
 
+        Pre-creates all unique parent directories in one bulk mkdir, then
+        uploads files concurrently through a semaphore-bounded worker pool
+        so the next upload starts the instant any slot frees up (rather
+        than waiting for the slowest file in a fixed-size batch).
+
         Args:
             workspace_id: Workspace UUID
             sandbox: Sandbox instance
@@ -448,25 +453,40 @@ class FilePersistenceService:
 
             logger.info(f"Restoring {len(files)} files for workspace {workspace_id}")
 
-            # Process in batches for parallel upload
-            batch_size = 10
-            for i in range(0, len(files), batch_size):
-                batch = files[i : i + batch_size]
-                tasks = [
-                    cls._restore_single_file(sandbox, file_record)
-                    for file_record in batch
-                ]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for j, res in enumerate(results):
-                    if isinstance(res, Exception):
-                        logger.warning(
-                            f"Failed to restore {batch[j]['file_path']}: {res}"
-                        )
-                        result["errors"] += 1
-                    elif res:
-                        result["restored"] += 1
-                    else:
-                        result["errors"] += 1
+            # Bulk-create unique parent directories in one exec call so
+            # we skip ~N redundant round-trips inside the per-file path.
+            work_dir = sandbox.working_dir
+            unique_dirs = {
+                os.path.dirname(f"{work_dir}/{file_record['file_path']}")
+                for file_record in files
+            }
+            unique_dirs.discard("")
+            unique_dirs.discard(work_dir)
+            if unique_dirs:
+                await cls._bulk_create_directories(sandbox, unique_dirs)
+
+            # Worker-pool upload: semaphore bounds concurrency, but each
+            # task releases its slot as soon as it finishes — no batch
+            # waits for the slowest file.
+            sem = asyncio.Semaphore(16)
+
+            async def _upload(file_record: dict) -> tuple[str, bool | Exception]:
+                async with sem:
+                    try:
+                        ok = await cls._restore_file_content_only(sandbox, file_record)
+                        return (file_record["file_path"], ok)
+                    except Exception as e:
+                        return (file_record["file_path"], e)
+
+            outcomes = await asyncio.gather(*(_upload(f) for f in files))
+            for path, res in outcomes:
+                if isinstance(res, Exception):
+                    logger.warning(f"Failed to restore {path}: {res}")
+                    result["errors"] += 1
+                elif res:
+                    result["restored"] += 1
+                else:
+                    result["errors"] += 1
 
             # Write sync marker
             try:
@@ -507,16 +527,29 @@ class FilePersistenceService:
 
     @classmethod
     async def _restore_single_file(cls, sandbox: Any, file_record: dict) -> bool:
-        """Restore a single file to sandbox."""
+        """Restore a single file to sandbox, creating its parent directory.
+
+        Kept for callers outside the bulk restore path (e.g. single-file
+        writes). Bulk restore uses ``_restore_file_content_only`` after a
+        single pre-pass that creates all unique parents at once.
+        """
         work_dir = sandbox.working_dir
         abs_path = f"{work_dir}/{file_record['file_path']}"
 
-        # Ensure parent directory exists
         parent_dir = os.path.dirname(abs_path)
         if parent_dir and parent_dir != work_dir:
             await sandbox.acreate_directory(parent_dir)
 
-        # Get content
+        return await cls._restore_file_content_only(sandbox, file_record)
+
+    @classmethod
+    async def _restore_file_content_only(
+        cls, sandbox: Any, file_record: dict
+    ) -> bool:
+        """Upload file content assuming parent directory already exists."""
+        work_dir = sandbox.working_dir
+        abs_path = f"{work_dir}/{file_record['file_path']}"
+
         if file_record.get("is_binary") and file_record.get("content_binary"):
             content = file_record["content_binary"]
             if isinstance(content, memoryview):
@@ -527,6 +560,36 @@ class FilePersistenceService:
             return False
 
         return await sandbox.aupload_file_bytes(abs_path, content)
+
+    @classmethod
+    async def _bulk_create_directories(
+        cls, sandbox: Any, dirs: set[str]
+    ) -> None:
+        """Pre-create all unique parent directories before bulk upload.
+
+        Uses the sandbox's bulk API (single ``mkdir -p`` exec for all
+        paths). Falls back to parallel per-dir creates if the bulk call
+        fails (e.g. command-line length exceeded for huge workspaces).
+        ``mkdir -p`` is idempotent either way.
+        """
+        if not sandbox or not dirs:
+            return
+
+        ok = await sandbox.acreate_directories(dirs)
+        if ok:
+            return
+
+        logger.debug(
+            f"Bulk mkdir unavailable or failed for {len(dirs)} dirs; "
+            "falling back to parallel per-dir creates."
+        )
+        sem = asyncio.Semaphore(16)
+
+        async def _mkone(d: str) -> None:
+            async with sem:
+                await sandbox.acreate_directory(d)
+
+        await asyncio.gather(*(_mkone(d) for d in dirs), return_exceptions=True)
 
     @classmethod
     async def maybe_restore(cls, workspace_id: str, sandbox: Any) -> None:
