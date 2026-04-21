@@ -526,8 +526,11 @@ const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvat
     if (result === null) setFeedbackRating(prevRating);
   };
 
-  // Show action buttons only when not streaming, not in subagent view, not read-only, and not loading
-  const showActions = !(message.isStreaming as boolean) && !isSubagentView && !readOnly && !isLoading;
+  // Action buttons are mounted for all normal messages (reserves layout space) and
+  // only made visible after streaming settles. Keeping them mounted prevents a
+  // ~32px layout jump on sibling messages when streaming ends.
+  const canShowActions = !isSubagentView && !readOnly;
+  const showActions = canShowActions && !(message.isStreaming as boolean) && !isLoading;
 
   const resizeTextarea = () => {
     const el = editTextareaRef.current;
@@ -769,11 +772,13 @@ const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvat
         </>
         )}
 
-        {/* Message action buttons -- visible on hover */}
-        {showActions && !isEditing && (
+        {/* Message action buttons -- always mounted (reserves space), visibility toggled */}
+        {canShowActions && !isEditing && (
           <div
             className={`flex gap-1 mt-0.5 transition-opacity ${
-              isMobile ? 'opacity-70' : 'opacity-0 group-hover:opacity-100'
+              showActions
+                ? (isMobile ? 'opacity-70' : 'opacity-0 group-hover:opacity-100')
+                : 'opacity-0 pointer-events-none'
             } ${
               isUser ? 'justify-end' : 'justify-start'
             }`}
