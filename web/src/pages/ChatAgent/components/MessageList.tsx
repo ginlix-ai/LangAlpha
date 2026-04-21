@@ -583,17 +583,17 @@ const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvat
   return (
     <div
       data-message-id={message.id as string}
-      className={`group flex ${isMobile ? 'gap-3' : 'gap-4'} ${isUser ? 'justify-end' : 'justify-start'}`}
+      className={`group flex items-start ${isMobile ? 'gap-3' : 'gap-4'} ${isUser ? 'justify-end' : 'justify-start'}`}
     >
       {/* Assistant avatar - shown on the left */}
       {isAssistant && !hideAvatar && (
-        <div className={`flex-shrink-0 mt-2 flex items-center justify-center ${isMobile ? 'w-6 h-6' : 'w-8 h-8'}`}>
+        <div className={`flex-shrink-0 flex items-center justify-center ${isMobile ? 'w-6 h-6' : 'w-8 h-8'}`}>
           <img src={logo} alt="Assistant" className={isMobile ? 'w-6 h-6' : 'w-8 h-8'} />
         </div>
       )}
 
       {/* Message content column -- bubble + standalone attachment cards */}
-      <div className={`${isUser ? (isEditing && isMobile ? 'w-full' : 'max-w-[80%]') + ' flex flex-col items-end gap-2' : 'w-full min-w-0'}`}>
+      <div className={`${isUser ? (isEditing && isMobile ? 'w-full' : 'max-w-[80%]') + ' flex flex-col items-end gap-2' : `w-full min-w-0${isMobile ? '' : ' pt-1'}`}`}>
 
         {/* ===== EDIT MODE (user messages) ===== */}
         {isEditing && isUser ? (
@@ -754,7 +754,7 @@ const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvat
           {(message.isStreaming as boolean) && !Object.keys((message.pendingToolCallChunks as Record<string, unknown>) || {}).length && (() => {
             const contentSegments = message.contentSegments as ContentSegmentRecord[] | undefined;
             const hasContent = contentSegments?.some(s => s.content?.trim()) || (message.content as string)?.trim();
-            return <LissajousLoading className={`${hasContent ? "mt-2" : "mt-3"} ${isMobile ? 'w-5 h-5' : 'w-6 h-6'} text-neutral-500 dark:text-neutral-400`} />;
+            return <LissajousLoading className={`${hasContent ? "mt-2" : "mt-0"} ${isMobile ? 'w-5 h-5' : 'w-6 h-6'} text-neutral-500 dark:text-neutral-400`} />;
           })()}
         </div>
 
@@ -1359,7 +1359,7 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
 
           if (block.type === 'text') {
             const textContent = isSubagentView ? normalizeSubagentText((block as TextRenderBlock).segment.content) : ((block as TextRenderBlock).segment.content ?? '');
-            return (
+            const textEl = (
               <TextMessageContent
                 key={block.key}
                 content={textContent}
@@ -1368,6 +1368,7 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
                 onOpenFile={onOpenFile}
               />
             );
+            return blockIdx === 0 && textContent ? <div key={block.key} className="-mt-1">{textEl}</div> : textEl;
           }
 
           if (block.type === 'html_widget') {

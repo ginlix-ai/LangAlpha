@@ -160,7 +160,7 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
   }
 
   return (
-    <div className="mt-1 mb-1">
+    <div className="mb-1">
       {/* Inline chart cards -- always visible, above accordion */}
       {hasInlineCharts && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: hasCompleted || hasLive || hasPreparingTools ? 6 : 0 }}>
@@ -185,6 +185,7 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
         {hasCompleted && (
           <motion.div
             key="accordion-zone"
+            className="-mt-2"
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
             transition={SPRING_SNAPPY}
@@ -263,7 +264,7 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
         {(hasLive || hasPreparingTools) && (
           <motion.div
             key="live-zone"
-            className="mt-2 space-y-2"
+            className={`${hasCompleted ? 'mt-2 ' : '-mt-1 '}space-y-2`}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0, height: 0, marginTop: 0 }}
