@@ -199,12 +199,18 @@ function ChatAgent(): React.ReactElement | null {
     cache.touch({ workspaceId, threadId, workspaceName: wsName, initialTaskId: taskId });
   }, [threadId, workspaceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Clean resolvingRef once updateKey's setEntries commits
+  // Clean resolvingRef once updateKey's setEntries commits. Two triggers:
+  //   (1) target is present → rename succeeded, bridge window closed
+  //   (2) source is absent → entry was either renamed away OR LRU-evicted; either
+  //       way the ref is orphaned and must not leak (a stale ref would suppress a
+  //       future touch for the same threadId and blank out the view).
   useEffect(() => {
     if (resolvingRef.current.size === 0) return;
     const resolved: string[] = [];
     for (const [oldKey, { workspaceId: wsId, newThreadId }] of resolvingRef.current) {
-      if (cache.entries.some(e => e.workspaceId === wsId && e.threadId === newThreadId)) {
+      const targetExists = cache.entries.some(e => e.workspaceId === wsId && e.threadId === newThreadId);
+      const sourceExists = cache.entries.some(e => e.key === oldKey);
+      if (targetExists || !sourceExists) {
         resolved.push(oldKey);
       }
     }

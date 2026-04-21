@@ -772,9 +772,14 @@ const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvat
         </>
         )}
 
-        {/* Message action buttons -- always mounted (reserves space), visibility toggled */}
+        {/* Message action buttons -- always mounted (reserves space), visibility toggled.
+            aria-hidden + inert keep the buttons out of the a11y tree and tab order
+            while opacity-0 is hiding them, so screen readers don't announce
+            "Copy, Thumbs up, ..." for every streaming message. */}
         {canShowActions && !isEditing && (
           <div
+            aria-hidden={!showActions}
+            inert={!showActions || undefined}
             className={`flex gap-1 mt-0.5 transition-opacity ${
               showActions
                 ? (isMobile ? 'opacity-70' : 'opacity-0 group-hover:opacity-100')
