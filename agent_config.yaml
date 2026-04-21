@@ -187,6 +187,15 @@ mcp:
       #   X_BEARER_TOKEN: "${X_BEARER_TOKEN}"
       # This will make every workspace's MCP subprocess share the same host token.
       env: {}
+      vault_blueprints:
+        - name: "X_BEARER_TOKEN"
+          label: "X (Twitter) Bearer Token"
+          description: "Read-only app-only auth for the x_api MCP server. Get one at console.x.com → App → Keys and tokens → Bearer Token. Paste the raw token — no 'Bearer ' prefix, no whitespace."
+          docs_url: "https://console.x.com/"
+          # Live X bearer tokens are opaque URL-safe strings, typically 100+ chars.
+          # Regex catches empty, short-paste, and 'Bearer <token>' prefix mistakes
+          # without being too strict about the exact character set.
+          regex: "^[A-Za-z0-9%_-]{20,}$"
 
     # Not enabled in Porduction or maintained by us
     - name: "alphavantage"
