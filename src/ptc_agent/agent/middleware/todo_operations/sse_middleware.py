@@ -86,14 +86,23 @@ class TodoWriteMiddleware(AgentMiddleware):
         try:
             result = await handler(request)
 
-            # Calculate status counts. Lowercase to mirror the TodoItem
-            # validator's normalize_status — an LLM-sent "PENDING" would
-            # otherwise fall through as uncounted.
+            # Restrict payload to the TodoItem schema: strip any legacy
+            # or unknown fields the LLM may still send, and lowercase status
+            # so the frontend's strict equality (status === 'pending') holds
+            # regardless of case variance. Anything non-dict is dropped.
             status_counts = {"pending": 0, "in_progress": 0, "completed": 0}
+            normalized_todos = []
             for todo in todos:
+                if not isinstance(todo, dict):
+                    continue
                 status = str(todo.get("status", "")).lower()
                 if status in status_counts:
                     status_counts[status] += 1
+                normalized_todos.append({
+                    "content": todo.get("content", ""),
+                    "activeForm": todo.get("activeForm", ""),
+                    "status": status,
+                })
 
             # Build completed event with structure expected by streaming_handler
             # Must include artifact_type for handler to recognize and emit as SSE artifact event
@@ -101,8 +110,8 @@ class TodoWriteMiddleware(AgentMiddleware):
 
             # Build payload with todo data
             payload: dict[str, Any] = {
-                "todos": todos,
-                "total": len(todos),
+                "todos": normalized_todos,
+                "total": len(normalized_todos),
                 "completed": status_counts["completed"],
                 "in_progress": status_counts["in_progress"],
                 "pending": status_counts["pending"],

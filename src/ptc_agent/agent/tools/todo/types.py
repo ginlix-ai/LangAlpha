@@ -6,7 +6,7 @@ Follows Anthropic's Claude Code best practices for todo management.
 
 from enum import Enum
 from typing import List, Dict, Any
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class TodoStatus(str, Enum):
@@ -18,6 +18,11 @@ class TodoStatus(str, Enum):
 
 class TodoItem(BaseModel):
     """Individual todo item passed by the agent."""
+
+    # extra='ignore' is pydantic v2's default; stated explicitly so a future
+    # base-class change to extra='forbid' can't silently break in-flight LLM
+    # sessions that learned the old schema and still send id/created_at/etc.
+    model_config = ConfigDict(extra="ignore")
 
     content: str = Field(
         min_length=1,

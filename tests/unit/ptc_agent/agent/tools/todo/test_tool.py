@@ -45,7 +45,14 @@ class TestTodoWriteValidInput:
 
 
 class TestTodoWriteRejectsInvalidShapes:
-    """These payloads should fail at the tool's pydantic arg parser."""
+    """These payloads fail at the tool's pydantic arg parser when invoked directly.
+
+    Note: In production, `ToolArgumentParsingMiddleware` JSON-decodes string args
+    before they reach the tool — so an LLM emitting `'[{"status":"pending"}]'`
+    is auto-parsed into a list and then would fail on missing `content`/`activeForm`
+    rather than on "not a list". These tests lock in the fail-closed behavior of
+    the tool itself as a defense-in-depth layer.
+    """
 
     def test_stringified_json_list_rejected(self):
         with pytest.raises(ValidationError):
