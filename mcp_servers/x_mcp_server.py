@@ -15,7 +15,6 @@ import re
 import time
 from contextlib import asynccontextmanager
 from typing import Any, Optional
-from urllib.parse import quote
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -157,6 +156,9 @@ def _error_from_response(resp: httpx.Response) -> dict:
 
 
 async def _get(path: str, params: dict[str, Any], token: str) -> httpx.Response | dict:
+    """Authenticated GET against X_API_BASE + path. Callers are responsible for
+    validating any interpolated path segments (see _USERNAME_RE, _TWEET_ID_RE);
+    this helper does no URL escaping."""
     if _client is None:
         return {"error": "client_unavailable", "detail": "HTTP client not initialized"}
     headers = {"Authorization": f"Bearer {token}"}
@@ -169,11 +171,15 @@ async def _get(path: str, params: dict[str, Any], token: str) -> httpx.Response 
     return resp
 
 
-def _parse_json_body(resp: httpx.Response) -> Any | dict:
+def _parse_json_body(resp: httpx.Response) -> tuple[Any, dict | None]:
+    """Parse the response JSON. Returns (payload, None) on success or
+    (None, error_dict) on decode failure. Using a tuple instead of a sentinel
+    dict avoids any collision with X response bodies that happen to carry an
+    ``error`` key."""
     try:
-        return resp.json()
+        return resp.json(), None
     except ValueError:
-        return {
+        return None, {
             "error": "malformed_response",
             "detail": "X API returned a non-JSON 2xx body",
         }
@@ -218,9 +224,9 @@ async def _search(
     if resp.status_code != 200:
         return _error_from_response(resp)
 
-    payload = _parse_json_body(resp)
-    if isinstance(payload, dict) and payload.get("error") == "malformed_response":
-        return payload
+    payload, err = _parse_json_body(resp)
+    if err is not None:
+        return err
 
     users_by_id = _index_users(payload.get("includes"))
     posts = [_enrich_post(p, users_by_id) for p in payload.get("data") or []]
@@ -336,7 +342,7 @@ async def get_user_by_username(
         }
 
     resp_or_err = await _get(
-        f"/users/by/username/{quote(username, safe='')}",
+        f"/users/by/username/{username}",
         {"user.fields": _USER_LOOKUP_FIELDS},
         token,
     )
@@ -346,9 +352,9 @@ async def get_user_by_username(
     if resp.status_code != 200:
         return _error_from_response(resp)
 
-    payload = _parse_json_body(resp)
-    if isinstance(payload, dict) and payload.get("error") == "malformed_response":
-        return payload
+    payload, err = _parse_json_body(resp)
+    if err is not None:
+        return err
     data = payload.get("data")
     if not data:
         return {"error": "not_found", "detail": f"User '{username}' not found"}
@@ -381,18 +387,16 @@ async def get_tweet_by_id(
         "expansions": _EXPANSIONS,
         "user.fields": _USER_FIELDS,
     }
-    resp_or_err = await _get(
-        f"/tweets/{quote(tweet_id, safe='')}", params, token
-    )
+    resp_or_err = await _get(f"/tweets/{tweet_id}", params, token)
     if isinstance(resp_or_err, dict):
         return resp_or_err
     resp = resp_or_err
     if resp.status_code != 200:
         return _error_from_response(resp)
 
-    payload = _parse_json_body(resp)
-    if isinstance(payload, dict) and payload.get("error") == "malformed_response":
-        return payload
+    payload, err = _parse_json_body(resp)
+    if err is not None:
+        return err
     data = payload.get("data")
     if not data:
         return {"error": "not_found", "detail": f"Tweet '{tweet_id}' not found"}
