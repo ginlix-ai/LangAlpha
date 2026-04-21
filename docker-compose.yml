@@ -11,7 +11,7 @@ services:
     image: postgres:18
     restart: unless-stopped
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${PG_HOST_PORT:-5432}:5432"
     volumes:
       - langalpha-postgresql-data:/var/lib/postgresql
     environment:
@@ -31,7 +31,7 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     ports:
-      - "127.0.0.1:6379:6379"
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
     command: redis-server --requirepass ${REDIS_PASSWORD:-redis}
     volumes:
       - langalpha-redis-data:/data
@@ -53,7 +53,7 @@ services:
     memswap_limit: 8g
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:8000"
     env_file: .env
     environment:
       BYOK_ENCRYPTION_KEY: ${BYOK_ENCRYPTION_KEY:-langalpha-local-dev-encryption-key}
@@ -88,7 +88,7 @@ services:
     command: sh -c "npm install -g pnpm@10 && pnpm install --frozen-lockfile && pnpm dev --host 0.0.0.0"
     restart: unless-stopped
     ports:
-      - "5173:5173"
+      - "${FRONTEND_PORT:-5173}:5173"
     environment:
       VITE_PROXY_BACKEND: http://backend:8000
     volumes:
