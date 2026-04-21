@@ -419,7 +419,8 @@ export function finalizeTodoListProcessesInMessages(
     const entries = Object.entries(am.todoListProcesses);
     const lastEntry = entries.reduce((a, b) => ((a[1].order || 0) >= (b[1].order || 0) ? a : b));
     const [lastKey, lastVal] = lastEntry;
-    const hasIncomplete = lastVal.todos?.some(
+    if (!Array.isArray(lastVal.todos)) return m;
+    const hasIncomplete = lastVal.todos.some(
       (todo: TodoItem) => todo.status !== 'completed' && todo.status !== 'stale'
     );
     if (!hasIncomplete) return m;
@@ -986,7 +987,7 @@ export function useChatMessages(
             // Update floating todo card from history (last event wins, shows final state)
             if (updateTodoListCard) {
               updateTodoListCard({
-                todos: payload.todos || [],
+                todos: Array.isArray(payload.todos) ? payload.todos : [],
                 total: payload.total || 0,
                 completed: payload.completed || 0,
                 in_progress: payload.in_progress || 0,
