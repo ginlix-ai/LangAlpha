@@ -196,18 +196,16 @@ Use `data_files` to load data from sandbox files instead of inlining everything 
 
 ### Workflow
 
-1. Generate data files via Python — inline `ExecuteCode` for small one-shots, or write a `.py` script under `work/<task_name>/` and run via `Bash` for larger/iterative pipelines
+1. Generate data files via Python
 2. Pass file paths to `ShowWidget` via `data_files`
 3. Access data in the widget via `window.__WIDGET_DATA__["filename"]`
 
 ```python
-# Step 1: Generate data inline via ExecuteCode (small one-shot)
-execute_code("""
+# Step 1: Generate data
 import json
 data = {"labels": ["Q1", "Q2", "Q3"], "values": [100, 150, 200]}
 with open("work/<task_name>/chart_data.json", "w") as f:
     json.dump(data, f)
-""")
 
 # Step 2: Agent calls ShowWidget with data_files
 ShowWidget(
