@@ -313,3 +313,72 @@ async def test_list_models(client):
     assert "models" in body
     assert "system_defaults" in body
     assert body["system_defaults"]["default_model"] == "gpt-4o"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/providers/{parent}/visible-models
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_visible_models_returns_parent_catalog(client):
+    """Wizard endpoint returns the parent's visible models for one-click import."""
+    mock_mc = MagicMock()
+    mock_mc.get_provider_info.return_value = {"display_name": "OpenAI"}
+    mock_mc.get_display_name.return_value = "OpenAI"
+    mock_mc.get_model_config.side_effect = lambda name: {
+        "gpt-4o": {"model_id": "gpt-4o", "input_modalities": ["text", "image"]},
+        "gpt-4o-mini": {"model_id": "gpt-4o-mini"},
+    }.get(name)
+
+    mock_llm_cls = MagicMock()
+    mock_llm_cls.get_model_config.return_value = mock_mc
+
+    with (
+        patch("src.llms.llm.LLM", mock_llm_cls),
+        patch(
+            "src.llms.llm.get_configured_llm_models",
+            return_value={"openai": ["gpt-4o", "gpt-4o-mini"]},
+        ),
+    ):
+        resp = await client.get("/api/v1/providers/openai/visible-models")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["parent"] == "openai"
+    assert body["parent_display_name"] == "OpenAI"
+    names = [m["name"] for m in body["models"]]
+    assert names == ["gpt-4o", "gpt-4o-mini"]
+    # input_modalities echoed for the wizard to render capability chips
+    gpt4o = next(m for m in body["models"] if m["name"] == "gpt-4o")
+    assert gpt4o["input_modalities"] == ["text", "image"]
+
+
+@pytest.mark.asyncio
+async def test_list_visible_models_unknown_parent_returns_404(client):
+    """Unknown parent provider → 404, not 500."""
+    mock_mc = MagicMock()
+    mock_mc.get_provider_info.return_value = {}  # empty = unknown
+
+    mock_llm_cls = MagicMock()
+    mock_llm_cls.get_model_config.return_value = mock_mc
+
+    with patch("src.llms.llm.LLM", mock_llm_cls):
+        resp = await client.get("/api/v1/providers/unknown-brand/visible-models")
+
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_visible_models_platform_only_rejected(client):
+    """Platform-only providers can't be imported through the wizard."""
+    mock_mc = MagicMock()
+    mock_mc.get_provider_info.return_value = {"platform": True}
+
+    mock_llm_cls = MagicMock()
+    mock_llm_cls.get_model_config.return_value = mock_mc
+
+    with patch("src.llms.llm.LLM", mock_llm_cls):
+        resp = await client.get("/api/v1/providers/platform-proxy/visible-models")
+
+    assert resp.status_code == 400

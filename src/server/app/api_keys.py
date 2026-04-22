@@ -667,6 +667,51 @@ async def list_provider_models(provider: str, user_id: CurrentUserId):
         raise HTTPException(status_code=502, detail="Internal error while querying provider")
 
 
+# ── Visible Models by Parent Provider ───────────────────────────────────
+
+
+@router.get("/api/v1/providers/{parent}/visible-models")
+async def list_visible_models_by_parent(parent: str, user_id: CurrentUserId):
+    """Return built-in visible models grouped under ``parent``'s brand.
+
+    Used by the setup wizard's "Import parent models" step when the user
+    creates a custom provider variant: we show the parent's catalog with
+    checkboxes so the user can copy selected models into their variant.
+
+    The returned ``models`` are the names as they appear in ``models.json``
+    (same keys the model picker uses). Rendering metadata (display name,
+    modalities) is included so the wizard can show rich rows without a
+    second round-trip.
+    """
+    from src.llms.llm import LLM as LLMFactory, get_configured_llm_models
+
+    mc = LLMFactory.get_model_config()
+    parent_info = mc.get_provider_info(parent)
+    if not parent_info:
+        raise HTTPException(status_code=404, detail=f"Unknown provider: {parent}")
+    if parent_info.get("platform"):
+        raise HTTPException(status_code=400, detail="Platform-only providers cannot be imported")
+
+    grouped = get_configured_llm_models()
+    model_names = grouped.get(parent, [])
+
+    models = []
+    for name in model_names:
+        info = mc.get_model_config(name) or {}
+        models.append({
+            "name": name,
+            "model_id": info.get("model_id", name),
+            "display_name": name,
+            "input_modalities": info.get("input_modalities", ["text"]),
+        })
+
+    return {
+        "parent": parent,
+        "parent_display_name": mc.get_display_name(parent),
+        "models": models,
+    }
+
+
 # ── Models Endpoint ──────────────────────────────────────────────────────
 
 
