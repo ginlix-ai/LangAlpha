@@ -2903,16 +2903,53 @@ export function useChatMessages(
         return;
       } else if (eventType === 'error' || event.error) {
         const errorMessage = event.error || event.message || 'An error occurred while processing your request.';
-        setMessageError(errorMessage);
-        setMessages((prev) =>
-          updateMessage(prev,assistantMessageId, (msg) => ({
-            ...msg,
-            content: msg.content || errorMessage,
-            contentType: 'text',
-            isStreaming: false,
-            error: true,
-          }))
-        );
+        // Backend (streaming_handler.format_error_event) enriches the event
+        // with ``error_kind``, ``status_code`` and ``hints``. We route the
+        // display by kind to avoid showing the same error twice:
+        //   - upstream → inline card on the failed assistant turn (part of
+        //     the transcript; the user's model choice is what triggered it)
+        //   - internal → banner near the chat input (our service failed;
+        //     don't pollute the conversation history)
+        const kind = event.error_kind as 'upstream' | 'internal' | undefined;
+        const structured: StructuredError | undefined =
+          kind === 'upstream' || kind === 'internal'
+            ? {
+                message: errorMessage as string,
+                kind,
+                statusCode: typeof event.status_code === 'number' ? event.status_code : undefined,
+                hints: Array.isArray(event.hints)
+                  ? (event.hints.filter(
+                      (h: unknown) =>
+                        h === 'api_key'
+                        || h === 'model_access'
+                        || h === 'provider_status'
+                        || h === 'try_another_model',
+                    ) as StructuredError['hints'])
+                  : undefined,
+              }
+            : undefined;
+
+        if (kind === 'internal') {
+          // Banner only — drop the optimistic assistant bubble entirely so the
+          // transcript stays clean. Matches the 429 rate-limit path; leaving a
+          // content-less bubble under the banner looks broken.
+          setMessageError(structured ?? (errorMessage as string));
+          setMessages((prev) => prev.filter((m) => m.id !== assistantMessageId));
+        } else {
+          // Upstream (or unclassified legacy) — render inline. Clear any
+          // stale banner from a prior turn so the error lives in one place.
+          setMessageError(null);
+          setMessages((prev) =>
+            updateMessage(prev, assistantMessageId, (msg) => ({
+              ...msg,
+              content: msg.content || errorMessage,
+              contentType: 'text',
+              isStreaming: false,
+              error: true,
+              ...(structured ? { structuredError: structured } : {}),
+            }))
+          );
+        }
       } else if (eventType === 'tool_call_chunks') {
         handleToolCallChunks({
           assistantMessageId,

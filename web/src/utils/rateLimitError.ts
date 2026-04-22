@@ -16,9 +16,25 @@ export interface RateLimitErrorInfo {
   [key: string]: unknown;
 }
 
+/** Hints the backend emits for upstream provider failures — each maps to an
+ *  i18n-bound bullet the user sees ("check your API key", etc.). Keep in sync
+ *  with the ``hints`` list in ``streaming_handler.format_error_event``. */
+export type UpstreamErrorHint =
+  | 'api_key'
+  | 'model_access'
+  | 'provider_status'
+  | 'try_another_model';
+
 export interface StructuredError {
   message: string;
   link?: { url: string; label: string };
+  /** ``upstream`` = LLM provider's fault (their 5xx/401/429). ``internal`` =
+   *  our pipeline. Undefined for rate-limit errors built on the client. */
+  kind?: 'upstream' | 'internal';
+  /** HTTP status from the upstream provider, when known. */
+  statusCode?: number;
+  /** Bulleted guidance to render under the message. */
+  hints?: UpstreamErrorHint[];
 }
 
 export function buildRateLimitError(
