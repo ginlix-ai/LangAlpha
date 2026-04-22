@@ -32,9 +32,16 @@ def _mock_model_config(system_models=None, providers=None):
         info = providers.get(name, {})
         return info.get("parent", name)
 
+    def get_children(name):
+        return [
+            k for k, info in providers.items()
+            if info.get("parent") == name and k != name
+        ]
+
     mc.get_model_config.side_effect = get_model
     mc.get_provider_info.side_effect = get_provider
     mc.get_parent_provider.side_effect = get_parent
+    mc.get_child_variants.side_effect = get_children
 
     return mc
 
@@ -45,6 +52,18 @@ def _mock_model_config(system_models=None, providers=None):
 
 
 class TestResolveBYOKSystemModel:
+    @pytest.fixture(autouse=True)
+    def _no_custom_models(self):
+        """Shadow semantics: ``classify_model`` checks custom first. For
+        system-only tests, stub the custom lookup out so it doesn't try to
+        hit the DB."""
+        with patch(
+            f"{HANDLER}.get_custom_model_config",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            yield
+
     @pytest.mark.asyncio
     async def test_not_byok_returns_none(self):
         from src.server.handlers.chat.llm_config import resolve_byok_llm_client

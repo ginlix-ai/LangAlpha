@@ -478,10 +478,22 @@ class AgentConfig(BaseModel):
                 "No LLM configured. Set llm in agent_config.yaml or configure a model in the setup wizard."
             )
 
-        # Use src/llms factory for file-based loading
+        # Use src/llms factory for file-based loading. A name not in
+        # models.json reaches this guard either because the user picked a
+        # custom model without a resolvable BYOK key, or because the name
+        # is a typo. Raise a neutral error instead of the generic factory one.
         from src.llms import create_llm
+        from src.llms.llm import LLM as LLMFactory
 
-        return create_llm(self.llm.name)
+        name = self.llm.name
+        if LLMFactory.get_model_config().get_model_config(name) is None:
+            raise ValueError(
+                f"Model '{name}' is not defined in models.json. "
+                "If this is a custom model, configure it in Settings with a valid API key. "
+                "If it's a built-in, check for typos."
+            )
+
+        return create_llm(name)
 
     def to_core_config(self) -> CoreConfig:
         """Convert to CoreConfig for use with SessionManager.

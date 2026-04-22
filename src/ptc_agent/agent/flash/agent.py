@@ -83,7 +83,18 @@ class FlashAgent:
                 self.llm: Any = config.llm_client
             else:
                 from src.llms import create_llm
+                from src.llms.llm import LLM as LLMFactory
 
+                # Models not in models.json reach here either because the user
+                # picked a custom model without a resolvable BYOK key, or
+                # because the name is a typo. Raise a neutral error instead of
+                # the generic factory one.
+                if LLMFactory.get_model_config().get_model_config(config.llm.flash) is None:
+                    raise ValueError(
+                        f"Model '{config.llm.flash}' is not defined in models.json. "
+                        "If this is a custom model, configure it in Settings with a valid API key. "
+                        "If it's a built-in, check for typos."
+                    )
                 self.llm = create_llm(config.llm.flash)
             model = config.llm.flash
             provider = "llm_config"

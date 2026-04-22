@@ -332,6 +332,11 @@ def _validate_custom_models(custom_models: list, custom_providers: list | None =
     name_re = re.compile(CUSTOM_MODEL_NAME_RE)
     seen_names: set[str] = set()
 
+    # Shadow semantics: a custom ``name`` MAY collide with a built-in. The
+    # resolver checks custom first, so the user's entry wins. This supports
+    # "route built-in model X through my variant's key" without inventing a
+    # prefix format for preferences.
+
     # Build valid provider set: all known flat providers + custom providers
     valid_providers = {
         k for k, v in mc.flat_providers.items()
@@ -363,13 +368,6 @@ def _validate_custom_models(custom_models: list, custom_providers: list | None =
             raise HTTPException(
                 status_code=400,
                 detail=f"custom_models[{idx}]: name '{name}' is invalid (alphanumeric start, max 63 chars, only .-_:/ allowed)",
-            )
-
-        # No collision with system models
-        if mc.get_model_config(name):
-            raise HTTPException(
-                status_code=400,
-                detail=f"custom_models[{idx}]: name '{name}' conflicts with a system model",
             )
 
         # No duplicate names

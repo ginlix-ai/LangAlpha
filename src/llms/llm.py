@@ -136,6 +136,20 @@ class ModelConfig:
         info = self.get_provider_info(provider)
         return info.get("parent_provider", provider)
 
+    def get_child_variants(self, provider: str) -> list[str]:
+        """Return provider names whose parent_provider is ``provider``.
+
+        Excludes the provider itself; platform-only variants are excluded
+        since BYOK keys are never stored under them.
+        """
+        return [
+            name
+            for name, cfg in self._flat_providers.items()
+            if cfg.get("parent_provider") == provider
+            and name != provider
+            and not cfg.get("platform", False)
+        ]
+
     def get_display_name(self, provider: str) -> str:
         """Return display name, preferring own name then resolving through parent."""
         info = self.get_provider_info(provider)
