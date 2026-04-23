@@ -36,6 +36,13 @@ export function useDashboardPrefs() {
   const storedRef = useRef<DashboardPrefs>(stored);
   const skipNextSyncRef = useRef(false);
 
+  // Ref-backed so the debounced flush always reads the current `other_preference`
+  // snapshot at fire time. Without this, a concurrent write to another preference
+  // key (theme, language) during the 800ms debounce would be overwritten when
+  // the flush spreads a stale snapshot.
+  const preferencesRef = useRef(preferences);
+  preferencesRef.current = preferences;
+
   useEffect(() => {
     storedRef.current = stored;
     if (skipNextSyncRef.current) {
@@ -50,7 +57,7 @@ export function useDashboardPrefs() {
   const flush = useCallback(
     (next: DashboardPrefs) => {
       skipNextSyncRef.current = true;
-      const prevOther = ((preferences as { other_preference?: Record<string, unknown> } | null | undefined)
+      const prevOther = ((preferencesRef.current as { other_preference?: Record<string, unknown> } | null | undefined)
         ?.other_preference) ?? {};
       updatePrefs.mutate(
         {
@@ -71,7 +78,7 @@ export function useDashboardPrefs() {
         }
       );
     },
-    [updatePrefs, preferences, toast]
+    [updatePrefs, toast]
   );
 
   const update = useCallback(
