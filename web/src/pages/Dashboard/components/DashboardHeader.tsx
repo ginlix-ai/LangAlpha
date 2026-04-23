@@ -1,4 +1,4 @@
-import { Search, HelpCircle, Mail } from 'lucide-react';
+import { Search, HelpCircle, Mail, LayoutGrid, Pencil } from 'lucide-react';
 import AvatarDropdown from './AvatarDropdown';
 import React, { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -16,9 +16,16 @@ interface StockResult {
 interface DashboardHeaderProps {
   onStockSearch?: (symbol: string, stock: StockResult | null) => void;
   onScrollToTop?: () => void;
+  /** When provided (desktop only), show the Classic/Custom segmented toggle and the Edit button in Custom mode. */
+  layoutToggle?: {
+    mode: 'classic' | 'custom';
+    onModeChange: (mode: 'classic' | 'custom') => void;
+    editMode?: boolean;
+    onEditModeChange?: (edit: boolean) => void;
+  };
 }
 
-const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScrollToTop }) => {
+const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScrollToTop, layoutToggle }) => {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const { t } = useTranslation();
@@ -227,6 +234,74 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
 
         {/* Right actions */}
         <div className="flex items-center gap-3 ml-3 shrink-0">
+          {/* Layout toggle — hidden on mobile */}
+          {layoutToggle && !isMobile && (
+            <>
+              <div
+                className="flex items-center rounded-lg border p-0.5"
+                style={{
+                  backgroundColor: 'var(--color-bg-input)',
+                  borderColor: 'var(--color-border-muted)',
+                }}
+                role="tablist"
+                aria-label="Dashboard layout"
+              >
+                <button
+                  type="button"
+                  onClick={() => layoutToggle.onModeChange('classic')}
+                  role="tab"
+                  aria-selected={layoutToggle.mode === 'classic'}
+                  className="px-2.5 py-1 text-xs rounded-md transition-colors"
+                  style={{
+                    backgroundColor:
+                      layoutToggle.mode === 'classic' ? 'var(--color-bg-elevated)' : 'transparent',
+                    color:
+                      layoutToggle.mode === 'classic'
+                        ? 'var(--color-text-primary)'
+                        : 'var(--color-text-secondary)',
+                    fontWeight: layoutToggle.mode === 'classic' ? 600 : 400,
+                  }}
+                >
+                  Classic
+                </button>
+                <button
+                  type="button"
+                  onClick={() => layoutToggle.onModeChange('custom')}
+                  role="tab"
+                  aria-selected={layoutToggle.mode === 'custom'}
+                  className="px-2.5 py-1 text-xs rounded-md transition-colors flex items-center gap-1"
+                  style={{
+                    backgroundColor:
+                      layoutToggle.mode === 'custom' ? 'var(--color-bg-elevated)' : 'transparent',
+                    color:
+                      layoutToggle.mode === 'custom'
+                        ? 'var(--color-text-primary)'
+                        : 'var(--color-text-secondary)',
+                    fontWeight: layoutToggle.mode === 'custom' ? 600 : 400,
+                  }}
+                >
+                  <LayoutGrid size={12} />
+                  Custom
+                </button>
+              </div>
+              {layoutToggle.mode === 'custom' && layoutToggle.onEditModeChange && (
+                <button
+                  type="button"
+                  onClick={() => layoutToggle.onEditModeChange?.(!layoutToggle.editMode)}
+                  className="p-2 rounded-md transition-colors"
+                  style={{
+                    color: layoutToggle.editMode ? 'var(--color-text-on-accent)' : 'var(--color-text-secondary)',
+                    backgroundColor: layoutToggle.editMode ? 'var(--color-accent-primary)' : 'transparent',
+                  }}
+                  aria-label={layoutToggle.editMode ? 'Exit edit layout' : 'Edit layout'}
+                  title={layoutToggle.editMode ? 'Exit edit layout' : 'Edit layout'}
+                >
+                  <Pencil size={16} />
+                </button>
+              )}
+            </>
+          )}
+
           {/* Help — hidden on mobile to save space */}
           <div className="relative hidden sm:block" ref={helpRef}>
             <button

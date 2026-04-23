@@ -57,6 +57,7 @@ function ChatInputCard() {
             selectedWorkspaceId={selectedWorkspaceId}
             onWorkspaceChange={setSelectedWorkspaceId}
             placeholder="Ask AI about market trends..."
+            minRows={2}
           />
         </div>
       </MobileFabChat>
@@ -99,6 +100,7 @@ function ChatInputCard() {
             selectedWorkspaceId={selectedWorkspaceId}
             onWorkspaceChange={setSelectedWorkspaceId}
             placeholder="Ask AI about market trends, specific stocks, or portfolio analysis..."
+            minRows={2}
           />
         </div>
       </div>

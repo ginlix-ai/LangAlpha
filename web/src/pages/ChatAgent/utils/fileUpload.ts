@@ -55,7 +55,7 @@ export function attachmentsToContexts(attachments: Attachment[]): ImageContext[]
 /**
  * Validate a file for upload.
  * When flashOnly is true, only images and PDFs are accepted (Flash mode).
- * Otherwise any file type is accepted (PTC/deep mode).
+ * Otherwise any file type is accepted (PTC mode).
  */
 export function validateFile(file: File, flashOnly = false): FileValidationResult {
   if (flashOnly) {

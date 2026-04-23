@@ -92,6 +92,18 @@ export async function getWorkspaceThreads(workspaceId: string, limit: number = 2
 }
 
 /**
+ * Get recent threads across all workspaces for the current user.
+ * Uses the same /api/v1/threads endpoint but omits workspace_id so the server
+ * returns threads across every workspace the user owns, sorted by updated_at.
+ */
+export async function getRecentThreads(limit: number = 20, offset: number = 0) {
+  const { data } = await api.get('/api/v1/threads', {
+    params: { limit, offset, sort_by: 'updated_at', sort_order: 'desc' },
+  });
+  return data;
+}
+
+/**
  * Delete a thread
  * @param {string} threadId - The thread ID to delete
  * @returns {Promise<Object>} Response with success, thread_id, and message
