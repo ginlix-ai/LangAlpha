@@ -24,6 +24,7 @@ from src.server.services.cache._ohlcv_envelope import (
     _merge_bars,
     _needs_refresh,
     _parse_envelope,
+    is_watermark_stale,
     watermark_to_date_str,
 )
 from src.utils.cache.redis_cache import get_cache_client
@@ -49,29 +50,50 @@ _COVERAGE_GAP_GRACE_S = 10
 
 def _should_discard_envelope(
     envelope: dict,
+    interval: Optional[str] = None,
     elapsed: float = 0.0,
     gap_grace_s: float = 0.0,
+    is_live: bool = True,
 ) -> bool:
     """Return True if the cached envelope should be discarded for a sync re-fetch.
 
-    Covers three cases:
-    - Stale date: cached data is from a previous trading day.
+    Covers four cases (live envelopes only; historical envelopes are immutable
+    snapshots and only evict at TTL):
+    - Stale date: cached data is from a previous trading date.
+    - Stale watermark: interval-aware — latest bar is behind the expected
+      latest bar for *now*, even if the date still matches (mid-session
+      stagnation or overnight freeze).
     - Day-boundary: cached as ``complete`` but market is now active.
     - Coverage gap: first bar is significantly after market open.
+
+    ``is_live`` gates the stale-date + stale-watermark + day-boundary checks.
+    Pass ``False`` for historical envelopes (cache keys with explicit
+    ``:{from_date}:{to_date}`` suffix) — their date and watermark are
+    intentionally in the past and must not trigger re-fetches.
+
+    ``interval`` is optional for backward compatibility, but callers should
+    pass it so the watermark-staleness check fires.
 
     The *elapsed* and *gap_grace_s* parameters gate the coverage-gap check:
     if the envelope was written less than *gap_grace_s* seconds ago the gap
     check is skipped to avoid fetch storms when the upstream consistently
     returns partial data.
     """
-    if _is_stale_date(envelope):
-        return True
-    if envelope.get("complete") and not is_market_closed():
-        return True
+    if is_live:
+        if _is_stale_date(envelope):
+            return True
+        if interval and is_watermark_stale(envelope, interval):
+            return True
+        if envelope.get("complete") and not is_market_closed():
+            return True
     # Coverage gap: bars start well after market open.
     # Large gaps (>30 min) always discard immediately.  Small gaps (10-30 min)
     # respect the grace period to avoid fetch storms when the upstream
     # consistently returns partial data.
+    # Runs for both live and historical envelopes, but is a no-op for
+    # historical: ``first_bar_time`` is on a past trading day and ``open_ms``
+    # is today's market open, so ``gap_ms`` is always negative and neither
+    # threshold fires.
     bars = envelope.get("bars")
     if bars and not envelope.get("complete"):
         open_ms = today_market_open_ms()
@@ -382,6 +404,7 @@ class IntradayCacheService:
         cache_key, envelope = await self._find_cached(
             normalized, is_index, interval, from_date, to_date,
         )
+        is_live = IntradayCacheKeyBuilder._is_live(to_date)
 
         if envelope is not None:
             bars = envelope["bars"]
@@ -401,8 +424,9 @@ class IntradayCacheService:
             # Always check structural integrity (stale date, day-boundary,
             # coverage gap) before considering soft-TTL refresh.  This ensures
             # partial/stale envelopes are discarded promptly even if the soft
-            # TTL hasn't elapsed yet.
-            if _should_discard_envelope(envelope, elapsed=elapsed, gap_grace_s=_COVERAGE_GAP_GRACE_S):
+            # TTL hasn't elapsed yet. Historical envelopes skip the live-only
+            # checks via is_live=False.
+            if _should_discard_envelope(envelope, interval=interval, elapsed=elapsed, gap_grace_s=_COVERAGE_GAP_GRACE_S, is_live=is_live):
                 # Use per-key lock to prevent concurrent sync re-fetches
                 # (multiple requests seeing the same stale envelope).
                 lock = self._get_refresh_lock(cache_key)
@@ -414,7 +438,7 @@ class IntradayCacheService:
                     )
                     if fresh is not None:
                         fresh_elapsed = time.time() - fresh.get("fetched_at", 0)
-                        if not _should_discard_envelope(fresh, elapsed=fresh_elapsed, gap_grace_s=_COVERAGE_GAP_GRACE_S):
+                        if not _should_discard_envelope(fresh, interval=interval, elapsed=fresh_elapsed, gap_grace_s=_COVERAGE_GAP_GRACE_S, is_live=is_live):
                             envelope = fresh
                             bars = fresh["bars"]
                             watermark = fresh.get("watermark")
@@ -427,7 +451,7 @@ class IntradayCacheService:
                             bars[0].get("time") if bars else None,
                         )
                         envelope = None
-            elif _needs_refresh(envelope, base_ttl):
+            elif _needs_refresh(envelope, base_ttl, interval=interval, is_live=is_live):
                 # Normal SWR: return stale bars, refresh in background.
                 bg_triggered = True
                 logger.info("Cache %s %s: SWR delta refresh triggered", normalized, interval)
@@ -563,16 +587,17 @@ class IntradayCacheService:
             key, envelope = await self._find_cached(
                 normalized, is_index, interval, from_date, to_date,
             )
+            is_live = IntradayCacheKeyBuilder._is_live(to_date)
 
             if envelope is not None:
                 env_elapsed = time.time() - envelope.get("fetched_at", 0)
-                if _should_discard_envelope(envelope, elapsed=env_elapsed, gap_grace_s=_COVERAGE_GAP_GRACE_S):
+                if _should_discard_envelope(envelope, interval=interval, elapsed=env_elapsed, gap_grace_s=_COVERAGE_GAP_GRACE_S, is_live=is_live):
                     cache_misses.append(sym)
                     return
                 results[normalized] = envelope["bars"]
                 resolved_keys[sym] = key
                 cache_hits += 1
-                if _needs_refresh(envelope, base_ttl):
+                if _needs_refresh(envelope, base_ttl, interval=interval, is_live=is_live):
                     background_refreshes += 1
                     asyncio.create_task(
                         self._delta_refresh(key, normalized, is_index, interval, user_id)
