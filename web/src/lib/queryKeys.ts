@@ -37,6 +37,7 @@ export const queryKeys = {
     all:         ['threads'],
     byWorkspace: (wsId: string) => [...queryKeys.threads.all, 'workspace', wsId],
     detail:      (threadId: string) => [...queryKeys.threads.all, 'detail', threadId],
+    recent:      (limit: number) => [...queryKeys.threads.all, 'recent', limit],
   },
   workspaceFiles: {
     all:  ['workspaceFiles'],
