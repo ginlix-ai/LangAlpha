@@ -1,0 +1,257 @@
+/* ConversationWidget — hero chat module for chat-centered dashboards. */
+
+.conversation-widget {
+  position: relative;
+  border-radius: 20px;
+  overflow: hidden;
+  border: 1px solid var(--color-border-muted);
+  background:
+    linear-gradient(
+      140deg,
+      var(--color-bg-card) 0%,
+      var(--color-bg-card) 55%,
+      var(--color-accent-soft) 100%
+    );
+  box-shadow:
+    0 1px 0 0 rgba(255, 255, 255, 0.04) inset,
+    0 1px 2px rgba(0, 0, 0, 0.03),
+    0 4px 16px rgba(0, 0, 0, 0.04);
+  isolation: isolate;
+}
+
+.conversation-widget__watermark {
+  position: absolute;
+  top: -28px;
+  right: -28px;
+  color: var(--color-accent-primary);
+  opacity: 0.14;
+  transform: rotate(-8deg);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.conversation-widget__wash {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    circle at 92% -12%,
+    color-mix(in srgb, var(--color-accent-primary) 20%, transparent) 0%,
+    transparent 55%
+  );
+  pointer-events: none;
+  z-index: 0;
+}
+
+.conversation-widget__inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 26px 16px;
+}
+
+/* --- Eyebrow strip --- */
+
+.conversation-widget__eyebrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 22px;
+}
+
+.conversation-widget__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background-color: var(--color-accent-soft);
+  color: var(--color-accent-light);
+  border: 1px solid var(--color-accent-overlay);
+  white-space: nowrap;
+}
+
+.conversation-widget__date {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- Greeting --- */
+
+.conversation-widget__heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.conversation-widget__greeting {
+  font-size: clamp(22px, 2.3vw, 30px);
+  font-weight: 600;
+  line-height: 1.14;
+  letter-spacing: -0.012em;
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.conversation-widget__subline {
+  font-size: 14px;
+  font-style: italic;
+  color: var(--color-text-secondary);
+  margin: 0;
+  letter-spacing: 0.004em;
+}
+
+/* --- Chat-input stage --- */
+
+.conversation-widget__stage {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.conversation-widget__stage-caption {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  padding: 0 4px;
+  letter-spacing: 0.01em;
+}
+
+.conversation-widget__stage-caption kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  font-size: 10px;
+  padding: 1px 5px;
+  margin: 0 2px;
+  border-radius: 4px;
+  border: 1px solid var(--color-border-muted);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Resume chips --- */
+
+.conversation-widget__resume {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  overflow: hidden;
+  margin-top: -2px;
+}
+
+.conversation-widget__resume-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+  flex-shrink: 0;
+}
+
+.conversation-widget__resume-chips {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.conversation-widget__resume-chips:has(> :nth-child(3)) {
+  mask-image: linear-gradient(
+    to right,
+    #000 0,
+    #000 calc(100% - 24px),
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 0,
+    #000 calc(100% - 24px),
+    transparent 100%
+  );
+}
+
+.conversation-widget__resume-chips::-webkit-scrollbar { display: none; }
+
+.conversation-widget__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-muted);
+  background: color-mix(in srgb, var(--color-bg-elevated) 55%, transparent);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  max-width: 220px;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.conversation-widget__chip:hover {
+  border-color: var(--color-accent-overlay);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+}
+
+.conversation-widget__chip:focus-visible {
+  outline: 2px solid var(--color-accent-primary);
+  outline-offset: 2px;
+  border-color: var(--color-accent-overlay);
+  color: var(--color-text-primary);
+}
+
+.conversation-widget__chip-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+
+.conversation-widget__chip-age {
+  font-size: 10px;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+/* --- Responsive tightening --- */
+
+@media (max-width: 640px) {
+  .conversation-widget__inner {
+    padding: 20px 18px 18px;
+    gap: 14px;
+  }
+  .conversation-widget__watermark { top: -20px; right: -20px; }
+  .conversation-widget__watermark svg { width: 140px; height: 140px; }
+}
+
+/* When the enclosing widget-frame is NOT in edit mode, the body has no padding,
+   so the card sits edge-to-edge with the cell (hero look). In edit mode the
+   body adds 12px padding — the border-muted outline above makes that inset
+   visible and consistent with other widgets' child cards. */
