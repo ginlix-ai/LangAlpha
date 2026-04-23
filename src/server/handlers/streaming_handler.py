@@ -1581,13 +1581,29 @@ class WorkflowStreamHandler:
             if info["provider_module"]:
                 data["provider_module"] = info["provider_module"]
             if info["kind"] == "upstream":
-                # Order matters — frontend renders the hints as a list.
-                data["hints"] = [
-                    "api_key",
-                    "model_access",
-                    "provider_status",
-                    "try_another_model",
-                ]
+                # Order matters — frontend renders the hints as a list, so the
+                # most relevant hint for this status goes first. 5xx/429 are
+                # provider outages, not the user's credentials; showing
+                # "check your API key" first on a 503 is misleading.
+                status = info.get("status_code")
+                if status in (401, 403):
+                    data["hints"] = [
+                        "api_key",
+                        "model_access",
+                        "try_another_model",
+                    ]
+                elif status == 404:
+                    data["hints"] = ["model_access", "try_another_model"]
+                elif status == 429 or (isinstance(status, int) and status >= 500):
+                    data["hints"] = ["provider_status", "try_another_model"]
+                else:
+                    # No status (network error) — could be anything; show all.
+                    data["hints"] = [
+                        "api_key",
+                        "model_access",
+                        "provider_status",
+                        "try_another_model",
+                    ]
         return self._format_sse_event("error", data)
 
     def _format_credit_usage_event(

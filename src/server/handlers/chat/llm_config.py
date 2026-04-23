@@ -7,6 +7,8 @@ lookups.
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from ._common import logger
 
 # ---------------------------------------------------------------------------
@@ -346,7 +348,7 @@ async def get_custom_provider_config(user_id: str, provider: str, _pref_cache: d
 # ---------------------------------------------------------------------------
 
 
-class ModelSource:
+class ModelSource(StrEnum):
     SYSTEM = "system"
     CUSTOM = "custom"
     UNKNOWN = "unknown"

@@ -45,12 +45,7 @@ export const UPSTREAM_HINT_I18N_KEY: Record<UpstreamErrorHint, string> = {
 };
 
 export function isUpstreamHint(value: unknown): value is UpstreamErrorHint {
-  return (
-    value === 'api_key'
-    || value === 'model_access'
-    || value === 'provider_status'
-    || value === 'try_another_model'
-  );
+  return UPSTREAM_HINT_KEYS.includes(value as UpstreamErrorHint);
 }
 
 export interface StructuredError {

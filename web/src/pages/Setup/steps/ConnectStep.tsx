@@ -47,6 +47,16 @@ const API_FORMATS = [
   { value: 'gemini', labelKey: 'setup.apiFormatGemini', parent: 'gemini', useResponseApi: false },
 ] as const;
 
+/** Shape returned by `/api/v1/providers/{parent}/visible-models` — the wizard
+ *  renders these as checkboxes so the user can import a subset into their
+ *  variant. */
+interface ParentModel {
+  name: string;
+  model_id: string;
+  display_name: string;
+  input_modalities: string[];
+}
+
 /** Translation key for API format from sdk + use_response_api. */
 function getApiFormatKey(sdk?: string | null, useResponseApi?: boolean): string {
   switch (sdk) {
@@ -294,12 +304,6 @@ export default function ConnectStep() {
 
   // Parent-model import state (for custom providers) — fetched from
   // /api/v1/providers/{parent}/visible-models once the user picks an API format.
-  interface ParentModel {
-    name: string;
-    model_id: string;
-    display_name: string;
-    input_modalities: string[];
-  }
   const [parentModels, setParentModels] = useState<ParentModel[]>([]);
   const [parentModelsLoading, setParentModelsLoading] = useState(false);
   const [selectedParentModelNames, setSelectedParentModelNames] = useState<Set<string>>(new Set());

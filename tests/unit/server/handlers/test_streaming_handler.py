@@ -253,7 +253,7 @@ class TestWorkflowStreamHandlerFormatting:
         assert "hints" not in parsed
 
     def test_format_error_event_with_upstream_exc(self):
-        """Upstream provider exceptions get ``error_kind=upstream`` + hints."""
+        """Upstream 5xx exceptions classify as upstream with provider-outage hints."""
         from anthropic import InternalServerError
 
         # Fabricate an anthropic.InternalServerError the way the SDK would
@@ -269,6 +269,35 @@ class TestWorkflowStreamHandlerFormatting:
         assert parsed["error_kind"] == "upstream"
         assert parsed["status_code"] == 500
         assert parsed["provider_module"] == "anthropic"
+        # 5xx is a provider outage — don't suggest checking the API key.
+        assert parsed["hints"] == ["provider_status", "try_another_model"]
+
+    def test_format_error_event_upstream_401_auth_hints(self):
+        """401 upstream surfaces credential-oriented hints first."""
+        from anthropic import AuthenticationError
+
+        exc = AuthenticationError.__new__(AuthenticationError)
+        exc.status_code = 401
+        Exception.__init__(exc, "invalid x-api-key")
+
+        handler = self._make_handler(thread_id="err-thread")
+        result = handler.format_error_event(str(exc), exc=exc)
+        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        assert parsed["error_kind"] == "upstream"
+        assert parsed["status_code"] == 401
+        assert parsed["hints"] == ["api_key", "model_access", "try_another_model"]
+
+    def test_format_error_event_upstream_no_status_falls_back(self):
+        """Unknown status (network error) shows all hints."""
+        from anthropic import APIConnectionError
+
+        exc = APIConnectionError.__new__(APIConnectionError)
+        Exception.__init__(exc, "Connection reset by peer")
+
+        handler = self._make_handler(thread_id="err-thread")
+        result = handler.format_error_event(str(exc), exc=exc)
+        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        assert parsed["error_kind"] == "upstream"
         assert parsed["hints"] == [
             "api_key",
             "model_access",
