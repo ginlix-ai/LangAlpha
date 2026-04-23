@@ -159,7 +159,18 @@ class StoreMemoryBackend:
         except InvalidMemoryKeyError:
             logger.debug("memory aread_text invalid key", path=file_path)
             return None
-        item = await self._store.aget(self._namespace(), key)
+        try:
+            item = await asyncio.wait_for(
+                self._store.aget(self._namespace(), key),
+                timeout=_STORE_OP_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "memory aget timed out",
+                path=file_path,
+                timeout_s=_STORE_OP_TIMEOUT_S,
+            )
+            return None
         if item is None:
             return None
         return self._content_from_value(item.value)
@@ -187,11 +198,32 @@ class StoreMemoryBackend:
         namespace = self._namespace()
         lock = _lock_for_namespace(namespace)
         async with lock:
-            existing_item = await self._store.aget(namespace, key)
+            try:
+                existing_item = await asyncio.wait_for(
+                    self._store.aget(namespace, key),
+                    timeout=_STORE_OP_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "memory aget timed out",
+                    path=file_path,
+                    timeout_s=_STORE_OP_TIMEOUT_S,
+                )
+                return False
             existing_value = existing_item.value if existing_item else None
             value = self._build_value(content=content, existing=existing_value)
             try:
-                await self._store.aput(namespace, key, value)
+                await asyncio.wait_for(
+                    self._store.aput(namespace, key, value),
+                    timeout=_STORE_OP_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "memory aput timed out",
+                    path=file_path,
+                    timeout_s=_STORE_OP_TIMEOUT_S,
+                )
+                return False
             except Exception:
                 logger.exception("memory awrite_text failed", path=file_path)
                 return False
@@ -217,7 +249,21 @@ class StoreMemoryBackend:
         namespace = self._namespace()
         lock = _lock_for_namespace(namespace)
         async with lock:
-            item = await self._store.aget(namespace, key)
+            try:
+                item = await asyncio.wait_for(
+                    self._store.aget(namespace, key),
+                    timeout=_STORE_OP_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "memory aget timed out",
+                    path=file_path,
+                    timeout_s=_STORE_OP_TIMEOUT_S,
+                )
+                return {
+                    "success": False,
+                    "error": "Memory store timed out. Retry shortly.",
+                }
             if item is None:
                 return {"success": False, "error": f"File not found: {file_path}"}
             content = self._content_from_value(item.value)
@@ -255,7 +301,20 @@ class StoreMemoryBackend:
 
             value = self._build_value(content=new_content, existing=item.value)
             try:
-                await self._store.aput(namespace, key, value)
+                await asyncio.wait_for(
+                    self._store.aput(namespace, key, value),
+                    timeout=_STORE_OP_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "memory aput timed out",
+                    path=file_path,
+                    timeout_s=_STORE_OP_TIMEOUT_S,
+                )
+                return {
+                    "success": False,
+                    "error": "Memory store timed out. Retry shortly.",
+                }
             except Exception as exc:
                 logger.exception("memory aedit_text failed", path=file_path)
                 return {"success": False, "error": str(exc)}
