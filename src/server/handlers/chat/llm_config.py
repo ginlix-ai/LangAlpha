@@ -8,6 +8,7 @@ lookups.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import NoReturn
 
 from ._common import logger
 
@@ -174,7 +175,9 @@ async def _cleanup_stale_model_preferences(user_id: str) -> list[tuple[str, str]
             or mc.get_model_config(name) is not None
         )
 
-    updates: dict = {}
+    # Values: ``None`` for scalar deletes, ``list[str]`` (or ``None``) for
+    # fallback_models. Merge-upsert interprets ``None`` as key deletion.
+    updates: dict[str, list[str] | None] = {}
     removed: list[tuple[str, str]] = []
 
     for key in _MODEL_PREF_KEYS:
@@ -196,6 +199,11 @@ async def _cleanup_stale_model_preferences(user_id: str) -> list[tuple[str, str]
             updates["fallback_models"] = kept or None
 
     if updates:
+        # Residual race window: between the re-read above and this upsert, a
+        # Settings save could still land and get overwritten by our ``None``
+        # delete. Narrow (single DB read → single DB write) and self-healing
+        # (the user saves again and it sticks). Not worth a CTE or advisory
+        # lock for the size of the hole.
         await upsert_user_preferences(user_id=user_id, other_preference=updates)
         await invalidate_user_prefs_cache(user_id)
         logger.info(
@@ -207,7 +215,7 @@ async def _cleanup_stale_model_preferences(user_id: str) -> list[tuple[str, str]
 
 def _raise_model_removed(
     model_name: str, removed: list[tuple[str, str]]
-) -> None:
+) -> NoReturn:
     """Raise a 400 with a CTA banner payload when a saved model no longer resolves."""
     from fastapi import HTTPException
 
@@ -608,6 +616,11 @@ async def resolve_llm_config(
     # culprit; raise a user-facing CTA either way. YAML-default UNKNOWN
     # falls through so the downstream error surfaces the config bug.
     if source == ModelSource.UNKNOWN and not is_custom_provider:
+        # Only the five scalar keys feed ``effective_model`` — fallback_models
+        # is tried by ``_resolve_one_with_fallbacks`` on a separate path and
+        # never flows through here, so it's intentionally excluded from this
+        # attribution check (the scrub in ``_cleanup_stale_model_preferences``
+        # still filters fallback_models once it fires).
         from_pref = any(
             model_pref.get(k) == effective_model for k in _MODEL_PREF_KEYS
         )
