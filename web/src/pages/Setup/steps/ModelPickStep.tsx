@@ -9,6 +9,7 @@ import { usePreferences } from '@/hooks/usePreferences';
 import { useUpdatePreferences } from '@/hooks/useUpdatePreferences';
 import { useTranslation } from 'react-i18next';
 import { slugifyModelName } from './slugifyModelName';
+import { computeSlotCleanup } from './modelSlotCleanup';
 
 // ---------------------------------------------------------------------------
 // ModelPickStep — Step 4: Choose which models to add to the configured model list.
@@ -301,17 +302,11 @@ export default function ModelPickStep() {
       // unchecked the model that was filling them. Otherwise an unchecked
       // model keeps appearing as the current selection in the chat dropdown
       // (since chat-input seeds selectedModel from preferred_model).
-      const selectedSet = new Set(mergedConfigured);
-      const wasInThisProvider = (m: string | undefined) => !!m && allModels.includes(m);
-      const orphaned = (m: string | undefined) => wasInThisProvider(m) && !selectedSet.has(m as string);
-      const slotCleanup: Record<string, null> = {};
-      if (orphaned(otherPref.preferred_model as string | undefined)) slotCleanup.preferred_model = null;
-      if (orphaned(otherPref.preferred_flash_model as string | undefined)) slotCleanup.preferred_flash_model = null;
-      if (orphaned(otherPref.compaction_model as string | undefined)) slotCleanup.compaction_model = null;
-      if (orphaned(otherPref.fetch_model as string | undefined)) slotCleanup.fetch_model = null;
-      const existingFallback = (otherPref.fallback_models as string[] | undefined) ?? [];
-      const cleanedFallback = existingFallback.filter((m) => !orphaned(m));
-      const fallbackChanged = cleanedFallback.length !== existingFallback.length;
+      const slotCleanup = computeSlotCleanup({
+        otherPref: otherPref as Parameters<typeof computeSlotCleanup>[0]['otherPref'],
+        allModels,
+        mergedConfigured,
+      });
 
       await updatePreferences.mutateAsync({
         other_preference: {
@@ -323,8 +318,10 @@ export default function ModelPickStep() {
           ...(allCustomModels.length > 0
             ? { custom_models: allCustomModels }
             : { custom_models: otherProviderCustomModels.length > 0 ? otherProviderCustomModels : null }),
-          ...slotCleanup,
-          ...(fallbackChanged ? { fallback_models: cleanedFallback } : {}),
+          ...slotCleanup.nulls,
+          ...(slotCleanup.fallback_models !== undefined
+            ? { fallback_models: slotCleanup.fallback_models }
+            : {}),
         },
       });
 

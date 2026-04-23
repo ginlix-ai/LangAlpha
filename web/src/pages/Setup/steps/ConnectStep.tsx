@@ -18,6 +18,7 @@ import {
   submitClaudeCallback,
 } from '@/pages/Dashboard/utils/api';
 import { useTranslation } from 'react-i18next';
+import { mergeCustomModelsForSlug, type CustomModelEntry } from './mergeCustomModelsForSlug';
 
 // ---------------------------------------------------------------------------
 // ConnectStep — Step 3: OAuth redirect or API key input
@@ -628,15 +629,11 @@ export default function ConnectStep() {
       // an existing slug. Imported/manual entries from this wizard pass win on
       // name collision; anything the user added elsewhere under this slug
       // keeps its current config.
-      const newNames = new Set(newModels.map((m) => m.name as string));
-      const preservedForSlug = existingModels.filter(
-        (m) => m.provider === slug && !newNames.has(m.name as string),
-      );
-      const mergedModels = [
-        ...existingModels.filter((m) => m.provider !== slug),
-        ...preservedForSlug,
-        ...newModels,
-      ];
+      const mergedModels = mergeCustomModelsForSlug({
+        existing: existingModels as unknown as CustomModelEntry[],
+        slug,
+        newForSlug: newModels as unknown as CustomModelEntry[],
+      });
 
       // Only send custom_providers and custom_models — backend merges into existing JSONB
       await updatePreferences.mutateAsync({
