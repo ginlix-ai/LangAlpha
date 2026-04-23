@@ -83,6 +83,11 @@ from .workspace_context import (
     WorkspaceContextMiddleware,
 )
 
+# Memory context middleware (memory.md injection from LangGraph BaseStore)
+from .memory_context import (
+    MemoryContextMiddleware,
+)
+
 # Runtime context middleware (time + user profile, after cache breakpoint)
 from .runtime_context import (
     RuntimeContextMiddleware,
@@ -148,6 +153,8 @@ __all__ = [
     "SubagentSteeringMiddleware",
     # Workspace context
     "WorkspaceContextMiddleware",
+    # Memory context
+    "MemoryContextMiddleware",
     # Runtime context
     "RuntimeContextMiddleware",
     # Anthropic thinking sanitizer

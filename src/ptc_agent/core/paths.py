@@ -39,6 +39,17 @@ BACKUP_EXCLUDE_AGENT_SUBDIRS: tuple[str, ...] = (
 )
 
 # ---------------------------------------------------------------------------
+# Long-term memory paths (store-backed, NOT on the sandbox filesystem).
+# Agent tools route reads/writes under these prefixes to a LangGraph
+# ``BaseStore`` instead of the sandbox, via ``CompositeFilesystemBackend``.
+# Listed here so they appear as first-class workspace paths for tooling and
+# documentation, even though the sandbox has no files at these locations.
+# ---------------------------------------------------------------------------
+MEMORY_USER_DIR: str = ".agents/user/memory"
+MEMORY_WORKSPACE_DIR: str = ".agents/workspace/memory"
+MEMORY_INDEX_FILENAME: str = "memory.md"
+
+# ---------------------------------------------------------------------------
 # Hidden path filters (always hidden from listings and completions)
 # ---------------------------------------------------------------------------
 HIDDEN_DIR_NAMES: frozenset[str] = frozenset({"_internal"})

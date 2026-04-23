@@ -6,16 +6,17 @@ from typing import Literal
 import structlog
 from langchain_core.tools import BaseTool, tool
 
-from ptc_agent.agent.backends.sandbox import SandboxBackend
+from ptc_agent.agent.backends import FilesystemBackend
 
 logger = structlog.get_logger(__name__)
 
 
-def create_grep_tool(backend: SandboxBackend) -> BaseTool:
+def create_grep_tool(backend: FilesystemBackend) -> BaseTool:
     """Factory function to create Grep tool.
 
     Args:
-        backend: SandboxBackend wrapping the sandbox
+        backend: Rich-method filesystem backend (``SandboxBackend`` or
+            ``CompositeFilesystemBackend``).
 
     Returns:
         Configured Grep tool function

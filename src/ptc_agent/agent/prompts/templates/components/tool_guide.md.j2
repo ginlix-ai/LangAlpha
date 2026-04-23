@@ -26,8 +26,8 @@ Quick reference:
 - **Inner cards** use `var(--color-bg-card)`, `0.5px solid var(--color-border-muted)`, `border-radius: 8px`
 - **Charts**: wrap `<canvas>` in a div with explicit height; use `responsive: true, maintainAspectRatio: false`
 - **CDN**: `cdnjs.cloudflare.com`, `cdn.jsdelivr.net`, `unpkg.com`, `esm.sh`
-- **No network to non-CDN origins**: `fetch()`/`XMLHttpRequest` to arbitrary URLs blocked by CSP — only CDN domains allowed. Use `data_files` for sandbox files, or embed small data directly in HTML
-- **`data_files`**: optional list of sandbox file paths — embedded as `window.__WIDGET_DATA__["filename"]` in the widget (text as strings, images as data URLs)
+- **No network to non-CDN origins**: `fetch()`/`XMLHttpRequest` to arbitrary URLs blocked by CSP — only CDN domains allowed. Use `data_files` for workspace files, or embed small data directly in HTML
+- **`data_files`**: optional list of workspace file paths — embedded as `window.__WIDGET_DATA__["filename"]` in the widget (text as strings, images as data URLs)
 - **No** `ResizeObserver`, `parent.postMessage`, `position: fixed`, `window.top`/`window.parent`
 - **`sendPrompt('text')`**: trigger follow-up chat messages from buttons (add ↗ arrow) (optional)
 
