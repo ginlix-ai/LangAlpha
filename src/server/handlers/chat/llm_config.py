@@ -94,6 +94,15 @@ async def _resolve_custom_model_byok(
         byok_config = configs.get(candidate)
         if byok_config:
             base_url = byok_config.get("base_url") or mc.get_provider_info(candidate).get("base_url")
+            # Rewrite ``provider`` to the candidate that actually held the key.
+            # ``create_llm_from_custom`` reads SDK / default_headers /
+            # use_response_api from the provider field, so if a custom model
+            # tagged ``dashscope`` resolves via its ``dashscope-coding``
+            # sibling, we need the SDK to match the coding-plan endpoint —
+            # otherwise we'd build a Qwen client pointed at an
+            # Anthropic-shaped URL and fail every request.
+            if candidate != provider:
+                custom_config = {**custom_config, "provider": candidate}
             return byok_config, base_url, custom_config
 
     return None, None, custom_config

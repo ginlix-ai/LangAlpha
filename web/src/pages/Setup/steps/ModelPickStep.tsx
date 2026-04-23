@@ -258,13 +258,19 @@ export default function ModelPickStep() {
       const otherPref = ((prefs.other_preference ?? {}) as Record<string, unknown>);
       const existingCustomModelList = ((otherPref.custom_models ?? []) as Array<{ name?: string; model_id: string; provider: string }>);
 
-      // Keep custom models for other providers
+      // Only entries whose ``provider`` equals the current slug are treated
+      // as owned by this view. Parent-brand entries (``cm.provider ===
+      // brandKey``) are kept as "other providers" so editing a variant like
+      // ``z-ai-coding`` doesn't delete the user's parent-brand ``z-ai``
+      // custom models. The display-time helpers still show brand entries for
+      // context, but the save path only rewrites the exact-slug bucket.
+      const providerSlug = provider || brandKey;
       const otherProviderCustomModels = existingCustomModelList.filter(
-        (cm) => cm.provider !== provider && cm.provider !== brandKey,
+        (cm) => cm.provider !== providerSlug,
       );
-      // Preserve existing custom models for this provider that are still selected
+      // Preserve existing custom models under THIS slug that are still selected.
       const existingThisProvider = existingCustomModelList.filter(
-        (cm) => (cm.provider === provider || cm.provider === brandKey) && selected.has(cm.name || cm.model_id),
+        (cm) => cm.provider === providerSlug && selected.has(cm.name || cm.model_id),
       );
       const existingIds = new Set(existingThisProvider.map((cm) => cm.name || cm.model_id));
 
@@ -275,7 +281,6 @@ export default function ModelPickStep() {
       //       metadata.provider points at the parent (z-ai), but BYOK must
       //       route through the variant's key. Writing a custom entry with
       //       provider=<variant slug> makes the backend resolver pick it up.
-      const providerSlug = provider || brandKey;
       const newCustomModels = [...selected]
         .filter((m) => !existingIds.has(m))
         .filter((m) => {
