@@ -235,6 +235,7 @@ class DailyCacheService:
 
         # --- Try cache (across all known sources) ---
         cache_key, envelope = await self._find_cached(normalized, from_date, to_date, is_index=is_index)
+        is_live = DailyCacheKeyBuilder._is_live(to_date)
 
         if envelope is not None:
             bars = envelope["bars"]
@@ -245,8 +246,10 @@ class DailyCacheService:
             ttl_remaining = max(0, int(stored_ttl - elapsed)) if stored_ttl else None
 
             bg_triggered = False
-            if _needs_refresh(envelope, base_ttl):
-                if _is_stale_date(envelope) or envelope.get("complete"):
+            # Historical daily envelopes skip live-only staleness checks but
+            # still participate in truncated/soft-TTL refresh via is_live.
+            if _needs_refresh(envelope, base_ttl, interval="1day", is_live=is_live):
+                if is_live and (_is_stale_date(envelope) or envelope.get("complete")):
                     # Stale date or day-boundary transition → sync re-fetch
                     logger.info("Daily cache %s: stale/complete → sync re-fetch", normalized)
                     envelope = None

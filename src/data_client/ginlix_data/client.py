@@ -43,6 +43,7 @@ class GinlixDataClient:
         to_date: str | None = None,
         limit: int = 5000,
         user_id: str | None = None,
+        sort: str = "desc",
     ) -> tuple[list[dict[str, Any]], bool]:
         """Fetch OHLCV bars for a single symbol, auto-paginating if needed.
 
@@ -52,6 +53,10 @@ class GinlixDataClient:
         automatically (up to ``_MAX_PAGES`` total requests) so the caller
         always receives the complete result set.
 
+        ``sort`` defaults to ``"desc"`` so page-ceiling truncation drops the
+        oldest bars rather than the recent tail. Results are sorted back to
+        ascending before return.
+
         Returns ``(results, truncated)`` where *truncated* is ``True`` when
         the page ceiling was hit while more data was available.
         """
@@ -59,6 +64,7 @@ class GinlixDataClient:
             "timespan": timespan,
             "multiplier": multiplier,
             "limit": limit,
+            "sort": sort,
         }
         if from_date:
             params["from"] = from_date
@@ -95,6 +101,10 @@ class GinlixDataClient:
                     "get_aggregates %s %s: hit %d-page ceiling, data truncated",
                     symbol, timespan, self._MAX_PAGES,
                 )
+
+        # Sort ascending; callers (lightweight-charts, cache watermark, delta-merge) depend on it.
+        if sort == "desc":
+            all_results.sort(key=lambda b: b.get("time", 0))
 
         return all_results, truncated
 
