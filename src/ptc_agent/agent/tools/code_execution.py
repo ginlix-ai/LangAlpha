@@ -9,6 +9,24 @@ from ptc_agent.agent.backends.sandbox import SandboxBackend
 
 logger = structlog.get_logger(__name__)
 
+# Same guard as bash — sandbox Python cannot reach the store-backed memory.
+_MEMORY_PATH_MARKERS: tuple[str, ...] = (
+    ".agents/user/memory/",
+    ".agents/workspace/memory/",
+)
+
+_MEMORY_ROUTE_ERROR = (
+    "ERROR: Memory paths (.agents/user/memory/**, .agents/workspace/memory/**) "
+    "are managed by the store-backed long-term memory system and are NOT on "
+    "the sandbox filesystem. Read them with the Read tool before this call and "
+    "pass the content in as a string; write them with Write/Edit. ExecuteCode "
+    "cannot persist to memory."
+)
+
+
+def _code_touches_memory(code: str) -> bool:
+    return any(marker in code for marker in _MEMORY_PATH_MARKERS)
+
 
 def create_execute_code_tool(backend: SandboxBackend, mcp_registry: Any, thread_id: str = "") -> BaseTool:
     """Factory function to create execute_code tool with injected dependencies.
@@ -44,6 +62,13 @@ def create_execute_code_tool(backend: SandboxBackend, mcp_registry: Any, thread_
         """
         if not backend:
             return "ERROR: Sandbox not initialized"
+
+        if _code_touches_memory(code):
+            logger.info(
+                "Blocked execute_code referencing memory path",
+                code_length=len(code),
+            )
+            return _MEMORY_ROUTE_ERROR
 
         try:
             logger.info("Executing code in sandbox", code_length=len(code), thread_id=thread_id)

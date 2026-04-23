@@ -7,6 +7,26 @@ from ptc_agent.agent.backends.sandbox import SandboxBackend
 
 logger = structlog.get_logger(__name__)
 
+# Bash runs in the sandbox FS; memory lives in the store. Refuse memory paths
+# so the agent routes them through the file tools instead of silently dropping
+# writes on the sandbox.
+_MEMORY_PATH_MARKERS: tuple[str, ...] = (
+    ".agents/user/memory/",
+    ".agents/workspace/memory/",
+)
+
+_MEMORY_ROUTE_ERROR = (
+    "ERROR: Memory paths (.agents/user/memory/**, .agents/workspace/memory/**) "
+    "are managed by the store-backed long-term memory system and are NOT on the "
+    "workspace filesystem. Use the Write, Edit, Read, Glob, or Grep file tools "
+    "for these paths so they route to the memory store. Bash will not see or "
+    "persist memory content."
+)
+
+
+def _command_touches_memory(command: str) -> bool:
+    return any(marker in command for marker in _MEMORY_PATH_MARKERS)
+
 
 def create_execute_bash_tool(backend: SandboxBackend, thread_id: str = "") -> BaseTool:
     """Factory function to create Bash tool with injected dependencies.
@@ -48,6 +68,14 @@ def create_execute_bash_tool(backend: SandboxBackend, thread_id: str = "") -> Ba
 
         Paths: Quote paths with spaces. Use /home/workspace/ for workspace files.
         """
+        # Bash cannot reach the store-backed memory tier.
+        if _command_touches_memory(command):
+            logger.info(
+                "Blocked bash command touching memory path",
+                command=command[:100],
+            )
+            return _MEMORY_ROUTE_ERROR
+
         try:
             logger.debug(
                 "Executing bash command",

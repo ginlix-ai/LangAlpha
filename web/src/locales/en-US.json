@@ -458,6 +458,31 @@
       "download": "Download instead"
     }
   },
+  "rightPanel": {
+    "tabs": {
+      "files": "Files",
+      "memory": "Memory",
+      "memo": "Memo"
+    },
+    "close": "Close panel"
+  },
+  "memoryPanel": {
+    "backToList": "Back to memory list",
+    "refresh": "Refresh memory",
+    "tierUser": "User",
+    "tierWorkspace": "Workspace",
+    "loading": "Loading…",
+    "loadingList": "Loading memory…",
+    "emptyUser": "No user memory yet.",
+    "emptyWorkspace": "No workspace memory yet.",
+    "emptyHint": "The agent will create memory.md when it has something worth remembering.",
+    "loadError": "Failed to load memory",
+    "readError": "Failed to read memory file"
+  },
+  "memoPanel": {
+    "title": "Memo",
+    "description": "Long-form research notes the agent composes and keeps up to date. Coming soon."
+  },
   "automation": {
     "automations": "Automations",
     "createAutomation": "Create Automation",

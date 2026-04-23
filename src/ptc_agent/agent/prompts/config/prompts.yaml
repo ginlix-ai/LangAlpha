@@ -16,6 +16,9 @@ defaults:
   include_examples: true
   include_anti_patterns: true
 
+  # Long-term memory (store-backed; injected via MemoryContextMiddleware)
+  memory_enabled: true
+
 # System prompt template metadata (for documentation)
 system:
   description: Main system prompt for task coordination and sub-agent delegation

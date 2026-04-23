@@ -13,7 +13,12 @@ from typing import Any
 import structlog
 from langchain.agents import create_agent
 
-from ptc_agent.agent.backends import SandboxBackend
+from ptc_agent.agent.backends import (
+    CompositeFilesystemBackend,
+    NamespaceFactory,
+    SandboxBackend,
+    StoreMemoryBackend,
+)
 from ptc_agent.agent.middleware import SubAgentMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
@@ -50,6 +55,13 @@ from ptc_agent.agent.middleware import (
     SubagentSteeringMiddleware,
     # Workspace context middleware
     WorkspaceContextMiddleware,
+    # Memory context middleware (memory.md injection)
+    MemoryContextMiddleware,
+)
+from ptc_agent.core.paths import (
+    MEMORY_INDEX_FILENAME,
+    MEMORY_USER_DIR,
+    MEMORY_WORKSPACE_DIR,
 )
 from ptc_agent.agent.middleware.runtime_context import RuntimeContextMiddleware
 from ptc_agent.agent.middleware.background_subagent.registry import (
@@ -244,6 +256,7 @@ class PTCAgent:
         store: Any | None = None,
         on_signed_url: Any | None = None,
         vault_secrets: dict[str, str] | None = None,
+        user_id: str | None = None,
     ) -> Any:
         """Create a deepagent with PTC pattern capabilities.
 
@@ -273,6 +286,9 @@ class PTCAgent:
                 Used to invalidate Session's agent.md cache.
             on_signed_url: Optional async callback(sandbox_id, port, url) to cache
                 signed preview URLs. Injected from the server layer.
+            user_id: Optional user identifier used as the first component of the
+                memory-namespace tuples. Falls back to ``"default"`` with a
+                warning when None (local / MemorySaver dev mode).
 
         Returns:
             Configured BackgroundSubagentOrchestrator wrapping the deepagent
@@ -288,8 +304,93 @@ class PTCAgent:
         # Compute short thread ID for thread-scoped storage
         short_thread_id = thread_id[:8] if thread_id else ""
 
-        # Single backend — tools, middleware, and skill discovery all route sandbox I/O through it.
         backend = SandboxBackend(sandbox, operation_callback=operation_callback)
+
+        # Memory is opt-in: disabled entirely when identity is missing rather
+        # than falling back to a shared namespace that would cross-pollinate
+        # unauthenticated sessions.
+        workspace_id_for_memory = (
+            getattr(session, "conversation_id", None) if session else None
+        )
+        user_memory_enabled = store is not None and bool(user_id)
+        workspace_memory_enabled = (
+            store is not None and bool(user_id) and bool(workspace_id_for_memory)
+        )
+        memory_enabled = user_memory_enabled or workspace_memory_enabled
+
+        if store is not None and not memory_enabled:
+            logger.warning(
+                "memory disabled due to missing identity",
+                user_id_present=bool(user_id),
+                workspace_id_present=bool(workspace_id_for_memory),
+            )
+
+        filesystem_backend: Any = backend
+        memory_context_middleware: list[Any] = []
+        if memory_enabled:
+            sandbox_root = backend.root_dir.rstrip("/")
+
+            # INVARIANT: these closures capture identity at agent-creation
+            # time. Safe only because one PTCAgent is built per request — if an
+            # orchestrator ever reuses agent instances across requests, memory
+            # will cross-pollinate between users. Resolve identity at call time
+            # (e.g. via `langgraph.runtime.get_runtime()`) before introducing
+            # reuse.
+            routes: list[StoreMemoryBackend] = []
+            user_namespace_factory: NamespaceFactory | None = None
+            workspace_namespace_factory: NamespaceFactory | None = None
+
+            if user_memory_enabled:
+                captured_user_id = user_id
+                def _user_namespace() -> tuple[str, ...]:
+                    return (captured_user_id, "memory")
+
+                user_namespace_factory = _user_namespace
+                routes.append(
+                    StoreMemoryBackend(
+                        store=store,
+                        namespace_factory=_user_namespace,
+                        root_prefix=f"{sandbox_root}/{MEMORY_USER_DIR}/",
+                        sandbox_backend=backend,
+                    )
+                )
+
+            if workspace_memory_enabled:
+                captured_user_id = user_id
+                captured_workspace_id = workspace_id_for_memory
+                def _workspace_namespace() -> tuple[str, ...]:
+                    return (
+                        captured_user_id,
+                        "workspaces",
+                        captured_workspace_id,
+                        "memory",
+                    )
+
+                workspace_namespace_factory = _workspace_namespace
+                routes.append(
+                    StoreMemoryBackend(
+                        store=store,
+                        namespace_factory=_workspace_namespace,
+                        root_prefix=f"{sandbox_root}/{MEMORY_WORKSPACE_DIR}/",
+                        sandbox_backend=backend,
+                    )
+                )
+
+            if routes:
+                filesystem_backend = CompositeFilesystemBackend(
+                    sandbox=backend,
+                    routes=routes,
+                )
+                memory_context_middleware = [
+                    MemoryContextMiddleware(
+                        store=store,
+                        user_namespace_factory=user_namespace_factory,
+                        workspace_namespace_factory=workspace_namespace_factory,
+                        user_display_path=f"{MEMORY_USER_DIR}/{MEMORY_INDEX_FILENAME}",
+                        workspace_display_path=f"{MEMORY_WORKSPACE_DIR}/{MEMORY_INDEX_FILENAME}",
+                        index_key=MEMORY_INDEX_FILENAME,
+                    )
+                ]
 
         # Create the execute_code tool for MCP invocation
         execute_code_tool = create_execute_code_tool(
@@ -310,17 +411,20 @@ class PTCAgent:
         # Start with base tools
         tools: list[Any] = [execute_code_tool, bash_tool, bash_output_tool, preview_url_tool, show_widget_tool, TodoWrite]
 
-        # Create custom filesystem tools (override deepagents middleware tools)
+        # Create custom filesystem tools (override deepagents middleware tools).
+        # `filesystem_backend` is the composite when a store is wired; otherwise
+        # it's the plain sandbox backend. Tools see a uniform rich-method
+        # surface either way.
         read_file, write_file, edit_file = create_filesystem_tools(
-            backend,
+            filesystem_backend,
             operation_callback=operation_callback,
         )
         filesystem_tools = [
             read_file,  # overrides middleware read_file
             write_file,  # overrides middleware write_file
             edit_file,  # overrides middleware edit_file
-            create_glob_tool(backend),  # overrides middleware glob
-            create_grep_tool(backend),  # overrides middleware grep
+            create_glob_tool(filesystem_backend),  # overrides middleware glob
+            create_grep_tool(filesystem_backend),  # overrides middleware grep
         ]
         tools.extend(filesystem_tools)
 
@@ -585,6 +689,14 @@ class PTCAgent:
         if session is not None:
             workspace_context_middleware = [WorkspaceContextMiddleware(session=session)]
 
+        # Memory context middleware (memory.md injection from LangGraph store).
+        # Built alongside the composite backend above; empty list when store is
+        # None so dev/MemorySaver runs skip the middleware entirely.
+        #
+        # Positioned next to workspace_context_middleware — both run innermost
+        # (after the prompt-cache breakpoint) so dynamic content doesn't
+        # invalidate the cached prefix.
+
         # Runtime context middleware (time + user profile — after cache breakpoint)
         runtime_context_middleware: list[Any] = [
             RuntimeContextMiddleware(
@@ -622,6 +734,7 @@ class PTCAgent:
                 EmptyToolCallRetryMiddleware(),
                 PatchToolCallsMiddleware(),
                 *workspace_context_middleware,
+                *memory_context_middleware,
                 *runtime_context_middleware,
             ]
             if m is not None

@@ -46,7 +46,7 @@ function appendPathSuffix(baseUrl: string, path?: string): string {
   }
 }
 
-const FilePanel = React.lazy(() => import('./FilePanel'));
+const RightPanel = React.lazy(() => import('./RightPanel'));
 const DetailPanel = React.lazy(() => import('./DetailPanel'));
 const PreviewViewer = React.lazy(() => import('./viewers/PreviewViewer'));
 
@@ -506,6 +506,25 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     refresh: refreshFiles,
   } = useWorkspaceFiles(effectiveFileWorkspaceId, { includeSystem: showSystemFiles });
 
+  // When the agent writes to a memory-tier path, invalidate the memory queries
+  // so the Memory tab reflects the new content without a manual refresh.
+  const handleFileArtifact = useCallback((event: { payload?: Record<string, unknown> }) => {
+    refreshFiles();
+    const filePath = (event?.payload?.file_path as string | undefined) ?? '';
+    if (!filePath) return;
+    const normalized = filePath.replace(/^\/+/, '');
+    const matchesUser = normalized.includes('.agents/user/memory/');
+    const matchesWorkspace = normalized.includes('.agents/workspace/memory/');
+    if (matchesUser) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.memory.user() });
+    }
+    if (matchesWorkspace && effectiveFileWorkspaceId) {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.memory.workspace(effectiveFileWorkspaceId),
+      });
+    }
+  }, [refreshFiles, queryClient, effectiveFileWorkspaceId]);
+
   // Navigation panel data — workspaces + threads for the overlay sidebar
   const {
     workspaces: navWorkspaces,
@@ -578,7 +597,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     getFeedbackForMessage,
     getSubagentHistory,
     resolveSubagentIdToAgentId,
-  } = useChatMessages(workspaceId, threadId, updateTodoListCard as (todoData: Record<string, unknown>) => void, updateSubagentCard, inactivateAllSubagents, finalizePendingTodos, handleOnboardingRelatedToolComplete, refreshFiles, handleOpenPreviewFromStream, agentMode, clearSubagentCards, handleWorkspaceCreated);
+  } = useChatMessages(workspaceId, threadId, updateTodoListCard as (todoData: Record<string, unknown>) => void, updateSubagentCard, inactivateAllSubagents, finalizePendingTodos, handleOnboardingRelatedToolComplete, handleFileArtifact, handleOpenPreviewFromStream, agentMode, clearSubagentCards, handleWorkspaceCreated);
 
   const chatPlaceholder = useMemo(() => {
     if (pendingRejection) return t('chat.placeholderPendingRejection');
@@ -2197,7 +2216,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
             <div className="flex-shrink-0 h-full" style={{ width: '100%' }}>
               <Suspense fallback={null}>
                 <WorkspaceProvider workspaceId={effectiveFileWorkspaceId || workspaceId} downloadFile={null}>
-                <FilePanel
+                <RightPanel
                   workspaceId={effectiveFileWorkspaceId || workspaceId}
                   onClose={() => { setRightPanelType(null); popPanelHistory(); }}
                   targetFile={filePanelTargetFile}
@@ -2250,7 +2269,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                 <Suspense fallback={null}>
                   {rightPanelType === 'file' ? (
                     <WorkspaceProvider workspaceId={effectiveFileWorkspaceId || workspaceId} downloadFile={null}>
-                    <FilePanel
+                    <RightPanel
                       workspaceId={effectiveFileWorkspaceId || workspaceId}
                       onClose={() => { setRightPanelType(null); popPanelHistory(); }}
                       targetFile={filePanelTargetFile}

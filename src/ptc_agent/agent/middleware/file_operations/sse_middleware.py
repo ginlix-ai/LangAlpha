@@ -67,13 +67,6 @@ class FileOperationMiddleware(AgentMiddleware):
         on_agent_md_write: Callable[[], None] | None = None,
         work_dir: str = "/home/workspace",
     ) -> None:
-        """Initialize middleware.
-
-        Args:
-            on_agent_md_write: Optional callback invoked when agent.md is written/edited.
-                Used to invalidate Session's agent.md cache.
-            work_dir: Sandbox working directory used to normalize file paths.
-        """
         super().__init__()
         self._on_agent_md_write = on_agent_md_write
         self._work_dir_prefix = work_dir.rstrip("/") + "/"
@@ -132,18 +125,19 @@ class FileOperationMiddleware(AgentMiddleware):
         try:
             result = await handler(request)
 
+            # removeprefix (not lstrip) — lstrip eats a leading "." from paths
+            # like ".agents/user/memory/memory.md".
+            normalized = file_path or ""
+            if normalized.startswith(self._work_dir_prefix):
+                normalized = normalized[len(self._work_dir_prefix):]
+            normalized = normalized.removeprefix("./")
+
             # Invalidate agent.md cache when agent.md is written or edited
-            if self._on_agent_md_write and file_path:
-                # Normalize: strip workspace prefix and ./ to get relative filename
-                normalized = file_path
-                if normalized.startswith(self._work_dir_prefix):
-                    normalized = normalized[len(self._work_dir_prefix):]
-                normalized = normalized.lstrip("./")
-                if normalized == "agent.md":
-                    try:
-                        self._on_agent_md_write()
-                    except Exception:
-                        logger.debug("[FILE_OP_MIDDLEWARE] Failed to invalidate agent.md cache")
+            if self._on_agent_md_write and normalized == "agent.md":
+                try:
+                    self._on_agent_md_write()
+                except Exception:
+                    logger.debug("[FILE_OP_MIDDLEWARE] Failed to invalidate agent.md cache")
 
             # Build completed event with structure expected by streaming_handler
             # Must include artifact_type for handler to recognize and emit as SSE artifact event

@@ -142,6 +142,7 @@ async def build_ptc_graph(
     background_registry: Any | None = None,
     store: Any | None = None,
     on_signed_url: Any | None = None,
+    user_id: str | None = None,
 ) -> Any:
     """
     Build a compiled LangGraph for a specific conversation.
@@ -201,8 +202,11 @@ async def build_ptc_graph(
         operation_callback=operation_callback,
         checkpointer=checkpointer,
         background_registry=background_registry,
+        # session gives workspace-tier memory a real namespace.
+        session=session,
         store=store,
         on_signed_url=on_signed_url,
+        user_id=user_id,
     )
 
     logger.debug(
@@ -300,6 +304,7 @@ async def build_ptc_graph_with_session(
         store=store,
         on_signed_url=on_signed_url,
         vault_secrets=vault_secrets,
+        user_id=user_id,
     )
 
     logger.debug(

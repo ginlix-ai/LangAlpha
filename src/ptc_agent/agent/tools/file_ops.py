@@ -9,7 +9,7 @@ from typing import Any, Callable
 import structlog
 from langchain_core.tools import tool
 
-from ptc_agent.agent.backends.sandbox import SandboxBackend
+from ptc_agent.agent.backends import FilesystemBackend
 
 logger = structlog.get_logger(__name__)
 
@@ -31,15 +31,25 @@ _PROTECTED_USER_FILES = {"preference.md", "watchlist.md", "portfolio.md"}
 
 
 def _is_protected_user_path(path: str) -> bool:
-    """Check if path is in the protected user data directory."""
+    """Check if ``path`` targets a legacy user-profile file under ``.agents/user/``."""
+    name = Path(path).name
+    if name not in _PROTECTED_USER_FILES:
+        return False
+    # Memory paths must stay writable even when the basename collides with a
+    # legacy protected filename.
     normalized = path.lstrip("/")
-    # Check sandbox absolute path
-    if normalized.startswith("home/daytona/.agents/user/"):
-        return True
-    # Check relative path
-    if normalized.startswith(_PROTECTED_USER_DIR):
-        return True
-    return False
+    memory_markers = (
+        ".agents/user/memory/",
+        "home/daytona/.agents/user/memory/",
+        "home/workspace/.agents/user/memory/",
+    )
+    if any(normalized.startswith(m) for m in memory_markers):
+        return False
+    return (
+        normalized.startswith("home/daytona/.agents/user/")
+        or normalized.startswith("home/workspace/.agents/user/")
+        or normalized.startswith(_PROTECTED_USER_DIR)
+    )
 
 
 def _get_protection_error(path: str) -> str:
@@ -54,14 +64,15 @@ def _get_protection_error(path: str) -> str:
 
 
 def create_filesystem_tools(
-    backend: SandboxBackend,
+    backend: FilesystemBackend,
     operation_callback: OperationCallback | None = None,
 ) -> tuple:
     """Factory function to create filesystem tools (Read, Write, Edit).
 
     Args:
-        backend: `SandboxBackend` wrapping the sandbox — routes all I/O through
-            one abstraction so the tools are decoupled from `PTCSandbox` directly.
+        backend: Rich-method filesystem backend — either a plain ``SandboxBackend``
+            or a ``CompositeFilesystemBackend`` that adds memory-path routing.
+            Tools see a uniform interface either way.
         operation_callback: Optional callback invoked on file operations (write, edit).
                             Receives dict with operation details for persistence/logging.
     """
