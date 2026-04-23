@@ -1,4 +1,4 @@
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Component as ReactComponent, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
 import {
   ResponsiveGridLayout,
   useContainerWidth,
@@ -36,6 +36,35 @@ function WidgetFallback() {
       Loading…
     </div>
   );
+}
+
+/** Isolates one widget's render failure so a bug in, say, ChartWidget can't
+ *  blank out every other widget on the dashboard. */
+class WidgetErrorBoundary extends ReactComponent<
+  { widgetType: string; children: ReactNode },
+  { error: Error | null }
+> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error(`[widget:${this.props.widgetType}] render error`, error, info.componentStack);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div
+          className="h-full w-full flex flex-col items-center justify-center px-3 py-2 text-center gap-1"
+          style={{ color: 'var(--color-text-tertiary)', fontSize: '11px', lineHeight: 1.4 }}
+        >
+          <span style={{ fontWeight: 500 }}>Widget failed to render</span>
+          <span style={{ opacity: 0.75 }}>{this.props.widgetType}</span>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 interface DashboardGridProps {
@@ -379,12 +408,14 @@ export function DashboardGrid({ prefs, editMode, onChange, onOpenSettings }: Das
           def,
           cb,
           body: (
-            <Suspense fallback={<WidgetFallback />}>
-              <Component
-                instance={instance}
-                updateConfig={cb.updateConfig as (patch: Partial<unknown>) => void}
-              />
-            </Suspense>
+            <WidgetErrorBoundary widgetType={def.type}>
+              <Suspense fallback={<WidgetFallback />}>
+                <Component
+                  instance={instance}
+                  updateConfig={cb.updateConfig as (patch: Partial<unknown>) => void}
+                />
+              </Suspense>
+            </WidgetErrorBoundary>
           ) as ReactNode,
         };
       }),
