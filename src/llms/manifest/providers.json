@@ -45,6 +45,9 @@
         "name": "GPT-5.4 Mini",
         "is_reasoning": true,
         "description": "OpenAI's strongest mini model for coding, computer use, and subagents",
+        "alias": [
+          "gpt-5.4-mini-2026-03-17"
+        ],
         "context_window": 400000,
         "max_output": 128000,
         "pricing": {
@@ -59,6 +62,9 @@
         "name": "GPT-5.4 Nano",
         "is_reasoning": true,
         "description": "OpenAI's cheapest GPT-5.4-class model for simple high-volume tasks",
+        "alias": [
+          "gpt-5.4-nano-2026-03-17"
+        ],
         "context_window": 400000,
         "max_output": 128000,
         "pricing": {
@@ -73,6 +79,9 @@
         "name": "GPT-5.4",
         "is_reasoning": true,
         "description": "OpenAI's latest and most capable reasoning model with tiered pricing",
+        "alias": [
+          "gpt-5.4-2026-03-05"
+        ],
         "pricing": {
           "input_tiers": [
             {
@@ -650,6 +659,40 @@
     ],
     "dashscope": [
       {
+        "id": "qwen3.6-max-preview",
+        "name": "Qwen3.6 Max Preview",
+        "is_reasoning": true,
+        "description": "Alibaba's largest and most capable Qwen3.6 Max Preview — improved vibe coding, coding agent execution, and frontend development",
+        "context_window": 262144,
+        "max_output": 65536,
+        "pricing": {
+          "input_tiers": [
+            {
+              "max_tokens": 128000,
+              "rate": 1.291,
+              "cached_input": 0.129
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 2.152,
+              "cached_input": 0.215
+            }
+          ],
+          "output_tiers": [
+            {
+              "max_tokens": 128000,
+              "rate": 7.747
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 12.912
+            }
+          ],
+          "output_pricing_mode": "input_dependent",
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
         "id": "qwen3.6-plus",
         "name": "Qwen3.6 Plus",
         "is_reasoning": true,
@@ -891,6 +934,40 @@
     ],
     "dashscope-intl": [
       {
+        "id": "qwen3.6-max-preview",
+        "name": "Qwen3.6 Max Preview (SG)",
+        "is_reasoning": true,
+        "description": "Alibaba's Qwen3.6 Max Preview — Singapore international region",
+        "context_window": 262144,
+        "max_output": 65536,
+        "pricing": {
+          "input_tiers": [
+            {
+              "max_tokens": 128000,
+              "rate": 1.398,
+              "cached_input": 0.140
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 2.150,
+              "cached_input": 0.215
+            }
+          ],
+          "output_tiers": [
+            {
+              "max_tokens": 128000,
+              "rate": 8.387
+            },
+            {
+              "max_tokens": 256000,
+              "rate": 12.902
+            }
+          ],
+          "output_pricing_mode": "input_dependent",
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
         "id": "qwen3.6-plus",
         "name": "Qwen3.6 Plus (SG)",
         "is_reasoning": true,
@@ -1037,6 +1114,19 @@
     ],
     "moonshot": [
       {
+        "id": "kimi-k2.6",
+        "name": "Kimi K2.6",
+        "is_reasoning": true,
+        "description": "Moonshot AI's Kimi K2.6 multi-modal model with extended context",
+        "context_window": 262144,
+        "pricing": {
+          "input": 0.95,
+          "cached_input": 0.16,
+          "output": 4.0,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
         "id": "kimi-k2.5",
         "name": "Kimi K2.5",
         "is_reasoning": true,
@@ -1061,6 +1151,19 @@
           "input": 0.6,
           "cached_input": 0.1,
           "output": 3.0,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "kimi-k2.6",
+        "name": "Kimi K2.6",
+        "is_reasoning": true,
+        "description": "Moonshot AI's Kimi K2.6 multi-modal model with extended context",
+        "context_window": 262144,
+        "pricing": {
+          "input": 0.95,
+          "cached_input": 0.16,
+          "output": 4.0,
           "unit": "per_1m_tokens"
         }
       },
