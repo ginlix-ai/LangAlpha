@@ -90,6 +90,10 @@ def _should_discard_envelope(
     # Large gaps (>30 min) always discard immediately.  Small gaps (10-30 min)
     # respect the grace period to avoid fetch storms when the upstream
     # consistently returns partial data.
+    # Runs for both live and historical envelopes, but is a no-op for
+    # historical: ``first_bar_time`` is on a past trading day and ``open_ms``
+    # is today's market open, so ``gap_ms`` is always negative and neither
+    # threshold fires.
     bars = envelope.get("bars")
     if bars and not envelope.get("complete"):
         open_ms = today_market_open_ms()
