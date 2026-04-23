@@ -1241,18 +1241,14 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                     padding: '6px 10px',
                     fontSize: '13px',
                     fontWeight: 500,
-                    background: mode === 'ptc' ? 'var(--color-accent-soft)' : 'transparent',
-                    color: mode === 'ptc' ? 'var(--color-accent-light)' : 'var(--color-text-muted, #8b8fa3)',
-                    border: mode === 'ptc' ? '1px solid var(--color-accent-overlay)' : '1px solid transparent',
+                    background: 'transparent',
+                    color: 'var(--color-text-muted, #8b8fa3)',
+                    border: '1px solid transparent',
                     transition: 'background 0.2s, color 0.2s, border-color 0.2s',
                   }}
                   onClick={(e) => { e.stopPropagation(); onModeChange(mode === 'fast' ? 'ptc' : 'fast'); }}
-                  onMouseEnter={(e) => {
-                    if (mode !== 'ptc') e.currentTarget.style.background = 'var(--color-border-muted)';
-                  }}
-                  onMouseLeave={(e) => {
-                    if (mode !== 'ptc') e.currentTarget.style.background = 'transparent';
-                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-border-muted)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
                   type="button"
                   title={mode === 'fast' ? 'Flash — quick answer using flash model' : 'PTC — full agent with workspace and tools'}
                 >
