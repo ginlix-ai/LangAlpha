@@ -74,17 +74,24 @@ async def _resolve_custom_model_byok(
     #    the mirror case where a custom model is tagged with the parent slug
     #    but the user only configured a variant (e.g. coding-plan) so the key
     #    lives under the variant.
+    #
+    #    Single batch query instead of a per-candidate round-trip: typical
+    #    candidate list is 2-4 entries, and the chat hot path can't afford
+    #    N round-trips per request.
+    from src.server.database.api_keys import get_byok_configs_for_providers
+
     parent = mc.get_parent_provider(provider)
     candidates: list[str] = [provider]
     if parent and parent != provider:
         candidates.append(parent)
-    # Enumerate sibling variants via the canonical root (parent or self).
     root = parent if parent else provider
     for sibling in mc.get_child_variants(root):
         if sibling not in candidates:
             candidates.append(sibling)
-    for candidate in candidates:
-        byok_config = await get_byok_config_for_provider(user_id, candidate)
+
+    configs = await get_byok_configs_for_providers(user_id, candidates)
+    for candidate in candidates:  # keep the provider → parent → sibling priority
+        byok_config = configs.get(candidate)
         if byok_config:
             base_url = byok_config.get("base_url") or mc.get_provider_info(candidate).get("base_url")
             return byok_config, base_url, custom_config

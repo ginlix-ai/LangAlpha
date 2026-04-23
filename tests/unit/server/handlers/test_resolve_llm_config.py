@@ -691,11 +691,13 @@ class TestCustomModelFallback:
         mc.get_child_variants.return_value = ["moonshot-coding"]
         mc.get_provider_info.return_value = {"base_url": "https://api.kimi.com/coding"}
 
-        async def _lookup(user_id, provider):
+        async def _batch_lookup(user_id, providers):
             # Key is stored under the variant, not the parent.
-            if provider == "moonshot-coding":
-                return {"api_key": "user-kimi-key", "base_url": None}
-            return None
+            return {
+                p: {"api_key": "user-kimi-key", "base_url": None}
+                for p in providers
+                if p == "moonshot-coding"
+            }
 
         with (
             patch(
@@ -704,9 +706,9 @@ class TestCustomModelFallback:
                 return_value=None,  # no custom provider, this is a built-in variant
             ),
             patch(
-                "src.server.database.api_keys.get_byok_config_for_provider",
+                "src.server.database.api_keys.get_byok_configs_for_providers",
                 new_callable=AsyncMock,
-                side_effect=_lookup,
+                side_effect=_batch_lookup,
             ),
         ):
             byok_config, base_url, _ = await _resolve_custom_model_byok(
@@ -742,10 +744,12 @@ class TestCustomModelFallback:
 
         mc.get_provider_info.side_effect = _provider_info
 
-        async def _lookup(user_id, provider):
-            if provider == "moonshot-coding":
-                return {"api_key": "user-kimi-coding-key", "base_url": None}
-            return None
+        async def _batch_lookup(user_id, providers):
+            return {
+                p: {"api_key": "user-kimi-coding-key", "base_url": None}
+                for p in providers
+                if p == "moonshot-coding"
+            }
 
         with (
             patch(
@@ -754,9 +758,9 @@ class TestCustomModelFallback:
                 return_value=None,
             ),
             patch(
-                "src.server.database.api_keys.get_byok_config_for_provider",
+                "src.server.database.api_keys.get_byok_configs_for_providers",
                 new_callable=AsyncMock,
-                side_effect=_lookup,
+                side_effect=_batch_lookup,
             ),
         ):
             byok_config, base_url, _ = await _resolve_custom_model_byok(
@@ -956,6 +960,84 @@ class TestResolveOneFallbackGuard:
 # (resolve_byok_llm_client) are mocked here, so this test only covers the
 # outer orchestration layer; their own cheap self-classification is fine.
 # ---------------------------------------------------------------------------
+
+
+class TestClassifyModelDirect:
+    """Direct unit tests for ``classify_model`` — the central entry point that
+    answers 'is this name system, custom, or unknown?'. Shadow semantics: a
+    user's custom entry wins when its name collides with a built-in, so a
+    user can route ``gpt-5`` through their own endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_returns_custom_when_user_has_entry(self):
+        from src.server.handlers.chat.llm_config import classify_model, ModelSource
+
+        custom_entry = {"name": "my-model", "model_id": "m1", "provider": "my-provider"}
+        with patch(
+            f"{HANDLER}.get_custom_model_config",
+            new_callable=AsyncMock,
+            return_value=custom_entry,
+        ):
+            source, cfg = await classify_model("user-1", "my-model")
+
+        assert source == ModelSource.CUSTOM
+        assert cfg is custom_entry
+
+    @pytest.mark.asyncio
+    async def test_returns_system_when_only_in_manifest(self):
+        from src.server.handlers.chat.llm_config import classify_model, ModelSource
+
+        system_info = {"provider": "openai", "model_id": "gpt-5.4"}
+        mock_mc = MagicMock()
+        mock_mc.get_model_config.return_value = system_info
+        with (
+            patch(f"{HANDLER}.get_custom_model_config", new_callable=AsyncMock, return_value=None),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        ):
+            source, cfg = await classify_model("user-1", "gpt-5.4")
+
+        assert source == ModelSource.SYSTEM
+        assert cfg is system_info
+
+    @pytest.mark.asyncio
+    async def test_returns_unknown_when_neither(self):
+        from src.server.handlers.chat.llm_config import classify_model, ModelSource
+
+        mock_mc = MagicMock()
+        mock_mc.get_model_config.return_value = None
+        with (
+            patch(f"{HANDLER}.get_custom_model_config", new_callable=AsyncMock, return_value=None),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        ):
+            source, cfg = await classify_model("user-1", "no-such-model")
+
+        assert source == ModelSource.UNKNOWN
+        assert cfg == {}
+
+    @pytest.mark.asyncio
+    async def test_custom_shadows_system_on_name_collision(self):
+        """When a name appears in BOTH custom and manifest, custom wins.
+        Regression guard for the shadow-semantics flip — without it, a user's
+        ``gpt-5`` custom entry would be invisible at routing time."""
+        from src.server.handlers.chat.llm_config import classify_model, ModelSource
+
+        custom_entry = {"name": "gpt-5", "model_id": "gpt-5", "provider": "my-openai"}
+        mock_mc = MagicMock()
+        mock_mc.get_model_config.return_value = {"provider": "openai", "model_id": "gpt-5"}
+        with (
+            patch(
+                f"{HANDLER}.get_custom_model_config",
+                new_callable=AsyncMock,
+                return_value=custom_entry,
+            ),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        ):
+            source, cfg = await classify_model("user-1", "gpt-5")
+
+        assert source == ModelSource.CUSTOM
+        assert cfg is custom_entry
+        # System lookup never even consulted — short-circuit on custom hit.
+        mock_mc.get_model_config.assert_not_called()
 
 
 class TestClassifyModelDedup:
