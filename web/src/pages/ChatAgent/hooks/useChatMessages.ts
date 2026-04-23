@@ -16,6 +16,8 @@
 import type React from 'react';
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useQueryClient } from '@tanstack/react-query';
+import { queryKeys } from '@/lib/queryKeys';
 import { useUser } from '@/hooks/useUser';
 import { sendChatMessageStream, replayThreadHistory, getWorkflowStatus, reconnectToWorkflowStream, sendHitlResponse, streamSubagentTaskEvents, fetchThreadTurns, submitFeedback, removeFeedback, getThreadFeedback, watchThread } from '../utils/api';
 import { buildRateLimitError, isUpstreamHint, type StructuredError } from '@/utils/rateLimitError';
@@ -495,6 +497,7 @@ export function useChatMessages(
   onWorkspaceCreated: ((info: { workspaceId: string; question: string }) => void) | null = null,
 ) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
 
   // User locale/timezone — prefer saved preference, fall back to browser detection
   const { user } = useUser();
@@ -3699,6 +3702,14 @@ export function useChatMessages(
             // to send message" bubble under the banner looks broken.
             const errorInfo = errObj.errorInfo as Record<string, unknown> | undefined;
             if (errorInfo?.link) {
+              // Backend scrubbed stale model names from the user's saved
+              // preferences — invalidate our cached copy so the selector and
+              // Settings page re-render with the server's (cleaned) state.
+              // Without this, the frontend keeps sending the removed model
+              // name as request_model on every retry.
+              if (errorInfo.type === 'model_removed') {
+                queryClient.invalidateQueries({ queryKey: queryKeys.user.preferences() });
+              }
               setMessageError({
                 message: (errorInfo.message as string) || (err as Error).message || 'An error occurred.',
                 link: errorInfo.link as { url: string; label: string },
