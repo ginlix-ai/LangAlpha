@@ -233,6 +233,16 @@ export interface ChartDataPoint {
 }
 
 /**
+ * Max time (seconds) between two consecutive bars before we consider the
+ * stream to have "jumped" and forcibly close the currently-open extended-
+ * hours region. Pre/post-market windows are at most ~5.5h and ~4h long, and
+ * within a session bars on supported intervals (1s..1hour) are always spaced
+ * well under this. Any gap larger than this is a day-boundary crossing or a
+ * backend data gap — both cases where a region should not be stretched.
+ */
+const EXT_REGION_MAX_GAP_SEC = 2 * 60 * 60;
+
+/**
  * Compute contiguous extended-hours time regions from chart data.
  * Returns [{start, end, type}] where type is 'pre' or 'post'.
  */
@@ -244,6 +254,20 @@ export function computeExtendedHoursRegions(data: ChartDataPoint[]): ExtendedHou
   let prevTime: number | null = null;
   for (const d of data) {
     const ext = getExtendedHoursType(d.time);
+    // If the gap since the last bar is large enough that it must span a
+    // session boundary (or a backend data gap), close any active region
+    // before doing anything else. Otherwise a string of pre-market bars
+    // that happens to skip over a missing day gets merged into one
+    // continuous region spanning multiple calendar days.
+    if (
+      regionStart !== null &&
+      prevTime !== null &&
+      d.time - prevTime > EXT_REGION_MAX_GAP_SEC
+    ) {
+      regions.push({ start: regionStart, end: prevTime, type: regionType! });
+      regionStart = null;
+      regionType = null;
+    }
     if (ext) {
       if (regionStart === null || ext !== regionType) {
         // Close previous region if type changed (e.g. pre -> post across gap)
@@ -253,7 +277,6 @@ export function computeExtendedHoursRegions(data: ChartDataPoint[]): ExtendedHou
         regionStart = d.time;
         regionType = ext;
       }
-      prevTime = d.time;
     } else {
       if (regionStart !== null) {
         regions.push({ start: regionStart, end: prevTime!, type: regionType! });
@@ -261,6 +284,7 @@ export function computeExtendedHoursRegions(data: ChartDataPoint[]): ExtendedHou
         regionType = null;
       }
     }
+    prevTime = d.time;
   }
   if (regionStart !== null) {
     regions.push({ start: regionStart, end: prevTime!, type: regionType! });
