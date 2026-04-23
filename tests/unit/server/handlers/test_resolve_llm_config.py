@@ -1079,3 +1079,298 @@ class TestClassifyModelDedup:
         assert classify_mock.await_count == 3
         called_names = [call.args[1] for call in classify_mock.await_args_list]
         assert set(called_names) == {"system-default-model", "fb-a", "fb-b"}
+
+
+# ---------------------------------------------------------------------------
+# Stale-preference recovery: saved model vanished from the manifest
+# ---------------------------------------------------------------------------
+
+
+class TestStaleModelPreference:
+    @pytest.mark.asyncio
+    async def test_stale_preferred_model_scrubs_pref_and_raises(self, base_config):
+        """Saved preferred_model no longer in manifest → scrub pref + raise
+        model_removed CTA. Next request won't re-hit the same wall."""
+        from fastapi import HTTPException
+
+        from src.server.handlers.chat.llm_config import resolve_llm_config
+
+        mock_mc = _mock_model_config(
+            system_models={"system-default-model", "system-flash-model"}
+        )
+        pref = {"preferred_model": "qwen3.5-flash"}
+
+        with (
+            patch(
+                f"{HANDLER}.get_model_preference",
+                new_callable=AsyncMock,
+                return_value=pref,
+            ),
+            patch(
+                f"{HANDLER}.get_custom_model_config",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                f"{HANDLER}.get_custom_provider_config",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+            patch(
+                "src.server.database.user.upsert_user_preferences",
+                new_callable=AsyncMock,
+            ) as mock_upsert,
+            patch(
+                "src.server.database.user.invalidate_user_prefs_cache",
+                new_callable=AsyncMock,
+            ) as mock_invalidate,
+        ):
+            with pytest.raises(HTTPException) as excinfo:
+                await resolve_llm_config(base_config, "user-1", None, False)
+
+        detail = excinfo.value.detail
+        assert isinstance(detail, dict)
+        assert detail.get("type") == "model_removed"
+        assert "qwen3.5-flash" in detail.get("message", "")
+        assert detail.get("link", {}).get("url")
+
+        # Pref was scrubbed: preferred_model deleted via None value
+        mock_upsert.assert_awaited_once()
+        kwargs = mock_upsert.await_args.kwargs
+        assert kwargs["user_id"] == "user-1"
+        assert kwargs["other_preference"] == {"preferred_model": None}
+        # Cache is invalidated twice: once to bust stale cache before the
+        # race-safe re-read, once after the write lands.
+        assert mock_invalidate.await_count == 2
+        for call in mock_invalidate.await_args_list:
+            assert call.args == ("user-1",)
+
+    @pytest.mark.asyncio
+    async def test_stale_pref_bulk_scrubs_fallback_list(self, base_config):
+        """When the main model is stale, scrub every stale entry in one DB
+        write — fallback_models included — so the user doesn't hit cascading
+        errors on subsequent requests."""
+        from fastapi import HTTPException
+
+        from src.server.handlers.chat.llm_config import resolve_llm_config
+
+        mock_mc = _mock_model_config(
+            system_models={"system-default-model", "system-flash-model", "good-model"}
+        )
+        pref = {
+            "preferred_model": "qwen3.5-flash",
+            "fetch_model": "gone-too",
+            "fallback_models": ["good-model", "also-gone", "qwen3.5-flash"],
+        }
+
+        with (
+            patch(
+                f"{HANDLER}.get_model_preference",
+                new_callable=AsyncMock,
+                return_value=pref,
+            ),
+            patch(
+                f"{HANDLER}.get_custom_model_config",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                f"{HANDLER}.get_custom_provider_config",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+            patch(
+                "src.server.database.user.upsert_user_preferences",
+                new_callable=AsyncMock,
+            ) as mock_upsert,
+            patch(
+                "src.server.database.user.invalidate_user_prefs_cache",
+                new_callable=AsyncMock,
+            ),
+        ):
+            with pytest.raises(HTTPException):
+                await resolve_llm_config(base_config, "user-1", None, False)
+
+        written = mock_upsert.await_args.kwargs["other_preference"]
+        # Stale scalars deleted, fallback list filtered down to only "good-model"
+        assert written["preferred_model"] is None
+        assert written["fetch_model"] is None
+        assert written["fallback_models"] == ["good-model"]
+
+    @pytest.mark.asyncio
+    async def test_stale_request_model_raises_without_scrub(self, base_config):
+        """Frontend sent a stale model name as request_model (e.g. its
+        React Query cache still held the pre-scrub value). Raise
+        model_removed so the UI shows the CTA banner, but don't scrub the
+        saved prefs — there's nothing in them to clean."""
+        from fastapi import HTTPException
+
+        from src.server.handlers.chat.llm_config import resolve_llm_config
+
+        mock_mc = _mock_model_config(
+            system_models={"system-default-model", "system-flash-model"}
+        )
+        # Prefs already clean from a prior scrub pass
+        pref = {}
+
+        with (
+            patch(
+                f"{HANDLER}.get_model_preference",
+                new_callable=AsyncMock,
+                return_value=pref,
+            ),
+            patch(
+                f"{HANDLER}.get_custom_model_config",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                f"{HANDLER}.get_custom_provider_config",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+            patch(
+                "src.server.database.user.upsert_user_preferences",
+                new_callable=AsyncMock,
+            ) as mock_upsert,
+        ):
+            with pytest.raises(HTTPException) as excinfo:
+                await resolve_llm_config(
+                    base_config, "user-1", "qwen3.5-flash", False
+                )
+
+        detail = excinfo.value.detail
+        assert detail.get("type") == "model_removed"
+        assert "qwen3.5-flash" in detail.get("message", "")
+        # No DB write — prefs are already clean, request_model has no pref to scrub
+        mock_upsert.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_yaml_default_stale_does_not_raise_model_removed(
+        self, base_config
+    ):
+        """If effective_model came from agent_config.yaml (not user pref),
+        fall through so the downstream error path surfaces the server bug —
+        raising model_removed would mislead every user on the instance."""
+        from src.server.handlers.chat.llm_config import resolve_llm_config
+
+        # YAML default is a model the mock_mc doesn't know about → UNKNOWN,
+        # but no user pref references it, so cleanup shouldn't flag it as
+        # "from pref" and shouldn't raise model_removed.
+        stale_yaml_config = _make_config(name="stale-yaml-default")
+        mock_mc = _mock_model_config(system_models={"system-flash-model"})
+
+        with (
+            patch(
+                f"{HANDLER}.get_model_preference",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                f"{HANDLER}.get_custom_model_config",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                f"{HANDLER}.get_custom_provider_config",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                f"{HANDLER}.resolve_oauth_llm_client",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+            patch(
+                "src.server.database.user.upsert_user_preferences",
+                new_callable=AsyncMock,
+            ) as mock_upsert,
+            patch(
+                "src.server.database.user.invalidate_user_prefs_cache",
+                new_callable=AsyncMock,
+            ),
+        ):
+            # Should NOT raise model_removed — falls through to normal resolution
+            result = await resolve_llm_config(
+                stale_yaml_config, "user-1", None, False
+            )
+
+        # No pref changes were written because no stale pref values existed
+        mock_upsert.assert_not_awaited()
+        # Config returned without an injected client — downstream will raise
+        # the original ValueError so the admin can fix agent_config.yaml
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_concurrent_save_is_not_clobbered(self, base_config):
+        """Race guard: the caller's pref snapshot says preferred_model is
+        stale, but between the snapshot read and the scrub write, the user
+        clicked Save in Settings and wrote a fresh valid value. The scrub
+        must NOT overwrite the fresh save — it re-reads the DB after busting
+        the cache and skips keys whose current value differs from the stale
+        name it originally detected."""
+        from fastapi import HTTPException
+
+        from src.server.handlers.chat.llm_config import resolve_llm_config
+
+        mock_mc = _mock_model_config(
+            system_models={"system-default-model", "system-flash-model", "freshly-saved"}
+        )
+        # Caller's snapshot: stale preferred_model
+        snapshot_pref = {"preferred_model": "qwen3.5-flash"}
+        # DB after the user's concurrent Save landed: new valid value
+        fresh_pref = {"preferred_model": "freshly-saved"}
+
+        call_count = {"n": 0}
+
+        async def prefs_sequence(_user_id):
+            """First call returns the stale snapshot (seen by resolve_llm_config).
+            Second call (inside the scrub after cache-bust) returns the
+            post-save fresh state."""
+            call_count["n"] += 1
+            return snapshot_pref if call_count["n"] == 1 else fresh_pref
+
+        with (
+            patch(
+                f"{HANDLER}.get_model_preference",
+                new=prefs_sequence,
+            ),
+            patch(
+                f"{HANDLER}.get_custom_model_config",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                f"{HANDLER}.get_custom_provider_config",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+            patch(
+                "src.server.database.user.upsert_user_preferences",
+                new_callable=AsyncMock,
+            ) as mock_upsert,
+            patch(
+                "src.server.database.user.invalidate_user_prefs_cache",
+                new_callable=AsyncMock,
+            ) as mock_invalidate,
+        ):
+            with pytest.raises(HTTPException) as excinfo:
+                await resolve_llm_config(base_config, "user-1", None, False)
+
+        # Still raises model_removed for THIS request (its model is unusable)
+        detail = excinfo.value.detail
+        assert detail.get("type") == "model_removed"
+
+        # The cache gets busted so the re-read hits Postgres, but since the
+        # fresh DB value no longer matches the stale snapshot name, NO
+        # delete is queued and NO write happens. The user's just-saved
+        # "freshly-saved" pref survives.
+        mock_upsert.assert_not_awaited()
+        # Cache was invalidated once (pre-read), never a second time because
+        # no write happened.
+        assert mock_invalidate.await_count == 1
