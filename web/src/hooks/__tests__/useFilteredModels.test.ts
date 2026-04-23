@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { filterModelsByAccess, filterByPlatformTier, augmentPlatformWithLocal, buildConfiguredTypeMap, buildVisibleModels } from '../useFilteredModels';
+import {
+  filterModelsByAccess,
+  filterByPlatformTier,
+  augmentPlatformWithLocal,
+  buildConfiguredTypeMap,
+  buildConfiguredSet,
+  buildVisibleModels,
+} from '../useFilteredModels';
 import type { ModelMetadataEntry } from '../useFilteredModels';
 import type { ConfiguredProvider } from '../useConfiguredProviders';
 import type { ProviderModelsData } from '@/components/model/types';
@@ -402,6 +409,42 @@ describe('buildVisibleModels', () => {
     expect(result.rawModels.anthropic?.models).toEqual(['claude-sonnet']);
   });
 
+  it('variant bypass: parent-catalog model starred under variant shows under variant group', () => {
+    // User has ``z-ai-coding`` configured (access_type=coding_plan). They
+    // starred ``glm-5.1`` (a parent-catalog model, provider=z-ai) under the
+    // variant in ModelPickStep, which writes ``{name:'glm-5.1', provider:
+    // 'z-ai-coding'}`` to custom_models. The variant group must list it.
+    //
+    // Before the ``customPairs`` fix the variant entry was dropped by the
+    // access_type mismatch (metadata.access_type='api_key' vs variant's
+    // 'coding_plan'), so the user saw an empty group.
+    const rawApiModels = {
+      'z-ai': { models: ['glm-5.1', 'glm-5-turbo', 'glm-5v-turbo'], display_name: 'Zhipu AI' },
+    };
+    const rawMetadata: Record<string, ModelMetadataEntry> = {
+      'glm-5.1': { provider: 'z-ai', access_type: 'api_key' },
+      'glm-5-turbo': { provider: 'z-ai', access_type: 'api_key' },
+      'glm-5v-turbo': { provider: 'z-ai', access_type: 'api_key' },
+    };
+    const customModels = [
+      { name: 'glm-5.1', model_id: 'glm-5.1', provider: 'z-ai-coding' },
+      { name: 'glm-5-turbo', model_id: 'glm-5-turbo', provider: 'z-ai-coding' },
+    ];
+    const configuredProviders: ConfiguredProvider[] = [
+      { provider: 'z-ai-coding', display_name: 'Zhipu AI', access_type: 'coding_plan' },
+    ];
+
+    const result = buildVisibleModels(rawApiModels, rawMetadata, customModels, {}, null, configuredProviders);
+
+    expect(result.models['z-ai-coding']?.models?.sort()).toEqual(['glm-5.1', 'glm-5-turbo'].sort());
+    // Parent group stays hidden — the user didn't configure z-ai itself.
+    expect(result.models['z-ai']).toBeUndefined();
+    expect(result.validModelNames.has('glm-5.1')).toBe(true);
+    expect(result.validModelNames.has('glm-5-turbo')).toBe(true);
+    // Unstarred parent model stays gone.
+    expect(result.validModelNames.has('glm-5v-turbo')).toBe(false);
+  });
+
   it('platform mode: filters by tier, custom models pass', () => {
     const rawApiModels = {
       openai: { models: ['gpt-4o', 'gpt-4o-mini'], display_name: 'OpenAI' },
@@ -421,5 +464,84 @@ describe('buildVisibleModels', () => {
     expect(result.validModelNames.has('gpt-4o')).toBe(false);
     expect(result.validModelNames.has('gpt-4o-mini')).toBe(true);
     expect(result.validModelNames.has('my-model')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Variant isolation — configuring a coding-plan variant does NOT unlock the
+// parent brand's catalog. Variant keys and endpoints are distinct from the
+// parent's, so promoting the brand would show models the backend can't route.
+// ---------------------------------------------------------------------------
+
+describe('variant isolation (no brand_key promotion)', () => {
+  it('buildConfiguredSet excludes brand_key for variant entries', () => {
+    const set = buildConfiguredSet([
+      {
+        provider: 'z-ai-coding',
+        display_name: 'Zhipu AI',
+        access_type: 'coding_plan',
+        brand_key: 'z-ai',
+      },
+    ]);
+    expect(set.has('z-ai-coding')).toBe(true);
+    expect(set.has('z-ai')).toBe(false);
+  });
+
+  it('buildConfiguredTypeMap does not register brand_key', () => {
+    const map = buildConfiguredTypeMap([
+      {
+        provider: 'z-ai-coding',
+        display_name: 'Zhipu AI',
+        access_type: 'coding_plan',
+        brand_key: 'z-ai',
+      },
+    ]);
+    expect(map.get('z-ai-coding')).toBe('coding_plan');
+    expect(map.has('z-ai')).toBe(false);
+  });
+
+  it('filterModelsByAccess hides the parent brand catalog when only a variant is configured', () => {
+    const providerMap = makeProviderMap({
+      'z-ai': ['glm-5.1', 'glm-5v-turbo'],
+    });
+    const metadata: Record<string, ModelMetadataEntry> = {
+      'glm-5.1': { provider: 'z-ai', access_type: 'api_key' },
+      'glm-5v-turbo': { provider: 'z-ai', access_type: 'api_key' },
+    };
+    const providers: ConfiguredProvider[] = [
+      {
+        provider: 'z-ai-coding',
+        display_name: 'Zhipu AI',
+        access_type: 'coding_plan',
+        brand_key: 'z-ai',
+      },
+    ];
+    const configuredSet = buildConfiguredSet(providers);
+    const configuredTypeMap = buildConfiguredTypeMap(providers);
+
+    const result = filterModelsByAccess(providerMap, metadata, configuredSet, configuredTypeMap);
+    // Only z-ai-coding is configured. Brand models (provider=z-ai) must not
+    // appear — the user has no z-ai key and the coding-plan key routes to a
+    // different endpoint.
+    expect(result['z-ai']).toBeUndefined();
+  });
+
+  it('augmentPlatformWithLocal does not promote brand_key', () => {
+    const platform: PlatformModelsResponse = {
+      tier: 0,
+      model_tier: 0,
+      byok_providers: [],
+      oauth_providers: [],
+    } as unknown as PlatformModelsResponse;
+    const augmented = augmentPlatformWithLocal(platform, [
+      {
+        provider: 'z-ai-coding',
+        display_name: 'Zhipu AI',
+        access_type: 'coding_plan',
+        brand_key: 'z-ai',
+      },
+    ]);
+    expect(augmented.byok_providers).toContain('z-ai-coding');
+    expect(augmented.byok_providers).not.toContain('z-ai');
   });
 });

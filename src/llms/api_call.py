@@ -25,6 +25,25 @@ def create_messages(system_prompt: str, user_prompt: str) -> list:
     ]
 
 
+def maybe_disable_streaming(model: object) -> None:
+    """Set ``streaming=False`` unless the provider rejects non-streaming.
+
+    The Codex proxy requires ``stream=true`` on every request (it returns
+    HTTP 400 ``{'detail': 'Stream must be set to true'}`` otherwise), so
+    ``ChatCodexOpenAI`` instances must keep their construction-time
+    ``streaming=True`` flag. Mutates ``model`` in place — callers that
+    share the instance across requests MUST deep-copy first (see
+    ``workflow_handler.py::compact`` and ``fetch.py::_extract_with_llm``
+    for the reference pattern).
+    """
+    from src.llms.extension.codex import ChatCodexOpenAI
+
+    if isinstance(model, ChatCodexOpenAI):
+        return
+    if hasattr(model, "streaming"):
+        model.streaming = False
+
+
 async def make_api_call(
     llm: object,
     system_prompt: str,

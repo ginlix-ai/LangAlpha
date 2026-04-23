@@ -193,3 +193,70 @@ def today_market_open_ms() -> int | None:
         return None
     open_dt = datetime.combine(now.date(), _MARKET_OPEN, tzinfo=ET)
     return int(open_dt.timestamp() * 1000)
+
+
+# Interval period in seconds. Used for "expected-latest-bar" staleness.
+# Weekly / monthly intervals are not listed — callers fall back to 60s, which
+# is intentionally permissive for staleness but would be wrong for scheduling.
+_INTERVAL_SECONDS: dict[str, int] = {
+    "1s": 1,
+    "1min": 60,
+    "5min": 300,
+    "15min": 900,
+    "30min": 1800,
+    "1hour": 3600,
+    "4hour": 14400,
+    "1day": 86400,
+}
+
+
+def interval_seconds(interval: str) -> int:
+    """Return the bar period in seconds for a given interval string.
+
+    Unknown intervals fall back to 60s (1-minute) to stay permissive;
+    staleness checks against unknown intervals still produce a sane answer.
+    """
+    return _INTERVAL_SECONDS.get(interval, 60)
+
+
+def expected_latest_bar_ms(interval: str, now: datetime | None = None) -> int:
+    """Return the Unix-ms timestamp of the most recent bar that should exist for this interval.
+
+    Active session: ``floor(now, interval_period)``. Market closed: regular-session
+    close (16:00 ET) of the most recent trading day, floored to the interval period.
+    Returns 0 if no trading day found in the 10-day lookback.
+    """
+    if now is None:
+        now = datetime.now(ET)
+    else:
+        now = now.astimezone(ET)
+
+    period = max(1, interval_seconds(interval))
+
+    if is_market_active(now):
+        epoch_s = int(now.timestamp())
+        floored = epoch_s - (epoch_s % period)
+        return floored * 1000
+
+    # Market closed — anchor to the most recent trading-day regular close.
+    candidate = now.date()
+    if now.time() < _PRE_OPEN:
+        candidate -= timedelta(days=1)
+    for _ in range(10):
+        if _is_trading_day(candidate):
+            close_dt = datetime.combine(candidate, _MARKET_CLOSE, tzinfo=ET)
+            if close_dt > now:
+                # We're on a trading day but before close (e.g. pre-market
+                # but is_market_active was False — shouldn't happen). Step
+                # back a day to stay safe.
+                candidate -= timedelta(days=1)
+                continue
+            close_ms = int(close_dt.timestamp() * 1000)
+            if period >= 86400:
+                # Daily: skip floor() — UTC-midnight rounding crosses ET date boundary.
+                return close_ms
+            epoch_s = close_ms // 1000
+            floored = epoch_s - (epoch_s % period)
+            return floored * 1000
+        candidate -= timedelta(days=1)
+    return 0

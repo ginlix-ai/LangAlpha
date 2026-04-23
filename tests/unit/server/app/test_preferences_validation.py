@@ -28,6 +28,9 @@ def _mock_model_config(system_models=None, byok_providers=None):
     mc.get_byok_eligible_providers.return_value = byok_providers
     # flat_providers property is accessed by _validate_custom_models
     mc.flat_providers = {p: {} for p in byok_providers}
+    # llm_config is used by _validate_custom_models to block names that
+    # collide with built-in models.
+    mc.llm_config = system_models
     return mc
 
 
@@ -70,14 +73,26 @@ class TestValidateCustomModels:
         with pytest.raises(HTTPException):
             self._validate([{"name": "-invalid", "model_id": "gpt-4o", "provider": "openai"}])
 
-    def test_system_model_collision_raises(self):
-        """Custom model name cannot collide with system model."""
+    def test_system_model_name_shadow_allowed(self):
+        """Custom model name may collide with a built-in — the resolver
+        checks custom first, so the user's entry shadows the built-in. This
+        is the normal path for routing built-in model names (e.g.
+        ``glm-5.1``) through a user's variant-specific key."""
         mc = _mock_model_config(system_models={"gpt-4o": {"model_id": "gpt-4o"}})
-        with pytest.raises(HTTPException, match="conflicts with a system model"):
-            self._validate(
-                [{"name": "gpt-4o", "model_id": "gpt-4o", "provider": "openai"}],
-                mc=mc,
-            )
+        # Should not raise.
+        self._validate(
+            [{"name": "gpt-4o", "model_id": "gpt-4o", "provider": "openai"}],
+            mc=mc,
+        )
+
+    def test_system_model_id_reuse_allowed(self):
+        """``model_id`` can match a built-in (the upstream endpoint interprets
+        it) — only the user-facing ``name`` is reserved."""
+        mc = _mock_model_config(system_models={"gpt-4o": {"model_id": "gpt-4o"}})
+        self._validate(
+            [{"name": "gpt-4o-custom", "model_id": "gpt-4o", "provider": "openai"}],
+            mc=mc,
+        )
 
     def test_duplicate_names_raises(self):
         """Duplicate custom model names should be rejected."""

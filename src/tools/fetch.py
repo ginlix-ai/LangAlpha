@@ -23,7 +23,7 @@ from langchain_core.tools import StructuredTool
 from .decorators import log_io
 from .crawler.safe_wrapper import get_safe_crawler_sync, CrawlResult
 from .crawler.sitemap import get_sitemap_summary
-from src.llms import LLM, make_api_call, format_llm_content
+from src.llms import LLM, make_api_call, maybe_disable_streaming, format_llm_content
 from src.config.core import load_yaml_config, find_config_file
 
 logger = logging.getLogger(__name__)
@@ -143,13 +143,16 @@ async def _extract_with_llm(
 
     client_override = fetch_llm_client_override.get()
     if client_override is not None:
-        llm = client_override
+        # Deep-copy: maybe_disable_streaming mutates .streaming in place and
+        # the override may be a shared instance from config.subsidiary_llm_clients.
+        # Mirrors workflow_handler.py::compact. See workflow_handler.py:514-526.
+        llm = client_override.model_copy()
     else:
         llm = LLM(model).get_llm()
 
-    # Disable streaming to prevent SSE events from extraction LLM
-    if hasattr(llm, 'streaming'):
-        llm.streaming = False
+    # Disable streaming to keep extraction chunks off the agent's SSE stream,
+    # EXCEPT for Codex whose proxy rejects stream=false outright.
+    maybe_disable_streaming(llm)
 
     # Apply timeout for extraction
     result = await asyncio.wait_for(

@@ -19,6 +19,12 @@ interface IndexCardProps {
 interface IndexMovementCardProps {
   indices?: IndexData[];
   loading?: boolean;
+  /**
+   * When true, forces the mobile iOS-style swipeable stack rendering even on
+   * desktop viewports. Used by the widget grid when the cell is too narrow to
+   * fit the 5-column tile layout comfortably.
+   */
+  forceMobile?: boolean;
 }
 
 /* ── Shared card content (no animation wrapper) ── */
@@ -350,8 +356,13 @@ function IndexSkeleton({ count }: { count: number }) {
 
 /* ── Main export ── */
 
-function IndexMovementCard({ indices = [], loading = false }: IndexMovementCardProps) {
-  const isMobile = useIsMobile();
+function IndexMovementCard({
+  indices = [],
+  loading = false,
+  forceMobile = false,
+}: IndexMovementCardProps) {
+  const isMobileViewport = useIsMobile();
+  const isMobile = forceMobile || isMobileViewport;
 
   if (isMobile) {
     if (loading) {

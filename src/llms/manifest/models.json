@@ -507,6 +507,17 @@
       "text"
     ]
   },
+  "qwen3.6-max-preview": {
+    "model_id": "qwen3.6-max-preview",
+    "provider": "dashscope",
+    "visible": true,
+    "input_modalities": [
+      "text"
+    ],
+    "extra_body": {
+      "enable_thinking": true
+    }
+  },
   "qwen3.6-plus": {
     "model_id": "qwen3.6-plus",
     "provider": "dashscope",
@@ -552,6 +563,17 @@
       "text",
       "image",
       "pdf"
+    ],
+    "extra_body": {
+      "enable_thinking": true
+    }
+  },
+  "qwen3.6-max-preview-intl": {
+    "model_id": "qwen3.6-max-preview",
+    "provider": "dashscope-intl",
+    "visible": true,
+    "input_modalities": [
+      "text"
     ],
     "extra_body": {
       "enable_thinking": true
@@ -643,6 +665,34 @@
     ],
     "extra_body": {
       "enable_thinking": true
+    }
+  },
+  "kimi-k2.6": {
+    "model_id": "kimi-k2.6",
+    "provider": "moonshot",
+    "visible": true,
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "parameters": {
+      "thinking": {
+        "type": "enabled"
+      }
+    }
+  },
+  "kimi-k2.6-coding": {
+    "model_id": "kimi-k2.6",
+    "provider": "moonshot-coding",
+    "visible": true,
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "parameters": {
+      "thinking": {
+        "type": "enabled"
+      }
     }
   },
   "kimi-k2.5": {

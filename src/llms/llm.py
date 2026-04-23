@@ -31,6 +31,18 @@ class ModelConfig:
             self.manifest.get("provider_config", {})
         )
 
+        # Precompute parent → [child variants] map once. ``get_child_variants``
+        # is on the chat hot path (BYOK sibling walk); scanning _flat_providers
+        # on every call is wasteful since the manifest is static.
+        self._child_variants: dict[str, list[str]] = {}
+        for name, cfg in self._flat_providers.items():
+            parent = cfg.get("parent_provider")
+            if not parent or parent == name:
+                continue
+            if cfg.get("platform", False):
+                continue
+            self._child_variants.setdefault(parent, []).append(name)
+
     @staticmethod
     def _flatten_providers(grouped: dict) -> dict:
         """Flatten grouped provider_config into a flat dict.
@@ -135,6 +147,15 @@ class ModelConfig:
         """Return the parent provider name (self if no parent)."""
         info = self.get_provider_info(provider)
         return info.get("parent_provider", provider)
+
+    def get_child_variants(self, provider: str) -> list[str]:
+        """Return provider names whose parent_provider is ``provider``.
+
+        Excludes the provider itself; platform-only variants are excluded
+        since BYOK keys are never stored under them. O(1) lookup against
+        the precomputed map in ``__init__``.
+        """
+        return list(self._child_variants.get(provider, ()))
 
     def get_display_name(self, provider: str) -> str:
         """Return display name, preferring own name then resolving through parent."""
@@ -718,3 +739,23 @@ def should_enable_caching(model_name: str) -> bool:
         return parameters.get("enable_caching", False)
     except Exception:
         return False
+
+
+def ensure_model_in_manifest(model_name: str) -> None:
+    """Raise a neutral ValueError if ``model_name`` isn't in models.json.
+
+    Shared guard: when a name reaches create_llm() but isn't in the manifest,
+    the factory raises a generic "Model X not found" message that used to leak
+    to users as an SSE error. Callers on the post-BYOK fallback path
+    (AgentConfig.get_llm_client, FlashAgent.__init__) call this helper instead,
+    so a missing manifest entry always surfaces as a user-friendly message
+    pointing at Settings. ``resolve_llm_config`` already preflights the main
+    model path via HTTPException — this is the belt-and-suspenders guard for
+    code paths downstream of that preflight.
+    """
+    if LLM.get_model_config().get_model_config(model_name) is None:
+        raise ValueError(
+            f"Model '{model_name}' is not defined in models.json. "
+            "If this is a custom model, configure it in Settings with a valid API key. "
+            "If it's a built-in, check for typos."
+        )

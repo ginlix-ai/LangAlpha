@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loader2, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -6,6 +6,7 @@ import { ModelTierConfig } from '@/components/model/ModelTierConfig';
 import { useAllModels } from '@/hooks/useAllModels';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useUpdatePreferences } from '@/hooks/useUpdatePreferences';
+import { useStarredPickerModels } from '@/hooks/useStarredPickerModels';
 import { useTranslation } from 'react-i18next';
 
 // ---------------------------------------------------------------------------
@@ -43,6 +44,22 @@ export default function DefaultsStep() {
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Depend on ``preferences`` (stable from React Query) rather than
+  // ``otherPref`` (derived fresh every render), to avoid recomputing the set
+  // on every render.
+  const starredSet = useMemo(() => {
+    const p = preferences as Record<string, unknown> | null;
+    const other = (p?.other_preference ?? {}) as Record<string, unknown>;
+    const arr = (other.starred_models as string[] | undefined) ?? [];
+    return new Set(arr);
+  }, [preferences]);
+
+  const pickerModels = useStarredPickerModels(
+    models,
+    starredSet,
+    [primaryModel, flashModel],
+  );
 
   const canContinue = Boolean(primaryModel && flashModel);
 
@@ -148,7 +165,7 @@ export default function DefaultsStep() {
 
       {/* Model tier config */}
       <ModelTierConfig
-        models={models}
+        models={pickerModels}
         primaryModel={primaryModel}
         onPrimaryModelChange={setPrimaryModel}
         flashModel={flashModel}

@@ -4,13 +4,21 @@ import type { IChartApi, LogicalRange, MouseEventParams } from 'lightweight-char
 import html2canvas from 'html2canvas';
 import './MarketChart.css';
 import { fetchStockData } from '../utils/api';
+import {
+  centerLatestBarView,
+  computeInitialLoadRange,
+  consumePrefetchBuffer,
+  dedupeMergeByTime,
+  etDateStr,
+  rangeBeforeOldest,
+} from '../utils/chartDataLoaders';
 import { calculateMA, calculateRSI, updateRSIIncremental } from '../utils/chartHelpers';
 import type { RSIState, OHLCDataPoint } from '../utils/chartHelpers';
 import {
   getChartTheme,
-  INTERVALS, PRIMARY_INTERVAL_KEYS, INITIAL_LOAD_DAYS, SCROLL_CHUNK_DAYS,
+  INTERVALS, PRIMARY_INTERVAL_KEYS, SCROLL_CHUNK_DAYS,
   SCROLL_LOAD_THRESHOLD, RANGE_CHANGE_DEBOUNCE_MS,
-  STAGE1_LOAD_DAYS, STAGE2_BACKFILL_DAYS, PREFETCH_ENABLED_INTERVALS, PREFETCH_THRESHOLD,
+  STAGE2_BACKFILL_DAYS, PREFETCH_ENABLED_INTERVALS, PREFETCH_THRESHOLD,
   MA_CONFIGS, DEFAULT_ENABLED_MA, RSI_PERIODS, BARS_PER_DAY, TARGET_BAR_SPACING,
   OVERLAY_COLORS, OVERLAY_LABELS,
   EXTENDED_HOURS_INTERVALS, getExtendedHoursType, computeExtendedHoursRegions,
@@ -276,8 +284,8 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
           gapFillInProgressRef.current = true;
           (async () => {
             try {
-              const fromDate = new Date(lastDataTime * 1000).toISOString().split('T')[0];
-              const toDate = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+              const fromDate = etDateStr(new Date(lastDataTime * 1000));
+              const toDate = etDateStr();
               const sym = symbol;
               const result = await fetchStockData(sym, interval, fromDate, toDate);
               if (symbolRef.current !== sym) return; // symbol changed, discard stale data
@@ -676,11 +684,8 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
   // --- Merge prepended data helper (shared by scroll-load & MA backfill) ---
   const mergePrependedData = (newData: ChartDataBar[] | null | undefined) => {
     if (!newData?.length) return;
-    const prevLen = allDataRef.current.length;
-    const existingMap = new Map(allDataRef.current.map(d => [d.time, d]));
-    newData.forEach(d => { if (!existingMap.has(d.time)) existingMap.set(d.time, d); });
-    const merged = Array.from(existingMap.values()).sort((a, b) => a.time - b.time);
-    const prependedCount = merged.length - prevLen;
+    const { merged, prependedCount } = dedupeMergeByTime(allDataRef.current, newData);
+    if (prependedCount === 0 && merged === allDataRef.current) return;
     allDataRef.current = merged;
     oldestDateRef.current = merged[0].time;
     const ts = chartRef.current?.timeScale();
@@ -695,14 +700,9 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
   const fetchAndPrepend = async (days: number) => {
     if (!oldestDateRef.current) return;
     const sym = symbol;
-    const oldest = new Date(oldestDateRef.current * 1000);
-    const toDate = new Date(oldest);
-    toDate.setDate(toDate.getDate() - 1);
-    const fromDate = new Date(toDate);
-    fromDate.setDate(fromDate.getDate() - days);
+    const { fromStr, toStr } = rangeBeforeOldest(oldestDateRef.current, days);
 
-    const result = await fetchStockData(sym, interval,
-      fromDate.toISOString().split('T')[0], toDate.toISOString().split('T')[0]);
+    const result = await fetchStockData(sym, interval, fromStr, toStr);
     if (symbolRef.current !== sym) return; // symbol changed, discard stale data
     const newData = result?.data;
     if (newData && Array.isArray(newData) && newData.length > 0) {
@@ -726,17 +726,9 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     const ac = new AbortController();
     prefetchAbortRef.current = ac;
 
-    const oldest = new Date(capturedOldest * 1000);
-    const toDate = new Date(oldest);
-    toDate.setDate(toDate.getDate() - 1);
-    const fromDate = new Date(toDate);
-    fromDate.setDate(fromDate.getDate() - days);
+    const { fromStr, toStr } = rangeBeforeOldest(capturedOldest, days);
 
-    fetchStockData(capturedSym, capturedInterval,
-      fromDate.toISOString().split('T')[0],
-      toDate.toISOString().split('T')[0],
-      { signal: ac.signal }
-    ).then(result => {
+    fetchStockData(capturedSym, capturedInterval, fromStr, toStr, { signal: ac.signal }).then(result => {
       if (ac.signal.aborted || symbolRef.current !== capturedSym) return;
       if (result?.data?.length > 0) {
         prefetchedDataRef.current = { data: result.data, anchorOldest: capturedOldest };
@@ -756,10 +748,10 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     fetchingRef.current = true;
     setScrollLoading(true);
     try {
-      const buf = prefetchedDataRef.current;
-      if (buf && buf.anchorOldest === oldestDateRef.current && buf.data?.length > 0) {
+      const bufData = consumePrefetchBuffer(prefetchedDataRef.current, oldestDateRef.current);
+      if (bufData) {
         // Instant merge from prefetch buffer — no network wait
-        mergePrependedData(buf.data);
+        mergePrependedData(bufData);
         prefetchedDataRef.current = null;
         triggerPrefetch();
       } else {
@@ -1250,20 +1242,8 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
       setError(null);
 
       try {
-        const loadDays = (interval in STAGE1_LOAD_DAYS) ? STAGE1_LOAD_DAYS[interval] : INITIAL_LOAD_DAYS[interval];
-
-        let fromDate, toDate;
-        if (loadDays > 0) {
-          const now = new Date();
-          toDate = now.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-          {
-            const maxMaPeriod = Math.max(...enabledMaPeriodsRef.current, 0);
-            const overheadDays = Math.ceil((maxMaPeriod / (BARS_PER_DAY[interval] || 1)) * 1.5);
-            const from = new Date(now);
-            from.setDate(from.getDate() - loadDays - overheadDays);
-            fromDate = from.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-          }
-        }
+        const maxMaPeriod = Math.max(...enabledMaPeriodsRef.current, 0);
+        const { fromStr: fromDate, toStr: toDate } = computeInitialLoadRange(interval, { maxMaPeriod });
 
         const result = await fetchStockData(symbol, interval, fromDate, toDate, { signal: abortController.signal });
 
@@ -1324,8 +1304,8 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
               if (interval === '1s' && oldestDateRef.current) {
                 const firstBarDate = new Date(oldestDateRef.current * 1000);
                 const firstBarMins = firstBarDate.getUTCHours() * 60 + firstBarDate.getUTCMinutes();
-                const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-                const firstBarDateStr = firstBarDate.toISOString().split('T')[0];
+                const todayStr = etDateStr();
+                const firstBarDateStr = etDateStr(firstBarDate);
 
                 // Fill if first bar is from today and starts after 4:30 AM ET (270 mins)
                 if (firstBarDateStr === todayStr && firstBarMins > 270) {
@@ -1349,20 +1329,13 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
 
               if (stage2Abort.signal.aborted || symbolRef.current !== capturedSym) return;
 
-              // --- Backwards backfill: fetch prior days ---
-              const oldest = new Date(oldestDateRef.current! * 1000);
-              const to = new Date(oldest);
-              to.setDate(to.getDate() - 1);
-              const from = new Date(to);
+              // --- Backwards backfill: fetch prior days (+ MA lookback overhead) ---
               const maxMaPeriod = Math.max(...enabledMaPeriodsRef.current, 0);
               const maOverhead = Math.ceil((maxMaPeriod / (BARS_PER_DAY[interval] || 1)) * 1.5);
-              from.setDate(from.getDate() - backfillDays - maOverhead);
+              const { fromStr, toStr } = rangeBeforeOldest(oldestDateRef.current!, backfillDays + maOverhead);
 
               try {
-                const result = await fetchStockData(capturedSym, interval,
-                  from.toISOString().split('T')[0],
-                  to.toISOString().split('T')[0],
-                  { signal: stage2Abort.signal });
+                const result = await fetchStockData(capturedSym, interval, fromStr, toStr, { signal: stage2Abort.signal });
                 if (stage2Abort.signal.aborted || symbolRef.current !== capturedSym) return;
                 if (result?.data?.length > 0) {
                   mergePrependedData(result.data);
@@ -1449,13 +1422,18 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
       if (lastLiveTickTimeRef.current > Date.now() - 5000) return;
       try {
         const now = new Date();
-        const toDate = now.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+        const toDate = etDateStr(now);
 
         // Delta-based: fetch only from last known bar's time onward
         const lastBar = allDataRef.current?.[allDataRef.current.length - 1];
-        const fromDate = lastBar
-          ? new Date(lastBar.time * 1000).toISOString().split('T')[0]
-          : (() => { const d = new Date(now); d.setDate(d.getDate() - 3); return d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' }); })();
+        let fromDate: string;
+        if (lastBar) {
+          fromDate = etDateStr(new Date(lastBar.time * 1000));
+        } else {
+          const d = new Date(now);
+          d.setDate(d.getDate() - 3);
+          fromDate = etDateStr(d);
+        }
 
         const result = await fetchStockData(symbol, interval, fromDate, toDate);
         if (aborted) return;
@@ -1526,11 +1504,7 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     const dataLen = allDataRef.current.length;
     if (dataLen === 0) { ts.scrollToRealTime(); return; }
     const chartWidth = chartRef.current.options().width || chartContainerRef.current?.clientWidth || 800;
-    const halfBars = Math.floor(chartWidth / target / 2);
-    ts.setVisibleLogicalRange({
-      from: dataLen - halfBars,
-      to: dataLen + halfBars,
-    });
+    ts.setVisibleLogicalRange(centerLatestBarView({ chartWidth, barSpacing: target, dataLen }));
   }, []);
 
   // --- Tool button handlers ---

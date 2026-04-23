@@ -88,23 +88,7 @@
   margin-left: auto;
 }
 
-/* ====== Plan Mode toggle glow ====== */
-
-.plan-mode-toggle-active {
-  animation: plan-mode-glow 2s ease-in-out infinite;
-}
-
-@keyframes plan-mode-glow {
-
-  0%,
-  100% {
-    box-shadow: 0 0 4px var(--color-accent-soft);
-  }
-
-  50% {
-    box-shadow: 0 0 12px var(--color-accent-overlay);
-  }
-}
+/* ====== Plan Mode toggle — low-profile active state (no glow) ====== */
 
 /* ====== Autocomplete dropdown ====== */
 

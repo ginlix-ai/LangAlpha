@@ -29,7 +29,7 @@ import { WorkspaceProvider } from '../contexts/WorkspaceContext';
 import SubagentStatusBar from './SubagentStatusBar';
 import TodoDrawer from './TodoDrawer';
 import { parseErrorMessage } from '../utils/parseErrorMessage';
-import type { StructuredError } from '@/utils/rateLimitError';
+import { UPSTREAM_HINT_I18N_KEY, type StructuredError } from '@/utils/rateLimitError';
 import { motion, AnimatePresence, type PanInfo } from 'framer-motion';
 import { MobileBottomSheet } from '@/components/ui/mobile-bottom-sheet';
 
@@ -2003,37 +2003,61 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                       </div>
                     )}
                     {messageError && !isLoading && (() => {
-                      // Structured error (from buildRateLimitError) — render message + optional link
+                      // Structured error (from buildRateLimitError or the
+                      // upstream/internal classifier) — render message, optional
+                      // link, and hint bullets when the backend flagged the
+                      // failure as upstream-provider.
                       if (typeof messageError === 'object' && 'message' in messageError) {
                         const err = messageError as StructuredError;
+                        const isUpstream = err.kind === 'upstream';
+                        const isInternal = err.kind === 'internal';
+                        const headline = isUpstream
+                          ? (err.statusCode
+                              ? t('chat.errorUpstreamHeadlineStatus', { status: err.statusCode })
+                              : t('chat.errorUpstreamHeadline'))
+                          : isInternal
+                            ? t('chat.errorInternalHeadline')
+                            : null;
+                        const hasHints = isUpstream && err.hints && err.hints.length > 0;
                         return (
                           <div
-                            className="flex items-center gap-2 px-3 py-2 rounded-md text-sm"
+                            className="flex items-start gap-2 px-3 py-2 rounded-md text-sm"
                             style={{ backgroundColor: 'var(--color-loss-soft)', color: 'var(--color-loss)' }}
                           >
-                            <AlertTriangle className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-loss)' }} />
-                            <span>
-                              {err.message}
-                              {err.link && (
-                                <>
-                                  {' '}
-                                  <a
-                                    href={err.link.url}
-                                    {...(!err.link.url.startsWith('/') && { target: '_blank', rel: 'noopener noreferrer' })}
-                                    onClick={(e) => {
-                                      // Use client-side navigation for internal paths
-                                      if (err.link!.url.startsWith('/')) {
-                                        e.preventDefault();
-                                        navigate(err.link!.url);
-                                      }
-                                    }}
-                                    style={{ textDecoration: 'underline', fontWeight: 500 }}
-                                  >
-                                    {err.link.label}
-                                  </a>
-                                </>
+                            <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" style={{ color: 'var(--color-loss)' }} />
+                            <div className="flex flex-col gap-1 min-w-0">
+                              {headline && (
+                                <span className="font-medium">{headline}</span>
                               )}
-                            </span>
+                              <span className="break-words">
+                                {err.message}
+                                {err.link && (
+                                  <>
+                                    {' '}
+                                    <a
+                                      href={err.link.url}
+                                      {...(!err.link.url.startsWith('/') && { target: '_blank', rel: 'noopener noreferrer' })}
+                                      onClick={(e) => {
+                                        if (err.link!.url.startsWith('/')) {
+                                          e.preventDefault();
+                                          navigate(err.link!.url);
+                                        }
+                                      }}
+                                      style={{ textDecoration: 'underline', fontWeight: 500 }}
+                                    >
+                                      {err.link.label}
+                                    </a>
+                                  </>
+                                )}
+                              </span>
+                              {hasHints && (
+                                <ul className="mt-1 list-disc pl-4 flex flex-col gap-0.5 text-xs opacity-90">
+                                  {err.hints!.map((h) => (
+                                    <li key={h}>{t(UPSTREAM_HINT_I18N_KEY[h] ?? h)}</li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
                           </div>
                         );
                       }
@@ -2109,7 +2133,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                       onAction={handleAction}
                       initialModel={threadModels[0] || null}
                       threadModels={threadModels}
-                      mode={isFlashMode ? 'fast' : 'deep'}
+                      mode={isFlashMode ? 'fast' : 'ptc'}
                     />
                   </>
                 ) : activeAgent ? (

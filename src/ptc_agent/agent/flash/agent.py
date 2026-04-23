@@ -83,7 +83,13 @@ class FlashAgent:
                 self.llm: Any = config.llm_client
             else:
                 from src.llms import create_llm
+                from src.llms.llm import ensure_model_in_manifest
 
+                # Models not in models.json reach here either because the user
+                # picked a custom model without a resolvable BYOK key, or
+                # because the name is a typo. Raise a neutral error instead of
+                # the generic factory one.
+                ensure_model_in_manifest(config.llm.flash)
                 self.llm = create_llm(config.llm.flash)
             model = config.llm.flash
             provider = "llm_config"

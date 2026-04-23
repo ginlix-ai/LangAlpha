@@ -17,8 +17,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from ptc_agent.agent.middleware.compaction.middleware import (
     _COMPACTION_USER_NUDGE,
     _build_summary_request,
-    _maybe_disable_streaming,
 )
+from src.llms import maybe_disable_streaming
 
 
 class TestBuildSummaryRequest:
@@ -315,7 +315,7 @@ class TestMaybeDisableStreaming:
             streaming = True
 
         client = _FakeClient()
-        _maybe_disable_streaming(client)
+        maybe_disable_streaming(client)
         assert client.streaming is False
 
     def test_preserves_streaming_on_codex_client(self):
@@ -326,7 +326,7 @@ class TestMaybeDisableStreaming:
         client = MagicMock(spec=ChatCodexOpenAI)
         client.streaming = True
 
-        _maybe_disable_streaming(client)
+        maybe_disable_streaming(client)
 
         # MagicMock.streaming would be settable — confirm it wasn't touched.
         assert client.streaming is True
@@ -336,5 +336,5 @@ class TestMaybeDisableStreaming:
             pass
 
         obj = _NoStreamingAttr()
-        _maybe_disable_streaming(obj)
+        maybe_disable_streaming(obj)
         assert not hasattr(obj, "streaming")

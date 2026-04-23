@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useToast } from '../../../components/ui/use-toast';
 import { getFlashWorkspace } from '../../ChatAgent/utils/api';
@@ -6,7 +6,7 @@ import { attachmentsToContexts } from '../../ChatAgent/utils/fileUpload';
 import { useWorkspaces } from '../../../hooks/useWorkspaces';
 import type { Workspace } from '@/types/api';
 
-type ChatMode = 'fast' | 'deep';
+type ChatMode = 'fast' | 'ptc';
 
 interface ChatAttachment {
   file: File;
@@ -31,20 +31,22 @@ interface SendOptions {
 
 /**
  * Custom hook for handling chat input functionality
- * Manages mode (fast/deep), workspace selection, loading state, and workspace creation dialog
+ * Manages mode (fast/ptc), workspace selection, loading state, and workspace creation dialog
  * Message and planMode are managed internally by ChatInput and passed via handleSend.
  *
  * @returns {Object} Chat input state and handlers
  */
 export function useChatInput() {
-  const [mode, setMode] = useState<ChatMode>('fast');
+  const [mode, setModeRaw] = useState<ChatMode>('ptc');
   const [isLoading, setIsLoading] = useState(false);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  // Fetch workspaces for the workspace selector (shared cache with ChatAgent)
-  const { data: wsData } = useWorkspaces({ limit: 50, offset: 0 });
+  // Fetch workspaces for the workspace selector. The 100-limit matches the other
+  // dashboard widgets (RecentThreads, ConversationWidget, WorkspacePicker) so all
+  // four share a single React Query cache entry instead of four separate ones.
+  const { data: wsData } = useWorkspaces({ limit: 100, offset: 0 });
   const workspaces = ((wsData as { workspaces?: Workspace[] })?.workspaces || []).filter((ws: Workspace) => ws.status !== 'flash');
 
   // Auto-select first workspace when data arrives
@@ -54,10 +56,24 @@ export function useChatInput() {
     }
   }, [workspaces, selectedWorkspaceId]);
 
+  // Fall back to Fast mode for new users with zero real workspaces. PTC requires
+  // a workspace and would dead-end their first send with "No workspace selected".
+  // Once the user explicitly picks a mode, stop auto-switching.
+  const userPickedModeRef = useRef(false);
+  const setMode = useCallback((next: ChatMode) => {
+    userPickedModeRef.current = true;
+    setModeRaw(next);
+  }, []);
+  useEffect(() => {
+    if (userPickedModeRef.current) return;
+    if (wsData === undefined) return; // still loading
+    if (workspaces.length === 0 && mode !== 'fast') setModeRaw('fast');
+  }, [wsData, workspaces.length, mode]);
+
   /**
    * Handles sending a message and navigating to the ChatAgent workspace.
    * Fast mode: uses flash workspace (agent_mode: flash)
-   * Deep mode: uses selected workspace or falls back to default LangAlpha workspace
+   * PTC mode: uses selected workspace or falls back to default LangAlpha workspace
    */
   const handleSend = async (
     message: string,
@@ -106,13 +122,13 @@ export function useChatInput() {
           },
         });
       } else {
-        // Deep mode: use selected workspace or prompt user to create one
+        // PTC mode: use selected workspace or prompt user to create one
         let workspaceId = selectedWorkspaceId;
         if (!workspaceId) {
           toast({
             variant: 'destructive',
             title: 'No workspace selected',
-            description: 'Please create a workspace first to use deep mode.',
+            description: 'Please create a workspace first to use PTC mode.',
           });
           return;
         }

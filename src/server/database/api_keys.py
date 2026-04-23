@@ -240,3 +240,44 @@ async def get_byok_config_for_provider(
             if not row:
                 return None
             return {"api_key": row["api_key"], "base_url": row["base_url"]}
+
+
+async def get_byok_configs_for_providers(
+    user_id: str, providers: list[str]
+) -> Dict[str, Dict[str, Any]]:
+    """Batch form of ``get_byok_config_for_provider``.
+
+    Single query against ``user_api_keys`` scoped to the user's enabled BYOK
+    flag and a provider list. Returns a dict keyed by provider, values shaped
+    the same as ``get_byok_config_for_provider`` (``{"api_key", "base_url"}``).
+    Missing providers are absent from the result.
+
+    Used by the chat hot path's custom-model sibling-variant walk so we don't
+    issue one round-trip per candidate slug.
+    """
+    if not providers:
+        return {}
+    enc_key = _get_encryption_key()
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT k.provider,
+                       pgp_sym_decrypt(k.api_key, %s) AS api_key,
+                       k.base_url
+                FROM user_api_keys k
+                JOIN users u ON u.user_id = k.user_id
+                WHERE k.user_id = %s
+                  AND k.provider = ANY(%s)
+                  AND u.byok_enabled = TRUE
+                """,
+                (enc_key, user_id, list(providers)),
+            )
+            rows = await cur.fetchall()
+            return {
+                row["provider"]: {
+                    "api_key": row["api_key"],
+                    "base_url": row["base_url"],
+                }
+                for row in rows
+            }

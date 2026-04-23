@@ -242,9 +242,25 @@ class TestAgentConfigGetLlmClient:
         """When no llm_client, use src/llms factory."""
         config = _minimal_config()
         mock_created = MagicMock()
-        with patch("src.llms.create_llm", return_value=mock_created):
+        mock_mc = MagicMock()
+        mock_mc.get_model_config.return_value = {"provider": "openai"}
+        with (
+            patch("src.llms.create_llm", return_value=mock_created),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        ):
             result = config.get_llm_client()
         assert result is mock_created
+
+    def test_falls_back_raises_clear_error_for_unknown_model(self):
+        """When llm.name isn't in models.json and no llm_client is preset,
+        raise a neutral setup error — the name could be either a custom
+        model without a resolvable key or a typo."""
+        config = _minimal_config()
+        mock_mc = MagicMock()
+        mock_mc.get_model_config.return_value = None  # not a system model
+        with patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc):
+            with pytest.raises(ValueError, match="not defined in models.json"):
+                config.get_llm_client()
 
 
 # ---------------------------------------------------------------------------

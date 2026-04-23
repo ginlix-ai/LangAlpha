@@ -80,8 +80,8 @@ export interface ChatInputProps {
   onStop?: () => void;
   placeholder?: string;
   files?: string[];
-  mode?: 'fast' | 'deep';
-  onModeChange?: (mode: 'fast' | 'deep') => void;
+  mode?: 'fast' | 'ptc';
+  onModeChange?: (mode: 'fast' | 'ptc') => void;
   workspaces?: Workspace[] | null;
   selectedWorkspaceId?: string | null;
   onWorkspaceChange?: ((wsId: string) => void) | null;
@@ -95,6 +95,7 @@ export interface ChatInputProps {
   initialModel?: string | null;
   threadModels?: string[];
   dropdownDirection?: 'up' | 'down';
+  minRows?: number;
 }
 
 /* --- UTILS --- */
@@ -220,7 +221,7 @@ function areModelsCompatible(modelA: string | null, modelB: string | null, metad
  * @param {Function}  onStop
  * @param {string}    placeholder
  * @param {string[]}  files               - workspace file paths for @mention autocomplete
- * @param {string}    mode                - 'fast' | 'deep' — undefined = no toggle shown
+ * @param {string}    mode                - 'fast' | 'ptc' — undefined = no toggle shown
  * @param {Function}  onModeChange        - (newMode) => void
  * @param {Array}     workspaces          - [{ workspace_id, name }] — null = hidden
  * @param {string}    selectedWorkspaceId
@@ -264,6 +265,8 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   threadModels: threadModelsProp = [],
   // Dropdown direction: 'up' (default, for bottom-positioned inputs) or 'down' (for mid-page inputs like ThreadGallery)
   dropdownDirection = 'up',
+  // Minimum visible rows for the textarea (default 1 = compact; pass 2 for roomier non-ChatView callsites)
+  minRows = 1,
 }, ref) {
   const { t, i18n } = useTranslation();
   const { toast } = useToast();
@@ -577,7 +580,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
         const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
         if (!isImage && !isPdf) continue;
       }
-      // PTC/deep: accept any file
+      // PTC: accept any file
       if (file.size > MAX_FILE_SIZE) continue;
       validFiles.push(file);
     }
@@ -970,15 +973,32 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       }
     }
 
-    if (e.key === 'Enter' && !e.shiftKey && !showAutocomplete) {
-      e.preventDefault();
-      handleSend();
+    if (e.key === 'Enter' && !showAutocomplete) {
+      // Cmd/Ctrl+Enter inserts a newline at the cursor (browsers suppress this by default)
+      if (e.metaKey || e.ctrlKey) {
+        e.preventDefault();
+        const ta = textareaRef.current;
+        if (ta) {
+          const start = ta.selectionStart;
+          const end = ta.selectionEnd;
+          const next = message.slice(0, start) + '\n' + message.slice(end);
+          setMessage(next);
+          requestAnimationFrame(() => {
+            ta.setSelectionRange(start + 1, start + 1);
+          });
+        }
+        return;
+      }
+      if (!e.shiftKey) {
+        e.preventDefault();
+        handleSend();
+      }
     }
 
     if (e.key === 'Escape' && showAutocomplete) {
       setShowAutocomplete(false);
     }
-  }, [showSlashMenu, filteredSlashCommands, slashActiveIndex, selectSlashCommand, showAutocomplete, filteredMentionFiles, activeIndex, selectFile, handleSend, isListening]);
+  }, [showSlashMenu, filteredSlashCommands, slashActiveIndex, selectSlashCommand, showAutocomplete, filteredMentionFiles, activeIndex, selectFile, handleSend, isListening, message]);
 
   // Workspace selector helpers
   const selectedWorkspaceName = useMemo(() => {
@@ -987,7 +1007,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     return ws?.name || 'Workspace';
   }, [workspaces, selectedWorkspaceId]);
 
-  const showWorkspaceSelector = hasModeToggle && mode === 'deep' && workspaces && workspaces.length > 0;
+  const showWorkspaceSelector = hasModeToggle && mode === 'ptc' && workspaces && workspaces.length > 0;
 
   /** Render starred model items — used by both desktop submenu and mobile inline expand */
   const moreModelsItems = useMemo(() => {
@@ -1174,9 +1194,9 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
               }}
               placeholder={isListening ? "" : placeholder}
               className={`w-full bg-transparent border-0 outline-none text-[var(--color-text-primary)] ${isMobile ? 'text-base' : 'text-sm'} placeholder:text-[var(--color-text-tertiary)] resize-none overflow-hidden leading-relaxed block transition-opacity duration-300 ${isListening ? 'opacity-20' : 'opacity-100'}`}
-              rows={1}
+              rows={minRows}
               disabled={disabled}
-              style={{ minHeight: '1.5em' }}
+              style={{ minHeight: `${minRows * 1.5}em` }}
             />
           </div>
 
@@ -1212,7 +1232,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                 </button>
               )}
 
-              {/* Mode Toggle (fast/deep) */}
+              {/* Mode Toggle (fast/ptc) */}
               {hasModeToggle && (
                 <button
                   className="inline-flex items-center rounded-full border-none cursor-pointer"
@@ -1221,23 +1241,19 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                     padding: '6px 10px',
                     fontSize: '13px',
                     fontWeight: 500,
-                    background: mode === 'deep' ? 'var(--color-accent-soft)' : 'transparent',
-                    color: mode === 'deep' ? 'var(--color-accent-light)' : 'var(--color-text-muted, #8b8fa3)',
-                    border: mode === 'deep' ? '1px solid var(--color-accent-overlay)' : '1px solid transparent',
+                    background: 'transparent',
+                    color: 'var(--color-text-muted, #8b8fa3)',
+                    border: '1px solid transparent',
                     transition: 'background 0.2s, color 0.2s, border-color 0.2s',
                   }}
-                  onClick={(e) => { e.stopPropagation(); onModeChange(mode === 'fast' ? 'deep' : 'fast'); }}
-                  onMouseEnter={(e) => {
-                    if (mode !== 'deep') e.currentTarget.style.background = 'var(--color-border-muted)';
-                  }}
-                  onMouseLeave={(e) => {
-                    if (mode !== 'deep') e.currentTarget.style.background = 'transparent';
-                  }}
+                  onClick={(e) => { e.stopPropagation(); onModeChange(mode === 'fast' ? 'ptc' : 'fast'); }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-border-muted)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
                   type="button"
-                  title={mode === 'fast' ? 'Flash — quick answer using flash model' : 'Deep — full agent with workspace and tools'}
+                  title={mode === 'fast' ? 'Flash — quick answer using flash model' : 'PTC — full agent with workspace and tools'}
                 >
                   {mode === 'fast' ? <Zap className="h-4 w-4" /> : <FileStack className="h-4 w-4" />}
-                  <span>{mode === 'fast' ? 'Flash' : 'Deep'}</span>
+                  <span>{mode === 'fast' ? 'Flash' : 'PTC'}</span>
                 </button>
               )}
 
@@ -1292,8 +1308,8 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                 </div>
               )}
 
-              {/* Plan Mode Toggle — shown when no mode toggle (PTC enforced) OR mode === 'deep' */}
-              {(!hasModeToggle || mode === 'deep') && (
+              {/* Plan Mode Toggle — shown when no mode toggle (PTC enforced) OR mode === 'ptc' */}
+              {(!hasModeToggle || mode === 'ptc') && (
                 <button
                   className={`inline-flex items-center rounded-full border-none cursor-pointer${planMode ? ' plan-mode-toggle-active' : ''}`}
                   style={{
@@ -1301,9 +1317,9 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                     padding: '6px 10px',
                     fontSize: '13px',
                     fontWeight: 500,
-                    background: planMode ? 'var(--color-accent-soft)' : 'transparent',
-                    color: planMode ? 'var(--color-accent-light)' : 'var(--color-text-muted, #8b8fa3)',
-                    border: planMode ? '1px solid var(--color-accent-overlay)' : '1px solid transparent',
+                    background: planMode ? 'var(--color-border-muted)' : 'transparent',
+                    color: 'var(--color-text-muted, #8b8fa3)',
+                    border: '1px solid transparent',
                     transition: 'background 0.2s, color 0.2s, border-color 0.2s',
                   }}
                   onClick={(e) => { e.stopPropagation(); setPlanMode(!planMode); }}

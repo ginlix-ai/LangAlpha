@@ -1,0 +1,6 @@
+/* AIDailyBriefCard renders itself as a single rounded card with a gradient
+ * background plus a decorative stacked-shadow effect. The widget uses
+ * fitToContent so the grid cell tracks the card's natural height; the frame
+ * body has overflow: hidden on fit widgets so the AnimatePresence drawer
+ * expansion animation never surfaces a transient scrollbar.
+ */
