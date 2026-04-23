@@ -1,8 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { CalendarDays } from 'lucide-react';
 import { getEarningsCalendar } from '../../utils/api';
 import { registerWidget } from '../framework/WidgetRegistry';
 import type { WidgetRenderProps } from '../types';
+
+/** Local-date YYYY-MM-DD. We can't use toISOString() because that emits UTC,
+ * which crosses the day boundary for users in non-UTC zones — earnings fetched
+ * for "today" then get filtered out by `e.date >= todayStr` or bucketed wrong. */
+function localDateStr(d: Date = new Date()): string {
+  return d.toLocaleDateString('en-CA'); // en-CA → YYYY-MM-DD in local time
+}
 
 type EarningsConfig = { window?: '1w' | '2w' | '1m'; tickers?: 'all' | 'portfolio' };
 
@@ -149,36 +157,23 @@ function BucketSection({
 
 function EarningsCalendarWidget({ instance }: WidgetRenderProps<EarningsConfig>) {
   const windowDays = WINDOW_DAYS[instance.config.window ?? '2w'];
-  const [earnings, setEarnings] = useState<EarningsEntry[]>([]);
-  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    let cancelled = false;
-    const fetchEarnings = async () => {
-      setLoading(true);
-      try {
-        const today = new Date();
-        const from = today.toISOString().split('T')[0];
-        const to = new Date(today.getTime() + windowDays * 86_400_000).toISOString().split('T')[0];
-        const result = await getEarningsCalendar({ from, to });
-        const usOnly = ((result?.data || []) as EarningsEntry[]).filter(
-          (e) => e.symbol && !e.symbol.includes('.')
-        );
-        if (!cancelled) setEarnings(usOnly);
-      } catch (err: unknown) {
-        console.error('[EarningsCalendarWidget] fetch failed:', (err as Error)?.message);
-        if (!cancelled) setEarnings([]);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-    fetchEarnings();
-    return () => {
-      cancelled = true;
-    };
-  }, [windowDays]);
+  // Use local dates end-to-end: the `from`/`to` we send must match the same
+  // day the user's clock is on, or the >= todayStr filter below will drop
+  // "today's" earnings for anyone east of UTC.
+  const todayStr = localDateStr();
+  const toStr = localDateStr(new Date(Date.now() + windowDays * 86_400_000));
 
-  const todayStr = new Date().toISOString().split('T')[0];
+  const { data: earnings = [], isLoading: loading } = useQuery<EarningsEntry[]>({
+    queryKey: ['earnings-calendar', todayStr, toStr],
+    queryFn: async () => {
+      const result = await getEarningsCalendar({ from: todayStr, to: toStr });
+      return ((result?.data || []) as EarningsEntry[]).filter(
+        (e) => e.symbol && !e.symbol.includes('.')
+      );
+    },
+    staleTime: 5 * 60_000,
+  });
 
   const upcoming = useMemo(
     () =>
