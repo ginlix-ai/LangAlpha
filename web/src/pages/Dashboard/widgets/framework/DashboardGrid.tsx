@@ -116,9 +116,12 @@ export function DashboardGrid({ prefs, editMode, onChange, onOpenSettings }: Das
       });
     });
     if (needsWrite) {
-      onChange({ ...prefs, layouts: reconciled });
+      // Read onChange via ref so a new onChange identity (parent re-render)
+      // doesn't re-fire this effect and risk a loop. The write itself triggers
+      // a prefs change, which IS the intended retrigger signal.
+      latestOnChangeRef.current({ ...prefs, layouts: reconciled });
     }
-  }, [reconciled, prefs, onChange]);
+  }, [reconciled, prefs]);
 
   const rglLayouts = useMemo<ResponsiveLayouts<'lg' | 'md'>>(() => {
     return {
