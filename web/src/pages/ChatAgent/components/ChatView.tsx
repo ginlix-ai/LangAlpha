@@ -2114,7 +2114,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                       onAction={handleAction}
                       initialModel={threadModels[0] || null}
                       threadModels={threadModels}
-                      mode={isFlashMode ? 'fast' : 'deep'}
+                      mode={isFlashMode ? 'fast' : 'ptc'}
                     />
                   </>
                 ) : activeAgent ? (
