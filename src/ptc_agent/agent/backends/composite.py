@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Sequence
 
 import structlog
@@ -122,21 +123,24 @@ class CompositeFilesystemBackend:
         if route is not None:
             return await route.aglob_paths(pattern, path)
 
-        # Sandbox root (or outside every route) — fan out to routes under it.
-        results = await self._sandbox.aglob_paths(pattern, normalized)
-        for r in self._routes:
-            if r.root_prefix.startswith(normalized.rstrip("/") + "/") or normalized in (
-                "/",
-                "",
-            ):
-                results.extend(await r.aglob_paths(pattern, r.root_prefix))
+        # Sandbox root (or outside every route) — fan out in parallel.
+        matching_routes = [
+            r for r in self._routes
+            if r.root_prefix.startswith(normalized.rstrip("/") + "/")
+            or normalized in ("/", "")
+        ]
+        batches = await asyncio.gather(
+            self._sandbox.aglob_paths(pattern, normalized),
+            *(r.aglob_paths(pattern, r.root_prefix) for r in matching_routes),
+        )
         seen: set[str] = set()
         ordered: list[str] = []
-        for p in results:
-            if p in seen:
-                continue
-            seen.add(p)
-            ordered.append(p)
+        for batch in batches:
+            for p in batch:
+                if p in seen:
+                    continue
+                seen.add(p)
+                ordered.append(p)
         return ordered
 
     async def agrep_rich(
@@ -177,7 +181,12 @@ class CompositeFilesystemBackend:
 
         # Gather all hits first, then apply one global offset/head_limit slice —
         # per-backend pagination would produce the wrong slice at the root.
-        sandbox_result = await self._sandbox.agrep_rich(
+        matching_routes = [
+            r for r in self._routes
+            if r.root_prefix.startswith(normalized.rstrip("/") + "/")
+            or normalized in ("/", "")
+        ]
+        sandbox_coro = self._sandbox.agrep_rich(
             pattern,
             path=normalized,
             output_mode=output_mode,
@@ -192,28 +201,29 @@ class CompositeFilesystemBackend:
             head_limit=None,
             offset=0,
         )
+        route_coros = [
+            r.agrep_rich(
+                pattern,
+                path=r.root_prefix,
+                output_mode=output_mode,
+                glob=glob,
+                type=type,
+                case_insensitive=case_insensitive,
+                show_line_numbers=show_line_numbers,
+                head_limit=None,
+                offset=0,
+            )
+            for r in matching_routes
+        ]
+        sandbox_result, *route_results = await asyncio.gather(sandbox_coro, *route_coros)
+
         if not isinstance(sandbox_result, list):
             return sandbox_result
 
         combined: list[Any] = list(sandbox_result)
-        for r in self._routes:
-            if r.root_prefix.startswith(normalized.rstrip("/") + "/") or normalized in (
-                "/",
-                "",
-            ):
-                memory_result = await r.agrep_rich(
-                    pattern,
-                    path=r.root_prefix,
-                    output_mode=output_mode,
-                    glob=glob,
-                    type=type,
-                    case_insensitive=case_insensitive,
-                    show_line_numbers=show_line_numbers,
-                    head_limit=None,
-                    offset=0,
-                )
-                if isinstance(memory_result, list):
-                    combined.extend(memory_result)
+        for memory_result in route_results:
+            if isinstance(memory_result, list):
+                combined.extend(memory_result)
 
         start = max(0, offset)
         if head_limit is not None:

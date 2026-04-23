@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/memory", tags=["Memory"])
 
 _MAX_LIST_LIMIT = 500
+_STORE_OP_TIMEOUT_S = 2.0
 
 
 class MemoryEntry(BaseModel):
@@ -94,6 +96,34 @@ def _validate_key(key: str) -> None:
         raise HTTPException(status_code=400, detail=f"Invalid memory key: {exc}") from exc
 
 
+async def _asearch(
+    store: Any, namespace: tuple[str, ...], *, limit: int, offset: int
+) -> list[Any]:
+    try:
+        return await asyncio.wait_for(
+            store.asearch(namespace, limit=limit, offset=offset),
+            timeout=_STORE_OP_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail="Memory store timed out. Retry shortly.",
+        ) from exc
+
+
+async def _aget(store: Any, namespace: tuple[str, ...], key: str) -> Any:
+    try:
+        return await asyncio.wait_for(
+            store.aget(namespace, key),
+            timeout=_STORE_OP_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail="Memory store timed out. Retry shortly.",
+        ) from exc
+
+
 async def _list_namespace(
     store: Any, namespace: tuple[str, ...]
 ) -> tuple[list[MemoryEntry], bool]:
@@ -102,7 +132,7 @@ async def _list_namespace(
     page = 100
     truncated = False
     while len(entries) < _MAX_LIST_LIMIT:
-        results = await store.asearch(namespace, limit=page, offset=offset)
+        results = await _asearch(store, namespace, limit=page, offset=offset)
         if not results:
             break
         for item in results:
@@ -112,7 +142,7 @@ async def _list_namespace(
         offset += page
     if len(entries) >= _MAX_LIST_LIMIT:
         # Peek past the cap in case the page boundary hid the extra items.
-        extra = await store.asearch(namespace, limit=1, offset=_MAX_LIST_LIMIT)
+        extra = await _asearch(store, namespace, limit=1, offset=_MAX_LIST_LIMIT)
         truncated = bool(extra)
     return entries[:_MAX_LIST_LIMIT], truncated
 
@@ -137,7 +167,7 @@ async def read_user_memory(
     """Read one user-tier memory file by its key."""
     _validate_key(key)
     store = _require_store()
-    item = await store.aget((user_id, "memory"), key)
+    item = await _aget(store, (user_id, "memory"), key)
     if item is None:
         raise HTTPException(status_code=404, detail="Memory entry not found")
     return _value_to_read("user", key, item.value)
@@ -174,7 +204,7 @@ async def read_workspace_memory(
     require_workspace_owner(workspace, user_id=user_id)
     store = _require_store()
     namespace = (user_id, "workspaces", workspace_id, "memory")
-    item = await store.aget(namespace, key)
+    item = await _aget(store, namespace, key)
     if item is None:
         raise HTTPException(status_code=404, detail="Memory entry not found")
     return _value_to_read("workspace", key, item.value)

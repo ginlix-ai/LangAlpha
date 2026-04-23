@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import re
+import weakref
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -20,6 +21,9 @@ _KEY_COMPONENT_RE = re.compile(r"^[A-Za-z0-9\-_.@+~]+$")
 
 MAX_CONTENT_BYTES = 256 * 1024
 
+# Matches the middleware's read-path budget so a stuck store can't wedge a tool call.
+_STORE_OP_TIMEOUT_S = 2.0
+
 NamespaceFactory = Callable[[], tuple[str, ...]]
 
 
@@ -32,22 +36,21 @@ class MemoryContentTooLargeError(ValueError):
 
 
 # Shared across backend instances targeting the same namespace so concurrent
-# turns within one process cannot lose updates. Cross-process safety still
-# needs store-level CAS on ``modified_at``.
-_WRITE_LOCKS: dict[tuple[str, ...], asyncio.Lock] = {}
-_WRITE_LOCKS_GUARD = asyncio.Lock()
+# turns within one process cannot lose updates. WeakValueDictionary auto-prunes
+# entries once no caller holds the lock, so the registry never leaks across
+# long-running processes. Cross-process safety still needs store-level CAS on
+# ``modified_at``.
+_WRITE_LOCKS: weakref.WeakValueDictionary[tuple[str, ...], asyncio.Lock] = (
+    weakref.WeakValueDictionary()
+)
 
 
-async def _lock_for_namespace(namespace: tuple[str, ...]) -> asyncio.Lock:
-    existing = _WRITE_LOCKS.get(namespace)
-    if existing is not None:
-        return existing
-    async with _WRITE_LOCKS_GUARD:
-        existing = _WRITE_LOCKS.get(namespace)
-        if existing is None:
-            existing = asyncio.Lock()
-            _WRITE_LOCKS[namespace] = existing
-        return existing
+def _lock_for_namespace(namespace: tuple[str, ...]) -> asyncio.Lock:
+    lock = _WRITE_LOCKS.get(namespace)
+    if lock is None:
+        lock = asyncio.Lock()
+        _WRITE_LOCKS[namespace] = lock
+    return lock
 
 
 def validate_memory_key(key: str) -> None:
@@ -174,14 +177,15 @@ class StoreMemoryBackend:
 
     async def awrite_text(self, file_path: str, content: str) -> bool:
         key = self._path_to_key(file_path)
-        if len(content.encode("utf-8")) > MAX_CONTENT_BYTES:
+        content_bytes = len(content.encode("utf-8"))
+        if content_bytes > MAX_CONTENT_BYTES:
             raise MemoryContentTooLargeError(
-                f"Memory content is {len(content.encode('utf-8'))} bytes; "
+                f"Memory content is {content_bytes} bytes; "
                 f"max is {MAX_CONTENT_BYTES}. Split the content into multiple "
                 "detail files or shorten the entry."
             )
         namespace = self._namespace()
-        lock = await _lock_for_namespace(namespace)
+        lock = _lock_for_namespace(namespace)
         async with lock:
             existing_item = await self._store.aget(namespace, key)
             existing_value = existing_item.value if existing_item else None
@@ -211,7 +215,7 @@ class StoreMemoryBackend:
                 "error": "old_string and new_string are identical",
             }
         namespace = self._namespace()
-        lock = await _lock_for_namespace(namespace)
+        lock = _lock_for_namespace(namespace)
         async with lock:
             item = await self._store.aget(namespace, key)
             if item is None:
@@ -272,9 +276,19 @@ class StoreMemoryBackend:
         offset = 0
         items: list[Any] = []
         while True:
-            page = await self._store.asearch(
-                namespace, limit=page_size, offset=offset
-            )
+            try:
+                page = await asyncio.wait_for(
+                    self._store.asearch(namespace, limit=page_size, offset=offset),
+                    timeout=_STORE_OP_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "memory asearch timed out",
+                    namespace=namespace,
+                    offset=offset,
+                    timeout_s=_STORE_OP_TIMEOUT_S,
+                )
+                break
             if not page:
                 break
             items.extend(page)
