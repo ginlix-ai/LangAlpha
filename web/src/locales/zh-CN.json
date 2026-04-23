@@ -451,6 +451,31 @@
       "download": "改为下载"
     }
   },
+  "rightPanel": {
+    "tabs": {
+      "files": "文件",
+      "memory": "记忆",
+      "memo": "备忘录"
+    },
+    "close": "关闭面板"
+  },
+  "memoryPanel": {
+    "backToList": "返回记忆列表",
+    "refresh": "刷新记忆",
+    "tierUser": "用户",
+    "tierWorkspace": "工作区",
+    "loading": "加载中…",
+    "loadingList": "正在加载记忆…",
+    "emptyUser": "暂无用户记忆。",
+    "emptyWorkspace": "暂无工作区记忆。",
+    "emptyHint": "当有值得记住的内容时，智能体会创建 memory.md。",
+    "loadError": "记忆加载失败",
+    "readError": "记忆文件读取失败"
+  },
+  "memoPanel": {
+    "title": "备忘录",
+    "description": "智能体撰写并持续更新的长篇研究笔记。即将上线。"
+  },
   "automation": {
     "automations": "自动化",
     "createAutomation": "创建自动化",

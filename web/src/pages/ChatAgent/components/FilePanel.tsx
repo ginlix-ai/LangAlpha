@@ -45,7 +45,7 @@ interface ContextMenuData {
   filePath: string;
 }
 
-interface ContextPayload {
+export interface ContextPayload {
   path?: string;
   snippet?: string;
   label?: string;
@@ -567,6 +567,9 @@ interface FilePanelProps {
   onAddContext?: ((ctx: ContextPayload) => void) | null;
   showSystemFiles?: boolean;
   onToggleSystemFiles?: (() => void) | null;
+  /** Hide the panel-close affordances (the mobile back arrow and the trailing X)
+   * when FilePanel is embedded inside a tabbed wrapper that owns the close button. */
+  hideClose?: boolean;
 }
 
 function FilePanel({
@@ -587,6 +590,7 @@ function FilePanel({
   onAddContext = null,
   showSystemFiles = false,
   onToggleSystemFiles = null,
+  hideClose = false,
 }: FilePanelProps): React.ReactElement {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
@@ -1308,7 +1312,7 @@ function FilePanel({
             <button onClick={() => onTargetDirHandled?.()} className="file-panel-icon-btn" title={t('filePanel.backToAllFiles')}>
               <ArrowLeft className="h-4 w-4" />
             </button>
-          ) : isMobile ? (
+          ) : isMobile && !hideClose ? (
             <button onClick={onClose} className="file-panel-icon-btn" title={t('filePanel.close')}>
               <ArrowLeft className="h-4 w-4" />
             </button>
@@ -1424,7 +1428,7 @@ function FilePanel({
             onSave={handleSave}
             onCancelEdit={handleCancelEdit}
           />
-          {!selectMode && !isEditing && (
+          {!selectMode && !isEditing && !hideClose && (
             <button onClick={onClose} className="file-panel-icon-btn" title={t('filePanel.close')}>
               <X className="h-4 w-4" />
             </button>

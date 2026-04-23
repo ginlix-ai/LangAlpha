@@ -42,4 +42,11 @@ export const queryKeys = {
     all:  ['workspaceFiles'],
     byWs: (wsId: string, opts?: Record<string, unknown>) => [...queryKeys.workspaceFiles.all, wsId, opts],
   },
+  memory: {
+    all:       ['memory'],
+    user:      () => [...queryKeys.memory.all, 'user'],
+    userRead:  (key: string) => [...queryKeys.memory.user(), 'read', key],
+    workspace: (wsId: string) => [...queryKeys.memory.all, 'workspace', wsId],
+    workspaceRead: (wsId: string, key: string) => [...queryKeys.memory.workspace(wsId), 'read', key],
+  },
 };

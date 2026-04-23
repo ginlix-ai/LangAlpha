@@ -12,7 +12,8 @@ import RenameThreadModal from './RenameThreadModal';
 import ChatInput from '../../../components/ui/chat-input';
 import type { ChatInputHandle } from '../../../components/ui/chat-input';
 import { attachmentsToContexts } from '../utils/fileUpload';
-import FilePanel, { SYSTEM_DIR_PREFIXES } from './FilePanel';
+import { SYSTEM_DIR_PREFIXES } from './FilePanel';
+import RightPanel from './RightPanel';
 import { clampPanelWidth as clampPanelWidthUtil } from '@/lib/panelUtils';
 import SandboxSettingsPanel from './SandboxSettingsPanel';
 import { getWorkspaceThreads, deleteThread, updateThreadTitle } from '../utils/api';
@@ -736,7 +737,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
               />
             )}
             <div className="flex-shrink-0" style={{ width: isMobile ? '100%' : filePanelWidth }}>
-              <FilePanel
+              <RightPanel
                 workspaceId={workspaceId}
                 onClose={() => setShowFilePanel(false)}
                 targetFile={filePanelTargetFile}
