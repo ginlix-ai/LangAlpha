@@ -3,7 +3,7 @@ import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useIsMobile } from '@/hooks/useIsMobile';
 
-const Dashboard = React.lazy(() => import('../../pages/Dashboard/Dashboard'));
+const Dashboard = React.lazy(() => import('../../pages/Dashboard/DashboardRouter'));
 const ChatAgent = React.lazy(() => import('../../pages/ChatAgent/ChatAgent'));
 const MarketView = React.lazy(() => import('../../pages/MarketView/MarketView'));
 const DetailPage = React.lazy(() => import('../../pages/Detail/DetailPage'));
