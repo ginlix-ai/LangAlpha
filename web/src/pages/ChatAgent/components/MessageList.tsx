@@ -709,6 +709,7 @@ const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvat
               pendingToolCallChunks={(message.pendingToolCallChunks as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
               isStreaming={message.isStreaming as boolean}
               hasError={message.error as boolean}
+              structuredError={message.structuredError as import('@/utils/rateLimitError').StructuredError | undefined}
               isAssistant={isAssistant}
               compactToolCalls={compactToolCalls}
               isSubagentView={isSubagentView}
@@ -746,6 +747,7 @@ const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvat
                 content={message.content as string}
                 isStreaming={message.isStreaming as boolean}
                 hasError={message.error as boolean}
+                structuredError={message.structuredError as import('@/utils/rateLimitError').StructuredError | undefined}
                 onOpenFile={onOpenFile}
               />
             )
@@ -905,6 +907,9 @@ interface MessageContentSegmentsProps {
   pendingToolCallChunks?: Record<string, Record<string, unknown>>;
   isStreaming?: boolean;
   hasError?: boolean;
+  /** Classified error data from the backend — used by TextMessageContent so
+   *  inline error cards can render hints without re-parsing the raw text. */
+  structuredError?: import('@/utils/rateLimitError').StructuredError;
   isAssistant?: boolean;
   compactToolCalls?: boolean;
   isSubagentView?: boolean;
@@ -1024,11 +1029,12 @@ interface TextBlockProps {
   isFirst: boolean;
   isStreaming: boolean;
   hasError: boolean;
+  structuredError?: import('@/utils/rateLimitError').StructuredError;
   isSubagentView: boolean;
   onOpenFile?: (path: string, workspaceId?: string) => void;
 }
 
-function TextBlock({ block, isFirst, isStreaming, hasError, isSubagentView, onOpenFile }: TextBlockProps): React.ReactElement | null {
+function TextBlock({ block, isFirst, isStreaming, hasError, structuredError, isSubagentView, onOpenFile }: TextBlockProps): React.ReactElement | null {
   const textContent = isSubagentView
     ? normalizeSubagentText(block.segment.content)
     : (block.segment.content ?? '');
@@ -1037,6 +1043,7 @@ function TextBlock({ block, isFirst, isStreaming, hasError, isSubagentView, onOp
       content={textContent}
       isStreaming={isStreaming}
       hasError={hasError}
+      structuredError={structuredError}
       onOpenFile={onOpenFile}
     />
   );
@@ -1047,7 +1054,7 @@ function TextBlock({ block, isFirst, isStreaming, hasError, isSubagentView, onOp
   return isFirst && textContent ? <div className="-mt-1">{textEl}</div> : textEl;
 }
 
-const MessageContentSegments = memo(function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesses, todoListProcesses, subagentTasks, planApprovals = EMPTY_OBJ, userQuestions = EMPTY_OBJ, workspaceProposals = EMPTY_OBJ, questionProposals = EMPTY_OBJ, pendingToolCallChunks = EMPTY_OBJ, isStreaming, hasError, isAssistant = false, compactToolCalls = false, isSubagentView = false, readOnly = false, allowFiles = false, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onApprovePTCAgent, onRejectPTCAgent, onApproveSecretaryAction, onRejectSecretaryAction, ptcAgentProposals = EMPTY_OBJ, secretaryActionProposals = EMPTY_OBJ, onWidgetSendPrompt, htmlWidgetProcesses = EMPTY_OBJ, textOnly = false, flashContext }: MessageContentSegmentsProps): React.ReactElement {
+const MessageContentSegments = memo(function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesses, todoListProcesses, subagentTasks, planApprovals = EMPTY_OBJ, userQuestions = EMPTY_OBJ, workspaceProposals = EMPTY_OBJ, questionProposals = EMPTY_OBJ, pendingToolCallChunks = EMPTY_OBJ, isStreaming, hasError, structuredError, isAssistant = false, compactToolCalls = false, isSubagentView = false, readOnly = false, allowFiles = false, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onApprovePTCAgent, onRejectPTCAgent, onApproveSecretaryAction, onRejectSecretaryAction, ptcAgentProposals = EMPTY_OBJ, secretaryActionProposals = EMPTY_OBJ, onWidgetSendPrompt, htmlWidgetProcesses = EMPTY_OBJ, textOnly = false, flashContext }: MessageContentSegmentsProps): React.ReactElement {
   // Force re-render timer for recently-completed tool calls that need minimum exposure
   const [tick, setTick] = useState(0);
   const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1403,6 +1410,7 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
                 isFirst={blockIdx === 0}
                 isStreaming={!!(isStreaming && blockIdx === lastTextBlockIdx && !hasAnyTrulyInProgress)}
                 hasError={!!hasError}
+                structuredError={structuredError}
                 isSubagentView={isSubagentView}
                 onOpenFile={onOpenFile}
               />
@@ -1564,6 +1572,7 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
                 content={segment.content ?? ''}
                 isStreaming={!!(isStreaming && isLastSegment)}
                 hasError={!!hasError}
+                structuredError={structuredError}
                 onOpenFile={onOpenFile}
               />
             </div>

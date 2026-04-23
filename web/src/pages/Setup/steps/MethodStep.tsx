@@ -134,6 +134,7 @@ function ConfiguredBanner({
                 >
                   {p.access_type === 'oauth' ? t('setup.oauthBadge')
                     : p.access_type === 'local' ? t('setup.localBadge')
+                    : p.access_type === 'coding_plan' ? t('setup.codingPlanBadge')
                     : t('setup.apiKeyBadge')}
                 </span>
               </div>

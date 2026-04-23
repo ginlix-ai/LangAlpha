@@ -7,6 +7,8 @@ lookups.
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from ._common import logger
 
 # ---------------------------------------------------------------------------
@@ -35,9 +37,14 @@ async def _resolve_custom_model_byok(
     Resolve BYOK key + base_url for a user-defined custom model.
 
     Key lookup order:
-    1. model name as a custom sub-provider (model and provider share a name)
-    2. custom model's provider field as a custom sub-provider
-    3. parent of the custom model's provider (system provider)
+    1. Model name as a custom sub-provider (model and provider share a name).
+    2. Custom model's provider field as a custom sub-provider.
+    3. System provider fan-out: the provider's own slug, then its parent, then
+       every non-platform sibling variant of the parent. The sibling step
+       handles the mirror case where the custom model is tagged with the
+       parent slug (e.g. ``moonshot``) but the user only configured a variant
+       (e.g. ``moonshot-coding``) so the key lives under that variant.
+       Platform-only variants are excluded (BYOK keys are never stored there).
     """
     from src.server.database.api_keys import get_byok_config_for_provider
 
@@ -63,12 +70,42 @@ async def _resolve_custom_model_byok(
                 custom_config = {**custom_config, "_use_response_api": True}
             return byok_config, base_url, custom_config
 
-    # 3. System/parent provider
+    # 3. System provider — try the provider's own slug first (variants like
+    #    ``moonshot-coding`` store their key under their own slug), then the
+    #    parent, then any sibling variants of the parent. The last step covers
+    #    the mirror case where a custom model is tagged with the parent slug
+    #    but the user only configured a variant (e.g. coding-plan) so the key
+    #    lives under the variant.
+    #
+    #    Single batch query instead of a per-candidate round-trip: typical
+    #    candidate list is 2-4 entries, and the chat hot path can't afford
+    #    N round-trips per request.
+    from src.server.database.api_keys import get_byok_configs_for_providers
+
     parent = mc.get_parent_provider(provider)
-    byok_config = await get_byok_config_for_provider(user_id, parent)
-    if byok_config:
-        base_url = byok_config.get("base_url") or mc.get_provider_info(parent).get("base_url")
-        return byok_config, base_url, custom_config
+    candidates: list[str] = [provider]
+    if parent and parent != provider:
+        candidates.append(parent)
+    root = parent if parent else provider
+    for sibling in mc.get_child_variants(root):
+        if sibling not in candidates:
+            candidates.append(sibling)
+
+    configs = await get_byok_configs_for_providers(user_id, candidates)
+    for candidate in candidates:  # keep the provider → parent → sibling priority
+        byok_config = configs.get(candidate)
+        if byok_config:
+            base_url = byok_config.get("base_url") or mc.get_provider_info(candidate).get("base_url")
+            # Rewrite ``provider`` to the candidate that actually held the key.
+            # ``create_llm_from_custom`` reads SDK / default_headers /
+            # use_response_api from the provider field, so if a custom model
+            # tagged ``dashscope`` resolves via its ``dashscope-coding``
+            # sibling, we need the SDK to match the coding-plan endpoint —
+            # otherwise we'd build a Qwen client pointed at an
+            # Anthropic-shaped URL and fail every request.
+            if candidate != provider:
+                custom_config = {**custom_config, "provider": candidate}
+            return byok_config, base_url, custom_config
 
     return None, None, custom_config
 
@@ -76,6 +113,29 @@ async def _resolve_custom_model_byok(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def _raise_byok_key_required(model_name: str) -> None:
+    """Raise a user-facing HTTPException pointing the user to Settings.
+
+    Used when a custom model is selected but no usable API key can be found
+    (BYOK disabled, or BYOK enabled but no key stored). Mirrors the
+    ``oauth_required`` error shape so the chat UI renders a single banner with
+    a clickable CTA.
+    """
+    from fastapi import HTTPException
+
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "message": (
+                f"API key required for custom model '{model_name}'. "
+                "Enable BYOK and add the key in Settings."
+            ),
+            "type": "byok_key_required",
+            "link": {"url": "/settings?tab=model", "label": "Open Settings"},
+        },
+    )
 
 
 async def resolve_byok_llm_client(
@@ -86,11 +146,22 @@ async def resolve_byok_llm_client(
     _pref_cache: dict | None = None,
 ):
     """
-    If BYOK is active, look up the user's key for the model's **parent** provider
-    and return a fresh LLM client.  Returns None if BYOK isn't applicable.
+    If BYOK is active, build an LLM client for ``model_name``. Returns None
+    if BYOK isn't applicable or no key is configured. ``resolve_llm_config``
+    converts a None result into a user-facing ``byok_key_required``
+    HTTPException for custom models on the main-model path — this function
+    stays at debug log level so the user sees one error, not two.
 
-    Auto-reroutes from sub-providers (e.g., platform variants) to the parent provider's
-    official endpoint (or user's custom base_url if set).
+    - System model: look up BYOK key under the model's parent provider,
+      resolving variants to the parent's endpoint.
+    - Custom model (custom shadows built-in when names collide): walk the
+      custom/provider/variant key chain via ``_resolve_custom_model_byok``.
+    - Unknown name but matches a user's ``custom_providers`` slug:
+      synthesize a custom model entry and route through the user's key.
+
+    ``classify_model`` is O(1) with ``_pref_cache`` populated, so callers
+    don't need to pre-classify — pass the cache and this function does its
+    own lookup.
     """
     if not is_byok:
         return None
@@ -99,35 +170,27 @@ async def resolve_byok_llm_client(
     from src.llms.llm import LLM as LLMFactory, create_llm, create_llm_from_custom
 
     mc = LLMFactory.get_model_config()
-    model_info = mc.get_model_config(model_name)
+    source, config_entry = await classify_model(
+        user_id, model_name, _pref_cache=_pref_cache,
+    )
 
-    if not model_info:
-        # Fall back to user's custom models
-        custom_config = await get_custom_model_config(user_id, model_name, _pref_cache=_pref_cache)
-
-        if not custom_config:
-            # Check if model_name is a BYOK custom provider name
-            # (user selected a custom provider directly as their model)
-            cp_config = await get_custom_provider_config(user_id, model_name, _pref_cache=_pref_cache)
-            if cp_config:
-                custom_config = {
-                    "name": model_name,
-                    "model_id": model_name,
-                    "provider": cp_config["parent_provider"],
-                }
-            else:
-                return None
-
+    # Custom model — custom entry wins. If the name also matches a built-in,
+    # we intentionally ignore the system side: the user asked for their
+    # variant's key to handle this name.
+    if source == ModelSource.CUSTOM:
         byok_config, base_url, custom_config = await _resolve_custom_model_byok(
-            user_id, model_name, custom_config, mc, _pref_cache=_pref_cache,
+            user_id, model_name, config_entry, mc, _pref_cache=_pref_cache,
         )
         if not byok_config:
-            logger.warning(
+            # ``resolve_llm_config`` converts this None into an HTTPException
+            # for the main-model path, and logs its own warning for custom
+            # fallback models. Keep this at debug so the chat-level error
+            # (with CTA) is the single user-visible signal.
+            logger.debug(
                 f"[CHAT] No BYOK key found for custom model={model_name} "
-                f"provider={custom_config['provider']}. Falling back to system default."
+                f"provider={custom_config['provider']}."
             )
             return None
-
         logger.info(
             f"[CHAT] Using BYOK key for custom model={model_name} "
             f"provider={custom_config['provider']} base_url={base_url or 'SDK default'}"
@@ -138,24 +201,44 @@ async def resolve_byok_llm_client(
             base_url=base_url,
         )
 
-    provider = model_info["provider"]
-    parent = mc.get_parent_provider(provider)
+    # Unknown name — last-chance check for a custom-provider slug. Covers the
+    # edge case where a user typed their custom provider slug as the model name.
+    if source == ModelSource.UNKNOWN:
+        cp_config = await get_custom_provider_config(
+            user_id, model_name, _pref_cache=_pref_cache,
+        )
+        if not cp_config:
+            return None
+        synthetic_cm = {
+            "name": model_name,
+            "model_id": model_name,
+            "provider": cp_config["parent_provider"],
+        }
+        byok_config, base_url, custom_config = await _resolve_custom_model_byok(
+            user_id, model_name, synthetic_cm, mc, _pref_cache=_pref_cache,
+        )
+        if not byok_config:
+            return None
+        return create_llm_from_custom(
+            custom_config,
+            api_key=byok_config["api_key"],
+            base_url=base_url,
+        )
 
-    # Look up BYOK key for parent provider (resolves platform variants to parent)
+    # System model — BYOK key lives under the parent provider.
+    provider = config_entry["provider"]
+    parent = mc.get_parent_provider(provider)
     byok_config = await get_byok_config_for_provider(user_id, parent)
     if not byok_config:
         return None
 
-    # Resolve base_url: user custom > parent provider's official > None (SDK default)
     base_url = byok_config.get("base_url")
     if not base_url:
-        parent_info = mc.get_provider_info(parent)
-        base_url = parent_info.get("base_url")  # None for anthropic = SDK default
+        base_url = mc.get_provider_info(parent).get("base_url")
 
     logger.debug(
         f"[CHAT] Resolved BYOK client for model={model_name} parent={parent} base_url={base_url or 'SDK default'}"
     )
-    # Always pass base_url (even None) to override the sub-provider's URL via sentinel
     return create_llm(
         model_name,
         api_key=byok_config["api_key"],
@@ -255,6 +338,51 @@ async def get_custom_provider_config(user_id: str, provider: str, _pref_cache: d
         if cp.get("name") == provider:
             return cp
     return None
+
+
+# ---------------------------------------------------------------------------
+# Central model classification — single entry point used by every call site
+# that needs to answer "what is this model?". System vs custom is a flat
+# namespace guaranteed by ``_validate_custom_models`` (users.py), so this
+# function does at most one in-memory dict hit and one pref-cache scan.
+# ---------------------------------------------------------------------------
+
+
+class ModelSource(StrEnum):
+    SYSTEM = "system"
+    CUSTOM = "custom"
+    UNKNOWN = "unknown"
+
+
+async def classify_model(
+    user_id: str,
+    model_name: str,
+    _pref_cache: dict | None = None,
+) -> tuple[str, dict]:
+    """Classify ``model_name`` as system / custom / unknown.
+
+    Returns a ``(source, config)`` pair where ``config`` is:
+      - the user's ``custom_models`` entry for custom models
+      - the entry from ``models.json`` for system models
+      - ``{}`` for unknown
+
+    Custom is checked first. When a user's ``custom_models`` entry shadows a
+    built-in of the same name, the custom entry wins — lets users route a
+    built-in model name (e.g. ``glm-5.1``) through a variant's own key.
+    ``_pref_cache`` keeps the chat hot path free of extra DB reads.
+    """
+    from src.llms.llm import LLM as LLMFactory
+
+    custom_cm = await get_custom_model_config(user_id, model_name, _pref_cache=_pref_cache)
+    if custom_cm:
+        return ModelSource.CUSTOM, custom_cm
+
+    mc = LLMFactory.get_model_config()
+    system_info = mc.get_model_config(model_name)
+    if system_info:
+        return ModelSource.SYSTEM, system_info
+
+    return ModelSource.UNKNOWN, {}
 
 
 async def resolve_llm_config(
@@ -363,35 +491,34 @@ async def resolve_llm_config(
     # Resolve the effective model from whichever field we just set
     effective_model = getattr(config.llm, model_field, None) or config.llm.name
 
-    # If effective model is a custom model but BYOK is off, fall back to system default
-    from src.llms.llm import LLM as LLMFactory
+    # Classify via the single entry point. System and custom share a flat
+    # namespace (enforced by ``_validate_custom_models``), so one call answers
+    # the question for the entire downstream flow.
+    source, resolved_config = await classify_model(
+        user_id, effective_model, _pref_cache=model_pref
+    )
+    is_custom = source == ModelSource.CUSTOM
+    custom_cm = resolved_config if is_custom else None
+    # ``is_custom_provider`` only matters when the model name didn't classify
+    # as a known custom model — catches the case where the user typed a
+    # custom *provider* slug as the model preference.
+    if source == ModelSource.UNKNOWN:
+        is_custom_provider = (
+            await get_custom_provider_config(user_id, effective_model, _pref_cache=model_pref) is not None
+        )
+    else:
+        is_custom_provider = False
 
-    mc = LLMFactory.get_model_config()
-    is_system_model = mc.get_model_config(effective_model) is not None
-    if not is_system_model:
-        custom_cm = await get_custom_model_config(user_id, effective_model, _pref_cache=model_pref)
-        is_custom = custom_cm is not None
-        is_custom_provider = not is_custom and await get_custom_provider_config(user_id, effective_model, _pref_cache=model_pref) is not None
-        if (is_custom or is_custom_provider) and not is_byok:
-            # Custom model/provider requires BYOK — revert to system default
-            default_model = (getattr(base_config.llm, model_field, None) or base_config.llm.name) if base_config.llm else None
-            if not default_model:
-                raise ValueError(
-                    f"Custom model {effective_model} requires BYOK but no system default model is configured to fall back to."
-                )
-            logger.warning(
-                f"[CHAT] Custom model {effective_model} selected but BYOK disabled, "
-                f"falling back to system default: {default_model}"
-            )
-            effective_model = default_model
-            config = base_config
-            custom_cm = None  # Reverted to system model
+    # Custom model/provider requires BYOK. No silent fallback — raise a clear error
+    # so the frontend can show a CTA linking to Settings.
+    if (is_custom or is_custom_provider) and not is_byok:
+        _raise_byok_key_required(effective_model)
 
-        # Thread custom model input_modalities onto config
-        if custom_cm and custom_cm.get("input_modalities"):
-            if config is base_config:
-                config = config.model_copy(deep=True)
-            config.input_modalities = custom_cm["input_modalities"]
+    # Thread custom model input_modalities onto config
+    if custom_cm and custom_cm.get("input_modalities"):
+        if config is base_config:
+            config = config.model_copy(deep=True)
+        config.input_modalities = custom_cm["input_modalities"]
 
     # Resolve reasoning effort: per-request > user pref > None (use model default)
     effective_reasoning = reasoning_effort
@@ -423,6 +550,11 @@ async def resolve_llm_config(
             if config is base_config:
                 config = config.model_copy(deep=True)
             config.llm_client = byok_client
+        elif is_custom or is_custom_provider:
+            # Custom model selected but no key resolvable — fail loud with a CTA
+            # instead of letting downstream create_llm() crash with a generic
+            # "Model X not found in models.json" error.
+            _raise_byok_key_required(effective_model)
     # Default path (system key) — apply reasoning_effort if set
     elif effective_reasoning:
         from src.llms.llm import create_llm
@@ -441,16 +573,27 @@ async def resolve_llm_config(
     import asyncio
 
     async def _resolve_one(model_name: str):
+        """Resolve one subsidiary/fallback model. Returns (client, source).
+
+        ``source`` tells the fallback merge loop whether a missed OAuth/BYOK
+        resolve can fall back to a platform-keyed client (only valid for
+        system models). On exception the source is ``None`` — callers should
+        treat that as "already logged, skip".
+        """
         try:
+            source, _ = await classify_model(
+                user_id, model_name, _pref_cache=model_pref,
+            )
             client = await resolve_oauth_llm_client(user_id, model_name)
             if not client and is_byok:
                 client = await resolve_byok_llm_client(
-                    user_id, model_name, is_byok, _pref_cache=model_pref,
+                    user_id, model_name, is_byok,
+                    _pref_cache=model_pref,
                 )
-            return client
+            return client, source
         except Exception:
             logger.error("[CHAT] Failed to resolve model %s, skipping", model_name, exc_info=True)
-            return None
+            return None, None
 
     subsidiary_pairs = [(role, m) for role, m in [("compaction", config.llm.compaction), ("fetch", config.llm.fetch)] if m]
     fallback_models = config.llm.fallback or []
@@ -460,29 +603,60 @@ async def resolve_llm_config(
         results = await asyncio.gather(*[_resolve_one(m) for m in all_models])
 
         sub_count = len(subsidiary_pairs)
-        for i, (role, _) in enumerate(subsidiary_pairs):
-            if results[i]:
+        for i, (role, sub_name) in enumerate(subsidiary_pairs):
+            client, source = results[i]
+            if client:
                 if config is base_config:
                     config = config.model_copy(deep=True)
-                config.subsidiary_llm_clients[role] = results[i]
+                config.subsidiary_llm_clients[role] = client
+                continue
+            # Mirror the fallback-loop warning so silently-dropped subsidiaries
+            # (e.g. user picked a custom compaction model without a BYOK key)
+            # surface in the logs. Main model stays hard-raised at the preflight;
+            # subsidiaries degrade: compaction falls back to the main llm_client,
+            # fetch re-constructs from the name via the factory.
+            if source is not None and source != ModelSource.SYSTEM:
+                logger.warning(
+                    "[CHAT] Subsidiary role '%s' model '%s' is a custom model "
+                    "without a usable BYOK key — falling back to default. "
+                    "Add a key in Settings to enable.",
+                    role,
+                    sub_name,
+                )
 
         # Merge resolved OAuth/BYOK clients with platform fallbacks.
         # For each fallback model: use the pre-resolved client if available,
         # otherwise create a platform-keyed client so no model is silently dropped.
+        # Custom fallback models without a usable key are skipped with a
+        # visible warning — we reuse the source already computed by
+        # ``_resolve_one`` instead of re-classifying.
         from src.llms.llm import create_llm as _create_llm
 
         fallback_results = results[sub_count:]
         merged_fallbacks = []
         byok_count = 0
         for i, model_name in enumerate(fallback_models):
-            if fallback_results[i]:
-                merged_fallbacks.append(fallback_results[i])
+            client, source = fallback_results[i]
+            if client:
+                merged_fallbacks.append(client)
                 byok_count += 1
-            else:
-                try:
-                    merged_fallbacks.append(_create_llm(model_name))
-                except Exception:
-                    logger.warning("[CHAT] Failed to create platform fallback for %s, skipping", model_name)
+                continue
+            if source is None:
+                # ``_resolve_one`` caught an exception and already logged it.
+                continue
+            if source != ModelSource.SYSTEM:
+                # Custom (or unknown) fallback without a usable key — can't
+                # build a platform client for a non-system name.
+                logger.warning(
+                    "[CHAT] Fallback model '%s' is a custom model without a "
+                    "usable BYOK key — skipping. Add a key in Settings to enable.",
+                    model_name,
+                )
+                continue
+            try:
+                merged_fallbacks.append(_create_llm(model_name))
+            except Exception:
+                logger.warning("[CHAT] Failed to create platform fallback for %s, skipping", model_name)
 
         if merged_fallbacks:
             if config is base_config:

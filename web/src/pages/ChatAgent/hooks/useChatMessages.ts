@@ -18,7 +18,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useUser } from '@/hooks/useUser';
 import { sendChatMessageStream, replayThreadHistory, getWorkflowStatus, reconnectToWorkflowStream, sendHitlResponse, streamSubagentTaskEvents, fetchThreadTurns, submitFeedback, removeFeedback, getThreadFeedback, watchThread } from '../utils/api';
-import { buildRateLimitError, type StructuredError } from '@/utils/rateLimitError';
+import { buildRateLimitError, isUpstreamHint, type StructuredError } from '@/utils/rateLimitError';
 import { getStoredThreadId, setStoredThreadId } from './utils/threadStorage';
 export { removeStoredThreadId } from './utils/threadStorage';
 import { createUserMessage, createAssistantMessage, createNotificationMessage, appendMessage, updateMessage, type AttachmentMeta } from './utils/messageHelpers';
@@ -2903,16 +2903,51 @@ export function useChatMessages(
         return;
       } else if (eventType === 'error' || event.error) {
         const errorMessage = event.error || event.message || 'An error occurred while processing your request.';
-        setMessageError(errorMessage);
-        setMessages((prev) =>
-          updateMessage(prev,assistantMessageId, (msg) => ({
-            ...msg,
-            content: msg.content || errorMessage,
-            contentType: 'text',
-            isStreaming: false,
-            error: true,
-          }))
-        );
+        // Backend (streaming_handler.format_error_event) enriches the event
+        // with ``error_kind``, ``status_code`` and ``hints``. We route the
+        // display by kind to avoid showing the same error twice:
+        //   - upstream → inline card on the failed assistant turn (part of
+        //     the transcript; the user's model choice is what triggered it)
+        //   - internal → banner near the chat input (our service failed;
+        //     don't pollute the conversation history)
+        const kind = event.error_kind as 'upstream' | 'internal' | undefined;
+        const structured: StructuredError | undefined =
+          kind === 'upstream' || kind === 'internal'
+            ? {
+                message: errorMessage as string,
+                kind,
+                statusCode: typeof event.status_code === 'number' ? event.status_code : undefined,
+                // ``hints`` are only meaningful for upstream provider errors
+                // (the bullets say "check your API key / plan / provider
+                // status"). An internal error doesn't get hints even if the
+                // backend ever starts emitting them for some future variant.
+                hints: kind === 'upstream' && Array.isArray(event.hints)
+                  ? (event.hints.filter(isUpstreamHint) as StructuredError['hints'])
+                  : undefined,
+              }
+            : undefined;
+
+        if (kind === 'internal') {
+          // Banner only — drop the optimistic assistant bubble entirely so the
+          // transcript stays clean. Matches the 429 rate-limit path; leaving a
+          // content-less bubble under the banner looks broken.
+          setMessageError(structured ?? (errorMessage as string));
+          setMessages((prev) => prev.filter((m) => m.id !== assistantMessageId));
+        } else {
+          // Upstream (or unclassified legacy) — render inline. Clear any
+          // stale banner from a prior turn so the error lives in one place.
+          setMessageError(null);
+          setMessages((prev) =>
+            updateMessage(prev, assistantMessageId, (msg) => ({
+              ...msg,
+              content: msg.content || errorMessage,
+              contentType: 'text',
+              isStreaming: false,
+              error: true,
+              ...(structured ? { structuredError: structured } : {}),
+            }))
+          );
+        }
       } else if (eventType === 'tool_call_chunks') {
         handleToolCallChunks({
           assistantMessageId,
@@ -3657,28 +3692,35 @@ export function useChatMessages(
           } else {
             console.error('Error sending message:', err);
             // Build structured error with link when backend provides one
+            // (byok_key_required, oauth_required, 403, ...). When a banner
+            // with a CTA renders, drop the optimistic assistant bubble so
+            // the transcript stays clean — matches the 429 pattern and the
+            // `internal` SSE error pattern. Leaving a content-less "Failed
+            // to send message" bubble under the banner looks broken.
             const errorInfo = errObj.errorInfo as Record<string, unknown> | undefined;
             if (errorInfo?.link) {
               setMessageError({
                 message: (errorInfo.message as string) || (err as Error).message || 'An error occurred.',
                 link: errorInfo.link as { url: string; label: string },
               });
+              setMessages((prev) => prev.filter((m) => m.id !== assistantMessageId));
             } else if (errObj.status === 403) {
               setMessageError({
                 message: (err as Error).message || 'Access denied.',
                 link: { url: '/setup/method', label: 'Configure providers' },
               });
+              setMessages((prev) => prev.filter((m) => m.id !== assistantMessageId));
             } else {
               setMessageError((err as Error).message || 'Failed to send message');
+              setMessages((prev) =>
+                updateMessage(prev, assistantMessageId, (msg) => ({
+                  ...msg,
+                  content: msg.content || 'Failed to send message. Please try again.',
+                  isStreaming: false,
+                  error: true,
+                }))
+              );
             }
-            setMessages((prev) =>
-              updateMessage(prev,assistantMessageId, (msg) => ({
-                ...msg,
-                content: msg.content || 'Failed to send message. Please try again.',
-                isStreaming: false,
-                error: true,
-              }))
-            );
           }
         } finally {
           if (!wasDisconnected && !wasInterruptedRef.current) {

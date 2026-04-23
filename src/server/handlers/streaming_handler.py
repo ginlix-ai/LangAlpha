@@ -18,6 +18,7 @@ import asyncio
 import copy
 import json
 import logging
+import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set, cast
 
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
@@ -46,6 +47,108 @@ SSE_KEEPALIVE_INTERVAL = get_sse_keepalive_interval()  # seconds
 SSE_EVENT_LOG_ENABLED = is_sse_event_log_enabled()
 
 MERGED_STREAM_CHUNK_MAX_BYTES_DEFAULT = get_merged_chunk_max_bytes()
+
+
+# ---------------------------------------------------------------------------
+# Stream error classification
+# ---------------------------------------------------------------------------
+#
+# Chat-stream failures fall into two buckets and the user-facing remedy is
+# different for each:
+#
+#   - ``upstream``  — the LLM provider we called returned an error (their
+#                     server 500'd, the key is rejected, rate-limited, etc).
+#                     User should check their key / plan / provider status.
+#   - ``internal``  — our own pipeline failed (middleware bug, our DB, a
+#                     schema mismatch in the payload we built). User can't
+#                     do anything; we should log loudly and show a generic
+#                     retry message.
+#
+# Classification is a module-prefix check with exception-chain walking — any
+# exception in the chain sourced from a known provider SDK flips the whole
+# failure to ``upstream``.
+
+# Provider SDK and LangChain-wrapper module prefixes. Any exception in the
+# cause chain whose ``__module__`` matches one of these flips the whole
+# failure to ``upstream``. Keep in sync with the SDKs wired up in
+# ``src/llms/llm.py`` — missing a prefix means the user sees "our service
+# failed" for what's really a provider error.
+#
+# ``httpx`` is in this list as a last-resort catch: a bare httpx exception
+# that reaches the stream error handler has almost always come from the
+# LangChain call path (SDKs raise via httpx). If our own service calls
+# (credit checks, workspace manager) ever start raising bare httpx errors to
+# the stream path we should wrap them in a distinct exception type before
+# they bubble; classification is a UI hint, not a diagnostic source of truth.
+_UPSTREAM_MODULE_PREFIXES: tuple[str, ...] = (
+    # Raw provider SDKs
+    "anthropic",
+    "openai",
+    "google.api_core",
+    "google.genai",
+    "google.generativeai",
+    "cohere",
+    "httpx",
+    # LangChain wrappers — their exceptions may not chain through the raw SDK
+    # when the wrapper normalizes errors, so match them directly.
+    "langchain_openai",
+    "langchain_anthropic",
+    "langchain_deepseek",
+    "langchain_qwq",
+    "langchain_google_genai",
+    "langchain_google_vertexai",
+    "langchain_mistralai",
+    "langchain_together",
+    "langchain_groq",
+    "groq",
+)
+
+_STATUS_CODE_RE = re.compile(r"\b([45]\d{2})\b")
+
+# Strip basic-auth credentials out of any URL that leaks into an exception
+# message (httpx will include the request URL in ``str(exc)``; a user who
+# configured a BYOK base_url as ``https://user:pass@host`` would otherwise
+# ship that secret to the SSE client and the replay log).
+_URL_USERINFO_RE = re.compile(r"(https?://)[^@/\s]+@")
+
+
+def _parse_status_from_message(text: str) -> Optional[int]:
+    match = _STATUS_CODE_RE.search(text)
+    return int(match.group(1)) if match else None
+
+
+def _sanitize_error_text(text: str) -> str:
+    """Scrub credentials out of the raw exception text before we send it."""
+    return _URL_USERINFO_RE.sub(r"\1", text)
+
+
+def classify_stream_exception(exc: BaseException) -> Dict[str, Any]:
+    """Classify a chat-stream exception as ``upstream`` or ``internal``.
+
+    Walks ``__cause__`` / ``__context__`` so a wrapped provider error (e.g.
+    a LangChain exception caused by ``anthropic.InternalServerError``) is
+    still recognized as upstream. Returns a dict with ``kind``,
+    ``status_code`` (when carried on the exception or parseable from its
+    message), and ``provider_module`` (the matched SDK prefix, or None).
+    """
+    seen: set[int] = set()
+    current: Optional[BaseException] = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        module = getattr(type(current), "__module__", "") or ""
+        for prefix in _UPSTREAM_MODULE_PREFIXES:
+            if module == prefix or module.startswith(prefix + "."):
+                status = getattr(current, "status_code", None)
+                if not isinstance(status, int):
+                    status = _parse_status_from_message(str(current))
+                return {
+                    "kind": "upstream",
+                    "status_code": status if isinstance(status, int) else None,
+                    "provider_module": prefix,
+                }
+        current = current.__cause__ or current.__context__
+
+    return {"kind": "internal", "status_code": None, "provider_module": None}
 
 
 class StreamEventAccumulator:
@@ -774,7 +877,7 @@ class WorkflowStreamHandler:
             raise
         except Exception as e:
             logger.exception(f"Error in stream generator for thread_id={self.thread_id}: {e}")
-            yield self.format_error_event(str(e))
+            yield self.format_error_event(str(e), exc=e)
             raise  # Re-raise so background_task_manager calls _mark_failed()
         finally:
             # Stop keepalive task
@@ -1443,24 +1546,65 @@ class WorkflowStreamHandler:
 
         return result
 
-    def format_error_event(self, error_message: str) -> str:
-        """
-        Format an error event as SSE string.
+    def format_error_event(
+        self,
+        error_message: str,
+        *,
+        exc: Optional[BaseException] = None,
+    ) -> str:
+        """Format an error event as SSE string.
+
+        When ``exc`` is passed the event carries ``error_kind`` (``upstream``
+        or ``internal``), ``status_code`` (when available), and ``hints`` for
+        the frontend to render user-actionable guidance. The legacy ``error``
+        and ``message`` fields stay so older clients keep working.
 
         Args:
-            error_message: Error message to send
+            error_message: Raw error text (usually ``str(exc)``).
+            exc: The exception itself — enables classification. Optional to
+                keep the legacy signature working for paths that only have
+                a prebuilt message.
 
         Returns:
-            SSE-formatted error event
+            SSE-formatted error event.
         """
-        return self._format_sse_event(
-            "error",
-            {
-                "thread_id": self.thread_id,
-                "error": error_message,
-                "message": "An error occurred during processing",
-            }
-        )
+        data: Dict[str, Any] = {
+            "thread_id": self.thread_id,
+            "error": _sanitize_error_text(error_message),
+            "message": "An error occurred during processing",
+        }
+        if exc is not None:
+            info = classify_stream_exception(exc)
+            data["error_kind"] = info["kind"]
+            if info["status_code"] is not None:
+                data["status_code"] = info["status_code"]
+            if info["provider_module"]:
+                data["provider_module"] = info["provider_module"]
+            if info["kind"] == "upstream":
+                # Order matters — frontend renders the hints as a list, so the
+                # most relevant hint for this status goes first. 5xx/429 are
+                # provider outages, not the user's credentials; showing
+                # "check your API key" first on a 503 is misleading.
+                status = info.get("status_code")
+                if status in (401, 403):
+                    data["hints"] = [
+                        "api_key",
+                        "model_access",
+                        "try_another_model",
+                    ]
+                elif status == 404:
+                    data["hints"] = ["model_access", "try_another_model"]
+                elif status == 429 or (isinstance(status, int) and status >= 500):
+                    data["hints"] = ["provider_status", "try_another_model"]
+                else:
+                    # No status (network error) — could be anything; show all.
+                    data["hints"] = [
+                        "api_key",
+                        "model_access",
+                        "provider_status",
+                        "try_another_model",
+                    ]
+        return self._format_sse_event("error", data)
 
     def _format_credit_usage_event(
         self,

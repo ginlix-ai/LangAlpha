@@ -18,12 +18,21 @@ export interface ModelMetadataEntry {
   is_custom_model?: boolean;
 }
 
+/** Key for the (group, name) pair in customPairs — '::' can't collide with any provider or model name. */
+export function customPairKey(group: string, name: string): string {
+  return `${group}::${name}`;
+}
+
 /**
  * Pure function: filter a grouped models map so only models the user
  * has access to remain.
  *
  * Filter logic per model:
- *   0. Custom models (is_custom_model) always pass — user explicitly added them
+ *   0a. (groupKey, name) is in customPairs -> include (user explicitly added
+ *       this model under this group, e.g. starred a parent-catalog model
+ *       under a variant provider)
+ *   0b. metadata[name].is_custom_model -> include (user-added model with
+ *       no parent-catalog collision)
  *   1. Direct match: configuredSet has the model's own provider -> include
  *   2. GroupKey fallback: configuredSet has the groupKey AND the configured
  *      provider's type matches the model's access_type -> include
@@ -34,6 +43,7 @@ export function filterModelsByAccess(
   metadata: Record<string, ModelMetadataEntry>,
   configuredSet: Set<string>,
   configuredTypeMap: Map<string, string>,
+  customPairs?: Set<string>,
 ): Record<string, ProviderModelsData> {
   const out: Record<string, ProviderModelsData> = {};
 
@@ -42,11 +52,16 @@ export function filterModelsByAccess(
     const allModels = data.models ?? [];
 
     const filtered = allModels.filter((m) => {
+      // 0a. Group-scoped custom entry — user explicitly added this model
+      // under this specific group (variant). The global metadata may still
+      // point to the parent, so we key off the pair.
+      if (customPairs?.has(customPairKey(groupKey, m))) return true;
+
       const meta = metadata[m];
       const modelProvider = meta?.provider;
       if (!modelProvider) return false;
 
-      // 0. Custom models are self-authorizing — user explicitly added them.
+      // 0b. Custom models are self-authorizing — user explicitly added them.
       if (meta?.is_custom_model) return true;
 
       // 1. Direct match on model's own provider
@@ -77,11 +92,32 @@ export function filterModelsByAccess(
 
 /**
  * Build a type map from configured providers: provider key -> access_type.
+ *
+ * Only exact provider slugs are registered. We do NOT promote ``brand_key``
+ * here because a variant key (e.g. ``moonshot-coding``) does not grant access
+ * to the parent brand's endpoint (backend BYOK resolves by exact slug + parent
+ * walk, not sibling walk). Unlocking the brand in UI would show models the
+ * backend can't route.
  */
 export function buildConfiguredTypeMap(
   providers: ConfiguredProvider[],
 ): Map<string, string> {
-  return new Map(providers.map((p) => [p.provider, p.access_type]));
+  const map = new Map<string, string>();
+  for (const p of providers) {
+    map.set(p.provider, p.access_type);
+  }
+  return map;
+}
+
+/**
+ * Build the "configured" set for filter purposes. Only exact provider slugs —
+ * see ``buildConfiguredTypeMap`` for the rationale against brand_key
+ * promotion.
+ */
+export function buildConfiguredSet(
+  providers: ConfiguredProvider[],
+): Set<string> {
+  return new Set(providers.map((p) => p.provider));
 }
 
 /**
@@ -99,8 +135,12 @@ export function augmentPlatformWithLocal(
   const localByok: string[] = [];
   const localOAuth: string[] = [];
   for (const p of configuredProviders) {
-    if (p.access_type === 'oauth') localOAuth.push(p.provider);
-    else localByok.push(p.provider);
+    const bucket = p.access_type === 'oauth' ? localOAuth : localByok;
+    bucket.push(p.provider);
+    // No brand_key promotion. A configured variant (e.g. moonshot-coding)
+    // does not imply the parent brand (moonshot) is accessible — their keys
+    // and endpoints are distinct. Promoting the brand would show models the
+    // backend can't route.
   }
   return {
     ...platform,
@@ -119,6 +159,7 @@ export function filterByPlatformTier(
   providerMap: Record<string, ProviderModelsData>,
   metadata: Record<string, ModelMetadataEntry>,
   platform: PlatformModelsResponse | null,
+  customPairs?: Set<string>,
 ): Record<string, ProviderModelsData> {
   if (!platform) return providerMap;
 
@@ -129,6 +170,9 @@ export function filterByPlatformTier(
     const allModels = data.models ?? [];
 
     const filtered = allModels.filter((m) => {
+      // Group-scoped custom entry — same bypass as in filterModelsByAccess.
+      if (customPairs?.has(customPairKey(groupKey, m))) return true;
+
       const meta = metadata[m];
 
       // Custom models are self-authorizing — user explicitly added them.
@@ -208,6 +252,11 @@ export function buildVisibleModels(
 
   // 2. Merge custom models
   const metadata: Record<string, ModelMetadataEntry> = { ...rawMetadata };
+  // (group, name) pairs the user explicitly added. Bypasses filters for that
+  // specific pair without polluting the global metadata — a parent-catalog
+  // model starred under a variant must appear under the variant, not under
+  // the parent group whose API metadata is still authoritative there.
+  const customPairs = new Set<string>();
   for (const cm of customModels) {
     const key = cm.provider;
     if (!normalized[key]) {
@@ -216,6 +265,7 @@ export function buildVisibleModels(
     if (!normalized[key].models!.includes(cm.name)) {
       normalized[key].models!.push(cm.name);
     }
+    customPairs.add(customPairKey(key, cm.name));
     if (!metadata[cm.name]) {
       const sdk = providerCatalog[cm.provider]?.sdk;
       metadata[cm.name] = {
@@ -235,11 +285,11 @@ export function buildVisibleModels(
   // 3. Filter
   let filtered: Record<string, ProviderModelsData>;
   if (platform) {
-    filtered = filterByPlatformTier(normalized, metadata, platform);
+    filtered = filterByPlatformTier(normalized, metadata, platform, customPairs);
   } else {
-    const configuredSet = new Set(configuredProviders.map((p) => p.provider));
+    const configuredSet = buildConfiguredSet(configuredProviders);
     const configuredTypeMap = buildConfiguredTypeMap(configuredProviders);
-    filtered = filterModelsByAccess(normalized, metadata, configuredSet, configuredTypeMap);
+    filtered = filterModelsByAccess(normalized, metadata, configuredSet, configuredTypeMap, customPairs);
   }
 
   // 4. Build validModelNames set

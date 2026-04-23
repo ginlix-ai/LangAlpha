@@ -248,6 +248,102 @@ class TestWorkflowStreamHandlerFormatting:
         assert parsed["thread_id"] == "err-thread"
         assert parsed["error"] == "Something went wrong"
         assert "message" in parsed
+        # Without ``exc``, legacy shape only — no classification fields.
+        assert "error_kind" not in parsed
+        assert "hints" not in parsed
+
+    def test_format_error_event_with_upstream_exc(self):
+        """Upstream 5xx exceptions classify as upstream with provider-outage hints."""
+        from anthropic import InternalServerError
+
+        # Fabricate an anthropic.InternalServerError the way the SDK would
+        # raise it on a 500 response. We just need the exception type and
+        # ``.status_code`` — the classifier doesn't read the body.
+        exc = InternalServerError.__new__(InternalServerError)
+        exc.status_code = 500
+        Exception.__init__(exc, "Error code: 500 - {'error': {'message': 'Internal service error'}}")
+
+        handler = self._make_handler(thread_id="err-thread")
+        result = handler.format_error_event(str(exc), exc=exc)
+        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        assert parsed["error_kind"] == "upstream"
+        assert parsed["status_code"] == 500
+        assert parsed["provider_module"] == "anthropic"
+        # 5xx is a provider outage — don't suggest checking the API key.
+        assert parsed["hints"] == ["provider_status", "try_another_model"]
+
+    def test_format_error_event_upstream_401_auth_hints(self):
+        """401 upstream surfaces credential-oriented hints first."""
+        from anthropic import AuthenticationError
+
+        exc = AuthenticationError.__new__(AuthenticationError)
+        exc.status_code = 401
+        Exception.__init__(exc, "invalid x-api-key")
+
+        handler = self._make_handler(thread_id="err-thread")
+        result = handler.format_error_event(str(exc), exc=exc)
+        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        assert parsed["error_kind"] == "upstream"
+        assert parsed["status_code"] == 401
+        assert parsed["hints"] == ["api_key", "model_access", "try_another_model"]
+
+    def test_format_error_event_upstream_no_status_falls_back(self):
+        """Unknown status (network error) shows all hints."""
+        from anthropic import APIConnectionError
+
+        exc = APIConnectionError.__new__(APIConnectionError)
+        Exception.__init__(exc, "Connection reset by peer")
+
+        handler = self._make_handler(thread_id="err-thread")
+        result = handler.format_error_event(str(exc), exc=exc)
+        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        assert parsed["error_kind"] == "upstream"
+        assert parsed["hints"] == [
+            "api_key",
+            "model_access",
+            "provider_status",
+            "try_another_model",
+        ]
+
+    def test_format_error_event_with_internal_exc(self):
+        """Bare Exception from our code is classified as internal, no hints."""
+        exc = RuntimeError("workspace state corrupted")
+        handler = self._make_handler(thread_id="err-thread")
+        result = handler.format_error_event(str(exc), exc=exc)
+        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        assert parsed["error_kind"] == "internal"
+        assert "hints" not in parsed
+
+    def test_format_error_event_upstream_wrapped_by_internal(self):
+        """Upstream error wrapped in our own exception still classifies as upstream."""
+        from anthropic import APIConnectionError
+
+        inner = APIConnectionError.__new__(APIConnectionError)
+        Exception.__init__(inner, "Connection reset by peer")
+        try:
+            try:
+                raise inner
+            except Exception as e:
+                raise RuntimeError("agent failed") from e
+        except RuntimeError as e:
+            exc = e
+
+        handler = self._make_handler()
+        result = handler.format_error_event(str(exc), exc=exc)
+        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        assert parsed["error_kind"] == "upstream"
+        assert parsed["provider_module"] == "anthropic"
+
+    def test_classify_stream_exception_parses_status_from_message(self):
+        """When status_code isn't on the exception, parse it from the message."""
+        from src.server.handlers.streaming_handler import classify_stream_exception
+        import httpx
+
+        exc = httpx.HTTPError("got HTTP 429 from upstream, backing off")
+        info = classify_stream_exception(exc)
+        assert info["kind"] == "upstream"
+        assert info["status_code"] == 429
+        assert info["provider_module"] == "httpx"
 
     def test_format_keepalive_event(self):
         handler = self._make_handler()

@@ -478,9 +478,14 @@ class AgentConfig(BaseModel):
                 "No LLM configured. Set llm in agent_config.yaml or configure a model in the setup wizard."
             )
 
-        # Use src/llms factory for file-based loading
+        # Use src/llms factory for file-based loading. A name not in
+        # models.json reaches this guard either because the user picked a
+        # custom model without a resolvable BYOK key, or because the name
+        # is a typo. Raise a neutral error instead of the generic factory one.
         from src.llms import create_llm
+        from src.llms.llm import ensure_model_in_manifest
 
+        ensure_model_in_manifest(self.llm.name)
         return create_llm(self.llm.name)
 
     def to_core_config(self) -> CoreConfig:

@@ -29,8 +29,8 @@ from ptc_agent.agent.middleware.compaction.utils import (
 )
 from ptc_agent.agent.middleware.compaction.middleware import (
     _build_summary_request,
-    _maybe_disable_streaming,
 )
+from src.llms import maybe_disable_streaming
 from ptc_agent.agent.middleware.compaction.offloading import (
     aoffload_base64_content,
     aoffload_to_backend,
@@ -162,7 +162,7 @@ async def compact_messages(
         compaction_model: BaseChatModel = llm_client
     else:
         compaction_model = get_llm_by_type(model_name)
-    _maybe_disable_streaming(compaction_model)
+    maybe_disable_streaming(compaction_model)
 
     token_threshold = config.get("token_threshold", 120000)
     trim_limit = token_threshold + 50000

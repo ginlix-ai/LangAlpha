@@ -37,7 +37,7 @@ from langchain.chat_models import BaseChatModel, init_chat_model
 from src.llms.content_utils import format_llm_content
 from src.llms.token_counter import extract_token_usage
 from ptc_agent.config.agent import CompactionConfig
-from src.llms import get_llm_by_type
+from src.llms import get_llm_by_type, maybe_disable_streaming
 
 from ptc_agent.agent.middleware.compaction.types import (
     CompactionEvent,
@@ -91,16 +91,6 @@ def _build_summary_request(
         system_prompt=summary_prompt,
         user_prompt=user_prompt,
     )
-
-
-def _maybe_disable_streaming(model: BaseChatModel) -> None:
-    """Set streaming=False unless the provider rejects non-streaming (Codex)."""
-    from src.llms.extension.codex import ChatCodexOpenAI
-
-    if isinstance(model, ChatCodexOpenAI):
-        return
-    if hasattr(model, "streaming"):
-        model.streaming = False
 
 
 class CompactionMiddleware(AgentMiddleware):
@@ -1292,7 +1282,7 @@ class CompactionMiddleware(AgentMiddleware):
             compaction_model: BaseChatModel = get_llm_by_type(model_name)
 
         # Suppress normal message_chunk emission where the provider permits it.
-        _maybe_disable_streaming(compaction_model)
+        maybe_disable_streaming(compaction_model)
 
         # Get configuration values
         token_threshold = config.get("token_threshold", 120000)

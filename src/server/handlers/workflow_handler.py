@@ -513,10 +513,11 @@ async def trigger_compaction(
 
         # Mirror PTCAgent.create_agent client priority: subsidiary → main → factory.
         # Deep-copy before handing the client to compact_messages — it calls
-        # _maybe_disable_streaming which sets streaming=False in-place. Without
-        # the copy, the fallback path (agent_cfg == setup.agent_config) would
-        # permanently mutate the shared main-agent client and break SSE
-        # streaming for every subsequent chat workflow.
+        # maybe_disable_streaming (src/llms/api_call.py) which sets
+        # streaming=False in-place. Without the copy, the fallback path
+        # (agent_cfg == setup.agent_config) would permanently mutate the
+        # shared main-agent client and break SSE streaming for every
+        # subsequent chat workflow.
         compaction_client = None
         if agent_cfg is not None:
             subsidiary = agent_cfg.subsidiary_llm_clients.get("compaction")

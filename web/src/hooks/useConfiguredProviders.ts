@@ -8,6 +8,10 @@ export interface ConfiguredProvider {
   provider: string;
   display_name: string;
   access_type: 'api_key' | 'oauth' | 'coding_plan' | 'local';
+  /** Parent/brand group key — equals ``provider`` when the entry is the brand
+   * itself. Carried through so model filters can treat the brand as
+   * configured when any of its variants are (e.g. z-ai-coding → z-ai). */
+  brand_key?: string;
 }
 
 /**
@@ -43,12 +47,14 @@ export function useConfiguredProviders() {
           display_name?: string;
           access_type?: string;
           has_key?: boolean;
+          brand_key?: string;
         }>) {
           if (p.has_key) {
             result.push({
               provider: p.provider,
               display_name: p.display_name ?? p.provider,
               access_type: (p.access_type as ConfiguredProvider['access_type']) ?? 'api_key',
+              brand_key: p.brand_key ?? p.provider,
             });
           }
         }

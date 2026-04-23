@@ -12,18 +12,47 @@ import React from 'react';
 import { parseErrorMessage } from '../../utils/parseErrorMessage';
 import type { StructuredError } from '@/utils/rateLimitError';
 
+// Fallback i18n strings (kept in sync with chat.* keys in en-US.json) so we
+// can assert on headline/hint copy without wiring the full i18next runtime.
+const EN = {
+  errorUpstreamHeadline: 'The model provider returned an error',
+  errorUpstreamHeadlineStatus: 'The model provider returned an error ({{status}})',
+  errorInternalHeadline: 'Something went wrong on our end',
+  errorHintApiKey: "Check that your API key is correct and hasn't been revoked.",
+  errorHintModelAccess: 'Confirm your plan or subscription allows access to this model.',
+  errorHintProviderStatus: "Check the provider's status page for ongoing incidents.",
+  errorHintTryAnotherModel: 'Try switching to a different model in the model picker.',
+};
+const HINT_COPY: Record<string, string> = {
+  api_key: EN.errorHintApiKey,
+  model_access: EN.errorHintModelAccess,
+  provider_status: EN.errorHintProviderStatus,
+  try_another_model: EN.errorHintTryAnotherModel,
+};
+
 /**
  * Minimal reproduction of the ChatView error banner logic.
- * Mirrors the IIFE in ChatView.tsx lines ~1930-1955.
+ * Mirrors the IIFE in ChatView.tsx — structured branch now also renders a
+ * kind-based headline and (for upstream) a hint list.
  */
 function ErrorBanner({ messageError }: { messageError: string | StructuredError | null }) {
   if (!messageError) return null;
 
-  // Structured error path (from buildRateLimitError)
   if (typeof messageError === 'object' && 'message' in messageError) {
     const err = messageError as StructuredError;
+    const isUpstream = err.kind === 'upstream';
+    const isInternal = err.kind === 'internal';
+    const headline = isUpstream
+      ? (err.statusCode
+          ? EN.errorUpstreamHeadlineStatus.replace('{{status}}', String(err.statusCode))
+          : EN.errorUpstreamHeadline)
+      : isInternal
+        ? EN.errorInternalHeadline
+        : null;
+    const hasHints = isUpstream && err.hints && err.hints.length > 0;
     return (
       <div data-testid="error-banner" role="alert">
+        {headline && <span data-testid="error-headline">{headline}</span>}
         <span>
           {err.message}
           {err.link && (
@@ -39,11 +68,17 @@ function ErrorBanner({ messageError }: { messageError: string | StructuredError 
             </>
           )}
         </span>
+        {hasHints && (
+          <ul data-testid="error-hints">
+            {err.hints!.map((h) => (
+              <li key={h}>{HINT_COPY[h] ?? h}</li>
+            ))}
+          </ul>
+        )}
       </div>
     );
   }
 
-  // String error path (existing parseErrorMessage)
   const parsed = parseErrorMessage(messageError as string);
   return (
     <div data-testid="error-banner" role="alert">
@@ -93,5 +128,52 @@ describe('ChatView error banner type guard', () => {
   it('renders null for no error', () => {
     const { container } = render(<ErrorBanner messageError={null} />);
     expect(container.firstChild).toBeNull();
+  });
+
+  it('renders upstream error with headline (including status) and hint list', () => {
+    const error: StructuredError = {
+      message: "Error code: 500 - {'error': {'message': 'Internal service error'}}",
+      kind: 'upstream',
+      statusCode: 500,
+      hints: ['api_key', 'model_access', 'provider_status', 'try_another_model'],
+    };
+    render(<ErrorBanner messageError={error} />);
+
+    expect(screen.getByTestId('error-headline')).toHaveTextContent(
+      'The model provider returned an error (500)',
+    );
+    const hints = screen.getByTestId('error-hints');
+    expect(hints).toHaveTextContent(/API key/);
+    expect(hints).toHaveTextContent(/plan or subscription/);
+    expect(hints).toHaveTextContent(/status page/);
+    expect(hints).toHaveTextContent(/different model/);
+  });
+
+  it('renders upstream error without status when backend omits it', () => {
+    const error: StructuredError = {
+      message: 'Connection reset by peer',
+      kind: 'upstream',
+      hints: ['provider_status'],
+    };
+    render(<ErrorBanner messageError={error} />);
+
+    expect(screen.getByTestId('error-headline')).toHaveTextContent(
+      'The model provider returned an error',
+    );
+    expect(screen.getByTestId('error-headline')).not.toHaveTextContent(/\(/);
+    expect(screen.getByTestId('error-hints')).toBeInTheDocument();
+  });
+
+  it('renders internal error with generic headline and no hints', () => {
+    const error: StructuredError = {
+      message: 'workspace state corrupted',
+      kind: 'internal',
+    };
+    render(<ErrorBanner messageError={error} />);
+
+    expect(screen.getByTestId('error-headline')).toHaveTextContent(
+      'Something went wrong on our end',
+    );
+    expect(screen.queryByTestId('error-hints')).not.toBeInTheDocument();
   });
 });
