@@ -31,7 +31,14 @@ interface DeleteConfirmState {
   onConfirm: (() => Promise<void>) | null;
 }
 
-function Dashboard() {
+interface DashboardProps {
+  layoutToggle?: {
+    mode: 'classic' | 'custom';
+    onModeChange: (mode: 'classic' | 'custom') => void;
+  };
+}
+
+function Dashboard({ layoutToggle }: DashboardProps = {}) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
   const mainRef = useRef<HTMLElement>(null);
@@ -106,7 +113,7 @@ function Dashboard() {
     <div className="dashboard-container min-h-screen">
       {/* Main content area */}
       <main ref={mainRef} className="flex-1 flex flex-col min-h-0 overflow-y-auto overflow-x-hidden">
-        <DashboardHeader onScrollToTop={handleScrollToTop} />
+        <DashboardHeader onScrollToTop={handleScrollToTop} layoutToggle={layoutToggle} />
 
         <div className="mx-auto max-w-[1920px] w-full p-3 sm:p-6 pb-32">
           {/* Market Overview heading + mobile watchlist tab */}
