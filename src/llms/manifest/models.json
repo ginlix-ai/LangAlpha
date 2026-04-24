@@ -1,4 +1,21 @@
 {
+  "gpt-5.5": {
+    "model_id": "gpt-5.5",
+    "provider": "openai",
+    "display_name": "GPT-5.5",
+    "visible": true,
+    "input_modalities": [
+      "text",
+      "image",
+      "pdf"
+    ],
+    "parameters": {
+      "reasoning": {
+        "effort": "medium",
+        "summary": "auto"
+      }
+    }
+  },
   "gpt-5.4": {
     "model_id": "gpt-5.4",
     "provider": "openai",
@@ -745,6 +762,26 @@
   },
   "gpt-5.3-codex-spark-oauth": {
     "model_id": "gpt-5.3-codex-spark",
+    "provider": "codex-oauth",
+    "visible": true,
+    "input_modalities": [
+      "text",
+      "image",
+      "pdf"
+    ],
+    "parameters": {
+      "reasoning": {
+        "effort": "medium",
+        "summary": "auto"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "store": false
+    }
+  },
+  "gpt-5.5-oauth": {
+    "model_id": "gpt-5.5",
     "provider": "codex-oauth",
     "visible": true,
     "input_modalities": [
