@@ -499,6 +499,18 @@ function WidgetCard({ def, disabled, selected, onSelect, onAdd }: WidgetCardProp
             >
               {isSingleton ? 'singleton' : 'multi'}
             </span>
+            {def.source === 'tradingview' && (
+              <span
+                className="text-[9px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold"
+                style={{
+                  backgroundColor: 'var(--color-accent-soft)',
+                  color: 'var(--color-accent-primary)',
+                  letterSpacing: '0.08em',
+                }}
+              >
+                TradingView
+              </span>
+            )}
           </div>
           {def.description && (
             <div

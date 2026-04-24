@@ -29,6 +29,7 @@ interface CellVisuals {
 
 const TYPE_VISUALS: Record<string, CellVisuals> = {
   'markets.overview': { bg: C.tape },
+  'markets.miniChartGrid': { bg: C.paper, stroke: C.line },
   'chart.symbol': { bg: C.paper, stroke: C.line },
   'insight.brief': { bg: C.paperHi, stroke: C.line },
   'news.feed': { bg: C.tape },
@@ -40,6 +41,19 @@ const TYPE_VISUALS: Record<string, CellVisuals> = {
   'workspace.picker': { bg: C.accentSoft },
   'threads.recent': { bg: C.paper, stroke: C.line },
   'automations.list': { bg: C.paper, stroke: C.line },
+  // TradingView embeds — same palette as their native siblings so thumbnails
+  // read as variations on the same canvas. Glyphs fall through to the default
+  // empty state which is fine; the cell bg + size still communicate layout.
+  'tv.ticker-tape': { bg: C.tape },
+  'tv.stock-heatmap': { bg: C.accentSoft, stroke: C.line },
+  'tv.crypto-heatmap': { bg: C.accentSoft, stroke: C.line },
+  'tv.forex-heatmap': { bg: C.accentSoft, stroke: C.line },
+  'tv.economic-events': { bg: C.paper, stroke: C.line },
+  'tv.technicals': { bg: C.paperHi, stroke: C.line },
+  'tv.movers': { bg: C.paperHi, stroke: C.line },
+  'tv.symbol-spotlight': { bg: C.paper, stroke: C.line },
+  'tv.company-profile': { bg: C.paper, stroke: C.line },
+  'tv.company-financials': { bg: C.paper, stroke: C.line },
 };
 
 interface GlyphProps {
