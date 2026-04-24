@@ -287,11 +287,17 @@
   opacity: 1;
 }
 
-/* Hide the TradingView attribution watermark in any widget that embeds a
- * lightweight-charts instance (e.g. the price chart widget). Matches the
- * suppression used by MarketChart.css; scoped to widget-frame so the rule is
- * only active once a dashboard widget is mounted. */
-.widget-frame a[href*="tradingview.com"],
+/* Hide the lightweight-charts attribution watermark (a small link in the
+ * chart corner) inside any widget that embeds lightweight-charts — the
+ * NOTICE text lives at /legal so we aren't stripping attribution; we just
+ * don't want a floating link on top of every chart.
+ *
+ * IMPORTANT — scope: this rule MUST NOT match the `Powered by TradingView ↗`
+ * attribution links our embed widgets render (class `.tv-attribution`).
+ * Those are required visible per TV's embed terms. The lightweight-charts
+ * watermark link's href always contains `utm_medium=lwc-link` (the
+ * library's own UTM campaign), so we target that specifically. */
+.widget-frame a[href*="utm_medium=lwc-link"],
 .widget-frame .tv-lightweight-charts__watermark {
   display: none !important;
   visibility: hidden !important;
