@@ -41,6 +41,18 @@
   "models": {
     "openai": [
       {
+        "id": "gpt-5.5",
+        "name": "GPT-5.5",
+        "is_reasoning": true,
+        "description": "OpenAI's GPT-5.5 — a new class of intelligence for coding and professional work (coming soon)",
+        "pricing": {
+          "input": 5.0,
+          "cached_input": 0.5,
+          "output": 30.0,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
         "id": "gpt-5.4-mini",
         "name": "GPT-5.4 Mini",
         "is_reasoning": true,
