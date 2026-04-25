@@ -8,6 +8,7 @@ import { clearChatSession } from '@/pages/ChatAgent/hooks/utils/chatSessionResto
 import type { Thread, ThreadsResponse, Workspace } from '@/types/api';
 import { queryKeys } from '@/lib/queryKeys';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { RecentThreadsConfigSchema } from '../framework/configSchemas';
 import type { WidgetRenderProps } from '../types';
 
 type RecentThreadsConfig = { workspaceId?: 'all' | 'current' | string; limit?: number };
@@ -359,6 +360,7 @@ registerWidget<RecentThreadsConfig>({
   icon: MessagesSquare,
   component: RecentThreadsWidget,
   defaultConfig: { workspaceId: 'all', limit: 15 },
+  configSchema: RecentThreadsConfigSchema,
   defaultSize: { w: 6, h: 22 },
   minSize: { w: 3, h: 15 },
 });

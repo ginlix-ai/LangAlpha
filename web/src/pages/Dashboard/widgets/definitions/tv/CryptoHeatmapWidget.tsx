@@ -1,6 +1,7 @@
 import { Bitcoin } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
+import { CryptoHeatmapConfigSchema } from '../../framework/configSchemas';
 import { EnumField } from '../../framework/settings/EnumField';
 import { TradingViewSettingsFooter } from '../../framework/TradingViewSettingsFooter';
 import { SettingsDoneButton } from '../../framework/settings/SettingsDoneButton';
@@ -74,6 +75,7 @@ registerWidget<CryptoHeatmapConfig>({
   component: CryptoHeatmapWidget,
   settingsComponent: CryptoHeatmapSettings,
   defaultConfig: { dataSource: 'Crypto', blockSize: 'market_cap_calc', blockColor: '24h_close_change|5' },
+  configSchema: CryptoHeatmapConfigSchema,
   defaultSize: { w: 12, h: 20 },
   minSize: { w: 6, h: 12 },
   maxSize: { w: 12, h: 40 },

@@ -1,6 +1,7 @@
 import { DollarSign } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
+import { ForexHeatmapConfigSchema, FOREX_DEFAULT_CURRENCIES } from '../../framework/configSchemas';
 import { TradingViewSettingsFooter } from '../../framework/TradingViewSettingsFooter';
 import { SettingsDoneButton } from '../../framework/settings/SettingsDoneButton';
 import type { WidgetRenderProps, WidgetSettingsProps } from '../../types';
@@ -9,7 +10,9 @@ interface ForexHeatmapConfig {
   currencies: string[];
 }
 
-const DEFAULT_CURRENCIES = ['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'CAD', 'AUD', 'NZD', 'CNY'];
+// Single source of truth lives in configSchemas.ts so the schema's whole-array
+// catch-fallback can't drift below the widget's expected breadth.
+const DEFAULT_CURRENCIES = [...FOREX_DEFAULT_CURRENCIES];
 
 function ForexHeatmapWidget({ instance }: WidgetRenderProps<ForexHeatmapConfig>) {
   return (
@@ -44,6 +47,7 @@ registerWidget<ForexHeatmapConfig>({
   component: ForexHeatmapWidget,
   settingsComponent: ForexHeatmapSettings,
   defaultConfig: { currencies: DEFAULT_CURRENCIES },
+  configSchema: ForexHeatmapConfigSchema,
   defaultSize: { w: 12, h: 18 },
   minSize: { w: 6, h: 10 },
   maxSize: { w: 12, h: 32 },

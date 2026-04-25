@@ -2,6 +2,7 @@ import { Sparkles } from 'lucide-react';
 import AIDailyBriefCard from '../../components/AIDailyBriefCard';
 import { useDashboardContext } from '../framework/DashboardDataContext';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { InsightBriefConfigSchema } from '../framework/configSchemas';
 import type { WidgetRenderProps } from '../types';
 import './InsightBriefWidget.css';
 
@@ -24,6 +25,7 @@ registerWidget<InsightBriefConfig>({
   icon: Sparkles,
   component: InsightBriefWidget,
   defaultConfig: { variant: 'latest' },
+  configSchema: InsightBriefConfigSchema,
   defaultSize: { w: 8, h: 18 },
   minSize: { w: 4, h: 15 },
   maxSize: { w: 12, h: 44 },

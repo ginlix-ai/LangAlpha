@@ -12,6 +12,7 @@ import { useAutomations } from '@/pages/Automations/hooks/useAutomations';
 import { useAutomationMutations } from '@/pages/Automations/hooks/useAutomationMutations';
 import type { Automation } from '@/types/automation';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { AutomationsConfigSchema } from '../framework/configSchemas';
 import type { WidgetRenderProps } from '../types';
 
 type AutomationsConfig = { limit?: number };
@@ -420,6 +421,7 @@ registerWidget<AutomationsConfig>({
   icon: Workflow,
   component: AutomationsWidget,
   defaultConfig: { limit: 8 },
+  configSchema: AutomationsConfigSchema,
   defaultSize: { w: 4, h: 22 },
   minSize: { w: 3, h: 14 },
 });

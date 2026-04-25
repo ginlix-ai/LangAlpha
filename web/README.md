@@ -8,7 +8,7 @@ React frontend for LangAlpha — a vibe investing agent with AI-powered research
 - **SSE Streaming Chat** — Real-time agent responses with subagent task cards, tool call display, and reasoning blocks
 - **HITL Plan Approval** — Review and approve/reject agent plans before execution
 - **React Query Data Layer** — Hierarchical cache key factory with prefix-based invalidation, shared hooks across pages
-- **Market Dashboard** — Watchlist and portfolio overview with stock data
+- **Configurable Dashboard** — Drag-and-drop widget gallery with 30+ widgets (watchlist, portfolio, news, TradingView heatmaps, screeners, ticker tape, mini-chart grid). Per-widget settings persisted to user preferences with Zod schema validation at the boundary, cross-tab sync, and an offline banner when the network drops.
 - **TradingView-Style Charting** — Interactive candlestick charts with AI chat sidebar for stock analysis
 - **Scheduled Automations** — Create and manage recurring agent tasks with cron scheduling and execution history
 - **Document Viewers** — Inline rendering of PDF, Excel, CSV, and HTML artifacts from agent responses
@@ -34,7 +34,8 @@ React frontend for LangAlpha — a vibe investing agent with AI-powered research
 | Styling | Tailwind CSS 3, `clsx`, `tailwind-merge`, `class-variance-authority` |
 | Animation | Framer Motion 12 |
 | Icons | Lucide React |
-| Charts | `lightweight-charts` (TradingView), Recharts |
+| Charts | `lightweight-charts` (TradingView), Recharts, embedded TradingView widgets |
+| Schema validation | `zod` (per-widget config schemas at the prefs boundary) |
 | Auth | `@supabase/supabase-js` |
 | HTTP | Axios |
 | Markdown | `react-markdown`, `remark-gfm`, `remark-math`, `remark-cjk-friendly`, `rehype-katex`, `rehype-raw`, `react-syntax-highlighter` |
@@ -62,7 +63,7 @@ src/
 ├── locales/                # i18n translation files (en-US, zh-CN)
 ├── pages/
 │   ├── Login/              # OAuth login with animated background
-│   ├── Dashboard/          # Watchlist, portfolio, market overview
+│   ├── Dashboard/          # Configurable widget gallery (watchlist, portfolio, news, TradingView widgets) with drag-and-drop layout
 │   ├── ChatAgent/          # Streaming chat with workspaces, threads, file panel
 │   ├── MarketView/         # Candlestick charts with AI chat sidebar
 │   ├── Automations/        # Scheduled agent task management

@@ -16,6 +16,7 @@ import { getWorkspaceThreads } from '@/pages/ChatAgent/utils/api';
 import { queryKeys } from '@/lib/queryKeys';
 import type { Thread, ThreadsResponse } from '@/types/api';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { ConversationConfigSchema } from '../framework/configSchemas';
 import type { WidgetRenderProps } from '../types';
 import './ConversationWidget.css';
 
@@ -211,6 +212,7 @@ registerWidget<ConversationConfig>({
   icon: MessageSquareText,
   component: ConversationWidget,
   defaultConfig: {},
+  configSchema: ConversationConfigSchema,
   defaultSize: { w: 8, h: 12 },
   minSize: { w: 6, h: 8 },
   maxSize: { w: 12, h: 44 },

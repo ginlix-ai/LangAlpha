@@ -1,6 +1,7 @@
 import { Gauge } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
+import { TechnicalsConfigSchema } from '../../framework/configSchemas';
 import { SymbolField } from '../../framework/settings/SymbolField';
 import { EnumField } from '../../framework/settings/EnumField';
 import { TradingViewSettingsFooter } from '../../framework/TradingViewSettingsFooter';
@@ -66,6 +67,7 @@ registerWidget<TechnicalsConfig>({
   component: TechnicalsWidget,
   settingsComponent: TechnicalsSettings,
   defaultConfig: { symbol: 'NASDAQ:NVDA', interval: '1D' },
+  configSchema: TechnicalsConfigSchema,
   defaultSize: { w: 6, h: 22 },
   // Min raised to 22 (= default) so the gauge + pills + labels always
   // render fully. At h<22 the edit-mode body (~cell-64px for chrome) drops

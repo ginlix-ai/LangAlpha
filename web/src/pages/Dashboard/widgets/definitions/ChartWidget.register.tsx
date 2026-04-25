@@ -1,6 +1,7 @@
 import { lazy } from 'react';
 import { CandlestickChart } from 'lucide-react';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { ChartConfigSchema } from '../framework/configSchemas';
 import type { WidgetRenderProps, WidgetSettingsProps } from '../types';
 
 type ChartConfig = {
@@ -31,6 +32,7 @@ registerWidget<ChartConfig>({
   component: LazyChartWidget as unknown as React.ComponentType<WidgetRenderProps<ChartConfig>>,
   settingsComponent: LazyChartSettings as unknown as React.ComponentType<WidgetSettingsProps<ChartConfig>>,
   defaultConfig: DEFAULT_CONFIG,
+  configSchema: ChartConfigSchema,
   defaultSize: { w: 6, h: 22 },
   minSize: { w: 3, h: 15 },
 });

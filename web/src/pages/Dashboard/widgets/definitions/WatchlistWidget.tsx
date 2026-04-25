@@ -2,6 +2,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Eye } from 'lucide-react';
 import { useDashboardContext } from '../framework/DashboardDataContext';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { WatchlistConfigSchema } from '../framework/configSchemas';
 import type { WidgetRenderProps } from '../types';
 import {
   HoldingsAddButton,
@@ -79,6 +80,7 @@ registerWidget<WatchlistConfig>({
   icon: Eye,
   component: WatchlistWidget,
   defaultConfig: {},
+  configSchema: WatchlistConfigSchema,
   defaultSize: { w: 4, h: 26 },
   minSize: { w: 3, h: 15 },
 });

@@ -1,6 +1,7 @@
 import { Bitcoin } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
+import { CryptoScreenerConfigSchema } from '../../framework/configSchemas';
 import { EnumField } from '../../framework/settings/EnumField';
 import { TradingViewSettingsFooter } from '../../framework/TradingViewSettingsFooter';
 import { SettingsDoneButton } from '../../framework/settings/SettingsDoneButton';
@@ -73,6 +74,7 @@ registerWidget<CryptoScreenerConfig>({
   component: CryptoScreenerWidget,
   settingsComponent: CryptoScreenerSettings,
   defaultConfig: { defaultColumn: 'overview', defaultScreen: 'general' },
+  configSchema: CryptoScreenerConfigSchema,
   defaultSize: { w: 12, h: 24 },
   minSize: { w: 6, h: 14 },
   maxSize: { w: 12, h: 48 },

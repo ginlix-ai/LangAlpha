@@ -1,6 +1,7 @@
 import { Filter } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
+import { StockScreenerConfigSchema } from '../../framework/configSchemas';
 import { EnumField } from '../../framework/settings/EnumField';
 import { TradingViewSettingsFooter } from '../../framework/TradingViewSettingsFooter';
 import { SettingsDoneButton } from '../../framework/settings/SettingsDoneButton';
@@ -84,6 +85,7 @@ registerWidget<StockScreenerConfig>({
   component: StockScreenerWidget,
   settingsComponent: StockScreenerSettings,
   defaultConfig: { market: 'america', defaultColumn: 'overview', defaultScreen: 'general' },
+  configSchema: StockScreenerConfigSchema,
   defaultSize: { w: 12, h: 24 },
   minSize: { w: 6, h: 14 },
   maxSize: { w: 12, h: 48 },

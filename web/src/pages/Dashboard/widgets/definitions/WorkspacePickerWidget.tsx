@@ -4,6 +4,7 @@ import { useWorkspaces } from '@/hooks/useWorkspaces';
 import { clearChatSession } from '@/pages/ChatAgent/hooks/utils/chatSessionRestore';
 import type { Workspace } from '@/types/api';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { WorkspacePickerConfigSchema } from '../framework/configSchemas';
 import type { WidgetRenderProps } from '../types';
 
 type WorkspacePickerConfig = { limit?: number };
@@ -235,6 +236,7 @@ registerWidget<WorkspacePickerConfig>({
   icon: LayoutGrid,
   component: WorkspacePickerWidget,
   defaultConfig: { limit: 12 },
+  configSchema: WorkspacePickerConfigSchema,
   defaultSize: { w: 6, h: 22 },
   minSize: { w: 3, h: 15 },
 });

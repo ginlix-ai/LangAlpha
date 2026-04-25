@@ -1,6 +1,7 @@
 import { Globe } from 'lucide-react';
 import { TradingViewWebComponent } from '../../framework/TradingViewWebComponent';
 import { registerWidget } from '../../framework/WidgetRegistry';
+import { EconomicMapConfigSchema } from '../../framework/configSchemas';
 import { EnumField } from '../../framework/settings/EnumField';
 import { TradingViewSettingsFooter } from '../../framework/TradingViewSettingsFooter';
 import { SettingsDoneButton } from '../../framework/settings/SettingsDoneButton';
@@ -80,6 +81,7 @@ registerWidget<EconomicMapConfig>({
   component: EconomicMapWidget,
   settingsComponent: EconomicMapSettings,
   defaultConfig: { region: 'global', metric: 'gdp', hideLegend: false },
+  configSchema: EconomicMapConfigSchema,
   // Wizard reports natural size 750w × 475h. h=18 (~416px content) hugs that
   // aspect at w=12 so the map + legend strip render without letterboxing.
   // Min raised to 18 (= default) so country labels and the legend always

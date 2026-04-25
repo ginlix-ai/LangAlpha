@@ -4,6 +4,7 @@ import { Grid2x2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useDashboardContext } from '../framework/DashboardDataContext';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { MiniChartGridConfigSchema } from '../framework/configSchemas';
 import { fetchStockData } from '@/pages/MarketView/utils/api';
 import { DEFAULT_BLUE_CHIPS } from '../framework/defaults';
 import { SymbolListField } from '../framework/settings/SymbolListField';
@@ -155,7 +156,9 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
             {data!.map((cell) => {
-              const pct = ((cell.last - cell.prev) / cell.prev) * 100;
+              // Guard against zero anchor (delisted ticker, corrupt fixture)
+              // so we don't render "Infinity%" / "NaN%" cells.
+              const pct = cell.prev === 0 ? 0 : ((cell.last - cell.prev) / cell.prev) * 100;
               const up = pct >= 0;
               return (
                 <button
@@ -242,6 +245,7 @@ registerWidget<MiniChartGridConfig>({
   component: MiniChartGridWidget,
   settingsComponent: MiniChartGridSettings,
   defaultConfig: { symbols: [] },
+  configSchema: MiniChartGridConfigSchema,
   defaultSize: { w: 12, h: 16 },
   minSize: { w: 6, h: 10 },
   initConfig: (ctx) => {

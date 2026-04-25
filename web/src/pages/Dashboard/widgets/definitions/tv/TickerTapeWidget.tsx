@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { Activity } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
+import { TickerTapeConfigSchema } from '../../framework/configSchemas';
 import { useDashboardContext } from '../../framework/DashboardDataContext';
 import { SymbolListField } from '../../framework/settings/SymbolListField';
 import { EnumField } from '../../framework/settings/EnumField';
@@ -166,6 +167,7 @@ registerWidget<TickerTapeConfig>({
   component: TickerTapeWidget,
   settingsComponent: TickerTapeSettings,
   defaultConfig: { symbols: [], displayMode: 'adaptive' },
+  configSchema: TickerTapeConfigSchema,
   // fitToContent: cell height tracks the embed's natural 76px iframe plus
   // chrome. View mode → ~6 rows (128px, card hugs the ticker). Edit mode →
   // ~9 rows (200px, includes 40px header + 24px body padding). maxSize.h
