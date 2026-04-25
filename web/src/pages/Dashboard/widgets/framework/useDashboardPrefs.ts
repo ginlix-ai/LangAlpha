@@ -57,6 +57,23 @@ export function useDashboardPrefs() {
   const flush = useCallback(
     (next: DashboardPrefs) => {
       skipNextSyncRef.current = true;
+      // Dev-only size trap: catches widget configs that bloat the prefs
+      // blob before we ship them. The prefs are PATCHed as one payload,
+      // so a widget with a 50-symbol array full of objects can balloon
+      // the blob quickly. 20KB is generous for normal use.
+      if (import.meta.env?.DEV) {
+        try {
+          const bytes = new Blob([JSON.stringify(next)]).size;
+          if (bytes > 20_000) {
+            console.warn(
+              `[dashboard-prefs] blob ${bytes}B exceeds 20KB dev trap — check widget configs`,
+              next,
+            );
+          }
+        } catch {
+          /* ignore sizing errors in dev */
+        }
+      }
       const prevOther = ((preferencesRef.current as { other_preference?: Record<string, unknown> } | null | undefined)
         ?.other_preference) ?? {};
       updatePrefs.mutate(

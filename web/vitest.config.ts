@@ -9,6 +9,11 @@ export default defineConfig({
     setupFiles: ['./src/test/setup.ts'],
     globals: true,
     exclude: ['e2e/**', 'node_modules/**'],
+    // 10s default. Worker pool is CPU-contended when tests that use real
+    // react-query retry timers (up to 6s wall clock in useWorkspaceFiles)
+    // land on the same thread as Testing Library render()s — the default 5s
+    // starved the settings-atoms tests into spurious timeouts.
+    testTimeout: 10_000,
   },
   resolve: {
     alias: {

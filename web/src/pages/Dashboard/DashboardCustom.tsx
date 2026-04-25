@@ -37,11 +37,12 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const mainRef = useRef<HTMLElement>(null);
 
+  const ctx = useDashboardContext();
   const {
     portfolio,
     watchlist,
     modals,
-  } = useDashboardContext();
+  } = ctx;
 
   const handleScrollToTop = useCallback(() => {
     mainRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
@@ -59,10 +60,16 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
     (type: string) => {
       const def = getWidget(type);
       if (!def) return;
+      // Prefer the widget's context-aware initConfig factory when present so
+      // e.g. a new TickerTape can default to the user's watchlist symbols.
+      // Falls back to shallow-copying the static defaultConfig otherwise.
+      const initialConfig = def.initConfig
+        ? def.initConfig(ctx)
+        : { ...(def.defaultConfig as object) };
       const newInstance: WidgetInstance = {
         id: newWidgetId(),
         type,
-        config: { ...(def.defaultConfig as object) },
+        config: initialConfig,
       };
       update((prev: DashboardPrefs) => {
         if (def.singleton && prev.widgets.some((w) => w.type === type)) return prev;
@@ -70,7 +77,7 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
         return { ...prev, widgets: [...prev.widgets, newInstance], layouts };
       });
     },
-    [update]
+    [update, ctx]
   );
 
   const handleGridChange = useCallback(
@@ -179,9 +186,12 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
       <ConfirmDialog
         open={resetConfirmOpen}
         title="Reset to Morning Brief?"
-        message="This replaces your current widgets and layout with the default preset. Your previous layout will be saved to history and can be restored from Presets."
+        message="This replaces your current widgets and layout with the default preset. This action can't be undone."
         confirmLabel="Reset layout"
-        onConfirm={resetToDefault}
+        onConfirm={() => {
+          setSettingsFor(null);
+          resetToDefault();
+        }}
         onOpenChange={setResetConfirmOpen}
       />
 
@@ -197,7 +207,15 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
       <PresetsDialog
         open={presetsOpen}
         onOpenChange={setPresetsOpen}
-        onApply={(id: PresetId) => applyPreset(id)}
+        onApply={(id: PresetId) => {
+          // Closing settings before swapping the widget set prevents the
+          // settings dialog from referencing a stale id after the preset
+          // replaces `prefs.widgets` (which would silently unmount the
+          // dialog mid-edit). Same protection applies to the reset path —
+          // resetToDefault calls applyPreset under the hood.
+          setSettingsFor(null);
+          applyPreset(id);
+        }}
       />
 
       {/* Widget settings */}
