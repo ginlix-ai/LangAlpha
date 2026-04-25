@@ -32,7 +32,7 @@ interface ModalActions {
   cancelDeleteConfirm: () => void;
 }
 
-interface DashboardDataContextValue {
+export interface DashboardDataContextValue {
   dashboard: DashboardData;
   watchlist: WatchlistData;
   portfolio: PortfolioData;

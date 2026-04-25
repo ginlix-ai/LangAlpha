@@ -43,7 +43,7 @@ export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProp
               className="mt-2 text-[13px] max-w-[64ch]"
               style={{ color: 'var(--color-text-secondary)' }}
             >
-              Five curated layouts tuned to different workflows. Pick one to start, then rearrange
+              Six curated layouts tuned to different workflows. Pick one to start, then rearrange
               and swap widgets freely. Your existing layout is saved and can be restored.
             </DialogDescription>
           </div>

@@ -30,6 +30,7 @@ import { ExtendedHoursBgPrimitive } from '../utils/extendedHoursBg';
 import { useTheme } from '@/contexts/ThemeContext';
 import CrosshairTooltip from './CrosshairTooltip';
 import TradingViewWidget from './TradingViewWidget';
+import { TradingViewAttribution } from '@/pages/Dashboard/widgets/framework/TradingViewAttribution';
 import { useChartAnnotations } from '../hooks/useChartAnnotations';
 import { useChartOverlays } from '../hooks/useChartOverlays';
 import { SlidersHorizontal, Settings2, Maximize2, Minimize2, ChevronDown, Plus, Minus, RotateCcw, Menu } from 'lucide-react';
@@ -1815,6 +1816,11 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
             </>
           )}
           <div className="chart-mode-switcher">
+            {/* TV embed-terms attribution. Sibling of the pill so the pill's
+                own background stays symmetric. Only shown when Advanced is
+                active — anchors the attribution to the mode that actually
+                renders TV content. */}
+            {isTV && <TradingViewAttribution />}
             <div className="interval-selector">
               <button
                 type="button"

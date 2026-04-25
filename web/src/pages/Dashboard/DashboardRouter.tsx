@@ -31,14 +31,18 @@ export default function DashboardRouter() {
   const onModeChange = useCallback(
     (next: 'classic' | 'custom') => {
       const prevOther = (rawOther ?? {}) as Record<string, unknown>;
-      const prevDashboard = (prevOther.dashboard ?? {}) as Partial<DashboardPrefs>;
-      const firstFlipToCustom = next === 'custom' && (!prevDashboard.widgets || prevDashboard.widgets.length === 0);
+      // Spread the migrated/normalized form (parsed) instead of the raw
+      // stored blob so malformed legacy keys can't round-trip back into
+      // the write. parsed comes from migrateDashboardPrefs which coerces
+      // bad widgets/layouts/history values into safe defaults.
+      const baseDashboard = parsed ?? ({} as Partial<DashboardPrefs>);
+      const firstFlipToCustom = next === 'custom' && (!baseDashboard.widgets || baseDashboard.widgets.length === 0);
       const seed = firstFlipToCustom ? getPreset('morning-brief') : null;
       updatePrefs.mutate({
         other_preference: {
           ...prevOther,
           dashboard: {
-            ...prevDashboard,
+            ...baseDashboard,
             version: 1,
             mode: next,
             ...(seed ? { widgets: seed.widgets, layouts: seed.layouts } : {}),
@@ -46,7 +50,7 @@ export default function DashboardRouter() {
         },
       });
     },
-    [rawOther, updatePrefs]
+    [rawOther, parsed, updatePrefs]
   );
 
   if (isMobile) {

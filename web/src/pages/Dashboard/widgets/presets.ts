@@ -1,11 +1,13 @@
 import { newWidgetId } from './framework/ids';
 import type { DashboardPrefs, RGLItem, WidgetInstance } from './types';
 import { DASHBOARD_PREFS_VERSION } from './types';
+import { DEFAULT_BLUE_CHIPS } from './framework/defaults';
 
 export type PresetId =
   | 'morning-brief'
   | 'researcher'
   | 'trader'
+  | 'trader-tv'
   | 'portfolio-steward'
   | 'agent-desk';
 
@@ -115,6 +117,38 @@ export function traderPreset(): Pick<DashboardPrefs, 'widgets' | 'layouts' | 've
 }
 
 /**
+ * TRADER (TV) — TradingView workstation.
+ * All-TV layout: ticker tape anchor, stock heatmap hero, symbol spotlight +
+ * movers side-by-side, economic events + technicals below, native mini-chart
+ * grid closes the canvas. Existing `trader` preset is preserved unchanged —
+ * users can pick either from the Presets dialog.
+ */
+export function traderTvPreset(): Pick<DashboardPrefs, 'widgets' | 'layouts' | 'version'> {
+  // Empty `symbols` lets TickerTapeWidget compute its live seed at render
+  // time (defaults + user's watchlist + portfolio, deduped). Hardcoding
+  // here would bypass the watchlist/portfolio merge.
+  const tape = { id: newId('tt'), type: 'tv.ticker-tape', config: { symbols: [], displayMode: 'adaptive' } };
+  const heatmap = { id: newId('hm'), type: 'tv.stock-heatmap', config: { dataSource: 'SPX500', blockSize: 'market_cap_basic', blockColor: 'change' } };
+  const spotlight = { id: newId('ss'), type: 'tv.symbol-spotlight', config: { symbol: 'NASDAQ:NVDA', range: '12M' } };
+  const movers = { id: newId('mv'), type: 'tv.movers', config: { exchange: 'US', dataSource: 'AllUSA' } };
+  const events = { id: newId('ev'), type: 'tv.economic-events', config: { importanceFilter: '-1,0,1', countryFilter: 'us,eu,jp,gb,cn' } };
+  const technicals = { id: newId('ta'), type: 'tv.technicals', config: { symbol: 'NASDAQ:NVDA', interval: '1D' } };
+  const miniGrid = { id: newId('mg'), type: 'markets.miniChartGrid', config: { symbols: DEFAULT_BLUE_CHIPS } };
+
+  const widgets = [tape, heatmap, spotlight, movers, events, technicals, miniGrid];
+  const layouts: RGLItem[] = [
+    { i: tape.id, x: 0, y: 0, w: 12, h: 4 },
+    { i: heatmap.id, x: 0, y: 4, w: 12, h: 20 },
+    { i: spotlight.id, x: 0, y: 24, w: 6, h: 22 },
+    { i: movers.id, x: 6, y: 24, w: 6, h: 22 },
+    { i: events.id, x: 0, y: 46, w: 6, h: 24 },
+    { i: technicals.id, x: 6, y: 46, w: 6, h: 24 },
+    { i: miniGrid.id, x: 0, y: 70, w: 12, h: 16 },
+  ];
+  return makePrefs(widgets, layouts);
+}
+
+/**
  * PORTFOLIO STEWARD — Wealth-first, actively tended.
  * Your top holding's daily chart anchors the left canvas; combined portfolio +
  * watchlist sit alongside; a portfolio-filtered news feed runs as a tall right
@@ -208,6 +242,15 @@ export const PRESETS_META: readonly PresetMeta[] = [
     pills: ['Chart × 4', 'Multi-timeframe', 'Portfolio + Watchlist', 'News feed', 'Markets overview'],
   },
   {
+    id: 'trader-tv',
+    name: 'Trader (TV)',
+    tagline: 'tradingview-first',
+    tag: 'tradingview-first',
+    description: 'A TradingView-driven trading desk. Ticker tape anchors the top, stock heatmap as hero, symbol spotlight with market movers alongside, economic events + a technical analysis gauge below, and a native mini-chart grid closes the canvas.',
+    bestFor: 'Tape-to-sector-to-symbol scan, with TV-native interactivity inside each card.',
+    pills: ['Ticker tape', 'Stock heatmap', 'Symbol spotlight', 'Market movers', 'Economic events', 'Technicals', 'Mini chart grid'],
+  },
+  {
     id: 'portfolio-steward',
     name: 'Portfolio Steward',
     tagline: 'wealth-first',
@@ -222,6 +265,7 @@ const PRESET_FACTORIES: Record<PresetId, () => Pick<DashboardPrefs, 'widgets' | 
   'morning-brief': morningBriefPreset,
   researcher: researcherPreset,
   trader: traderPreset,
+  'trader-tv': traderTvPreset,
   'portfolio-steward': portfolioStewardPreset,
   'agent-desk': agentDeskPreset,
 };

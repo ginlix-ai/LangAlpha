@@ -13,6 +13,7 @@ import './App.css';
 
 const SetupWizard = React.lazy(() => import('./pages/Setup/SetupWizard'));
 const PrivacyPolicy = React.lazy(() => import('./pages/Legal/PrivacyPolicy'));
+const Legal = React.lazy(() => import('./pages/Legal/Legal'));
 
 /** Handles the OAuth redirect from Supabase — shows a spinner then redirects to /dashboard. */
 function AuthCallback() {
@@ -111,6 +112,15 @@ function App() {
           </div>
         }>
           <PrivacyPolicy />
+        </Suspense>
+      } />
+      <Route path="/legal" element={
+        <Suspense fallback={
+          <div className="flex items-center justify-center min-h-screen" style={{ backgroundColor: 'var(--color-bg-page)' }}>
+            <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{t('common.loading')}</p>
+          </div>
+        }>
+          <Legal />
         </Suspense>
       } />
       <Route path="/setup/*" element={

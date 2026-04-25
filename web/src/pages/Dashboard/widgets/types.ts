@@ -1,5 +1,6 @@
 import type { ComponentType } from 'react';
 import type { LucideIcon } from 'lucide-react';
+import type { DashboardDataContextValue } from './framework/DashboardDataContext';
 
 export type WidgetCategory = 'markets' | 'intel' | 'personal' | 'agent' | 'workspace';
 
@@ -39,6 +40,18 @@ export interface WidgetDefinition<C = unknown> {
    * cell beyond the content. Width resize still works.
    */
   fitToContent?: boolean;
+  /**
+   * Gallery shows a provider badge and widget components should render
+   * attribution when this is set. Currently only TradingView uses this flag.
+   */
+  source?: 'tradingview';
+  /**
+   * Optional factory that returns the initial config for a newly added
+   * instance, given runtime dashboard context (watchlist, portfolio). Called
+   * by the add-widget path instead of shallow-copying `defaultConfig`. Falls
+   * back to `defaultConfig` when undefined.
+   */
+  initConfig?: (ctx: DashboardDataContextValue) => C;
 }
 
 export interface WidgetInstance<C = unknown> {

@@ -12,15 +12,18 @@ export function reconcileLayouts(
   widgets: WidgetInstance[],
   layouts: Partial<Record<BreakpointKey, RGLItem[]>>
 ): Partial<Record<BreakpointKey, RGLItem[]>> {
-  const widgetIds = new Set(widgets.map((w) => w.id));
+  // Map by id once so the per-breakpoint loop does O(n) lookups instead of
+  // O(n²) `widgets.find()` calls. Doubles as the membership check.
+  const widgetsById = new Map(widgets.map((w) => [w.id, w]));
   const out: Partial<Record<BreakpointKey, RGLItem[]>> = {};
 
   for (const bp of BREAKPOINT_KEYS) {
-    const items = (layouts[bp] ?? []).filter((l) => widgetIds.has(l.i));
+    const items = (layouts[bp] ?? []).filter((l) => widgetsById.has(l.i));
     const placed = new Set(items.map((l) => l.i));
     const result: RGLItem[] = items.map((l) => {
-      const w = widgets.find((w) => w.id === l.i);
-      if (!w) return l;
+      // `items` was pre-filtered by `widgetsById.has(l.i)` above, so `.get()`
+      // here always returns a value. The `!` cast skips an unreachable guard.
+      const w = widgetsById.get(l.i)!;
       const def = getWidget(w.type);
       if (!def) return l;
       const minW = def.minSize.w;

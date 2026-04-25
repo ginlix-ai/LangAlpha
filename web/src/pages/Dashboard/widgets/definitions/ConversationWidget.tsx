@@ -82,7 +82,9 @@ function ConversationWidget(_props: WidgetRenderProps<ConversationConfig>) {
 
   const { user } = useUser();
   const greeting = useMemo(() => formatGreeting(user?.name), [user?.name]);
-  const dateStrip = useMemo(() => formatDateStrip(), []);
+  // Computed per render so the strip updates if the dashboard sits open
+  // across midnight. Empty-deps memo would freeze it at mount time.
+  const dateStrip = formatDateStrip();
 
   // Recent threads for the Resume strip — peek at the first workspace.
   // Fetch 100 to match the shared React Query cache key used by useChatInput,
