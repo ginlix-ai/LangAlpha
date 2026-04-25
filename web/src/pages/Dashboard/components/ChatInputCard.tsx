@@ -67,23 +67,29 @@ function ChatInputCard() {
   return (
     <div className="dashboard-floating-chat-wrapper fixed bottom-8 left-0 right-0 z-40 flex justify-center pointer-events-none">
       <div className="pointer-events-auto w-full max-w-2xl px-4">
-        {/* Suggestion bubbles — above the input, outside focus container */}
-        <div className={`dashboard-suggestion-bubbles ${focused ? 'visible' : ''}`}>
-          {SUGGESTION_CHIPS.map((label, i) => (
-            <button
-              key={label}
-              type="button"
-              className="dashboard-suggestion-bubble"
-              style={{ transitionDelay: `${i * 60}ms` }}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => chatInputRef.current?.setValue(label)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        {/* Suggestion bubbles — above the input, outside focus container.
+            Only mount when focused so they stay out of the DOM, a11y tree,
+            and tab order otherwise. */}
+        {focused && (
+          <div className="dashboard-suggestion-bubbles visible">
+            {SUGGESTION_CHIPS.map((label, i) => (
+              <button
+                key={label}
+                type="button"
+                data-testid="dashboard-suggestion-bubble"
+                className="dashboard-suggestion-bubble"
+                style={{ animationDelay: `${i * 60}ms` }}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => chatInputRef.current?.setValue(label)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
 
         <div
+          data-testid="dashboard-chat-input"
           className="dashboard-floating-chat"
           onFocus={() => setFocused(true)}
           onBlur={(e) => {

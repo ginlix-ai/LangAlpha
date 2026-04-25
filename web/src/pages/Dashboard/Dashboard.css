@@ -176,9 +176,14 @@
   transform: translateY(6px);
   transition: opacity 0.3s ease, transform 0.3s ease, background-color 0.15s, border-color 0.15s, color 0.15s;
 }
+@keyframes dashboard-chip-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
 .dashboard-suggestion-bubbles.visible .dashboard-suggestion-bubble {
   opacity: 1;
   transform: translateY(0);
+  animation: dashboard-chip-enter 0.3s ease both;
 }
 .dashboard-suggestion-bubble:hover,
 .dashboard-suggestion-bubble:active {

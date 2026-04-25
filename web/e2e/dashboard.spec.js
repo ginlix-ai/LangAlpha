@@ -264,7 +264,7 @@ test.describe('Watchlist CRUD', () => {
     await expect(page.locator('h2', { hasText: 'Watchlist' })).toBeVisible();
 
     // Symbol renders
-    await expect(page.locator('text=TSLA').first()).toBeVisible();
+    await expect(page.getByTestId('watchlist-row-TSLA')).toBeVisible();
   });
 
   test('add watchlist item', async ({ page }) => {
@@ -367,16 +367,58 @@ test.describe('Watchlist CRUD', () => {
     await page.goto('/dashboard');
 
     // Wait for the item to render
-    await expect(page.locator('text=TSLA').first()).toBeVisible();
+    await expect(page.getByTestId('watchlist-row-TSLA')).toBeVisible();
 
     // Right-click to open context menu (Radix ContextMenu)
-    await page.locator('text=TSLA').first().click({ button: 'right' });
+    await page.getByTestId('watchlist-row-TSLA').click({ button: 'right' });
 
     // Click "Delete" in context menu (Radix renders items as role="menuitem")
     await page.getByRole('menuitem', { name: 'Delete' }).click();
 
     // Verify the DELETE request was made
     expect(deleteCalled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Suggestion chips (regression coverage for the dashboard chat input)
+// ---------------------------------------------------------------------------
+
+test.describe('Dashboard chat suggestion chips', () => {
+  test('chips: a11y-gated by focus, click fills input, blur unmounts', async ({ page }) => {
+    await mockAPI(page, dashboardOverrides({}));
+    await page.goto('/dashboard');
+
+    const bubbles = page.getByTestId('dashboard-suggestion-bubble');
+    const textarea = page.getByTestId('dashboard-chat-input').locator('textarea');
+    // Role-based check pins the a11y invariant (chips not in tab order / a11y tree
+    // when unfocused), so a future inert/aria-hidden refactor would still satisfy it
+    // even if DOM mounting changed.
+    const tslaChip = page.getByRole('button', { name: 'Compare TSLA vs BYD' });
+
+    // Unfocused: chips absent from DOM AND a11y tree.
+    await expect(bubbles).toHaveCount(0);
+    await expect(tslaChip).toHaveCount(0);
+
+    // Focus mounts chips in DOM and a11y tree.
+    await textarea.focus();
+    await expect(bubbles).toHaveCount(4);
+    await expect(tslaChip).toHaveCount(1);
+
+    // Click chip -> textarea value updates. Chip's onMouseDown preventDefault
+    // keeps focus on the textarea, so chips remain mounted.
+    await tslaChip.click();
+    await expect(textarea).toHaveValue('Compare TSLA vs BYD');
+
+    // setValue queues setTimeout(focus, 0) to refocus the textarea. Drain the
+    // macrotask queue before blurring, otherwise the queued refocus fires AFTER
+    // our blur and remounts the chips.
+    await page.evaluate(() => new Promise((r) => setTimeout(r, 0)));
+
+    // Blur -> chips unmount from both DOM and a11y tree.
+    await textarea.blur();
+    await expect(bubbles).toHaveCount(0);
+    await expect(tslaChip).toHaveCount(0);
   });
 });
 
@@ -422,7 +464,7 @@ test.describe('Portfolio CRUD', () => {
     await expect(page.locator('h2', { hasText: 'Portfolio' })).toBeVisible();
 
     // Symbol and share count visible
-    await expect(page.locator('text=AAPL').first()).toBeVisible();
+    await expect(page.getByTestId('portfolio-row-AAPL')).toBeVisible();
     await expect(page.locator('text=10 shares')).toBeVisible();
 
     // Market value ($1,800.00 = 10 shares * $180.00)
@@ -515,10 +557,10 @@ test.describe('Portfolio CRUD', () => {
 
     // Switch to Holdings tab
     await page.getByRole('button', { name: 'Holdings' }).click();
-    await expect(page.locator('text=AAPL').first()).toBeVisible();
+    await expect(page.getByTestId('portfolio-row-AAPL')).toBeVisible();
 
     // Right-click to open context menu (Radix ContextMenu)
-    await page.locator('text=AAPL').first().click({ button: 'right' });
+    await page.getByTestId('portfolio-row-AAPL').click({ button: 'right' });
 
     // Click "Edit" in context menu (Radix renders items as role="menuitem")
     await page.getByRole('menuitem', { name: 'Edit' }).click();
@@ -559,10 +601,10 @@ test.describe('Portfolio CRUD', () => {
 
     // Switch to Holdings tab
     await page.getByRole('button', { name: 'Holdings' }).click();
-    await expect(page.locator('text=AAPL').first()).toBeVisible();
+    await expect(page.getByTestId('portfolio-row-AAPL')).toBeVisible();
 
     // Right-click to open context menu (Radix ContextMenu)
-    await page.locator('text=AAPL').first().click({ button: 'right' });
+    await page.getByTestId('portfolio-row-AAPL').click({ button: 'right' });
 
     // Click "Delete" in context menu (Radix renders items as role="menuitem")
     await page.getByRole('menuitem', { name: 'Delete' }).click();

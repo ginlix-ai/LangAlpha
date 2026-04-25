@@ -58,6 +58,7 @@ function WatchlistItem({ item, index, onDelete, marketStatus, isMobile }: Watchl
 
   const rowContent = (
     <motion.div
+      data-testid={item.symbol ? `watchlist-row-${item.symbol}` : undefined}
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.05 }}
@@ -175,6 +176,7 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStat
 
   const rowContent = (
     <motion.div
+      data-testid={item.symbol ? `portfolio-row-${item.symbol}` : undefined}
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.05 }}
