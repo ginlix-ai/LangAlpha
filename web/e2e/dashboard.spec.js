@@ -410,6 +410,11 @@ test.describe('Dashboard chat suggestion chips', () => {
     await tslaChip.click();
     await expect(textarea).toHaveValue('Compare TSLA vs BYD');
 
+    // setValue queues setTimeout(focus, 0) to refocus the textarea. Drain the
+    // macrotask queue before blurring, otherwise the queued refocus fires AFTER
+    // our blur and remounts the chips.
+    await page.evaluate(() => new Promise((r) => setTimeout(r, 0)));
+
     // Blur -> chips unmount from both DOM and a11y tree.
     await textarea.blur();
     await expect(bubbles).toHaveCount(0);
