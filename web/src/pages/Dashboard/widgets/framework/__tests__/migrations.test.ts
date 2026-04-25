@@ -162,14 +162,30 @@ describe('migrateDashboardPrefs', () => {
       expect((out?.widgets[0].config as { displayMode?: string }).displayMode).toBe('adaptive');
     });
 
-    it('coerces a malformed top-level config to defaultConfig', () => {
-      // top-level is a string instead of an object → safeParse fails outright
-      // → fall back to defaultConfig.
+    it('coerces bad field values to schema defaults via per-field .catch()', () => {
+      // Input is a non-empty object with one bogus enum (displayMode: 42) and
+      // a missing array (symbols). Per-field .catch('adaptive') and .catch([])
+      // recover the values on the SUCCESS branch — the result matches
+      // defaultConfig because the catch defaults happen to equal it. This
+      // exercises field-level recovery, not the top-level fallback (covered
+      // in the next test).
       const out = migrateDashboardPrefs({
         widgets: [{ id: 'a', type: 'tv.ticker-tape', config: { displayMode: 42 } }],
       });
       const def = getWidget('tv.ticker-tape')?.defaultConfig as object;
       expect(out?.widgets[0].config).toMatchObject(def);
+    });
+
+    it('falls back to defaultConfig when top-level config shape is unparseable', () => {
+      // Array config slips past the shape filter (typeof === 'object' and
+      // !== null) but z.object().safeParse([]) fails at the top level — no
+      // per-field .catch() can recover it. Sanitize must fall back to
+      // defaultConfig wholesale.
+      const out = migrateDashboardPrefs({
+        widgets: [{ id: 'a', type: 'tv.ticker-tape', config: [] as unknown as Record<string, unknown> }],
+      });
+      const def = getWidget('tv.ticker-tape')?.defaultConfig as object;
+      expect(out?.widgets[0].config).toEqual(def);
     });
 
     it('preserves widgets whose definition has no schema (back-compat)', () => {

@@ -3,14 +3,13 @@ import { useQueryClient } from '@tanstack/react-query';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useToast } from '@/components/ui/use-toast';
 import { queryKeys } from '@/lib/queryKeys';
-import { useDashboardPrefsWriter } from './dashboardPrefsWriter';
+import { BROADCAST_CHANNEL, useDashboardPrefsWriter } from './dashboardPrefsWriter';
 import { migrateDashboardPrefs } from './migrations';
 import { getPreset, type PresetId } from '../presets';
 import { DASHBOARD_PREFS_VERSION, type DashboardPrefs } from '../types';
 
 const HISTORY_CAP = 3;
 const DEBOUNCE_MS = 800;
-const BROADCAST_CHANNEL = 'dashboard-prefs';
 
 function emptyPrefs(): DashboardPrefs {
   return {

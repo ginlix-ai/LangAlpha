@@ -5,7 +5,7 @@ import { queryKeys } from '@/lib/queryKeys';
 import type { UserPreferences } from '@/types/api';
 import type { DashboardPrefs } from '../types';
 
-const BROADCAST_CHANNEL = 'dashboard-prefs';
+export const BROADCAST_CHANNEL = 'dashboard-prefs';
 
 /**
  * Single writer for `other_preference.dashboard`. Centralizes three concerns
