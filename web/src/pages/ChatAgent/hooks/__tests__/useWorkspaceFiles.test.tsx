@@ -88,15 +88,26 @@ describe('useWorkspaceFiles', () => {
   });
 
   it('returns sandbox unavailable for 503', async () => {
-    const error: Error & { response?: { status?: number } } = new Error('Service unavailable');
-    error.response = { status: 503 };
-    mockListFiles.mockRejectedValue(error);
+    // The hook retries 503 errors up to 3 times with delays of 1s+2s+3s = 6s
+    // wall clock. Use fake timers and step through them so the test runs in
+    // milliseconds instead of starving the worker pool.
+    vi.useFakeTimers();
+    try {
+      const error: Error & { response?: { status?: number } } = new Error('Service unavailable');
+      error.response = { status: 503 };
+      mockListFiles.mockRejectedValue(error);
 
-    const queryClient = createFastRetryClient();
-    const { result } = renderHookWithProviders(() => useWorkspaceFiles('ws-1'), { queryClient });
+      const queryClient = createFastRetryClient();
+      const { result } = renderHookWithProviders(() => useWorkspaceFiles('ws-1'), { queryClient });
 
-    // The hook retries 503 errors up to 3 times with delays of 1s, 2s, 3s
-    await waitFor(() => expect(result.current.error).not.toBeNull(), { timeout: 10000 });
-    expect(result.current.error).toBe('Sandbox not available');
-  }, 15000);
+      // Drain initial query + 3 retry delays. advanceTimersByTimeAsync flushes
+      // microtasks between ticks so each retry's promise rejection settles.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(7_000);
+      });
+      expect(result.current.error).toBe('Sandbox not available');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
