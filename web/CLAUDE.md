@@ -37,7 +37,7 @@ QueryClientProvider (React Query — 2min staleTime, retry: 1)
 
 **`components/Main/Main.tsx`** handles authenticated routes inside the app shell (Sidebar + Main). All pages are **lazy-loaded** with `React.lazy` and animated via `AnimatePresence` (keyed by top-level path segment):
 
-- `/dashboard` — Dashboard (watchlist, portfolio, news)
+- `/dashboard` — Dashboard (configurable widget gallery: watchlist, portfolio, news, TradingView widgets, mini-chart grid). Layout + per-widget settings stored in user preferences; see `pages/Dashboard/widgets/framework/`.
 - `/chat`, `/chat/:workspaceId`, `/chat/t/:threadId` — ChatAgent
 - `/market` — MarketView (real-time charts)
 - `/automations` — Automations
@@ -56,7 +56,9 @@ Controlled by `VITE_SUPABASE_URL`:
 
 **SSE streaming (chat):** Uses raw `fetch()` + `ReadableStream` (not axios — it doesn't support streaming). Implemented as `streamFetch()` in `pages/ChatAgent/utils/api.ts` and `pages/MarketView/utils/api.ts`. Auth tokens for fetch are obtained directly from `supabase.auth.getSession()`.
 
-**React Query:** Global `QueryClient` in `main.tsx`. Key factory in `lib/queryKeys.ts` — hierarchical keys enabling prefix-based invalidation (e.g., invalidate `queryKeys.user.all` to refresh all user-related data). Shared hooks in `hooks/` (`useUser`, `useWorkspaces`, `useWorkspace`, `usePreferences`, `useUpdatePreferences`).
+**React Query:** Global `QueryClient` in `main.tsx`. Key factory in `lib/queryKeys.ts` — hierarchical keys enabling prefix-based invalidation (e.g., invalidate `queryKeys.user.all` to refresh all user-related data). Shared hooks in `hooks/` (`useUser`, `useWorkspaces`, `useWorkspace`, `usePreferences`, `useUpdatePreferences`, `useNetworkStatus`).
+
+**Dashboard preferences:** `useDashboardPrefs` (in `pages/Dashboard/widgets/framework/`) reads layout + per-widget config from `user.preferences.dashboard`, validates each widget config through a Zod schema (`configSchemas.ts`), and writes back via a guarded writer (`dashboardPrefsWriter.ts`) that survives cross-tab races and cold-cache mounts. Cross-tab updates land via the `usePreferences` query cache; the dashboard re-renders without a network round-trip.
 
 ### API Layer Pattern
 

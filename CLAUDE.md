@@ -71,7 +71,7 @@ React 19 + Vite 7, TypeScript, Tailwind CSS 3, shadcn/ui. State via React Query 
 | `contexts/` | `AuthContext` (Supabase session), `ThemeContext` |
 | `hooks/` | Shared React Query hooks (`useUser`, `useWorkspaces`, etc.) |
 | `pages/ChatAgent/` | Main AI chat interface — SSE streaming via raw `fetch()` + `ReadableStream` |
-| `pages/Dashboard/` | Overview with watchlist, portfolio, news |
+| `pages/Dashboard/` | Configurable widget gallery (watchlist, portfolio, news, TradingView widgets, mini-chart grid). Per-widget config validated with Zod at the prefs boundary. |
 | `pages/MarketView/` | Real-time market chart with WebSocket data |
 | `pages/Automations/` | Scheduled automation CRUD |
 | `components/ui/` | Primitive UI components (Radix-based) |
