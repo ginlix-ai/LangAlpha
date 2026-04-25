@@ -388,7 +388,18 @@
     "addLineToContext": "添加 L{{line}} 到上下文",
     "addNLinesToContext": "添加 {{count}} 行到上下文",
     "openFile": "打开文件",
-    "fromAgentResponse": "来自智能体回复"
+    "fromAgentResponse": "来自智能体回复",
+    "addToMemo": "添加到备忘录",
+    "syncWithMemo": "同步到备忘录",
+    "memoAdding": "正在将 \"{{name}}\" 添加到备忘录",
+    "memoUploading": "正在上传…",
+    "memoAddSuccess": "已将 \"{{name}}\" 添加到备忘录",
+    "memoUpdateSuccess": "\"{{name}}\" 已同步至最新",
+    "memoGenerating": "正在生成描述…",
+    "viewInMemo": "在备忘录中查看",
+    "memoAddError": "添加到备忘录失败",
+    "memoUnsupportedType": "备忘录仅支持 .md、.txt、.csv、.json 或 .pdf 文件。",
+    "inMemo": "已在备忘录中"
   },
   "filePanel": {
     "editingHint": "编辑中 — 更改在按下保存前不会生效",
@@ -436,6 +447,21 @@
     "cancelEditing": "取消编辑",
     "close": "关闭",
     "sortFiles": "排序文件",
+    "memoBanner": {
+      "fresh": "已在备忘录中 — 内容一致。",
+      "stale": "已在备忘录中 — 工作区版本与备忘录已不一致。",
+      "checking": "已在备忘录中 — 正在检查…",
+      "unknown": "已在备忘录中。",
+      "sync": "同步到备忘录",
+      "syncing": "同步中…",
+      "viewDiff": "查看差异",
+      "diffTitle": "差异：{{name}}",
+      "diffSubtitle": "左：备忘录已保存版本。右：当前工作区文件。",
+      "diffLeftLabel": "备忘录版本",
+      "diffLeftHint": "已保存",
+      "diffRightLabel": "工作区文件",
+      "diffRightHint": "当前"
+    },
     "error": {
       "notFound": "文件未找到",
       "notFoundHint": "文件路径可能不正确，或文件已被删除。",
@@ -479,8 +505,72 @@
     "readError": "记忆文件读取失败"
   },
   "memoPanel": {
-    "title": "备忘录",
-    "description": "智能体撰写并持续更新的长篇研究笔记。即将上线。"
+    "title": "备忘文档",
+    "description": "上传研究备忘、原始资料或参考文件。按用户归档，在任一工作区智能体都可读取。",
+    "uploadButton": "上传",
+    "uploadHint": "支持 Markdown、TXT、CSV、JSON、PDF · 单文件不超过 5 MB",
+    "dragOverlayText": "松开鼠标以上传文件",
+    "refresh": "刷新",
+    "selectMode": "批量选择",
+    "selectedCount_other": "已选 {{count}} 项",
+    "deleteSelected": "删除所选",
+    "backToList": "返回列表",
+    "loading": "加载中…",
+    "loadingList": "正在加载备忘文档…",
+    "uploading": "上传中…",
+    "columns": {
+      "name": "名称",
+      "type": "类型",
+      "size": "大小",
+      "status": "状态",
+      "description": "描述",
+      "uploaded": "上传时间"
+    },
+    "status": {
+      "pending": "生成中…",
+      "ready": "已就绪",
+      "failed": "生成失败"
+    },
+    "actions": {
+      "view": "查看",
+      "download": "下载原件",
+      "edit": "编辑",
+      "save": "保存",
+      "cancel": "取消",
+      "delete": "删除",
+      "regenerate": "重新生成"
+    },
+    "empty": {
+      "title": "暂无备忘文档",
+      "hint": "将文件拖到此处，或点击“上传”添加第一份文档。"
+    },
+    "errors": {
+      "fileTooLarge": "文件过大（{{size}} MB），最大支持 5 MB。",
+      "unsupportedType": "不支持的文件类型。可接受格式：.md、.txt、.csv、.json、.pdf。",
+      "uploadFailed": "上传失败",
+      "readFailed": "读取备忘文档失败",
+      "saveFailed": "保存失败",
+      "deleteFailed": "删除失败",
+      "downloadFailed": "下载失败",
+      "regenerateFailed": "重新生成失败",
+      "loadFailed": "备忘文档加载失败",
+      "bulkDeleteFailed": "{{count}} 个备忘文档删除失败：{{first}}"
+    },
+    "confirm": {
+      "deleteTitle": "删除备忘文档",
+      "deleteBody": "确定永久删除 “{{name}}” 吗？此操作无法撤销。",
+      "bulkDeleteTitle": "删除所选备忘文档",
+      "bulkDeleteBody": "确定永久删除 {{count}} 个备忘文档吗？此操作无法撤销。",
+      "deleteConfirm": "删除",
+      "deleteCancel": "取消"
+    },
+    "source": {
+      "sandbox": "沙箱"
+    },
+    "metadataFailed": "摘要生成失败，点击“重新生成”再试一次。",
+    "pdfFallback": "当前浏览器无法内嵌显示此 PDF。",
+    "pdfOpenLink": "在新标签页打开",
+    "viewerExtracted": "已提取的文本（原件可通过“下载原件”获取）"
   },
   "automation": {
     "automations": "自动化",

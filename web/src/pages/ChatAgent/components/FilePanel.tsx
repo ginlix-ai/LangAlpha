@@ -1,12 +1,21 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo, Suspense } from 'react';
 import type { editor } from 'monaco-editor';
-import { ArrowLeft, X, FileText, FileImage, File, RefreshCw, Upload, Folder, ChevronRight, ChevronDown, ArrowUpDown, AlertTriangle, Trash2, CheckSquare, Square, HardDrive, Pencil, TextSelect, FolderOpen, Settings } from 'lucide-react';
+import { ArrowLeft, X, FileText, FileImage, File, RefreshCw, Upload, Folder, ChevronRight, ChevronDown, ArrowUpDown, AlertTriangle, Trash2, CheckSquare, Square, HardDrive, Pencil, TextSelect, FolderOpen, Settings, ScrollText } from 'lucide-react';
+import {
+  memoMimeForName,
+  useAddToMemo,
+  useWorkspaceMemoIndex,
+  useMemoStaleCheck,
+  MemoStaleBanner,
+  MemoDiffModal,
+} from './FilePanelMemo';
 import { useWorkspace } from '@/hooks/useWorkspace';
 import { SandboxSettingsContent } from './SandboxSettingsPanel';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import SyntaxHighlighter, { oneDark, oneLight } from './SyntaxHighlighter';
 import { useTranslation } from 'react-i18next';
 import { readWorkspaceFile, readWorkspaceFileFull, writeWorkspaceFile, downloadWorkspaceFile, downloadWorkspaceFileAsArrayBuffer, triggerFileDownload, uploadWorkspaceFile, deleteWorkspaceFiles, backupWorkspaceFiles, getBackupStatus } from '../utils/api';
+import type { MemoEntry } from '../utils/api';
 import { stripLineNumbers } from './toolDisplayConfig';
 import Markdown from './Markdown';
 import ImageLightbox from './ImageLightbox';
@@ -306,8 +315,11 @@ interface DirectoryNodeProps {
   readOnly: boolean;
   backedUpSet: Set<string>;
   modifiedSet: Set<string>;
+  memoedMap: Map<string, MemoEntry>;
+  memoedTitle: string;
   onAddContext: ((ctx: ContextPayload) => void) | null;
   setContextMenu: (menu: ContextMenuData | null) => void;
+  activeContextPath: string | null;
 }
 
 /** Recursive directory node renderer for the file tree */
@@ -315,8 +327,8 @@ function DirectoryNode({
   node, depth, showHeader,
   expandedDirs, toggleDir,
   selectMode, selectedPaths, toggleSelect, toggleDirSelect,
-  handleFileClick, readOnly, backedUpSet, modifiedSet,
-  onAddContext, setContextMenu,
+  handleFileClick, readOnly, backedUpSet, modifiedSet, memoedMap, memoedTitle,
+  onAddContext, setContextMenu, activeContextPath,
 }: DirectoryNodeProps): React.ReactElement {
   const isRoot = node.name === '/';
   const isCollapsed = isRoot ? false : !expandedDirs.has(node.fullPath);
@@ -369,8 +381,11 @@ function DirectoryNode({
               readOnly={readOnly}
               backedUpSet={backedUpSet}
               modifiedSet={modifiedSet}
+              memoedMap={memoedMap}
+              memoedTitle={memoedTitle}
               onAddContext={onAddContext}
               setContextMenu={setContextMenu}
+              activeContextPath={activeContextPath}
             />
           ))}
           {/* Files in this directory */}
@@ -382,7 +397,7 @@ function DirectoryNode({
             return (
               <div
                 key={filePath}
-                className={`file-panel-item file-tree-row ${selectMode && isSelected ? 'file-panel-item-selected' : ''}`}
+                className={`file-panel-item file-tree-row ${selectMode && isSelected ? 'file-panel-item-selected' : ''} ${activeContextPath === filePath ? 'file-panel-item-context-active' : ''}`}
                 style={{ paddingLeft: showHeader ? indent : undefined }}
                 onClick={() => selectMode ? toggleSelect(filePath) : handleFileClick(filePath)}
                 onContextMenu={!selectMode && onAddContext ? (e: React.MouseEvent) => {
@@ -399,11 +414,23 @@ function DirectoryNode({
                   <Icon className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
                 )}
                 <span className="text-sm truncate" style={{ color: 'var(--color-text-primary)' }}>{name}</span>
-                {!readOnly && !selectMode && (backedUpSet.has(filePath) || modifiedSet.has(filePath)) && (
-                  <span
-                    className={`file-panel-backup-dot ${backedUpSet.has(filePath) ? 'backed-up' : 'modified'}`}
-                    title={backedUpSet.has(filePath) ? 'Backed up' : 'Modified since last backup'}
-                  />
+                {!selectMode && (memoedMap.has(filePath) || (!readOnly && (backedUpSet.has(filePath) || modifiedSet.has(filePath)))) && (
+                  <span className="file-panel-row-status">
+                    {memoedMap.has(filePath) && (
+                      <span className="file-panel-memo-badge" title={memoedTitle}>
+                        <ScrollText
+                          className="h-3.5 w-3.5"
+                          style={{ color: 'var(--color-text-tertiary)', opacity: 0.85 }}
+                        />
+                      </span>
+                    )}
+                    {!readOnly && (backedUpSet.has(filePath) || modifiedSet.has(filePath)) && (
+                      <span
+                        className={`file-panel-backup-dot ${backedUpSet.has(filePath) ? 'backed-up' : 'modified'}`}
+                        title={backedUpSet.has(filePath) ? 'Backed up' : 'Modified since last backup'}
+                      />
+                    )}
+                  </span>
                 )}
               </div>
             );
@@ -570,6 +597,7 @@ interface FilePanelProps {
   /** Hide the panel-close affordances (the mobile back arrow and the trailing X)
    * when FilePanel is embedded inside a tabbed wrapper that owns the close button. */
   hideClose?: boolean;
+  onSwitchToMemoTab?: (() => void) | null;
 }
 
 function FilePanel({
@@ -591,6 +619,7 @@ function FilePanel({
   showSystemFiles = false,
   onToggleSystemFiles = null,
   hideClose = false,
+  onSwitchToMemoTab = null,
 }: FilePanelProps): React.ReactElement {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
@@ -829,14 +858,23 @@ function FilePanel({
     window.getSelection()?.removeAllRanges();
   }, [selectionTooltip, selectedFile, onAddContext]);
 
+  const handleAddToMemo = useAddToMemo({
+    workspaceId,
+    downloadFileAsArrayBufferFn,
+    readFileFullFn,
+    onSwitchToMemoTab,
+  });
+
   const handleContextMenuAction = useCallback((action: string, filePath: string) => {
     setContextMenu(null);
     if (action === 'add-context' && onAddContext) {
       onAddContext({ path: filePath });
+    } else if (action === 'add-to-memo') {
+      handleAddToMemo(filePath);
     } else if (action === 'open') {
       handleFileClick(filePath);
     }
-  }, [onAddContext]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [onAddContext, handleAddToMemo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Export modal state
   const [exportModalOpen, setExportModalOpen] = useState(false);
@@ -853,6 +891,40 @@ function FilePanel({
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
+
+  // Memo'd lookup + stale-check verdict — see FilePanelMemo.tsx.
+  const memoedMap = useWorkspaceMemoIndex(workspaceId);
+  const memoedTitle = t('context.inMemo');
+  const memoEntryForSelected = selectedFile ? memoedMap.get(selectedFile) ?? null : null;
+  const {
+    status: memoStaleStatus,
+    sandboxText: memoStaleSandboxText,
+    refresh: refreshMemoStale,
+  } = useMemoStaleCheck({
+    workspaceId,
+    selectedFile,
+    fileMime,
+    memoSha256: memoEntryForSelected?.sha256 ?? null,
+    readFileFullFn,
+  });
+  const [memoSyncing, setMemoSyncing] = useState(false);
+  const [memoDiffOpen, setMemoDiffOpen] = useState(false);
+
+  const handleSyncMemo = useCallback(async () => {
+    if (!selectedFile || memoSyncing) return;
+    setMemoSyncing(true);
+    try {
+      await handleAddToMemo(selectedFile);
+      // Re-run the stale check even if memoListData is still revalidating.
+      refreshMemoStale();
+    } finally {
+      setMemoSyncing(false);
+    }
+  }, [selectedFile, memoSyncing, handleAddToMemo, refreshMemoStale]);
+
+  const handleViewMemoDiff = useCallback(() => {
+    setMemoDiffOpen(true);
+  }, []);
 
   // Backup state
   const [backedUpSet, setBackedUpSet] = useState<Set<string>>(new Set());
@@ -1597,6 +1669,21 @@ function FilePanel({
                   {t('context.addToContext')}
                 </div>
               )}
+              {memoMimeForName(contextMenu.filePath) && (
+                <div className="file-panel-context-menu-item" onClick={() => handleContextMenuAction('add-to-memo', contextMenu.filePath)}>
+                  {memoedMap.has(contextMenu.filePath) ? (
+                    <>
+                      <RefreshCw className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />
+                      {t('context.syncWithMemo')}
+                    </>
+                  ) : (
+                    <>
+                      <ScrollText className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />
+                      {t('context.addToMemo')}
+                    </>
+                  )}
+                </div>
+              )}
               <div className="file-panel-context-menu-item" onClick={() => handleContextMenuAction('open', contextMenu.filePath)}>
                 <FolderOpen className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />
                 {t('context.openFile')}
@@ -1605,7 +1692,17 @@ function FilePanel({
           )}
 
           {selectedFile ? (
-            fileLoading ? (
+            <>
+              {memoEntryForSelected && (
+                <MemoStaleBanner
+                  status={memoStaleStatus}
+                  syncing={memoSyncing}
+                  onSwitchToMemoTab={onSwitchToMemoTab}
+                  onSync={handleSyncMemo}
+                  onViewDiff={memoStaleSandboxText !== null ? handleViewMemoDiff : null}
+                />
+              )}
+              {fileLoading ? (
               <div className="p-4">
                 <div className="flex items-center justify-center py-12">
                   <RefreshCw className="h-5 w-5 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />
@@ -1686,7 +1783,8 @@ function FilePanel({
                   </SyntaxHighlighter>
                 )}
               </div>
-            )
+            )}
+            </>
           ) : (
             <div className="py-1 file-tree-root">
               {filesLoading ? (
@@ -1725,8 +1823,11 @@ function FilePanel({
                     readOnly={readOnly}
                     backedUpSet={backedUpSet}
                     modifiedSet={modifiedSet}
+                    memoedMap={memoedMap}
+                    memoedTitle={memoedTitle}
                     onAddContext={onAddContext}
                     setContextMenu={setContextMenu}
+                    activeContextPath={contextMenu?.filePath ?? null}
                   />
                 ))
               )}
@@ -1747,6 +1848,15 @@ function FilePanel({
             readFileFullFn={readFileFullFn}
           />
         </Suspense>
+      )}
+      {selectedFile && memoEntryForSelected && memoStaleSandboxText !== null && (
+        <MemoDiffModal
+          open={memoDiffOpen}
+          memoKey={memoEntryForSelected.key}
+          fileName={selectedFile.split('/').pop() || selectedFile}
+          sandboxText={memoStaleSandboxText}
+          onClose={() => setMemoDiffOpen(false)}
+        />
       )}
     </div>
   );

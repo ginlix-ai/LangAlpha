@@ -50,4 +50,9 @@ export const queryKeys = {
     workspace: (wsId: string) => [...queryKeys.memory.all, 'workspace', wsId],
     workspaceRead: (wsId: string, key: string) => [...queryKeys.memory.workspace(wsId), 'read', key],
   },
+  memo: {
+    all:  ['memo'],
+    list: () => [...queryKeys.memo.all, 'list'],
+    read: (key: string) => [...queryKeys.memo.all, 'read', key],
+  },
 };

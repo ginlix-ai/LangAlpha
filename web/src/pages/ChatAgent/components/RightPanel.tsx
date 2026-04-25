@@ -115,6 +115,7 @@ export default function RightPanel({
               readOnly={readOnly}
               singleFileMode={singleFileMode}
               hideClose
+              onSwitchToMemoTab={() => setTab('memo')}
             />
           )}
           {tab === 'memory' && <MemoryPanel workspaceId={workspaceId} />}
