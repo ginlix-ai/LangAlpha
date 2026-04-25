@@ -287,6 +287,17 @@
   opacity: 1;
 }
 
+/* Edit-mode touch passthrough — TV iframes (and other embeds) consume touch
+ * events on tablets/phones, so a long-press inside the body never reaches
+ * react-grid-layout's drag handler. Killing pointer events on the iframe
+ * itself in edit mode lets the gesture bubble to the cell. View mode keeps
+ * pointer events on so users can interact with the embed normally. Covers
+ * both TradingViewEmbed (script-injected iframe) and TradingViewWebComponent
+ * (Light DOM custom element with internal iframe). */
+.widget-grid--edit .widget-frame__body iframe {
+  pointer-events: none;
+}
+
 /* Hide the lightweight-charts attribution watermark (a small link in the
  * chart corner) inside any widget that embeds lightweight-charts — the
  * NOTICE text lives at /legal so we aren't stripping attribution; we just
