@@ -47,4 +47,25 @@ describe('TradingViewEmbed', () => {
     expect(screen.getByText(/widget unavailable/i)).toBeInTheDocument();
     expect(consoleSpy).toHaveBeenCalled();
   });
+
+  it('clears a stuck error overlay when config changes trigger a rebuild', () => {
+    const { rerender } = render(
+      <TradingViewEmbed scriptKey="ticker-tape" config={{ symbols: [{ proName: 'NVDA' }] }} />,
+    );
+    // Trip the 10s no-iframe timeout to land in the error state.
+    act(() => {
+      vi.advanceTimersByTime(10_050);
+    });
+    expect(screen.getByText(/widget unavailable/i)).toBeInTheDocument();
+
+    // Config change (e.g., user swaps symbol in settings) should reset the
+    // error overlay back to loading on the next rebuild — without waiting
+    // for the new iframe (or the next 10s timeout) to arrive.
+    act(() => {
+      rerender(
+        <TradingViewEmbed scriptKey="ticker-tape" config={{ symbols: [{ proName: 'AAPL' }] }} />,
+      );
+    });
+    expect(screen.queryByText(/widget unavailable/i)).not.toBeInTheDocument();
+  });
 });

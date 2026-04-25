@@ -57,6 +57,13 @@ export function TradingViewEmbed({ scriptKey, config, className, card = false, c
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [retryToken, setRetryToken] = useState(0);
   const builtOnceRef = useRef(false);
+  // Mirror of `status` for use inside the rebuild effect without adding it
+  // to the dep array — the effect would otherwise re-run on every status
+  // flip (including loading→ready), causing a rebuild loop.
+  const statusRef = useRef(status);
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
 
   // Stable JSON of config. Effect dependency uses the string so reference
   // changes from inline object literals don't trigger spurious rebuilds.
@@ -70,6 +77,10 @@ export function TradingViewEmbed({ scriptKey, config, className, card = false, c
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+    // Clear a stuck error overlay when a real config/theme change triggers
+    // a rebuild. Skip when healthy so theme toggles across 17 tiles don't
+    // flash the loading skeleton.
+    if (statusRef.current === 'error') setStatus('loading');
 
     let timeoutId: number | null = null;
     let buildTimer: number | null = null;
