@@ -77,6 +77,9 @@ if STORAGE_PROVIDER == "none":
     def upload_bytes(key: str, data: bytes, content_type: str | None = None) -> bool:
         return False
 
+    def get_bytes(key: str) -> bytes | None:
+        return None
+
     def does_object_exist(key: str) -> bool:
         return False
 
@@ -118,6 +121,7 @@ elif STORAGE_PROVIDER == "oss":
     from src.utils.storage.oss_uploader import (
         delete_object,
         does_object_exist,
+        get_bytes,
         get_public_url,
         get_signed_url,
         sanitize_storage_key,
@@ -128,6 +132,7 @@ elif STORAGE_PROVIDER == "oss":
         upload_image,
         verify_connection,
     )
+
     _PROVIDER_NAME = "Alibaba Cloud OSS"
 
 else:
@@ -135,6 +140,7 @@ else:
     from src.utils.storage.s3_compatible import (
         delete_object,
         does_object_exist,
+        get_bytes,
         get_public_url,
         get_signed_url,
         sanitize_storage_key,
@@ -151,6 +157,7 @@ else:
 __all__ = [
     "delete_object",
     "does_object_exist",
+    "get_bytes",
     "get_provider_id",
     "get_provider_name",
     "get_public_url",

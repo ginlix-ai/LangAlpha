@@ -89,8 +89,19 @@ class StorageConfig:
         return f"https://{cls.BUCKET_NAME}.s3.{cls.REGION}.amazonaws.com"
 
 
+# Module-level cache. boto3 clients are thread-safe and the underlying
+# botocore connection pool reuses TLS sessions, so a single shared client
+# eliminates the per-op handshake that previously dominated upload/download
+# latency under load. Lazy so import-time failures (missing creds in tests)
+# don't blow up modules that never actually use object storage.
+_CLIENT: Any | None = None
+
+
 def _get_client() -> Any:
-    """Create and return a configured S3-compatible client."""
+    """Return the lazily-constructed shared S3-compatible client."""
+    global _CLIENT
+    if _CLIENT is not None:
+        return _CLIENT
     kwargs: dict[str, Any] = {
         "aws_access_key_id": StorageConfig.ACCESS_KEY_ID,
         "aws_secret_access_key": StorageConfig.SECRET_ACCESS_KEY,
@@ -102,7 +113,14 @@ def _get_client() -> Any:
     }
     if StorageConfig.ENDPOINT_URL:
         kwargs["endpoint_url"] = StorageConfig.ENDPOINT_URL
-    return boto3.client("s3", **kwargs)
+    _CLIENT = boto3.client("s3", **kwargs)
+    return _CLIENT
+
+
+def _reset_client_for_test() -> None:
+    """Drop the cached client. Test-only — production never re-initializes."""
+    global _CLIENT
+    _CLIENT = None
 
 
 def upload_file(key: str, file_path: str, content_type: str | None = None) -> bool:
@@ -177,6 +195,28 @@ def upload_bytes(key: str, data: bytes, content_type: str | None = None) -> bool
     except Exception:
         logger.exception(f"Unexpected error uploading {key}")
         return False
+
+
+def get_bytes(key: str) -> bytes | None:
+    """Download an object's raw bytes. Returns None on failure or missing object."""
+    try:
+        client = _get_client()
+        response = client.get_object(Bucket=StorageConfig.BUCKET_NAME, Key=key)
+        body = response.get("Body")
+        if body is None:
+            return None
+        data = body.read()
+        return data if isinstance(data, bytes) else bytes(data)
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code")
+        if code in {"NoSuchKey", "404"}:
+            logger.debug(f"Object not found: {key}")
+            return None
+        logger.exception(f"Download failed for {key}")
+        return None
+    except Exception:
+        logger.exception(f"Unexpected error downloading {key}")
+        return None
 
 
 def does_object_exist(key: str) -> bool:
