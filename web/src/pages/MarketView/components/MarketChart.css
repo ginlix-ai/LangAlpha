@@ -25,6 +25,9 @@
 
 .chart-mode-switcher {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .chart-indicators {
@@ -457,11 +460,14 @@
   }
 }
 
-/* Hide TradingView branding watermark */
-.chart-wrapper a[href*="tradingview.com"],
-.rsi-chart-wrapper a[href*="tradingview.com"],
-.tv-lightweight-charts__watermark,
-a[href*="tradingview.com"] {
+/* Hide the lightweight-charts watermark only. MUST NOT match the TradingView
+ * embed-widget attribution link (class `.tv-attribution`, rendered by
+ * `TradingViewEmbed`) — that link is required visible per TV's embed terms.
+ * The lightweight-charts watermark is an <a> whose href always contains
+ * `utm_medium=lwc-link`; the class selector is a secondary safety net. */
+.chart-wrapper a[href*="utm_medium=lwc-link"],
+.rsi-chart-wrapper a[href*="utm_medium=lwc-link"],
+.tv-lightweight-charts__watermark {
   display: none !important;
   visibility: hidden !important;
   opacity: 0 !important;

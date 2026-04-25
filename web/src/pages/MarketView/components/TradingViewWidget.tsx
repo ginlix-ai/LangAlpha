@@ -1,5 +1,6 @@
-import React, { useEffect, useRef, memo } from 'react';
+import { memo } from 'react';
 import { useTheme } from '@/contexts/ThemeContext';
+import { TradingViewEmbed } from '@/pages/Dashboard/widgets/framework/TradingViewEmbed';
 
 // Map our interval keys to TradingView widget interval values
 const TV_INTERVALS: Record<string, string> = {
@@ -19,67 +20,46 @@ interface TradingViewWidgetProps {
 
 /**
  * TradingView Advanced Chart widget embed.
- * Provides full drawing tools, indicators, and TradingView's own real-time data.
+ *
+ * Thin wrapper around the shared dashboard `TradingViewEmbed` so the full
+ * app uses a single TV-embed abstraction (loader cache, error/retry UX,
+ * theme sync, attribution placement). The Advanced Chart accepts many more
+ * config keys than the dashboard embeds; we spread the app-specific ones
+ * here so the host component stays uniform.
+ *
+ * Note on background/grid: the shared TV_COMMON_CONFIG sets transparent
+ * defaults so dashboard widgets render cleanly inside `.dashboard-glass-card`.
+ * MarketView's chart has no card behind it, and Advanced Chart's up-candles
+ * use semi-transparent fills — with a transparent background they composite
+ * against the page and render pastel/washed-out. We override with a solid
+ * theme-matched background + gridColor here to restore the saturated look
+ * the chart had on main.
  */
 function TradingViewWidget({ symbol, interval = '1day' }: TradingViewWidgetProps) {
   const { theme } = useTheme();
-  const containerRef = useRef<HTMLDivElement>(null);
-  const scriptRef = useRef<HTMLScriptElement | null>(null);
-
-  useEffect(() => {
-    if (!containerRef.current) return;
-
-    // Clear previous widget
-    containerRef.current.innerHTML = '';
-
-    // Create the widget container div that TradingView expects
-    const widgetDiv = document.createElement('div');
-    widgetDiv.className = 'tradingview-widget-container__widget';
-    widgetDiv.style.height = '100%';
-    widgetDiv.style.width = '100%';
-    containerRef.current.appendChild(widgetDiv);
-
-    // Create and configure the embed script
-    const script = document.createElement('script');
-    script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
-    script.type = 'text/javascript';
-    script.async = true;
-    script.innerHTML = JSON.stringify({
-      autosize: true,
-      symbol: symbol,
-      interval: TV_INTERVALS[interval] || 'D',
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York',
-      theme: theme === 'light' ? 'light' : 'dark',
-      style: '1', // Candlestick
-      locale: 'en',
-      backgroundColor: theme === 'light' ? '#FFFCF9' : '#000000',
-      gridColor: theme === 'light' ? '#E8E2DB' : '#1A1A1A',
-      allow_symbol_change: false,
-      hide_side_toolbar: false, // Keep drawing tools visible
-      hide_top_toolbar: false,
-      withdateranges: true,
-      details: false,
-      calendar: false,
-      studies: ['RSI@tv-basicstudies'],
-      support_host: 'https://www.tradingview.com',
-    });
-    scriptRef.current = script;
-    containerRef.current.appendChild(script);
-
-    return () => {
-      // Cleanup: remove widget DOM
-      if (containerRef.current) {
-        containerRef.current.innerHTML = '';
-      }
-      scriptRef.current = null;
-    };
-  }, [symbol, interval, theme]);
+  const isLight = theme === 'light';
+  const config = {
+    symbol,
+    interval: TV_INTERVALS[interval] || 'D',
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York',
+    style: '1',
+    isTransparent: false,
+    backgroundColor: isLight ? '#FFFCF9' : '#000000',
+    gridColor: isLight ? '#E8E2DB' : '#1A1A1A',
+    allow_symbol_change: false,
+    hide_side_toolbar: false,
+    hide_top_toolbar: false,
+    withdateranges: true,
+    details: false,
+    calendar: false,
+    studies: ['RSI@tv-basicstudies'],
+  };
 
   return (
-    <div
-      ref={containerRef}
-      className="tradingview-widget-container"
-      style={{ height: '100%', width: '100%' }}
+    <TradingViewEmbed
+      scriptKey="advanced-chart"
+      config={config}
+      className="h-full w-full"
     />
   );
 }
