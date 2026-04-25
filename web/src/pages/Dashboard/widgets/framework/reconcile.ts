@@ -21,8 +21,9 @@ export function reconcileLayouts(
     const items = (layouts[bp] ?? []).filter((l) => widgetsById.has(l.i));
     const placed = new Set(items.map((l) => l.i));
     const result: RGLItem[] = items.map((l) => {
-      const w = widgetsById.get(l.i);
-      if (!w) return l;
+      // `items` was pre-filtered by `widgetsById.has(l.i)` above, so `.get()`
+      // here always returns a value. The `!` cast skips an unreachable guard.
+      const w = widgetsById.get(l.i)!;
       const def = getWidget(w.type);
       if (!def) return l;
       const minW = def.minSize.w;

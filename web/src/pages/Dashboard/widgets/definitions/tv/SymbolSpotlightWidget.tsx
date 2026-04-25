@@ -22,7 +22,6 @@ function SymbolSpotlightWidget({ instance }: WidgetRenderProps<SymbolSpotlightCo
         symbols: [[symbol, `${symbol}|${range}`]],
         chartOnly: false,
         dateRange: range,
-        colorTheme: undefined, // host passes this
         trendLineColor: 'rgba(41, 98, 255, 1)',
         underLineColor: 'rgba(41, 98, 255, 0.3)',
         underLineBottomColor: 'rgba(41, 98, 255, 0)',
