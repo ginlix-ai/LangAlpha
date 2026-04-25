@@ -7,7 +7,7 @@ from typing import Any, Sequence
 
 import structlog
 
-from ptc_agent.agent.backends.memory import StoreMemoryBackend
+from ptc_agent.agent.backends.langgraph_store import StoreBackend
 from ptc_agent.agent.backends.sandbox import SandboxBackend
 
 logger = structlog.get_logger(__name__)
@@ -20,11 +20,11 @@ class CompositeFilesystemBackend:
         self,
         *,
         sandbox: SandboxBackend,
-        routes: Sequence[StoreMemoryBackend],
+        routes: Sequence[StoreBackend],
     ) -> None:
         self._sandbox = sandbox
         # Longest prefix wins.
-        self._routes: list[StoreMemoryBackend] = sorted(
+        self._routes: list[StoreBackend] = sorted(
             routes, key=lambda b: len(b.root_prefix), reverse=True
         )
 
@@ -67,7 +67,7 @@ class CompositeFilesystemBackend:
             raise AttributeError(name)
         return getattr(sandbox, name)
 
-    def _route_for(self, normalized_path: str) -> StoreMemoryBackend | None:
+    def _route_for(self, normalized_path: str) -> StoreBackend | None:
         for route in self._routes:
             prefix = route.root_prefix
             if normalized_path.startswith(prefix):
