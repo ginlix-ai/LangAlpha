@@ -187,7 +187,7 @@ class TestValidateCustomProviders:
     def test_invalid_parent_provider_raises(self):
         """parent_provider must be a BYOK-eligible builtin."""
         with pytest.raises(HTTPException, match="not a BYOK-eligible"):
-            self._validate([{"name": "my-deepseek", "parent_provider": "deepseek"}])
+            self._validate([{"name": "my-fake", "parent_provider": "not-a-real-provider"}])
 
     def test_builtin_collision_raises(self):
         """Custom provider name must not collide with builtin."""

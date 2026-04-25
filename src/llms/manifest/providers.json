@@ -269,14 +269,30 @@
     "openrouter": [],
     "deepseek": [
       {
-        "id": "deepseek-reasoner",
-        "name": "DeepSeek V3.2",
+        "id": "deepseek-v4-pro",
+        "name": "DeepSeek V4 Pro",
         "is_reasoning": true,
-        "description": "DeepSeek's V3.2 reasoning model with extended thinking capabilities",
+        "description": "DeepSeek's V4 Pro model with extended thinking and 1M context",
+        "context_window": 1000000,
+        "max_output": 384000,
         "pricing": {
-          "input": 0.28,
+          "input": 1.74,
+          "cached_input": 0.145,
+          "output": 3.48,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
+        "id": "deepseek-v4-flash",
+        "name": "DeepSeek V4 Flash",
+        "is_reasoning": true,
+        "description": "DeepSeek's V4 Flash model with extended thinking and 1M context",
+        "context_window": 1000000,
+        "max_output": 384000,
+        "pricing": {
+          "input": 0.14,
           "cached_input": 0.028,
-          "output": 0.42,
+          "output": 0.28,
           "unit": "per_1m_tokens"
         }
       }
@@ -1408,7 +1424,7 @@
       "base_url": "https://api.deepseek.com/anthropic",
       "env_key": "DEEPSEEK_API_KEY",
       "access_type": "api_key",
-      "byok_eligible": false,
+      "byok_eligible": true,
       "display_name": "DeepSeek"
     },
     "groq": {
