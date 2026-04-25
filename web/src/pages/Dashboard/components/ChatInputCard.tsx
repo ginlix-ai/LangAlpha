@@ -78,7 +78,7 @@ function ChatInputCard() {
                 type="button"
                 data-testid="dashboard-suggestion-bubble"
                 className="dashboard-suggestion-bubble"
-                style={{ transitionDelay: `${i * 60}ms` }}
+                style={{ animationDelay: `${i * 60}ms` }}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => chatInputRef.current?.setValue(label)}
               >
