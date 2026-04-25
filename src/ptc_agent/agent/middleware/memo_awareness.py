@@ -53,11 +53,14 @@ class MemoAwarenessMiddleware(AgentMiddleware):
     invalidating the cached prefix.
 
     Notes:
-        The count is recomputed on every model call. At production scale we
-        may want a tiny in-process LRU keyed on
-        ``(namespace, latest_modified_at_floor)`` to avoid repeat ``asearch``
-        calls — the cache would slot in inside ``_count_memos``. Skipped for
-        MVP because the extra read is cheap metadata.
+        The result is memoized per-namespace on the instance. One
+        ``MemoAwarenessMiddleware`` lives for one ``PTCAgent.create_agent``
+        call (≈ one request), so the memo collapses K model calls in a turn
+        into one count compute — protecting the slow path (memo-less users
+        whose catalog row doesn't exist) from K postgres ``asearch`` round-
+        trips. Memo writes by the user are rare mid-turn, and the agent
+        itself has read-only access, so a single stable count per request
+        is correct.
     """
 
     def __init__(
@@ -79,6 +82,10 @@ class MemoAwarenessMiddleware(AgentMiddleware):
         # middleware hits the store on the fast path; caching it across the
         # K model calls in a turn collapses K reads into 1.
         self._cache = cache
+        # Per-request count memo. Bounded by the namespaces this instance
+        # ever sees within its lifetime (always 1 in production — the
+        # factory captures one user_id at agent-creation time).
+        self._count_cache: dict[tuple[str, ...], int] = {}
 
     async def _count_memos(self, namespace: tuple[str, ...]) -> int:
         """Count memos in the namespace, capping at the query limit.
@@ -91,7 +98,15 @@ class MemoAwarenessMiddleware(AgentMiddleware):
         Slow path (catalog missing or malformed): one bounded asearch. This
         runs at most once per namespace lifetime — first turn before any
         upload, or if the catalog row was wiped.
+
+        Both paths are memoized on ``self._count_cache`` so the K model
+        calls in a turn pay one compute, not K. Stable for the request
+        because memos are user-managed (agent is read-only) and out-of-band
+        writes mid-turn are rare; the worst case is a one-turn-stale count.
         """
+        cached = self._count_cache.get(namespace)
+        if cached is not None:
+            return cached
         catalog = await (
             self._cache.aget(self._store, namespace, self._index_key)
             if self._cache is not None
@@ -100,15 +115,24 @@ class MemoAwarenessMiddleware(AgentMiddleware):
         if catalog is not None and isinstance(catalog.value, dict):
             count = catalog.value.get("memo_count")
             if isinstance(count, int) and count >= 0:
+                self._count_cache[namespace] = count
                 return count
         # Fallback: enumerate. Bounded by _COUNT_QUERY_LIMIT to keep the cost
-        # capped even when the namespace is large.
-        results = await self._store.asearch(
-            namespace, limit=_COUNT_QUERY_LIMIT, offset=0
+        # capped even when the namespace is large. The inner ``wait_for``
+        # mirrors ``_store_helpers.asearch`` and is defense-in-depth: the
+        # outer ``awrap_model_call`` already wraps this whole coroutine, but
+        # bounding the asearch directly keeps the slow path safe if a future
+        # refactor reroutes around the outer guard.
+        results = await asyncio.wait_for(
+            self._store.asearch(namespace, limit=_COUNT_QUERY_LIMIT, offset=0),
+            timeout=self._timeout_s,
         )
-        if not results:
-            return 0
-        return sum(1 for item in results if item.key != self._index_key)
+        count = (
+            0 if not results
+            else sum(1 for item in results if item.key != self._index_key)
+        )
+        self._count_cache[namespace] = count
+        return count
 
     @staticmethod
     def _format_count(count: int) -> str | None:

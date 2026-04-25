@@ -311,3 +311,105 @@ class TestCacheDeduplication:
         # Three model calls, but only one store.aget round-trip — the cache
         # served the next two from memory.
         assert len(fake_store.aget_calls) == 1
+
+
+class TestCountMemoization:
+    """Regression: ``_count_memos`` memoizes its result per-instance so the K
+    model calls in a turn collapse to one compute. Without this, memo-less
+    users (catalog row missing) paid K postgres ``asearch`` round-trips per
+    turn — flagged in the PR #176 follow-up review."""
+
+    @pytest.mark.asyncio
+    async def test_slow_path_asearch_runs_once_for_memo_less_namespace(self):
+        # No catalog row → middleware falls through to asearch every time
+        # without memoization.
+        async def _empty_asearch(namespace_prefix, **_):
+            return []
+
+        fake_store = _FakeStore(asearch_impl=_empty_asearch)
+        mw = MemoAwarenessMiddleware(
+            store=fake_store,
+            user_namespace_factory=lambda: ("user_abc", "memos"),
+        )
+
+        # Drive the awareness path by directly invoking _count_memos so we
+        # measure store calls without dragging the whole request flow in.
+        for _ in range(5):
+            assert await mw._count_memos(("user_abc", "memos")) == 0
+
+        # 5 invocations, one asearch — the rest came from the per-namespace
+        # memo on the middleware.
+        assert len(fake_store.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_fast_path_memoizes_count_without_recache(self):
+        # Catalog row exists but the middleware was constructed without a
+        # ``RequestScopedStoreCache``; the count cache should still collapse
+        # repeat aget calls to one.
+        class _Item:
+            def __init__(self, value: dict) -> None:
+                self.value = value
+
+        async def _aget(namespace, key):
+            if key == "memo.md":
+                return _Item({"memo_count": 7})
+            return None
+
+        async def _asearch(namespace_prefix, **_):
+            raise AssertionError("asearch must not run when catalog has memo_count")
+
+        fake_store = _FakeStore(asearch_impl=_asearch, aget_impl=_aget)
+        mw = MemoAwarenessMiddleware(
+            store=fake_store,
+            user_namespace_factory=lambda: ("user_abc", "memos"),
+        )
+
+        for _ in range(3):
+            assert await mw._count_memos(("user_abc", "memos")) == 7
+
+        # Three invocations, one aget — the count cache served the rest.
+        assert len(fake_store.aget_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_slow_path_asearch_has_inner_timeout_guard(self):
+        # Defense-in-depth: bypass awrap_model_call's outer wait_for and call
+        # _count_memos directly, asserting the asearch is bounded internally.
+        # If a future refactor drops the outer guard, this still keeps the
+        # slow path from hanging the agent.
+        async def _slow_asearch(namespace_prefix, **_):
+            await asyncio.sleep(1.0)
+            return []
+
+        fake_store = _FakeStore(asearch_impl=_slow_asearch)
+        mw = MemoAwarenessMiddleware(
+            store=fake_store,
+            user_namespace_factory=lambda: ("user_abc", "memos"),
+            timeout_s=0.01,
+        )
+
+        with pytest.raises(asyncio.TimeoutError):
+            await mw._count_memos(("user_abc", "memos"))
+
+    @pytest.mark.asyncio
+    async def test_different_namespaces_have_independent_cache_entries(self):
+        # The factory returns one namespace per agent in production, but the
+        # cache key is the namespace tuple — verify it doesn't cross-pollute
+        # if a future caller routes multiple namespaces through one instance.
+        seen: list[tuple[str, ...]] = []
+
+        async def _asearch(namespace_prefix, **_):
+            seen.append(namespace_prefix)
+            return []
+
+        fake_store = _FakeStore(asearch_impl=_asearch)
+        mw = MemoAwarenessMiddleware(
+            store=fake_store,
+            user_namespace_factory=lambda: ("user_abc", "memos"),
+        )
+
+        await mw._count_memos(("user_abc", "memos"))
+        await mw._count_memos(("user_xyz", "memos"))
+        await mw._count_memos(("user_abc", "memos"))  # cached
+        await mw._count_memos(("user_xyz", "memos"))  # cached
+
+        assert seen == [("user_abc", "memos"), ("user_xyz", "memos")]
