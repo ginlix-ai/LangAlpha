@@ -4,7 +4,7 @@ import { QueryClientProvider, QueryClient } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { queryKeys } from '@/lib/queryKeys';
 
-const prefsState: { current: { other_preference?: Record<string, unknown> } | null } = {
+const prefsState: { current: { other_preference?: Record<string, unknown> | null } | null } = {
   current: { other_preference: { theme: 'dark', dashboard: { mode: 'classic', widgets: [], layouts: {} } } },
 };
 const loadingState = { isLoading: false };
@@ -150,6 +150,27 @@ describe('DashboardRouter', () => {
       other_preference: { dashboard?: { mode: string; widgets?: unknown[] } };
     };
     expect(payload.other_preference.dashboard?.mode).toBe('custom');
+    expect((payload.other_preference.dashboard?.widgets?.length ?? 0)).toBeGreaterThan(0);
+  });
+
+  it('new-user warm cache: onModeChange writes with seeded other_preference={dashboard:{...}}', () => {
+    // Regression: writer used to refuse when both freshOther and fallbackOther
+    // were null, so new users' first mode flip reverted on next refetch.
+    prefsState.current = { other_preference: null };
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { retry: false } },
+    });
+    queryClient.setQueryData(queryKeys.user.preferences(), { other_preference: null });
+    renderRouter(queryClient);
+    act(() => {
+      lastDashboardProps.current!.onModeChange('custom');
+    });
+    expect(mockMutate).toHaveBeenCalledTimes(1);
+    const payload = mockMutate.mock.calls[0][0] as {
+      other_preference: { dashboard?: { mode: string; widgets?: unknown[] } };
+    };
+    expect(payload.other_preference.dashboard?.mode).toBe('custom');
+    // Morning-brief seed kicks in for the empty-widgets first flip.
     expect((payload.other_preference.dashboard?.widgets?.length ?? 0)).toBeGreaterThan(0);
   });
 

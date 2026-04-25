@@ -117,11 +117,10 @@ export function useDashboardPrefs() {
         }
       }
       const accepted = writeDashboardPrefs(next, {
-        // The hook-provided preferences object is the React snapshot — pass
-        // it as a fallback so a near-cold write (cache empty but the GET has
-        // already populated React state) can still proceed without clobber.
-        fallbackOther: ((preferences as { other_preference?: Record<string, unknown> } | null)
-          ?.other_preference) ?? null,
+        // undefined = cold (writer refuses); null = warm w/ empty siblings.
+        fallbackOther: preferences === null
+          ? undefined
+          : ((preferences as { other_preference?: Record<string, unknown> }).other_preference ?? null),
         onSuccess: runReplay,
         onError: () => {
           // Server rejected the write. Clear the sync guard so the invalidate

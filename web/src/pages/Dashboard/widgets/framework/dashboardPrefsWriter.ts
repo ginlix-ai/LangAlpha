@@ -49,21 +49,17 @@ export function useDashboardPrefsWriter() {
     (
       next: DashboardPrefs,
       opts?: {
-        /** Caller-supplied fallback for cold-cache scenarios. If both the
-         * React Query cache AND this fallback are absent, the write is
-         * refused (returns false) to avoid clobbering server-side siblings. */
+        /** `null` = warm prefs with empty other_preference (new users).
+         *  `undefined` = no info — writer refuses the write. */
         fallbackOther?: Record<string, unknown> | null;
         onSuccess?: () => void;
         onError?: (err: unknown) => void;
       }
     ): boolean => {
       const fresh = queryClient.getQueryData<UserPreferences>(queryKeys.user.preferences());
+      if (fresh === undefined && opts?.fallbackOther === undefined) return false;
       const freshOther = (fresh?.other_preference as Record<string, unknown> | undefined) ?? null;
-      const baseOther = freshOther ?? opts?.fallbackOther ?? null;
-      if (baseOther === null) {
-        // Cold cache + no fallback — refuse rather than clobber siblings.
-        return false;
-      }
+      const baseOther = freshOther ?? opts?.fallbackOther ?? {};
       updatePrefs.mutate(
         {
           other_preference: { ...baseOther, dashboard: next },

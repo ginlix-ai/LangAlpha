@@ -63,10 +63,13 @@ export default function DashboardRouter() {
         history: baseDashboard.history,
       };
       writeDashboardPrefs(dashboard, {
-        fallbackOther: (rawOther as Record<string, unknown> | undefined) ?? null,
+        // undefined = cold (writer refuses); null = warm w/ empty siblings.
+        fallbackOther: preferences === null
+          ? undefined
+          : ((rawOther as Record<string, unknown> | undefined) ?? null),
       });
     },
-    [writeDashboardPrefs, parsed, rawOther, isLoading, queryClient]
+    [writeDashboardPrefs, parsed, preferences, rawOther, isLoading, queryClient]
   );
 
   if (isMobile) {
