@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { CalendarDays } from 'lucide-react';
 import { getEarningsCalendar } from '../../utils/api';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { EarningsConfigSchema } from '../framework/configSchemas';
 import type { WidgetRenderProps } from '../types';
 
 /** Local-date YYYY-MM-DD. We can't use toISOString() because that emits UTC,
@@ -289,6 +290,7 @@ registerWidget<EarningsConfig>({
   icon: CalendarDays,
   component: EarningsCalendarWidget,
   defaultConfig: { window: '2w', tickers: 'all' },
+  configSchema: EarningsConfigSchema,
   defaultSize: { w: 4, h: 26 },
   minSize: { w: 3, h: 15 },
 });

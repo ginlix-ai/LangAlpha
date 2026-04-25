@@ -1,6 +1,7 @@
 import { CalendarClock } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
+import { EconomicEventsConfigSchema } from '../../framework/configSchemas';
 import { EnumField } from '../../framework/settings/EnumField';
 import { TradingViewSettingsFooter } from '../../framework/TradingViewSettingsFooter';
 import { SettingsDoneButton } from '../../framework/settings/SettingsDoneButton';
@@ -62,6 +63,7 @@ registerWidget<EconomicEventsConfig>({
   component: EconomicEventsWidget,
   settingsComponent: EconomicEventsSettings,
   defaultConfig: { importanceFilter: '-1,0,1', countryFilter: 'us,eu,jp,gb,cn' },
+  configSchema: EconomicEventsConfigSchema,
   defaultSize: { w: 6, h: 24 },
   minSize: { w: 4, h: 14 },
   maxSize: { w: 12, h: 48 },

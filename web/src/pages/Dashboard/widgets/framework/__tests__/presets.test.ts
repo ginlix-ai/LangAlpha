@@ -82,4 +82,26 @@ describe('presets', () => {
     expect(types).toContain('tv.technicals');
     expect(types).toContain('markets.miniChartGrid');
   });
+
+  // REGRESSION-CRITICAL: every preset's widget configs must round-trip cleanly
+  // through the widget's Zod schema. If a preset author seeds a config that
+  // doesn't satisfy the schema, sanitizeConfig will silently rewrite it to
+  // defaultConfig on first load — the user gets a different layout than the
+  // one we shipped. Catch the drift here at preset-authoring time.
+  it('every preset widget config validates against its schema', () => {
+    for (const meta of PRESETS_META) {
+      const p = getPreset(meta.id as PresetId);
+      for (const w of p.widgets) {
+        const def = getWidget(w.type);
+        if (!def?.configSchema) continue;
+        const result = def.configSchema.safeParse(w.config);
+        expect(
+          result.success,
+          `preset "${meta.id}" widget "${w.id}" (${w.type}) failed schema validation: ${
+            result.success ? '' : JSON.stringify(result.error)
+          }`,
+        ).toBe(true);
+      }
+    }
+  });
 });

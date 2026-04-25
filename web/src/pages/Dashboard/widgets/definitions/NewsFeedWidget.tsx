@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Newspaper, Clock, Search, X } from 'lucide-react';
 import { useDashboardContext } from '../framework/DashboardDataContext';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { NewsFeedConfigSchema } from '../framework/configSchemas';
 import type { WidgetRenderProps } from '../types';
 
 type NewsFeedSource = 'market' | 'portfolio' | 'watchlist';
@@ -404,6 +405,7 @@ registerWidget<NewsFeedConfig>({
   icon: Newspaper,
   component: NewsFeedWidget,
   defaultConfig: { source: 'market' },
+  configSchema: NewsFeedConfigSchema,
   defaultSize: { w: 8, h: 29 },
   minSize: { w: 4, h: 18 },
 });

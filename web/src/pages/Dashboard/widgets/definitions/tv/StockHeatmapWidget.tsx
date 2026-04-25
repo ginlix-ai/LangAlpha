@@ -1,6 +1,7 @@
 import { Map } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
+import { StockHeatmapConfigSchema } from '../../framework/configSchemas';
 import { EnumField } from '../../framework/settings/EnumField';
 import { TradingViewSettingsFooter } from '../../framework/TradingViewSettingsFooter';
 import { SettingsDoneButton } from '../../framework/settings/SettingsDoneButton';
@@ -83,6 +84,7 @@ registerWidget<StockHeatmapConfig>({
   component: StockHeatmapWidget,
   settingsComponent: StockHeatmapSettings,
   defaultConfig: { dataSource: 'SPX500', blockSize: 'market_cap_basic', blockColor: 'change' },
+  configSchema: StockHeatmapConfigSchema,
   defaultSize: { w: 12, h: 22 },
   minSize: { w: 6, h: 12 },
   maxSize: { w: 12, h: 40 },

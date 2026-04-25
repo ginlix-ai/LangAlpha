@@ -1,6 +1,7 @@
 import { Layers } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
+import { ETFHeatmapConfigSchema } from '../../framework/configSchemas';
 import { EnumField } from '../../framework/settings/EnumField';
 import { TradingViewSettingsFooter } from '../../framework/TradingViewSettingsFooter';
 import { SettingsDoneButton } from '../../framework/settings/SettingsDoneButton';
@@ -88,6 +89,7 @@ registerWidget<ETFHeatmapConfig>({
   component: ETFHeatmapWidget,
   settingsComponent: ETFHeatmapSettings,
   defaultConfig: { dataSource: 'AllUSEtf', blockSize: 'aum', blockColor: 'change', grouping: 'asset_class' },
+  configSchema: ETFHeatmapConfigSchema,
   defaultSize: { w: 12, h: 20 },
   minSize: { w: 6, h: 12 },
   maxSize: { w: 12, h: 40 },

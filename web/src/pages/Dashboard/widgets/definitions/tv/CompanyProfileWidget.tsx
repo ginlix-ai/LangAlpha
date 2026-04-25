@@ -1,6 +1,7 @@
 import { Building2 } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
+import { CompanyProfileConfigSchema } from '../../framework/configSchemas';
 import { SymbolField } from '../../framework/settings/SymbolField';
 import { TradingViewSettingsFooter } from '../../framework/TradingViewSettingsFooter';
 import { SettingsDoneButton } from '../../framework/settings/SettingsDoneButton';
@@ -44,6 +45,7 @@ registerWidget<CompanyProfileConfig>({
   component: CompanyProfileWidget,
   settingsComponent: CompanyProfileSettings,
   defaultConfig: { symbol: 'NASDAQ:NVDA' },
+  configSchema: CompanyProfileConfigSchema,
   defaultSize: { w: 6, h: 18 },
   minSize: { w: 4, h: 12 },
   maxSize: { w: 12, h: 32 },

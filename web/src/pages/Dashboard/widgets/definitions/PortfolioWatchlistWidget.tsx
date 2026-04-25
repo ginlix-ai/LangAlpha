@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Wallet } from 'lucide-react';
 import { useDashboardContext } from '../framework/DashboardDataContext';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { PortfolioWatchlistConfigSchema } from '../framework/configSchemas';
 import type { WidgetRenderProps } from '../types';
 import {
   HoldingsAddButton,
@@ -195,6 +196,7 @@ registerWidget<PortfolioWatchlistConfig>({
   icon: Wallet,
   component: PortfolioWatchlistWidget,
   defaultConfig: { defaultTab: 'watchlist', valuesHidden: false },
+  configSchema: PortfolioWatchlistConfigSchema,
   defaultSize: { w: 4, h: 30 },
   minSize: { w: 3, h: 18 },
 });

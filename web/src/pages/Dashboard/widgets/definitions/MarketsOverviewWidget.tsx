@@ -3,6 +3,7 @@ import { LineChart } from 'lucide-react';
 import IndexMovementCard from '../../components/IndexMovementCard';
 import { useDashboardContext } from '../framework/DashboardDataContext';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { MarketsOverviewConfigSchema } from '../framework/configSchemas';
 import type { WidgetRenderProps } from '../types';
 
 type MarketsOverviewConfig = { indices?: string[] };
@@ -45,6 +46,7 @@ registerWidget<MarketsOverviewConfig>({
   icon: LineChart,
   component: MarketsOverviewWidget,
   defaultConfig: {},
+  configSchema: MarketsOverviewConfigSchema,
   defaultSize: { w: 12, h: 11 },
   minSize: { w: 3, h: 11 },
   maxSize: { w: 12, h: 11 },

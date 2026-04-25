@@ -1,6 +1,7 @@
 import { Newspaper } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
+import { TopStoriesConfigSchema } from '../../framework/configSchemas';
 import { SymbolField } from '../../framework/settings/SymbolField';
 import { EnumField } from '../../framework/settings/EnumField';
 import { TradingViewSettingsFooter } from '../../framework/TradingViewSettingsFooter';
@@ -86,6 +87,7 @@ registerWidget<TopStoriesConfig>({
   component: TopStoriesWidget,
   settingsComponent: TopStoriesSettings,
   defaultConfig: { feedMode: 'market', market: 'stock', symbol: 'NASDAQ:NVDA', displayMode: 'regular' },
+  configSchema: TopStoriesConfigSchema,
   defaultSize: { w: 6, h: 22 },
   minSize: { w: 4, h: 14 },
   maxSize: { w: 12, h: 40 },

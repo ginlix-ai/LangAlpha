@@ -1,6 +1,7 @@
 import { Target } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
+import { SymbolSpotlightConfigSchema } from '../../framework/configSchemas';
 import { SymbolField } from '../../framework/settings/SymbolField';
 import { EnumField } from '../../framework/settings/EnumField';
 import { TradingViewSettingsFooter } from '../../framework/TradingViewSettingsFooter';
@@ -75,6 +76,7 @@ registerWidget<SymbolSpotlightConfig>({
   component: SymbolSpotlightWidget,
   settingsComponent: SymbolSpotlightSettings,
   defaultConfig: { symbol: 'NASDAQ:NVDA', range: '12M' },
+  configSchema: SymbolSpotlightConfigSchema,
   defaultSize: { w: 6, h: 22 },
   minSize: { w: 4, h: 14 },
   maxSize: { w: 12, h: 32 },

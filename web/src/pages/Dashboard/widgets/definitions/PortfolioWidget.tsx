@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Briefcase } from 'lucide-react';
 import { useDashboardContext } from '../framework/DashboardDataContext';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { PortfolioConfigSchema } from '../framework/configSchemas';
 import type { WidgetRenderProps } from '../types';
 import {
   HoldingsAddButton,
@@ -100,6 +101,7 @@ registerWidget<PortfolioConfig>({
   icon: Briefcase,
   component: PortfolioWidget,
   defaultConfig: { valuesHidden: false },
+  configSchema: PortfolioConfigSchema,
   defaultSize: { w: 4, h: 26 },
   minSize: { w: 3, h: 15 },
 });

@@ -1,6 +1,7 @@
 import { TrendingUp } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
+import { MoversConfigSchema } from '../../framework/configSchemas';
 import { EnumField } from '../../framework/settings/EnumField';
 import { TradingViewSettingsFooter } from '../../framework/TradingViewSettingsFooter';
 import { SettingsDoneButton } from '../../framework/settings/SettingsDoneButton';
@@ -69,6 +70,7 @@ registerWidget<MoversConfig>({
   component: MoversWidget,
   settingsComponent: MoversSettings,
   defaultConfig: { exchange: 'US', dataSource: 'AllUSA' },
+  configSchema: MoversConfigSchema,
   defaultSize: { w: 6, h: 22 },
   minSize: { w: 4, h: 14 },
   maxSize: { w: 12, h: 40 },

@@ -1,6 +1,7 @@
 import { BarChart3 } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
+import { CompanyFinancialsConfigSchema } from '../../framework/configSchemas';
 import { SymbolField } from '../../framework/settings/SymbolField';
 import { EnumField } from '../../framework/settings/EnumField';
 import { TradingViewSettingsFooter } from '../../framework/TradingViewSettingsFooter';
@@ -59,6 +60,7 @@ registerWidget<CompanyFinancialsConfig>({
   component: CompanyFinancialsWidget,
   settingsComponent: CompanyFinancialsSettings,
   defaultConfig: { symbol: 'NASDAQ:NVDA', displayMode: 'regular' },
+  configSchema: CompanyFinancialsConfigSchema,
   defaultSize: { w: 6, h: 24 },
   minSize: { w: 4, h: 14 },
   maxSize: { w: 12, h: 48 },
