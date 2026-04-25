@@ -92,7 +92,7 @@ The agent does NOT use a hand-written `StateGraph`. It uses `create_agent()` fro
 
 **`src/ptc_agent/agent/agent.py` — `PTCAgent.create_agent()`** assembles:
 1. **Tools**: `execute_code`, `bash`, filesystem ops (read/write/edit/glob/grep), `show_widget` (inline HTML visualizations), `web_search`, `web_fetch`, SEC/market tools
-2. **Middleware chain** (~23 layers): tool argument parsing → protected paths → error handling → leak detection → file/todo artifact emission → multimodal support → skills → steering → background subagents → HITL → compaction → model retry/fallback → prompt caching → workspace context injection
+2. **Middleware chain** (~25 layers): tool argument parsing → protected paths → error handling → leak detection → file/todo artifact emission → multimodal support → skills → steering → background subagents → HITL → compaction → model retry/fallback → prompt caching → workspace context injection → memory + memo awareness
 3. **`BackgroundSubagentOrchestrator`** wraps the agent for parallel background task coordination
 
 **Subagents** (`src/ptc_agent/agent/subagents/`): `general-purpose` and `research` built-in; registry loads additional from `agent_config.yaml`.
@@ -129,6 +129,19 @@ Financial data MCP servers in `mcp_servers/` run as stdio subprocesses, configur
 ### Prompt System
 
 Jinja2 templates in `src/ptc_agent/agent/prompts/templates/`, config in `prompts/config/prompts.yaml`, loaded by `PromptLoader`. Preview with `scripts/utils/render_prompt.py`.
+
+### Long-Term Memory & Memo Store
+
+Two separate stores backed by the LangGraph `BaseStore` API (Postgres-backed in production, in-memory for tests):
+
+- **Long-term memory** — agent-written. User tier `(user_id, "memory")` and workspace tier `(user_id, workspace_id, "memory")`. Persists durable preferences and cross-sandbox knowledge. Read by `MemoryContextMiddleware` which injects `memory.md` into every model call.
+- **Memo store** (`src/ptc_agent/agent/memo/`, `src/server/app/memo.py`) — user-managed under `(user_id, "memos")`. Users upload markdown/PDF/CSV/JSON/plain-text via `/api/v1/memo/*`; PDFs are text-extracted server-side, metadata (title, summary, tags) is generated asynchronously by an LLM through `LLMService`, and original bytes go to S3-compatible object storage (Cloudflare R2, Tencent COS, MinIO, AWS S3) via `src/server/services/memo_binary_storage.py` — falling back to inline base64 when no bucket is configured. The agent has read-only filesystem access through `CompositeFilesystemBackend` and is told the memo count via `MemoAwarenessMiddleware` so it can `read_file` / `glob` on demand.
+
+Both stores share a request-scoped cache (`backends/store_cache.py`) so multi-middleware reads of the same key in one turn hit the store once.
+
+### Server Utility LLM Calls
+
+`src/server/services/llm_service.py` (`LLMService.complete`) is the canonical wrapper for one-shot server-side LLM calls (memo metadata, future thread titles / follow-up suggestions / hint messages). It delegates credential resolution to `resolve_llm_config` so BYOK, OAuth, and per-user model preferences are respected — never call `create_llm()` directly from server utilities or the call will always bill through the platform key.
 
 ## Conventions
 
