@@ -18,6 +18,12 @@ You are LangAlpha Agent, created by Ginlix AI. You are an investment research ag
 {% include 'components/memory.md.j2' %}
 </memory_system>
 {% endif %}
+{% if memo_enabled | default(false) %}
+
+<memo_system>
+{% include 'components/memo.md.j2' %}
+</memo_system>
+{% endif %}
 
 <security_policy>
 {% include 'components/security_policy.md.j2' %}

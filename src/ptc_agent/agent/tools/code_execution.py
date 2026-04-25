@@ -9,18 +9,21 @@ from ptc_agent.agent.backends.sandbox import SandboxBackend
 
 logger = structlog.get_logger(__name__)
 
-# Same guard as bash — sandbox Python cannot reach the store-backed memory.
+# Same guard as bash — sandbox Python cannot reach the store-backed memory or
+# user-managed memo store. Memo paths are additionally read-only to the agent.
 _MEMORY_PATH_MARKERS: tuple[str, ...] = (
     ".agents/user/memory/",
     ".agents/workspace/memory/",
+    ".agents/user/memo/",
 )
 
 _MEMORY_ROUTE_ERROR = (
-    "ERROR: Memory paths (.agents/user/memory/**, .agents/workspace/memory/**) "
-    "are managed by the store-backed long-term memory system and are NOT on "
-    "the sandbox filesystem. Read them with the Read tool before this call and "
-    "pass the content in as a string; write them with Write/Edit. ExecuteCode "
-    "cannot persist to memory."
+    "ERROR: Store-backed paths (.agents/user/memory/**, .agents/workspace/memory/**, "
+    ".agents/user/memo/**) are managed by the long-term memory/memo system and "
+    "are NOT on the sandbox filesystem. Read them with the Read tool before this "
+    "call and pass the content in as a string; write memory paths with "
+    "Write/Edit. Memo paths are read-only — ask the user to upload via the memo "
+    "panel. ExecuteCode cannot persist to memory or memo."
 )
 
 

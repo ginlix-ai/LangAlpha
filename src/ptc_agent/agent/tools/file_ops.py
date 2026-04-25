@@ -1,4 +1,4 @@
-"""File operation tools: read, write, edit."""
+"""Read, Write, and Edit tool factories for the agent filesystem backend."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any, Callable
 import structlog
 from langchain_core.tools import tool
 
-from ptc_agent.agent.backends import FilesystemBackend
+from ptc_agent.agent.backends import FilesystemBackend, ReadOnlyStoreError
 
 logger = structlog.get_logger(__name__)
 
@@ -21,6 +21,12 @@ DOCUMENT_EXTENSIONS = frozenset({".pdf"})
 
 # Combined visual extensions (images + documents that need special handling)
 VISUAL_EXTENSIONS = IMAGE_EXTENSIONS | DOCUMENT_EXTENSIONS
+
+# Memo PDFs are extracted to text on upload and live in the store-backed memo
+# tier; serve their extracted text through the regular read path instead of
+# the multimodal/document middleware (which is wired to the sandbox FS, not
+# the composite memo backend).
+_MEMO_TEXT_PREFIX = ".agents/user/memo/"
 
 # Type alias for operation callback
 OperationCallback = Callable[[dict[str, Any]], None]
@@ -53,7 +59,6 @@ def _is_protected_user_path(path: str) -> bool:
 
 
 def _get_protection_error(path: str) -> str:
-    """Get error message for protected path."""
     return (
         f"ERROR: Cannot modify {path} directly.\n\n"
         "User data files are read-only. To update user data:\n"
@@ -67,14 +72,11 @@ def create_filesystem_tools(
     backend: FilesystemBackend,
     operation_callback: OperationCallback | None = None,
 ) -> tuple:
-    """Factory function to create filesystem tools (Read, Write, Edit).
+    """Create the Read, Write, and Edit tools bound to ``backend``.
 
-    Args:
-        backend: Rich-method filesystem backend — either a plain ``SandboxBackend``
-            or a ``CompositeFilesystemBackend`` that adds memory-path routing.
-            Tools see a uniform interface either way.
-        operation_callback: Optional callback invoked on file operations (write, edit).
-                            Receives dict with operation details for persistence/logging.
+    ``backend`` is either a plain ``SandboxBackend`` or a
+    ``CompositeFilesystemBackend`` that adds store-backed memory/memo routing;
+    the tools see a uniform interface either way.
     """
 
     def _format_cat_n(lines: list[str], *, start_line_number: int) -> str:
@@ -98,9 +100,22 @@ def create_filesystem_tools(
                 logger.info("Loading document from URL", url=file_path)
                 return f"Loading document from URL: {file_path}"
 
-            # Check if this is a visual file (image or document) by extension
+            # Check if this is a visual file (image or document) by extension.
+            # Memo-tier PDFs bypass the multimodal branch — extracted text lives
+            # in the store and the multimodal middleware would otherwise fail
+            # to find the file on the sandbox FS.
             suffix = Path(file_path).suffix.lower()
-            if suffix in VISUAL_EXTENSIONS:
+            # Glob/Grep virtualize store-backed matches as ``/.agents/...`` and
+            # users may pass ``./.agents/...`` from a relative cwd. ``lstrip``
+            # would strip every leading ``.`` and ``/`` indiscriminately (it's
+            # a charset, not a substring), so we match each literal prefix.
+            _stripped = file_path
+            if _stripped.startswith("./"):
+                _stripped = _stripped[2:]
+            elif _stripped.startswith("/"):
+                _stripped = _stripped[1:]
+            is_memo_path = _stripped.startswith(_MEMO_TEXT_PREFIX)
+            if suffix in VISUAL_EXTENSIONS and not is_memo_path:
                 # Validate the path exists before returning acknowledgment
                 normalized_path = backend.normalize_path(file_path)
                 logger.info("Loading image file", file_path=file_path, normalized_path=normalized_path)
@@ -161,7 +176,14 @@ def create_filesystem_tools(
                 logger.error(error_msg, file_path=file_path)
                 return f"ERROR: {error_msg}"
 
-            success = await backend.awrite_text(normalized_path, content)
+            try:
+                success = await backend.awrite_text(normalized_path, content)
+            except ReadOnlyStoreError as exc:
+                logger.info(
+                    "write rejected on read-only path",
+                    file_path=file_path,
+                )
+                return f"ERROR: {exc}"
             if not success:
                 return "ERROR: Write operation failed"
 

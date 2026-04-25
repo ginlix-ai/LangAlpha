@@ -19,6 +19,10 @@ defaults:
   # Long-term memory (store-backed; injected via MemoryContextMiddleware)
   memory_enabled: true
 
+  # User-managed memo store (read-only for the agent; count injected via
+  # MemoAwarenessMiddleware, static prompt component describes the feature)
+  memo_enabled: true
+
 # System prompt template metadata (for documentation)
 system:
   description: Main system prompt for task coordination and sub-agent delegation

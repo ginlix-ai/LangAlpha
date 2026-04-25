@@ -7,20 +7,23 @@ from ptc_agent.agent.backends.sandbox import SandboxBackend
 
 logger = structlog.get_logger(__name__)
 
-# Bash runs in the sandbox FS; memory lives in the store. Refuse memory paths
-# so the agent routes them through the file tools instead of silently dropping
-# writes on the sandbox.
+# Bash runs in the sandbox FS; memory and memo live in the store. Refuse those
+# paths so the agent routes them through the file tools instead of silently
+# dropping writes on the sandbox (which would also let the agent fabricate
+# fake memos invisible to the UI).
 _MEMORY_PATH_MARKERS: tuple[str, ...] = (
     ".agents/user/memory/",
     ".agents/workspace/memory/",
+    ".agents/user/memo/",
 )
 
 _MEMORY_ROUTE_ERROR = (
-    "ERROR: Memory paths (.agents/user/memory/**, .agents/workspace/memory/**) "
-    "are managed by the store-backed long-term memory system and are NOT on the "
-    "workspace filesystem. Use the Write, Edit, Read, Glob, or Grep file tools "
-    "for these paths so they route to the memory store. Bash will not see or "
-    "persist memory content."
+    "ERROR: Store-backed paths (.agents/user/memory/**, .agents/workspace/memory/**, "
+    ".agents/user/memo/**) are managed by the long-term memory/memo system and "
+    "are NOT on the workspace filesystem. Use the Write, Edit, Read, Glob, or "
+    "Grep file tools for these paths so they route to the store. Memo paths are "
+    "additionally read-only to the agent — ask the user to upload via the memo "
+    "panel. Bash will not see or persist memory or memo content."
 )
 
 
