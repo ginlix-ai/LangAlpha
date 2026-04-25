@@ -15,6 +15,11 @@ interface MiniChartGridConfig {
 }
 
 const SPARK_DAYS = 30;
+// Render-time hard cap. SymbolListField caps at 18, but prefs are
+// server-stored JSON — a corrupted or hand-edited blob with thousands of
+// symbols would fan out thousands of OHLC requests every 120s. Clamp here
+// so the render path never trusts persisted state past the UI-enforced cap.
+const MAX_SYMBOLS = 18;
 
 interface CellData {
   symbol: string;
@@ -84,7 +89,7 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
   // saves allocating a throwaway array on every parent render.
   const effectiveSymbols = useMemo(() => {
     const configured = (instance.config.symbols ?? []).filter(Boolean);
-    if (configured.length > 0) return configured;
+    if (configured.length > 0) return configured.slice(0, MAX_SYMBOLS);
     const fromWatchlist = watchlist.rows.map((r) => r.symbol).filter(Boolean);
     if (fromWatchlist.length > 0) return fromWatchlist.slice(0, 12);
     return DEFAULT_BLUE_CHIPS;

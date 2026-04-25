@@ -118,13 +118,13 @@ export function TradingViewEmbed({ scriptKey, config, className, card = false, c
 
       // TV embeds inject an <iframe> child after the script executes. Watch
       // for it; if none appears within 10s, flip to error (ad-blocker most
-      // commonly causes this).
+      // commonly causes this). Observer stays alive past the timeout — slow
+      // CDN/mobile loads where the iframe arrives at 10.5s shouldn't leave
+      // the user stuck on the fallback. Late arrival flips status back to ready.
       observer = new MutationObserver(() => {
         if (cancelled) return;
         if (container.querySelector('iframe')) {
           setStatus('ready');
-          observer?.disconnect();
-          observer = null;
           if (timeoutId !== null) {
             window.clearTimeout(timeoutId);
             timeoutId = null;
@@ -137,8 +137,9 @@ export function TradingViewEmbed({ scriptKey, config, className, card = false, c
         if (cancelled) return;
         if (!container.querySelector('iframe')) {
           setStatus('error');
-          observer?.disconnect();
-          observer = null;
+          // Do NOT disconnect the observer — keep watching so a late iframe
+          // (slow CDN, mobile, network blip) can recover the widget instead
+          // of leaving the user staring at a permanent fallback.
         }
       }, 10_000);
     };
