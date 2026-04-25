@@ -401,12 +401,33 @@
       }
     }
   },
-  "deepseek-reasoner": {
-    "model_id": "deepseek-reasoner",
+  "deepseek-v4-pro": {
+    "model_id": "deepseek-v4-pro",
     "provider": "deepseek",
+    "visible": true,
     "input_modalities": [
       "text"
-    ]
+    ],
+    "parameters": {
+      "max_tokens": 384000,
+      "thinking": {
+        "type": "enabled"
+      }
+    }
+  },
+  "deepseek-v4-flash": {
+    "model_id": "deepseek-v4-flash",
+    "provider": "deepseek",
+    "visible": true,
+    "input_modalities": [
+      "text"
+    ],
+    "parameters": {
+      "max_tokens": 384000,
+      "thinking": {
+        "type": "enabled"
+      }
+    }
   },
   "glm-5.1": {
     "model_id": "glm-5.1",

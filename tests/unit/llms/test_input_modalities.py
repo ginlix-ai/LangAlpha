@@ -34,7 +34,7 @@ class TestGetInputModalities:
         assert "pdf" not in result
 
     def test_deepseek_text_only(self, model_config):
-        result = model_config.get_input_modalities("deepseek-reasoner")
+        result = model_config.get_input_modalities("deepseek-v4-flash")
         assert result == ["text"]
 
     def test_minimax_text_only(self, model_config):
