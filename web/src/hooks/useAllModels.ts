@@ -120,7 +120,13 @@ export function useAllModels(): UseAllModelsResult {
   /** Run the full pipeline: normalize → merge custom → filter */
   const visible = useMemo<BuildVisibleModelsResult>(() => {
     if (!modelsData) {
-      return { models: {}, metadata: {}, rawModels: {}, validModelNames: new Set() };
+      return {
+        models: {},
+        metadata: {},
+        rawModels: {},
+        validModelNames: new Set(),
+        customPairs: new Set(),
+      };
     }
     const raw = modelsData as Record<string, unknown>;
     const rawApiModels = (raw.models ?? raw) as Record<string, Record<string, unknown>>;
@@ -136,7 +142,12 @@ export function useAllModels(): UseAllModelsResult {
     );
   }, [modelsData, customModels, providerCatalog, platform, configuredProviders]);
 
-  const modelAccessMap = useModelAccessMap(visible.models, visible.metadata, platform);
+  const modelAccessMap = useModelAccessMap(
+    visible.models,
+    visible.metadata,
+    platform,
+    visible.customPairs,
+  );
 
   return {
     models: visible.models,

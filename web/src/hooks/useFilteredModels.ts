@@ -224,6 +224,10 @@ export interface BuildVisibleModelsResult {
   rawModels: Record<string, ProviderModelsData>;
   /** Flat set of all model names in the filtered result. */
   validModelNames: Set<string>;
+  /** (group, name) pairs the user explicitly added via custom_models. Used by
+   *  the badge map to render "byok" instead of "platform" for custom-pair
+   *  entries that shadow a built-in name. */
+  customPairs: Set<string>;
 }
 
 /**
@@ -276,13 +280,32 @@ export function buildVisibleModels(
     }
   }
 
-  // Snapshot before filtering
+  // Snapshot before filtering — preserves the FULL pre-filter picture for
+  // consumers like ModelPickStep that need to show built-ins under their
+  // parent group regardless of shadowing.
   const rawModels: Record<string, ProviderModelsData> = {};
   for (const [k, v] of Object.entries(normalized)) {
     rawModels[k] = { models: [...(v.models ?? [])], display_name: v.display_name };
   }
 
-  // 3. Filter
+  // 3. Hide shadowed built-ins. When a custom_models entry shadows a
+  // built-in of the same name, the resolver's classify_model returns
+  // CUSTOM first (src/server/handlers/chat/llm_config.py:455-483) — the
+  // platform path is unreachable as long as the shadow exists. Drop the
+  // name from every group except the custom-pair owner so the picker
+  // doesn't show two identically-routed rows.
+  const shadowOwner: Record<string, string> = {};
+  for (const cm of customModels) {
+    if (!Object.hasOwn(shadowOwner, cm.name)) shadowOwner[cm.name] = cm.provider;
+  }
+  for (const [groupKey, data] of Object.entries(normalized)) {
+    if (!data.models) continue;
+    data.models = data.models.filter(
+      (m) => !Object.hasOwn(shadowOwner, m) || shadowOwner[m] === groupKey,
+    );
+  }
+
+  // 4. Filter
   let filtered: Record<string, ProviderModelsData>;
   if (platform) {
     filtered = filterByPlatformTier(normalized, metadata, platform, customPairs);
@@ -292,7 +315,7 @@ export function buildVisibleModels(
     filtered = filterModelsByAccess(normalized, metadata, configuredSet, configuredTypeMap, customPairs);
   }
 
-  // 4. Build validModelNames set
+  // 5. Build validModelNames set
   const validModelNames = new Set<string>();
   for (const group of Object.values(filtered)) {
     for (const m of group.models ?? []) {
@@ -300,6 +323,6 @@ export function buildVisibleModels(
     }
   }
 
-  return { models: filtered, metadata, rawModels, validModelNames };
+  return { models: filtered, metadata, rawModels, validModelNames, customPairs };
 }
 

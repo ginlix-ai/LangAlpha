@@ -445,6 +445,43 @@ describe('buildVisibleModels', () => {
     expect(result.validModelNames.has('glm-5v-turbo')).toBe(false);
   });
 
+  it('shadow hide: a custom_models entry shadowing a built-in name removes the built-in from other groups', () => {
+    // The runtime resolver's classify_model returns CUSTOM first whenever a
+    // user's custom_models entry shares a name with a built-in
+    // (src/server/handlers/chat/llm_config.py:455-483). The built-in path
+    // becomes unreachable, so showing the built-in row in the picker is
+    // misleading. This test pins the UI behavior: the shadowed row is
+    // dropped from the parent group, and only the custom-pair owner shows.
+    const rawApiModels = {
+      'parent-prov': { models: ['model-shared', 'model-other'], display_name: 'Parent' },
+    };
+    const rawMetadata: Record<string, ModelMetadataEntry> = {
+      'model-shared': { provider: 'parent-prov', tier: 1 },
+      'model-other': { provider: 'parent-prov' },
+    };
+    const customModels = [
+      { name: 'model-shared', model_id: 'model-shared', provider: 'byok-variant' },
+    ];
+    const platform = makePlatform({
+      model_tier: 1,
+      byok_providers: ['byok-variant'],
+    });
+
+    const result = buildVisibleModels(rawApiModels, rawMetadata, customModels, {}, platform, []);
+
+    // model-shared must NOT appear under its parent group — the custom
+    // shadow makes that row functionally unreachable.
+    expect(result.models['parent-prov']?.models ?? []).not.toContain('model-shared');
+    // model-shared lives only under the custom-pair owner.
+    expect(result.models['byok-variant']?.models).toEqual(['model-shared']);
+    // rawModels keeps the pre-shadow snapshot so ModelPickStep still shows
+    // the built-in under the parent catalog when configuring it directly.
+    expect(result.rawModels['parent-prov']?.models).toContain('model-shared');
+    // customPairs is exposed so the badge map can render "byok" instead
+    // of "platform" for shadowing rows.
+    expect(result.customPairs.has('byok-variant::model-shared')).toBe(true);
+  });
+
   it('platform mode: filters by tier, custom models pass', () => {
     const rawApiModels = {
       openai: { models: ['gpt-4o', 'gpt-4o-mini'], display_name: 'OpenAI' },
