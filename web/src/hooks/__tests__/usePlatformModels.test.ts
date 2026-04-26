@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { waitFor } from '@testing-library/react';
+import { renderHook, waitFor } from '@testing-library/react';
 import { renderHookWithProviders } from '../../test/utils';
-import { usePlatformModels, getModelAccess } from '../usePlatformModels';
+import { usePlatformModels, getModelAccess, useModelAccessMap } from '../usePlatformModels';
+import { customPairKey, type ModelMetadataEntry } from '../useFilteredModels';
+import type { ProviderModelsData } from '@/components/model/types';
 import type { PlatformModelsResponse } from '@/types/platform';
 
 // ---------------------------------------------------------------------------
@@ -126,5 +128,61 @@ describe('getModelAccess', () => {
   it('prioritizes BYOK over plan tier', () => {
     // Even though model tier 0 <= user tier 1, BYOK takes priority
     expect(getModelAccess(0, 'openai', basePlatform)).toBe('byok');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// useModelAccessMap — custom-pair badge resolution
+// ---------------------------------------------------------------------------
+
+describe('useModelAccessMap', () => {
+  it('badges a custom-pair row against groupKey ("byok") instead of the built-in metadata provider', () => {
+    // User has tier 1 (granting platform access to the built-in) AND a
+    // configured BYOK variant with a custom_models entry shadowing the
+    // built-in name. The runtime resolver routes through the variant
+    // regardless, so the badge must reflect "byok", not "platform".
+    const models: Record<string, ProviderModelsData> = {
+      'byok-variant': { models: ['model-shared'], display_name: 'Variant' },
+    };
+    const metadata: Record<string, ModelMetadataEntry> = {
+      // Built-in metadata still points at the parent provider — the merge
+      // step in buildVisibleModels intentionally does not overwrite it.
+      'model-shared': { provider: 'parent-prov', tier: 1 },
+    };
+    const platform: PlatformModelsResponse = {
+      model_tier: 1,
+      byok_providers: ['byok-variant'],
+      oauth_providers: [],
+    };
+    const customPairs = new Set([customPairKey('byok-variant', 'model-shared')]);
+
+    const { result } = renderHook(() =>
+      useModelAccessMap(models, metadata, platform, customPairs),
+    );
+
+    expect(result.current).toEqual({ 'model-shared': 'byok' });
+  });
+
+  it('falls back to built-in metadata provider when the row is NOT a custom-pair', () => {
+    // OAuth-served models live under the parent's group but their
+    // meta.provider is the OAuth slug — the meta lookup must win when
+    // there's no custom-pair shadow.
+    const models: Record<string, ProviderModelsData> = {
+      'parent-prov': { models: ['oauth-model'] },
+    };
+    const metadata: Record<string, ModelMetadataEntry> = {
+      'oauth-model': { provider: 'oauth-prov' },
+    };
+    const platform: PlatformModelsResponse = {
+      model_tier: 0,
+      byok_providers: [],
+      oauth_providers: ['oauth-prov'],
+    };
+
+    const { result } = renderHook(() =>
+      useModelAccessMap(models, metadata, platform, new Set()),
+    );
+
+    expect(result.current).toEqual({ 'oauth-model': 'oauth' });
   });
 });
