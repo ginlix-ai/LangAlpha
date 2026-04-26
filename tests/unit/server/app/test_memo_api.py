@@ -409,8 +409,13 @@ async def test_upload_pdf_empty_extraction_returns_422(store):
 async def test_upload_pdf_strips_nul_bytes_from_extracted_text(store):
     """Postgres JSONB rejects \\x00 in text — sanitize at the boundary."""
     extracted = "Lecture body\x00 with stray\x00 NULs from pdfminer"
-    with patch.object(
-        memo_mod, "extract_pdf_text", AsyncMock(return_value=extracted),
+    with (
+        patch.object(
+            memo_mod, "extract_pdf_text", AsyncMock(return_value=extracted),
+        ),
+        patch.object(
+            memo_mod.memo_binary_storage, "is_configured", return_value=False,
+        ),
     ):
         await upload_user_memo(
             user_id="user_abc",
