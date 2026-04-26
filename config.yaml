@@ -109,6 +109,8 @@ redis:
     workflow_status: 3600   # Completed/cancelled workflow status key TTL (1 hour)
     cancel_flag: 300        # Workflow cancel flag TTL (5 minutes)
     steering: 3600          # Steering message key TTL (1 hour)
+    memo_metadata_inflight: 300  # Cross-worker visibility of in-flight memo metadata tasks (5 minutes)
+    memo_metadata_cancel: 60     # Cooperative cross-worker cancel flag for memo metadata (1 minute)
 
     # Per-interval OHLCV cache TTLs (≈ interval_seconds × 1.5)
     # SWR soft threshold stays at 50% of these values

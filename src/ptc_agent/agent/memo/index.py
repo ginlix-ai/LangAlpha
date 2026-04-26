@@ -10,12 +10,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any
 
 from langgraph.store.base import BaseStore
 
+from ptc_agent.agent.memo._time import now_iso
 from ptc_agent.agent.memo.schema import (
     METADATA_PLACEHOLDER_DESCRIPTION,
 )
@@ -89,7 +89,7 @@ def _format_entry(item: Any) -> str:
 def _render_memo_md(items: list[Any]) -> str:
     """Render the complete memo.md body from sorted memo items."""
     # Items are already sorted by the caller; preserve order.
-    now = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    now = now_iso()
     count = len(items)
     header = [
         "# Memos",
@@ -176,7 +176,7 @@ async def rebuild_memo_index(
     items = await _collect_items(store, namespace)
     state_hash = _index_state_hash(items)
 
-    now = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    now = now_iso()
     existing_created = now
     existing_hash: str | None = None
     try:

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import uuid
 from typing import Any
 
 from src.utils.storage import (
@@ -65,51 +66,44 @@ def is_configured() -> bool:
     return is_storage_enabled()
 
 
-def _build_key(user_id: str, key: str) -> str:
-    """Build the object-storage key for a memo binary.
+_MIME_EXTENSION = {
+    "application/pdf": ".pdf",
+}
 
-    ``key`` is already a slug produced by ``validate_store_key`` so it is
-    path-safe; no escaping is required. ``user_id`` is normally a UUID from
-    the authenticated session — but the service-token auth path returns
-    ``X-User-Id`` verbatim, so we re-validate here so a header injection
-    can never escape the ``memo/`` prefix or stray into another tenant's
-    namespace.
-    """
+
+def _validate_user_id(user_id: str) -> None:
+    """Refuse user_ids that could escape the ``memo/{user_id}/...`` prefix."""
     if not _USER_ID_RE.match(user_id):
         msg = f"Refusing to build storage key for unsafe user_id: {user_id!r}"
         raise MemoBinaryStorageError(msg)
-    return f"memo/{user_id}/{key}"
+
+
+def _build_storage_key(user_id: str, content_type: str) -> str:
+    """Build a fresh ``memo/{user_id}/{uuid}{ext}`` storage key.
+
+    UUID-based so concurrent uploads to the same slug don't collide on bytes.
+    """
+    _validate_user_id(user_id)
+    ext = _MIME_EXTENSION.get(content_type, "")
+    return f"memo/{user_id}/{uuid.uuid4().hex}{ext}"
 
 
 async def store_binary(
     *,
     user_id: str,
-    key: str,
     content: bytes,
     content_type: str,
 ) -> dict[str, Any] | None:
-    """Upload memo binary bytes to object storage.
+    """Upload memo bytes to a fresh UUID storage key.
 
-    Returns a ``binary_ref`` dict when object storage is configured and the
-    upload succeeded. Returns ``None`` when object storage is not configured
-    (the caller must fall back to base64). Raises
-    :class:`MemoBinaryUploadError` when object storage is configured but the
-    upload failed — callers typically map that to an HTTP 500.
-
-    Args:
-        user_id: The owning user's id (used to scope the object key).
-        key: The slugified memo key (path-safe per ``validate_store_key``).
-        content: Raw bytes to upload.
-        content_type: The MIME type to stamp on the stored object.
-
-    Returns:
-        ``{"storage": "r2", "key": "memo/<user>/<slug>", "content_type": ...}``
-        when stored, else ``None``.
+    Returns the ``binary_ref`` dict on success, ``None`` when storage is not
+    configured. Raises :class:`MemoBinaryUploadError` when configured but the
+    upload failed.
     """
     if not is_configured():
         return None
 
-    storage_key = _build_key(user_id, key)
+    storage_key = _build_storage_key(user_id, content_type)
     # upload_bytes is a synchronous boto3 call; off-load to a thread so we
     # don't block the event loop (same pattern as persistence/image_capture).
     success = await asyncio.to_thread(
@@ -117,9 +111,9 @@ async def store_binary(
     )
     if not success:
         logger.error(
-            "Failed to upload memo binary to object storage (user=%s key=%s)",
+            "Failed to upload memo binary to object storage (user=%s storage_key=%s)",
             user_id,
-            key,
+            storage_key,
         )
         msg = (
             "Could not store the original file in object storage. Please retry."

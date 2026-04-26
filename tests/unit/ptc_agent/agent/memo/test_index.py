@@ -156,12 +156,9 @@ class TestRebuild:
         )
         # Freeze time so both rebuilds produce byte-identical output.
         with patch(
-            "ptc_agent.agent.memo.index.datetime"
-        ) as mock_dt:
-            from datetime import UTC, datetime
-            frozen = datetime(2026, 4, 24, 10, 15, 0, tzinfo=UTC)
-            mock_dt.now.return_value = frozen
-            mock_dt.UTC = UTC
+            "ptc_agent.agent.memo.index.now_iso",
+            return_value="2026-04-24T10:15:00.000000Z",
+        ):
             await rebuild_memo_index(store, NAMESPACE)
             first = (await store.aget(NAMESPACE, "memo.md")).value["content"]
             await rebuild_memo_index(store, NAMESPACE)

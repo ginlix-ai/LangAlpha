@@ -17,6 +17,8 @@ Environment Variables:
     STORAGE_ENDPOINT_URL      - Custom endpoint for non-AWS services (falls back to S3_ENDPOINT_URL)
     STORAGE_PUBLIC_URL_BASE   - Public URL base (falls back to S3_PUBLIC_URL_BASE)
     STORAGE_MAX_UPLOAD_SIZE   - Max upload size in bytes (default: 10MB)
+    STORAGE_CONNECT_TIMEOUT_S - boto3 connect timeout in seconds (default: 5)
+    STORAGE_READ_TIMEOUT_S    - boto3 read timeout in seconds (default: 30)
 
 Provider-specific examples:
     AWS S3:      No endpoint needed, just credentials + bucket + region
@@ -81,6 +83,9 @@ class StorageConfig:
     DEFAULT_IMAGE_PREFIX = os.getenv("STORAGE_DEFAULT_IMAGE_PREFIX", "images/")
     DEFAULT_CHART_PREFIX = os.getenv("STORAGE_DEFAULT_CHART_PREFIX", "charts/")
 
+    CONNECT_TIMEOUT_S = int(os.getenv("STORAGE_CONNECT_TIMEOUT_S", "5"))
+    READ_TIMEOUT_S = int(os.getenv("STORAGE_READ_TIMEOUT_S", "30"))
+
     @classmethod
     def get_public_url_base(cls) -> str:
         """Get the public URL base for the bucket."""
@@ -109,6 +114,8 @@ def _get_client() -> Any:
         "config": Config(
             signature_version="s3v4",
             retries={"max_attempts": 3, "mode": "standard"},
+            connect_timeout=StorageConfig.CONNECT_TIMEOUT_S,
+            read_timeout=StorageConfig.READ_TIMEOUT_S,
         ),
     }
     if StorageConfig.ENDPOINT_URL:

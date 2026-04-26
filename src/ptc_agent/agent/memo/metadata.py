@@ -12,16 +12,19 @@ import asyncio
 import logging
 import re
 import secrets
-from datetime import UTC, datetime
 from typing import Any
 
 from langgraph.store.base import BaseStore
 
+from ptc_agent.agent.backends import lock_for_namespace
+from ptc_agent.agent.memo._time import now_iso
+from ptc_agent.agent.memo.cache_keys import memo_metadata_cancel_key
 from ptc_agent.agent.memo.index import rebuild_memo_index
 from ptc_agent.agent.memo.schema import (
     METADATA_LLM_CONTENT_CHARS,
     MemoMetadata,
 )
+from src.utils.cache.redis_cache import get_cache_client
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +142,7 @@ async def _mark_failed(
             extra={"namespace": namespace, "key": key},
         )
         return
-    now = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    now = now_iso()
     updated = {
         **item.value,
         "metadata_status": "failed",
@@ -201,7 +204,7 @@ async def _merge_metadata(
         )
         return
     current_value = item.value
-    now = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    now = now_iso()
     updated = {
         **current_value,
         "description": metadata.description,
@@ -221,6 +224,22 @@ async def _merge_metadata(
             "memo metadata-merge aput failed",
             extra={"namespace": namespace, "key": key},
         )
+
+
+async def _is_cross_worker_cancelled(user_id: str | None, key: str) -> bool:
+    """Check the Redis cancel flag for this memo.
+
+    Fail-open: any Redis error is treated as "not cancelled" so a cache
+    outage never strands metadata generation.
+    """
+    if user_id is None:
+        return False
+    try:
+        flag = await get_cache_client().get(memo_metadata_cancel_key(user_id, key))
+    except Exception:
+        logger.debug("memo cross-worker cancel poll failed", exc_info=True)
+        return False
+    return flag is not None
 
 
 async def generate_memo_metadata(
@@ -263,6 +282,16 @@ async def generate_memo_metadata(
         value.get("modified_at") if isinstance(value.get("modified_at"), str) else None
     )
 
+    # Pre-LLM checkpoint: skip the call entirely if a sibling worker already
+    # asked us to cancel (e.g. delete on worker A while we picked up the row
+    # on worker B).
+    if await _is_cross_worker_cancelled(user_id, key):
+        logger.info(
+            "memo metadata cross-worker-cancelled before LLM call",
+            extra={"namespace": namespace, "key": key},
+        )
+        return
+
     try:
         metadata = await asyncio.wait_for(
             llm_service.complete(
@@ -289,27 +318,40 @@ async def generate_memo_metadata(
                 "timeout_s": _LLM_CALL_TIMEOUT_S,
             },
         )
-        await _mark_failed(
-            store, namespace, key,
-            f"LLM call timed out after {_LLM_CALL_TIMEOUT_S}s",
-            expected_modified_at=expected_modified_at,
-        )
-        await rebuild_memo_index(store, namespace)
+        async with lock_for_namespace(namespace):
+            await _mark_failed(
+                store, namespace, key,
+                f"LLM call timed out after {_LLM_CALL_TIMEOUT_S}s",
+                expected_modified_at=expected_modified_at,
+            )
+            await rebuild_memo_index(store, namespace)
         return
     except Exception as exc:
         logger.exception(
             "memo metadata LLM call failed",
             extra={"namespace": namespace, "key": key},
         )
-        await _mark_failed(
-            store, namespace, key, str(exc),
+        async with lock_for_namespace(namespace):
+            await _mark_failed(
+                store, namespace, key, str(exc),
+                expected_modified_at=expected_modified_at,
+            )
+            await rebuild_memo_index(store, namespace)
+        return
+
+    # Post-LLM checkpoint: a delete that landed during the LLM call should
+    # short-circuit the merge so we don't spend the round trip to the store
+    # only to have the CAS in _merge_metadata bounce.
+    if await _is_cross_worker_cancelled(user_id, key):
+        logger.info(
+            "memo metadata cross-worker-cancelled after LLM call",
+            extra={"namespace": namespace, "key": key},
+        )
+        return
+
+    async with lock_for_namespace(namespace):
+        await _merge_metadata(
+            store, namespace, key, metadata,
             expected_modified_at=expected_modified_at,
         )
         await rebuild_memo_index(store, namespace)
-        return
-
-    await _merge_metadata(
-        store, namespace, key, metadata,
-        expected_modified_at=expected_modified_at,
-    )
-    await rebuild_memo_index(store, namespace)

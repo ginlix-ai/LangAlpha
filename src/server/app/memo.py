@@ -24,7 +24,6 @@ import binascii
 import contextlib
 import logging
 import re
-from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Annotated, Any
 from urllib.parse import quote
@@ -53,10 +52,19 @@ from ptc_agent.agent.memo import (
     random_collision_slug,
     slug_components,
 )
+from ptc_agent.agent.memo._time import now_iso
+from ptc_agent.agent.memo.cache_keys import (
+    memo_metadata_cancel_key,
+    memo_metadata_inflight_key,
+)
 from ptc_agent.agent.memo.content_types import is_pdf, resolve_mime_type
 from ptc_agent.agent.memo.index import rebuild_memo_index
 from ptc_agent.agent.memo.metadata import generate_memo_metadata
 from ptc_agent.core.paths import MEMO_INDEX_FILENAME
+from src.config.settings import (
+    get_redis_ttl_memo_metadata_cancel,
+    get_redis_ttl_memo_metadata_inflight,
+)
 from src.server.app import setup
 from src.server.app._store_helpers import (
     MAX_LIST_LIMIT,
@@ -72,6 +80,7 @@ from src.server.app._store_helpers import (
 from src.server.services import memo_binary_storage
 from src.server.database.workspace import get_workspace as db_get_workspace
 from src.server.utils.api import CurrentUserId, require_workspace_owner
+from src.utils.cache.redis_cache import get_cache_client
 
 logger = logging.getLogger(__name__)
 
@@ -79,25 +88,89 @@ router = APIRouter(prefix="/api/v1/memo", tags=["Memo"])
 
 _INDEX_KEY = MEMO_INDEX_FILENAME
 
-# Per-key registry of in-flight metadata tasks so a delete or replace can
-# cancel the prior task before issuing the new write. Without this, an LLM
-# call that resolves AFTER the user deleted the row would resurrect it via
-# the post-LLM ``_merge_metadata`` aput, or stamp stale description/summary
-# onto newer content if the user re-uploaded mid-flight. Keyed by
-# ``(namespace, key)`` so different memos do not interfere.
+# Per-key registry of in-flight metadata tasks. Process-local; the Redis
+# cancel flag is what crosses worker boundaries.
+#
+# Known limitation: the inflight Redis key is set/cleared but is not yet
+# surfaced via any GET endpoint. On a worker crash mid-LLM, the row stays
+# at ``metadata_status="pending"`` until the next user action (regenerate,
+# reupload, delete) since no client-visible signal can disambiguate
+# "actively generating" from "stranded". Follow-up: expose the inflight
+# key as a derived field on read/list, or add a dedicated polling endpoint.
 _TaskKey = tuple[tuple[str, ...], str]
 _METADATA_TASKS: dict[_TaskKey, asyncio.Task[Any]] = {}
 
+# Strong refs for fire-and-forget background coroutines. asyncio holds only
+# weak refs to tasks (Py3.11+), so without this set tasks can be GC'd before
+# their first await resolves and the cache op silently never lands.
+_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
 
-def _cancel_pending_metadata(namespace: tuple[str, ...], key: str) -> None:
-    """Cancel any in-flight metadata task for this key (best effort)."""
+
+def _spawn_background(coro: Any) -> asyncio.Task[Any]:
+    """Schedule a fire-and-forget coroutine and keep a strong ref."""
+    task = asyncio.create_task(coro)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return task
+
+
+async def _signal_cross_worker_cancel(user_id: str, key: str) -> None:
+    """Write the cross-worker cancel flag to Redis; best-effort on cache outage."""
+    try:
+        cache = get_cache_client()
+        await cache.set(
+            memo_metadata_cancel_key(user_id, key),
+            "1",
+            ttl=get_redis_ttl_memo_metadata_cancel(),
+        )
+    except Exception:
+        # Cache outage: in-process cancel already ran; cross-worker is best-effort.
+        logger.debug("memo cross-worker cancel signal failed", exc_info=True)
+
+
+def _cancel_local_metadata_task(namespace: tuple[str, ...], key: str) -> None:
+    """Pop and cancel the registered metadata asyncio.Task for this key, if live."""
     task = _METADATA_TASKS.pop((namespace, key), None)
     if task is not None and not task.done():
         task.cancel()
 
 
-def _now_iso() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+def _cancel_pending_metadata(
+    namespace: tuple[str, ...], key: str, *, user_id: str | None = None,
+) -> None:
+    """Cancel the local in-flight metadata task and raise the cross-worker flag.
+
+    ``user_id`` is optional; callers without it get the in-process cancel only.
+    Use this from delete-style paths that don't immediately re-spawn a new
+    task — the kickoff path uses ``_kickoff_metadata_handover`` instead so
+    the cancel flag set/clear happens in a single ordered Redis sequence.
+    """
+    _cancel_local_metadata_task(namespace, key)
+    if user_id is not None:
+        _spawn_background(_signal_cross_worker_cancel(user_id, key))
+
+
+async def _kickoff_metadata_handover(user_id: str, key: str) -> None:
+    """Cross-worker handover for the kickoff path: cancel siblings, then claim slot.
+
+    Single coroutine so the SET → DELETE → SET sequence at Redis is ordered
+    from this worker's perspective. ``_kickoff_metadata`` awaits this before
+    spawning the new metadata task so the new task cannot observe the
+    transient cancel flag we just set for sibling workers. Raises on Redis
+    failure so the caller can choose to skip task creation rather than
+    spawn one that may self-abort against a stuck cancel flag.
+    """
+    cache = get_cache_client()
+    cancel_key = memo_metadata_cancel_key(user_id, key)
+    await cache.set(
+        cancel_key, "1", ttl=get_redis_ttl_memo_metadata_cancel(),
+    )
+    await cache.delete(cancel_key)
+    await cache.set(
+        memo_metadata_inflight_key(user_id, key),
+        {"started_at": now_iso()},
+        ttl=get_redis_ttl_memo_metadata_inflight(),
+    )
 
 
 def _namespace(user_id: str) -> tuple[str, ...]:
@@ -328,30 +401,50 @@ async def _resolve_unique_slug(
     return random_collision_slug(base, suffix)
 
 
-def _kickoff_metadata(
+async def _rebuild_index_under_lock(
+    store: Any, namespace: tuple[str, ...]
+) -> None:
+    async with lock_for_namespace(namespace):
+        await rebuild_memo_index(store, namespace)
+
+
+async def _kickoff_metadata(
     *, user_id: str, namespace: tuple[str, ...], key: str
 ) -> bool:
     """Dispatch a background LLM call. Requires setup.llm_service to be wired.
 
-    Cancels any in-flight task for the same ``(namespace, key)`` before
-    scheduling — a fresh upload/write/regen supersedes a prior pending
-    metadata generation, so we don't want a stale LLM result writing the
-    older description over the new content.
-
-    Returns ``True`` when a task was scheduled. Callers use the return value
-    to decide whether to do their own ``rebuild_memo_index`` — when the
-    metadata task is going to call rebuild after the LLM resolves, the
-    caller's placeholder rebuild is redundant. When ``False`` (no LLM
-    service configured), the caller MUST rebuild itself.
+    Returns ``True`` when scheduled. Callers use the return value to skip
+    their own placeholder rebuild — the metadata task does its own rebuild
+    after the LLM resolves. ``False`` means the caller MUST rebuild itself.
     """
     llm_service = getattr(setup, "llm_service", None)
     if llm_service is None:
         logger.warning(
             "memo: llm_service not configured; skipping metadata generation",
-            extra={"key": key},
+            extra={"memo_key": key},
         )
         return False
-    _cancel_pending_metadata(namespace, key)
+    # Cancel any in-process predecessor, then complete the cross-worker
+    # handover BEFORE spawning the new metadata task. Awaiting here means
+    # the handover's SET → DELETE → SET sequence has fully landed by the
+    # time the new task reaches its cancel poll, so it cannot observe the
+    # transient cancel flag we just set for sibling workers.
+    _cancel_local_metadata_task(namespace, key)
+    try:
+        await _kickoff_metadata_handover(user_id, key)
+    except Exception:
+        # If the handover failed mid-sequence (e.g. SET cancel succeeded but
+        # DELETE failed), the cancel flag could persist for its 60s TTL and
+        # any task we spawn now would self-abort at its pre-LLM cancel poll.
+        # Skip task creation; caller rebuilds the index itself. The user can
+        # hit Regenerate once Redis recovers.
+        logger.warning(
+            "memo metadata handover failed; skipping metadata task",
+            extra={"memo_key": key},
+            exc_info=True,
+        )
+        return False
+
     task = asyncio.create_task(
         generate_memo_metadata(
             store=setup.store,
@@ -370,6 +463,15 @@ def _kickoff_metadata(
         current = _METADATA_TASKS.get((namespace, key))
         if current is _t:
             _METADATA_TASKS.pop((namespace, key), None)
+        # Best-effort: clear the in-flight visibility key so the UI doesn't
+        # show "regenerating" past the actual task lifetime.
+        async def _clear_inflight() -> None:
+            try:
+                cache = get_cache_client()
+                await cache.delete(memo_metadata_inflight_key(user_id, key))
+            except Exception:
+                logger.debug("memo inflight clear failed", exc_info=True)
+        _spawn_background(_clear_inflight())
 
     task.add_done_callback(_cleanup)
     return True
@@ -456,6 +558,12 @@ async def upload_user_memo(
                 ),
             ) from exc
 
+    # Postgres JSONB rejects NUL bytes in text. pdfminer occasionally emits
+    # \x00 from malformed font glyphs, and uploaded text files can contain
+    # stray NULs too. Strip at the ingestion boundary so the store write
+    # never trips UntranslatableCharacter.
+    content = content.replace("\x00", "")
+
     content_bytes = len(content.encode("utf-8"))
     if content_bytes > MEMO_MAX_CONTENT_BYTES:
         raise HTTPException(
@@ -469,137 +577,153 @@ async def upload_user_memo(
     namespace = _namespace(user_id)
     original_filename = file.filename or "memo"
 
-    # Slug allocation + dedup + aput run under the namespace lock so two
-    # concurrent uploads with the same filename or same sandbox source can't
-    # both observe an empty slot and both write — the prior code raced both
-    # ``_find_by_source`` and ``_resolve_unique_slug``'s aget probes.
-    async with lock_for_namespace(namespace):
-        # Dedup-by-source: re-uploading the same sandbox file replaces the
-        # existing entry instead of growing a new slug suffix.
-        is_sandbox_source = (
-            source_kind == "sandbox"
-            and source_workspace_id
-            and source_path
-        )
-        existing: tuple[str, dict[str, Any]] | None = None
-        if is_sandbox_source:
-            existing = await _find_by_source(
-                store,
-                namespace,
-                workspace_id=source_workspace_id,
-                path=source_path,
-            )
-
-        if existing is not None:
-            key, prev_value = existing
-            replaced = True
-            # Preserve created_at across replacements; only modified_at advances.
-            prior_binary_ref = prev_value.get("binary_ref")
-            created_at = prev_value.get("created_at") or _now_iso()
-        else:
-            key = await _resolve_unique_slug(
-                store, namespace, original_filename,
-            )
-            replaced = False
-            prior_binary_ref = None
-            created_at = _now_iso()
-
-        # Final safety: the slug must pass the store's own validator.
-        validate_key(key)
-        if key == _INDEX_KEY:
-            # Catalog file is server-maintained; refuse uploads that would clobber it.
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"'{_INDEX_KEY}' is a reserved key for the memo catalog. "
-                    "Rename the file before uploading."
-                ),
-            )
-
-        # Binary stash (PDF only) ----------------------------------------
-        # We upload the original bytes to object storage BEFORE the row aput
-        # so the row never points at a missing object. If the row aput then
-        # fails, we revert the upload to avoid orphan bytes in the bucket.
-        binary_ref: dict[str, Any] | None = None
-        original_bytes_b64: str | None = None
-        if is_pdf(mime_type):
-            if memo_binary_storage.is_configured():
-                try:
-                    binary_ref = await memo_binary_storage.store_binary(
-                        user_id=user_id,
-                        key=key,
-                        content=raw,
-                        content_type=mime_type,
-                    )
-                except memo_binary_storage.MemoBinaryUploadError as exc:
-                    logger.exception(
-                        "memo binary upload failed",
-                        extra={"user_id": user_id, "key": key},
-                    )
-                    raise HTTPException(
-                        status_code=500,
-                        detail="Could not store the original file — please retry.",
-                    ) from exc
-            else:
-                original_bytes_b64 = base64.b64encode(raw).decode("ascii")
-
-        # Build value and persist ----------------------------------------
-        now = _now_iso()
-        value: dict[str, Any] = {
-            "content": content,
-            "encoding": "utf-8",
-            "mime_type": mime_type,
-            "original_filename": original_filename,
-            "key": key,
-            "size_bytes": content_bytes,
-            "sha256": sha256(content.encode("utf-8")).hexdigest(),
-            "description": METADATA_PLACEHOLDER_DESCRIPTION,
-            "summary": "",
-            "metadata_status": "pending",
-            "metadata_error": None,
-            "binary_ref": binary_ref,
-            "original_bytes_b64": original_bytes_b64,
-            "created_at": created_at,
-            "modified_at": now,
-            "metadata_generated_at": None,
-            "source_kind": source_kind,
-            "source_workspace_id": source_workspace_id,
-            "source_path": source_path,
-        }
-        try:
-            await aput(store, namespace, key, value)
-        except Exception:
-            # Roll back the just-uploaded binary so we don't leave an orphan
-            # blob in R2/S3 with no row referencing it. delete_binary is
-            # best-effort; failing to revert just leaves the orphan, which
-            # is the same end-state we'd have without this rollback.
-            if binary_ref is not None:
-                with contextlib.suppress(Exception):
-                    await memo_binary_storage.delete_binary(binary_ref)
-            raise
-
-    # Replace-PDF-with-text: drop the orphaned object AFTER the row aput
-    # succeeds. Doing this before would leave a row referencing a deleted
-    # binary if aput later failed.
-    if replaced and prior_binary_ref and not is_pdf(mime_type):
+    # Phase A — outside the lock. Object-storage PUT is the slow part of
+    # an upload (~3–5 s for a multi-MB PDF). Issuing it before we acquire
+    # the per-user lock means concurrent memo ops for the same user no
+    # longer queue behind the upload's S3 round trip. Storage keys are
+    # UUIDs, so we never need to coordinate with the slug we'll allocate
+    # under the lock.
+    binary_ref: dict[str, Any] | None = None
+    original_bytes_b64: str | None = None
+    if is_pdf(mime_type):
         if memo_binary_storage.is_configured():
             try:
-                await memo_binary_storage.delete_binary(prior_binary_ref)
-            except Exception:
+                binary_ref = await memo_binary_storage.store_binary(
+                    user_id=user_id,
+                    content=raw,
+                    content_type=mime_type,
+                )
+            except memo_binary_storage.MemoBinaryUploadError as exc:
                 logger.exception(
-                    "memo binary delete failed during replace",
+                    "memo binary upload failed",
+                    extra={"user_id": user_id, "original_filename": original_filename},
+                )
+                # 502: upstream object store failure mirrors the symmetric
+                # download path (`MemoBinaryFetchError` → 502 below).
+                raise HTTPException(
+                    status_code=502,
+                    detail="Could not store the original file — please retry.",
+                ) from exc
+        else:
+            original_bytes_b64 = base64.b64encode(raw).decode("ascii")
+
+    # Phase B — inside the lock. Dedup, slug resolution, and the row aput
+    # must serialize against concurrent uploads/writes/deletes for this
+    # user so two callers can't both observe an empty slot and both write.
+    phase_b_succeeded = False
+    try:
+        async with lock_for_namespace(namespace):
+            # Dedup-by-source: re-uploading the same sandbox file replaces
+            # the existing entry instead of growing a new slug suffix.
+            is_sandbox_source = (
+                source_kind == "sandbox"
+                and source_workspace_id
+                and source_path
+            )
+            existing: tuple[str, dict[str, Any]] | None = None
+            if is_sandbox_source:
+                existing = await _find_by_source(
+                    store,
+                    namespace,
+                    workspace_id=source_workspace_id,
+                    path=source_path,
+                )
+
+            if existing is not None:
+                key, prev_value = existing
+                replaced = True
+                # Preserve created_at across replacements; only modified_at advances.
+                prior_binary_ref = prev_value.get("binary_ref")
+                created_at = prev_value.get("created_at") or now_iso()
+            else:
+                key = await _resolve_unique_slug(
+                    store, namespace, original_filename,
+                )
+                replaced = False
+                prior_binary_ref = None
+                created_at = now_iso()
+
+            # Final safety: the slug must pass the store's own validator.
+            validate_key(key)
+            if key == _INDEX_KEY:
+                # Catalog file is server-maintained; refuse uploads that would clobber it.
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"'{_INDEX_KEY}' is a reserved key for the memo catalog. "
+                        "Rename the file before uploading."
+                    ),
+                )
+
+            now = now_iso()
+            value: dict[str, Any] = {
+                "content": content,
+                "encoding": "utf-8",
+                "mime_type": mime_type,
+                "original_filename": original_filename,
+                "key": key,
+                "size_bytes": content_bytes,
+                "sha256": sha256(content.encode("utf-8")).hexdigest(),
+                "description": METADATA_PLACEHOLDER_DESCRIPTION,
+                "summary": "",
+                "metadata_status": "pending",
+                "metadata_error": None,
+                "binary_ref": binary_ref,
+                "original_bytes_b64": original_bytes_b64,
+                "created_at": created_at,
+                "modified_at": now,
+                "metadata_generated_at": None,
+                "source_kind": source_kind,
+                "source_workspace_id": source_workspace_id,
+                "source_path": source_path,
+            }
+            try:
+                await aput(store, namespace, key, value)
+            except HTTPException:
+                raise
+            except Exception as exc:
+                # Convert raw store outages into a clean 503 with retry intent
+                # so clients can backoff/retry instead of seeing a bare 500.
+                logger.exception(
+                    "memo store aput failed during upload",
                     extra={"user_id": user_id, "key": key},
                 )
+                raise HTTPException(
+                    status_code=503,
+                    detail="Memo store unavailable — please retry.",
+                ) from exc
+            phase_b_succeeded = True
+    finally:
+        # Drop the Phase A blob unless Phase B landed the row pointing at it.
+        # try/finally + flag (not `except Exception`) so CancelledError on
+        # client disconnect also triggers cleanup.
+        if not phase_b_succeeded and binary_ref is not None:
+            with contextlib.suppress(Exception):
+                await memo_binary_storage.delete_binary(binary_ref)
+
+    # Drop the prior blob whenever a replace lands. UUID storage keys mean
+    # every upload owns a distinct blob (PDF→PDF, PDF→text, anything), so
+    # the prior_binary_ref is never the same object as the new binary_ref.
+    # Run AFTER the row aput so a failed aput doesn't leave a row pointing
+    # at a deleted binary.
+    if replaced and prior_binary_ref and memo_binary_storage.is_configured():
+        try:
+            await memo_binary_storage.delete_binary(prior_binary_ref)
+        except Exception:
+            logger.exception(
+                "memo binary delete failed during replace",
+                extra={"user_id": user_id, "key": key},
+            )
 
     # When metadata generation is dispatched, the background task rebuilds
     # the index after the LLM resolves — doing it here too writes memo.md
     # twice for every upload. Only rebuild eagerly when no LLM service is
     # wired (dev mode) so the catalog still updates.
-    metadata_dispatched = _kickoff_metadata(
+    metadata_dispatched = await _kickoff_metadata(
         user_id=user_id, namespace=namespace, key=key
     )
     if not metadata_dispatched:
-        await rebuild_memo_index(store, namespace)
+        await _rebuild_index_under_lock(store, namespace)
 
     return MemoUploadResponse(
         key=key,
@@ -625,7 +749,10 @@ async def write_user_memo(
     _reject_reserved_key(body.key)
 
     namespace = _namespace(user_id)
-    content_bytes = len(body.content.encode("utf-8"))
+    # See upload_user_memo: strip NULs at the ingestion boundary because
+    # Postgres JSONB rejects \x00 in text fields.
+    content = body.content.replace("\x00", "")
+    content_bytes = len(content.encode("utf-8"))
     if content_bytes > MEMO_MAX_CONTENT_BYTES:
         raise HTTPException(
             status_code=413,
@@ -655,7 +782,7 @@ async def write_user_memo(
                 ),
             )
 
-        new_hash = sha256(body.content.encode("utf-8")).hexdigest()
+        new_hash = sha256(content.encode("utf-8")).hexdigest()
         if new_hash == existing_value.get("sha256"):
             # No-op — content unchanged. Don't rebuild, don't regenerate.
             return MemoUploadResponse(
@@ -664,10 +791,10 @@ async def write_user_memo(
                 metadata_status=existing_value.get("metadata_status") or "ready",
             )
 
-        now = _now_iso()
+        now = now_iso()
         updated = {
             **existing_value,
-            "content": body.content,
+            "content": content,
             "sha256": new_hash,
             "size_bytes": content_bytes,
             "modified_at": now,
@@ -677,11 +804,11 @@ async def write_user_memo(
         }
         await aput(store, namespace, body.key, updated)
 
-    metadata_dispatched = _kickoff_metadata(
+    metadata_dispatched = await _kickoff_metadata(
         user_id=user_id, namespace=namespace, key=body.key
     )
     if not metadata_dispatched:
-        await rebuild_memo_index(store, namespace)
+        await _rebuild_index_under_lock(store, namespace)
 
     return MemoUploadResponse(
         key=body.key,
@@ -797,8 +924,10 @@ async def delete_user_memo(
 
         # Cancel any in-flight metadata task before deleting the row —
         # otherwise a post-LLM ``_merge_metadata`` aput could resurrect this
-        # key after it is gone from the store.
-        _cancel_pending_metadata(namespace, key)
+        # key after it is gone from the store. ``user_id`` here also raises
+        # the cross-worker Redis cancel flag so a task running on another
+        # worker stops before its merge step.
+        _cancel_pending_metadata(namespace, key, user_id=user_id)
 
         # Capture the binary_ref BEFORE deleting the store row — once the row
         # is gone we can't recover where the bytes lived.
@@ -815,7 +944,7 @@ async def delete_user_memo(
     if isinstance(binary_ref, dict):
         await memo_binary_storage.delete_binary(binary_ref)
 
-    await rebuild_memo_index(store, namespace)
+    await _rebuild_index_under_lock(store, namespace)
     return {"status": "deleted", "key": key}
 
 
@@ -839,7 +968,7 @@ async def regenerate_user_memo_metadata(
         if not isinstance(item.value, dict):
             raise HTTPException(status_code=500, detail="Malformed memo value")
 
-        now = _now_iso()
+        now = now_iso()
         updated = {
             **item.value,
             "metadata_status": "pending",
@@ -849,11 +978,11 @@ async def regenerate_user_memo_metadata(
         }
         await aput(store, namespace, key, updated)
 
-    metadata_dispatched = _kickoff_metadata(
+    metadata_dispatched = await _kickoff_metadata(
         user_id=user_id, namespace=namespace, key=key
     )
     if not metadata_dispatched:
-        await rebuild_memo_index(store, namespace)
+        await _rebuild_index_under_lock(store, namespace)
     return MemoUploadResponse(
         key=key,
         original_filename=updated.get("original_filename") or key,
