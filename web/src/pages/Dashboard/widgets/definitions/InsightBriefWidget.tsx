@@ -19,8 +19,8 @@ function InsightBriefWidget(_props: WidgetRenderProps<InsightBriefConfig>) {
 
 registerWidget<InsightBriefConfig>({
   type: 'insight.brief',
-  title: 'AI Daily Brief',
-  description: 'Auto-generated market insight with a "Read Full Brief" CTA.',
+  titleKey: 'dashboard.widgets.insightBrief.title',
+  descriptionKey: 'dashboard.widgets.insightBrief.description',
   category: 'intel',
   icon: Sparkles,
   component: InsightBriefWidget,

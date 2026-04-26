@@ -1,10 +1,7 @@
 import { useMemo } from 'react';
-import {
-  MessageSquareText,
-  Sparkles,
-  MessagesSquare,
-  Command,
-} from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
+import { MessageSquareText, MessagesSquare } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
@@ -22,30 +19,23 @@ import './ConversationWidget.css';
 
 type ConversationConfig = Record<string, never>;
 
-function formatGreeting(name?: string | null): string {
+function greetingKey(): string {
   const hour = new Date().getHours();
-  const tod =
-    hour < 5
-      ? 'Up late'
-      : hour < 12
-        ? 'Good morning'
-        : hour < 17
-          ? 'Good afternoon'
-          : hour < 22
-            ? 'Good evening'
-            : 'Still at it';
-  const first = (name || '').trim().split(/\s+/)[0];
-  return first ? `${tod}, ${first}.` : `${tod}.`;
+  if (hour < 5) return 'dashboard.widgets.conversation.greetingLate';
+  if (hour < 12) return 'dashboard.widgets.conversation.greetingMorning';
+  if (hour < 17) return 'dashboard.widgets.conversation.greetingAfternoon';
+  if (hour < 22) return 'dashboard.widgets.conversation.greetingEvening';
+  return 'dashboard.widgets.conversation.greetingStillAtIt';
 }
 
 function formatDateStrip(): string {
   const now = new Date();
-  const date = now.toLocaleDateString(undefined, {
+  const date = now.toLocaleDateString(i18n.language, {
     weekday: 'long',
     month: 'short',
     day: 'numeric',
   });
-  const time = now.toLocaleTimeString(undefined, {
+  const time = now.toLocaleTimeString(i18n.language, {
     hour: 'numeric',
     minute: '2-digit',
   });
@@ -56,19 +46,26 @@ function formatRelative(ts?: string): string {
   if (!ts) return '';
   const diffMs = Date.now() - new Date(ts).getTime();
   const m = Math.floor(diffMs / 60000);
-  if (m < 1) return 'now';
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h`;
-  const d = Math.floor(h / 24);
-  if (d < 7) return `${d}d`;
-  return new Date(ts).toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-  });
+  if (m < 1) return i18n.t('dashboard.widgets.common.relativeNow');
+  let when: string;
+  if (m < 60) when = `${m}m`;
+  else {
+    const h = Math.floor(m / 60);
+    if (h < 24) when = `${h}h`;
+    else {
+      const d = Math.floor(h / 24);
+      if (d < 7) when = `${d}d`;
+      else return new Date(ts).toLocaleDateString(i18n.language, {
+        month: 'short',
+        day: 'numeric',
+      });
+    }
+  }
+  return i18n.t('dashboard.widgets.common.relativePast', { when });
 }
 
 function ConversationWidget(_props: WidgetRenderProps<ConversationConfig>) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
 
   const {
@@ -82,7 +79,11 @@ function ConversationWidget(_props: WidgetRenderProps<ConversationConfig>) {
   } = useChatInput();
 
   const { user } = useUser();
-  const greeting = useMemo(() => formatGreeting(user?.name), [user?.name]);
+  const greeting = useMemo(() => {
+    const tod = t(greetingKey());
+    const first = (user?.name || '').trim().split(/\s+/)[0];
+    return first ? `${tod}, ${first}.` : `${tod}.`;
+  }, [user?.name, t]);
   // Computed per render so the strip updates if the dashboard sits open
   // across midnight. Empty-deps memo would freeze it at mount time.
   const dateStrip = formatDateStrip();
@@ -111,9 +112,10 @@ function ConversationWidget(_props: WidgetRenderProps<ConversationConfig>) {
   return (
     <div className="conversation-widget">
       <div className="conversation-widget__watermark" aria-hidden="true">
-        <MessageSquareText size={180} strokeWidth={1} />
+        <MessageSquareText size={280} strokeWidth={0.9} />
       </div>
       <div className="conversation-widget__wash" aria-hidden="true" />
+      <div className="conversation-widget__grid" aria-hidden="true" />
 
       <motion.div
         className="conversation-widget__inner"
@@ -125,37 +127,17 @@ function ConversationWidget(_props: WidgetRenderProps<ConversationConfig>) {
         }}
       >
         <motion.div
-          className="conversation-widget__eyebrow"
-          variants={{ hidden: { opacity: 0, y: -4 }, show: { opacity: 1, y: 0 } }}
-        >
-          <span className="conversation-widget__badge">
-            <Sparkles size={12} />
-            Work with LangAlpha
-          </span>
-          <span className="conversation-widget__date">{dateStrip}</span>
-        </motion.div>
-
-        <motion.div
           className="conversation-widget__heading"
           variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }}
         >
           <h2 className="conversation-widget__greeting">{greeting}</h2>
-          <p className="conversation-widget__subline">
-            What are we working on today?
-          </p>
+          <span className="conversation-widget__date">{dateStrip}</span>
         </motion.div>
 
         <motion.div
           className="conversation-widget__stage"
           variants={{ hidden: { opacity: 0, y: 12 }, show: { opacity: 1, y: 0 } }}
         >
-          <div className="conversation-widget__stage-caption">
-            <Command size={11} />
-            <span>
-              Press <kbd>↵</kbd> to send · <kbd>⌘</kbd>+<kbd>↵</kbd> for newline
-              · type <kbd>/</kbd> for skills &amp; subagents
-            </span>
-          </div>
           <ChatInput
             onSend={handleSend}
             disabled={isLoading}
@@ -164,8 +146,8 @@ function ConversationWidget(_props: WidgetRenderProps<ConversationConfig>) {
             workspaces={workspaces}
             selectedWorkspaceId={selectedWorkspaceId}
             onWorkspaceChange={setSelectedWorkspaceId}
-            placeholder="Put LangAlpha to work — a ticker to unpack, a filing to parse, a thesis to stress-test…"
-            minRows={2}
+            placeholder={t('dashboard.widgets.conversation.placeholder')}
+            minRows={4}
           />
         </motion.div>
 
@@ -176,22 +158,22 @@ function ConversationWidget(_props: WidgetRenderProps<ConversationConfig>) {
           >
             <span className="conversation-widget__resume-label">
               <MessagesSquare size={11} />
-              Resume
+              {t('dashboard.widgets.conversation.resume')}
             </span>
             <div className="conversation-widget__resume-chips">
-              {recentThreads.map((t) => (
+              {recentThreads.map((thread) => (
                 <button
-                  key={t.thread_id}
+                  key={thread.thread_id}
                   type="button"
                   className="conversation-widget__chip"
-                  onClick={() => navigate(`/chat/t/${t.thread_id}`)}
-                  title={t.title || 'Untitled thread'}
+                  onClick={() => navigate(`/chat/t/${thread.thread_id}`)}
+                  title={thread.title || t('dashboard.widgets.conversation.untitledThread')}
                 >
                   <span className="conversation-widget__chip-title">
-                    {t.title || 'Untitled thread'}
+                    {thread.title || t('dashboard.widgets.conversation.untitledThread')}
                   </span>
                   <span className="conversation-widget__chip-age">
-                    {formatRelative(t.updated_at)}
+                    {formatRelative(thread.updated_at)}
                   </span>
                 </button>
               ))}
@@ -205,16 +187,15 @@ function ConversationWidget(_props: WidgetRenderProps<ConversationConfig>) {
 
 registerWidget<ConversationConfig>({
   type: 'agent.conversation',
-  title: 'Workbench',
-  description:
-    'A chat-first console: greeting, live chat input, and one-click resume.',
+  titleKey: 'dashboard.widgets.conversation.title',
+  descriptionKey: 'dashboard.widgets.conversation.description',
   category: 'agent',
   icon: MessageSquareText,
   component: ConversationWidget,
   defaultConfig: {},
   configSchema: ConversationConfigSchema,
-  defaultSize: { w: 8, h: 12 },
-  minSize: { w: 6, h: 8 },
+  defaultSize: { w: 12, h: 18 },
+  minSize: { w: 8, h: 12 },
   maxSize: { w: 12, h: 44 },
   singleton: true,
   fitToContent: true,

@@ -1,4 +1,5 @@
 import { WifiOff } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { useNetworkStatus } from '@/hooks/useNetworkStatus';
 
 /**
@@ -10,6 +11,7 @@ import { useNetworkStatus } from '@/hooks/useNetworkStatus';
  * banner just tells the user why their numbers may be stale.
  */
 export default function NetworkBanner() {
+  const { t } = useTranslation();
   const { online } = useNetworkStatus();
   if (online) return null;
 
@@ -28,7 +30,7 @@ export default function NetworkBanner() {
       }}
     >
       <WifiOff size={14} />
-      <span>Network offline — dashboard data may be stale until you reconnect.</span>
+      <span>{t('dashboard.networkBanner.offlineMessage')}</span>
     </div>
   );
 }

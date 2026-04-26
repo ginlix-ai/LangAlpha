@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next';
+
 interface Props {
   onClick: () => void;
   /** Override the default "Done" copy when the dialog has a different commit verb. */
@@ -8,7 +10,8 @@ interface Props {
  * Shared "Done" button for widget settings dialogs. One change here updates
  * focus-visible / hover / disabled states across every settings panel.
  */
-export function SettingsDoneButton({ onClick, label = 'Done' }: Props) {
+export function SettingsDoneButton({ onClick, label }: Props) {
+  const { t } = useTranslation();
   return (
     <div className="flex justify-end pt-1">
       <button
@@ -21,7 +24,7 @@ export function SettingsDoneButton({ onClick, label = 'Done' }: Props) {
           outlineColor: 'var(--color-accent-primary)',
         }}
       >
-        {label}
+        {label ?? t('dashboard.widgets.settings.doneButton')}
       </button>
     </div>
   );

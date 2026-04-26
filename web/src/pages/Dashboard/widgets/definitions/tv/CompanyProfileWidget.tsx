@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { Building2 } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
@@ -22,10 +23,11 @@ function CompanyProfileWidget({ instance }: WidgetRenderProps<CompanyProfileConf
 }
 
 function CompanyProfileSettings({ config, onChange, onClose }: WidgetSettingsProps<CompanyProfileConfig>) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-4">
       <SymbolField
-        label="Symbol"
+        label={t('dashboard.widgets.companyProfile.symbol')}
         value={config.symbol ?? ''}
         onChange={(v) => onChange({ symbol: v })}
         placeholder="NASDAQ:NVDA"
@@ -38,8 +40,8 @@ function CompanyProfileSettings({ config, onChange, onClose }: WidgetSettingsPro
 
 registerWidget<CompanyProfileConfig>({
   type: 'tv.company-profile',
-  title: 'Company Profile',
-  description: 'Business description, sector, industry, and HQ for a single company.',
+  titleKey: 'dashboard.widgets.companyProfile.title',
+  descriptionKey: 'dashboard.widgets.companyProfile.description',
   category: 'markets',
   icon: Building2,
   component: CompanyProfileWidget,

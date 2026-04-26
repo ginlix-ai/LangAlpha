@@ -1,4 +1,6 @@
 import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
 import { MessagesSquare, ArrowUpRight, MessageSquareText, Zap } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
@@ -15,10 +17,10 @@ type RecentThreadsConfig = { workspaceId?: 'all' | 'current' | string; limit?: n
 
 type BucketKey = 'today' | 'week' | 'older';
 
-const BUCKET_LABELS: Record<BucketKey, string> = {
-  today: 'Today',
-  week: 'Earlier this week',
-  older: 'Older',
+const BUCKET_KEY: Record<BucketKey, string> = {
+  today: 'dashboard.widgets.recentThreads.bucket_today',
+  week: 'dashboard.widgets.recentThreads.bucket_thisWeek',
+  older: 'dashboard.widgets.recentThreads.bucket_older',
 };
 
 function bucketFor(date: Date): BucketKey {
@@ -33,12 +35,12 @@ function bucketFor(date: Date): BucketKey {
 
 function formatThreadTime(date: Date, bucket: BucketKey): string {
   if (bucket === 'today') {
-    return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    return date.toLocaleTimeString(i18n.language, { hour: 'numeric', minute: '2-digit' });
   }
   if (bucket === 'week') {
-    return date.toLocaleDateString(undefined, { weekday: 'short' });
+    return date.toLocaleDateString(i18n.language, { weekday: 'short' });
   }
-  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return date.toLocaleDateString(i18n.language, { month: 'short', day: 'numeric' });
 }
 
 interface GroupedThreads {
@@ -60,10 +62,11 @@ function ThreadRow({
   workspaceLabel?: string;
   isFlash?: boolean;
 }) {
+  const { t } = useTranslation();
   const title =
     thread.title ||
     ((thread as { first_query_content?: string }).first_query_content as string | undefined) ||
-    'Untitled thread';
+    t('dashboard.widgets.recentThreads.untitled');
   const updated = thread.updated_at ? new Date(thread.updated_at) : null;
   const timeStr = updated ? formatThreadTime(updated, bucket) : '';
 
@@ -150,6 +153,7 @@ function BucketSection({
   onOpen: (thread: Thread) => void;
   workspaceMap: Map<string, Workspace>;
 }) {
+  const { t } = useTranslation();
   if (threads.length === 0) return null;
   return (
     <div className="flex flex-col">
@@ -177,17 +181,17 @@ function BucketSection({
         </span>
       </div>
       <div className="flex flex-col">
-        {threads.map((t) => {
-          const wsId = (t as { workspace_id?: string }).workspace_id;
+        {threads.map((thread) => {
+          const wsId = (thread as { workspace_id?: string }).workspace_id;
           const ws = wsId ? workspaceMap.get(wsId) : undefined;
           const isFlash = ws?.status === 'flash';
-          const workspaceLabel = ws?.name ?? (isFlash ? 'Flash' : undefined);
+          const workspaceLabel = ws?.name ?? (isFlash ? t('dashboard.widgets.recentThreads.flash') : undefined);
           return (
             <ThreadRow
-              key={t.thread_id}
-              thread={t}
+              key={thread.thread_id}
+              thread={thread}
               bucket={bucket}
-              onOpen={() => onOpen(t)}
+              onOpen={() => onOpen(thread)}
               workspaceLabel={workspaceLabel}
               isFlash={isFlash}
             />
@@ -199,6 +203,7 @@ function BucketSection({
 }
 
 function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig>) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const limit = instance.config.limit ?? 15;
   const scope = instance.config.workspaceId ?? 'all';
@@ -238,13 +243,13 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
 
   const grouped = useMemo<GroupedThreads>(() => {
     const out: GroupedThreads = { today: [], week: [], older: [] };
-    for (const t of threads) {
-      const d = t.updated_at ? new Date(t.updated_at) : null;
+    for (const thread of threads) {
+      const d = thread.updated_at ? new Date(thread.updated_at) : null;
       if (!d || Number.isNaN(d.getTime())) {
-        out.older.push(t);
+        out.older.push(thread);
         continue;
       }
-      out[bucketFor(d)].push(t);
+      out[bucketFor(d)].push(thread);
     }
     return out;
   }, [threads]);
@@ -274,7 +279,7 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
             className="text-[10px] font-semibold uppercase tracking-[0.14em]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
-            Recent Threads
+            {t('dashboard.widgets.recentThreads.header')}
           </span>
           <span
             className="title-font text-lg leading-none dashboard-mono"
@@ -298,7 +303,7 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
             e.currentTarget.style.color = 'var(--color-text-tertiary)';
           }}
         >
-          <span>View all</span>
+          <span>{t('dashboard.widgets.recentThreads.viewAll')}</span>
           <ArrowUpRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
         </button>
       </div>
@@ -327,24 +332,24 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
             </div>
             <div className="text-center">
               <div
-                className="title-font italic text-sm mb-0.5"
+                className="dashboard-mono text-sm mb-0.5"
                 style={{ color: 'var(--color-text-primary)' }}
               >
-                No recent threads
+                {t('dashboard.widgets.recentThreads.empty')}
               </div>
               <div
                 className="text-[11px]"
                 style={{ color: 'var(--color-text-tertiary)' }}
               >
-                Start a conversation to fill this log.
+                {t('dashboard.widgets.recentThreads.emptyHint')}
               </div>
             </div>
           </div>
         ) : (
           <div className="flex flex-col gap-3">
-            <BucketSection label={BUCKET_LABELS.today} threads={grouped.today} bucket="today" onOpen={handleOpen} workspaceMap={workspaceMap} />
-            <BucketSection label={BUCKET_LABELS.week} threads={grouped.week} bucket="week" onOpen={handleOpen} workspaceMap={workspaceMap} />
-            <BucketSection label={BUCKET_LABELS.older} threads={grouped.older} bucket="older" onOpen={handleOpen} workspaceMap={workspaceMap} />
+            <BucketSection label={t(BUCKET_KEY.today)} threads={grouped.today} bucket="today" onOpen={handleOpen} workspaceMap={workspaceMap} />
+            <BucketSection label={t(BUCKET_KEY.week)} threads={grouped.week} bucket="week" onOpen={handleOpen} workspaceMap={workspaceMap} />
+            <BucketSection label={t(BUCKET_KEY.older)} threads={grouped.older} bucket="older" onOpen={handleOpen} workspaceMap={workspaceMap} />
           </div>
         )}
       </div>
@@ -354,8 +359,8 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
 
 registerWidget<RecentThreadsConfig>({
   type: 'threads.recent',
-  title: 'Recent Threads',
-  description: 'Latest research conversations.',
+  titleKey: 'dashboard.widgets.recentThreads.title',
+  descriptionKey: 'dashboard.widgets.recentThreads.description',
   category: 'workspace',
   icon: MessagesSquare,
   component: RecentThreadsWidget,

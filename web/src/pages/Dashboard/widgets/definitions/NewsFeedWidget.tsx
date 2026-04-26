@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Newspaper, Clock, Search, X } from 'lucide-react';
 import { useDashboardContext } from '../framework/DashboardDataContext';
@@ -11,18 +12,20 @@ type NewsFeedConfig = { source?: NewsFeedSource; limit?: number };
 
 type DateRangeKey = 'all' | '1h' | '6h' | '24h' | '7d';
 
-const SOURCE_LABEL: Record<NewsFeedSource, string> = {
-  market: 'Market',
-  portfolio: 'Portfolio',
-  watchlist: 'Watchlist',
+const SOURCE_KEY: Record<NewsFeedSource, string> = {
+  market: 'dashboard.widgets.newsFeed.tab_market',
+  portfolio: 'dashboard.widgets.newsFeed.tab_portfolio',
+  watchlist: 'dashboard.widgets.newsFeed.tab_watchlist',
 };
 
-const DATE_RANGES: { key: DateRangeKey; label: string }[] = [
-  { key: 'all', label: 'All' },
-  { key: '1h', label: '1H' },
-  { key: '6h', label: '6H' },
-  { key: '24h', label: '24H' },
-  { key: '7d', label: '7D' },
+const SOURCES: NewsFeedSource[] = ['market', 'portfolio', 'watchlist'];
+
+const DATE_RANGES: { key: DateRangeKey; labelKey: string }[] = [
+  { key: 'all', labelKey: 'dashboard.widgets.newsFeed.range_all' },
+  { key: '1h', labelKey: 'dashboard.widgets.newsFeed.range_1h' },
+  { key: '6h', labelKey: 'dashboard.widgets.newsFeed.range_6h' },
+  { key: '24h', labelKey: 'dashboard.widgets.newsFeed.range_24h' },
+  { key: '7d', labelKey: 'dashboard.widgets.newsFeed.range_7d' },
 ];
 
 interface NewsItem {
@@ -170,6 +173,7 @@ function NewsRow({
 }
 
 function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedConfig>) {
+  const { t } = useTranslation();
   const { dashboard, portfolioNews, watchlistNews, modals } = useDashboardContext();
   const initialSource: NewsFeedSource = instance.config.source ?? 'market';
   const [activeTab, setActiveTab] = useState<NewsFeedSource>(initialSource);
@@ -223,7 +227,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
             className="text-[10px] font-semibold uppercase tracking-[0.14em]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
-            News · {SOURCE_LABEL[activeTab]}
+            {t('dashboard.widgets.newsFeed.header', { label: t(SOURCE_KEY[activeTab]) })}
           </span>
           <span
             className="title-font text-lg leading-none dashboard-mono"
@@ -236,7 +240,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
           className="flex rounded-full p-[2px] flex-shrink-0"
           style={{ backgroundColor: 'var(--color-bg-subtle)' }}
         >
-          {(Object.keys(SOURCE_LABEL) as NewsFeedSource[]).map((key) => {
+          {SOURCES.map((key) => {
             const isActive = activeTab === key;
             return (
               <button
@@ -250,7 +254,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
                   boxShadow: isActive ? '0 1px 2px rgba(0,0,0,0.04)' : 'none',
                 }}
               >
-                {SOURCE_LABEL[key]}
+                {t(SOURCE_KEY[key])}
               </button>
             );
           })}
@@ -270,7 +274,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
           <Search size={12} style={{ color: 'var(--color-text-tertiary)', flexShrink: 0 }} />
           <input
             type="text"
-            placeholder="Ticker..."
+            placeholder={t('dashboard.widgets.newsFeed.tickerPlaceholder')}
             value={tickerFilter}
             onChange={(e) => setTickerFilter(e.target.value)}
             className="flex-1 text-[11px] bg-transparent border-none outline-none min-w-0"
@@ -282,7 +286,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
               onClick={() => setTickerFilter('')}
               className="flex-shrink-0"
               style={{ color: 'var(--color-text-tertiary)' }}
-              aria-label="Clear ticker filter"
+              aria-label={t('dashboard.widgets.newsFeed.clearTicker')}
             >
               <X size={11} />
             </button>
@@ -307,7 +311,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
                   boxShadow: isActive ? '0 1px 2px rgba(0,0,0,0.04)' : 'none',
                 }}
               >
-                {dr.label}
+                {t(dr.labelKey)}
               </button>
             );
           })}
@@ -329,7 +333,7 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
               e.currentTarget.style.color = 'var(--color-text-tertiary)';
             }}
           >
-            Clear
+            {t('dashboard.widgets.newsFeed.clear')}
           </button>
         ) : null}
       </div>
@@ -372,10 +376,14 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
                   <Newspaper className="h-4 w-4" style={{ color: 'var(--color-text-tertiary)' }} />
                 </div>
                 <div
-                  className="title-font italic text-sm"
+                  className="dashboard-mono text-sm"
                   style={{ color: 'var(--color-text-primary)' }}
                 >
-                  {hasFilters ? 'No news matching filters' : activeTab === 'market' ? 'No market news' : `Add to ${SOURCE_LABEL[activeTab].toLowerCase()} to see news`}
+                  {hasFilters
+                    ? t('dashboard.widgets.newsFeed.emptyFiltered')
+                    : activeTab === 'market'
+                      ? t('dashboard.widgets.newsFeed.emptyMarket')
+                      : t('dashboard.widgets.newsFeed.emptyAddTo', { label: t(SOURCE_KEY[activeTab]).toLowerCase() })}
                 </div>
               </div>
             ) : (
@@ -399,8 +407,8 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
 
 registerWidget<NewsFeedConfig>({
   type: 'news.feed',
-  title: 'News Feed',
-  description: 'Market / Portfolio / Watchlist news with ticker + time filters.',
+  titleKey: 'dashboard.widgets.newsFeed.title',
+  descriptionKey: 'dashboard.widgets.newsFeed.description',
   category: 'intel',
   icon: Newspaper,
   component: NewsFeedWidget,

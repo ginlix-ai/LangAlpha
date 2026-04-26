@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ArrowLeft, Search } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../../components/ui/dialog';
 import { Input } from '../../../components/ui/input';
@@ -42,6 +43,7 @@ function AddPortfolioHoldingDialog({
   onClose,
   onAdd,
 }: AddPortfolioHoldingDialogProps) {
+  const { t } = useTranslation();
   const [page, setPage] = useState<1 | 2>(1); // 1 = search, 2 = details
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<StockResult[]>([]);
@@ -117,11 +119,11 @@ function AddPortfolioHoldingDialog({
 
     // Validate required fields
     if (!quantity.trim()) {
-      alert('Please enter quantity.');
+      alert(t('dashboard.addPortfolioDialog.alertQuantityMissing'));
       return;
     }
     if (!averageCost.trim()) {
-      alert('Please enter average cost.');
+      alert(t('dashboard.addPortfolioDialog.alertAverageCostMissing'));
       return;
     }
 
@@ -129,12 +131,12 @@ function AddPortfolioHoldingDialog({
     const averageCostNum = parseFloat(averageCost);
 
     if (isNaN(quantityNum) || quantityNum <= 0) {
-      alert('Please enter a valid quantity greater than 0.');
+      alert(t('dashboard.addPortfolioDialog.alertQuantityInvalid'));
       return;
     }
 
     if (isNaN(averageCostNum) || averageCostNum <= 0) {
-      alert('Please enter a valid average cost greater than 0.');
+      alert(t('dashboard.addPortfolioDialog.alertAverageCostInvalid'));
       return;
     }
 
@@ -164,14 +166,14 @@ function AddPortfolioHoldingDialog({
           <>
             <DialogHeader className="text-left">
               <DialogTitle className="title-font" style={{ color: 'var(--color-text-primary)' }}>
-                Add Portfolio Holding
+                {t('dashboard.addPortfolioDialog.titleSearch')}
               </DialogTitle>
             </DialogHeader>
             <div className="pt-1">
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4" style={{ color: 'var(--color-text-secondary)' }} />
                 <Input
-                  placeholder="Search by symbol or company name..."
+                  placeholder={t('dashboard.addPortfolioDialog.searchPlaceholder')}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="pl-10 border"
@@ -182,15 +184,15 @@ function AddPortfolioHoldingDialog({
               <ScrollArea className="mt-3 max-h-[50dvh] sm:max-h-[400px]">
                 {searchLoading ? (
                   <div className="py-8 text-center text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-                    Searching...
+                    {t('dashboard.addPortfolioDialog.searching')}
                   </div>
                 ) : searchResults.length === 0 && searchQuery.trim().length >= 1 ? (
                   <div className="py-8 text-center text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-                    No results found
+                    {t('dashboard.addPortfolioDialog.noResults')}
                   </div>
                 ) : searchResults.length === 0 ? (
                   <div className="py-8 text-center text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-                    Type to search for stocks...
+                    {t('dashboard.addPortfolioDialog.searchHint')}
                   </div>
                 ) : (
                   <div className="divide-y" style={{ borderColor: 'var(--color-border-muted)' }}>
@@ -231,12 +233,12 @@ function AddPortfolioHoldingDialog({
                   style={{ color: 'var(--color-text-secondary)' }}
                   onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)'; }}
                   onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
-                  aria-label="Back"
+                  aria-label={t('dashboard.addPortfolioDialog.back')}
                 >
                   <ArrowLeft className="h-4 w-4" />
                 </button>
                 <DialogTitle className="title-font" style={{ color: 'var(--color-text-primary)' }}>
-                  Add to Portfolio
+                  {t('dashboard.addPortfolioDialog.titleDetails')}
                 </DialogTitle>
               </div>
             </DialogHeader>
@@ -269,13 +271,13 @@ function AddPortfolioHoldingDialog({
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-                      Quantity <span style={{ color: 'var(--color-loss)' }}>*</span>
+                      {t('dashboard.addPortfolioDialog.quantityLabel')} <span style={{ color: 'var(--color-loss)' }}>*</span>
                     </label>
                     <Input
                       type="number"
                       min="0"
                       step="any"
-                      placeholder="e.g. 10.5"
+                      placeholder={t('dashboard.addPortfolioDialog.quantityPlaceholder')}
                       value={quantity}
                       onChange={(e) => setQuantity(e.target.value)}
                       className="border"
@@ -284,13 +286,13 @@ function AddPortfolioHoldingDialog({
                   </div>
                   <div>
                     <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-                      Avg Cost <span style={{ color: 'var(--color-loss)' }}>*</span>
+                      {t('dashboard.addPortfolioDialog.averageCostLabel')} <span style={{ color: 'var(--color-loss)' }}>*</span>
                     </label>
                     <Input
                       type="number"
                       min="0"
                       step="any"
-                      placeholder="e.g. 175.50"
+                      placeholder={t('dashboard.addPortfolioDialog.averageCostPlaceholder')}
                       value={averageCost}
                       onChange={(e) => setAverageCost(e.target.value)}
                       className="border"
@@ -302,10 +304,10 @@ function AddPortfolioHoldingDialog({
                 {/* Account Name */}
                 <div>
                   <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-                    Account Name
+                    {t('dashboard.addPortfolioDialog.accountNameLabel')}
                   </label>
                   <Input
-                    placeholder="e.g. Robinhood"
+                    placeholder={t('dashboard.addPortfolioDialog.accountNamePlaceholder')}
                     value={accountName}
                     onChange={(e) => setAccountName(e.target.value)}
                     className="border"
@@ -316,10 +318,10 @@ function AddPortfolioHoldingDialog({
                 {/* Notes Input */}
                 <div>
                   <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--color-text-secondary)' }}>
-                    Notes
+                    {t('dashboard.addPortfolioDialog.notesLabel')}
                   </label>
                   <Input
-                    placeholder="Optional"
+                    placeholder={t('dashboard.addPortfolioDialog.notesPlaceholder')}
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
                     className="border"
@@ -334,7 +336,7 @@ function AddPortfolioHoldingDialog({
                   className="w-full px-4 py-3 rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
                   style={{ backgroundColor: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}
                 >
-                  Add to Portfolio
+                  {t('dashboard.addPortfolioDialog.addButton')}
                 </button>
               </div>
             )}

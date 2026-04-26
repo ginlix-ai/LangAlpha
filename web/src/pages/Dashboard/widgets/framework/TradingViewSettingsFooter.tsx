@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { HelpCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
@@ -6,6 +7,7 @@ import { Link } from 'react-router-dom';
  * settings dialog. One edit changes all 10.
  */
 export function TradingViewSettingsFooter() {
+  const { t } = useTranslation();
   return (
     <div
       className="mt-4 pt-3 flex items-center gap-2 text-[11px]"
@@ -15,7 +17,7 @@ export function TradingViewSettingsFooter() {
       }}
     >
       <span>
-        Provided by{' '}
+        {t('dashboard.widgets.tvFooter.providedBy')}
         <a
           className="tv-attribution"
           href="https://www.tradingview.com/"
@@ -23,13 +25,13 @@ export function TradingViewSettingsFooter() {
           rel="noopener noreferrer"
           style={{ display: 'inline', padding: 0 }}
         >
-          TradingView
+          {t('dashboard.widgets.tvFooter.tradingView')}
         </a>
         .
       </span>
       <Link
         to="/legal"
-        title="Legal & attributions"
+        title={t('dashboard.widgets.tvFooter.legal')}
         style={{ color: 'var(--color-text-tertiary)', display: 'inline-flex' }}
       >
         <HelpCircle size={12} />

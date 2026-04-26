@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import i18n from '@/i18n';
 import { getNews, getIndices, INDEX_SYMBOLS, fallbackIndex, normalizeIndexSymbol } from '../utils/api';
 import { fetchMarketStatus } from '@/lib/marketUtils';
 import type { IndexData } from '@/types/market';
@@ -32,7 +33,10 @@ interface DashboardData {
 }
 
 /**
- * Formats a given timestamp to a relative time string (e.g. "just now", "10 min ago").
+ * Formats a given timestamp to a relative time string. Outside React render —
+ * components consuming the result via this hook re-render on locale switch
+ * because their parent calls useTranslation, which is what makes the freshly
+ * resolved string reach the DOM.
  */
 function formatRelativeTime(timestamp: string | number | null | undefined): string {
   if (!timestamp) return '';
@@ -40,12 +44,15 @@ function formatRelativeTime(timestamp: string | number | null | undefined): stri
   const then = new Date(timestamp);
   const diffMs = now.getTime() - then.getTime();
   const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return 'just now';
-  if (diffMin < 60) return `${diffMin} min ago`;
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr} hr${diffHr > 1 ? 's' : ''} ago`;
-  const diffDay = Math.floor(diffHr / 24);
-  return `${diffDay} day${diffDay > 1 ? 's' : ''} ago`;
+  if (diffMin < 1) return i18n.t('dashboard.widgets.common.relativeNow');
+  let when: string;
+  if (diffMin < 60) when = `${diffMin}m`;
+  else {
+    const diffHr = Math.floor(diffMin / 60);
+    if (diffHr < 24) when = `${diffHr}h`;
+    else when = `${Math.floor(diffHr / 24)}d`;
+  }
+  return i18n.t('dashboard.widgets.common.relativePast', { when });
 }
 
 /**

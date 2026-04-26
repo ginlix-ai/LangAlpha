@@ -1,9 +1,13 @@
 import React, { useState, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { LineChart, Line, ResponsiveContainer, YAxis, Tooltip } from 'recharts';
 import { motion, AnimatePresence, type PanInfo } from 'framer-motion';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { createFormatter } from '@/lib/format';
 import type { IndexData } from '@/types/market';
+
+const fmt2 = createFormatter({ minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 interface SparklineDataPoint {
   time?: string;
@@ -30,11 +34,12 @@ interface IndexMovementCardProps {
 /* ── Shared card content (no animation wrapper) ── */
 
 function IndexCardContent({ index }: { index: IndexData }) {
+  useTranslation();
   const pos = index.isPositive;
   const ch = Number(index.change);
   const pct = Number(index.changePercent);
-  const changeStr = ch.toFixed(2);
-  const pctStr = '(' + (pos ? '+' : '') + pct.toFixed(2) + '%)';
+  const changeStr = fmt2(ch);
+  const pctStr = '(' + (pos ? '+' : '') + fmt2(pct) + '%)';
   const chartData: SparklineDataPoint[] = (index.sparklineData || []).map((pt, i) =>
     typeof pt === 'object' ? { ...pt, i } : { val: pt as unknown as number, i },
   );
@@ -68,10 +73,7 @@ function IndexCardContent({ index }: { index: IndexData }) {
               className="text-lg font-bold tracking-tight dashboard-mono"
               style={{ color: 'var(--color-text-primary)' }}
             >
-              {Number(index.price).toLocaleString(undefined, {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-              })}
+              {fmt2(Number(index.price))}
             </div>
             <div
               className="text-xs dashboard-mono"
@@ -113,10 +115,7 @@ function IndexCardContent({ index }: { index: IndexData }) {
                         <div style={{ color: 'var(--color-text-secondary)' }}>{d.time}</div>
                       )}
                       <div className="font-semibold dashboard-mono">
-                        {Number(d.val).toLocaleString(undefined, {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })}
+                        {fmt2(Number(d.val))}
                       </div>
                     </div>
                   );

@@ -2,29 +2,30 @@
 
 .conversation-widget {
   position: relative;
-  border-radius: 20px;
+  height: 100%;
+  border-radius: 24px;
   overflow: hidden;
   border: 1px solid var(--color-border-muted);
   background:
     linear-gradient(
-      140deg,
+      135deg,
       var(--color-bg-card) 0%,
-      var(--color-bg-card) 55%,
-      var(--color-accent-soft) 100%
+      var(--color-bg-card) 45%,
+      color-mix(in srgb, var(--color-accent-primary) 8%, var(--color-bg-card)) 100%
     );
   box-shadow:
-    0 1px 0 0 rgba(255, 255, 255, 0.04) inset,
-    0 1px 2px rgba(0, 0, 0, 0.03),
-    0 4px 16px rgba(0, 0, 0, 0.04);
+    0 1px 0 0 rgba(255, 255, 255, 0.05) inset,
+    0 2px 4px rgba(0, 0, 0, 0.04),
+    0 12px 40px rgba(0, 0, 0, 0.06);
   isolation: isolate;
 }
 
 .conversation-widget__watermark {
   position: absolute;
-  top: -28px;
-  right: -28px;
+  top: -56px;
+  right: -56px;
   color: var(--color-accent-primary);
-  opacity: 0.14;
+  opacity: 0.10;
   transform: rotate(-8deg);
   pointer-events: none;
   z-index: 0;
@@ -33,11 +34,35 @@
 .conversation-widget__wash {
   position: absolute;
   inset: 0;
-  background: radial-gradient(
-    circle at 92% -12%,
-    color-mix(in srgb, var(--color-accent-primary) 20%, transparent) 0%,
-    transparent 55%
-  );
+  background:
+    radial-gradient(
+      ellipse 70% 50% at 95% -5%,
+      color-mix(in srgb, var(--color-accent-primary) 24%, transparent) 0%,
+      transparent 60%
+    ),
+    radial-gradient(
+      ellipse 60% 40% at 5% 110%,
+      color-mix(in srgb, var(--color-accent-primary) 12%, transparent) 0%,
+      transparent 55%
+    );
+  pointer-events: none;
+  z-index: 0;
+}
+
+.conversation-widget__grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(
+      circle at 1px 1px,
+      color-mix(in srgb, var(--color-text-tertiary) 22%, transparent) 1px,
+      transparent 0
+    );
+  background-size: 24px 24px;
+  background-position: 0 0;
+  opacity: 0.35;
+  mask-image: linear-gradient(180deg, transparent 0%, #000 30%, #000 70%, transparent 100%);
+  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 30%, #000 70%, transparent 100%);
   pointer-events: none;
   z-index: 0;
 }
@@ -47,69 +72,41 @@
   z-index: 1;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 20px 26px 16px;
+  gap: clamp(22px, 2.4vw, 32px);
+  padding: clamp(36px, 4vw, 56px) clamp(36px, 4vw, 60px) clamp(28px, 3vw, 40px);
+  height: 100%;
 }
 
-/* --- Eyebrow strip --- */
-
-.conversation-widget__eyebrow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-height: 22px;
-}
-
-.conversation-widget__badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  background-color: var(--color-accent-soft);
-  color: var(--color-accent-light);
-  border: 1px solid var(--color-accent-overlay);
-  white-space: nowrap;
-}
-
-.conversation-widget__date {
-  font-size: 11px;
-  letter-spacing: 0.02em;
-  color: var(--color-text-tertiary);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* --- Greeting --- */
+/* --- Greeting + trailing date --- */
 
 .conversation-widget__heading {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 24px;
+  min-width: 0;
 }
 
 .conversation-widget__greeting {
-  font-size: clamp(22px, 2.3vw, 30px);
+  font-size: clamp(36px, 4vw, 60px);
   font-weight: 600;
-  line-height: 1.14;
-  letter-spacing: -0.012em;
+  line-height: 1.04;
+  letter-spacing: -0.024em;
   color: var(--color-text-primary);
   margin: 0;
+  min-width: 0;
 }
 
-.conversation-widget__subline {
-  font-size: 14px;
-  font-style: italic;
-  color: var(--color-text-secondary);
-  margin: 0;
-  letter-spacing: 0.004em;
+.conversation-widget__date {
+  font-family: 'JetBrains Mono', 'Menlo', monospace;
+  font-size: 11px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+  padding-top: 0.5em;
 }
 
 /* --- Chat-input stage --- */
@@ -117,32 +114,8 @@
 .conversation-widget__stage {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-}
-
-.conversation-widget__stage-caption {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--color-text-tertiary);
-  padding: 0 4px;
-  letter-spacing: 0.01em;
-}
-
-.conversation-widget__stage-caption kbd {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-family: inherit;
-  font-size: 10px;
-  padding: 1px 5px;
-  margin: 0 2px;
-  border-radius: 4px;
-  border: 1px solid var(--color-border-muted);
-  background: var(--color-bg-subtle);
-  color: var(--color-text-secondary);
-  font-variant-numeric: tabular-nums;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 /* --- Resume chips --- */
@@ -150,19 +123,23 @@
 .conversation-widget__resume {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 14px;
   min-width: 0;
   overflow: hidden;
-  margin-top: -2px;
+  padding-top: 2px;
+  border-top: 1px solid color-mix(in srgb, var(--color-border-muted) 60%, transparent);
+  margin-top: 2px;
+  padding-block-start: 14px;
 }
 
 .conversation-widget__resume-label {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 9.5px;
+  gap: 6px;
+  font-family: 'JetBrains Mono', 'Menlo', monospace;
+  font-size: 10px;
   font-weight: 600;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--color-text-tertiary);
   flex-shrink: 0;
@@ -197,23 +174,25 @@
 .conversation-widget__chip {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
+  gap: 10px;
+  padding: 6px 14px;
   border-radius: 999px;
   border: 1px solid var(--color-border-muted);
-  background: color-mix(in srgb, var(--color-bg-elevated) 55%, transparent);
+  background: color-mix(in srgb, var(--color-bg-elevated) 65%, transparent);
   color: var(--color-text-secondary);
-  font-size: 12px;
-  max-width: 220px;
+  font-size: 12.5px;
+  max-width: 240px;
   flex-shrink: 0;
   cursor: pointer;
   transition:
+    transform 0.15s ease,
     border-color 0.15s ease,
     background-color 0.15s ease,
     color 0.15s ease;
 }
 
 .conversation-widget__chip:hover {
+  transform: translateY(-1px);
   border-color: var(--color-accent-overlay);
   background: var(--color-bg-elevated);
   color: var(--color-text-primary);
@@ -249,6 +228,7 @@
   }
   .conversation-widget__watermark { top: -20px; right: -20px; }
   .conversation-widget__watermark svg { width: 140px; height: 140px; }
+  .conversation-widget__date { display: none; }
 }
 
 /* When the enclosing widget-frame is NOT in edit mode, the body has no padding,

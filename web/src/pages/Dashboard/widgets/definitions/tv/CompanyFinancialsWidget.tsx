@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { BarChart3 } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
@@ -27,22 +28,23 @@ function CompanyFinancialsWidget({ instance }: WidgetRenderProps<CompanyFinancia
 }
 
 function CompanyFinancialsSettings({ config, onChange, onClose }: WidgetSettingsProps<CompanyFinancialsConfig>) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-4">
       <SymbolField
-        label="Symbol"
+        label={t('dashboard.widgets.companyFinancials.symbol')}
         value={config.symbol ?? ''}
         onChange={(v) => onChange({ symbol: v })}
         placeholder="NASDAQ:NVDA"
       />
       <EnumField
-        label="Layout"
+        label={t('dashboard.widgets.companyFinancials.layout')}
         value={config.displayMode ?? 'regular'}
         onChange={(v) => onChange({ displayMode: v as CompanyFinancialsConfig['displayMode'] })}
         options={[
-          { value: 'regular', label: 'Regular' },
-          { value: 'compact', label: 'Compact' },
-          { value: 'adaptive', label: 'Adaptive' },
+          { value: 'regular', label: t('dashboard.widgets.companyFinancials.layout_regular') },
+          { value: 'compact', label: t('dashboard.widgets.companyFinancials.layout_compact') },
+          { value: 'adaptive', label: t('dashboard.widgets.companyFinancials.layout_adaptive') },
         ]}
       />
       <TradingViewSettingsFooter />
@@ -53,8 +55,8 @@ function CompanyFinancialsSettings({ config, onChange, onClose }: WidgetSettings
 
 registerWidget<CompanyFinancialsConfig>({
   type: 'tv.company-financials',
-  title: 'Company Financials',
-  description: 'Fundamentals — income statement, balance sheet, cash flow, key ratios.',
+  titleKey: 'dashboard.widgets.companyFinancials.title',
+  descriptionKey: 'dashboard.widgets.companyFinancials.description',
   category: 'markets',
   icon: BarChart3,
   component: CompanyFinancialsWidget,

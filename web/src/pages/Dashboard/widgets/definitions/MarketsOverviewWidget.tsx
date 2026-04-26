@@ -40,8 +40,8 @@ function MarketsOverviewWidget(_props: WidgetRenderProps<MarketsOverviewConfig>)
 
 registerWidget<MarketsOverviewConfig>({
   type: 'markets.overview',
-  title: 'Markets Overview',
-  description: 'Live tiles for major indices with sparklines.',
+  titleKey: 'dashboard.widgets.marketsOverview.title',
+  descriptionKey: 'dashboard.widgets.marketsOverview.description',
   category: 'markets',
   icon: LineChart,
   component: MarketsOverviewWidget,

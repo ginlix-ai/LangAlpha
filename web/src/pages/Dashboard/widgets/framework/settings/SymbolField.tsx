@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { Input } from '@/components/ui/input';
 
 interface Props {
@@ -14,6 +15,7 @@ interface Props {
  * TradingView resolves them server-side anyway.
  */
 export function SymbolField({ label, value, onChange, placeholder, helper }: Props) {
+  const { t } = useTranslation();
   return (
     <label className="block">
       <span className="text-xs block mb-1" style={{ color: 'var(--color-text-secondary)' }}>
@@ -26,7 +28,7 @@ export function SymbolField({ label, value, onChange, placeholder, helper }: Pro
           const trimmed = e.target.value.trim();
           if (trimmed !== e.target.value) onChange(trimmed);
         }}
-        placeholder={placeholder ?? 'e.g. NASDAQ:NVDA or AAPL'}
+        placeholder={placeholder ?? t('dashboard.widgets.settings.symbolFieldPlaceholder')}
         className="border"
         style={{
           backgroundColor: 'var(--color-bg-card)',

@@ -1,4 +1,5 @@
 import { useState, type KeyboardEvent, type ClipboardEvent } from 'react';
+import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 
@@ -28,6 +29,7 @@ export function SymbolListField({
   helper,
   max = 50,
 }: Props) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState('');
 
   const atCap = value.length >= max;
@@ -114,7 +116,7 @@ export function SymbolListField({
             <button
               type="button"
               onClick={() => remove(sym)}
-              aria-label={`Remove ${sym}`}
+              aria-label={t('dashboard.widgets.settings.symbolListRemove', { symbol: sym })}
               style={{ color: 'var(--color-text-tertiary)' }}
             >
               <X size={10} />
@@ -130,9 +132,9 @@ export function SymbolListField({
           disabled={atCap}
           placeholder={
             atCap
-              ? `Max ${max} reached`
+              ? t('dashboard.widgets.settings.symbolListAtCap', { max })
               : value.length === 0
-                ? placeholder ?? 'Add symbols (Enter)'
+                ? placeholder ?? t('dashboard.widgets.settings.symbolListPlaceholder')
                 : ''
           }
           className="flex-1 min-w-[100px] border-0 !p-0 !h-6 text-xs bg-transparent shadow-none focus-visible:ring-0 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -149,7 +151,7 @@ export function SymbolListField({
       )}
       {atCap && (
         <span className="text-[11px] mt-1 block" style={{ color: 'var(--color-text-tertiary)' }}>
-          Max {max} symbols.
+          {t('dashboard.widgets.settings.symbolListHelperAtCap', { max })}
         </span>
       )}
     </div>

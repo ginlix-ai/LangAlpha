@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Briefcase } from 'lucide-react';
 import { useDashboardContext } from '../framework/DashboardDataContext';
@@ -15,6 +16,7 @@ import {
 type PortfolioConfig = { valuesHidden?: boolean };
 
 function PortfolioWidget({ instance, updateConfig }: WidgetRenderProps<PortfolioConfig>) {
+  const { t } = useTranslation();
   const { portfolio, portfolioHandlers, dashboard } = useDashboardContext();
   const [valuesHidden, setValuesHidden] = useState(!!instance.config.valuesHidden);
 
@@ -42,7 +44,7 @@ function PortfolioWidget({ instance, updateConfig }: WidgetRenderProps<Portfolio
             className="text-[10px] font-semibold uppercase tracking-[0.14em]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
-            Holdings
+            {t('dashboard.widgets.portfolio.header')}
           </span>
           <span
             className="title-font text-lg leading-none dashboard-mono"
@@ -85,7 +87,7 @@ function PortfolioWidget({ instance, updateConfig }: WidgetRenderProps<Portfolio
               ))
             )}
 
-            <HoldingsAddButton label="Add Transaction" onClick={portfolioHandlers.onAdd} />
+            <HoldingsAddButton label={t('dashboard.widgets.portfolio.addTransaction')} onClick={portfolioHandlers.onAdd} />
           </motion.div>
         </AnimatePresence>
       </div>
@@ -95,8 +97,8 @@ function PortfolioWidget({ instance, updateConfig }: WidgetRenderProps<Portfolio
 
 registerWidget<PortfolioConfig>({
   type: 'portfolio.holdings',
-  title: 'Portfolio',
-  description: 'Your holdings with market value and unrealized P/L.',
+  titleKey: 'dashboard.widgets.portfolio.title',
+  descriptionKey: 'dashboard.widgets.portfolio.description',
   category: 'personal',
   icon: Briefcase,
   component: PortfolioWidget,

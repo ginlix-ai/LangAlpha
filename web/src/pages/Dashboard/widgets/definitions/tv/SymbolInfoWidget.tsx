@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { Info } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
@@ -22,10 +23,11 @@ function SymbolInfoWidget({ instance }: WidgetRenderProps<SymbolInfoConfig>) {
 }
 
 function SymbolInfoSettings({ config, onChange, onClose }: WidgetSettingsProps<SymbolInfoConfig>) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-4">
       <SymbolField
-        label="Symbol"
+        label={t('dashboard.widgets.symbolInfo.symbol')}
         value={config.symbol ?? ''}
         onChange={(v) => onChange({ symbol: v })}
         placeholder="NASDAQ:NVDA"
@@ -38,8 +40,8 @@ function SymbolInfoSettings({ config, onChange, onClose }: WidgetSettingsProps<S
 
 registerWidget<SymbolInfoConfig>({
   type: 'tv.symbol-info',
-  title: 'Symbol Info',
-  description: 'Compact summary card — price, day range, market cap, volume.',
+  titleKey: 'dashboard.widgets.symbolInfo.title',
+  descriptionKey: 'dashboard.widgets.symbolInfo.description',
   category: 'markets',
   icon: Info,
   component: SymbolInfoWidget,

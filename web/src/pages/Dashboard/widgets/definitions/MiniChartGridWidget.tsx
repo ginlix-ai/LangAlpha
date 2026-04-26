@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { Grid2x2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -9,7 +10,10 @@ import { fetchStockData } from '@/pages/MarketView/utils/api';
 import { DEFAULT_BLUE_CHIPS } from '../framework/defaults';
 import { SymbolListField } from '../framework/settings/SymbolListField';
 import { SettingsDoneButton } from '../framework/settings/SettingsDoneButton';
+import { createFormatter } from '@/lib/format';
 import type { WidgetRenderProps, WidgetSettingsProps } from '../types';
+
+const fmt2 = createFormatter({ minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 interface MiniChartGridConfig {
   symbols: string[];
@@ -82,6 +86,7 @@ function MiniSparkline({ cell }: { cell: CellData }) {
 }
 
 function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig>) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const { watchlist } = useDashboardContext();
   // Memoized so the query key stays reference-stable on unrelated re-renders
@@ -127,11 +132,11 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
             className="text-[10px] font-semibold uppercase tracking-[0.14em]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
-            Mini Chart Grid
+            {t('dashboard.widgets.miniChartGrid.header')}
           </span>
         </div>
         <span className="text-[11px] dashboard-mono" style={{ color: 'var(--color-text-tertiary)' }}>
-          {effectiveSymbols.length} symbols · {SPARK_DAYS}d
+          {t('dashboard.widgets.miniChartGrid.summary', { count: effectiveSymbols.length, days: SPARK_DAYS })}
         </span>
       </div>
 
@@ -151,7 +156,7 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
             className="text-center py-8 text-xs"
             style={{ color: 'var(--color-text-tertiary)' }}
           >
-            No data available
+            {t('dashboard.widgets.miniChartGrid.empty')}
           </div>
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
@@ -184,7 +189,7 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
                       className="text-[11px] dashboard-mono"
                       style={{ color: up ? 'var(--color-profit)' : 'var(--color-loss)' }}
                     >
-                      {up ? '+' : ''}{pct.toFixed(2)}%
+                      {up ? '+' : ''}{fmt2(pct)}%
                     </span>
                   </div>
                   <div className="flex items-end justify-between mt-1">
@@ -192,7 +197,7 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
                       className="text-[11px] dashboard-mono"
                       style={{ color: 'var(--color-text-secondary)' }}
                     >
-                      ${cell.last.toFixed(2)}
+                      ${fmt2(cell.last)}
                     </span>
                     <MiniSparkline cell={cell} />
                   </div>
@@ -211,6 +216,7 @@ function MiniChartGridSettings({
   onChange,
   onClose,
 }: WidgetSettingsProps<MiniChartGridConfig>) {
+  const { t } = useTranslation();
   const { watchlist } = useDashboardContext();
   // Mirror the render-time precedence: configured symbols > watchlist >
   // defaults. Opening settings is side-effect-free — prefs only commit
@@ -225,10 +231,10 @@ function MiniChartGridSettings({
   return (
     <div className="space-y-4">
       <SymbolListField
-        label="Symbols"
+        label={t('dashboard.widgets.miniChartGrid.symbols')}
         value={displayedSymbols}
         onChange={(next) => onChange({ symbols: next })}
-        placeholder="Add a symbol (Enter)"
+        placeholder={t('dashboard.widgets.miniChartGrid.symbolsPlaceholder')}
         max={18}
       />
       <SettingsDoneButton onClick={onClose} />
@@ -238,8 +244,8 @@ function MiniChartGridSettings({
 
 registerWidget<MiniChartGridConfig>({
   type: 'markets.miniChartGrid',
-  title: 'Mini Chart Grid',
-  description: 'Sparkline grid across multiple symbols — 30-day trend at a glance.',
+  titleKey: 'dashboard.widgets.miniChartGrid.title',
+  descriptionKey: 'dashboard.widgets.miniChartGrid.description',
   category: 'markets',
   icon: Grid2x2,
   component: MiniChartGridWidget,

@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { Layers } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
@@ -30,48 +31,49 @@ function ETFHeatmapWidget({ instance }: WidgetRenderProps<ETFHeatmapConfig>) {
 }
 
 function ETFHeatmapSettings({ config, onChange, onClose }: WidgetSettingsProps<ETFHeatmapConfig>) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-4">
       <EnumField
-        label="Universe"
+        label={t('dashboard.widgets.etfHeatmap.universe')}
         value={config.dataSource ?? 'AllUSEtf'}
         onChange={(v) => onChange({ dataSource: v })}
         options={[
-          { value: 'AllUSEtf', label: 'All US ETFs' },
-          { value: 'EquityEtf', label: 'Equity ETFs' },
-          { value: 'BondEtf', label: 'Bond ETFs' },
-          { value: 'CommodityEtf', label: 'Commodity ETFs' },
-          { value: 'CurrencyEtf', label: 'Currency ETFs' },
+          { value: 'AllUSEtf', label: t('dashboard.widgets.etfHeatmap.universe_allUS') },
+          { value: 'EquityEtf', label: t('dashboard.widgets.etfHeatmap.universe_equity') },
+          { value: 'BondEtf', label: t('dashboard.widgets.etfHeatmap.universe_bond') },
+          { value: 'CommodityEtf', label: t('dashboard.widgets.etfHeatmap.universe_commodity') },
+          { value: 'CurrencyEtf', label: t('dashboard.widgets.etfHeatmap.universe_currency') },
         ]}
       />
       <EnumField
-        label="Block size by"
+        label={t('dashboard.widgets.etfHeatmap.blockSize')}
         value={config.blockSize ?? 'aum'}
         onChange={(v) => onChange({ blockSize: v })}
         options={[
-          { value: 'aum', label: 'AUM' },
-          { value: 'volume', label: 'Volume' },
-          { value: 'no_filter', label: 'Equal size' },
+          { value: 'aum', label: t('dashboard.widgets.etfHeatmap.blockSize_aum') },
+          { value: 'volume', label: t('dashboard.widgets.etfHeatmap.blockSize_volume') },
+          { value: 'no_filter', label: t('dashboard.widgets.etfHeatmap.blockSize_equal') },
         ]}
       />
       <EnumField
-        label="Color by"
+        label={t('dashboard.widgets.etfHeatmap.color')}
         value={config.blockColor ?? 'change'}
         onChange={(v) => onChange({ blockColor: v })}
         options={[
-          { value: 'change', label: '% change' },
-          { value: 'Perf.W', label: '1 week performance' },
-          { value: 'Perf.1M', label: '1 month performance' },
-          { value: 'Perf.YTD', label: 'YTD performance' },
+          { value: 'change', label: t('dashboard.widgets.etfHeatmap.color_change') },
+          { value: 'Perf.W', label: t('dashboard.widgets.etfHeatmap.color_1w') },
+          { value: 'Perf.1M', label: t('dashboard.widgets.etfHeatmap.color_1m') },
+          { value: 'Perf.YTD', label: t('dashboard.widgets.etfHeatmap.color_ytd') },
         ]}
       />
       <EnumField
-        label="Group by"
+        label={t('dashboard.widgets.etfHeatmap.groupBy')}
         value={config.grouping ?? 'asset_class'}
         onChange={(v) => onChange({ grouping: v })}
         options={[
-          { value: 'asset_class', label: 'Asset class' },
-          { value: 'no_group', label: 'None' },
+          { value: 'asset_class', label: t('dashboard.widgets.etfHeatmap.groupBy_assetClass') },
+          { value: 'no_group', label: t('dashboard.widgets.etfHeatmap.groupBy_none') },
         ]}
       />
       <TradingViewSettingsFooter />
@@ -82,8 +84,8 @@ function ETFHeatmapSettings({ config, onChange, onClose }: WidgetSettingsProps<E
 
 registerWidget<ETFHeatmapConfig>({
   type: 'tv.etf-heatmap',
-  title: 'ETF Heatmap',
-  description: 'Treemap of ETFs sized by AUM, colored by performance.',
+  titleKey: 'dashboard.widgets.etfHeatmap.title',
+  descriptionKey: 'dashboard.widgets.etfHeatmap.description',
   category: 'markets',
   icon: Layers,
   component: ETFHeatmapWidget,

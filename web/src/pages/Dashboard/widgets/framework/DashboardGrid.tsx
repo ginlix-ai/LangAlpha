@@ -1,4 +1,6 @@
 import { Component as ReactComponent, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
 import {
   ResponsiveGridLayout,
   useContainerWidth,
@@ -28,12 +30,13 @@ function pxToRows(px: number): number {
 }
 
 function WidgetFallback() {
+  const { t } = useTranslation();
   return (
     <div
       className="h-full w-full flex items-center justify-center text-[11px]"
       style={{ color: 'var(--color-text-tertiary)' }}
     >
-      Loading…
+      {t('dashboard.widgets.common.loading')}
     </div>
   );
 }
@@ -58,7 +61,7 @@ class WidgetErrorBoundary extends ReactComponent<
           className="h-full w-full flex flex-col items-center justify-center px-3 py-2 text-center gap-1"
           style={{ color: 'var(--color-text-tertiary)', fontSize: '11px', lineHeight: 1.4 }}
         >
-          <span style={{ fontWeight: 500 }}>Widget failed to render</span>
+          <span style={{ fontWeight: 500 }}>{i18n.t('dashboard.widgets.frame.errorBoundary')}</span>
           <span style={{ opacity: 0.75 }}>{this.props.widgetType}</span>
         </div>
       );

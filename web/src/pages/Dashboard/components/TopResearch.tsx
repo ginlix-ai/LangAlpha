@@ -1,5 +1,7 @@
 import React from 'react';
 import { Menu } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
 
 interface ResearchItem {
   title: string;
@@ -7,17 +9,20 @@ interface ResearchItem {
 }
 
 const TopResearch: React.FC = () => {
+  const { t } = useTranslation();
+  const sampleTitle = t('dashboard.topResearch.sample1');
+  const sampleTime = i18n.t('dashboard.widgets.common.relativePast', { when: '10m' });
   const researchItems: ResearchItem[] = [
-    { title: 'Retail Sales Slump Takes Toll on Market, Stocks Dip', time: '10 min ago' },
-    { title: 'Retail Sales Slump Takes Toll on Market, Stocks Dip', time: '10 min ago' },
-    { title: 'Retail Sales Slump Takes Toll on Market, Stocks Dip', time: '10 min ago' },
-    { title: 'Retail Sales Slump Takes Toll on Market, Stocks Dip', time: '10 min ago' },
+    { title: sampleTitle, time: sampleTime },
+    { title: sampleTitle, time: sampleTime },
+    { title: sampleTitle, time: sampleTime },
+    { title: sampleTitle, time: sampleTime },
   ];
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-semibold">Top Research</h2>
+        <h2 className="text-2xl font-semibold">{t('dashboard.topResearch.title')}</h2>
         <Menu className="h-5 w-5 text-muted-foreground cursor-pointer" />
       </div>
       <div className="space-y-3">

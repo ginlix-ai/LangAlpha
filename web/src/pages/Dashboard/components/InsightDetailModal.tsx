@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { X, ExternalLink, Sparkles, ChevronDown } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useTranslation } from 'react-i18next';
 import TopicBadge from './TopicBadge';
 import { getInsightDetail } from '../utils/api';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { MobileBottomSheet } from '@/components/ui/mobile-bottom-sheet';
+import i18n from '@/i18n';
 
 interface InsightTopic {
   text: string;
@@ -44,7 +46,7 @@ function formatDate(dateString: string | undefined): string {
   if (!dateString) return '';
   try {
     const d = new Date(dateString);
-    return d.toLocaleDateString('en-US', {
+    return d.toLocaleDateString(i18n.language, {
       month: 'short',
       day: 'numeric',
       year: 'numeric',
@@ -70,6 +72,7 @@ function InsightBody({
   setSourcesOpen: React.Dispatch<React.SetStateAction<boolean>>;
   isMobile: boolean;
 }) {
+  const { t } = useTranslation();
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -84,7 +87,7 @@ function InsightBody({
   if (!detail) {
     return (
       <div className="flex items-center justify-center py-24">
-        <p style={{ color: 'var(--color-text-secondary)' }}>Insight not found</p>
+        <p style={{ color: 'var(--color-text-secondary)' }}>{t('dashboard.insightDetail.notFound')}</p>
       </div>
     );
   }
@@ -104,7 +107,7 @@ function InsightBody({
             }}
           >
             <Sparkles size={isMobile ? 10 : 12} />
-            AI Research Brief
+            {t('dashboard.insightDetail.eyebrow')}
           </div>
           {detail.model && (
             <span
@@ -229,7 +232,7 @@ function InsightBody({
                 className="transition-transform"
                 style={{ transform: sourcesOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}
               />
-              All Sources ({detail.sources!.length})
+              {t('dashboard.insightDetail.allSources', { count: detail.sources!.length })}
               {!sourcesOpen && (
                 <span className="flex items-center -space-x-1 ml-1">
                   {detail.sources!

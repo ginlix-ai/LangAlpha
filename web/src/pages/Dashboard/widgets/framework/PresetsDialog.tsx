@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { Sparkles, Star } from 'lucide-react';
 import {
   Dialog,
@@ -16,6 +17,7 @@ interface PresetsDialogProps {
 }
 
 export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProps) {
+  const { t } = useTranslation();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -31,20 +33,19 @@ export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProp
               className="text-[11px] font-semibold uppercase tracking-[0.08em] mb-1.5"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
-              Dashboard layouts
+              {t('dashboard.widgets.presetsDialog.eyebrow')}
             </div>
             <DialogTitle
               className="text-[28px] leading-tight tracking-tight"
               style={{ color: 'var(--color-text-primary)', fontWeight: 600 }}
             >
-              Start with a preset
+              {t('dashboard.widgets.presetsDialog.title')}
             </DialogTitle>
             <DialogDescription
               className="mt-2 text-[13px] max-w-[64ch]"
               style={{ color: 'var(--color-text-secondary)' }}
             >
-              Six curated layouts tuned to different workflows. Pick one to start, then rearrange
-              and swap widgets freely. Your existing layout is saved and can be restored.
+              {t('dashboard.widgets.presetsDialog.description')}
             </DialogDescription>
           </div>
           <div
@@ -55,7 +56,7 @@ export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProp
               color: 'var(--color-accent-primary)',
             }}
           >
-            <Sparkles size={10} /> tailored to your holdings
+            <Sparkles size={10} /> {t('dashboard.widgets.presetsDialog.tailoredBadge')}
           </div>
         </DialogHeader>
         <div className="flex-1 overflow-y-auto">
@@ -93,7 +94,7 @@ export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProp
                       borderColor: '#E0CC9B',
                     }}
                   >
-                    <Star size={9} fill="currentColor" /> most popular
+                    <Star size={9} fill="currentColor" /> {t('dashboard.widgets.presetsDialog.popularBadge')}
                   </span>
                 )}
                 <div className="flex items-start justify-between mb-3 gap-3 pr-20">
@@ -103,7 +104,7 @@ export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProp
                         className="text-[22px] leading-tight"
                         style={{ color: 'var(--color-text-primary)', fontWeight: 600 }}
                       >
-                        {preset.name}
+                        {t(preset.nameKey)}
                       </span>
                       <span
                         className="text-[10px] px-2 py-0.5 rounded-full border"
@@ -113,14 +114,14 @@ export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProp
                           color: 'var(--color-text-secondary)',
                         }}
                       >
-                        {preset.tag}
+                        {t(preset.tagKey)}
                       </span>
                     </div>
                     <p
                       className="text-[12.5px] leading-relaxed"
                       style={{ color: 'var(--color-text-secondary)' }}
                     >
-                      {preset.description}
+                      {t(preset.descriptionKey)}
                     </p>
                   </div>
                 </div>
@@ -134,9 +135,9 @@ export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProp
                   <PresetThumbnail id={preset.id} />
                 </div>
                 <div className="mt-3 flex flex-wrap gap-1.5">
-                  {preset.pills.map((pill) => (
+                  {preset.pillKeys.map((key) => (
                     <span
-                      key={pill}
+                      key={key}
                       className="text-[10px] px-2 py-0.5 rounded-full border"
                       style={{
                         backgroundColor: 'var(--color-bg-subtle)',
@@ -144,13 +145,15 @@ export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProp
                         color: 'var(--color-text-secondary)',
                       }}
                     >
-                      {pill}
+                      {t(key)}
                     </span>
                   ))}
                 </div>
                 <div className="mt-3 flex items-center justify-between text-[11.5px]">
                   <span style={{ color: 'var(--color-text-tertiary)' }}>
-                    Best when: {preset.bestFor}
+                    {t('dashboard.widgets.presetsDialog.bestWhen', {
+                      bestFor: t(preset.bestForKey),
+                    })}
                   </span>
                   <button
                     type="button"
@@ -160,7 +163,7 @@ export function PresetsDialog({ open, onOpenChange, onApply }: PresetsDialogProp
                       color: 'var(--color-bg-card)',
                     }}
                   >
-                    Use this layout →
+                    {t('dashboard.widgets.presetsDialog.useLayout')}
                   </button>
                 </div>
               </article>

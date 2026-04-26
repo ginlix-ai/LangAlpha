@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { Map } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
@@ -34,39 +35,40 @@ function StockHeatmapWidget({ instance }: WidgetRenderProps<StockHeatmapConfig>)
 }
 
 function StockHeatmapSettings({ config, onChange, onClose }: WidgetSettingsProps<StockHeatmapConfig>) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-4">
       <EnumField
-        label="Market"
+        label={t('dashboard.widgets.stockHeatmap.market')}
         value={config.dataSource ?? 'SPX500'}
         onChange={(v) => onChange({ dataSource: v })}
         options={[
-          { value: 'SPX500', label: 'S&P 500' },
-          { value: 'NASDAQ100', label: 'NASDAQ 100' },
-          { value: 'DJI', label: 'Dow Jones 30' },
-          { value: 'FTSE100', label: 'FTSE 100' },
-          { value: 'HSI', label: 'Hang Seng' },
+          { value: 'SPX500', label: t('dashboard.widgets.stockHeatmap.market_sp500') },
+          { value: 'NASDAQ100', label: t('dashboard.widgets.stockHeatmap.market_ndx') },
+          { value: 'DJI', label: t('dashboard.widgets.stockHeatmap.market_dji') },
+          { value: 'FTSE100', label: t('dashboard.widgets.stockHeatmap.market_ftse') },
+          { value: 'HSI', label: t('dashboard.widgets.stockHeatmap.market_hsi') },
         ]}
       />
       <EnumField
-        label="Cell size"
+        label={t('dashboard.widgets.stockHeatmap.cellSize')}
         value={config.blockSize ?? 'market_cap_basic'}
         onChange={(v) => onChange({ blockSize: v })}
         options={[
-          { value: 'market_cap_basic', label: 'Market cap' },
-          { value: 'volume', label: 'Volume' },
-          { value: 'number_of_employees', label: 'Employees' },
+          { value: 'market_cap_basic', label: t('dashboard.widgets.stockHeatmap.cellSize_marketCap') },
+          { value: 'volume', label: t('dashboard.widgets.stockHeatmap.cellSize_volume') },
+          { value: 'number_of_employees', label: t('dashboard.widgets.stockHeatmap.cellSize_employees') },
         ]}
       />
       <EnumField
-        label="Cell color"
+        label={t('dashboard.widgets.stockHeatmap.cellColor')}
         value={config.blockColor ?? 'change'}
         onChange={(v) => onChange({ blockColor: v })}
         options={[
-          { value: 'change', label: '% change (day)' },
-          { value: 'Perf.W', label: '% change (week)' },
-          { value: 'Perf.1M', label: '% change (month)' },
-          { value: 'Volatility.W', label: 'Volatility' },
+          { value: 'change', label: t('dashboard.widgets.stockHeatmap.cellColor_changeDay') },
+          { value: 'Perf.W', label: t('dashboard.widgets.stockHeatmap.cellColor_changeWeek') },
+          { value: 'Perf.1M', label: t('dashboard.widgets.stockHeatmap.cellColor_changeMonth') },
+          { value: 'Volatility.W', label: t('dashboard.widgets.stockHeatmap.cellColor_volatility') },
         ]}
       />
       <TradingViewSettingsFooter />
@@ -77,8 +79,8 @@ function StockHeatmapSettings({ config, onChange, onClose }: WidgetSettingsProps
 
 registerWidget<StockHeatmapConfig>({
   type: 'tv.stock-heatmap',
-  title: 'Stock Heatmap',
-  description: 'Sector-grouped treemap sized by market cap, colored by % change.',
+  titleKey: 'dashboard.widgets.stockHeatmap.title',
+  descriptionKey: 'dashboard.widgets.stockHeatmap.description',
   category: 'markets',
   icon: Map,
   component: StockHeatmapWidget,

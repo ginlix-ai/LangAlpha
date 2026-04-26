@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
 import { LayoutGrid, Zap, ArrowUpRight, Plus } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useWorkspaces } from '@/hooks/useWorkspaces';
@@ -14,21 +16,31 @@ interface WorkspaceRecord extends Workspace {
   is_pinned?: boolean;
 }
 
+// Outside React render — module-level helper. Components that consume this
+// MUST call useTranslation() so the surrounding tree re-renders on locale
+// switch and picks up the freshly-resolved string.
 function formatRelative(ts?: string): string {
   if (!ts) return '';
   const then = new Date(ts).getTime();
   if (Number.isNaN(then)) return '';
   const mins = Math.max(0, Math.floor((Date.now() - then) / 60000));
-  if (mins < 1) return 'now';
-  if (mins < 60) return `${mins}m`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h`;
-  const days = Math.floor(hrs / 24);
-  if (days < 7) return `${days}d`;
-  const weeks = Math.floor(days / 7);
-  if (weeks < 5) return `${weeks}w`;
-  const months = Math.floor(days / 30);
-  return `${months}mo`;
+  if (mins < 1) return i18n.t('dashboard.widgets.common.relativeNow');
+  let when: string;
+  if (mins < 60) when = `${mins}m`;
+  else {
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) when = `${hrs}h`;
+    else {
+      const days = Math.floor(hrs / 24);
+      if (days < 7) when = `${days}d`;
+      else {
+        const weeks = Math.floor(days / 7);
+        if (weeks < 5) when = `${weeks}w`;
+        else when = `${Math.floor(days / 30)}mo`;
+      }
+    }
+  }
+  return i18n.t('dashboard.widgets.common.relativePast', { when });
 }
 
 function WorkspaceTile({
@@ -40,6 +52,7 @@ function WorkspaceTile({
   index: number;
   onOpen: () => void;
 }) {
+  const { t } = useTranslation();
   const isFlash = workspace.status === 'flash';
   const relative = formatRelative(workspace.updated_at as string | undefined);
   const idx = String(index + 1).padStart(2, '0');
@@ -86,7 +99,7 @@ function WorkspaceTile({
               letterSpacing: '-0.005em',
             }}
           >
-            {workspace.name || 'Untitled workspace'}
+            {workspace.name || t('dashboard.widgets.workspacePicker.untitled')}
           </span>
         </div>
         <ArrowUpRight
@@ -107,13 +120,13 @@ function WorkspaceTile({
             className="text-[11.5px] italic"
             style={{ color: 'var(--color-text-tertiary)', opacity: 0.7 }}
           >
-            {isFlash ? 'Instant answers, no sandbox.' : 'No description'}
+            {isFlash ? t('dashboard.widgets.workspacePicker.flashDesc') : t('dashboard.widgets.workspacePicker.noDescription')}
           </div>
         )}
         {relative ? (
           <div className="flex items-center justify-between text-[10px] dashboard-mono uppercase tracking-wider">
             <span style={{ color: 'var(--color-text-tertiary)', opacity: 0.75 }}>
-              {isFlash ? 'flash' : 'workspace'}
+              {isFlash ? t('dashboard.widgets.workspacePicker.tagFlash') : t('dashboard.widgets.workspacePicker.tagWorkspace')}
             </span>
             <span style={{ color: 'var(--color-text-tertiary)' }}>{relative}</span>
           </div>
@@ -124,6 +137,7 @@ function WorkspaceTile({
 }
 
 function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerConfig>) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   // Fetch 100 to share the cache key with the other dashboard workspace consumers;
   // slice locally to honor the widget's configured display limit.
@@ -140,7 +154,7 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
             className="text-[10px] font-semibold uppercase tracking-[0.14em]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
-            Workspaces
+            {t('dashboard.widgets.workspacePicker.header')}
           </span>
           <span
             className="title-font text-lg leading-none dashboard-mono"
@@ -164,7 +178,7 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
             e.currentTarget.style.color = 'var(--color-text-tertiary)';
           }}
         >
-          <span>View all</span>
+          <span>{t('dashboard.widgets.workspacePicker.viewAll')}</span>
           <ArrowUpRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
         </button>
       </div>
@@ -190,10 +204,10 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
             </div>
             <div className="text-center">
               <div
-                className="title-font italic text-sm mb-0.5"
+                className="dashboard-mono text-sm mb-0.5"
                 style={{ color: 'var(--color-text-primary)' }}
               >
-                No workspaces yet
+                {t('dashboard.widgets.workspacePicker.empty')}
               </div>
               <button
                 type="button"
@@ -204,7 +218,7 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
                 className="text-[11px] uppercase tracking-wider underline-offset-4 hover:underline"
                 style={{ color: 'var(--color-text-secondary)' }}
               >
-                Start your first one →
+                {t('dashboard.widgets.workspacePicker.emptyCta')}
               </button>
             </div>
           </div>
@@ -230,8 +244,8 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
 
 registerWidget<WorkspacePickerConfig>({
   type: 'workspace.picker',
-  title: 'Workspaces',
-  description: 'Jump into an existing workspace.',
+  titleKey: 'dashboard.widgets.workspacePicker.title',
+  descriptionKey: 'dashboard.widgets.workspacePicker.description',
   category: 'workspace',
   icon: LayoutGrid,
   component: WorkspacePickerWidget,

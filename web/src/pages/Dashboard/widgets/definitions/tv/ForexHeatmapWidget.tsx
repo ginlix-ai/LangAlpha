@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { DollarSign } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
@@ -27,10 +28,11 @@ function ForexHeatmapWidget({ instance }: WidgetRenderProps<ForexHeatmapConfig>)
 }
 
 function ForexHeatmapSettings({ config: _config, onChange: _onChange, onClose }: WidgetSettingsProps<ForexHeatmapConfig>) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-4">
       <div className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-        Shows cross-rates for major currencies. The currency set is fixed by TradingView in this widget.
+        {t('dashboard.widgets.forexHeatmap.info')}
       </div>
       <TradingViewSettingsFooter />
       <SettingsDoneButton onClick={onClose} />
@@ -40,8 +42,8 @@ function ForexHeatmapSettings({ config: _config, onChange: _onChange, onClose }:
 
 registerWidget<ForexHeatmapConfig>({
   type: 'tv.forex-heatmap',
-  title: 'Forex Cross Rates',
-  description: 'Major-currency cross-rate grid with live spreads.',
+  titleKey: 'dashboard.widgets.forexHeatmap.title',
+  descriptionKey: 'dashboard.widgets.forexHeatmap.description',
   category: 'markets',
   icon: DollarSign,
   component: ForexHeatmapWidget,

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { X, Calendar, Hash, ExternalLink, TrendingUp, TrendingDown, Minus, Tag } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import i18n from '@/i18n';
 import { getNewsArticle } from '../utils/api';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { MobileBottomSheet } from '@/components/ui/mobile-bottom-sheet';
@@ -74,7 +75,7 @@ function formatDate(dateString: string | undefined): string {
   if (!dateString) return '';
   try {
     const d = new Date(dateString);
-    return d.toLocaleDateString('en-US', {
+    return d.toLocaleDateString(i18n.language, {
       month: 'short',
       day: 'numeric',
       year: 'numeric',

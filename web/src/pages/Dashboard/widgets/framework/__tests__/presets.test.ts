@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import i18n from '@/i18n';
 import { PRESETS_META, getPreset, type PresetId } from '../../presets';
-import { getWidget } from '../WidgetRegistry';
+import { getWidget, listWidgets } from '../WidgetRegistry';
 import '../../index'; // side-effect: register all widgets
 
 // Presets drift silently if a layout item's `i` doesn't map to a widget, or if
@@ -104,4 +105,59 @@ describe('presets', () => {
       }
     }
   });
+
+  // REGRESSION-CRITICAL: every preset must declare i18n keys for all
+  // user-visible chrome (name/tag/description/bestFor + per-pill keys), and
+  // every key must resolve to a non-empty string in BOTH locales. Rendering
+  // is i18n-only after the literal cleanup — a missing key surfaces as the
+  // raw key path on the dialog ('dashboard.widgets.presets.foo.name') and
+  // the user sees the wrong copy.
+  describe('preset i18n key coverage', () => {
+    PRESETS_META.forEach((meta) => {
+      it(`${meta.id}: declares all required i18n keys`, () => {
+        expect(meta.nameKey, `missing nameKey on ${meta.id}`).toBeTruthy();
+        expect(meta.tagKey, `missing tagKey on ${meta.id}`).toBeTruthy();
+        expect(meta.descriptionKey, `missing descriptionKey on ${meta.id}`).toBeTruthy();
+        expect(meta.bestForKey, `missing bestForKey on ${meta.id}`).toBeTruthy();
+        expect(meta.pillKeys, `missing pillKeys on ${meta.id}`).toBeTruthy();
+      });
+
+      it(`${meta.id}: every key resolves to a non-empty string in en-US AND zh-CN`, () => {
+        const keys = [meta.nameKey, meta.tagKey, meta.descriptionKey, meta.bestForKey, ...(meta.pillKeys ?? [])];
+        for (const key of keys) {
+          if (!key) continue;
+          for (const lng of ['en-US', 'zh-CN']) {
+            const resolved = i18n.t(key, { lng });
+            expect(resolved.length, `key ${key} empty under ${lng}`).toBeGreaterThan(0);
+            expect(resolved, `key ${key} unresolved under ${lng}`).not.toBe(key);
+          }
+        }
+      });
+    });
+  });
+});
+
+// Same shape for widget definitions: every registered widget must have a
+// titleKey that resolves in both locales. Without this, the gallery /
+// widget-frame would render the raw key path. descriptionKey is optional
+// (some widgets have no blurb) but if declared, must resolve.
+describe('widget definition i18n key coverage', () => {
+  for (const def of listWidgets()) {
+    it(`${def.type}: titleKey resolves in en-US and zh-CN`, () => {
+      expect(def.titleKey, `missing titleKey on ${def.type}`).toBeTruthy();
+      for (const lng of ['en-US', 'zh-CN']) {
+        const resolved = i18n.t(def.titleKey, { lng });
+        expect(resolved.length, `${def.titleKey} empty under ${lng}`).toBeGreaterThan(0);
+        expect(resolved, `${def.titleKey} unresolved under ${lng}`).not.toBe(def.titleKey);
+      }
+    });
+    it(`${def.type}: descriptionKey (when set) resolves in en-US and zh-CN`, () => {
+      if (!def.descriptionKey) return;
+      for (const lng of ['en-US', 'zh-CN']) {
+        const resolved = i18n.t(def.descriptionKey, { lng });
+        expect(resolved.length, `${def.descriptionKey} empty under ${lng}`).toBeGreaterThan(0);
+        expect(resolved, `${def.descriptionKey} unresolved under ${lng}`).not.toBe(def.descriptionKey);
+      }
+    });
+  }
 });

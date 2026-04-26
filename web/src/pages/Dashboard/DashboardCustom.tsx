@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Plus, Layers, RotateCcw, X } from 'lucide-react';
 import DashboardHeader from './components/DashboardHeader';
 import ConfirmDialog from './components/ConfirmDialog';
@@ -29,6 +30,7 @@ interface DashboardCustomProps {
 }
 
 function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
+  const { t } = useTranslation();
   const { prefs, update, applyPreset, resetToDefault } = useDashboardPrefs();
   const [editMode, setEditMode] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
@@ -152,7 +154,7 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
               color: 'var(--color-text-on-accent)',
             }}
           >
-            <Plus size={12} /> Add widget
+            <Plus size={12} /> {t('dashboard.widgets.shell.addWidget')}
           </button>
           <button
             type="button"
@@ -160,7 +162,7 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full transition-colors"
             style={{ color: 'var(--color-text-primary)' }}
           >
-            <Layers size={12} /> Presets
+            <Layers size={12} /> {t('dashboard.widgets.shell.presets')}
           </button>
           <button
             type="button"
@@ -168,7 +170,7 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-full transition-colors"
             style={{ color: 'var(--color-text-secondary)' }}
           >
-            <RotateCcw size={12} /> Reset
+            <RotateCcw size={12} /> {t('dashboard.widgets.shell.reset')}
           </button>
           <div className="w-px h-5 mx-0.5" style={{ backgroundColor: 'var(--color-border-muted)' }} />
           <button
@@ -177,7 +179,7 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full transition-colors"
             style={{ color: 'var(--color-text-secondary)' }}
           >
-            <X size={12} /> Done
+            <X size={12} /> {t('dashboard.widgets.shell.done')}
           </button>
         </div>
       )}
@@ -185,9 +187,9 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
       {/* Reset confirmation */}
       <ConfirmDialog
         open={resetConfirmOpen}
-        title="Reset to Morning Brief?"
-        message="This replaces your current widgets and layout with the default preset. This action can't be undone."
-        confirmLabel="Reset layout"
+        title={t('dashboard.widgets.shell.resetTitle')}
+        message={t('dashboard.widgets.shell.resetMessage')}
+        confirmLabel={t('dashboard.widgets.shell.resetConfirm')}
         onConfirm={() => {
           setSettingsFor(null);
           resetToDefault();
@@ -230,7 +232,9 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
           >
             <DialogHeader>
               <DialogTitle style={{ color: 'var(--color-text-primary)' }}>
-                {settingsDef?.title} settings
+                {t('dashboard.widgets.shell.settingsDialogTitle', {
+                  title: settingsDef?.titleKey ? t(settingsDef.titleKey) : '',
+                })}
               </DialogTitle>
             </DialogHeader>
             <SettingsComp
@@ -265,7 +269,7 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
         open={modals.deleteConfirm.open}
         title={modals.deleteConfirm.title}
         message={modals.deleteConfirm.message}
-        confirmLabel="Delete"
+        confirmLabel={t('dashboard.widgets.shell.deleteConfirm')}
         onConfirm={modals.runDeleteConfirm}
         onOpenChange={(open) => !open && modals.cancelDeleteConfirm()}
       />
@@ -278,7 +282,7 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
         >
           <DialogHeader>
             <DialogTitle className="title-font" style={{ color: 'var(--color-text-primary)' }}>
-              Edit holding — {portfolio.editRow?.symbol}
+              {t('dashboard.widgets.shell.editHoldingTitle', { symbol: portfolio.editRow?.symbol ?? '' })}
             </DialogTitle>
           </DialogHeader>
           <div
@@ -292,13 +296,13 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
           >
             <div>
               <label className="text-xs block mb-1" style={{ color: 'var(--color-text-secondary)' }}>
-                Quantity *
+                {t('dashboard.widgets.shell.quantityLabel')}
               </label>
               <Input
                 type="number"
                 min="0"
                 step="any"
-                placeholder="e.g. 10.5"
+                placeholder={t('dashboard.widgets.shell.quantityPlaceholder')}
                 value={portfolio.editForm.quantity ?? ''}
                 onChange={(e) => portfolio.setEditForm?.({ ...portfolio.editForm, quantity: e.target.value })}
                 className="border"
@@ -311,13 +315,13 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
             </div>
             <div>
               <label className="text-xs block mb-1" style={{ color: 'var(--color-text-secondary)' }}>
-                Average Cost Per Share *
+                {t('dashboard.widgets.shell.averageCostLabel')}
               </label>
               <Input
                 type="number"
                 min="0"
                 step="any"
-                placeholder="e.g. 175.50"
+                placeholder={t('dashboard.widgets.shell.averageCostPlaceholder')}
                 value={portfolio.editForm.averageCost ?? ''}
                 onChange={(e) => portfolio.setEditForm?.({ ...portfolio.editForm, averageCost: e.target.value })}
                 className="border"
@@ -330,10 +334,10 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
             </div>
             <div>
               <label className="text-xs block mb-1" style={{ color: 'var(--color-text-secondary)' }}>
-                Notes
+                {t('dashboard.widgets.shell.notesLabel')}
               </label>
               <Input
-                placeholder="Optional"
+                placeholder={t('dashboard.widgets.shell.notesPlaceholder')}
                 value={portfolio.editForm.notes ?? ''}
                 onChange={(e) => portfolio.setEditForm?.({ ...portfolio.editForm, notes: e.target.value })}
                 className="border"
@@ -352,7 +356,7 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
               className="px-3 py-1.5 rounded text-sm border hover:bg-foreground/10"
               style={{ color: 'var(--color-text-primary)', borderColor: 'var(--color-border-default)' }}
             >
-              Cancel
+              {t('dashboard.widgets.shell.cancel')}
             </button>
             <button
               type="button"
@@ -360,7 +364,7 @@ function CustomInner({ mode, onModeChange }: DashboardCustomProps) {
               className="px-3 py-1.5 rounded text-sm font-medium hover:opacity-90"
               style={{ backgroundColor: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}
             >
-              Save
+              {t('dashboard.widgets.shell.save')}
             </button>
           </div>
         </DialogContent>

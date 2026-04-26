@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { Tag } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
@@ -22,10 +23,11 @@ function SingleTickerWidget({ instance }: WidgetRenderProps<SingleTickerConfig>)
 }
 
 function SingleTickerSettings({ config, onChange, onClose }: WidgetSettingsProps<SingleTickerConfig>) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-4">
       <SymbolField
-        label="Symbol"
+        label={t('dashboard.widgets.singleTicker.symbol')}
         value={config.symbol ?? ''}
         onChange={(v) => onChange({ symbol: v })}
         placeholder="NASDAQ:NVDA"
@@ -38,8 +40,8 @@ function SingleTickerSettings({ config, onChange, onClose }: WidgetSettingsProps
 
 registerWidget<SingleTickerConfig>({
   type: 'tv.single-ticker',
-  title: 'Single Ticker',
-  description: 'Compact live-price card for one symbol.',
+  titleKey: 'dashboard.widgets.singleTicker.title',
+  descriptionKey: 'dashboard.widgets.singleTicker.description',
   category: 'markets',
   icon: Tag,
   component: SingleTickerWidget,
