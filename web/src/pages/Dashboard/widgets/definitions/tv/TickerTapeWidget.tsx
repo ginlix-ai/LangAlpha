@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Activity } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
@@ -122,6 +123,7 @@ function TickerTapeWidget({ instance }: WidgetRenderProps<TickerTapeConfig>) {
 }
 
 function TickerTapeSettings({ config, onChange, onClose }: WidgetSettingsProps<TickerTapeConfig>) {
+  const { t } = useTranslation();
   const { watchlist, portfolio } = useDashboardContext();
   // Mirror the render-time live seed so the chip list shows what the tape
   // is actually rendering. Opening settings stays side-effect-free — the
@@ -136,20 +138,20 @@ function TickerTapeSettings({ config, onChange, onClose }: WidgetSettingsProps<T
   return (
     <div className="space-y-4">
       <SymbolListField
-        label="Symbols"
+        label={t('dashboard.widgets.tickerTape.symbols')}
         value={displayedSymbols}
         onChange={(next) => onChange({ symbols: next })}
-        placeholder="e.g. NASDAQ:NVDA"
-        helper="Use TradingView's exchange-qualified form (e.g. NASDAQ:NVDA) for best results."
+        placeholder={t('dashboard.widgets.tickerTape.symbolsPlaceholder')}
+        helper={t('dashboard.widgets.tickerTape.symbolsHelper')}
       />
       <EnumField
-        label="Display mode"
+        label={t('dashboard.widgets.tickerTape.displayMode')}
         value={config.displayMode ?? 'adaptive'}
         onChange={(v) => onChange({ displayMode: v as TickerTapeConfig['displayMode'] })}
         options={[
-          { value: 'adaptive', label: 'Adaptive' },
-          { value: 'regular', label: 'Regular' },
-          { value: 'compact', label: 'Compact' },
+          { value: 'adaptive', label: t('dashboard.widgets.tickerTape.displayMode_adaptive') },
+          { value: 'regular', label: t('dashboard.widgets.tickerTape.displayMode_regular') },
+          { value: 'compact', label: t('dashboard.widgets.tickerTape.displayMode_compact') },
         ]}
       />
       <TradingViewSettingsFooter />
@@ -160,8 +162,8 @@ function TickerTapeSettings({ config, onChange, onClose }: WidgetSettingsProps<T
 
 registerWidget<TickerTapeConfig>({
   type: 'tv.ticker-tape',
-  title: 'Ticker Tape',
-  description: 'Scrolling real-time quotes across your chosen symbols.',
+  titleKey: 'dashboard.widgets.tickerTape.title',
+  descriptionKey: 'dashboard.widgets.tickerTape.description',
   category: 'markets',
   icon: Activity,
   component: TickerTapeWidget,

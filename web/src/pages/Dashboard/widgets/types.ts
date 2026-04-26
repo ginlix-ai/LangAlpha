@@ -23,8 +23,12 @@ export interface WidgetSettingsProps<C = unknown> {
 
 export interface WidgetDefinition<C = unknown> {
   type: string;
-  title: string;
-  description?: string;
+  /** i18n key for the widget's display name. Required — render sites resolve
+   *  it via `t(titleKey)`. Use a `dashboard.widgets.<key>.title` shape so
+   *  `keys.test.ts` picks it up automatically. */
+  titleKey: string;
+  /** Optional i18n key for the widget's gallery blurb. Same shape rules. */
+  descriptionKey?: string;
   category: WidgetCategory;
   icon: LucideIcon;
   component: ComponentType<WidgetRenderProps<C>>;

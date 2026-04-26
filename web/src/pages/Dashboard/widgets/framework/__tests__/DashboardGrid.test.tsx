@@ -32,7 +32,7 @@ function TestWidget() {
 
 registerWidget({
   type: 'test.fit-height',
-  title: 'Test Fit Height',
+  titleKey: 'test.fit-height.title',
   category: 'intel',
   icon: (() => null) as any,
   component: TestWidget,

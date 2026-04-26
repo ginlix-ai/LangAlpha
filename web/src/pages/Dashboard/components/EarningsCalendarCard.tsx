@@ -1,4 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
 import { createPortal } from 'react-dom';
 import { ChevronRight, X, Calendar } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -54,7 +56,7 @@ function LogoFallback({ symbol }: LogoFallbackProps) {
 
 function formatDate(dateStr: string | undefined): string {
   if (!dateStr) return '';
-  return new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return new Date(dateStr + 'T00:00:00').toLocaleDateString(i18n.language, { month: 'short', day: 'numeric' });
 }
 
 function EarningsItem({ item, index: _index, isPast }: EarningsItemProps) {
@@ -116,13 +118,14 @@ function SectionLabel({ label }: SectionLabelProps) {
 function formatDateTab(dateStr: string | undefined): DateTabInfo {
   if (!dateStr) return { weekday: '', label: '' };
   const d = new Date(dateStr + 'T00:00:00');
-  const weekday = d.toLocaleDateString('en-US', { weekday: 'short' });
-  const month = d.toLocaleDateString('en-US', { month: 'short' });
+  const weekday = d.toLocaleDateString(i18n.language, { weekday: 'short' });
+  const month = d.toLocaleDateString(i18n.language, { month: 'short' });
   const day = d.getDate();
   return { weekday, label: `${month} ${day}` };
 }
 
 function EarningsModal({ earnings, onClose }: EarningsModalProps) {
+  const { t } = useTranslation();
   const todayStr = new Date().toISOString().split('T')[0];
 
   // Group by date, sorted chronologically
@@ -186,7 +189,7 @@ function EarningsModal({ earnings, onClose }: EarningsModalProps) {
         <div className="flex items-center justify-between px-6 pt-6 pb-4 flex-shrink-0">
           <h2 className="text-xl font-bold flex items-center gap-2" style={{ color: 'var(--color-text-primary)' }}>
             <Calendar size={20} style={{ color: 'var(--color-accent-light)' }} />
-            Earnings Calendar
+            {t('dashboard.widgets.earningsCalendar.title')}
           </h2>
           <button
             onClick={onClose}
@@ -194,6 +197,7 @@ function EarningsModal({ earnings, onClose }: EarningsModalProps) {
             style={{ color: 'var(--color-text-secondary)' }}
             onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)'; }}
             onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
+            aria-label={t('dashboard.earningsCalendarCard.close')}
           >
             <X size={18} />
           </button>
@@ -236,7 +240,7 @@ function EarningsModal({ earnings, onClose }: EarningsModalProps) {
                 </span>
                 <span className="font-bold">{label}</span>
                 <span className="text-[10px] mt-0.5" style={{ opacity: 0.7 }}>
-                  {group.items.length} {group.items.length === 1 ? 'stock' : 'stocks'}
+                  {t('dashboard.earningsCalendarCard.stockCount', { count: group.items.length })}
                 </span>
               </button>
             );
@@ -258,7 +262,7 @@ function EarningsModal({ earnings, onClose }: EarningsModalProps) {
                 className="text-sm py-8 text-center"
                 style={{ color: 'var(--color-text-secondary)' }}
               >
-                No earnings on this date
+                {t('dashboard.earningsCalendarCard.emptyOnDate')}
               </motion.p>
             ) : (
               <motion.div
@@ -314,6 +318,7 @@ function EarningsModal({ earnings, onClose }: EarningsModalProps) {
 }
 
 function EarningsCalendarCard() {
+  const { t } = useTranslation();
   const [allEarnings, setAllEarnings] = useState<EarningsEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -364,7 +369,7 @@ function EarningsCalendarCard() {
       <div className="dashboard-glass-card p-6 flex flex-col">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-xl font-bold" style={{ color: 'var(--color-text-primary)' }}>
-            Earnings Calendar
+            {t('dashboard.widgets.earningsCalendar.title')}
           </h2>
           <button
             onClick={() => setModalOpen(true)}
@@ -373,7 +378,7 @@ function EarningsCalendarCard() {
             onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--color-text-primary)')}
             onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--color-text-secondary)')}
           >
-            View All <ChevronRight size={12} />
+            {t('dashboard.earningsCalendarCard.viewAll')} <ChevronRight size={12} />
           </button>
         </div>
 
@@ -399,15 +404,15 @@ function EarningsCalendarCard() {
             ))
           ) : previewItems.length === 0 ? (
             <p className="text-sm py-4 text-center" style={{ color: 'var(--color-text-secondary)' }}>
-              No earnings in this period
+              {t('dashboard.earningsCalendarCard.emptyPeriod')}
             </p>
           ) : (
             <>
-              {previewItems.some((e) => e._isPast) && <SectionLabel label="Recent" />}
+              {previewItems.some((e) => e._isPast) && <SectionLabel label={t('dashboard.earningsCalendarCard.sectionRecent')} />}
               {previewItems.filter((e) => e._isPast).map((item, i) => (
                 <EarningsItem key={item.symbol + item.date + i} item={item} index={i} isPast />
               ))}
-              {previewItems.some((e) => !e._isPast) && <SectionLabel label="Upcoming" />}
+              {previewItems.some((e) => !e._isPast) && <SectionLabel label={t('dashboard.earningsCalendarCard.sectionUpcoming')} />}
               {previewItems.filter((e) => !e._isPast).map((item, i) => (
                 <EarningsItem key={item.symbol + item.date + i} item={item} index={i} />
               ))}

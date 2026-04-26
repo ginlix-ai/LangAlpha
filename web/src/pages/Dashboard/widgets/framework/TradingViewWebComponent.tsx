@@ -1,11 +1,22 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useTheme } from '@/contexts/ThemeContext';
 import { EmbedFallback } from './EmbedFallback';
+import { mapLocaleForTV } from './tvConfig';
 
 /**
- * Per-element-name module loader cache. Each TradingView web-component lives
- * at a per-name module URL (`tv-ticker-tape.js` registers `<tv-ticker-tape>`).
- * We dedupe so N instances of the same element on a page only fetch once.
+ * Per-element+locale module loader cache. Each TradingView web-component lives
+ * at a per-name + per-locale module URL (e.g.
+ * `widgets.tradingview-widget.com/w/zh_CN/tv-economic-map.js`). The bundle
+ * embeds chrome strings for that locale, so loading `/w/en/` once locks the
+ * element class to English regardless of any later `locale` attribute —
+ * `customElements.define()` is one-shot per element name per page. We key
+ * the cache by `${locale}:${elementName}` so a session that starts in zh-CN
+ * fetches the right bundle on first paint. Switching locale mid-session
+ * cannot re-register the element class on the same page (browser limitation);
+ * a full reload is required for chrome strings to swap. We still update the
+ * `locale` attribute on the element in case TV's runtime honors it for any
+ * dynamic copy.
  *
  * IMPORTANT — host: it's `widgets.tradingview-widget.com`, NOT
  * `www.tradingview-widget.com`. The www host returns 403 for these paths.
@@ -13,7 +24,7 @@ import { EmbedFallback } from './EmbedFallback';
  */
 const loaderPromises = new Map<string, Promise<void>>();
 
-const TV_WC_BASE = 'https://widgets.tradingview-widget.com/w/en/';
+const TV_WC_HOST = 'https://widgets.tradingview-widget.com/w/';
 
 /**
  * Once-per-page setup: load the `<tv-custom-settings>` element and stamp it
@@ -28,10 +39,16 @@ const TV_WC_BASE = 'https://widgets.tradingview-widget.com/w/en/';
  * setting on registration.
  */
 let customSettingsInstalled = false;
-function ensureCustomSettings(): void {
+// `locale` only takes effect on the FIRST call. Once `<tv-custom-settings>` is
+// registered, the singleton flag short-circuits subsequent invocations — so a
+// mid-session locale switch can't re-register it in the new bundle. This
+// matches the broader one-shot `customElements.define()` browser limitation
+// documented at the top of this file: full reload is required to pick up a
+// different locale for already-registered TV elements.
+function ensureCustomSettings(locale: string): void {
   if (customSettingsInstalled || typeof window === 'undefined') return;
   customSettingsInstalled = true;
-  ensureLoaded('tv-custom-settings').then(
+  ensureLoaded('tv-custom-settings', locale).then(
     () => {
       if (document.querySelector('tv-custom-settings')) return;
       const el = document.createElement('tv-custom-settings');
@@ -44,11 +61,12 @@ function ensureCustomSettings(): void {
   );
 }
 
-function ensureLoaded(elementName: string): Promise<void> {
-  const cached = loaderPromises.get(elementName);
+function ensureLoaded(elementName: string, locale: string): Promise<void> {
+  const cacheKey = `${locale}:${elementName}`;
+  const cached = loaderPromises.get(cacheKey);
   if (cached) return cached;
 
-  const src = `${TV_WC_BASE}${elementName}.js`;
+  const src = `${TV_WC_HOST}${locale}/${elementName}.js`;
 
   const promise = (async () => {
     if (typeof window === 'undefined') {
@@ -66,7 +84,7 @@ function ensureLoaded(elementName: string): Promise<void> {
       await import(/* @vite-ignore */ src);
     } catch (e) {
       console.error(`[TradingViewWebComponent] import failed for ${src}`, e);
-      loaderPromises.delete(elementName);
+      loaderPromises.delete(cacheKey);
       throw e;
     }
 
@@ -76,7 +94,7 @@ function ensureLoaded(elementName: string): Promise<void> {
     await window.customElements.whenDefined(elementName);
   })();
 
-  loaderPromises.set(elementName, promise);
+  loaderPromises.set(cacheKey, promise);
   return promise;
 }
 
@@ -127,6 +145,7 @@ export function TradingViewWebComponent({
   card = false,
 }: Props) {
   const { theme } = useTheme();
+  const { i18n } = useTranslation();
   const hostRef = useRef<HTMLDivElement>(null);
   const elRef = useRef<HTMLElement | null>(null);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -139,13 +158,20 @@ export function TradingViewWebComponent({
   // neighbor widgets edit, the grid layout shifts, or edit-mode toggles.
   const configKey = JSON.stringify(config);
 
+  const tvLocale = mapLocaleForTV(i18n.language);
+
   const retry = useCallback(() => {
-    loaderPromises.delete(element);
+    loaderPromises.delete(`${tvLocale}:${element}`);
     setStatus('loading');
     setRetryToken((n) => n + 1);
-  }, [element]);
+  }, [element, tvLocale]);
 
-  // Loader: drives status transitions. Re-runs on element change or retry.
+  // Loader: drives status transitions. Re-runs on element change, locale
+  // change, or retry. Note: mid-session locale switch triggers a fresh fetch
+  // for the locale-keyed bundle, but `customElements.define()` is one-shot
+  // per element name — the element class registered by the first-loaded
+  // bundle stays bound to that locale's chrome strings. A page reload is
+  // required for chrome to fully re-localize.
   useEffect(() => {
     // Reset to 'loading' when the element prop changes mid-mount. Without
     // this, status stays 'ready' from the prior element, the mount effect
@@ -153,7 +179,7 @@ export function TradingViewWebComponent({
     // tag whose module hasn't loaded yet — producing an HTMLUnknownElement
     // with leaked attributes.
     setStatus('loading');
-    ensureCustomSettings();
+    ensureCustomSettings(tvLocale);
     let cancelled = false;
     let timeoutId: number | null = window.setTimeout(() => {
       if (cancelled) return;
@@ -162,7 +188,7 @@ export function TradingViewWebComponent({
       }
     }, 15_000);
 
-    ensureLoaded(element).then(
+    ensureLoaded(element, tvLocale).then(
       () => {
         if (cancelled) return;
         if (timeoutId !== null) {
@@ -186,7 +212,7 @@ export function TradingViewWebComponent({
       cancelled = true;
       if (timeoutId !== null) window.clearTimeout(timeoutId);
     };
-  }, [element, retryToken]);
+  }, [element, tvLocale, retryToken]);
 
   // Mount: when ready, create the custom element imperatively and append to
   // the host ref. Imperative because React's JSX doesn't ship attributes
@@ -225,6 +251,8 @@ export function TradingViewWebComponent({
     wantedAttrs.add('theme');
     el.setAttribute('color-theme', theme);
     wantedAttrs.add('color-theme');
+    el.setAttribute('locale', tvLocale);
+    wantedAttrs.add('locale');
 
     // Strip stale attributes from prior config so attribute state mirrors
     // the current config object exactly.
@@ -237,7 +265,7 @@ export function TradingViewWebComponent({
     // `configKey` (the stable JSON string) tracks content changes without
     // tripping on reference churn from inline object literals.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, element, configKey, theme]);
+  }, [status, element, configKey, theme, tvLocale]);
 
   // Teardown on unmount or element change: detach the custom element so it
   // doesn't leak its iframe into the next mount.

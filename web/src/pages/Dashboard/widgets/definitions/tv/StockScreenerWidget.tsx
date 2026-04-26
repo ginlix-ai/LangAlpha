@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { Filter } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
@@ -30,44 +31,45 @@ function StockScreenerWidget({ instance }: WidgetRenderProps<StockScreenerConfig
 }
 
 function StockScreenerSettings({ config, onChange, onClose }: WidgetSettingsProps<StockScreenerConfig>) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-4">
       <EnumField
-        label="Market"
+        label={t('dashboard.widgets.stockScreener.market')}
         value={config.market ?? 'america'}
         onChange={(v) => onChange({ market: v })}
         options={[
-          { value: 'america', label: 'USA (NYSE + NASDAQ + AMEX)' },
-          { value: 'uk', label: 'United Kingdom (LSE)' },
-          { value: 'germany', label: 'Germany (XETR)' },
-          { value: 'japan', label: 'Japan' },
-          { value: 'china', label: 'China (SSE)' },
-          { value: 'hongkong', label: 'Hong Kong (HKEX)' },
+          { value: 'america', label: t('dashboard.widgets.stockScreener.market_us') },
+          { value: 'uk', label: t('dashboard.widgets.stockScreener.market_uk') },
+          { value: 'germany', label: t('dashboard.widgets.stockScreener.market_de') },
+          { value: 'japan', label: t('dashboard.widgets.stockScreener.market_jp') },
+          { value: 'china', label: t('dashboard.widgets.stockScreener.market_cn') },
+          { value: 'hongkong', label: t('dashboard.widgets.stockScreener.market_hk') },
         ]}
       />
       <EnumField
-        label="Default column set"
+        label={t('dashboard.widgets.stockScreener.columns')}
         value={config.defaultColumn ?? 'overview'}
         onChange={(v) => onChange({ defaultColumn: v })}
         options={[
-          { value: 'overview', label: 'Overview' },
-          { value: 'performance', label: 'Performance' },
-          { value: 'valuation', label: 'Valuation' },
-          { value: 'dividends', label: 'Dividends' },
-          { value: 'profitability', label: 'Profitability' },
-          { value: 'technicals', label: 'Technicals' },
+          { value: 'overview', label: t('dashboard.widgets.stockScreener.columns_overview') },
+          { value: 'performance', label: t('dashboard.widgets.stockScreener.columns_performance') },
+          { value: 'valuation', label: t('dashboard.widgets.stockScreener.columns_valuation') },
+          { value: 'dividends', label: t('dashboard.widgets.stockScreener.columns_dividends') },
+          { value: 'profitability', label: t('dashboard.widgets.stockScreener.columns_profitability') },
+          { value: 'technicals', label: t('dashboard.widgets.stockScreener.columns_technicals') },
         ]}
       />
       <EnumField
-        label="Default screen"
+        label={t('dashboard.widgets.stockScreener.screen')}
         value={config.defaultScreen ?? 'general'}
         onChange={(v) => onChange({ defaultScreen: v })}
         options={[
-          { value: 'general', label: 'General' },
-          { value: 'most_capitalized', label: 'Most capitalized' },
-          { value: 'top_gainers', label: 'Top gainers' },
-          { value: 'top_losers', label: 'Top losers' },
-          { value: 'most_active', label: 'Most active' },
+          { value: 'general', label: t('dashboard.widgets.stockScreener.screen_general') },
+          { value: 'most_capitalized', label: t('dashboard.widgets.stockScreener.screen_mostCap') },
+          { value: 'top_gainers', label: t('dashboard.widgets.stockScreener.screen_topGainers') },
+          { value: 'top_losers', label: t('dashboard.widgets.stockScreener.screen_topLosers') },
+          { value: 'most_active', label: t('dashboard.widgets.stockScreener.screen_active') },
         ]}
       />
       <TradingViewSettingsFooter />
@@ -78,8 +80,8 @@ function StockScreenerSettings({ config, onChange, onClose }: WidgetSettingsProp
 
 registerWidget<StockScreenerConfig>({
   type: 'tv.screener',
-  title: 'Stock Screener',
-  description: 'Filter the full stock universe by price, market cap, technicals, fundamentals.',
+  titleKey: 'dashboard.widgets.stockScreener.title',
+  descriptionKey: 'dashboard.widgets.stockScreener.description',
   category: 'markets',
   icon: Filter,
   component: StockScreenerWidget,

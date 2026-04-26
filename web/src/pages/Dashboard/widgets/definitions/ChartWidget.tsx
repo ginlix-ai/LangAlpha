@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ExternalLink, Loader2, Maximize2, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -37,7 +38,20 @@ import {
 } from '@/pages/MarketView/utils/chartDataLoaders';
 import { useMarketDataWSContext } from '@/pages/MarketView/contexts/MarketDataWSContext';
 import { useTheme } from '@/contexts/ThemeContext';
+import { createFormatter, createDateFormatter } from '@/lib/format';
 import type { WidgetRenderProps, WidgetSettingsProps } from '../types';
+
+const fmt2 = createFormatter({ minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Compact volumes ("1.23B", "1.23M", "1.2K"). Intl.NumberFormat with
+// notation: 'compact' produces locale-appropriate scale suffixes — `1.23亿`
+// instead of `123M` for zh-CN, `1.23 Mio.` for de-DE.
+const fmtVolumeCompact = createFormatter({ notation: 'compact', compactDisplay: 'short', maximumFractionDigits: 2 });
+const fmtVolumeRound = createFormatter({ maximumFractionDigits: 0 });
+// Hover labels use the ET-wall-clock-as-UTC convention shared across the chart;
+// timeZone: 'UTC' keeps the formatter from reapplying any regional shift while
+// month/day names still respect the user's locale.
+const fmtHoverDay = createDateFormatter({ month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+const fmtHoverIntraday = createDateFormatter({ month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' });
 
 // Widget intervals mirror MarketView's bar-interval keys (not the old
 // visible-range labels). The interval IS the backend interval; we share
@@ -89,23 +103,18 @@ type Bar = {
 };
 
 // Hover timestamps are stored as ET-wall-clock-as-UTC (same 'Z' trick the rest
-// of the chart uses), so read with UTC getters to display ET-local values.
-const HOVER_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// of the chart uses); the formatters are pinned to timeZone: 'UTC' so the read
+// reflects ET-local values, while month/day names follow the active locale.
 function formatHoverTime(timeSec: number, daily: boolean): string {
   const d = new Date(timeSec * 1000);
-  const mon = HOVER_MONTHS[d.getUTCMonth()];
-  const day = d.getUTCDate();
-  if (daily) return `${mon} ${day}, ${d.getUTCFullYear()}`;
-  const hh = String(d.getUTCHours()).padStart(2, '0');
-  const mm = String(d.getUTCMinutes()).padStart(2, '0');
-  return `${mon} ${day}, ${hh}:${mm}`;
+  return daily ? fmtHoverDay(d) : fmtHoverIntraday(d);
 }
 
 function formatHoverVolume(v: number): string {
-  if (v >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
-  if (v >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
-  if (v >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
-  return String(Math.round(v));
+  // Round-only for sub-1K values matches the prior `String(Math.round(v))`
+  // shape (no decimals on small volumes); compact format kicks in above.
+  if (v < 1e3) return fmtVolumeRound(v);
+  return fmtVolumeCompact(v);
 }
 
 // Return the ET calendar date (YYYY-MM-DD) of a bar. Bar timestamps are stored
@@ -121,6 +130,7 @@ function etDateOfBar(timeSec: number): string {
 }
 
 function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>) {
+  const { t } = useTranslation();
   // Merge stored config onto the default, then sanitize the interval: if a
   // persisted dashboard pref has a legacy visible-range key (e.g. '3M') from
   // before the bar-interval refactor, silently fall back to the default so
@@ -1040,14 +1050,14 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
               maxLength={12}
               autoComplete="off"
               spellCheck={false}
-              placeholder="Search…"
+              placeholder={t('dashboard.widgets.chart.searchPlaceholder')}
             />
           ) : (
             <div className="flex items-baseline gap-2">
               <button
                 type="button"
                 onClick={startEditSymbol}
-                title="Click to change symbol"
+                title={t('dashboard.widgets.chart.clickToChange')}
                 className="text-sm font-semibold tabular-nums hover:opacity-70 transition-opacity"
                 style={{ color: 'var(--color-text-primary)' }}
               >
@@ -1058,13 +1068,13 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
                   className="text-sm tabular-nums"
                   style={{ color: 'var(--color-text-primary)' }}
                 >
-                  {headerLast.toFixed(2)}
+                  {fmt2(headerLast)}
                 </span>
               )}
             </div>
           )}
           <div className="text-[11px] tabular-nums" style={{ color: changeColor }}>
-            {positive ? '+' : ''}{change.toFixed(2)} ({positive ? '+' : ''}{pct.toFixed(2)}%)
+            {positive ? '+' : ''}{fmt2(change)} ({positive ? '+' : ''}{fmt2(pct)}%)
           </div>
           {editingSymbol && symbolDraft.trim() && (
             <div
@@ -1079,14 +1089,14 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
                   className="px-2.5 py-1.5 text-[11px]"
                   style={{ color: 'var(--color-text-tertiary)' }}
                 >
-                  Searching…
+                  {t('dashboard.widgets.chart.searching')}
                 </div>
               ) : searchHits.length === 0 ? (
                 <div
                   className="px-2.5 py-1.5 text-[11px]"
                   style={{ color: 'var(--color-text-tertiary)' }}
                 >
-                  No matches. Press Enter to use &quot;{symbolDraft.trim().toUpperCase()}&quot;.
+                  {t('dashboard.widgets.chart.noMatchesEnter', { symbol: symbolDraft.trim().toUpperCase() })}
                 </div>
               ) : (
                 searchHits.map((hit) => (
@@ -1145,20 +1155,20 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
             className="flex items-center gap-0.5 pl-2"
             style={{ borderLeft: '1px solid var(--color-border-muted)' }}
           >
-            <ToolbarIconBtn title="Zoom in" onClick={handleZoomIn}>
+            <ToolbarIconBtn title={t('dashboard.widgets.chart.zoomIn')} onClick={handleZoomIn}>
               <ZoomIn size={12} />
             </ToolbarIconBtn>
-            <ToolbarIconBtn title="Zoom out" onClick={handleZoomOut}>
+            <ToolbarIconBtn title={t('dashboard.widgets.chart.zoomOut')} onClick={handleZoomOut}>
               <ZoomOut size={12} />
             </ToolbarIconBtn>
-            <ToolbarIconBtn title="Fit all" onClick={handleFitAll}>
+            <ToolbarIconBtn title={t('dashboard.widgets.chart.fitAll')} onClick={handleFitAll}>
               <Maximize2 size={12} />
             </ToolbarIconBtn>
-            <ToolbarIconBtn title="Reset view" onClick={handleResetView}>
+            <ToolbarIconBtn title={t('dashboard.widgets.chart.resetView')} onClick={handleResetView}>
               <RotateCcw size={12} />
             </ToolbarIconBtn>
             <ToolbarIconBtn
-              title="Open in Market view"
+              title={t('dashboard.widgets.chart.openInMarket')}
               onClick={() => navigate(`/market?symbol=${encodeURIComponent(config.symbol)}`)}
             >
               <ExternalLink size={12} />
@@ -1179,18 +1189,18 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
             {hover.open != null && hover.high != null && hover.low != null && (
               <>
                 <span>
-                  O <span style={{ color: 'var(--color-text-primary)' }}>{hover.open.toFixed(2)}</span>
+                  O <span style={{ color: 'var(--color-text-primary)' }}>{fmt2(hover.open)}</span>
                 </span>
                 <span>
-                  H <span style={{ color: 'var(--color-text-primary)' }}>{hover.high.toFixed(2)}</span>
+                  H <span style={{ color: 'var(--color-text-primary)' }}>{fmt2(hover.high)}</span>
                 </span>
                 <span>
-                  L <span style={{ color: 'var(--color-text-primary)' }}>{hover.low.toFixed(2)}</span>
+                  L <span style={{ color: 'var(--color-text-primary)' }}>{fmt2(hover.low)}</span>
                 </span>
               </>
             )}
             <span>
-              C <span style={{ color: 'var(--color-text-primary)' }}>{hover.close.toFixed(2)}</span>
+              C <span style={{ color: 'var(--color-text-primary)' }}>{fmt2(hover.close)}</span>
             </span>
             {hover.volume != null && hover.volume > 0 && (
               <span>
@@ -1253,6 +1263,7 @@ function ToolbarIconBtn({
 }
 
 export function ChartSettings({ config, onChange, onClose }: WidgetSettingsProps<ChartConfig>) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<ChartConfig>({ ...DEFAULT_CONFIG, ...config });
   useEffect(() => setDraft({ ...DEFAULT_CONFIG, ...config }), [config]);
 
@@ -1262,16 +1273,16 @@ export function ChartSettings({ config, onChange, onClose }: WidgetSettingsProps
   };
 
   const types: { key: ChartType; label: string }[] = [
-    { key: 'candle', label: 'Candle' },
-    { key: 'area', label: 'Area' },
-    { key: 'line', label: 'Line' },
+    { key: 'candle', label: t('dashboard.widgets.chart.chartType_candle') },
+    { key: 'area', label: t('dashboard.widgets.chart.chartType_area') },
+    { key: 'line', label: t('dashboard.widgets.chart.chartType_line') },
   ];
 
   return (
     <div className="space-y-3">
       <div>
         <label className="text-xs block mb-1" style={{ color: 'var(--color-text-secondary)' }}>
-          Symbol
+          {t('dashboard.widgets.chart.settingsSymbol')}
         </label>
         <input
           type="text"
@@ -1288,7 +1299,7 @@ export function ChartSettings({ config, onChange, onClose }: WidgetSettingsProps
       </div>
       <div>
         <label className="text-xs block mb-1" style={{ color: 'var(--color-text-secondary)' }}>
-          Chart type
+          {t('dashboard.widgets.chart.settingsChartType')}
         </label>
         <div className="flex gap-1">
           {types.map((t) => (
@@ -1315,7 +1326,7 @@ export function ChartSettings({ config, onChange, onClose }: WidgetSettingsProps
           className="px-3 py-1 text-xs rounded border"
           style={{ color: 'var(--color-text-primary)', borderColor: 'var(--color-border-default)' }}
         >
-          Cancel
+          {t('dashboard.widgets.common.cancel')}
         </button>
         <button
           type="button"
@@ -1323,7 +1334,7 @@ export function ChartSettings({ config, onChange, onClose }: WidgetSettingsProps
           className="px-3 py-1 text-xs rounded font-medium"
           style={{ backgroundColor: 'var(--color-accent-primary)', color: 'var(--color-text-on-accent)' }}
         >
-          Save
+          {t('dashboard.widgets.common.save')}
         </button>
       </div>
     </div>

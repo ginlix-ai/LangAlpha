@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Wallet } from 'lucide-react';
 import { useDashboardContext } from '../framework/DashboardDataContext';
@@ -24,6 +25,7 @@ function PortfolioWatchlistWidget({
   instance,
   updateConfig,
 }: WidgetRenderProps<PortfolioWatchlistConfig>) {
+  const { t } = useTranslation();
   const {
     portfolio,
     portfolioHandlers,
@@ -68,7 +70,9 @@ function PortfolioWatchlistWidget({
             className="text-[10px] font-semibold uppercase tracking-[0.14em]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
-            {activeTab === 'watchlist' ? 'Watchlist' : 'Holdings'}
+            {activeTab === 'watchlist'
+              ? t('dashboard.widgets.portfolioWatchlist.headerWatchlist')
+              : t('dashboard.widgets.portfolioWatchlist.headerHoldings')}
           </span>
           <span
             className="title-font text-lg leading-none dashboard-mono"
@@ -98,7 +102,7 @@ function PortfolioWatchlistWidget({
                   : 'none',
             }}
           >
-            Watch
+            {t('dashboard.widgets.portfolioWatchlist.tabWatch')}
           </button>
           <button
             type="button"
@@ -117,7 +121,7 @@ function PortfolioWatchlistWidget({
                   : 'none',
             }}
           >
-            Holdings
+            {t('dashboard.widgets.portfolioWatchlist.tabHoldings')}
           </button>
         </div>
       </div>
@@ -145,7 +149,7 @@ function PortfolioWatchlistWidget({
                   />
                 ))
               )}
-              <HoldingsAddButton label="Add Symbol" onClick={watchlistHandlers.onAdd} />
+              <HoldingsAddButton label={t('dashboard.widgets.portfolioWatchlist.addSymbol')} onClick={watchlistHandlers.onAdd} />
             </motion.div>
           ) : (
             <motion.div
@@ -179,7 +183,7 @@ function PortfolioWatchlistWidget({
                 ))
               )}
 
-              <HoldingsAddButton label="Add Transaction" onClick={portfolioHandlers.onAdd} />
+              <HoldingsAddButton label={t('dashboard.widgets.portfolioWatchlist.addTransaction')} onClick={portfolioHandlers.onAdd} />
             </motion.div>
           )}
         </AnimatePresence>
@@ -190,8 +194,8 @@ function PortfolioWatchlistWidget({
 
 registerWidget<PortfolioWatchlistConfig>({
   type: 'personal.portfolioWatchlist',
-  title: 'Portfolio + Watchlist',
-  description: 'Combined holdings and watchlist with a Watch / Holdings tab switcher.',
+  titleKey: 'dashboard.widgets.portfolioWatchlist.title',
+  descriptionKey: 'dashboard.widgets.portfolioWatchlist.description',
   category: 'personal',
   icon: Wallet,
   component: PortfolioWatchlistWidget,

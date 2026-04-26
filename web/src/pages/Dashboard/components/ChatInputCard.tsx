@@ -1,15 +1,9 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import ChatInput, { type ChatInputHandle } from '../../../components/ui/chat-input';
 import { useChatInput } from '../hooks/useChatInput';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { MobileFabChat } from '@/components/ui/mobile-fab-chat';
-
-const SUGGESTION_CHIPS: string[] = [
-  "Summarize Apple's earnings",
-  'Compare TSLA vs BYD',
-  'Predict market volatility',
-  'Analyze my portfolio risk',
-];
 
 /**
  * Floating chat input wrapper for dashboard.
@@ -17,6 +11,7 @@ const SUGGESTION_CHIPS: string[] = [
  * On mobile: collapses to a floating logo FAB by default.
  */
 function ChatInputCard() {
+  const { t } = useTranslation();
   const {
     mode,
     setMode,
@@ -26,6 +21,16 @@ function ChatInputCard() {
     selectedWorkspaceId,
     setSelectedWorkspaceId,
   } = useChatInput();
+
+  const SUGGESTION_CHIPS = useMemo<string[]>(
+    () => [
+      t('dashboard.chatInputCard.suggestion1'),
+      t('dashboard.chatInputCard.suggestion2'),
+      t('dashboard.chatInputCard.suggestion3'),
+      t('dashboard.chatInputCard.suggestion4'),
+    ],
+    [t],
+  );
 
   const [focused, setFocused] = useState(false);
   const chatInputRef = useRef<ChatInputHandle>(null);
@@ -56,7 +61,7 @@ function ChatInputCard() {
             workspaces={workspaces}
             selectedWorkspaceId={selectedWorkspaceId}
             onWorkspaceChange={setSelectedWorkspaceId}
-            placeholder="Ask AI about market trends..."
+            placeholder={t('dashboard.chatInputCard.placeholderMobile')}
             minRows={2}
           />
         </div>
@@ -105,7 +110,7 @@ function ChatInputCard() {
             workspaces={workspaces}
             selectedWorkspaceId={selectedWorkspaceId}
             onWorkspaceChange={setSelectedWorkspaceId}
-            placeholder="Ask AI about market trends, specific stocks, or portfolio analysis..."
+            placeholder={t('dashboard.chatInputCard.placeholderDesktop')}
             minRows={2}
           />
         </div>

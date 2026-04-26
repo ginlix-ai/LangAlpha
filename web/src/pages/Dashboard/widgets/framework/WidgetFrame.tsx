@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { GripVertical, Settings, MoreVertical, X, Copy } from 'lucide-react';
 import type { WidgetDefinition, WidgetInstance } from '../types';
 import './WidgetFrame.css';
@@ -29,6 +30,7 @@ export function WidgetFrame({
   onFitHeight,
   children,
 }: WidgetFrameProps) {
+  const { t } = useTranslation();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
@@ -160,12 +162,12 @@ export function WidgetFrame({
         {editMode && (
           <div
             className="widget-drag-handle widget-frame__drag"
-            aria-label="Drag to rearrange"
+            aria-label={t('dashboard.widgets.frame.drag')}
           >
             <GripVertical size={14} />
           </div>
         )}
-        <div className="widget-frame__title">{definition.title}</div>
+        <div className="widget-frame__title">{t(definition.titleKey)}</div>
         {editMode && (
           <div className="widget-frame__actions widget-drag-cancel">
             {hasSettings && (
@@ -173,8 +175,8 @@ export function WidgetFrame({
                 type="button"
                 className="widget-frame__icon-btn"
                 onClick={() => onOpenSettings(instance.id)}
-                aria-label="Widget settings"
-                title="Settings"
+                aria-label={t('dashboard.widgets.frame.settings')}
+                title={t('dashboard.widgets.frame.settingsTitle')}
               >
                 <Settings size={14} />
               </button>
@@ -184,7 +186,7 @@ export function WidgetFrame({
                 type="button"
                 className="widget-frame__icon-btn"
                 onClick={() => setMenuOpen((p) => !p)}
-                aria-label="Widget menu"
+                aria-label={t('dashboard.widgets.frame.menu')}
               >
                 <MoreVertical size={14} />
               </button>
@@ -199,7 +201,7 @@ export function WidgetFrame({
                         setMenuOpen(false);
                       }}
                     >
-                      <Copy size={12} /> Duplicate
+                      <Copy size={12} /> {t('dashboard.widgets.frame.duplicate')}
                     </button>
                   )}
                   <button
@@ -210,7 +212,7 @@ export function WidgetFrame({
                       setMenuOpen(false);
                     }}
                   >
-                    <X size={12} /> Remove
+                    <X size={12} /> {t('dashboard.widgets.frame.remove')}
                   </button>
                 </div>
               )}

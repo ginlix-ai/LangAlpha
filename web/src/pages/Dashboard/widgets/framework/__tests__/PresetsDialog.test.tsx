@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
+import i18n from '@/i18n';
 import { PresetsDialog } from '../PresetsDialog';
 import { PRESETS_META } from '../../presets';
 import '../../index'; // ensure registry is populated for thumbnails
@@ -20,13 +21,13 @@ describe('PresetsDialog', () => {
     renderDialog();
     expect(screen.getByText(/start with a preset/i)).toBeInTheDocument();
     for (const meta of PRESETS_META) {
-      expect(screen.getByText(meta.name)).toBeInTheDocument();
+      expect(screen.getByText(i18n.t(meta.nameKey))).toBeInTheDocument();
     }
   });
 
   it('calls onApply with the preset id when a card is clicked', () => {
     const { props } = renderDialog();
-    const card = screen.getByText(PRESETS_META[0].name);
+    const card = screen.getByText(i18n.t(PRESETS_META[0].nameKey));
     fireEvent.click(card);
     expect(props.onApply).toHaveBeenCalledWith(PRESETS_META[0].id);
     expect(props.onOpenChange).toHaveBeenCalledWith(false);

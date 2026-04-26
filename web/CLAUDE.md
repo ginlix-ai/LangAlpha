@@ -88,7 +88,7 @@ The ChatAgent page has side-by-side panels (ChatView + FilePanel). Their headers
 - **Path alias:** `@` → `src/` (configured in both `vite.config.js` and `vitest.config.js`)
 - **Tests:** Co-located in `__tests__/` subdirectories next to the code they test. Vitest + jsdom + Testing Library + `@testing-library/jest-dom`. Global setup mocks `matchMedia`, `IntersectionObserver`, `ResizeObserver` (`src/test/setup.ts`).
 - **UI primitives:** `components/ui/` has Radix-based primitives (dialog, toast, button, card, etc.) using `class-variance-authority` for variant props.
-- **i18n:** `i18next` + `react-i18next`. Setup in `src/i18n.ts`.
+- **i18n:** `i18next` + `react-i18next`. Setup in `src/i18n.ts` (cross-tab locale sync via `storage` event). Locale-aware number/date formatting via `createFormatter` / `createDateFormatter` in `src/lib/format.ts` — components MUST also call `useTranslation()` so they re-render on locale switch.
 - **WebSocket:** Real-time market data via `pages/MarketView/contexts/MarketDataWSContext.tsx`.
 
 ### Env Variables

@@ -1,4 +1,6 @@
 import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
 import {
   Workflow,
   ArrowUpRight,
@@ -19,10 +21,10 @@ type AutomationsConfig = { limit?: number };
 
 type BucketKey = 'active' | 'paused' | 'error';
 
-const BUCKET_LABELS: Record<BucketKey, string> = {
-  active: 'Active',
-  paused: 'Paused',
-  error: 'Needs attention',
+const BUCKET_KEY: Record<BucketKey, string> = {
+  active: 'dashboard.widgets.automations.bucket_active',
+  paused: 'dashboard.widgets.automations.bucket_paused',
+  error: 'dashboard.widgets.automations.bucket_attention',
 };
 
 function formatRelativeRun(ts?: string | null): string {
@@ -32,26 +34,34 @@ function formatRelativeRun(ts?: string | null): string {
   const diff = then - Date.now();
   const abs = Math.abs(diff);
   const mins = Math.round(abs / 60000);
-  const prefix = diff >= 0 ? 'in ' : '';
-  const suffix = diff >= 0 ? '' : ' ago';
-  if (mins < 1) return 'now';
-  if (mins < 60) return `${prefix}${mins}m${suffix}`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${prefix}${hrs}h${suffix}`;
-  const days = Math.round(hrs / 24);
-  if (days < 7) return `${prefix}${days}d${suffix}`;
-  const weeks = Math.round(days / 7);
-  return `${prefix}${weeks}w${suffix}`;
+  if (mins < 1) return i18n.t('dashboard.widgets.common.relativeNow');
+  let when: string;
+  if (mins < 60) when = `${mins}m`;
+  else {
+    const hrs = Math.round(mins / 60);
+    if (hrs < 24) when = `${hrs}h`;
+    else {
+      const days = Math.round(hrs / 24);
+      if (days < 7) when = `${days}d`;
+      else when = `${Math.round(days / 7)}w`;
+    }
+  }
+  const key = diff >= 0
+    ? 'dashboard.widgets.common.relativeFuture'
+    : 'dashboard.widgets.common.relativePast';
+  return i18n.t(key, { when });
 }
 
 function triggerLabel(a: Automation): string {
   if (a.trigger_type === 'price') {
     const sym = a.trigger_config?.symbol;
-    return sym ? `price · ${sym}` : 'price';
+    return sym
+      ? i18n.t('dashboard.widgets.automations.trigger.priceSymbol', { symbol: sym })
+      : i18n.t('dashboard.widgets.automations.trigger.price');
   }
-  if (a.trigger_type === 'once') return 'once';
-  if (a.schedule) return 'cron';
-  return 'auto';
+  if (a.trigger_type === 'once') return i18n.t('dashboard.widgets.automations.trigger.once');
+  if (a.schedule) return i18n.t('dashboard.widgets.automations.trigger.cron');
+  return i18n.t('dashboard.widgets.automations.trigger.auto');
 }
 
 function AutomationRow({
@@ -67,6 +77,7 @@ function AutomationRow({
   onRun: () => void;
   busy: boolean;
 }) {
+  const { t } = useTranslation();
   const isActive = automation.status === 'active';
   const isPaused = automation.status === 'paused';
   const isError = automation.status === 'error';
@@ -79,7 +90,14 @@ function AutomationRow({
 
   const nextRun = isActive ? formatRelativeRun(automation.next_run_at) : '';
   const lastRun = !isActive && automation.last_run_at ? formatRelativeRun(automation.last_run_at) : '';
-  const rightText = nextRun || (lastRun ? `last ${lastRun}` : isPaused ? 'paused' : isError ? 'error' : '');
+  const rightText = nextRun
+    || (lastRun
+      ? t('dashboard.widgets.automations.lastRun', { when: lastRun })
+      : isPaused
+        ? t('dashboard.widgets.automations.statusPaused')
+        : isError
+          ? t('dashboard.widgets.automations.statusError')
+          : '');
 
   return (
     <div
@@ -119,7 +137,7 @@ function AutomationRow({
             className="text-[13px] truncate leading-tight font-medium"
             style={{ color: 'var(--color-text-primary)' }}
           >
-            {automation.name || 'Untitled automation'}
+            {automation.name || t('dashboard.widgets.automations.untitled')}
           </span>
           <span
             className="text-[10px] uppercase tracking-wider truncate"
@@ -147,8 +165,8 @@ function AutomationRow({
             onRun();
           }}
           disabled={busy}
-          title="Run now"
-          aria-label="Run now"
+          title={t('dashboard.widgets.automations.runNow')}
+          aria-label={t('dashboard.widgets.automations.runNow')}
           className="p-1 rounded-md transition-colors disabled:opacity-50"
           style={{ color: 'var(--color-text-secondary)' }}
           onMouseEnter={(e) => {
@@ -170,8 +188,8 @@ function AutomationRow({
               onToggle();
             }}
             disabled={busy}
-            title={isActive ? 'Pause' : 'Resume'}
-            aria-label={isActive ? 'Pause automation' : 'Resume automation'}
+            title={isActive ? t('dashboard.widgets.automations.pause') : t('dashboard.widgets.automations.resume')}
+            aria-label={isActive ? t('dashboard.widgets.automations.pauseAria') : t('dashboard.widgets.automations.resumeAria')}
             className="p-1 rounded-md transition-colors disabled:opacity-50"
             style={{ color: 'var(--color-text-secondary)' }}
             onMouseEnter={(e) => {
@@ -247,6 +265,7 @@ function BucketSection({
 }
 
 function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const limit = instance.config.limit ?? 8;
 
@@ -315,7 +334,7 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
             className="text-[10px] font-semibold uppercase tracking-[0.14em]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
-            Automations
+            {t('dashboard.widgets.automations.header')}
           </span>
           <span
             className="title-font text-lg leading-none dashboard-mono"
@@ -336,7 +355,7 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
             e.currentTarget.style.color = 'var(--color-text-tertiary)';
           }}
         >
-          <span>View all</span>
+          <span>{t('dashboard.widgets.automations.viewAll')}</span>
           <ArrowUpRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
         </button>
       </div>
@@ -365,10 +384,10 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
             </div>
             <div className="text-center">
               <div
-                className="title-font italic text-sm mb-0.5"
+                className="dashboard-mono text-sm mb-0.5"
                 style={{ color: 'var(--color-text-primary)' }}
               >
-                No automations yet
+                {t('dashboard.widgets.automations.empty')}
               </div>
               <button
                 type="button"
@@ -376,14 +395,14 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
                 className="text-[11px] uppercase tracking-wider underline-offset-4 hover:underline"
                 style={{ color: 'var(--color-text-secondary)' }}
               >
-                Create your first →
+                {t('dashboard.widgets.automations.emptyCta')}
               </button>
             </div>
           </div>
         ) : (
           <div className="flex flex-col gap-3">
             <BucketSection
-              label={BUCKET_LABELS.error}
+              label={t(BUCKET_KEY.error)}
               items={grouped.error}
               busy={mutating}
               onOpen={handleOpen}
@@ -391,7 +410,7 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
               onRun={handleRun}
             />
             <BucketSection
-              label={BUCKET_LABELS.active}
+              label={t(BUCKET_KEY.active)}
               items={grouped.active}
               busy={mutating}
               onOpen={handleOpen}
@@ -399,7 +418,7 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
               onRun={handleRun}
             />
             <BucketSection
-              label={BUCKET_LABELS.paused}
+              label={t(BUCKET_KEY.paused)}
               items={grouped.paused}
               busy={mutating}
               onOpen={handleOpen}
@@ -415,8 +434,8 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
 
 registerWidget<AutomationsConfig>({
   type: 'automations.list',
-  title: 'Automations',
-  description: 'Scheduled runs with next-run times and quick pause / resume / trigger.',
+  titleKey: 'dashboard.widgets.automations.title',
+  descriptionKey: 'dashboard.widgets.automations.description',
   category: 'personal',
   icon: Workflow,
   component: AutomationsWidget,

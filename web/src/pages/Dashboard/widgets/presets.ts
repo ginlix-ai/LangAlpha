@@ -13,13 +13,16 @@ export type PresetId =
 
 export interface PresetMeta {
   id: PresetId;
-  name: string;
-  tagline: string;
-  tag: string;
-  description: string;
-  bestFor: string;
-  pills: string[];
   popular?: boolean;
+  /** i18n keys for the user-facing chrome. Required — render sites resolve
+   *  via `t(key)`. Use a `dashboard.widgets.presets.<id>.<field>` shape so
+   *  `keys.test.ts` picks them up automatically. */
+  nameKey: string;
+  tagKey: string;
+  descriptionKey: string;
+  bestForKey: string;
+  /** Per-pill i18n keys; pill count is determined by this array's length. */
+  pillKeys: string[];
 }
 
 const newId = newWidgetId;
@@ -194,11 +197,11 @@ export function agentDeskPreset(): Pick<DashboardPrefs, 'widgets' | 'layouts' | 
   const widgets = [brief, convo, picker, threads, automations, holdings];
   const layouts: RGLItem[] = [
     { i: brief.id, x: 0, y: 0, w: 12, h: 20 },
-    { i: convo.id, x: 0, y: 20, w: 12, h: 13 },
-    { i: picker.id, x: 0, y: 33, w: 8, h: 22 },
-    { i: threads.id, x: 8, y: 33, w: 4, h: 22 },
-    { i: automations.id, x: 0, y: 55, w: 6, h: 18 },
-    { i: holdings.id, x: 6, y: 55, w: 6, h: 18 },
+    { i: convo.id, x: 0, y: 20, w: 12, h: 20 },
+    { i: picker.id, x: 0, y: 40, w: 8, h: 22 },
+    { i: threads.id, x: 8, y: 40, w: 4, h: 22 },
+    { i: automations.id, x: 0, y: 62, w: 6, h: 18 },
+    { i: holdings.id, x: 6, y: 62, w: 6, h: 18 },
   ];
   return makePrefs(widgets, layouts);
 }
@@ -206,58 +209,93 @@ export function agentDeskPreset(): Pick<DashboardPrefs, 'widgets' | 'layouts' | 
 export const PRESETS_META: readonly PresetMeta[] = [
   {
     id: 'morning-brief',
-    name: 'Morning Brief',
-    tagline: 'balanced',
-    tag: 'balanced',
-    description: 'The first five minutes of your day. AI Daily Brief anchors the canvas; market news, earnings, and your portfolio + watchlist sit one glance away.',
-    bestFor: 'Opening the app once a day and wanting the full picture.',
-    pills: ['AI daily brief', 'Portfolio + Watchlist', 'News', 'Earnings', 'Markets overview'],
     popular: true,
+    nameKey: 'dashboard.widgets.presets.morningBrief.name',
+    tagKey: 'dashboard.widgets.presets.morningBrief.tag',
+    descriptionKey: 'dashboard.widgets.presets.morningBrief.description',
+    bestForKey: 'dashboard.widgets.presets.morningBrief.bestFor',
+    pillKeys: [
+      'dashboard.widgets.presets.morningBrief.pills.aiBrief',
+      'dashboard.widgets.presets.morningBrief.pills.portfolioWatchlist',
+      'dashboard.widgets.presets.morningBrief.pills.news',
+      'dashboard.widgets.presets.morningBrief.pills.earnings',
+      'dashboard.widgets.presets.morningBrief.pills.marketsOverview',
+    ],
   },
   {
     id: 'agent-desk',
-    name: 'Agent Desk',
-    tagline: 'agent-led',
-    tag: 'agent-led',
-    description: "The agent's working surface. Start with today's AI brief, then ask — a full-width ask console sits beneath. Workspaces, recent threads, automations, and your book round out the desk.",
-    bestFor: 'Living next to the agent — reading, asking, running automations, jumping across workspaces.',
-    pills: ['AI brief', 'Ask console', 'Workspaces', 'Recent threads', 'Automations', 'Holdings + Watchlist'],
+    nameKey: 'dashboard.widgets.presets.agentDesk.name',
+    tagKey: 'dashboard.widgets.presets.agentDesk.tag',
+    descriptionKey: 'dashboard.widgets.presets.agentDesk.description',
+    bestForKey: 'dashboard.widgets.presets.agentDesk.bestFor',
+    pillKeys: [
+      'dashboard.widgets.presets.agentDesk.pills.aiBrief',
+      'dashboard.widgets.presets.agentDesk.pills.askConsole',
+      'dashboard.widgets.presets.agentDesk.pills.workspaces',
+      'dashboard.widgets.presets.agentDesk.pills.recentThreads',
+      'dashboard.widgets.presets.agentDesk.pills.automations',
+      'dashboard.widgets.presets.agentDesk.pills.holdingsWatchlist',
+    ],
   },
   {
     id: 'researcher',
-    name: 'Researcher',
-    tagline: 'sources-first',
-    tag: 'sources-first',
-    description: 'Deep qualitative work. The ask console leads; a tall market news rail keeps sources in view. AI brief, holdings + watchlist, and a 2-week earnings calendar round out the canvas.',
-    bestFor: 'Writing memos, running deep-dives, chasing citations.',
-    pills: ['Ask console', 'Market news rail', 'AI brief', 'Portfolio + Watchlist', 'Earnings (2w)', 'Markets overview'],
+    nameKey: 'dashboard.widgets.presets.researcher.name',
+    tagKey: 'dashboard.widgets.presets.researcher.tag',
+    descriptionKey: 'dashboard.widgets.presets.researcher.description',
+    bestForKey: 'dashboard.widgets.presets.researcher.bestFor',
+    pillKeys: [
+      'dashboard.widgets.presets.researcher.pills.askConsole',
+      'dashboard.widgets.presets.researcher.pills.marketNewsRail',
+      'dashboard.widgets.presets.researcher.pills.aiBrief',
+      'dashboard.widgets.presets.researcher.pills.portfolioWatchlist',
+      'dashboard.widgets.presets.researcher.pills.earnings2w',
+      'dashboard.widgets.presets.researcher.pills.marketsOverview',
+    ],
   },
   {
     id: 'trader',
-    name: 'Trader',
-    tagline: 'multi-timeframe',
-    tag: 'multi-timeframe',
-    description: 'Multi-timeframe workstation. A 2×2 chart grid reads the same symbol at four zoom levels — short-horizon candles over long-horizon area views and a benchmark. Portfolio + watchlist and a wide news tape close the canvas.',
-    bestFor: 'Reading one symbol deeply across horizons with context in view.',
-    pills: ['Chart × 4', 'Multi-timeframe', 'Portfolio + Watchlist', 'News feed', 'Markets overview'],
+    nameKey: 'dashboard.widgets.presets.trader.name',
+    tagKey: 'dashboard.widgets.presets.trader.tag',
+    descriptionKey: 'dashboard.widgets.presets.trader.description',
+    bestForKey: 'dashboard.widgets.presets.trader.bestFor',
+    pillKeys: [
+      'dashboard.widgets.presets.trader.pills.chartX4',
+      'dashboard.widgets.presets.trader.pills.multiTimeframe',
+      'dashboard.widgets.presets.trader.pills.portfolioWatchlist',
+      'dashboard.widgets.presets.trader.pills.newsFeed',
+      'dashboard.widgets.presets.trader.pills.marketsOverview',
+    ],
   },
   {
     id: 'trader-tv',
-    name: 'Trader (TV)',
-    tagline: 'tradingview-first',
-    tag: 'tradingview-first',
-    description: 'A TradingView-driven trading desk. Ticker tape anchors the top, stock heatmap as hero, symbol spotlight with market movers alongside, economic events + a technical analysis gauge below, and a native mini-chart grid closes the canvas.',
-    bestFor: 'Tape-to-sector-to-symbol scan, with TV-native interactivity inside each card.',
-    pills: ['Ticker tape', 'Stock heatmap', 'Symbol spotlight', 'Market movers', 'Economic events', 'Technicals', 'Mini chart grid'],
+    nameKey: 'dashboard.widgets.presets.traderTv.name',
+    tagKey: 'dashboard.widgets.presets.traderTv.tag',
+    descriptionKey: 'dashboard.widgets.presets.traderTv.description',
+    bestForKey: 'dashboard.widgets.presets.traderTv.bestFor',
+    pillKeys: [
+      'dashboard.widgets.presets.traderTv.pills.tickerTape',
+      'dashboard.widgets.presets.traderTv.pills.stockHeatmap',
+      'dashboard.widgets.presets.traderTv.pills.symbolSpotlight',
+      'dashboard.widgets.presets.traderTv.pills.marketMovers',
+      'dashboard.widgets.presets.traderTv.pills.economicEvents',
+      'dashboard.widgets.presets.traderTv.pills.technicals',
+      'dashboard.widgets.presets.traderTv.pills.miniChartGrid',
+    ],
   },
   {
     id: 'portfolio-steward',
-    name: 'Portfolio Steward',
-    tagline: 'wealth-first',
-    tag: 'wealth-first',
-    description: "Your book, actively tended. Your top holding's chart anchors the canvas alongside the combined portfolio + watchlist; a portfolio-filtered news rail runs tall on the right. Ask console and recent threads sit below for when you need to dig in.",
-    bestFor: 'Tending a concentrated book and asking questions about positions.',
-    pills: ['Top holding chart', 'Portfolio + Watchlist', 'News (portfolio)', 'Ask console', 'Recent threads', 'Markets'],
+    nameKey: 'dashboard.widgets.presets.portfolioSteward.name',
+    tagKey: 'dashboard.widgets.presets.portfolioSteward.tag',
+    descriptionKey: 'dashboard.widgets.presets.portfolioSteward.description',
+    bestForKey: 'dashboard.widgets.presets.portfolioSteward.bestFor',
+    pillKeys: [
+      'dashboard.widgets.presets.portfolioSteward.pills.topHoldingChart',
+      'dashboard.widgets.presets.portfolioSteward.pills.portfolioWatchlist',
+      'dashboard.widgets.presets.portfolioSteward.pills.newsPortfolio',
+      'dashboard.widgets.presets.portfolioSteward.pills.askConsole',
+      'dashboard.widgets.presets.portfolioSteward.pills.recentThreads',
+      'dashboard.widgets.presets.portfolioSteward.pills.markets',
+    ],
   },
 ];
 

@@ -1,4 +1,6 @@
 import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
 import { useQuery } from '@tanstack/react-query';
 import { CalendarDays } from 'lucide-react';
 import { getEarningsCalendar } from '../../utils/api';
@@ -24,12 +26,12 @@ interface EarningsEntry {
 
 type BucketKey = 'today' | 'tomorrow' | 'week' | 'next' | 'later';
 
-const BUCKET_LABELS: Record<BucketKey, string> = {
-  today: 'Today',
-  tomorrow: 'Tomorrow',
-  week: 'This week',
-  next: 'Next week',
-  later: 'Later',
+const BUCKET_KEY: Record<BucketKey, string> = {
+  today: 'dashboard.widgets.earningsCalendar.bucket_today',
+  tomorrow: 'dashboard.widgets.earningsCalendar.bucket_tomorrow',
+  week: 'dashboard.widgets.earningsCalendar.bucket_thisWeek',
+  next: 'dashboard.widgets.earningsCalendar.bucket_nextWeek',
+  later: 'dashboard.widgets.earningsCalendar.bucket_later',
 };
 
 const WINDOW_DAYS: Record<NonNullable<EarningsConfig['window']>, number> = {
@@ -59,13 +61,22 @@ function formatDateRight(dateStr: string, bucket: BucketKey): string {
   if (bucket === 'today') return 'Today';
   if (bucket === 'tomorrow') return 'Tomorrow';
   if (bucket === 'week') {
-    return d.toLocaleDateString(undefined, { weekday: 'short' });
+    return d.toLocaleDateString(i18n.language, { weekday: 'short' });
   }
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return d.toLocaleDateString(i18n.language, { month: 'short', day: 'numeric' });
 }
 
 function EarningsRow({ item, bucket }: { item: EarningsEntry; bucket: BucketKey }) {
-  const label = formatDateRight(item.date, bucket);
+  const { t } = useTranslation();
+  // formatDateRight returns 'Today'/'Tomorrow' fallthrough or the locale's
+  // weekday/short-month string. Translate the today/tomorrow shortcuts so
+  // they swap with locale; the others come from native Intl.DateTimeFormat.
+  const raw = formatDateRight(item.date, bucket);
+  const label = raw === 'Today'
+    ? t('dashboard.widgets.earningsCalendar.bucket_today')
+    : raw === 'Tomorrow'
+      ? t('dashboard.widgets.earningsCalendar.bucket_tomorrow')
+      : raw;
   return (
     <div
       className="group flex items-center gap-3 px-2 py-2 rounded-md border border-transparent transition-colors"
@@ -157,6 +168,7 @@ function BucketSection({
 }
 
 function EarningsCalendarWidget({ instance }: WidgetRenderProps<EarningsConfig>) {
+  const { t } = useTranslation();
   const windowDays = WINDOW_DAYS[instance.config.window ?? '2w'];
 
   // Use local dates end-to-end: the `from`/`to` we send must match the same
@@ -213,7 +225,7 @@ function EarningsCalendarWidget({ instance }: WidgetRenderProps<EarningsConfig>)
             className="text-[10px] font-semibold uppercase tracking-[0.14em]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
-            Earnings
+            {t('dashboard.widgets.earningsCalendar.header')}
           </span>
           <span
             className="title-font text-lg leading-none dashboard-mono"
@@ -226,7 +238,7 @@ function EarningsCalendarWidget({ instance }: WidgetRenderProps<EarningsConfig>)
           className="text-[10px] uppercase tracking-wider flex-shrink-0"
           style={{ color: 'var(--color-text-tertiary)' }}
         >
-          Next {windowDays}d
+          {t('dashboard.widgets.earningsCalendar.windowLabel', { days: windowDays })}
         </span>
       </div>
 
@@ -254,26 +266,26 @@ function EarningsCalendarWidget({ instance }: WidgetRenderProps<EarningsConfig>)
             </div>
             <div className="text-center">
               <div
-                className="title-font italic text-sm mb-0.5"
+                className="dashboard-mono text-sm mb-0.5"
                 style={{ color: 'var(--color-text-primary)' }}
               >
-                No earnings ahead
+                {t('dashboard.widgets.earningsCalendar.empty')}
               </div>
               <div
                 className="text-[11px]"
                 style={{ color: 'var(--color-text-tertiary)' }}
               >
-                Nothing scheduled in the next {windowDays} days.
+                {t('dashboard.widgets.earningsCalendar.emptyHint', { days: windowDays })}
               </div>
             </div>
           </div>
         ) : (
           <div className="flex flex-col gap-3">
-            <BucketSection label={BUCKET_LABELS.today} items={grouped.today} bucket="today" />
-            <BucketSection label={BUCKET_LABELS.tomorrow} items={grouped.tomorrow} bucket="tomorrow" />
-            <BucketSection label={BUCKET_LABELS.week} items={grouped.week} bucket="week" />
-            <BucketSection label={BUCKET_LABELS.next} items={grouped.next} bucket="next" />
-            <BucketSection label={BUCKET_LABELS.later} items={grouped.later} bucket="later" />
+            <BucketSection label={t(BUCKET_KEY.today)} items={grouped.today} bucket="today" />
+            <BucketSection label={t(BUCKET_KEY.tomorrow)} items={grouped.tomorrow} bucket="tomorrow" />
+            <BucketSection label={t(BUCKET_KEY.week)} items={grouped.week} bucket="week" />
+            <BucketSection label={t(BUCKET_KEY.next)} items={grouped.next} bucket="next" />
+            <BucketSection label={t(BUCKET_KEY.later)} items={grouped.later} bucket="later" />
           </div>
         )}
       </div>
@@ -284,8 +296,8 @@ function EarningsCalendarWidget({ instance }: WidgetRenderProps<EarningsConfig>)
 
 registerWidget<EarningsConfig>({
   type: 'calendar.earnings',
-  title: 'Earnings Calendar',
-  description: 'Upcoming earnings, grouped by Today / Tomorrow / This week / Next week.',
+  titleKey: 'dashboard.widgets.earningsCalendar.title',
+  descriptionKey: 'dashboard.widgets.earningsCalendar.description',
   category: 'intel',
   icon: CalendarDays,
   component: EarningsCalendarWidget,

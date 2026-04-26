@@ -1,5 +1,9 @@
 /// <reference types="vitest/globals" />
 import '@testing-library/jest-dom';
+// Side-effect import: initializes i18next with the same en-US/zh-CN
+// resources the app uses, so `t()` in components returns real strings
+// instead of bare key paths under test.
+import '@/i18n';
 
 // Mock window.matchMedia for framer-motion
 Object.defineProperty(window, 'matchMedia', {

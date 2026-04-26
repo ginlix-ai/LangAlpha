@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import './TradingViewAttribution.css';
 
 /**
@@ -8,6 +9,7 @@ import './TradingViewAttribution.css';
  * `WidgetFrame.css` selector that hides the lightweight-charts watermark.
  */
 export function TradingViewAttribution() {
+  const { t } = useTranslation();
   return (
     <a
       className="tv-attribution"
@@ -15,7 +17,7 @@ export function TradingViewAttribution() {
       target="_blank"
       rel="noopener noreferrer"
     >
-      Powered by TradingView ↗
+      {t('dashboard.widgets.tvAttribution.powered')}
     </a>
   );
 }

@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { Bitcoin } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
@@ -34,29 +35,30 @@ function CryptoScreenerWidget({ instance }: WidgetRenderProps<CryptoScreenerConf
 }
 
 function CryptoScreenerSettings({ config, onChange, onClose }: WidgetSettingsProps<CryptoScreenerConfig>) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-4">
       <EnumField
-        label="Default column set"
+        label={t('dashboard.widgets.cryptoScreener.columns')}
         value={config.defaultColumn ?? 'overview'}
         onChange={(v) => onChange({ defaultColumn: v })}
         options={[
-          { value: 'overview', label: 'Overview' },
-          { value: 'performance', label: 'Performance' },
-          { value: 'oscillators', label: 'Oscillators' },
-          { value: 'moving_averages', label: 'Moving averages' },
+          { value: 'overview', label: t('dashboard.widgets.cryptoScreener.columns_overview') },
+          { value: 'performance', label: t('dashboard.widgets.cryptoScreener.columns_performance') },
+          { value: 'oscillators', label: t('dashboard.widgets.cryptoScreener.columns_oscillators') },
+          { value: 'moving_averages', label: t('dashboard.widgets.cryptoScreener.columns_movingAverages') },
         ]}
       />
       <EnumField
-        label="Default screen"
+        label={t('dashboard.widgets.cryptoScreener.screen')}
         value={config.defaultScreen ?? 'general'}
         onChange={(v) => onChange({ defaultScreen: v })}
         options={[
-          { value: 'general', label: 'General' },
-          { value: 'most_capitalized', label: 'Most capitalized' },
-          { value: 'top_gainers', label: 'Top gainers' },
-          { value: 'top_losers', label: 'Top losers' },
-          { value: 'most_active', label: 'Most active' },
+          { value: 'general', label: t('dashboard.widgets.cryptoScreener.screen_general') },
+          { value: 'most_capitalized', label: t('dashboard.widgets.cryptoScreener.screen_mostCap') },
+          { value: 'top_gainers', label: t('dashboard.widgets.cryptoScreener.screen_topGainers') },
+          { value: 'top_losers', label: t('dashboard.widgets.cryptoScreener.screen_topLosers') },
+          { value: 'most_active', label: t('dashboard.widgets.cryptoScreener.screen_active') },
         ]}
       />
       <TradingViewSettingsFooter />
@@ -67,8 +69,8 @@ function CryptoScreenerSettings({ config, onChange, onClose }: WidgetSettingsPro
 
 registerWidget<CryptoScreenerConfig>({
   type: 'tv.crypto-screener',
-  title: 'Crypto Screener',
-  description: 'Filter the crypto universe by market cap, performance, technicals.',
+  titleKey: 'dashboard.widgets.cryptoScreener.title',
+  descriptionKey: 'dashboard.widgets.cryptoScreener.description',
   category: 'markets',
   icon: Bitcoin,
   component: CryptoScreenerWidget,

@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { Gauge } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
@@ -29,27 +30,28 @@ function TechnicalsWidget({ instance }: WidgetRenderProps<TechnicalsConfig>) {
 }
 
 function TechnicalsSettings({ config, onChange, onClose }: WidgetSettingsProps<TechnicalsConfig>) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-4">
       <SymbolField
-        label="Symbol"
+        label={t('dashboard.widgets.technicals.symbol')}
         value={config.symbol ?? ''}
         onChange={(v) => onChange({ symbol: v })}
         placeholder="NASDAQ:NVDA"
       />
       <EnumField
-        label="Interval"
+        label={t('dashboard.widgets.technicals.interval')}
         value={config.interval ?? '1D'}
         onChange={(v) => onChange({ interval: v })}
         options={[
-          { value: '1m', label: '1 minute' },
-          { value: '5m', label: '5 minutes' },
-          { value: '15m', label: '15 minutes' },
-          { value: '1h', label: '1 hour' },
-          { value: '4h', label: '4 hours' },
-          { value: '1D', label: '1 day' },
-          { value: '1W', label: '1 week' },
-          { value: '1M', label: '1 month' },
+          { value: '1m', label: t('dashboard.widgets.technicals.interval_1m') },
+          { value: '5m', label: t('dashboard.widgets.technicals.interval_5m') },
+          { value: '15m', label: t('dashboard.widgets.technicals.interval_15m') },
+          { value: '1h', label: t('dashboard.widgets.technicals.interval_1h') },
+          { value: '4h', label: t('dashboard.widgets.technicals.interval_4h') },
+          { value: '1D', label: t('dashboard.widgets.technicals.interval_1d') },
+          { value: '1W', label: t('dashboard.widgets.technicals.interval_1w') },
+          { value: '1M', label: t('dashboard.widgets.technicals.interval_1M') },
         ]}
       />
       <TradingViewSettingsFooter />
@@ -60,8 +62,8 @@ function TechnicalsSettings({ config, onChange, onClose }: WidgetSettingsProps<T
 
 registerWidget<TechnicalsConfig>({
   type: 'tv.technicals',
-  title: 'Technical Analysis',
-  description: 'Oscillator + moving-average consensus gauge with buy/sell/neutral verdict.',
+  titleKey: 'dashboard.widgets.technicals.title',
+  descriptionKey: 'dashboard.widgets.technicals.description',
   category: 'markets',
   icon: Gauge,
   component: TechnicalsWidget,

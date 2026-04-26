@@ -1,5 +1,7 @@
 import React from 'react';
 import { Menu, Zap } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
 
 interface NewsItem {
   title: string;
@@ -8,19 +10,20 @@ interface NewsItem {
 }
 
 const TopNews: React.FC = () => {
+  const { t } = useTranslation();
   const newsItems: NewsItem[] = [
-    { title: 'Retail Sales Slump Takes Toll on Market,...', time: '10 min ago', isHot: true },
-    { title: "Tech Giant's Earnings Soar, Stock Hits All-Ti...", time: '2 min ago', isHot: false },
-    { title: 'Retail Sales Slump Takes Toll on Market,...', time: '10 min ago', isHot: true },
-    { title: 'Retail Sales Slump Takes Toll on Market,...', time: '10 min ago', isHot: true },
-    { title: 'High-Profile IPO Falls Short of Expectations...', time: '12 hrs ago', isHot: false },
-    { title: 'Electric Vehicle Stocks Skyrocket as Deman...', time: '22 hrs ago', isHot: false },
+    { title: t('dashboard.topNews.sample1'), time: i18n.t('dashboard.widgets.common.relativePast', { when: '10m' }), isHot: true },
+    { title: t('dashboard.topNews.sample2'), time: i18n.t('dashboard.widgets.common.relativePast', { when: '2m' }), isHot: false },
+    { title: t('dashboard.topNews.sample1'), time: i18n.t('dashboard.widgets.common.relativePast', { when: '10m' }), isHot: true },
+    { title: t('dashboard.topNews.sample1'), time: i18n.t('dashboard.widgets.common.relativePast', { when: '10m' }), isHot: true },
+    { title: t('dashboard.topNews.sample3'), time: i18n.t('dashboard.widgets.common.relativePast', { when: '12h' }), isHot: false },
+    { title: t('dashboard.topNews.sample4'), time: i18n.t('dashboard.widgets.common.relativePast', { when: '22h' }), isHot: false },
   ];
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-semibold">Top News</h2>
+        <h2 className="text-2xl font-semibold">{t('dashboard.topNews.title')}</h2>
         <Menu className="h-5 w-5 text-muted-foreground cursor-pointer" />
       </div>
       <div className="space-y-2">

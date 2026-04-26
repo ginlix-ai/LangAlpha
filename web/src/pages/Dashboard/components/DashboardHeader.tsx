@@ -244,7 +244,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
                   borderColor: 'var(--color-border-muted)',
                 }}
                 role="tablist"
-                aria-label="Dashboard layout"
+                aria-label={t('dashboard.layoutToggle.groupAria')}
               >
                 <button
                   type="button"
@@ -262,7 +262,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
                     fontWeight: layoutToggle.mode === 'classic' ? 600 : 400,
                   }}
                 >
-                  Classic
+                  {t('dashboard.layoutToggle.classic')}
                 </button>
                 <button
                   type="button"
@@ -281,7 +281,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
                   }}
                 >
                   <LayoutGrid size={12} />
-                  Custom
+                  {t('dashboard.layoutToggle.custom')}
                 </button>
               </div>
               {layoutToggle.mode === 'custom' && layoutToggle.onEditModeChange && (
@@ -293,8 +293,8 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
                     color: layoutToggle.editMode ? 'var(--color-text-on-accent)' : 'var(--color-text-secondary)',
                     backgroundColor: layoutToggle.editMode ? 'var(--color-accent-primary)' : 'transparent',
                   }}
-                  aria-label={layoutToggle.editMode ? 'Exit edit layout' : 'Edit layout'}
-                  title={layoutToggle.editMode ? 'Exit edit layout' : 'Edit layout'}
+                  aria-label={t(layoutToggle.editMode ? 'dashboard.layoutToggle.exitEditLayout' : 'dashboard.layoutToggle.editLayout')}
+                  title={t(layoutToggle.editMode ? 'dashboard.layoutToggle.exitEditLayout' : 'dashboard.layoutToggle.editLayout')}
                 >
                   <Pencil size={16} />
                 </button>
@@ -344,7 +344,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
                   >
                     <Mail className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-primary)' }} />
                     <div className="min-w-0">
-                      <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>Email</p>
+                      <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{t('dashboard.classic.emailLabel')}</p>
                       <p className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{email.trim()}</p>
                     </div>
                   </div>

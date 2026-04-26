@@ -1,6 +1,8 @@
 import React, { useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlignEndHorizontal, Clock, Menu, Tag } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
 
 interface PopularItem {
@@ -25,15 +27,16 @@ function formatRelativeTime(timestamp: string): string {
   const then = new Date(timestamp);
   const diffMs = now.getTime() - then.getTime();
   const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return 'just now';
-  if (diffMin < 60) return `${diffMin} min ago`;
+  if (diffMin < 1) return i18n.t('dashboard.widgets.common.relativeNow');
+  if (diffMin < 60) return i18n.t('dashboard.widgets.common.relativePast', { when: `${diffMin}m` });
   const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr} hr${diffHr > 1 ? 's' : ''} ago`;
+  if (diffHr < 24) return i18n.t('dashboard.widgets.common.relativePast', { when: `${diffHr}h` });
   const diffDay = Math.floor(diffHr / 24);
-  return `${diffDay} day${diffDay > 1 ? 's' : ''} ago`;
+  return i18n.t('dashboard.widgets.common.relativePast', { when: `${diffDay}d` });
 }
 
 function PopularCard({ items = [], loading = false, hasMore = false, onLoadMore }: PopularCardProps) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const loadingMore = useRef(false);
 
@@ -61,7 +64,7 @@ function PopularCard({ items = [], loading = false, hasMore = false, onLoadMore 
       <CardHeader className="px-5 py-4" style={{ paddingLeft: '20px', paddingRight: '24px', paddingTop: '16px', paddingBottom: '16px' }}>
         <div className="flex items-center justify-between">
           <CardTitle className="title-font text-base font-semibold" style={{ color: 'var(--color-text-primary)', letterSpacing: '0.15px', lineHeight: '24px' }}>
-            What&apos;s Popular
+            {t('dashboard.popularCard.title')}
           </CardTitle>
           <Menu className="h-4 w-4 cursor-pointer transition-colors" style={{ color: 'var(--color-text-primary)' }} />
         </div>

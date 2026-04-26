@@ -1,4 +1,5 @@
 import { AnimatePresence, motion } from 'framer-motion';
+import { useTranslation } from 'react-i18next';
 import { Eye } from 'lucide-react';
 import { useDashboardContext } from '../framework/DashboardDataContext';
 import { registerWidget } from '../framework/WidgetRegistry';
@@ -13,6 +14,7 @@ import {
 type WatchlistConfig = Record<string, never>;
 
 function WatchlistWidget(_props: WidgetRenderProps<WatchlistConfig>) {
+  const { t } = useTranslation();
   const { watchlist, watchlistHandlers, dashboard } = useDashboardContext();
   const showSkeleton = watchlist.loading && watchlist.rows.length === 0;
 
@@ -31,7 +33,7 @@ function WatchlistWidget(_props: WidgetRenderProps<WatchlistConfig>) {
             className="text-[10px] font-semibold uppercase tracking-[0.14em]"
             style={{ color: 'var(--color-text-secondary)' }}
           >
-            Watchlist
+            {t('dashboard.widgets.watchlist.header')}
           </span>
           <span
             className="title-font text-lg leading-none dashboard-mono"
@@ -64,7 +66,7 @@ function WatchlistWidget(_props: WidgetRenderProps<WatchlistConfig>) {
               ))
             )}
 
-            <HoldingsAddButton label="Add Symbol" onClick={watchlistHandlers.onAdd} />
+            <HoldingsAddButton label={t('dashboard.widgets.watchlist.addSymbol')} onClick={watchlistHandlers.onAdd} />
           </motion.div>
         </AnimatePresence>
       </div>
@@ -74,8 +76,8 @@ function WatchlistWidget(_props: WidgetRenderProps<WatchlistConfig>) {
 
 registerWidget<WatchlistConfig>({
   type: 'watchlist.list',
-  title: 'Watchlist',
-  description: 'Compact ticker list with live prices.',
+  titleKey: 'dashboard.widgets.watchlist.title',
+  descriptionKey: 'dashboard.widgets.watchlist.description',
   category: 'personal',
   icon: Eye,
   component: WatchlistWidget,

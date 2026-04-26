@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import { CalendarClock } from 'lucide-react';
 import { TradingViewEmbed } from '../../framework/TradingViewEmbed';
 import { registerWidget } from '../../framework/WidgetRegistry';
@@ -26,26 +27,27 @@ function EconomicEventsWidget({ instance }: WidgetRenderProps<EconomicEventsConf
 }
 
 function EconomicEventsSettings({ config, onChange, onClose }: WidgetSettingsProps<EconomicEventsConfig>) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-4">
       <EnumField
-        label="Importance"
+        label={t('dashboard.widgets.economicEvents.importance')}
         value={config.importanceFilter ?? '-1,0,1'}
         onChange={(v) => onChange({ importanceFilter: v })}
         options={[
-          { value: '-1,0,1', label: 'All (low, medium, high)' },
-          { value: '0,1', label: 'Medium + high' },
-          { value: '1', label: 'High only' },
+          { value: '-1,0,1', label: t('dashboard.widgets.economicEvents.importance_all') },
+          { value: '0,1', label: t('dashboard.widgets.economicEvents.importance_mediumHigh') },
+          { value: '1', label: t('dashboard.widgets.economicEvents.importance_high') },
         ]}
       />
       <EnumField
-        label="Countries"
+        label={t('dashboard.widgets.economicEvents.countries')}
         value={config.countryFilter ?? 'us,eu,jp,gb,cn'}
         onChange={(v) => onChange({ countryFilter: v })}
         options={[
-          { value: 'us,eu,jp,gb,cn', label: 'Major (US, EU, JP, GB, CN)' },
-          { value: 'us', label: 'US only' },
-          { value: 'us,eu,gb', label: 'US + EU + GB' },
+          { value: 'us,eu,jp,gb,cn', label: t('dashboard.widgets.economicEvents.countries_major') },
+          { value: 'us', label: t('dashboard.widgets.economicEvents.countries_us') },
+          { value: 'us,eu,gb', label: t('dashboard.widgets.economicEvents.countries_usEuGb') },
         ]}
       />
       <TradingViewSettingsFooter />
@@ -56,8 +58,8 @@ function EconomicEventsSettings({ config, onChange, onClose }: WidgetSettingsPro
 
 registerWidget<EconomicEventsConfig>({
   type: 'tv.economic-events',
-  title: 'Economic Calendar',
-  description: 'Upcoming releases (CPI, NFP, FOMC, etc.) filtered by importance.',
+  titleKey: 'dashboard.widgets.economicEvents.title',
+  descriptionKey: 'dashboard.widgets.economicEvents.description',
   category: 'markets',
   icon: CalendarClock,
   component: EconomicEventsWidget,

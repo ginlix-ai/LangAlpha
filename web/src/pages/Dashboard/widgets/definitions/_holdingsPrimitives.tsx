@@ -1,4 +1,5 @@
 import { motion } from 'framer-motion';
+import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import {
   Plus,
@@ -12,6 +13,7 @@ import {
   EyeOff,
 } from 'lucide-react';
 import { getExtendedHoursInfo } from '@/lib/marketUtils';
+import { createFormatter } from '@/lib/format';
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -23,6 +25,10 @@ import type { PortfolioRow } from '../../hooks/usePortfolioData';
 
 type MarketStatusData = Parameters<typeof getExtendedHoursInfo>[0];
 
+const fmt2 = createFormatter({ minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmt1 = createFormatter({ minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const fmtInt = createFormatter({ maximumFractionDigits: 0 });
+
 interface WatchlistRowItemProps {
   item: WatchlistRow;
   index: number;
@@ -31,9 +37,10 @@ interface WatchlistRowItemProps {
 }
 
 export function WatchlistRowItem({ item, index, marketStatus, onDelete }: WatchlistRowItemProps) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const pos = item.isPositive;
-  const pctStr = (pos ? '+' : '') + Number(item.changePercent).toFixed(2) + '%';
+  const pctStr = (pos ? '+' : '') + fmt2(Number(item.changePercent)) + '%';
   const hasId = !!item.watchlist_item_id;
 
   const { extPct, extType } = getExtendedHoursInfo(marketStatus, item, { shortLabels: true });
@@ -60,7 +67,7 @@ export function WatchlistRowItem({ item, index, marketStatus, onDelete }: Watchl
           {item.symbol}
         </div>
         <div className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-          Stock
+          {t('dashboard.widgets.holdings.stock')}
         </div>
       </div>
       <div className="flex items-center gap-4">
@@ -69,16 +76,13 @@ export function WatchlistRowItem({ item, index, marketStatus, onDelete }: Watchl
             className="text-sm font-medium dashboard-mono"
             style={{ color: 'var(--color-text-primary)' }}
           >
-            {Number(extType && item.previousClose != null ? item.previousClose : item.price).toLocaleString(undefined, {
-              minimumFractionDigits: 2,
-              maximumFractionDigits: 2,
-            })}
+            {fmt2(Number(extType && item.previousClose != null ? item.previousClose : item.price))}
           </div>
           <div
             className="text-xs font-medium dashboard-mono"
             style={{ color: pos ? 'var(--color-profit)' : 'var(--color-loss)' }}
           >
-            {(pos ? '+' : '') + Number(item.change).toFixed(2)}
+            {(pos ? '+' : '') + fmt2(Number(item.change))}
           </div>
         </div>
         <div className="text-right">
@@ -97,8 +101,8 @@ export function WatchlistRowItem({ item, index, marketStatus, onDelete }: Watchl
               style={{ color: extColor }}
             >
               {extType === 'pre' ? <Sunrise size={10} /> : <Sunset size={10} />}
-              {Number(item.price).toFixed(2)} {extPct >= 0 ? '+' : ''}
-              {extPct.toFixed(2)}%
+              {fmt2(Number(item.price))} {extPct >= 0 ? '+' : ''}
+              {fmt2(extPct)}%
             </div>
           )}
         </div>
@@ -113,7 +117,7 @@ export function WatchlistRowItem({ item, index, marketStatus, onDelete }: Watchl
         <ContextMenuContent>
           <ContextMenuItem variant="destructive" onSelect={() => onDelete?.(String(item.watchlist_item_id))}>
             <Trash2 className="h-3.5 w-3.5" />
-            Delete
+            {t('dashboard.widgets.holdings.delete')}
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
@@ -139,11 +143,12 @@ export function PortfolioRowItem({
   onEdit,
   onDelete,
 }: PortfolioRowItemProps) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const pos = item.isPositive;
   const plStr =
     item.unrealizedPlPercent != null
-      ? (pos ? '+' : '') + Number(item.unrealizedPlPercent).toFixed(2) + '%'
+      ? (pos ? '+' : '') + fmt2(Number(item.unrealizedPlPercent)) + '%'
       : '—';
   const hasId = !!item.user_portfolio_id;
 
@@ -172,9 +177,9 @@ export function PortfolioRowItem({
         </div>
         <div className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
           {valuesHidden
-            ? '*** shares'
+            ? t('dashboard.widgets.holdings.sharesHidden')
             : item.quantity != null
-              ? `${Number(item.quantity).toLocaleString()} shares`
+              ? t('dashboard.widgets.holdings.shares', { n: fmtInt(Number(item.quantity)) })
               : ''}
         </div>
       </div>
@@ -186,18 +191,12 @@ export function PortfolioRowItem({
           >
             {valuesHidden
               ? '******'
-              : `$${Number(item.marketValue || 0).toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                })}`}
+              : `$${fmt2(Number(item.marketValue || 0))}`}
           </div>
           <div className="text-xs dashboard-mono" style={{ color: 'var(--color-text-secondary)' }}>
             {valuesHidden
               ? '***'
-              : `@${Number(extType && item.previousClose != null ? item.previousClose : item.price).toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                })}`}
+              : `@${fmt2(Number(extType && item.previousClose != null ? item.previousClose : item.price))}`}
           </div>
         </div>
         <div className="text-right">
@@ -216,8 +215,8 @@ export function PortfolioRowItem({
               style={{ color: extColor }}
             >
               {extType === 'pre' ? <Sunrise size={10} /> : <Sunset size={10} />}
-              {Number(item.price).toFixed(2)} {extPct >= 0 ? '+' : ''}
-              {extPct.toFixed(2)}%
+              {fmt2(Number(item.price))} {extPct >= 0 ? '+' : ''}
+              {fmt2(extPct)}%
             </div>
           )}
         </div>
@@ -232,11 +231,11 @@ export function PortfolioRowItem({
         <ContextMenuContent>
           <ContextMenuItem onSelect={() => onEdit?.(item)}>
             <Pencil className="h-3.5 w-3.5" />
-            Edit
+            {t('dashboard.widgets.holdings.edit')}
           </ContextMenuItem>
           <ContextMenuItem variant="destructive" onSelect={() => onDelete?.(String(item.user_portfolio_id))}>
             <Trash2 className="h-3.5 w-3.5" />
-            Delete
+            {t('dashboard.widgets.holdings.delete')}
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
@@ -283,6 +282,7 @@ interface PortfolioNavSummaryProps {
 }
 
 export function PortfolioNavSummary({ rows, valuesHidden, onToggleHidden }: PortfolioNavSummaryProps) {
+  const { t } = useTranslation();
   const totalValue = rows.reduce((sum, r) => sum + (r.marketValue || 0), 0);
   const totalCost = rows.reduce(
     (sum, r) => sum + (r.average_cost != null ? r.average_cost * (r.quantity || 0) : 0),
@@ -302,7 +302,7 @@ export function PortfolioNavSummary({ rows, valuesHidden, onToggleHidden }: Port
     >
       <div className="flex items-center justify-between mb-1">
         <div className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-          Net Asset Value
+          {t('dashboard.widgets.holdings.nav')}
         </div>
         <button
           type="button"
@@ -315,7 +315,7 @@ export function PortfolioNavSummary({ rows, valuesHidden, onToggleHidden }: Port
           onMouseLeave={(e) => {
             e.currentTarget.style.backgroundColor = 'transparent';
           }}
-          aria-label={valuesHidden ? 'Show values' : 'Hide values'}
+          aria-label={valuesHidden ? t('dashboard.widgets.holdings.showValues') : t('dashboard.widgets.holdings.hideValues')}
         >
           {valuesHidden ? <EyeOff size={14} /> : <Eye size={14} />}
         </button>
@@ -324,9 +324,7 @@ export function PortfolioNavSummary({ rows, valuesHidden, onToggleHidden }: Port
         className="text-2xl font-bold mb-2 dashboard-mono"
         style={{ color: 'var(--color-text-primary)' }}
       >
-        {valuesHidden
-          ? '********'
-          : `$${totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+        {valuesHidden ? '********' : `$${fmt2(totalValue)}`}
       </div>
       {!valuesHidden && totalCost > 0 && (
         <div
@@ -337,12 +335,7 @@ export function PortfolioNavSummary({ rows, valuesHidden, onToggleHidden }: Port
           }}
         >
           {isPlPositive ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
-          {isPlPositive ? '+' : '-'}$
-          {Math.abs(totalPl).toLocaleString(undefined, {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2,
-          })}{' '}
-          ({totalPlPct.toFixed(1)}%)
+          {isPlPositive ? '+' : '-'}${fmt2(Math.abs(totalPl))} ({fmt1(totalPlPct)}%)
         </div>
       )}
     </div>

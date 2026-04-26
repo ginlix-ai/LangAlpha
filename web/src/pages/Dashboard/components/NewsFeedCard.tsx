@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { TrendingUp, Clock, Briefcase, Eye, Search, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useTranslation } from 'react-i18next';
 import { useIsMobile } from '@/hooks/useIsMobile';
 
 interface NewsItem {
@@ -18,30 +19,13 @@ interface NewsItem {
 type TabKey = 'market' | 'portfolio' | 'watchlist';
 type DateRangeKey = 'all' | '1h' | '6h' | '24h' | '7d';
 
-interface TabDef {
-  key: TabKey;
-  label: string;
-  icon: React.ComponentType<{ size?: number }>;
-}
-
-interface DateRangeDef {
-  key: DateRangeKey;
-  label: string;
-}
-
-const TABS: TabDef[] = [
-  { key: 'market', label: 'Market Pulse', icon: TrendingUp },
-  { key: 'portfolio', label: 'Your Portfolio', icon: Briefcase },
-  { key: 'watchlist', label: 'Your Watchlist', icon: Eye },
+const TAB_KEYS: { key: TabKey; icon: React.ComponentType<{ size?: number }> }[] = [
+  { key: 'market', icon: TrendingUp },
+  { key: 'portfolio', icon: Briefcase },
+  { key: 'watchlist', icon: Eye },
 ];
 
-const DATE_RANGES: DateRangeDef[] = [
-  { key: 'all', label: 'All' },
-  { key: '1h', label: '1H' },
-  { key: '6h', label: '6H' },
-  { key: '24h', label: '24H' },
-  { key: '7d', label: '7D' },
-];
+const DATE_RANGE_KEYS: DateRangeKey[] = ['all', '1h', '6h', '24h', '7d'];
 
 function parseRelativeTime(timeStr: string | undefined | null): number | null {
   if (!timeStr) return null;
@@ -201,26 +185,28 @@ interface EmptyStateProps {
 }
 
 function EmptyState({ tab, hasFilters }: EmptyStateProps) {
+  const { t } = useTranslation();
+
   if (hasFilters) {
     return (
       <div className="flex items-center justify-center py-16">
         <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-          No news matching your filters
+          {t('dashboard.newsFeedCard.emptyFilters')}
         </p>
       </div>
     );
   }
 
   const messages: Record<TabKey, string> = {
-    market: 'No market news available',
-    portfolio: 'Add stocks to your portfolio to see relevant news here',
-    watchlist: 'Add stocks to your watchlist to see relevant news here',
+    market: t('dashboard.newsFeedCard.emptyMarket'),
+    portfolio: t('dashboard.newsFeedCard.emptyPortfolio'),
+    watchlist: t('dashboard.newsFeedCard.emptyWatchlist'),
   };
 
   return (
     <div className="flex items-center justify-center py-16">
       <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-        {messages[tab] || 'No news available'}
+        {messages[tab] || t('dashboard.newsFeedCard.emptyDefault')}
       </p>
     </div>
   );
@@ -245,9 +231,24 @@ function NewsFeedCard({
   watchlistLoading = false,
   onNewsClick,
 }: NewsFeedCardProps) {
+  const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<TabKey>('market');
   const [tickerFilter, setTickerFilter] = useState('');
   const [dateRange, setDateRange] = useState<DateRangeKey>('all');
+
+  const tabLabels: Record<TabKey, string> = {
+    market: t('dashboard.newsFeedCard.tabMarket'),
+    portfolio: t('dashboard.newsFeedCard.tabPortfolio'),
+    watchlist: t('dashboard.newsFeedCard.tabWatchlist'),
+  };
+
+  const dateRangeLabels: Record<DateRangeKey, string> = {
+    all: t('dashboard.newsFeedCard.rangeAll'),
+    '1h': t('dashboard.newsFeedCard.range1h'),
+    '6h': t('dashboard.newsFeedCard.range6h'),
+    '24h': t('dashboard.newsFeedCard.range24h'),
+    '7d': t('dashboard.newsFeedCard.range7d'),
+  };
 
   const dataMap: Record<TabKey, { items: NewsItem[]; loading: boolean }> = {
     market: { items: marketItems, loading: marketLoading },
@@ -302,7 +303,7 @@ function NewsFeedCard({
       >
         {/* Tabs */}
         <div className="flex items-center gap-1 p-1 rounded-lg min-w-0 overflow-x-auto" style={{ backgroundColor: 'var(--color-bg-tag)' }}>
-          {TABS.map((tab) => {
+          {TAB_KEYS.map((tab) => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.key;
             return (
@@ -320,7 +321,7 @@ function NewsFeedCard({
                 }}
               >
                 <Icon size={13} />
-                {tab.label}
+                {tabLabels[tab.key]}
               </button>
             );
           })}
@@ -341,7 +342,7 @@ function NewsFeedCard({
             <Search size={12} style={{ color: 'var(--color-text-secondary)', flexShrink: 0 }} />
             <input
               type="text"
-              placeholder="Ticker..."
+              placeholder={t('dashboard.newsFeedCard.tickerPlaceholder')}
               value={tickerFilter}
               onChange={(e) => setTickerFilter(e.target.value)}
               className="flex-1 text-[11px] bg-transparent border-none outline-none min-w-0"
@@ -360,19 +361,19 @@ function NewsFeedCard({
 
           {/* Date range pills */}
           <div className="flex items-center gap-0.5 p-0.5 rounded-lg" style={{ backgroundColor: 'var(--color-bg-tag)' }}>
-            {DATE_RANGES.map((dr) => {
-              const isActive = dateRange === dr.key;
+            {DATE_RANGE_KEYS.map((key) => {
+              const isActive = dateRange === key;
               return (
                 <button
-                  key={dr.key}
-                  onClick={() => setDateRange(dr.key)}
+                  key={key}
+                  onClick={() => setDateRange(key)}
                   className="px-2 py-1 rounded-md text-[11px] font-medium transition-all"
                   style={{
                     backgroundColor: isActive ? 'var(--color-bg-elevated)' : 'transparent',
                     color: isActive ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
                   }}
                 >
-                  {dr.label}
+                  {dateRangeLabels[key]}
                 </button>
               );
             })}

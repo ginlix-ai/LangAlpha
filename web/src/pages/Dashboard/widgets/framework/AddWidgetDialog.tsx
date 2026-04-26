@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 import { ArrowRight, Search } from 'lucide-react';
 import {
   Dialog,
@@ -9,36 +10,36 @@ import {
 import { listWidgets, listWidgetsByCategory } from './WidgetRegistry';
 import type { WidgetCategory, WidgetDefinition, WidgetInstance } from '../types';
 
-type CategoryMeta = { label: string; blurb: string; order: number; dot: string };
+type CategoryMeta = { labelKey: string; blurbKey: string; order: number; dot: string };
 
 const CATEGORY_META: Record<WidgetCategory, CategoryMeta> = {
   markets: {
-    label: 'Markets',
-    blurb: 'Real-time quotes, indices, charts and calendars.',
+    labelKey: 'dashboard.widgets.addDialog.category.marketsLabel',
+    blurbKey: 'dashboard.widgets.addDialog.category.marketsBlurb',
     order: 1,
     dot: '#E0B341',
   },
   intel: {
-    label: 'Intelligence',
-    blurb: 'AI-generated briefs and curated news streams.',
+    labelKey: 'dashboard.widgets.addDialog.category.intelligenceLabel',
+    blurbKey: 'dashboard.widgets.addDialog.category.intelligenceBlurb',
     order: 2,
     dot: '#5BA47F',
   },
   personal: {
-    label: 'Personal',
-    blurb: 'Your portfolio, watchlist, and holdings.',
+    labelKey: 'dashboard.widgets.addDialog.category.personalLabel',
+    blurbKey: 'dashboard.widgets.addDialog.category.personalBlurb',
     order: 3,
     dot: '#C4A36B',
   },
   agent: {
-    label: 'Agent',
-    blurb: 'Kick off a research session from the dashboard.',
+    labelKey: 'dashboard.widgets.addDialog.category.agentLabel',
+    blurbKey: 'dashboard.widgets.addDialog.category.agentBlurb',
     order: 4,
     dot: '#C4574F',
   },
   workspace: {
-    label: 'Workspace',
-    blurb: 'Jump into a past conversation or workspace.',
+    labelKey: 'dashboard.widgets.addDialog.category.workspaceLabel',
+    blurbKey: 'dashboard.widgets.addDialog.category.workspaceBlurb',
     order: 5,
     dot: '#5DA372',
   },
@@ -52,6 +53,7 @@ interface AddWidgetDialogProps {
 }
 
 export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: AddWidgetDialogProps) {
+  const { t } = useTranslation();
   const grouped = useMemo(() => listWidgetsByCategory(), []);
   const allWidgets = useMemo(() => listWidgets(), []);
   const existingTypes = useMemo(() => new Set(existingWidgets.map((w) => w.type)), [existingWidgets]);
@@ -78,12 +80,18 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
   const searchLower = search.trim().toLowerCase();
   const matches = useMemo(() => {
     if (!searchActive) return null;
-    return allWidgets.filter((w) =>
-      w.title.toLowerCase().includes(searchLower) ||
-      (w.description ?? '').toLowerCase().includes(searchLower) ||
-      w.type.toLowerCase().includes(searchLower),
-    );
-  }, [allWidgets, searchActive, searchLower]);
+    return allWidgets.filter((w) => {
+      const translatedTitle = t(w.titleKey);
+      const translatedDesc = w.descriptionKey ? t(w.descriptionKey) : '';
+      // Type stays English for power-user search ('chart.symbol', 'tv.movers');
+      // chrome strings come from the active locale.
+      return (
+        w.type.toLowerCase().includes(searchLower) ||
+        translatedTitle.toLowerCase().includes(searchLower) ||
+        translatedDesc.toLowerCase().includes(searchLower)
+      );
+    });
+  }, [allWidgets, searchActive, searchLower, t]);
 
   const ordered = useMemo(
     () => [activeCat, ...categoriesSorted.filter((c) => c !== activeCat)],
@@ -151,13 +159,13 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
               className="text-[11px] font-semibold uppercase tracking-[0.14em]"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
-              Widget Gallery
+              {t('dashboard.widgets.addDialog.eyebrow')}
             </div>
             <DialogTitle
               className="title-font mt-1.5 text-[26px] leading-tight tracking-tight"
               style={{ color: 'var(--color-text-primary)', fontWeight: 500 }}
             >
-              Add a widget
+              {t('dashboard.widgets.addDialog.title')}
             </DialogTitle>
           </div>
 
@@ -173,7 +181,7 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
             <input
               type="text"
               autoFocus
-              placeholder="Search widgets..."
+              placeholder={t('dashboard.widgets.addDialog.searchPlaceholder')}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="flex-1 min-w-0 bg-transparent outline-none"
@@ -211,7 +219,7 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
                       className="inline-block rounded-full flex-shrink-0"
                       style={{ width: 8, height: 8, backgroundColor: meta?.dot ?? '#999' }}
                     />
-                    <span className="font-medium truncate">{meta?.label ?? cat}</span>
+                    <span className="font-medium truncate">{meta?.labelKey ? t(meta.labelKey) : cat}</span>
                   </span>
                   <span
                     className="text-xs tabular-nums flex-shrink-0"
@@ -244,10 +252,10 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
                 letterSpacing: '0.05em',
               }}
             >
-              tip
+              {t('dashboard.widgets.addDialog.tip')}
             </span>
             <div style={{ color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>
-              Click a widget to drop it at the next open slot on your dashboard.
+              {t('dashboard.widgets.addDialog.tipBody')}
             </div>
           </div>
         </aside>
@@ -262,13 +270,16 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
                     className="title-font text-[26px] leading-tight tracking-tight"
                     style={{ color: 'var(--color-text-primary)', fontWeight: 500 }}
                   >
-                    Results
+                    {t('dashboard.widgets.addDialog.results')}
                   </div>
                   <DialogDescription
                     className="mt-1 text-sm"
                     style={{ color: 'var(--color-text-secondary)' }}
                   >
-                    {matches?.length ?? 0} widget{(matches?.length ?? 0) === 1 ? '' : 's'} match &ldquo;{search}&rdquo;.
+                    {t('dashboard.widgets.addDialog.resultCount', {
+                      count: matches?.length ?? 0,
+                      search,
+                    })}
                   </DialogDescription>
                 </>
               ) : (
@@ -278,13 +289,17 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
                       className="title-font text-[26px] leading-tight tracking-tight"
                       style={{ color: 'var(--color-text-primary)', fontWeight: 500 }}
                     >
-                      {CATEGORY_META[activeCat]?.label ?? activeCat}
+                      {CATEGORY_META[activeCat]?.labelKey
+                        ? t(CATEGORY_META[activeCat].labelKey)
+                        : activeCat}
                     </div>
                     <DialogDescription
                       className="text-sm"
                       style={{ color: 'var(--color-text-secondary)' }}
                     >
-                      {CATEGORY_META[activeCat]?.blurb}
+                      {CATEGORY_META[activeCat]?.blurbKey
+                        ? t(CATEGORY_META[activeCat].blurbKey)
+                        : ''}
                     </DialogDescription>
                   </div>
                 </>
@@ -298,7 +313,7 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
                   color: 'var(--color-text-tertiary)',
                 }}
               >
-                {allWidgets.length} total widgets
+                {t('dashboard.widgets.addDialog.totalCount', { count: allWidgets.length })}
               </span>
               <button
                 type="button"
@@ -313,7 +328,7 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
                   e.currentTarget.style.backgroundColor = 'transparent';
                   e.currentTarget.style.color = 'var(--color-text-tertiary)';
                 }}
-                aria-label="Close"
+                aria-label={t('dashboard.widgets.addDialog.closeAria')}
               >
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round">
                   <path d="M3 3L11 11M11 3L3 11" />
@@ -340,7 +355,7 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
                     className="col-span-full py-12 text-center text-sm"
                     style={{ color: 'var(--color-text-tertiary)' }}
                   >
-                    No widgets match your search.
+                    {t('dashboard.widgets.addDialog.noMatches')}
                   </div>
                 )}
               </div>
@@ -360,7 +375,7 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
                           className="text-[11px] font-semibold uppercase tracking-[0.14em]"
                           style={{ color: 'var(--color-text-tertiary)' }}
                         >
-                          {CATEGORY_META[cat]?.label ?? cat}
+                          {CATEGORY_META[cat]?.labelKey ? t(CATEGORY_META[cat].labelKey) : cat}
                         </div>
                         <div
                           className="flex-1 h-px"
@@ -391,18 +406,23 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
             style={{ borderTop: '1px solid var(--color-border-muted)' }}
           >
             <div className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-              Click to select · double-click or{' '}
-              <span
-                className="inline-flex items-center justify-center px-1.5 min-w-[18px] h-[18px] rounded border text-[10px] align-middle"
-                style={{
-                  borderColor: 'var(--color-border-muted)',
-                  backgroundColor: 'var(--color-bg-subtle)',
-                  color: 'var(--color-text-secondary)',
+              <Trans
+                i18nKey="dashboard.widgets.addDialog.hintAddSentence"
+                components={{
+                  enter: (
+                    <span
+                      className="inline-flex items-center justify-center px-1.5 min-w-[18px] h-[18px] rounded border text-[10px] align-middle"
+                      style={{
+                        borderColor: 'var(--color-border-muted)',
+                        backgroundColor: 'var(--color-bg-subtle)',
+                        color: 'var(--color-text-secondary)',
+                      }}
+                    >
+                      ↵
+                    </span>
+                  ),
                 }}
-              >
-                ↵
-              </span>{' '}
-              to add
+              />
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -417,7 +437,7 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
                 onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)')}
                 onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'var(--color-bg-card)')}
               >
-                Cancel
+                {t('dashboard.widgets.addDialog.cancel')}
               </button>
               <button
                 type="button"
@@ -429,7 +449,11 @@ export function AddWidgetDialog({ open, onOpenChange, onAdd, existingWidgets }: 
                   color: 'var(--color-bg-card)',
                 }}
               >
-                {selectedDef && !selectedDisabled ? `Add ${selectedDef.title.toLowerCase()}` : 'Add widget'}
+                {selectedDef && !selectedDisabled
+                  ? t('dashboard.widgets.addDialog.addNamed', {
+                      title: t(selectedDef.titleKey),
+                    })
+                  : t('dashboard.widgets.addDialog.addWidget')}
                 <ArrowRight size={14} />
               </button>
             </div>
@@ -449,6 +473,7 @@ interface WidgetCardProps {
 }
 
 function WidgetCard({ def, disabled, selected, onSelect, onAdd }: WidgetCardProps) {
+  const { t } = useTranslation();
   const Icon = def.icon;
   const isSingleton = !!def.singleton;
   const { w, h } = def.defaultSize;
@@ -487,7 +512,7 @@ function WidgetCard({ def, disabled, selected, onSelect, onAdd }: WidgetCardProp
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
             <span className="text-sm font-semibold" style={{ color: 'var(--color-text-primary)' }}>
-              {def.title}
+              {t(def.titleKey)}
             </span>
             <span
               className="text-[10px] px-2 py-0.5 rounded-full lowercase"
@@ -497,7 +522,7 @@ function WidgetCard({ def, disabled, selected, onSelect, onAdd }: WidgetCardProp
                 letterSpacing: '0.02em',
               }}
             >
-              {isSingleton ? 'singleton' : 'multi'}
+              {isSingleton ? t('dashboard.widgets.addDialog.badgeSingleton') : t('dashboard.widgets.addDialog.badgeMulti')}
             </span>
             {def.source === 'tradingview' && (
               <span
@@ -508,24 +533,26 @@ function WidgetCard({ def, disabled, selected, onSelect, onAdd }: WidgetCardProp
                   letterSpacing: '0.08em',
                 }}
               >
-                TradingView
+                {t('dashboard.widgets.addDialog.badgeTradingView')}
               </span>
             )}
           </div>
-          {def.description && (
+          {def.descriptionKey && (
             <div
               className="text-[12px] leading-snug mb-2"
               style={{ color: 'var(--color-text-secondary)' }}
             >
-              {def.description}
+              {t(def.descriptionKey)}
             </div>
           )}
           <div
             className="text-[11px] dashboard-mono"
             style={{ color: 'var(--color-text-tertiary)' }}
           >
-            {w}w × {h}h · {def.settingsComponent ? 'configurable' : 'no settings'}
-            {disabled && ' · on dashboard'}
+            {w}w × {h}h · {def.settingsComponent
+              ? t('dashboard.widgets.addDialog.metaConfigurable')
+              : t('dashboard.widgets.addDialog.metaNoSettings')}
+            {disabled && ' ' + t('dashboard.widgets.addDialog.metaOnDashboard')}
           </div>
         </div>
       </div>

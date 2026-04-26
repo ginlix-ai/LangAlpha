@@ -7,6 +7,11 @@
  * changes rebuild the iframe (TV's embed scripts don't expose attribute
  * APIs for the legacy widget catalog).
  *
+ * Locale: `getTVCommonConfig()` reads `i18n.language` at call time and maps
+ * it into TV's locale grammar via `mapLocaleForTV()`. Embed effects must
+ * include `i18n.language` in their dep array so the iframe rebuilds when
+ * the user switches locale.
+ *
  * Web-components alternative: `framework/TradingViewWebComponent.tsx` hosts
  * the newer `<tv-*>` catalog from `widgets.tradingview-widget.com`. Web
  * components support `symbol-url` redirection (per-symbol click → our
@@ -32,6 +37,8 @@
  *     marquee that users expect. Trade-off: symbol clicks bounce to
  *     tradingview.com instead of our `/market` route.
  */
+
+import i18n from '@/i18n';
 
 const TV_BASE = 'https://s3.tradingview.com/external-embedding/';
 
@@ -72,7 +79,49 @@ export function largeChartUrl(): string {
   return `${window.location.origin}/market`;
 }
 
+/**
+ * BCP-47 → TV locale string. TV uses underscored variants (`zh_CN`, `pt_BR`)
+ * and falls back to `en` for unsupported locales. Caller maps once per
+ * iframe rebuild.
+ */
+const TV_LOCALE_MAP: Record<string, string> = {
+  'en-US': 'en',
+  'en-GB': 'en',
+  'zh-CN': 'zh_CN',
+  'zh-TW': 'zh_TW',
+  'ja-JP': 'ja',
+  'ko-KR': 'ko',
+  'es-ES': 'es',
+  'fr-FR': 'fr',
+  'de-DE': 'de',
+  'pt-BR': 'pt',
+  'ru-RU': 'ru',
+  // Prefix-only fallbacks for unknown regions (e.g. `en-AU`, `zh-HK`).
+  // Defaults pick the most common region per language.
+  en: 'en',
+  zh: 'zh_CN',
+  ja: 'ja',
+  ko: 'ko',
+  es: 'es',
+  fr: 'fr',
+  de: 'de',
+  pt: 'pt',
+  ru: 'ru',
+};
+
+export function mapLocaleForTV(bcp47: string): string {
+  if (TV_LOCALE_MAP[bcp47]) return TV_LOCALE_MAP[bcp47];
+  const prefix = bcp47.split('-')[0];
+  if (TV_LOCALE_MAP[prefix]) return TV_LOCALE_MAP[prefix];
+  return 'en';
+}
+
 /** Per-card config defaults baked into every TV embed payload.
+ *
+ * Function (not `as const`) so `locale` reflects the current `i18n.language`
+ * each time an embed effect rebuilds. Consumers MUST include `i18n.language`
+ * in their effect deps; the function reads it at call time, but React only
+ * re-runs the effect when a tracked dep changes.
  *
  * `largeChartUrl` overrides the "view full chart" button destination for the
  * subset of iframe widgets that honor it (symbol-overview, mini-chart,
@@ -81,13 +130,15 @@ export function largeChartUrl(): string {
  * clicks inside those widgets still bounce to tradingview.com. The full
  * symbol-link redirection (`symbol-url={tvsymbol}`) would require the
  * `<tv-*>` web-component variant — currently unreachable, see header. */
-export const TV_COMMON_CONFIG = {
-  autosize: true,
-  width: '100%',
-  height: '100%',
-  isTransparent: true,
-  backgroundColor: 'rgba(0,0,0,0)',
-  locale: 'en',
-  support_host: 'https://www.tradingview.com',
-  largeChartUrl: largeChartUrl(),
-} as const;
+export function getTVCommonConfig(): Record<string, unknown> {
+  return {
+    autosize: true,
+    width: '100%',
+    height: '100%',
+    isTransparent: true,
+    backgroundColor: 'rgba(0,0,0,0)',
+    locale: mapLocaleForTV(i18n.language),
+    support_host: 'https://www.tradingview.com',
+    largeChartUrl: largeChartUrl(),
+  };
+}
