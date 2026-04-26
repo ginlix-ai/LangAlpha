@@ -49,6 +49,11 @@ MEMORY_USER_DIR: str = ".agents/user/memory"
 MEMORY_WORKSPACE_DIR: str = ".agents/workspace/memory"
 MEMORY_INDEX_FILENAME: str = "memory.md"
 
+# User-managed memo store — parallel to memory, but user-owned, read-only to
+# the agent. Server API writes; agent reads via filesystem tools.
+MEMO_USER_DIR: str = ".agents/user/memo"
+MEMO_INDEX_FILENAME: str = "memo.md"
+
 # ---------------------------------------------------------------------------
 # Hidden path filters (always hidden from listings and completions)
 # ---------------------------------------------------------------------------

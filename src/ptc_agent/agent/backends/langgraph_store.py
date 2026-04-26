@@ -1,4 +1,4 @@
-"""Memory backend — rich-method filesystem surface over a LangGraph `BaseStore`."""
+"""Filesystem surface over a LangGraph ``BaseStore`` — used for memory and memo."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import structlog
 from langgraph.store.base import BaseStore
 
 from ptc_agent.agent.backends.sandbox import SandboxBackend
+from ptc_agent.agent.backends.store_cache import RequestScopedStoreCache
 
 logger = structlog.get_logger(__name__)
 
@@ -27,12 +28,21 @@ _STORE_OP_TIMEOUT_S = 2.0
 NamespaceFactory = Callable[[], tuple[str, ...]]
 
 
-class InvalidMemoryKeyError(ValueError):
-    """Raised for malformed memory keys."""
+class InvalidStoreKeyError(ValueError):
+    """Raised for malformed store keys."""
 
 
-class MemoryContentTooLargeError(ValueError):
+class StoreContentTooLargeError(ValueError):
     """Raised when a write would exceed ``MAX_CONTENT_BYTES``."""
+
+
+class ReadOnlyStoreError(PermissionError):
+    """Raised when ``awrite_text`` is called against a read-only tier.
+
+    Carries a tier-specific message (e.g. "Memo is user-managed. Ask the user
+    to edit or upload via the memo panel.") so the agent's filesystem tool
+    can surface that text rather than the generic "Write operation failed".
+    """
 
 
 # Shared across backend instances targeting the same namespace so concurrent
@@ -45,7 +55,13 @@ _WRITE_LOCKS: weakref.WeakValueDictionary[tuple[str, ...], asyncio.Lock] = (
 )
 
 
-def _lock_for_namespace(namespace: tuple[str, ...]) -> asyncio.Lock:
+def lock_for_namespace(namespace: tuple[str, ...]) -> asyncio.Lock:
+    """Return the in-process write lock for ``namespace``.
+
+    Public so siblings (e.g. the memo router) can serialize their own
+    multi-step read-modify-write windows against the same namespace without
+    rolling a parallel registry.
+    """
     lock = _WRITE_LOCKS.get(namespace)
     if lock is None:
         lock = asyncio.Lock()
@@ -53,24 +69,28 @@ def _lock_for_namespace(namespace: tuple[str, ...]) -> asyncio.Lock:
     return lock
 
 
-def validate_memory_key(key: str) -> None:
-    """Validate a memory key (path relative to a tier root). Shared with the server API."""
+# Module-private alias kept so internal call sites don't need updating.
+_lock_for_namespace = lock_for_namespace
+
+
+def validate_store_key(key: str) -> None:
+    """Validate a store key (path relative to a tier root). Shared with the server API."""
     if not key:
-        raise InvalidMemoryKeyError("Empty memory key")
+        raise InvalidStoreKeyError("Empty store key")
     if key.startswith("/") or key.endswith("/"):
-        raise InvalidMemoryKeyError(f"Memory key must not start or end with '/': {key!r}")
+        raise InvalidStoreKeyError(f"Store key must not start or end with '/': {key!r}")
     for seg in key.split("/"):
         if not seg or seg in ("..", "."):
-            raise InvalidMemoryKeyError(f"Invalid key segment in {key!r}")
+            raise InvalidStoreKeyError(f"Invalid key segment in {key!r}")
         if not _KEY_COMPONENT_RE.match(seg):
-            raise InvalidMemoryKeyError(
+            raise InvalidStoreKeyError(
                 f"Disallowed characters in key segment {seg!r} "
                 "(allowed: letters, digits, '-', '_', '.', '@', '+', '~')"
             )
 
 
-class StoreMemoryBackend:
-    """`BaseStore`-backed filesystem surface for a single memory tier."""
+class StoreBackend:
+    """`BaseStore`-backed filesystem surface for a single store-backed tier."""
 
     def __init__(
         self,
@@ -79,6 +99,9 @@ class StoreMemoryBackend:
         namespace_factory: NamespaceFactory,
         root_prefix: str,
         sandbox_backend: SandboxBackend,
+        read_only: bool = False,
+        read_only_error: str = "This path is read-only from the agent. Ask the user to edit it via the UI.",
+        cache: RequestScopedStoreCache | None = None,
     ) -> None:
         if not root_prefix.endswith("/"):
             root_prefix = root_prefix + "/"
@@ -86,6 +109,13 @@ class StoreMemoryBackend:
         self._namespace_factory = namespace_factory
         self._root_prefix = root_prefix
         self._sandbox = sandbox_backend
+        self._read_only = read_only
+        self._read_only_error = read_only_error
+        # Optional shared cache. When provided, agent-side writes invalidate
+        # the affected key so middleware reads in subsequent model calls
+        # within the same turn pick up the new value. None means disabled
+        # (legacy / tests / dev mode).
+        self._cache = cache
 
     def normalize_path(self, path: str) -> str:
         return self._sandbox.normalize_path(path)
@@ -110,14 +140,14 @@ class StoreMemoryBackend:
     def _path_to_key(self, normalized_path: str) -> str:
         if not normalized_path.startswith(self._root_prefix):
             if normalized_path.rstrip("/") == self._root_prefix.rstrip("/"):
-                raise InvalidMemoryKeyError(
-                    f"Memory root '{normalized_path}' is not a file path"
+                raise InvalidStoreKeyError(
+                    f"Store root '{normalized_path}' is not a file path"
                 )
-            raise InvalidMemoryKeyError(
-                f"Path '{normalized_path}' is not under memory root '{self._root_prefix}'"
+            raise InvalidStoreKeyError(
+                f"Path '{normalized_path}' is not under store root '{self._root_prefix}'"
             )
         key = normalized_path[len(self._root_prefix):]
-        validate_memory_key(key)
+        validate_store_key(key)
         return key
 
     @staticmethod
@@ -156,8 +186,8 @@ class StoreMemoryBackend:
     async def aread_text(self, file_path: str) -> str | None:
         try:
             key = self._path_to_key(file_path)
-        except InvalidMemoryKeyError:
-            logger.debug("memory aread_text invalid key", path=file_path)
+        except InvalidStoreKeyError:
+            logger.debug("store aread_text invalid key", path=file_path)
             return None
         try:
             item = await asyncio.wait_for(
@@ -166,7 +196,7 @@ class StoreMemoryBackend:
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "memory aget timed out",
+                "store aget timed out",
                 path=file_path,
                 timeout_s=_STORE_OP_TIMEOUT_S,
             )
@@ -187,11 +217,14 @@ class StoreMemoryBackend:
         return "".join(lines[start:end])
 
     async def awrite_text(self, file_path: str, content: str) -> bool:
+        if self._read_only:
+            logger.debug("write rejected on read-only tier", path=file_path)
+            raise ReadOnlyStoreError(self._read_only_error)
         key = self._path_to_key(file_path)
         content_bytes = len(content.encode("utf-8"))
         if content_bytes > MAX_CONTENT_BYTES:
-            raise MemoryContentTooLargeError(
-                f"Memory content is {content_bytes} bytes; "
+            raise StoreContentTooLargeError(
+                f"Stored content is {content_bytes} bytes; "
                 f"max is {MAX_CONTENT_BYTES}. Split the content into multiple "
                 "detail files or shorten the entry."
             )
@@ -205,7 +238,7 @@ class StoreMemoryBackend:
                 )
             except asyncio.TimeoutError:
                 logger.warning(
-                    "memory aget timed out",
+                    "store aget timed out",
                     path=file_path,
                     timeout_s=_STORE_OP_TIMEOUT_S,
                 )
@@ -219,14 +252,16 @@ class StoreMemoryBackend:
                 )
             except asyncio.TimeoutError:
                 logger.warning(
-                    "memory aput timed out",
+                    "store aput timed out",
                     path=file_path,
                     timeout_s=_STORE_OP_TIMEOUT_S,
                 )
                 return False
             except Exception:
-                logger.exception("memory awrite_text failed", path=file_path)
+                logger.exception("store awrite_text failed", path=file_path)
                 return False
+            if self._cache is not None:
+                self._cache.invalidate(namespace, key)
         return True
 
     async def aedit_text(
@@ -237,9 +272,11 @@ class StoreMemoryBackend:
         *,
         replace_all: bool = False,
     ) -> dict[str, Any]:
+        if self._read_only:
+            return {"success": False, "error": self._read_only_error}
         try:
             key = self._path_to_key(file_path)
-        except InvalidMemoryKeyError as exc:
+        except InvalidStoreKeyError as exc:
             return {"success": False, "error": str(exc)}
         if old_string == new_string:
             return {
@@ -256,13 +293,13 @@ class StoreMemoryBackend:
                 )
             except asyncio.TimeoutError:
                 logger.warning(
-                    "memory aget timed out",
+                    "store aget timed out",
                     path=file_path,
                     timeout_s=_STORE_OP_TIMEOUT_S,
                 )
                 return {
                     "success": False,
-                    "error": "Memory store timed out. Retry shortly.",
+                    "error": "Long-term store timed out. Retry shortly.",
                 }
             if item is None:
                 return {"success": False, "error": f"File not found: {file_path}"}
@@ -270,7 +307,7 @@ class StoreMemoryBackend:
             if content is None:
                 return {
                     "success": False,
-                    "error": "Malformed memory value (missing content)",
+                    "error": "Malformed store value (missing content)",
                 }
 
             occurrences = content.count(old_string)
@@ -307,17 +344,19 @@ class StoreMemoryBackend:
                 )
             except asyncio.TimeoutError:
                 logger.warning(
-                    "memory aput timed out",
+                    "store aput timed out",
                     path=file_path,
                     timeout_s=_STORE_OP_TIMEOUT_S,
                 )
                 return {
                     "success": False,
-                    "error": "Memory store timed out. Retry shortly.",
+                    "error": "Long-term store timed out. Retry shortly.",
                 }
             except Exception as exc:
-                logger.exception("memory aedit_text failed", path=file_path)
+                logger.exception("store aedit_text failed", path=file_path)
                 return {"success": False, "error": str(exc)}
+            if self._cache is not None:
+                self._cache.invalidate(namespace, key)
 
         return {
             "success": True,
@@ -330,30 +369,57 @@ class StoreMemoryBackend:
         }
 
     async def _all_items(self) -> list[Any]:
+        """Page through every Item under the backend's namespace.
+
+        Pages are fetched in fan-out batches of ``fanout`` so that a 300-key
+        namespace pays roughly ``ceil(N / page_size / fanout)`` round-trips
+        instead of ``ceil(N / page_size)``. Termination: as soon as any page
+        in a batch returns short, we know there are no more rows past that
+        offset and stop. Tiny namespaces (≤ page_size) issue exactly one
+        round-trip in either implementation, so there's no overhead in the
+        common case.
+        """
         namespace = self._namespace()
         page_size = 100
-        offset = 0
+        # Modest fan-out — three concurrent paged reads is enough to win
+        # against the typical postgres latency without saturating the pool.
+        fanout = 3
         items: list[Any] = []
+        offset = 0
         while True:
+            offsets = [offset + i * page_size for i in range(fanout)]
             try:
-                page = await asyncio.wait_for(
-                    self._store.asearch(namespace, limit=page_size, offset=offset),
+                pages = await asyncio.wait_for(
+                    asyncio.gather(
+                        *(
+                            self._store.asearch(
+                                namespace, limit=page_size, offset=o
+                            )
+                            for o in offsets
+                        )
+                    ),
                     timeout=_STORE_OP_TIMEOUT_S,
                 )
             except asyncio.TimeoutError:
                 logger.warning(
-                    "memory asearch timed out",
+                    "store asearch timed out",
                     namespace=namespace,
                     offset=offset,
                     timeout_s=_STORE_OP_TIMEOUT_S,
                 )
                 break
-            if not page:
+            stop = False
+            for page in pages:
+                if not page:
+                    stop = True
+                    break
+                items.extend(page)
+                if len(page) < page_size:
+                    stop = True
+                    break
+            if stop:
                 break
-            items.extend(page)
-            if len(page) < page_size:
-                break
-            offset += page_size
+            offset += fanout * page_size
         return items
 
     def _absolute(self, key: str) -> str:
@@ -407,7 +473,7 @@ class StoreMemoryBackend:
         try:
             compiled = re.compile(pattern, flags=flags)
         except re.error as exc:
-            logger.debug("memory agrep invalid regex", pattern=pattern, error=str(exc))
+            logger.debug("store agrep invalid regex", pattern=pattern, error=str(exc))
             return []
 
         items = await self._all_items()

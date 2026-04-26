@@ -57,7 +57,8 @@
     cursor: pointer;
     transition: background-color 0.15s;
   }
-  .file-panel-item:hover {
+  .file-panel-item:hover,
+  .file-panel-item-context-active {
     background-color: var(--color-border-muted);
   }
   .file-panel-item-nested {
@@ -310,13 +311,26 @@
     100% { transform: scale(1); opacity: 1; }
   }
 
+  /* ====== Row Status Group (memo badge + backup dot) ====== */
+  .file-panel-row-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+  .file-panel-memo-badge {
+    display: inline-flex;
+    align-items: center;
+    line-height: 0;
+  }
+
   /* ====== Backup Status Dot ====== */
   .file-panel-backup-dot {
     width: 6px;
     height: 6px;
     border-radius: 50%;
     flex-shrink: 0;
-    margin-left: auto;
     transition: all 0.2s ease;
   }
   .file-panel-backup-dot.backed-up {
@@ -375,6 +389,69 @@
   [data-theme="light"] .file-panel-edit-hint {
     background-color: hsl(var(--primary) / 0.06);
     border-bottom-color: hsl(var(--primary) / 0.15);
+  }
+
+  /* ====== Memo banner (file in memo store, with stale/fresh verdict) ====== */
+  .file-panel-memo-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--color-text-secondary);
+    background-color: var(--color-bg-card);
+    border-bottom: 1px solid var(--color-border-muted);
+    flex-shrink: 0;
+  }
+  .file-panel-memo-banner-fresh {
+    color: var(--color-profit-muted);
+    background-color: var(--color-profit-soft);
+    border-bottom-color: var(--color-profit-border);
+  }
+  .file-panel-memo-banner-stale {
+    color: var(--color-status-modified);
+    background-color: var(--color-status-modified-glow);
+    border-bottom-color: var(--color-status-modified-border);
+  }
+  .file-panel-memo-banner-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .file-panel-memo-banner-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: transparent;
+    border: 1px solid currentColor;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 500;
+    color: inherit;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: opacity 0.15s ease;
+    white-space: nowrap;
+  }
+  .file-panel-memo-banner-action:hover:not(:disabled) {
+    opacity: 0.8;
+  }
+  .file-panel-memo-banner-action:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  /* Primary CTA renders only in the "stale" tone — scope explicit colors so
+     the fill is the amber accent and the label stays readable. */
+  .file-panel-memo-banner-stale .file-panel-memo-banner-action-primary {
+    background-color: var(--color-status-modified);
+    color: #fff;
+    border-color: var(--color-status-modified);
+  }
+  .file-panel-memo-banner-stale .file-panel-memo-banner-action-primary:hover:not(:disabled) {
+    opacity: 0.85;
   }
 
   /* ====== Selection Tooltip ("Add to context") ====== */

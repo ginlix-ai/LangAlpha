@@ -88,6 +88,11 @@ from .memory_context import (
     MemoryContextMiddleware,
 )
 
+# Memo awareness middleware (tiny <memo-index count=N/> block from BaseStore)
+from .memo_awareness import (
+    MemoAwarenessMiddleware,
+)
+
 # Runtime context middleware (time + user profile, after cache breakpoint)
 from .runtime_context import (
     RuntimeContextMiddleware,
@@ -155,6 +160,8 @@ __all__ = [
     "WorkspaceContextMiddleware",
     # Memory context
     "MemoryContextMiddleware",
+    # Memo awareness
+    "MemoAwarenessMiddleware",
     # Runtime context
     "RuntimeContextMiddleware",
     # Anthropic thinking sanitizer

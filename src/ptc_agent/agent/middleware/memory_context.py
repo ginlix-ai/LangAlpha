@@ -10,6 +10,8 @@ from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, Mod
 from langchain_core.messages import SystemMessage
 from langgraph.store.base import BaseStore
 
+from ptc_agent.agent.backends.store_cache import RequestScopedStoreCache
+
 logger = structlog.get_logger(__name__)
 
 MAX_MEMORY_BLOCK_SIZE = 8192
@@ -45,6 +47,7 @@ class MemoryContextMiddleware(AgentMiddleware):
         user_display_path: str = ".agents/user/memory/memory.md",
         workspace_display_path: str = ".agents/workspace/memory/memory.md",
         index_key: str = "memory.md",
+        cache: RequestScopedStoreCache | None = None,
     ) -> None:
         self._store = store
         self._user_ns = user_namespace_factory
@@ -52,6 +55,10 @@ class MemoryContextMiddleware(AgentMiddleware):
         self._user_display_path = user_display_path
         self._workspace_display_path = workspace_display_path
         self._index_key = index_key
+        # Optional shared cache so successive model calls in the same turn
+        # don't repeat the same memory.md aget. Invalidated by the
+        # StoreBackend when the agent writes within the same turn.
+        self._cache = cache
 
     @staticmethod
     def _content_from_value(value: object) -> str | None:
@@ -72,9 +79,16 @@ class MemoryContextMiddleware(AgentMiddleware):
         except Exception:
             logger.exception("memory namespace resolution failed")
             return None
+        # Prefer the request-scoped cache when wired so the second+ model
+        # call within a turn skips the round-trip entirely.
+        getter = (
+            (lambda: self._cache.aget(self._store, namespace, self._index_key))
+            if self._cache is not None
+            else (lambda: self._store.aget(namespace, self._index_key))
+        )
         try:
             item = await asyncio.wait_for(
-                self._store.aget(namespace, self._index_key),
+                getter(),
                 timeout=_READ_TIMEOUT_S,
             )
         except asyncio.TimeoutError:
@@ -137,7 +151,6 @@ class MemoryContextMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        # Sync fallback; langalpha is async end-to-end.
         return handler(request)
 
     async def awrap_model_call(

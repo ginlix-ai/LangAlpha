@@ -1,4 +1,4 @@
-"""Unit tests for ``StoreMemoryBackend``.
+"""Unit tests for ``StoreBackend``.
 
 Uses ``InMemoryStore`` (LangGraph's in-process implementation) so tests don't
 need Postgres. Verifies the rich-method surface that the custom tools consume:
@@ -12,18 +12,18 @@ from unittest.mock import MagicMock
 import pytest
 from langgraph.store.memory import InMemoryStore
 
-from ptc_agent.agent.backends.memory import (
+from ptc_agent.agent.backends.langgraph_store import (
     MAX_CONTENT_BYTES,
-    InvalidMemoryKeyError,
-    MemoryContentTooLargeError,
-    StoreMemoryBackend,
+    InvalidStoreKeyError,
+    StoreContentTooLargeError,
+    StoreBackend,
 )
 
 USER_PREFIX = "/home/workspace/.agents/user/memory/"
 
 
 def _make_sandbox(working_dir: str = "/home/workspace") -> MagicMock:
-    """Minimal ``SandboxBackend`` stand-in exposing just what MemoryBackend needs."""
+    """Minimal ``SandboxBackend`` stand-in exposing just what StoreBackend needs."""
     sandbox_backend = MagicMock()
 
     def _normalize(p: str) -> str:
@@ -55,7 +55,7 @@ def store():
 
 
 def _make_backend(store, sandbox_backend, *, prefix: str = USER_PREFIX):
-    return StoreMemoryBackend(
+    return StoreBackend(
         store=store,
         namespace_factory=lambda: ("user_abc", "memory"),
         root_prefix=prefix,
@@ -76,7 +76,7 @@ class TestPathToKey:
 
     def test_rejects_out_of_prefix_path(self, store, sandbox_backend):
         backend = _make_backend(store, sandbox_backend)
-        with pytest.raises(ValueError, match="not under memory root"):
+        with pytest.raises(ValueError, match="not under store root"):
             backend._path_to_key("/home/workspace/work/foo.md")
 
     def test_rejects_path_traversal(self, store, sandbox_backend):
@@ -86,7 +86,7 @@ class TestPathToKey:
 
     def test_rejects_empty_key(self, store, sandbox_backend):
         backend = _make_backend(store, sandbox_backend)
-        with pytest.raises(ValueError, match="Empty memory key"):
+        with pytest.raises(ValueError, match="Empty store key"):
             backend._path_to_key(USER_PREFIX)  # just the prefix, no filename
 
     def test_rejects_exact_root_without_trailing_slash(self, store, sandbox_backend):
@@ -150,14 +150,14 @@ class TestWriteRead:
         # Path under the tier root, but with a `..` segment that bypasses the
         # sandbox's own normalization (the composite catches raw ``..`` in
         # normalize_path; here we exercise the backend's defense-in-depth).
-        with pytest.raises(InvalidMemoryKeyError):
+        with pytest.raises(InvalidStoreKeyError):
             await backend.awrite_text(USER_PREFIX + "../escape.md", "nope")
 
     @pytest.mark.asyncio
     async def test_awrite_rejects_content_over_size_cap(self, store, sandbox_backend):
         backend = _make_backend(store, sandbox_backend)
         oversized = "x" * (MAX_CONTENT_BYTES + 1)
-        with pytest.raises(MemoryContentTooLargeError):
+        with pytest.raises(StoreContentTooLargeError):
             await backend.awrite_text(USER_PREFIX + "huge.md", oversized)
         # Nothing was written
         assert await backend.aread_text(USER_PREFIX + "huge.md") is None
@@ -196,7 +196,7 @@ class TestConcurrency:
     async def test_multiple_backend_instances_share_a_lock(
         self, store, sandbox_backend
     ):
-        """Two ``StoreMemoryBackend`` instances pointing at the same namespace
+        """Two ``StoreBackend`` instances pointing at the same namespace
         must serialize writes against each other — simulates two concurrent
         turns that each build a fresh agent (the real prod scenario).
 
@@ -340,7 +340,7 @@ class TestNamespaceFactory:
             calls.append(1)
             return ("user_abc", "memory")
 
-        backend = StoreMemoryBackend(
+        backend = StoreBackend(
             store=store,
             namespace_factory=factory,
             root_prefix=USER_PREFIX,
@@ -353,14 +353,14 @@ class TestNamespaceFactory:
 
     @pytest.mark.asyncio
     async def test_workspace_namespace_is_isolated_from_user(self, store, sandbox_backend):
-        user = StoreMemoryBackend(
+        user = StoreBackend(
             store=store,
             namespace_factory=lambda: ("user_abc", "memory"),
             root_prefix=USER_PREFIX,
             sandbox_backend=sandbox_backend,
         )
         workspace_prefix = "/home/workspace/.agents/workspace/memory/"
-        workspace = StoreMemoryBackend(
+        workspace = StoreBackend(
             store=store,
             namespace_factory=lambda: ("user_abc", "workspaces", "ws_42", "memory"),
             root_prefix=workspace_prefix,
@@ -379,3 +379,139 @@ class TestNamespaceFactory:
             await user.aread_text(workspace_prefix + "memory.md") is None
             or True  # out-of-prefix returns None by design
         )
+
+
+class TestReadOnly:
+    """read_only=True tier supports reads but rejects writes + edits cleanly."""
+
+    @pytest.mark.asyncio
+    async def test_awrite_raises_read_only_with_friendly_message(
+        self, store, sandbox_backend
+    ):
+        from ptc_agent.agent.backends import ReadOnlyStoreError
+
+        custom = "Memo is user-managed. Ask the user to edit via the memo panel."
+        backend = StoreBackend(
+            store=store,
+            namespace_factory=lambda: ("user_abc", "memos"),
+            root_prefix="/home/workspace/.agents/user/memo/",
+            sandbox_backend=sandbox_backend,
+            read_only=True,
+            read_only_error=custom,
+        )
+        with pytest.raises(ReadOnlyStoreError) as excinfo:
+            await backend.awrite_text(
+                "/home/workspace/.agents/user/memo/foo.md", "agent tried"
+            )
+        assert str(excinfo.value) == custom
+        # No store write happened.
+        assert await store.aget(("user_abc", "memos"), "foo.md") is None
+
+    @pytest.mark.asyncio
+    async def test_aedit_returns_structured_error_with_custom_message(
+        self, store, sandbox_backend
+    ):
+        custom = "Memo is user-managed. Ask the user to edit via the memo panel."
+        backend = StoreBackend(
+            store=store,
+            namespace_factory=lambda: ("user_abc", "memos"),
+            root_prefix="/home/workspace/.agents/user/memo/",
+            sandbox_backend=sandbox_backend,
+            read_only=True,
+            read_only_error=custom,
+        )
+        result = await backend.aedit_text(
+            "/home/workspace/.agents/user/memo/foo.md", "old", "new"
+        )
+        assert result == {"success": False, "error": custom}
+
+    @pytest.mark.asyncio
+    async def test_reads_still_work_on_read_only_tier(
+        self, store, sandbox_backend
+    ):
+        # Seed directly via the store (simulates the server-side write path).
+        await store.aput(
+            ("user_abc", "memos"),
+            "q1-thesis.md",
+            {
+                "content": "memo body",
+                "encoding": "utf-8",
+                "created_at": "2026-04-24T10:00:00Z",
+                "modified_at": "2026-04-24T10:00:00Z",
+            },
+        )
+        backend = StoreBackend(
+            store=store,
+            namespace_factory=lambda: ("user_abc", "memos"),
+            root_prefix="/home/workspace/.agents/user/memo/",
+            sandbox_backend=sandbox_backend,
+            read_only=True,
+        )
+        content = await backend.aread_text(
+            "/home/workspace/.agents/user/memo/q1-thesis.md"
+        )
+        assert content == "memo body"
+
+
+class TestCacheInvalidation:
+    """Writes through the backend must invalidate the shared per-request cache.
+
+    Otherwise the next ``MemoryContextMiddleware`` read in the same turn
+    would serve the pre-write value.
+    """
+
+    @pytest.mark.asyncio
+    async def test_awrite_invalidates_cached_key(self, store, sandbox_backend):
+        from ptc_agent.agent.backends.store_cache import RequestScopedStoreCache
+
+        cache = RequestScopedStoreCache()
+        backend = StoreBackend(
+            store=store,
+            namespace_factory=lambda: ("user_abc", "memory"),
+            root_prefix=USER_PREFIX,
+            sandbox_backend=sandbox_backend,
+            cache=cache,
+        )
+        # Pre-warm the cache with the (currently empty) entry.
+        ns = ("user_abc", "memory")
+        first = await cache.aget(store, ns, "memory.md")
+        assert first is None
+        assert len(cache) == 1
+
+        # Write through the backend — the cache must drop the stale None.
+        ok = await backend.awrite_text(USER_PREFIX + "memory.md", "fresh")
+        assert ok is True
+        assert len(cache) == 0
+
+        # Next cache.aget refetches and sees the new value.
+        item = await cache.aget(store, ns, "memory.md")
+        assert item is not None
+        assert item.value["content"] == "fresh"
+
+    @pytest.mark.asyncio
+    async def test_aedit_invalidates_cached_key(self, store, sandbox_backend):
+        from ptc_agent.agent.backends.store_cache import RequestScopedStoreCache
+
+        cache = RequestScopedStoreCache()
+        backend = StoreBackend(
+            store=store,
+            namespace_factory=lambda: ("user_abc", "memory"),
+            root_prefix=USER_PREFIX,
+            sandbox_backend=sandbox_backend,
+            cache=cache,
+        )
+        # Seed an initial value via a successful write (also primes cache state).
+        await backend.awrite_text(USER_PREFIX + "memory.md", "old body")
+        ns = ("user_abc", "memory")
+        first = await cache.aget(store, ns, "memory.md")
+        assert first.value["content"] == "old body"
+
+        result = await backend.aedit_text(
+            USER_PREFIX + "memory.md", "old", "new"
+        )
+        assert result["success"] is True
+        # Cache no longer holds the stale entry.
+        assert (ns, "memory.md") not in cache._cache  # type: ignore[attr-defined]
+
+        refreshed = await cache.aget(store, ns, "memory.md")
+        assert refreshed.value["content"] == "new body"

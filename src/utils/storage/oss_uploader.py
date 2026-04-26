@@ -267,6 +267,42 @@ def upload_bytes(key: str, data: bytes, content_type: str | None = None) -> bool
         return False
 
 
+def get_bytes(key: str) -> bytes | None:
+    """Download an object's raw bytes from OSS.
+
+    Mirrors the S3 ``get_bytes`` contract: ``None`` on missing object or any
+    failure (logged), bytes on success.
+
+    Args:
+        key: The object key (path) to fetch.
+
+    Returns:
+        Raw bytes on success, or ``None`` if the object is missing or the
+        download failed.
+    """
+    try:
+        client = get_oss_client()
+        result = client.get_object(oss.GetObjectRequest(
+            bucket=OSSConfig.BUCKET_NAME,
+            key=key,
+        ))
+        body = getattr(result, "body", None)
+        if body is None:
+            return None
+        # The OSS SDK returns a streaming body that supports .read().
+        data = body.read()
+        return data if isinstance(data, bytes) else bytes(data)
+    except oss_exceptions.OssError as e:
+        if hasattr(e, "status_code") and e.status_code == 404:
+            logger.debug(f"OSS object not found: {key}")
+            return None
+        logger.exception(f"OSS download failed for {key}")
+        return None
+    except Exception:
+        logger.exception(f"Unexpected error downloading {key}")
+        return None
+
+
 def does_object_exist(key: str) -> bool:
     """Check if an object exists in the OSS bucket.
 

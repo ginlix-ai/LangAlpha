@@ -46,7 +46,7 @@ In practice, you create a workspace per research goal ("Q2 rebalance", "data cen
 - **Progressive Tool Discovery** — Any MCP tools loaded as summary in context and full documentation dumped into the workspace, allowing the agent to discover and use tools truly on demand. Also supports binding json tools with skills and only expose to agent when skill is activated.
 - **Programmatic Tool Calling (PTC)** — The agent writes and executes Python to process financial data from mcp servers instead of pouring raw data into the LLM context window, enabling complex multi-step analysis while dramatically reducing token waste.
 - **Financial data ecosystem** — Multi-tier provider hierarchy with native tools for quick lookups and MCP servers for bulk data processing, charting, and multi-year analysis in sandboxes.
-- **Persistent workspaces** — Each workspace maps to a dedicated sandbox with structured directories and a workspace notes file (`agent.md`) that compounds research across sessions and threads. A separate long-term memory store (`.agents/user/memory/`, `.agents/workspace/memory/`) persists durable user preferences and cross-sandbox knowledge.
+- **Persistent workspaces** — Each workspace maps to a dedicated sandbox with structured directories and a workspace notes file (`agent.md`) that compounds research across sessions and threads. A separate long-term memory store (`.agents/user/memory/`, `.agents/workspace/memory/`) persists durable user preferences and cross-sandbox knowledge, and a user-managed memo store (`.agents/user/memo/`) lets you upload PDFs and markdown research notes that the agent can read on demand.
 - **Skills for Financial Research** — Pre-built workflows for DCF models, initiating coverage reports, earnings analysis, morning notes, document generation, and more — activatable by slash command or auto-detection.
 - **Finance Research Workbench** — Web UI with inline financial charts, multi-format file viewer, TradingView charting, real-time WebSocket market data, shareable conversations, and subagent monitoring.
 - **Multi-provider model layer** — Provider-agnostic LLM abstraction and automatic failover on error.
@@ -54,7 +54,7 @@ In practice, you create a workspace per research goal ("Q2 rebalance", "data cen
 - **Secretary** — Flash agent doubles as a secretary: create and manage workspaces, dispatch deep PTC analyses in the background, monitor running tasks, and retrieve results — all through conversational commands with human-in-the-loop approval.
 - **Agent swarm** — Parallel async subagents with isolated context windows, preloaded toolset/skills, mid-execution steering, checkpoint-based resume, and live progress monitoring in the UI.
 - **Live steering** — Send follow-up messages while the agent/subagent is working to course-correct, clarify, or redirect without waiting for it to finish.
-- **Middleware stack** — 24 composable layers handling skill loading, plan mode, multimodal input, auto-compaction, and context management support long-running agent sessions.
+- **Middleware stack** — 25 composable layers handling skill loading, plan mode, multimodal input, auto-compaction, and context management support long-running agent sessions.
 - **Security & workspace vault** — Encryption at rest via pgcrypto, automatic credential leak detection and redaction, sandboxed execution, and per-workspace secret storage for safe agent access
 - **Channel integrations** — Use LangAlpha from Slack, Discord with complete feature support.
 - **Production-ready infrastructure** — SSE-streamed agent activity with Redis-buffered reconnection replay, background execution decoupled from HTTP connections, and PostgreSQL-backed state persistence.
@@ -139,7 +139,7 @@ flowchart LR
 
 
 
-In addition, the workspace environment enables persistence beyond a single session. Each sandbox has a structured directory layout — `work/<task>/` for per-task working areas (data, charts, code), `results/` for finalized reports, and `data/` for shared datasets — so intermediate results survive across sessions. At the root sits `agent.md`, a workspace notes file that the agent maintains across threads: workspace goals, key findings, a thread index, and a file index of important artifacts. A middleware layer injects `agent.md` into every model call, so the agent always has full context of prior work without re-reading files. Orthogonal to this, a store-backed long-term memory system (`.agents/user/memory/`, `.agents/workspace/memory/`) captures durable user preferences and cross-sandbox knowledge that survives workspace resets. Each workspace supports multiple conversation threads tied to a single research goal.
+In addition, the workspace environment enables persistence beyond a single session. Each sandbox has a structured directory layout — `work/<task>/` for per-task working areas (data, charts, code), `results/` for finalized reports, and `data/` for shared datasets — so intermediate results survive across sessions. At the root sits `agent.md`, a workspace notes file that the agent maintains across threads: workspace goals, key findings, a thread index, and a file index of important artifacts. A middleware layer injects `agent.md` into every model call, so the agent always has full context of prior work without re-reading files. Orthogonal to this, a store-backed long-term memory system (`.agents/user/memory/`, `.agents/workspace/memory/`) captures durable user preferences and cross-sandbox knowledge that survives workspace resets, and a user-managed memo store (`.agents/user/memo/`) holds documents you upload — PDFs are text-extracted server-side and metadata is generated asynchronously by an LLM so the agent can find and cite them by topic. Each workspace supports multiple conversation threads tied to a single research goal.
 
 <p align="center">
   <img src="docs/images/workspaces-list-page.png" alt="Workspaces page with research workspace cards" width="800" />
@@ -269,7 +269,7 @@ flowchart TB
         S3["user-defined"]
     end
 
-    subgraph Middleware ["Middleware — 24 Layers"]
+    subgraph Middleware ["Middleware — 25 Layers"]
         direction LR
         MW1["Tool Safety<br/>Leak Detection<br/>Protected Paths<br/>Error Handling"]
         MW2["Context & Skills<br/>agent.md Injection<br/>Skill Loading<br/>Multimodal"]

@@ -54,6 +54,7 @@ workspace_manager = None  # Workspace manager instance
 checkpointer = None  # PTC Agent LangGraph checkpointer for state persistence
 store = None  # LangGraph Store for cross-turn metadata persistence
 graph = None  # Most recently used LangGraph (for persistence snapshots)
+llm_service = None  # Generic one-shot LLM call wrapper (BYOK/OAuth-aware)
 
 # PID 1 process names that correctly reap orphaned subprocesses.
 # `docker-init` is Docker's bundled tini wrapper (what `init: true` in compose
@@ -96,7 +97,7 @@ def _log_container_hardening() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize resources when server starts, cleanup when stops."""
-    global agent_config, session_service, workspace_manager, checkpointer, store
+    global agent_config, session_service, workspace_manager, checkpointer, store, llm_service
 
     # Configure logging based on environment settings (first thing on startup)
     configure_logging()
@@ -197,6 +198,15 @@ async def lifespan(app: FastAPI):
         agent_config = await load_from_files(context=ConfigContext.SDK)
         agent_config.validate_api_keys()
         logger.info("PTC Agent configuration loaded successfully")
+
+        # Initialize generic one-shot LLM call wrapper. Constructed once so
+        # every server-side utility LLM call (memo metadata, thread titles,
+        # follow-up suggestions, etc.) shares a single BYOK/OAuth-aware entry
+        # point.
+        from src.server.services.llm_service import LLMService
+
+        llm_service = LLMService(agent_config=agent_config, logger=logger)
+        logger.info("LLMService initialized")
 
         # Initialize session service
         # Derive idle timeout from Daytona auto-stop so the server cleans up
@@ -523,6 +533,7 @@ from src.server.app.oauth import router as oauth_router
 from src.server.app.public import router as public_router
 from src.server.app.skills import router as skills_router
 from src.server.app.vault import router as vault_router
+from src.server.app.memo import router as memo_router
 from src.server.app.memory import router as memory_router
 
 # Conditionally import ginlix-data WS proxy (only when GINLIX_DATA_WS_URL is set)
@@ -588,6 +599,9 @@ app.include_router(
 app.include_router(
     memory_router
 )  # /api/v1/memory/* - Read agent long-term memory (user + workspace tiers)
+app.include_router(
+    memo_router
+)  # /api/v1/memo/* - User-managed document memos (upload, read, write, delete, download)
 app.include_router(health_router)  # /health - Health check
 app.include_router(
     preview_redirect_router

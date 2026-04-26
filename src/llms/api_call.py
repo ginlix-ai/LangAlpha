@@ -5,7 +5,8 @@ import logging
 import json
 from .token_counter import extract_token_usage
 from .content_utils import (
-    get_message_content
+    format_llm_content,
+    get_message_content,
 )
 
 # Configure logging for token usage
@@ -144,6 +145,10 @@ async def make_api_call(
                     if token_info:
                         for key, value in token_info.items():
                             total_token_info[key] = total_token_info.get(key, 0) + value
+
+                    # Flatten content_blocks (reasoning + text) to text.
+                    if isinstance(content, list):
+                        content = format_llm_content(content).get("text", "") or ""
 
                     # Try to extract and parse JSON
                     if isinstance(content, str):

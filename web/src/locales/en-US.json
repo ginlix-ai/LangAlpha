@@ -388,7 +388,18 @@
     "addLineToContext": "Add L{{line}} to context",
     "addNLinesToContext": "Add {{count}} lines to context",
     "openFile": "Open file",
-    "fromAgentResponse": "From agent response"
+    "fromAgentResponse": "From agent response",
+    "addToMemo": "Add to memo",
+    "syncWithMemo": "Sync with memo",
+    "memoAdding": "Adding \"{{name}}\" to memo",
+    "memoUploading": "Uploading…",
+    "memoAddSuccess": "Added \"{{name}}\" to memo",
+    "memoUpdateSuccess": "Synced \"{{name}}\" to latest",
+    "memoGenerating": "Generating description…",
+    "viewInMemo": "View in memo",
+    "memoAddError": "Failed to add to memo",
+    "memoUnsupportedType": "Memo only accepts .md, .txt, .csv, .json, or .pdf files.",
+    "inMemo": "In memo"
   },
   "filePanel": {
     "editingHint": "Editing — changes are not saved until you press Save",
@@ -437,6 +448,21 @@
     "cancelEditing": "Cancel editing",
     "close": "Close",
     "sortFiles": "Sort files",
+    "memoBanner": {
+      "fresh": "In memo — up to date.",
+      "stale": "In memo — workspace version differs from the saved memo.",
+      "checking": "In memo — checking…",
+      "unknown": "In memo.",
+      "sync": "Sync to memo",
+      "syncing": "Syncing…",
+      "viewDiff": "View diff",
+      "diffTitle": "Diff: {{name}}",
+      "diffSubtitle": "Left: saved memo. Right: current workspace file.",
+      "diffLeftLabel": "Saved memo",
+      "diffLeftHint": "what's stored",
+      "diffRightLabel": "Workspace file",
+      "diffRightHint": "current"
+    },
     "error": {
       "notFound": "File not found",
       "notFoundHint": "The file path may be incorrect, or the file has been deleted.",
@@ -480,8 +506,73 @@
     "readError": "Failed to read memory file"
   },
   "memoPanel": {
-    "title": "Memo",
-    "description": "Long-form research notes the agent composes and keeps up to date. Coming soon."
+    "title": "Memos",
+    "description": "Upload research memos, source documents, and reference material. Stored per user — the agent can read them across any workspace.",
+    "uploadButton": "Upload",
+    "uploadHint": "Markdown, TXT, CSV, JSON, or PDF · up to 5 MB",
+    "dragOverlayText": "Drop file to upload",
+    "refresh": "Refresh",
+    "selectMode": "Select",
+    "selectedCount_one": "{{count}} selected",
+    "selectedCount_other": "{{count}} selected",
+    "deleteSelected": "Delete selected",
+    "backToList": "Back to memos",
+    "loading": "Loading…",
+    "loadingList": "Loading memos…",
+    "uploading": "Uploading…",
+    "columns": {
+      "name": "Name",
+      "type": "Type",
+      "size": "Size",
+      "status": "Status",
+      "description": "Description",
+      "uploaded": "Uploaded"
+    },
+    "status": {
+      "pending": "Generating…",
+      "ready": "Ready",
+      "failed": "Failed"
+    },
+    "actions": {
+      "view": "View",
+      "download": "Download original",
+      "edit": "Edit",
+      "save": "Save",
+      "cancel": "Cancel",
+      "delete": "Delete",
+      "regenerate": "Regenerate"
+    },
+    "empty": {
+      "title": "No memos yet",
+      "hint": "Drop a file here or click Upload to add your first memo."
+    },
+    "errors": {
+      "fileTooLarge": "File is too large ({{size}} MB). Maximum is 5 MB.",
+      "unsupportedType": "Unsupported file type. Accepted: .md, .txt, .csv, .json, .pdf.",
+      "uploadFailed": "Upload failed",
+      "readFailed": "Failed to read memo",
+      "saveFailed": "Failed to save memo",
+      "deleteFailed": "Failed to delete memo",
+      "downloadFailed": "Download failed",
+      "regenerateFailed": "Failed to regenerate metadata",
+      "loadFailed": "Failed to load memos",
+      "bulkDeleteFailed": "{{count}} memo(s) failed to delete. {{first}}"
+    },
+    "confirm": {
+      "deleteTitle": "Delete memo",
+      "deleteBody": "Permanently delete \"{{name}}\"? This cannot be undone.",
+      "bulkDeleteTitle": "Delete selected memos",
+      "bulkDeleteBody": "Permanently delete {{count}} memo(s)? This cannot be undone.",
+      "deleteConfirm": "Delete",
+      "deleteCancel": "Cancel"
+    },
+    "source": {
+      "sandbox": "Sandbox"
+    },
+    "metadataFailed": "Metadata generation failed. Click Regenerate to retry.",
+    "pdfFallback": "Your browser cannot display this PDF inline.",
+    "pdfOpenLink": "Open in new tab",
+    "viewerExtracted": "Extracted text (original preserved for download)"
   },
   "automation": {
     "automations": "Automations",

@@ -1,9 +1,10 @@
 """Unit tests for ``CompositeFilesystemBackend``.
 
-Verifies prefix routing: `.agents/user/memory/**` hits the user-tier memory
-backend, `.agents/workspace/memory/**` hits the workspace-tier backend, and
-everything else falls through to the sandbox. Uses ``InMemoryStore`` for the
-memory backends and a ``MagicMock`` for the sandbox.
+Verifies prefix routing: `.agents/user/memory/**` hits the user-tier
+``StoreBackend``, `.agents/workspace/memory/**` hits the workspace-tier
+``StoreBackend``, and everything else falls through to the sandbox. Uses
+``InMemoryStore`` for the store-backed routes and a ``MagicMock`` for the
+sandbox.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import pytest
 from langgraph.store.memory import InMemoryStore
 
 from ptc_agent.agent.backends.composite import CompositeFilesystemBackend
-from ptc_agent.agent.backends.memory import StoreMemoryBackend
+from ptc_agent.agent.backends.langgraph_store import StoreBackend
 
 USER_PREFIX = "/home/workspace/.agents/user/memory/"
 WORKSPACE_PREFIX = "/home/workspace/.agents/workspace/memory/"
@@ -63,13 +64,13 @@ def store():
 
 @pytest.fixture
 def composite(sandbox, store):
-    user_backend = StoreMemoryBackend(
+    user_backend = StoreBackend(
         store=store,
         namespace_factory=lambda: ("user_abc", "memory"),
         root_prefix=USER_PREFIX,
         sandbox_backend=sandbox,
     )
-    workspace_backend = StoreMemoryBackend(
+    workspace_backend = StoreBackend(
         store=store,
         namespace_factory=lambda: ("user_abc", "workspaces", "ws_42", "memory"),
         root_prefix=WORKSPACE_PREFIX,
@@ -138,13 +139,13 @@ class TestRouting:
     async def test_longest_prefix_wins(self, sandbox, store):
         """Overlapping routes: the longer prefix must be selected."""
         # Fabricate an overlapping outer backend to verify ordering
-        outer = StoreMemoryBackend(
+        outer = StoreBackend(
             store=store,
             namespace_factory=lambda: ("outer",),
             root_prefix="/home/workspace/.agents/",
             sandbox_backend=sandbox,
         )
-        inner = StoreMemoryBackend(
+        inner = StoreBackend(
             store=store,
             namespace_factory=lambda: ("inner",),
             root_prefix=USER_PREFIX,
@@ -232,3 +233,140 @@ class TestSearchFanOut:
         matches = await composite.aglob_paths("*.md", USER_PREFIX)
         assert matches == [USER_PREFIX + "a.md"]
         sandbox.aglob_paths.assert_not_awaited()
+
+
+MEMO_PREFIX = "/home/workspace/.agents/user/memo/"
+
+
+@pytest.fixture
+def three_route_composite(sandbox, store):
+    """Composite with memory (writable) + memo (read-only) + sandbox."""
+    user_memory = StoreBackend(
+        store=store,
+        namespace_factory=lambda: ("user_abc", "memory"),
+        root_prefix=USER_PREFIX,
+        sandbox_backend=sandbox,
+    )
+    workspace_memory = StoreBackend(
+        store=store,
+        namespace_factory=lambda: ("user_abc", "workspaces", "ws_42", "memory"),
+        root_prefix=WORKSPACE_PREFIX,
+        sandbox_backend=sandbox,
+    )
+    user_memo = StoreBackend(
+        store=store,
+        namespace_factory=lambda: ("user_abc", "memos"),
+        root_prefix=MEMO_PREFIX,
+        sandbox_backend=sandbox,
+        read_only=True,
+        read_only_error="Memo is user-managed. Ask the user to edit via the memo panel.",
+    )
+    return CompositeFilesystemBackend(
+        sandbox=sandbox, routes=[user_memory, workspace_memory, user_memo]
+    )
+
+
+class TestThreeRouteBoundary:
+    """Memory, memo, and sandbox coexist under `.agents/user/` — confirm no cross-wire."""
+
+    @pytest.mark.asyncio
+    async def test_write_to_memory_still_lands_in_store(
+        self, three_route_composite, store, sandbox
+    ):
+        ok = await three_route_composite.awrite_text(USER_PREFIX + "foo.md", "memory body")
+        assert ok is True
+        item = await store.aget(("user_abc", "memory"), "foo.md")
+        assert item is not None and item.value["content"] == "memory body"
+        sandbox.awrite_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_write_to_memo_is_rejected_as_read_only(
+        self, three_route_composite, store, sandbox
+    ):
+        from ptc_agent.agent.backends import ReadOnlyStoreError
+
+        with pytest.raises(ReadOnlyStoreError) as excinfo:
+            await three_route_composite.awrite_text(
+                MEMO_PREFIX + "doc.md", "agent tried"
+            )
+        assert "memo panel" in str(excinfo.value).lower()
+        # Nothing stored in either memory or memo namespace
+        assert await store.aget(("user_abc", "memos"), "doc.md") is None
+        assert await store.aget(("user_abc", "memory"), "doc.md") is None
+        # Sandbox not touched either
+        sandbox.awrite_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_edit_on_memo_returns_read_only_error(
+        self, three_route_composite
+    ):
+        result = await three_route_composite.aedit_text(
+            MEMO_PREFIX + "doc.md", "old", "new"
+        )
+        assert result["success"] is False
+        assert "memo panel" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_read_on_memo_hits_memo_namespace(
+        self, three_route_composite, store
+    ):
+        # Server-side write to seed (bypasses the read_only flag).
+        await store.aput(
+            ("user_abc", "memos"),
+            "q1-thesis.md",
+            {
+                "content": "memo body",
+                "encoding": "utf-8",
+                "created_at": "2026-04-24T10:00:00Z",
+                "modified_at": "2026-04-24T10:00:00Z",
+            },
+        )
+        content = await three_route_composite.aread_text(MEMO_PREFIX + "q1-thesis.md")
+        assert content == "memo body"
+
+    @pytest.mark.asyncio
+    async def test_write_outside_all_routes_goes_to_sandbox(
+        self, three_route_composite, sandbox, store
+    ):
+        await three_route_composite.awrite_text(
+            f"{WORKING_DIR}/work/scratch.md", "just sandbox"
+        )
+        sandbox.awrite_text.assert_awaited_once()
+        # Neither memory nor memo namespace touched
+        assert await store.aget(("user_abc", "memory"), "scratch.md") is None
+        assert await store.aget(("user_abc", "memos"), "scratch.md") is None
+
+    @pytest.mark.asyncio
+    async def test_glob_at_user_prefix_sees_memory_and_memo(
+        self, three_route_composite, store
+    ):
+        # Seed memory
+        await three_route_composite.awrite_text(USER_PREFIX + "m.md", "memory entry")
+        # Seed memo (direct store put bypasses read-only)
+        await store.aput(
+            ("user_abc", "memos"),
+            "p.md",
+            {
+                "content": "memo entry",
+                "encoding": "utf-8",
+                "created_at": "2026-04-24T10:00:00Z",
+                "modified_at": "2026-04-24T10:00:00Z",
+            },
+        )
+        matches = await three_route_composite.aglob_paths(
+            "*.md", "/home/workspace/.agents/user"
+        )
+        assert USER_PREFIX + "m.md" in matches
+        assert MEMO_PREFIX + "p.md" in matches
+
+    @pytest.mark.asyncio
+    async def test_similar_prefix_no_false_match(
+        self, three_route_composite, store, sandbox
+    ):
+        # `.agents/user/memory/x.md` MUST NOT be routed to memo even though
+        # "memo" starts the same as "memory". Regression guard for prefix matching.
+        await three_route_composite.awrite_text(
+            USER_PREFIX + "nested.md", "still memory"
+        )
+        assert await store.aget(("user_abc", "memory"), "nested.md") is not None
+        assert await store.aget(("user_abc", "memos"), "nested.md") is None
