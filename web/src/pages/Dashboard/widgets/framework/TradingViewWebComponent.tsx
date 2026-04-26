@@ -39,6 +39,12 @@ const TV_WC_HOST = 'https://widgets.tradingview-widget.com/w/';
  * setting on registration.
  */
 let customSettingsInstalled = false;
+// `locale` only takes effect on the FIRST call. Once `<tv-custom-settings>` is
+// registered, the singleton flag short-circuits subsequent invocations — so a
+// mid-session locale switch can't re-register it in the new bundle. This
+// matches the broader one-shot `customElements.define()` browser limitation
+// documented at the top of this file: full reload is required to pick up a
+// different locale for already-registered TV elements.
 function ensureCustomSettings(locale: string): void {
   if (customSettingsInstalled || typeof window === 'undefined') return;
   customSettingsInstalled = true;

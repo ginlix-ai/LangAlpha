@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '@/contexts/ThemeContext';
-import { getTVCommonConfig, resolveScriptSrc } from './tvConfig';
+import { getTVCommonConfig, mapLocaleForTV, resolveScriptSrc } from './tvConfig';
 import { EmbedFallback } from './EmbedFallback';
 
 interface Props {
@@ -55,6 +55,10 @@ const REBUILD_DEBOUNCE_MS = 200;
 export function TradingViewEmbed({ scriptKey, config, className, card = false, contentHeight }: Props) {
   const { theme } = useTheme();
   const { i18n } = useTranslation();
+  // Named local mirrors the WC component pattern (TradingViewWebComponent.tsx)
+  // and makes the dep array below self-explanatory: rebuild when the TV-mapped
+  // locale changes, not just any i18n internal.
+  const tvLocale = mapLocaleForTV(i18n.language);
   const containerRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [retryToken, setRetryToken] = useState(0);
@@ -181,7 +185,7 @@ export function TradingViewEmbed({ scriptKey, config, className, card = false, c
   // an inline `config={{...}}`), rebuilding the iframe and flashing the
   // embed on theme toggle / edit-mode flip / neighbor widget edits.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scriptKey, configKey, theme, retryToken, i18n.language]);
+  }, [scriptKey, configKey, theme, retryToken, tvLocale]);
 
   const cardClass = card ? 'dashboard-glass-card p-3 overflow-hidden' : '';
   const isFixed = typeof contentHeight === 'number';
