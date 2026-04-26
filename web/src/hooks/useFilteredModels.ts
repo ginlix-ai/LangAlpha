@@ -296,7 +296,7 @@ export function buildVisibleModels(
   // doesn't show two identically-routed rows.
   const shadowOwner: Record<string, string> = {};
   for (const cm of customModels) {
-    if (!shadowOwner[cm.name]) shadowOwner[cm.name] = cm.provider;
+    if (!Object.hasOwn(shadowOwner, cm.name)) shadowOwner[cm.name] = cm.provider;
   }
   for (const [groupKey, data] of Object.entries(normalized)) {
     if (!data.models) continue;
