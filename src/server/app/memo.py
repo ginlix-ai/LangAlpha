@@ -154,9 +154,10 @@ async def _kickoff_metadata_handover(user_id: str, key: str) -> None:
     """Cross-worker handover for the kickoff path: cancel siblings, then claim slot.
 
     Single coroutine so the SET → DELETE → SET sequence at Redis is ordered
-    from this worker's perspective. A sibling-worker task observes the cancel
-    during the brief SET window; our own new task sees a cleared flag once
-    DELETE has run, so it never self-aborts.
+    from this worker's perspective. ``_kickoff_metadata`` awaits this before
+    spawning the new metadata task so the new task cannot observe the
+    transient cancel flag, even if a partial Redis failure leaves DELETE
+    unrun (the awaiting caller still sees the success/failure outcome).
     """
     try:
         cache = get_cache_client()
@@ -409,7 +410,7 @@ async def _rebuild_index_under_lock(
         await rebuild_memo_index(store, namespace)
 
 
-def _kickoff_metadata(
+async def _kickoff_metadata(
     *, user_id: str, namespace: tuple[str, ...], key: str
 ) -> bool:
     """Dispatch a background LLM call. Requires setup.llm_service to be wired.
@@ -425,10 +426,13 @@ def _kickoff_metadata(
             extra={"memo_key": key},
         )
         return False
-    # In-process cancel runs synchronously; cross-worker cancel+inflight claim
-    # runs as a single ordered coroutine via _kickoff_metadata_handover.
+    # Cancel any in-process predecessor, then complete the cross-worker
+    # handover BEFORE spawning the new metadata task. Awaiting here means
+    # the handover's SET → DELETE → SET sequence has fully landed by the
+    # time the new task reaches its cancel poll, so it cannot observe the
+    # transient cancel flag we just set for sibling workers.
     _cancel_local_metadata_task(namespace, key)
-    _spawn_background(_kickoff_metadata_handover(user_id, key))
+    await _kickoff_metadata_handover(user_id, key)
 
     task = asyncio.create_task(
         generate_memo_metadata(
@@ -704,7 +708,7 @@ async def upload_user_memo(
     # the index after the LLM resolves — doing it here too writes memo.md
     # twice for every upload. Only rebuild eagerly when no LLM service is
     # wired (dev mode) so the catalog still updates.
-    metadata_dispatched = _kickoff_metadata(
+    metadata_dispatched = await _kickoff_metadata(
         user_id=user_id, namespace=namespace, key=key
     )
     if not metadata_dispatched:
@@ -789,7 +793,7 @@ async def write_user_memo(
         }
         await aput(store, namespace, body.key, updated)
 
-    metadata_dispatched = _kickoff_metadata(
+    metadata_dispatched = await _kickoff_metadata(
         user_id=user_id, namespace=namespace, key=body.key
     )
     if not metadata_dispatched:
@@ -964,7 +968,7 @@ async def regenerate_user_memo_metadata(
         }
         await aput(store, namespace, key, updated)
 
-    metadata_dispatched = _kickoff_metadata(
+    metadata_dispatched = await _kickoff_metadata(
         user_id=user_id, namespace=namespace, key=key
     )
     if not metadata_dispatched:

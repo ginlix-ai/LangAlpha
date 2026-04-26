@@ -1061,6 +1061,57 @@ async def test_kickoff_handover_clears_cancel_before_inflight_set(store):
 
 
 @pytest.mark.asyncio
+async def test_kickoff_metadata_awaits_handover_before_creating_task(store):
+    """The handover must fully complete before the new metadata task spawns.
+
+    Regression: previously _kickoff_metadata fired the handover as a fire-and-
+    forget background task and immediately created the metadata task. If the
+    metadata task's pre-LLM cancel poll ran during the handover's brief SET
+    window (between SET cancel and DELETE cancel), it observed the flag and
+    self-aborted. Now _kickoff_metadata is async and awaits the handover, so
+    by the time the new task starts polling, the cancel flag is already gone.
+    """
+    await _seed(store, "regen.md")
+    handover_calls: list[str] = []
+    real_handover = memo_mod._kickoff_metadata_handover
+
+    async def _tracking_handover(user_id: str, key: str) -> None:
+        handover_calls.append("start")
+        await real_handover(user_id, key)
+        handover_calls.append("end")
+
+    fake_cache = MagicMock()
+    fake_cache.set = AsyncMock(return_value=True)
+    fake_cache.delete = AsyncMock(return_value=True)
+    fake_cache.get = AsyncMock(return_value=None)
+
+    fake_llm = MagicMock()
+    fake_llm.complete = AsyncMock(return_value=MagicMock(
+        description="d", summary="s",
+    ))
+    with (
+        patch.object(memo_mod, "get_cache_client", return_value=fake_cache),
+        patch.object(
+            memo_mod, "_kickoff_metadata_handover", side_effect=_tracking_handover,
+        ),
+        patch.object(memo_mod.setup, "llm_service", fake_llm, create=True),
+    ):
+        dispatched = await memo_mod._kickoff_metadata(
+            user_id="user_abc", namespace=NAMESPACE, key="regen.md",
+        )
+    assert dispatched is True
+    assert handover_calls == ["start", "end"], (
+        "handover must complete before _kickoff_metadata returns"
+    )
+
+    pending = memo_mod._METADATA_TASKS.get((NAMESPACE, "regen.md"))
+    if pending is not None:
+        pending.cancel()
+        with contextlib.suppress(BaseException):
+            await pending
+
+
+@pytest.mark.asyncio
 async def test_concurrent_pdf_uploads_dedupe_to_one_row_and_clean_orphan_blob(store):
     """Two parallel sandbox-source PDF uploads → exactly one row, one live blob.
 
