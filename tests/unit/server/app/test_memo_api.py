@@ -358,7 +358,8 @@ async def test_upload_pdf_uses_object_storage_when_configured(store):
 
 
 @pytest.mark.asyncio
-async def test_upload_pdf_r2_failure_returns_500(store):
+async def test_upload_pdf_r2_failure_returns_502(store):
+    """Object-store upload failure should surface as 502 (matches the symmetric fetch path)."""
     from src.server.services.memo_binary_storage import MemoBinaryUploadError
 
     with (
@@ -381,7 +382,7 @@ async def test_upload_pdf_r2_failure_returns_500(store):
                 user_id="user_abc",
                 file=_upload("bad.pdf", b"%PDF-1.4 bad", "application/pdf"),
             )
-    assert exc.value.status_code == 500
+    assert exc.value.status_code == 502
     # No store write on failure.
     assert await store.aget(NAMESPACE, "bad.pdf") is None
 
@@ -402,6 +403,35 @@ async def test_upload_pdf_empty_extraction_returns_422(store):
             )
     assert exc.value.status_code == 422
     assert await store.aget(NAMESPACE, "scan.pdf") is None
+
+
+@pytest.mark.asyncio
+async def test_upload_pdf_strips_nul_bytes_from_extracted_text(store):
+    """Postgres JSONB rejects \\x00 in text — sanitize at the boundary."""
+    extracted = "Lecture body\x00 with stray\x00 NULs from pdfminer"
+    with patch.object(
+        memo_mod, "extract_pdf_text", AsyncMock(return_value=extracted),
+    ):
+        await upload_user_memo(
+            user_id="user_abc",
+            file=_upload("lecture.pdf", b"%PDF-1.4 x", "application/pdf"),
+        )
+    item = await store.aget(NAMESPACE, "lecture.pdf")
+    assert "\x00" not in item.value["content"]
+    assert item.value["content"] == "Lecture body with stray NULs from pdfminer"
+
+
+@pytest.mark.asyncio
+async def test_upload_text_strips_nul_bytes(store):
+    """Non-PDF UTF-8 uploads with embedded NULs also get sanitized."""
+    raw = "intro\x00body\x00".encode("utf-8")
+    await upload_user_memo(
+        user_id="user_abc",
+        file=_upload("notes.txt", raw, "text/plain"),
+    )
+    item = await store.aget(NAMESPACE, "notes.txt")
+    assert "\x00" not in item.value["content"]
+    assert item.value["content"] == "introbody"
 
 
 # --- Write ----------------------------------------------------------------
@@ -479,6 +509,19 @@ async def test_write_missing_returns_404(store):
             body=MemoWriteRequest(key="ghost.md", content="x"),
         )
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_write_strips_nul_bytes(store):
+    """JSON deserialization can carry \\u0000 escapes through to body.content."""
+    await _seed(store, "note.md")
+    await write_user_memo(
+        user_id="user_abc",
+        body=MemoWriteRequest(key="note.md", content="hello\x00 world\x00"),
+    )
+    item = await store.aget(NAMESPACE, "note.md")
+    assert "\x00" not in item.value["content"]
+    assert item.value["content"] == "hello world"
 
 
 # --- List + Read ----------------------------------------------------------
@@ -853,3 +896,256 @@ async def test_delete_acquires_namespace_lock(store):
     # Lock released — delete should now proceed.
     await asyncio.wait_for(task, timeout=2.0)
     assert await store.aget(NAMESPACE, "to-delete.md") is None
+
+
+# --- Lock-split around R2 PUT (Phase A outside lock, Phase B inside) -----
+
+
+@pytest.mark.asyncio
+async def test_upload_pdf_put_runs_outside_namespace_lock(store):
+    """A slow R2 PUT must not block other memo ops on the same namespace.
+
+    Holds the lock externally while a PDF upload is in flight; the PUT
+    happens in Phase A (no lock) so it must reach store_binary even though
+    the lock is held. Phase B (lock + aput) is the only step that should
+    block.
+    """
+    pdf_bytes = b"%PDF-1.4 slow"
+    put_started = asyncio.Event()
+    put_unblock = asyncio.Event()
+
+    async def _slow_put(*_args, **_kwargs):
+        put_started.set()
+        await put_unblock.wait()
+        return {
+            "storage": "r2",
+            "key": "memo/user_abc/abc.pdf",
+            "content_type": "application/pdf",
+        }
+
+    with (
+        patch.object(
+            memo_mod,
+            "extract_pdf_text",
+            AsyncMock(return_value="Extracted PDF body well over the fifty-char floor."),
+        ),
+        patch.object(
+            memo_mod.memo_binary_storage, "is_configured", return_value=True
+        ),
+        patch.object(
+            memo_mod.memo_binary_storage,
+            "store_binary",
+            AsyncMock(side_effect=_slow_put),
+        ),
+    ):
+        async with lock_for_namespace(NAMESPACE):
+            task = asyncio.create_task(
+                upload_user_memo(
+                    user_id="user_abc",
+                    file=_upload("slow.pdf", pdf_bytes, "application/pdf"),
+                ),
+            )
+            # Phase A reaches the PUT even while we hold the lock.
+            await asyncio.wait_for(put_started.wait(), timeout=2.0)
+            put_unblock.set()
+            # Yield generously; Phase B must NOT have completed yet — it's
+            # waiting on us to release the lock.
+            for _ in range(30):
+                await asyncio.sleep(0)
+            assert not task.done(), (
+                "Phase B aput should still be blocked on the namespace lock"
+            )
+        # Lock released — Phase B proceeds.
+        await asyncio.wait_for(task, timeout=2.0)
+
+    item = await store.aget(NAMESPACE, "slow.pdf")
+    assert item is not None
+    assert item.value["binary_ref"]["key"] == "memo/user_abc/abc.pdf"
+
+
+@pytest.mark.asyncio
+async def test_upload_pdf_phase_b_failure_cleans_up_orphan_blob(store):
+    """If Phase B raises after Phase A's PUT, the blob is best-effort deleted."""
+    ref = {
+        "storage": "r2",
+        "key": "memo/user_abc/orphan-uuid.pdf",
+        "content_type": "application/pdf",
+    }
+    delete_calls: list[dict] = []
+
+    async def _fake_delete(binary_ref):
+        delete_calls.append(binary_ref)
+        return True
+
+    with (
+        patch.object(
+            memo_mod,
+            "extract_pdf_text",
+            AsyncMock(return_value="Extracted PDF body well over the fifty-char floor."),
+        ),
+        patch.object(
+            memo_mod.memo_binary_storage, "is_configured", return_value=True
+        ),
+        patch.object(
+            memo_mod.memo_binary_storage,
+            "store_binary",
+            AsyncMock(return_value=ref),
+        ),
+        patch.object(
+            memo_mod.memo_binary_storage,
+            "delete_binary",
+            AsyncMock(side_effect=_fake_delete),
+        ),
+        # Force Phase B aput to fail so the rollback path runs. Bare store
+        # exceptions are wrapped into HTTPException(503) on the way out.
+        patch.object(memo_mod, "aput", AsyncMock(side_effect=RuntimeError("store down"))),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await upload_user_memo(
+                user_id="user_abc",
+                file=_upload("orphan.pdf", b"%PDF-1.4 x", "application/pdf"),
+            )
+        assert exc.value.status_code == 503
+
+    # Orphan cleanup ran with the binary_ref we Phase-A'd into existence.
+    assert delete_calls == [ref]
+    # No catalog row created.
+    assert await store.aget(NAMESPACE, "orphan.pdf") is None
+
+
+@pytest.mark.asyncio
+async def test_kickoff_handover_clears_cancel_before_inflight_set(store):
+    """Regression: cancel→delete→inflight must run in one ordered Redis sequence.
+
+    Previous design fired the cross-worker cancel SET and the inflight DELETE+SET
+    as two independent fire-and-forget tasks. Their Redis ops could land out of
+    order, leaving the new task's pre-LLM cancel-poll observing a stale "1" and
+    self-aborting. The combined ``_kickoff_metadata_handover`` runs them in one
+    coroutine so the order is fixed: SET cancel → DELETE cancel → SET inflight.
+    """
+    ops: list[tuple[str, str]] = []
+
+    fake_cache = MagicMock()
+
+    async def _record_set(key: str, value, ttl=None):
+        ops.append(("set", key))
+        return True
+
+    async def _record_delete(key: str):
+        ops.append(("delete", key))
+        return True
+
+    async def _record_get(_key: str):
+        return None
+
+    fake_cache.set = AsyncMock(side_effect=_record_set)
+    fake_cache.delete = AsyncMock(side_effect=_record_delete)
+    fake_cache.get = AsyncMock(side_effect=_record_get)
+
+    with patch.object(memo_mod, "get_cache_client", return_value=fake_cache):
+        await memo_mod._kickoff_metadata_handover("user_abc", "q1.md")
+
+    # The cancel SET must precede the cancel DELETE; the inflight SET runs last.
+    cancel_key = memo_mod.memo_metadata_cancel_key("user_abc", "q1.md")
+    inflight_key = memo_mod.memo_metadata_inflight_key("user_abc", "q1.md")
+    assert ops == [
+        ("set", cancel_key),
+        ("delete", cancel_key),
+        ("set", inflight_key),
+    ], f"handover ordering wrong: {ops}"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_pdf_uploads_dedupe_to_one_row_and_clean_orphan_blob(store):
+    """Two parallel sandbox-source PDF uploads → exactly one row, one live blob.
+
+    Phase A runs outside the lock, so both uploads PUT distinct UUID blobs.
+    Phase B serializes via ``lock_for_namespace``; the second caller sees
+    the first's row through ``_find_by_source`` and replaces it. The
+    replaced row's ``prior_binary_ref`` must be deleted by the post-aput
+    cleanup so the loser's blob doesn't leak. (Pre-fix: cleanup was gated
+    on ``not is_pdf(mime_type)`` so PDF→PDF dedup orphaned the prior blob.)
+    """
+    blob_keys: list[str] = []
+    delete_calls: list[dict] = []
+
+    async def _store_unique_blob(*, user_id, content, content_type):
+        key = f"memo/{user_id}/{len(blob_keys):08x}.pdf"
+        blob_keys.append(key)
+        # Yield so the two coroutines interleave their Phase A PUTs.
+        await asyncio.sleep(0)
+        return {"storage": "r2", "key": key, "content_type": content_type}
+
+    async def _record_delete(binary_ref):
+        delete_calls.append(binary_ref)
+        return True
+
+    pdf_a = b"%PDF-1.4 first"
+    pdf_b = b"%PDF-1.4 second"
+
+    with (
+        patch.object(
+            memo_mod,
+            "extract_pdf_text",
+            AsyncMock(return_value="Plenty of extracted text well over the fifty-char floor."),
+        ),
+        patch.object(
+            memo_mod.memo_binary_storage, "is_configured", return_value=True
+        ),
+        patch.object(
+            memo_mod.memo_binary_storage,
+            "store_binary",
+            AsyncMock(side_effect=_store_unique_blob),
+        ),
+        patch.object(
+            memo_mod.memo_binary_storage,
+            "delete_binary",
+            AsyncMock(side_effect=_record_delete),
+        ),
+    ):
+        results = await asyncio.gather(
+            upload_user_memo(
+                user_id="user_abc",
+                file=_upload("doc.pdf", pdf_a, "application/pdf"),
+                source_kind="sandbox",
+                source_workspace_id="ws-1",
+                source_path="results/doc.pdf",
+            ),
+            upload_user_memo(
+                user_id="user_abc",
+                file=_upload("doc.pdf", pdf_b, "application/pdf"),
+                source_kind="sandbox",
+                source_workspace_id="ws-1",
+                source_path="results/doc.pdf",
+            ),
+        )
+
+    # Both PUTs ran outside the lock — two blobs created.
+    assert len(blob_keys) == 2
+
+    # Exactly one row remains for the source path.
+    matched = []
+    items = await store.asearch(NAMESPACE, limit=10)
+    for item in items:
+        v = item.value if isinstance(item.value, dict) else {}
+        if v.get("source_path") == "results/doc.pdf":
+            matched.append(item)
+    assert len(matched) == 1
+    surviving_blob = matched[0].value["binary_ref"]["key"]
+    assert surviving_blob in blob_keys
+
+    # The loser's blob got deleted via the post-aput cleanup. Pre-fix this
+    # would have been zero deletes for PDF→PDF dedup.
+    deleted_keys = [r["key"] for r in delete_calls]
+    losers = [k for k in blob_keys if k != surviving_blob]
+    assert losers, "test setup should produce at least one losing blob"
+    for loser in losers:
+        assert loser in deleted_keys, (
+            f"loser blob {loser} not cleaned up; orphan in storage. "
+            f"delete_calls={deleted_keys}"
+        )
+
+    # Both responses returned 202 with replaced True/False distinguishing
+    # winner from loser of the dedup race.
+    replaced_flags = sorted(r.replaced for r in results)
+    assert replaced_flags == [False, True]

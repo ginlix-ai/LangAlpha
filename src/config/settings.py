@@ -290,6 +290,16 @@ def get_redis_ttl_steering() -> int:
     return get_infrastructure_config().redis.ttl.steering
 
 
+def get_redis_ttl_memo_metadata_inflight() -> int:
+    """Get Redis TTL for the memo metadata in-flight visibility key (seconds)."""
+    return get_infrastructure_config().redis.ttl.memo_metadata_inflight
+
+
+def get_redis_ttl_memo_metadata_cancel() -> int:
+    """Get Redis TTL for the memo metadata cooperative cancel flag (seconds)."""
+    return get_infrastructure_config().redis.ttl.memo_metadata_cancel
+
+
 def is_cache_invalidate_on_write_enabled() -> bool:
     """Check if cache invalidation on write is enabled."""
     return get_infrastructure_config().redis.cache_invalidate_on_write

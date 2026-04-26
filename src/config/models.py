@@ -106,6 +106,19 @@ class RedisTTLConfig(BaseModel):
     steering: int = Field(
         default=3600, description="TTL for steering message Redis keys (1 hour)"
     )
+    memo_metadata_inflight: int = Field(
+        default=300,
+        description=(
+            "TTL for the cross-worker visibility key marking a memo metadata "
+            "task as in flight (5 minutes)"
+        ),
+    )
+    memo_metadata_cancel: int = Field(
+        default=60,
+        description=(
+            "TTL for the cooperative cross-worker memo metadata cancel flag (1 minute)"
+        ),
+    )
 
 
 class RedisSWRConfig(BaseModel):
