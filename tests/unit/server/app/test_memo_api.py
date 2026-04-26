@@ -1061,6 +1061,34 @@ async def test_kickoff_handover_clears_cancel_before_inflight_set(store):
 
 
 @pytest.mark.asyncio
+async def test_kickoff_metadata_skips_task_when_handover_fails(store):
+    """Partial-Redis failure (SET succeeded, DELETE failed) leaves the cancel
+    flag set for its 60s TTL. Spawning a metadata task here would just have it
+    self-abort at the pre-LLM poll. Skip task creation instead so the caller
+    rebuilds the index and the user can retry once Redis recovers.
+    """
+    await _seed(store, "redis-down.md")
+    fake_llm = MagicMock()
+    fake_llm.complete = AsyncMock()
+
+    async def _failing_handover(_uid: str, _key: str) -> None:
+        raise RuntimeError("redis blip mid-handover")
+
+    with (
+        patch.object(
+            memo_mod, "_kickoff_metadata_handover", side_effect=_failing_handover,
+        ),
+        patch.object(memo_mod.setup, "llm_service", fake_llm, create=True),
+    ):
+        dispatched = await memo_mod._kickoff_metadata(
+            user_id="user_abc", namespace=NAMESPACE, key="redis-down.md",
+        )
+    assert dispatched is False
+    fake_llm.complete.assert_not_called()
+    assert (NAMESPACE, "redis-down.md") not in memo_mod._METADATA_TASKS
+
+
+@pytest.mark.asyncio
 async def test_kickoff_metadata_awaits_handover_before_creating_task(store):
     """The handover must fully complete before the new metadata task spawns.
 

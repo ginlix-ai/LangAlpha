@@ -156,23 +156,21 @@ async def _kickoff_metadata_handover(user_id: str, key: str) -> None:
     Single coroutine so the SET → DELETE → SET sequence at Redis is ordered
     from this worker's perspective. ``_kickoff_metadata`` awaits this before
     spawning the new metadata task so the new task cannot observe the
-    transient cancel flag, even if a partial Redis failure leaves DELETE
-    unrun (the awaiting caller still sees the success/failure outcome).
+    transient cancel flag we just set for sibling workers. Raises on Redis
+    failure so the caller can choose to skip task creation rather than
+    spawn one that may self-abort against a stuck cancel flag.
     """
-    try:
-        cache = get_cache_client()
-        cancel_key = memo_metadata_cancel_key(user_id, key)
-        await cache.set(
-            cancel_key, "1", ttl=get_redis_ttl_memo_metadata_cancel(),
-        )
-        await cache.delete(cancel_key)
-        await cache.set(
-            memo_metadata_inflight_key(user_id, key),
-            {"started_at": now_iso()},
-            ttl=get_redis_ttl_memo_metadata_inflight(),
-        )
-    except Exception:
-        logger.debug("memo metadata handover failed", exc_info=True)
+    cache = get_cache_client()
+    cancel_key = memo_metadata_cancel_key(user_id, key)
+    await cache.set(
+        cancel_key, "1", ttl=get_redis_ttl_memo_metadata_cancel(),
+    )
+    await cache.delete(cancel_key)
+    await cache.set(
+        memo_metadata_inflight_key(user_id, key),
+        {"started_at": now_iso()},
+        ttl=get_redis_ttl_memo_metadata_inflight(),
+    )
 
 
 def _namespace(user_id: str) -> tuple[str, ...]:
@@ -432,7 +430,20 @@ async def _kickoff_metadata(
     # time the new task reaches its cancel poll, so it cannot observe the
     # transient cancel flag we just set for sibling workers.
     _cancel_local_metadata_task(namespace, key)
-    await _kickoff_metadata_handover(user_id, key)
+    try:
+        await _kickoff_metadata_handover(user_id, key)
+    except Exception:
+        # If the handover failed mid-sequence (e.g. SET cancel succeeded but
+        # DELETE failed), the cancel flag could persist for its 60s TTL and
+        # any task we spawn now would self-abort at its pre-LLM cancel poll.
+        # Skip task creation; caller rebuilds the index itself. The user can
+        # hit Regenerate once Redis recovers.
+        logger.warning(
+            "memo metadata handover failed; skipping metadata task",
+            extra={"memo_key": key},
+            exc_info=True,
+        )
+        return False
 
     task = asyncio.create_task(
         generate_memo_metadata(
@@ -933,8 +944,7 @@ async def delete_user_memo(
     if isinstance(binary_ref, dict):
         await memo_binary_storage.delete_binary(binary_ref)
 
-    async with lock_for_namespace(namespace):
-        await rebuild_memo_index(store, namespace)
+    await _rebuild_index_under_lock(store, namespace)
     return {"status": "deleted", "key": key}
 
 
