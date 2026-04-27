@@ -40,21 +40,9 @@ describe('categorizeTool — memo classification', () => {
     ).toBe('memoWrite');
   });
 
-  it('classifies the snake_case write_file alias as memoWrite', () => {
-    expect(
-      categorizeTool('write_file', { args: { file_path: '.agents/user/memo/x.md' } })
-    ).toBe('memoWrite');
-  });
-
   it('keeps a Read on a memo path as memo (read bucket)', () => {
     expect(
       categorizeTool('Read', { args: { file_path: '.agents/user/memo/x.md' } })
-    ).toBe('memo');
-  });
-
-  it('keeps the snake_case read_file alias as memo', () => {
-    expect(
-      categorizeTool('read_file', { args: { file_path: '.agents/user/memo/x.md' } })
     ).toBe('memo');
   });
 

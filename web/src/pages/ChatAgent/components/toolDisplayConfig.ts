@@ -91,24 +91,22 @@ export const TOOL_DISPLAY_CONFIG: Record<string, ToolDisplayEntry> = {
   manage_automation:        { displayName: 'Manage Automation',    i18nKey: 'manageAutomation',    icon: Settings },
 };
 
-/** Classifies the file_path arg for Read/Write/Edit and their snake_case aliases. Returns null for all other tools. */
+// Single source of truth for "what tool name indicates a file
+// write/edit/read?" — these are the only tool decorators registered in the
+// agent (see src/ptc_agent/agent/tools/file_ops.py: @tool("Read"),
+// @tool("Write"), @tool("Edit")). Used by classifyFromArgs and categorizeTool.
+const FILE_WRITE_TOOLS = new Set(['Write', 'Edit']);
+const FILE_READ_TOOLS = new Set(['Read']);
+const FILE_PATH_TOOLS = new Set([...FILE_WRITE_TOOLS, ...FILE_READ_TOOLS]);
+
+/** Classifies the file_path arg for Read/Write/Edit. Returns null for all other tools. */
 function classifyFromArgs(toolName: string, args: ToolCallArgs | undefined): AgentPathInfo | null {
   if (!args) return null;
-  if (toolName !== 'Read' && toolName !== 'Write' && toolName !== 'Edit' &&
-      toolName !== 'read_file' && toolName !== 'write_file' && toolName !== 'edit_file' &&
-      toolName !== 'Save' && toolName !== 'save_file') {
-    return null;
-  }
+  if (!FILE_PATH_TOOLS.has(toolName)) return null;
   const fp = (args.file_path || args.filePath) as string | undefined;
   if (!fp) return null;
   return classifyAgentPath(fp);
 }
-
-// Defined above the icon/label helpers (which now reference it) and reused by
-// `categorizeTool` further down. Single source of truth for "what tool name
-// indicates a write/edit?" — keep both entries in sync if a new alias appears.
-const FILE_WRITE_TOOLS = new Set(['Write', 'write_file', 'Save', 'save_file', 'Edit', 'edit_file']);
-const FILE_READ_TOOLS = new Set(['Read', 'read_file']);
 
 export function getDisplayName(rawToolName: string, t?: TFn, args?: ToolCallArgs): string {
   const info = classifyFromArgs(rawToolName, args);
@@ -153,7 +151,7 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
   // generic Read/Write/Edit branches below.
   const info = classifyFromArgs(rawToolName, args);
   if (info) {
-    if (info.kind === 'skill' && (rawToolName === 'Read' || rawToolName === 'read_file')) {
+    if (info.kind === 'skill' && rawToolName === 'Read') {
       return info.name
         ? (tr?.('activatingSkillName', { name: info.name }) ?? `activating skill ${info.name}...`)
         : (tr?.('activatingSkill') ?? 'activating skill...');
@@ -161,7 +159,7 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
     if (info.kind === 'memory') {
       const topic = topicFromMemoryKey(info.key);
       const ws = info.tier === 'workspace';
-      if (rawToolName === 'Read' || rawToolName === 'read_file') {
+      if (rawToolName === 'Read') {
         if (info.isIndex) {
           return ws
             ? (tr?.('readingWorkspaceMemory') ?? 'reading workspace memory...')
@@ -171,7 +169,7 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
           ? (tr?.('readingWorkspaceMemoryTopic', { topic }) ?? `reading workspace memory about ${topic}...`)
           : (tr?.('readingMemoryTopic', { topic }) ?? `reading memory about ${topic}...`);
       }
-      if (rawToolName === 'Write' || rawToolName === 'write_file' || rawToolName === 'Save' || rawToolName === 'save_file') {
+      if (rawToolName === 'Write') {
         // Index writes shouldn't render the topic — `topicFromMemoryKey('memory.md')`
         // returns 'memory', which would print "adding memory memory...".
         if (info.isIndex) {
@@ -183,7 +181,7 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
           ? (tr?.('addingWorkspaceMemoryTopic', { topic }) ?? `adding workspace memory ${topic}...`)
           : (tr?.('addingMemoryTopic', { topic }) ?? `adding memory ${topic}...`);
       }
-      if (rawToolName === 'Edit' || rawToolName === 'edit_file') {
+      if (rawToolName === 'Edit') {
         if (info.isIndex) {
           return ws
             ? (tr?.('updatingWorkspaceMemory') ?? 'updating workspace memory...')
@@ -195,16 +193,16 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
       }
     }
     if (info.kind === 'memo') {
-      if (rawToolName === 'Read' || rawToolName === 'read_file') {
+      if (rawToolName === 'Read') {
         if (info.isIndex) {
           return tr?.('readingMemoIndex') ?? 'reading memo index...';
         }
         return tr?.('readingMemoSlug', { slug: info.key }) ?? `reading memo ${info.key}...`;
       }
-      if (rawToolName === 'Write' || rawToolName === 'Save' || rawToolName === 'write_file' || rawToolName === 'save_file') {
+      if (rawToolName === 'Write') {
         return tr?.('writingMemoSlug', { slug: info.key }) ?? `writing memo ${info.key}...`;
       }
-      if (rawToolName === 'Edit' || rawToolName === 'edit_file') {
+      if (rawToolName === 'Edit') {
         return tr?.('updatingMemoSlug', { slug: info.key }) ?? `updating memo ${info.key}...`;
       }
     }
@@ -371,33 +369,33 @@ export function getCompletedRowTitle(toolName: string, toolCall: ToolCall | unde
   const args = toolCall?.args;
   const info = classifyFromArgs(toolName, args);
   if (info) {
-    if (info.kind === 'skill' && (toolName === 'Read' || toolName === 'read_file')) {
+    if (info.kind === 'skill' && toolName === 'Read') {
       return t ? t('toolArtifact.completed.activatedSkill') : 'Activated skill';
     }
     if (info.kind === 'memory') {
       const ws = info.tier === 'workspace';
-      if (toolName === 'Write' || toolName === 'Save' || toolName === 'write_file' || toolName === 'save_file') {
+      if (toolName === 'Write') {
         return t ? t('toolArtifact.completed.addedMemory') : 'Added memory';
       }
-      if (toolName === 'Edit' || toolName === 'edit_file') {
+      if (toolName === 'Edit') {
         return t ? t('toolArtifact.completed.updatedMemory') : 'Updated memory';
       }
-      if (toolName === 'Read' || toolName === 'read_file') {
+      if (toolName === 'Read') {
         if (ws) return t ? t('toolArtifact.completed.readWorkspaceMemory') : 'Read workspace memory';
         return t ? t('toolArtifact.completed.readMemory') : 'Read memory';
       }
     }
     if (info.kind === 'memo') {
-      if (toolName === 'Read' || toolName === 'read_file') {
+      if (toolName === 'Read') {
         if (info.isIndex) return t ? t('toolArtifact.completed.readMemoIndex') : 'Read memo index';
         return t ? t('toolArtifact.completed.readMemo') : 'Read memo';
       }
       // Distinguish Write vs Edit verbs so a regression that lets the agent
       // mutate a memo surfaces with the correct framing instead of "Read memo".
-      if (toolName === 'Write' || toolName === 'Save' || toolName === 'write_file' || toolName === 'save_file') {
+      if (toolName === 'Write') {
         return t ? t('toolArtifact.completed.wroteMemo') : 'Wrote memo';
       }
-      if (toolName === 'Edit' || toolName === 'edit_file') {
+      if (toolName === 'Edit') {
         return t ? t('toolArtifact.completed.updatedMemo') : 'Updated memo';
       }
     }

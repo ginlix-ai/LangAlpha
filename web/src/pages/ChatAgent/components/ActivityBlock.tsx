@@ -32,7 +32,7 @@ import { useTranslation } from 'react-i18next';
 import './ActivityBlock.css';
 
 /** Tool names where clicking should open the file in the FilePanel */
-const FILE_NAV_TOOLS = new Set(['Read', 'Write', 'Save', 'read_file', 'write_file', 'save_file']);
+const FILE_NAV_TOOLS = new Set(['Read', 'Write']);
 
 function getFilePathFromArgs(args: Record<string, unknown> | undefined): string | null {
   if (!args) return null;
@@ -479,7 +479,7 @@ function renderCompletedItem(
   if (item.type === 'tool_call') {
     const toolName = item.toolName || '';
 
-    if (toolName === 'Edit' || toolName === 'edit_file') {
+    if (toolName === 'Edit') {
       return <EditToolRow item={item} onOpenFile={onOpenFile} />;
     }
 

@@ -408,6 +408,31 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
   // Discard; Cancel just closes the dialog and leaves the editor intact.
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
   const pendingDiscardActionRef = useRef<(() => void) | null>(null);
+  const handleDiscardConfirm = useCallback(() => {
+    const fn = pendingDiscardActionRef.current;
+    pendingDiscardActionRef.current = null;
+    setDiscardConfirmOpen(false);
+    fn?.();
+  }, []);
+  const handleDiscardCancel = useCallback(() => {
+    pendingDiscardActionRef.current = null;
+    setDiscardConfirmOpen(false);
+  }, []);
+  // Same dialog node is rendered in both the entry-view and list-view return
+  // branches. Both share `discardConfirmOpen` state, so only one is ever
+  // mounted at a time — but defining the JSX in one place keeps the two
+  // sites from drifting. NOTE: must be defined after `t` (line 331).
+  const discardConfirmDialog = (
+    <ConfirmDialog
+      open={discardConfirmOpen}
+      title={t('memoPanel.discardEditTitle')}
+      body={t('memoPanel.unsavedDiscardConfirm')}
+      confirmLabel={t('memoPanel.discardEdits')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={handleDiscardConfirm}
+      onCancel={handleDiscardCancel}
+    />
+  );
 
   // Panel width drives the responsive layout below.
   const { ref: bodyRef, width: panelWidth } = useElementWidth();
@@ -996,23 +1021,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
           onConfirm={handleConfirmDelete}
           onCancel={() => setDeleteKey(null)}
         />
-        <ConfirmDialog
-          open={discardConfirmOpen}
-          title={t('memoPanel.discardEditTitle')}
-          body={t('memoPanel.unsavedDiscardConfirm')}
-          confirmLabel={t('memoPanel.discardEdits')}
-          cancelLabel={t('common.cancel')}
-          onConfirm={() => {
-            const fn = pendingDiscardActionRef.current;
-            pendingDiscardActionRef.current = null;
-            setDiscardConfirmOpen(false);
-            fn?.();
-          }}
-          onCancel={() => {
-            pendingDiscardActionRef.current = null;
-            setDiscardConfirmOpen(false);
-          }}
-        />
+        {discardConfirmDialog}
       </div>
     );
   }
@@ -1415,23 +1424,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
         onConfirm={handleBulkDelete}
         onCancel={() => setBulkDeleteOpen(false)}
       />
-      <ConfirmDialog
-        open={discardConfirmOpen}
-        title={t('memoPanel.discardEditTitle')}
-        body={t('memoPanel.unsavedDiscardConfirm')}
-        confirmLabel={t('memoPanel.discardEdits')}
-        cancelLabel={t('common.cancel')}
-        onConfirm={() => {
-          const fn = pendingDiscardActionRef.current;
-          pendingDiscardActionRef.current = null;
-          setDiscardConfirmOpen(false);
-          fn?.();
-        }}
-        onCancel={() => {
-          pendingDiscardActionRef.current = null;
-          setDiscardConfirmOpen(false);
-        }}
-      />
+      {discardConfirmDialog}
     </div>
   );
 }

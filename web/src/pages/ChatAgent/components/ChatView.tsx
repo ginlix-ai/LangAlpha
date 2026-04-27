@@ -1063,7 +1063,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
 
       // Wide: file reading, SEC filings, subagent results
       if (artifactType === 'sec_filing') desired = 850;
-      else if (toolName === 'Read' || toolName === 'read_file') desired = 850;
+      else if (toolName === 'Read') desired = 850;
       else if (toolName === 'Task' || toolName === 'task') desired = 750;
       // Medium: charts, search results, default markdown
       else if (artifactType === 'stock_prices' || artifactType === 'market_indices' || artifactType === 'sector_performance') desired = 650;

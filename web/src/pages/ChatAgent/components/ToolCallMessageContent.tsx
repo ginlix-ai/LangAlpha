@@ -8,10 +8,9 @@ import { parseDisplayableResults, buildRichResultMap, resolveSnippet } from './w
 
 /**
  * File-related tool names that support opening in the file panel.
- * Backend uses PascalCase (LangChain SDK convention). Include both for backward compatibility
- * with older history that may have snake_case tool names.
+ * Mirrors the agent's @tool decorators in src/ptc_agent/agent/tools/file_ops.py.
  */
-const FILE_TOOLS = ['Write', 'Edit', 'Read', 'Save', 'write_file', 'edit_file', 'read_file', 'save_file'];
+const FILE_TOOLS = ['Write', 'Edit', 'Read'];
 
 /**
  * Inline tools — results are shown as a one-line summary directly in the row.
