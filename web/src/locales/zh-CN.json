@@ -1285,6 +1285,8 @@
     "deleteSelected": "删除所选",
     "backToList": "返回列表",
     "unsavedDiscardConfirm": "您有未保存的备忘修改。确定放弃吗？",
+    "discardEditTitle": "放弃未保存的修改？",
+    "discardEdits": "放弃",
     "loading": "加载中…",
     "loadingList": "正在加载备忘文档…",
     "uploading": "上传中…",
@@ -1705,7 +1707,9 @@
     },
     "a11y": {
       "toolCallFailed": "工具调用失败",
-      "openInTab": "在 {{tab}} 中打开"
+      "openInTab": "在 {{tab}} 中打开",
+      "collapseDiff": "折叠差异",
+      "expandDiff": "展开差异"
     }
   },
   "setup": {

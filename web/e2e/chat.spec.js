@@ -359,8 +359,10 @@ test.describe('Chat View -- SSE Streaming', () => {
 
     await page.goto('/chat/t/th-1');
 
-    // The tool call card should appear (collapsed as "N step(s) completed")
-    await expect(page.getByText('step completed')).toBeVisible({ timeout: 10000 });
+    // The tool call card should appear. The accordion header is now
+    // content-aware (skill/memory/memo/code/web/search/file/generic) — for
+    // a single WebSearch call it renders as "made 1 web call".
+    await expect(page.getByText(/made \d+ web call/i)).toBeVisible({ timeout: 10000 });
     // The final assistant text should appear
     await expect(page.getByText('NVIDIA reported strong Q4 earnings')).toBeVisible({ timeout: 10000 });
   });

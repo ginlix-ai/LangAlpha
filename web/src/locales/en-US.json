@@ -1287,6 +1287,8 @@
     "deleteSelected": "Delete selected",
     "backToList": "Back to memos",
     "unsavedDiscardConfirm": "You have unsaved memo edits. Discard them?",
+    "discardEditTitle": "Discard unsaved edits?",
+    "discardEdits": "Discard",
     "loading": "Loading…",
     "loadingList": "Loading memos…",
     "uploading": "Uploading…",
@@ -1726,7 +1728,9 @@
     },
     "a11y": {
       "toolCallFailed": "Tool call failed",
-      "openInTab": "Open in {{tab}}"
+      "openInTab": "Open in {{tab}}",
+      "collapseDiff": "Collapse diff",
+      "expandDiff": "Expand diff"
     }
   },
   "setup": {

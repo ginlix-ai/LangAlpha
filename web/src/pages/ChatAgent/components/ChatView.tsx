@@ -369,12 +369,13 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
 
   // --- Aria-live announcement for screen readers ---
   // String announced through a polite live region whenever a tool call
-  // transitions from in-progress → completed/failed. Auto-clears after 3s
-  // so re-focus on the live region doesn't replay stale announcements.
-  // Tool-call ids we've already announced so we don't re-trigger on every
-  // re-render once the transition has been observed.
+  // transitions from in-progress → completed/failed. Each completion is
+  // queued and announced individually so a batch of completions in a single
+  // SSE tick doesn't collapse to "only the last one" — screen readers
+  // re-utter each one with a brief silence in between.
   const announcedToolCallIdsRef = useRef<Set<string>>(new Set());
   const announcementClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const announcementQueueRef = useRef<Array<{ label: string; failed: boolean }>>([]);
   const [recentlyCompletedAnnouncement, setRecentlyCompletedAnnouncement] = useState('');
 
   // --- Scroll position memory for tab switching ---
@@ -1588,15 +1589,38 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     }
   }, [messages]);
 
+  // Drain the announcement queue one item at a time. Each announcement is
+  // displayed for 1500ms, followed by ~80ms of silence before the next so
+  // screen readers treat each as a fresh utterance. Stable identity (no
+  // deps) — uses tRef for fresh translations.
+  const tRef = useRef(t);
+  tRef.current = t;
+  const pumpAnnouncements = useCallback(() => {
+    if (announcementClearTimerRef.current) return;
+    const next = announcementQueueRef.current.shift();
+    if (!next) return;
+    const currentT = tRef.current;
+    const tail = next.failed
+      ? currentT('chat.a11y.toolCallFailed', 'failed')
+      : currentT('chat.a11y.toolCallCompleted', 'completed');
+    setRecentlyCompletedAnnouncement(`${next.label} ${tail}`);
+    announcementClearTimerRef.current = setTimeout(() => {
+      announcementClearTimerRef.current = null;
+      setRecentlyCompletedAnnouncement('');
+      if (announcementQueueRef.current.length > 0) {
+        setTimeout(pumpAnnouncements, 80);
+      }
+    }, 1500);
+  }, []);
+
   // Aria-live announcements for tool call completion. Watches assistant
   // messages for tool-call processes that have transitioned out of
-  // `isInProgress: true` and emits a path-aware "<verb> <object> completed/failed"
-  // string into a polite live region. Each tool-call id is announced at most
-  // once; the announcement auto-clears after 3s so re-focus doesn't replay it.
+  // `isInProgress: true` and pushes a path-aware
+  // "<verb> <object> completed/failed" string onto a queue that is drained
+  // by `pumpAnnouncements`. Each tool-call id is announced at most once.
   useEffect(() => {
     const seen = announcedToolCallIdsRef.current;
-    let latestLabel: string | null = null;
-    let latestFailed = false;
+    let enqueued = 0;
 
     for (const m of messages as unknown as Array<Record<string, unknown>>) {
       if (m?.role !== 'assistant') continue;
@@ -1616,31 +1640,22 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
         const toolName = (proc.toolName as string) || '';
         const toolCall = proc.toolCall as { args?: Record<string, unknown> } | undefined;
         const baseTitle = getCompletedRowTitle(toolName, toolCall, t);
-        latestLabel = baseTitle;
-        latestFailed = isFailed;
+        announcementQueueRef.current.push({ label: baseTitle, failed: isFailed });
+        enqueued++;
       }
     }
 
-    if (latestLabel) {
-      const tail = latestFailed
-        ? t('chat.a11y.toolCallFailed', 'failed')
-        : t('chat.a11y.toolCallCompleted', 'completed');
-      setRecentlyCompletedAnnouncement(`${latestLabel} ${tail}`);
-      if (announcementClearTimerRef.current) clearTimeout(announcementClearTimerRef.current);
-      announcementClearTimerRef.current = setTimeout(() => {
-        setRecentlyCompletedAnnouncement('');
-        announcementClearTimerRef.current = null;
-      }, 3000);
-    }
-  }, [messages, t]);
+    if (enqueued > 0) pumpAnnouncements();
+  }, [messages, t, pumpAnnouncements]);
 
-  // Clear announcement timer on unmount.
+  // Clear announcement timer + queue on unmount.
   useEffect(() => {
     return () => {
       if (announcementClearTimerRef.current) {
         clearTimeout(announcementClearTimerRef.current);
         announcementClearTimerRef.current = null;
       }
+      announcementQueueRef.current = [];
     };
   }, []);
 

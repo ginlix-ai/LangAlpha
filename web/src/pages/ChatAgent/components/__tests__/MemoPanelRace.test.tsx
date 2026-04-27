@@ -14,8 +14,7 @@ import { renderWithProviders } from '@/test/utils';
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, opts?: Record<string, unknown>) => {
-      // Mirror the i18next defaultValue fallback so the unsaved-edit prompt
-      // reads naturally when the test inspects window.confirm's argument.
+      // Mirror the i18next defaultValue fallback for any keys still using it.
       if (opts && typeof opts === 'object' && 'defaultValue' in opts) {
         return String((opts as { defaultValue: unknown }).defaultValue);
       }
@@ -384,17 +383,16 @@ describe('MemoPanel — unsaved edit guard on empty targetKey (Fix #8)', () => {
     const textarea = await screen.findByDisplayValue('old content');
     await user.type(textarea, ' + my unsaved work');
 
-    // Stub confirm → user cancels.
-    const confirmSpy = vi
-      .spyOn(window, 'confirm')
-      .mockImplementation(() => false);
-
     // Empty-string sentinel arrives (e.g. agent wrote memo.md index).
+    // The non-blocking discard-confirm dialog should open instead of the
+    // synchronous window.confirm() that would freeze the SSE event loop.
     rerender(
       <MemoPanel targetKey="" onTargetHandled={onTargetHandled} />,
     );
 
-    await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
+    // Dialog title appears (translation mock returns the key verbatim).
+    const cancelBtn = await screen.findByRole('button', { name: 'common.cancel' });
+    await user.click(cancelBtn);
 
     // Editor still mounted with the dirty buffer intact.
     expect(
@@ -403,8 +401,6 @@ describe('MemoPanel — unsaved edit guard on empty targetKey (Fix #8)', () => {
 
     // Sentinel was acked so we don't loop on every render.
     expect(onTargetHandled).toHaveBeenCalled();
-
-    confirmSpy.mockRestore();
   });
 
   it('clears the editor when the user confirms the discard', async () => {
@@ -448,13 +444,11 @@ describe('MemoPanel — unsaved edit guard on empty targetKey (Fix #8)', () => {
     const textarea = await screen.findByDisplayValue('old content');
     await user.type(textarea, ' dirty');
 
-    const confirmSpy = vi
-      .spyOn(window, 'confirm')
-      .mockImplementation(() => true);
-
     rerender(<MemoPanel targetKey="" onTargetHandled={() => {}} />);
 
-    await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
+    // The discard-confirm dialog opens; click the destructive Discard button.
+    const discardBtn = await screen.findByRole('button', { name: 'memoPanel.discardEdits' });
+    await user.click(discardBtn);
 
     // Back on the list view (no editor mounted).
     await waitFor(() =>
@@ -462,8 +456,6 @@ describe('MemoPanel — unsaved edit guard on empty targetKey (Fix #8)', () => {
         screen.queryByDisplayValue('old content dirty'),
       ).not.toBeInTheDocument(),
     );
-
-    confirmSpy.mockRestore();
   });
 });
 

@@ -402,6 +402,12 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
   const [editContent, setEditContent] = useState<string>('');
   const [deleteKey, setDeleteKey] = useState<string | null>(null);
   const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
+  // Non-blocking discard-confirm dialog. Replaces window.confirm() — a sync
+  // confirm freezes the JS event loop including the SSE reader, so streaming
+  // animations stutter while the dialog is up. The pending action runs on
+  // Discard; Cancel just closes the dialog and leaves the editor intact.
+  const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
+  const pendingDiscardActionRef = useRef<(() => void) | null>(null);
 
   // Panel width drives the responsive layout below.
   const { ref: bodyRef, width: panelWidth } = useElementWidth();
@@ -613,19 +619,19 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
   useEffect(() => {
     if (targetKey == null) return;
     if (targetKey === '') {
-      // User has an unsaved edit in the editor — confirm before discarding.
+      // User has an unsaved edit in the editor — open the non-blocking
+      // discard-confirm dialog. We ack the target immediately so the parent
+      // clears it (no render loop); the actual discard runs on user click.
       if (editing && editContent !== (read.data?.content ?? '')) {
-        const ok = window.confirm(
-          t('memoPanel.unsavedDiscardConfirm', {
-            defaultValue: 'You have unsaved memo edits. Discard them?',
-          }),
-        );
-        if (!ok) {
-          // Acknowledge the target so we don't loop on every render, but
-          // leave the editor mounted with the user's pending edits intact.
-          onTargetHandled?.();
-          return;
-        }
+        pendingDiscardActionRef.current = () => {
+          setSelectedKey(null);
+          setEditing(false);
+          setEditContent('');
+          setNotFoundKey(null);
+        };
+        setDiscardConfirmOpen(true);
+        onTargetHandled?.();
+        return;
       }
       setSelectedKey(null);
       setEditing(false);
@@ -654,7 +660,6 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
     editing,
     editContent,
     read.data,
-    t,
   ]);
 
   // Clear the not-found banner if the missing key later appears (e.g., the
@@ -991,6 +996,23 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
           onConfirm={handleConfirmDelete}
           onCancel={() => setDeleteKey(null)}
         />
+        <ConfirmDialog
+          open={discardConfirmOpen}
+          title={t('memoPanel.discardEditTitle')}
+          body={t('memoPanel.unsavedDiscardConfirm')}
+          confirmLabel={t('memoPanel.discardEdits')}
+          cancelLabel={t('common.cancel')}
+          onConfirm={() => {
+            const fn = pendingDiscardActionRef.current;
+            pendingDiscardActionRef.current = null;
+            setDiscardConfirmOpen(false);
+            fn?.();
+          }}
+          onCancel={() => {
+            pendingDiscardActionRef.current = null;
+            setDiscardConfirmOpen(false);
+          }}
+        />
       </div>
     );
   }
@@ -1169,6 +1191,7 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
             {t('memoPanel.notFound', { key: notFoundKey })}
           </span>
           <button
+            type="button"
             onClick={() => setNotFoundKey(null)}
             className="flex-shrink-0"
             title={t('memoPanel.dismissNotFound')}
@@ -1391,6 +1414,23 @@ export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: Me
         busy={bulkDeleting}
         onConfirm={handleBulkDelete}
         onCancel={() => setBulkDeleteOpen(false)}
+      />
+      <ConfirmDialog
+        open={discardConfirmOpen}
+        title={t('memoPanel.discardEditTitle')}
+        body={t('memoPanel.unsavedDiscardConfirm')}
+        confirmLabel={t('memoPanel.discardEdits')}
+        cancelLabel={t('common.cancel')}
+        onConfirm={() => {
+          const fn = pendingDiscardActionRef.current;
+          pendingDiscardActionRef.current = null;
+          setDiscardConfirmOpen(false);
+          fn?.();
+        }}
+        onCancel={() => {
+          pendingDiscardActionRef.current = null;
+          setDiscardConfirmOpen(false);
+        }}
       />
     </div>
   );

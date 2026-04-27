@@ -332,12 +332,12 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
                   transition={SPRING}
                   style={{ overflow: 'hidden' }}
                 >
-                  <ol
+                  <div
                     id={timelinePanelId}
-                    className="timeline mt-1"
                     role="region"
                     aria-labelledby={summaryButtonId}
                   >
+                  <ol className="timeline mt-1">
                     {completedItems.map((item, idx) => {
                       const itemId = item.id || item.toolCallId;
                       const isNew = newlyCompletedIds.has(itemId);
@@ -363,6 +363,7 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
                       return <li key={itemKey} style={{ listStyle: 'none' }}>{content}</li>;
                     })}
                   </ol>
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -545,12 +546,11 @@ const ToolCallLiveRow = memo(function ToolCallLiveRow({ tc, liveState }: ToolCal
   const args = tc.toolCall?.args;
   const IconComponent = getToolIcon(toolName, args);
   const isInProgress = liveState === 'active' && !tc.isComplete && !tc._recentlyCompleted;
-  const isFailed = liveState === 'failed';
-  const stateClass = isInProgress
-    ? 'state-active'
-    : isFailed
-      ? 'state-failed'
-      : 'state-completing';
+  // Only `state-active` has a CSS treatment (left-rule shimmer in
+  // ActivityBlock.css). Completing and failed states get their visual cue
+  // from the inline icon badges below; keeping unused class hooks would
+  // mislead the next CSS author.
+  const stateClass = isInProgress ? 'state-active' : '';
 
   const activeLabel = isInProgress ? getActiveLabel(toolName, tc.toolCall, t) : null;
   const completedTitle = !isInProgress ? getCompletedRowTitle(toolName, tc.toolCall, t) : null;
@@ -622,7 +622,7 @@ function PreparingToolCallRow({ tc }: PreparingToolCallRowProps): React.ReactEle
 
   return (
     <div
-      className="nrow state-prep flex items-center gap-2 pl-3 pr-3"
+      className="nrow flex items-center gap-2 pl-3 pr-3"
       style={{
         fontSize: '13px',
         color: 'var(--Labels-Secondary)',
@@ -872,7 +872,7 @@ const EditToolRow = memo(function EditToolRow({ item, onOpenFile }: EditToolRowP
               onClick={() => setExpanded(!expanded)}
               className="titem-trail bg-transparent border-0 p-0 cursor-pointer"
               style={{ color: 'inherit' }}
-              aria-label={expanded ? t('toolArtifact.a11y.collapseDiff', { defaultValue: 'Collapse diff' }) : t('toolArtifact.a11y.expandDiff', { defaultValue: 'Expand diff' })}
+              aria-label={expanded ? t('toolArtifact.a11y.collapseDiff') : t('toolArtifact.a11y.expandDiff')}
             >
               <motion.div
                 animate={{ rotate: expanded ? 90 : 0 }}

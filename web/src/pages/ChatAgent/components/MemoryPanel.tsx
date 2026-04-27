@@ -285,6 +285,7 @@ export default function MemoryPanel({
             {t('memoryPanel.notFound', { key: notFoundKey })}
           </span>
           <button
+            type="button"
             onClick={() => setNotFoundKey(null)}
             className="flex-shrink-0"
             title={t('memoryPanel.dismissNotFound')}
