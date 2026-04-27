@@ -6,6 +6,7 @@ import TopicBadge from './TopicBadge';
 import { getTodayInsights, getInsightDetail, generatePersonalizedInsight } from '../utils/api';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import i18n from '@/i18n';
+import { RowAttachButton } from './RowAttachButton';
 
 interface InsightTopic {
   text: string;
@@ -24,6 +25,8 @@ interface Insight {
 
 interface AIDailyBriefCardProps {
   onReadFull?: (marketInsightId: string) => void;
+  /** Widget instance id — when provided, per-row paperclip attach buttons render. */
+  instanceId?: string;
 }
 
 interface TypeConfigEntry {
@@ -33,6 +36,16 @@ interface TypeConfigEntry {
 
 // Module-level cache (survives navigation, clears on page refresh)
 let insightsCache: Insight[] | null = null;
+
+/**
+ * Read the latest insight brief data from the module cache. Used by the
+ * InsightBriefWidget's `useWidgetContextExport` snapshot serializer so the
+ * agent gets the actual headline + summary + topics, not just the widget label.
+ * Returns null if the brief hasn't loaded yet.
+ */
+export function getCachedInsights(): Insight[] | null {
+  return insightsCache;
+}
 
 const TYPE_CONFIG: Record<string, TypeConfigEntry> = {
   pre_market: { labelKey: 'dashboard.brief.typeLabel.preMarket', accent: 'var(--color-profit)' },
@@ -126,7 +139,7 @@ function MobileTopicRow({ topics }: { topics: InsightTopic[] }) {
   );
 }
 
-function AIDailyBriefCard({ onReadFull }: AIDailyBriefCardProps) {
+function AIDailyBriefCard({ onReadFull, instanceId }: AIDailyBriefCardProps) {
   const { t } = useTranslation();
   const [insights, setInsights] = useState<Insight[]>(insightsCache || []);
   const [loading, setLoading] = useState(!insightsCache);
@@ -226,7 +239,6 @@ function AIDailyBriefCard({ onReadFull }: AIDailyBriefCardProps) {
     }
   }, [generating, onReadFull, t]);
 
-  // Loading skeleton
   if (loading) {
     return (
       <div
@@ -254,7 +266,6 @@ function AIDailyBriefCard({ onReadFull }: AIDailyBriefCardProps) {
     );
   }
 
-  // No data state
   if (!latest) {
     return (
       <div
@@ -308,7 +319,6 @@ function AIDailyBriefCard({ onReadFull }: AIDailyBriefCardProps) {
         </>
       )}
 
-      {/* Main card */}
       <motion.div
         layout
         initial={{ opacity: 0, y: 20 }}
@@ -323,14 +333,12 @@ function AIDailyBriefCard({ onReadFull }: AIDailyBriefCardProps) {
         }}
         onClick={handleCardClick}
       >
-        {/* Decorative brain icon */}
         <div className="absolute top-0 right-0 p-6 opacity-20 group-hover:opacity-40 transition-opacity pointer-events-none hidden sm:block">
           <Newspaper size={120} style={{ color: 'var(--color-accent-primary)' }} />
         </div>
 
         <div className="relative z-10 p-4 sm:p-8 flex flex-col gap-8 items-start">
           <div className="flex-1">
-            {/* Badge + updated */}
             <div className="flex items-center gap-2 mb-4">
               <div
                 className="px-3 py-1 rounded-full border flex items-center gap-2 text-xs font-semibold uppercase tracking-wider"
@@ -361,7 +369,6 @@ function AIDailyBriefCard({ onReadFull }: AIDailyBriefCardProps) {
               )}
             </div>
 
-            {/* Headline */}
             <h2
               className="text-xl sm:text-3xl font-bold mb-4 leading-tight"
               style={{ color: 'var(--color-text-primary)' }}
@@ -369,7 +376,6 @@ function AIDailyBriefCard({ onReadFull }: AIDailyBriefCardProps) {
               {latest.headline}
             </h2>
 
-            {/* Summary */}
             <p
               className="mb-6 leading-relaxed line-clamp-3 sm:line-clamp-none"
               style={{ color: 'var(--color-text-secondary)' }}
@@ -377,7 +383,6 @@ function AIDailyBriefCard({ onReadFull }: AIDailyBriefCardProps) {
               {latest.summary}
             </p>
 
-            {/* Topic badges */}
             <MobileTopicRow topics={topics} />
 
             {/* Mobile: full-width CTA + stack indicator */}
@@ -474,7 +479,6 @@ function AIDailyBriefCard({ onReadFull }: AIDailyBriefCardProps) {
               <p className="text-xs text-right" style={{ color: 'var(--color-loss, #ef4444)' }}>{generateError}</p>
             )}
 
-            {/* Stack indicator */}
             {older.length > 0 && (
               <button
                 onClick={(e) => {
@@ -525,55 +529,51 @@ function AIDailyBriefCard({ onReadFull }: AIDailyBriefCardProps) {
                   {older.map((item) => {
                     const cfg = TYPE_CONFIG[item.type] || TYPE_CONFIG.market_update;
                     return (
-                      <button
-                        key={item.market_insight_id}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onReadFull?.(item.market_insight_id);
-                        }}
-                        className="w-full flex items-center gap-4 px-4 py-3 rounded-xl text-left transition-colors group/item"
-                        style={{ color: 'var(--color-text-secondary)' }}
-                        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)')}
-                        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-                      >
-                        {/* Time */}
-                        <span
-                          className="text-xs font-medium shrink-0 w-16 text-right tabular-nums"
-                          style={{ color: 'var(--color-text-tertiary)' }}
-                        >
-                          {formatTime(item.completed_at)}
-                        </span>
-
-                        {/* Timeline dot */}
-                        <span
-                          className="w-2 h-2 rounded-full shrink-0"
-                          style={{ backgroundColor: cfg.accent }}
-                        />
-
-                        {/* Type badge */}
-                        <span
-                          className="text-[10px] font-semibold uppercase tracking-wider shrink-0 px-2 py-0.5 rounded"
-                          style={{
-                            color: cfg.accent,
-                            backgroundColor: `color-mix(in srgb, ${cfg.accent} 15%, transparent)`,
+                      <div key={item.market_insight_id} className="row-attach-host relative">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onReadFull?.(item.market_insight_id);
                           }}
+                          className="w-full flex items-center gap-4 px-4 py-3 rounded-xl text-left transition-colors group/item"
+                          style={{ color: 'var(--color-text-secondary)' }}
+                          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)')}
+                          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
                         >
-                          {t(cfg.labelKey)}
-                        </span>
+                          <span
+                            className="text-xs font-medium shrink-0 w-16 text-right tabular-nums"
+                            style={{ color: 'var(--color-text-tertiary)' }}
+                          >
+                            {formatTime(item.completed_at)}
+                          </span>
 
-                        {/* Headline */}
-                        <span
-                          className="text-sm truncate flex-1 group-hover/item:text-[var(--color-text-primary)] transition-colors"
-                        >
-                          {item.headline}
-                        </span>
+                          <span
+                            className="w-2 h-2 rounded-full shrink-0"
+                            style={{ backgroundColor: cfg.accent }}
+                          />
 
-                        <ArrowRight
-                          size={14}
-                          className="shrink-0 opacity-0 group-hover/item:opacity-60 transition-opacity"
-                          style={{ color: 'var(--color-text-tertiary)' }}
-                        />
-                      </button>
+                          <span
+                            className="text-[10px] font-semibold uppercase tracking-wider shrink-0 px-2 py-0.5 rounded"
+                            style={{
+                              color: cfg.accent,
+                              backgroundColor: `color-mix(in srgb, ${cfg.accent} 15%, transparent)`,
+                            }}
+                          >
+                            {t(cfg.labelKey)}
+                          </span>
+
+                          <span
+                            className="text-sm truncate flex-1 group-hover/item:text-[var(--color-text-primary)] transition-colors"
+                          >
+                            {item.headline}
+                          </span>
+                        </button>
+                        {instanceId && (
+                          <span className="absolute right-2 top-1/2 -translate-y-1/2 z-10">
+                            <RowAttachButton instanceId={instanceId} rowId={item.market_insight_id} />
+                          </span>
+                        )}
+                      </div>
                     );
                   })}
                 </div>

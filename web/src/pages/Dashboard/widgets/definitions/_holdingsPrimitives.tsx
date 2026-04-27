@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/context-menu';
 import type { WatchlistRow } from '../../hooks/useWatchlistData';
 import type { PortfolioRow } from '../../hooks/usePortfolioData';
+import { portfolioSummary } from './_holdingsHelpers';
 
 type MarketStatusData = Parameters<typeof getExtendedHoursInfo>[0];
 
@@ -283,13 +284,7 @@ interface PortfolioNavSummaryProps {
 
 export function PortfolioNavSummary({ rows, valuesHidden, onToggleHidden }: PortfolioNavSummaryProps) {
   const { t } = useTranslation();
-  const totalValue = rows.reduce((sum, r) => sum + (r.marketValue || 0), 0);
-  const totalCost = rows.reduce(
-    (sum, r) => sum + (r.average_cost != null ? r.average_cost * (r.quantity || 0) : 0),
-    0
-  );
-  const totalPl = totalCost > 0 ? totalValue - totalCost : 0;
-  const totalPlPct = totalCost > 0 ? ((totalValue - totalCost) / totalCost) * 100 : 0;
+  const { totalValue, totalCost, totalPl, totalPlPct } = portfolioSummary(rows);
   const isPlPositive = totalPl >= 0;
 
   return (

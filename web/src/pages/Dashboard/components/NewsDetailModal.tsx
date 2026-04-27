@@ -1,10 +1,17 @@
 import React, { useEffect, useState } from 'react';
-import { X, Calendar, Hash, ExternalLink, TrendingUp, TrendingDown, Minus, Tag } from 'lucide-react';
+import {
+  X, Calendar, Hash, ExternalLink, TrendingUp, TrendingDown, Minus, Tag,
+  Paperclip,
+} from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import i18n from '@/i18n';
+import { useTranslation } from 'react-i18next';
 import { getNewsArticle } from '../utils/api';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { MobileBottomSheet } from '@/components/ui/mobile-bottom-sheet';
+import { useToast } from '@/components/ui/use-toast';
+import { ContextBus } from '@/lib/contextBus';
+import { buildNewsWidgetSnapshot, normalizeArticle } from '../utils/newsArticleFetch';
 
 interface ArticleSource {
   name: string;
@@ -35,6 +42,15 @@ interface NewsDetailModalProps {
   newsId: string | null;
   onClose: () => void;
   fallbackUrl?: string | null;
+}
+
+function attachArticleToContext(article: Article, articleId: string): void {
+  const detail = normalizeArticle(article as Parameters<typeof normalizeArticle>[0]);
+  ContextBus.attach(buildNewsWidgetSnapshot({
+    instanceId: 'news.detail',
+    rowId: articleId,
+    article: detail,
+  }));
 }
 
 function sentimentIcon(sentiment: string): React.ReactElement {
@@ -96,6 +112,7 @@ function NewsBody({
   expandedSentiment,
   setExpandedSentiment,
   isMobile,
+  onAttach,
 }: {
   article: Article | null;
   loading: boolean;
@@ -104,7 +121,10 @@ function NewsBody({
   expandedSentiment: number | null;
   setExpandedSentiment: React.Dispatch<React.SetStateAction<number | null>>;
   isMobile: boolean;
+  /** Optional handler. If provided, an Attach-to-chat button is rendered in the meta row. */
+  onAttach?: () => void;
 }) {
+  const { t: trans } = useTranslation();
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -209,17 +229,43 @@ function NewsBody({
               <Calendar size={isMobile ? 12 : 14} /> {formatDate(article.published_at)}
             </span>
           )}
-          {article.article_url && (
-            <a
-              href={article.article_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="ml-auto flex items-center gap-1.5 transition-opacity hover:opacity-80"
-              style={{ color: 'var(--color-text-secondary)' }}
-            >
-              Source <ExternalLink size={isMobile ? 12 : 14} />
-            </a>
-          )}
+          <div className="ml-auto flex items-center gap-3">
+            {onAttach && (
+              <button
+                type="button"
+                onClick={onAttach}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] sm:text-xs font-medium transition-colors"
+                style={{
+                  backgroundColor: 'var(--color-accent-soft)',
+                  borderColor: 'var(--color-accent-overlay)',
+                  color: 'var(--color-accent-primary)',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = 'var(--color-accent-primary)';
+                  e.currentTarget.style.color = '#fff';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = 'var(--color-accent-soft)';
+                  e.currentTarget.style.color = 'var(--color-accent-primary)';
+                }}
+                title={trans('dashboard.widgets.frame.addToContext', { defaultValue: 'Attach to chat' })}
+              >
+                <Paperclip size={isMobile ? 12 : 13} />
+                {trans('dashboard.widgets.frame.addToContext', { defaultValue: 'Attach to chat' })}
+              </button>
+            )}
+            {article.article_url && (
+              <a
+                href={article.article_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 transition-opacity hover:opacity-80"
+                style={{ color: 'var(--color-text-secondary)' }}
+              >
+                Source <ExternalLink size={isMobile ? 12 : 14} />
+              </a>
+            )}
+          </div>
         </div>
 
         <div className="space-y-6 sm:space-y-8">
@@ -407,11 +453,23 @@ function NewsBody({
 }
 
 function NewsDetailModal({ newsId, onClose, fallbackUrl }: NewsDetailModalProps) {
+  const { t } = useTranslation();
+  const { toast } = useToast();
   const [article, setArticle] = useState<Article | null>(null);
   const [loading, setLoading] = useState(false);
   const [fetchFailed, setFetchFailed] = useState(false);
   const [expandedSentiment, setExpandedSentiment] = useState<number | null>(null);
   const isMobile = useIsMobile();
+
+  const handleAttach = () => {
+    if (!article || !newsId) return;
+    attachArticleToContext(article, newsId);
+    toast({
+      title: t('dashboard.widgets.frame.contextAttached', { defaultValue: 'Added to context' }),
+      description: 'News: ' + (article.title || ''),
+    });
+  };
+  const canAttach = !!article && !!newsId;
 
   useEffect(() => {
     if (!newsId) {
@@ -443,7 +501,6 @@ function NewsDetailModal({ newsId, onClose, fallbackUrl }: NewsDetailModalProps)
     };
   }, [newsId]);
 
-  // Escape key
   useEffect(() => {
     if (!newsId) return;
     const handleEsc = (e: KeyboardEvent) => {
@@ -462,6 +519,7 @@ function NewsDetailModal({ newsId, onClose, fallbackUrl }: NewsDetailModalProps)
       expandedSentiment={expandedSentiment}
       setExpandedSentiment={setExpandedSentiment}
       isMobile={isMobile}
+      onAttach={canAttach ? handleAttach : undefined}
     />
   );
 

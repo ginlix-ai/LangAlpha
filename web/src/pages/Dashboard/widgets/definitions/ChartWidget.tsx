@@ -40,6 +40,12 @@ import { useMarketDataWSContext } from '@/pages/MarketView/contexts/MarketDataWS
 import { useTheme } from '@/contexts/ThemeContext';
 import { createFormatter, createDateFormatter } from '@/lib/format';
 import type { WidgetRenderProps, WidgetSettingsProps } from '../types';
+import { useWidgetContextExport } from '../framework/contextSnapshot';
+import {
+  serializeOhlcvToMarkdown,
+  summarizeOhlcv,
+  wrapWidgetContext,
+} from '../framework/snapshotSerializers';
 
 const fmt2 = createFormatter({ minimumFractionDigits: 2, maximumFractionDigits: 2 });
 // Compact volumes ("1.23B", "1.23M", "1.2K"). Intl.NumberFormat with
@@ -175,6 +181,60 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
   // --- AbortControllers (one per fetch path) ---
   const initAbortRef = useRef<AbortController | null>(null);
   const stage2AbortRef = useRef<AbortController | null>(null);
+
+  // Snapshot exporter — Tier 1 (text + image). Reads bars from `allDataRef`
+  // (the same buffer the chart series draws from) and asks the chart canvas
+  // for a JPEG. Same-origin canvas should never taint, but defensive try/
+  // catch falls back to text-only if the browser reports it as tainted.
+  useWidgetContextExport(instance.id, {
+    full: () => {
+      const bars = allDataRef.current ?? [];
+      const ohlcv = bars.map((b) => ({
+        time: new Date(b.time * 1000).toISOString().slice(0, 10),
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+        volume: b.volume,
+      }));
+      const tableBody = serializeOhlcvToMarkdown(ohlcv);
+      const summary = summarizeOhlcv(ohlcv);
+      const summaryLine = summary ? `\n<summary>${summary}</summary>` : '';
+      const text = wrapWidgetContext(
+        'markets.chart',
+        {
+          symbol: config.symbol,
+          interval: config.interval,
+          chart_type: config.chartType,
+          as_of: new Date().toISOString(),
+        },
+        tableBody + summaryLine,
+      );
+      // Try to capture the lightweight-charts canvas as JPEG. If the canvas
+      // is tainted (cross-origin texture) or no canvas yet, fall back to
+      // directive-only.
+      let imageDataUrl: string | undefined;
+      try {
+        const canvas = containerRef.current?.querySelector('canvas');
+        if (canvas instanceof HTMLCanvasElement) {
+          imageDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        }
+      } catch (err) {
+        console.warn('[ChartWidget] canvas capture failed, sending text-only', err);
+      }
+      const labelBits = [config.symbol.toUpperCase(), config.interval, t('dashboard.widgets.chart.title', { defaultValue: 'Chart' })];
+      return {
+        widget_type: 'markets.chart',
+        widget_id: instance.id,
+        label: labelBits.filter(Boolean).join(' · '),
+        description: summary || `${ohlcv.length} bars`,
+        captured_at: new Date().toISOString(),
+        text,
+        data: { bars: ohlcv, symbol: config.symbol, interval: config.interval, chartType: config.chartType },
+        image_jpeg_data_url: imageDataUrl,
+      };
+    },
+  });
 
   // --- WS live-tick bookkeeping ---
   const lastLiveTickTimeRef = useRef(0); // wall-clock ms of the most recent applied WS tick

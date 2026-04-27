@@ -1,6 +1,7 @@
 /* WidgetFrame — chrome around every widget */
 
 .widget-frame {
+  position: relative;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -185,13 +186,81 @@
 }
 
 /* View mode: the inner card is self-contained chrome (own border/background
- * or its own branding treatment). Hide the frame header entirely so every
- * widget presents as a single card with no external label floating above it.
+ * or its own branding treatment). The header collapses to an overlay that
+ * pins the action buttons (just the "+ to context" button in view mode) to
+ * the top-right corner of the widget, hover-revealed on hover-capable
+ * devices and always visible on touch.
  *
- * Edit mode: the header returns for drag handle, settings gear and overflow
- * menu — uniform across all widgets inside the dashed edit border. */
+ * Edit mode: the header returns inline for drag handle + title + settings +
+ * "+" + overflow menu — uniform chrome across all widgets inside the dashed
+ * edit border. */
 .widget-frame:not(.widget-frame--edit) .widget-frame__header {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 5;
+  padding: 0;
+  border: 0;
+  min-height: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.widget-frame:not(.widget-frame--edit) .widget-frame__header > .widget-frame__title,
+.widget-frame:not(.widget-frame--edit) .widget-frame__header > .widget-frame__drag {
   display: none;
+}
+
+.widget-frame:not(.widget-frame--edit) .widget-frame__actions {
+  pointer-events: auto;
+}
+
+/* The "Attach to chat" paperclip uses a circular hover background so it
+ * matches the widget's rounded chrome instead of the squared 4px corners
+ * shared by the edit-mode icon buttons. */
+.widget-frame__add-btn {
+  border-radius: 50%;
+}
+
+/* In view mode the paperclip is hover-revealed on hover-capable pointers
+ * and always visible on touch. Plain icon-button styling (no card/border/
+ * shadow) so it reads as a quiet header glyph rather than a boxed CTA. */
+.widget-frame__add-btn--view {
+  opacity: 0;
+  transition: opacity 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.widget-frame:hover .widget-frame__add-btn--view,
+.widget-frame__add-btn--view:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .widget-frame__add-btn--view {
+    opacity: 1;
+  }
+}
+
+/* Disabled state (TV widgets, or widgets that haven't registered an exporter
+ * yet): stay hidden by default just like the enabled state — we don't want a
+ * permanent disabled glyph cluttering the header. Reveal at reduced opacity
+ * on hover so the user can still see the affordance + tooltip explaining why
+ * it's unavailable. Touch devices show it always (no hover signal). */
+.widget-frame__add-btn--view:disabled {
+  cursor: not-allowed;
+  color: var(--color-text-tertiary);
+  opacity: 0;
+}
+
+.widget-frame:hover .widget-frame__add-btn--view:disabled,
+.widget-frame__add-btn--view:disabled:focus-visible {
+  opacity: 0.4;
+}
+
+@media (hover: none) {
+  .widget-frame__add-btn--view:disabled {
+    opacity: 0.4;
+  }
 }
 
 /* fit-to-content widgets in view mode: drop body padding so the inner card

@@ -1,7 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { GripVertical, Settings, MoreVertical, X, Copy } from 'lucide-react';
+import { GripVertical, Settings, MoreVertical, X, Copy, Paperclip } from 'lucide-react';
 import type { WidgetDefinition, WidgetInstance } from '../types';
+import { getWidgetContextSnapshot, useHasWidgetContextExporter } from './contextSnapshot';
+import { ContextBus } from '@/lib/contextBus';
+import { useToast } from '@/components/ui/use-toast';
 import './WidgetFrame.css';
 
 interface WidgetFrameProps {
@@ -31,11 +34,50 @@ export function WidgetFrame({
   children,
 }: WidgetFrameProps) {
   const { t } = useTranslation();
+  const { toast } = useToast();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
+
+  const exporterRegistered = useHasWidgetContextExporter(instance.id);
+  // TradingView widgets render cross-origin iframes — neither pixels nor DOM
+  // are reachable, so attach is permanently unavailable. We keep the paperclip
+  // visible (parity with native widgets) but disable it and surface the reason
+  // in the tooltip so users don't wonder why nothing happens.
+  const attachUnsupportedReason =
+    definition.source === 'tradingview'
+      ? t('dashboard.widgets.frame.contextUnsupportedTradingView', {
+          defaultValue:
+            "Can't attach this — the content is managed by TradingView, so the agent can't access it.",
+        })
+      : null;
+  const attachDisabled = attachUnsupportedReason !== null || !exporterRegistered;
+  const attachTooltip =
+    attachUnsupportedReason ??
+    t('dashboard.widgets.frame.addToContextTitle', { defaultValue: 'Attach to chat' });
+
+  const handleAddToContext = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (attachUnsupportedReason) return;
+    const snapshot = await getWidgetContextSnapshot(instance.id);
+    if (!snapshot) {
+      toast({
+        variant: 'destructive',
+        title: t('dashboard.widgets.frame.contextUnavailable', { defaultValue: 'Widget not available' }),
+        description: t('dashboard.widgets.frame.contextUnavailableHint', {
+          defaultValue: 'This widget has not registered a context exporter yet.',
+        }),
+      });
+      return;
+    }
+    ContextBus.attach(snapshot);
+    toast({
+      title: t('dashboard.widgets.frame.contextAttached', { defaultValue: 'Added to context' }),
+      description: snapshot.label,
+    });
+  };
 
   // Keep the latest onFitHeight in a ref so the ResizeObserver effect doesn't
   // tear down / reconnect (and fire a synchronous report) on every parent
@@ -156,6 +198,10 @@ export function WidgetFrame({
     .filter(Boolean)
     .join(' ');
 
+  // The "+ to context" button is always rendered (CSS controls visibility by
+  // mode: hover-revealed in view mode on hover-capable devices, always visible
+  // on touch). Other action buttons (settings, menu) only appear in edit mode.
+  // All actions carry `widget-drag-cancel` so they don't initiate drag.
   return (
     <div className={classes} data-widget-type={instance.type}>
       <div ref={headerRef} className="widget-frame__header">
@@ -168,19 +214,29 @@ export function WidgetFrame({
           </div>
         )}
         <div className="widget-frame__title">{t(definition.titleKey)}</div>
-        {editMode && (
-          <div className="widget-frame__actions widget-drag-cancel">
-            {hasSettings && (
-              <button
-                type="button"
-                className="widget-frame__icon-btn"
-                onClick={() => onOpenSettings(instance.id)}
-                aria-label={t('dashboard.widgets.frame.settings')}
-                title={t('dashboard.widgets.frame.settingsTitle')}
-              >
-                <Settings size={14} />
-              </button>
-            )}
+        <div className="widget-frame__actions widget-drag-cancel">
+          {editMode && hasSettings && (
+            <button
+              type="button"
+              className="widget-frame__icon-btn"
+              onClick={() => onOpenSettings(instance.id)}
+              aria-label={t('dashboard.widgets.frame.settings')}
+              title={t('dashboard.widgets.frame.settingsTitle')}
+            >
+              <Settings size={14} />
+            </button>
+          )}
+          <button
+            type="button"
+            className={`widget-frame__icon-btn widget-frame__add-btn ${editMode ? '' : 'widget-frame__add-btn--view'}`}
+            onClick={handleAddToContext}
+            disabled={attachDisabled}
+            aria-label={attachTooltip}
+            title={attachTooltip}
+          >
+            <Paperclip size={13} />
+          </button>
+          {editMode && (
             <div className="widget-frame__menu-wrap" ref={menuRef}>
               <button
                 type="button"
@@ -217,8 +273,8 @@ export function WidgetFrame({
                 </div>
               )}
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
       <div ref={bodyRef} className="widget-frame__body">
         <div ref={innerRef} className={definition.fitToContent ? undefined : 'h-full'}>

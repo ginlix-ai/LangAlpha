@@ -6,6 +6,8 @@ import { useWorkspaces } from '@/hooks/useWorkspaces';
 import { clearChatSession } from '@/pages/ChatAgent/hooks/utils/chatSessionRestore';
 import type { Workspace } from '@/types/api';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { useWidgetContextExport } from '../framework/contextSnapshot';
+import { serializeRowsToMarkdown, wrapWidgetContext } from '../framework/snapshotSerializers';
 import { WorkspacePickerConfigSchema } from '../framework/configSchemas';
 import type { WidgetRenderProps } from '../types';
 
@@ -144,6 +146,49 @@ function WorkspacePickerWidget({ instance }: WidgetRenderProps<WorkspacePickerCo
   const { data, isLoading } = useWorkspaces({ limit: 100 });
   const displayLimit = instance.config.limit ?? 12;
   const workspaces: WorkspaceRecord[] = ((data?.workspaces ?? []) as WorkspaceRecord[]).slice(0, displayLimit);
+
+  useWidgetContextExport(instance.id, {
+    full: () => {
+      const tableRows = workspaces.map((ws) => ({
+        name: ws.name || t('dashboard.widgets.workspacePicker.untitled'),
+        status: ws.status ?? 'workspace',
+        // Newlines in descriptions would corrupt the single-row markdown table;
+        // collapse them to spaces here. Pipe-escaping is handled by serializeRowsToMarkdown.
+        description: (ws.description ?? '').replace(/\n/g, ' '),
+        updated_at: ws.updated_at ?? '',
+        workspace_id: ws.workspace_id,
+      }));
+      const body = workspaces.length
+        ? serializeRowsToMarkdown(tableRows, [
+            { key: 'name', label: 'name' },
+            { key: 'status', label: 'status' },
+            { key: 'description', label: 'description' },
+            { key: 'updated_at', label: 'updated_at' },
+            { key: 'workspace_id', label: 'workspace_id' },
+          ])
+        : '_no workspaces_';
+      const text = wrapWidgetContext('workspace.picker', { count: workspaces.length }, body);
+      return {
+        widget_type: 'workspace.picker',
+        widget_id: instance.id,
+        label: `${t('dashboard.widgets.workspacePicker.title')} · ${workspaces.length}`,
+        description: workspaces.length
+          ? `${workspaces.length} workspace${workspaces.length === 1 ? '' : 's'}`
+          : 'empty',
+        captured_at: new Date().toISOString(),
+        text,
+        data: {
+          workspaces: workspaces.map((ws) => ({
+            workspace_id: ws.workspace_id,
+            name: ws.name,
+            description: ws.description,
+            status: ws.status,
+            updated_at: ws.updated_at,
+          })),
+        },
+      };
+    },
+  });
 
   return (
     <div className="dashboard-glass-card p-5 flex flex-col h-full">

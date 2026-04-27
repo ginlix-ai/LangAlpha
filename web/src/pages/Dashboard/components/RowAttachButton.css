@@ -1,0 +1,48 @@
+/* Quiet, hover-revealed paperclip — matches the widget-frame "Attach to
+ * chat" affordance. No card/border by default so it doesn't read as a
+ * boxed CTA next to the row content; hover gives it a soft circular bg
+ * that mirrors the widget's rounded chrome instead of squared corners. */
+.row-attach {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: transparent;
+  border: 0;
+  color: var(--color-text-tertiary, #8a8a8a);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 120ms ease,
+    background-color 120ms ease,
+    color 120ms ease;
+  padding: 0;
+}
+
+/* Show on hover within the row's `.row-attach-host` ancestor. List widgets
+ * apply that class to the row container so the button is opacity-tied to a
+ * single, predictable hover region. */
+.row-attach-host:hover .row-attach,
+.row-attach:focus-visible {
+  opacity: 1;
+}
+
+.row-attach:hover {
+  background: var(--color-accent-soft, rgba(184, 138, 44, 0.12));
+  color: var(--color-accent-primary, #b88a2c);
+}
+
+@media (hover: none) {
+  /* Touch devices: always visible. Hover would never trigger. */
+  .row-attach {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .row-attach {
+    transition: none;
+  }
+}

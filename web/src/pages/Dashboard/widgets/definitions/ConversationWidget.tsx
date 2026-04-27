@@ -13,6 +13,8 @@ import { getWorkspaceThreads } from '@/pages/ChatAgent/utils/api';
 import { queryKeys } from '@/lib/queryKeys';
 import type { Thread, ThreadsResponse } from '@/types/api';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { useWidgetContextExport } from '../framework/contextSnapshot';
+import { wrapWidgetContext } from '../framework/snapshotSerializers';
 import { ConversationConfigSchema } from '../framework/configSchemas';
 import type { WidgetRenderProps } from '../types';
 import './ConversationWidget.css';
@@ -64,7 +66,7 @@ function formatRelative(ts?: string): string {
   return i18n.t('dashboard.widgets.common.relativePast', { when });
 }
 
-function ConversationWidget(_props: WidgetRenderProps<ConversationConfig>) {
+function ConversationWidget({ instance }: WidgetRenderProps<ConversationConfig>) {
   const { t } = useTranslation();
   const navigate = useNavigate();
 
@@ -108,6 +110,46 @@ function ConversationWidget(_props: WidgetRenderProps<ConversationConfig>) {
     () => (threadsData?.threads ?? []).slice(0, 4),
     [threadsData],
   );
+
+  useWidgetContextExport(instance.id, {
+    full: () => {
+      const selectedWs = workspaces.find((w) => w.workspace_id === selectedWorkspaceId);
+      const lines: string[] = [
+        `Mode: ${mode}`,
+        `Workspace: ${selectedWs?.name ?? '(none)'} (${selectedWorkspaceId ?? 'unset'})`,
+      ];
+      if (recentThreads.length) {
+        lines.push('', '**Resume threads:**');
+        recentThreads.forEach((th) => {
+          const title = th.title || t('dashboard.widgets.conversation.untitledThread');
+          lines.push(`- ${title} — ${th.updated_at ?? ''} (${th.thread_id})`);
+        });
+      }
+      const text = wrapWidgetContext(
+        'agent.conversation',
+        { mode, workspace_id: selectedWorkspaceId },
+        lines.join('\n'),
+      );
+      return {
+        widget_type: 'agent.conversation',
+        widget_id: instance.id,
+        label: t('dashboard.widgets.conversation.title'),
+        description: `${mode} · ${selectedWs?.name ?? 'no workspace'}`,
+        captured_at: new Date().toISOString(),
+        text,
+        data: {
+          mode,
+          workspace_id: selectedWorkspaceId,
+          workspace_name: selectedWs?.name,
+          recent_threads: recentThreads.map((th) => ({
+            thread_id: th.thread_id,
+            title: th.title,
+            updated_at: th.updated_at,
+          })),
+        },
+      };
+    },
+  });
 
   return (
     <div className="conversation-widget">

@@ -228,6 +228,12 @@ export interface UserMessage {
   isStreaming: false;
   isHistory?: boolean;
   attachments?: Attachment[];
+  /**
+   * Widget context snapshots attached to this message. Rendered as inline
+   * chip cards below the user bubble (like attachments) and forwarded to the
+   * backend via `additional_context`.
+   */
+  widgetSnapshots?: import('@/pages/Dashboard/widgets/framework/contextSnapshot').WidgetContextSnapshot[];
   steeringDelivered?: boolean;
   steering?: boolean;
 }
