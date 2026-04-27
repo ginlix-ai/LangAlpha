@@ -1162,6 +1162,10 @@
       "listening": "正在倾听... (打字可中断)",
       "permissionDenied": "麦克风权限被拒绝",
       "serviceError": "语音识别服务错误"
+    },
+    "a11y": {
+      "toolCallCompleted": "已完成",
+      "toolCallFailed": "已失败"
     }
   },
   "context": {
@@ -1284,7 +1288,9 @@
     "emptyWorkspace": "暂无工作区记忆。",
     "emptyHint": "当有值得记住的内容时，智能体会创建 memory.md。",
     "loadError": "记忆加载失败",
-    "readError": "记忆文件读取失败"
+    "readError": "记忆文件读取失败",
+    "notFound": "记忆 “{{key}}” 已不存在，已显示全部条目。",
+    "dismissNotFound": "关闭"
   },
   "memoPanel": {
     "title": "备忘文档",
@@ -1297,6 +1303,9 @@
     "selectedCount_other": "已选 {{count}} 项",
     "deleteSelected": "删除所选",
     "backToList": "返回列表",
+    "unsavedDiscardConfirm": "您有未保存的备忘修改。确定放弃吗？",
+    "discardEditTitle": "放弃未保存的修改？",
+    "discardEdits": "放弃",
     "loading": "加载中…",
     "loadingList": "正在加载备忘文档…",
     "uploading": "上传中…",
@@ -1338,6 +1347,8 @@
       "loadFailed": "备忘文档加载失败",
       "bulkDeleteFailed": "{{count}} 个备忘文档删除失败：{{first}}"
     },
+    "notFound": "备忘文档 “{{key}}” 已不存在，已显示全部备忘。",
+    "dismissNotFound": "关闭",
     "confirm": {
       "deleteTitle": "删除备忘文档",
       "deleteBody": "确定永久删除 “{{name}}” 吗？此操作无法撤销。",
@@ -1579,6 +1590,7 @@
     "nSearchResults": "\"{{query}}\" 的 {{count}} 个结果",
     "untitled": "无标题",
     "nReasoning": "{{count}} 次推理",
+    "andMore": "等更多 …",
     "nToolCalls": "{{count}} 次工具调用",
     "nStepsCompleted": "已完成 {{count}} 个步骤",
     "reasoning": "推理",
@@ -1618,9 +1630,42 @@
       "taskOutput": "任务输出",
       "automations": "自动化",
       "createAutomation": "创建自动化",
-      "manageAutomation": "管理自动化"
+      "manageAutomation": "管理自动化",
+      "skill": "技能",
+      "memory": "记忆",
+      "workspaceMemory": "工作区记忆",
+      "memo": "备忘录"
+    },
+    "completed": {
+      "activatedSkill": "已激活技能",
+      "readMemory": "已读取记忆",
+      "readWorkspaceMemory": "已读取工作区记忆",
+      "addedMemory": "已新增记忆",
+      "updatedMemory": "已更新记忆",
+      "readMemo": "已读取备忘",
+      "readMemoIndex": "已读取备忘索引",
+      "wroteMemo": "已写入备忘",
+      "updatedMemo": "已更新备忘"
     },
     "inProgress": {
+      "activatingSkill": "激活技能中...",
+      "activatingSkillName": "激活技能 {{name}}...",
+      "readingMemory": "读取记忆中...",
+      "readingMemoryTopic": "读取关于 {{topic}} 的记忆...",
+      "readingWorkspaceMemory": "读取工作区记忆中...",
+      "readingWorkspaceMemoryTopic": "读取关于 {{topic}} 的工作区记忆...",
+      "addingMemory": "新增记忆中...",
+      "addingMemoryTopic": "新增记忆 {{topic}}...",
+      "addingWorkspaceMemory": "新增工作区记忆中...",
+      "addingWorkspaceMemoryTopic": "新增工作区记忆 {{topic}}...",
+      "updatingMemory": "更新记忆中...",
+      "updatingMemoryTopic": "更新记忆 {{topic}}...",
+      "updatingWorkspaceMemory": "更新工作区记忆中...",
+      "updatingWorkspaceMemoryTopic": "更新工作区记忆 {{topic}}...",
+      "readingMemoIndex": "读取备忘索引...",
+      "readingMemoSlug": "读取备忘 {{slug}}...",
+      "writingMemoSlug": "写入备忘 {{slug}}...",
+      "updatingMemoSlug": "更新备忘 {{slug}}...",
       "fetchingSymbolPrices": "获取 {{symbol}} 价格...",
       "fetchingPrices": "获取价格...",
       "analyzingSymbol": "分析 {{symbol}}...",
@@ -1664,7 +1709,27 @@
       "generating": "生成中{{size}}..."
     },
     "nChars": "~{{count}} 字符",
-    "nKB": "~{{size}} KB"
+    "nKB": "~{{size}} KB",
+    "categoryCount": {
+      "skill": "激活 {{count}} 项技能",
+      "memoryRead": "读取记忆",
+      "memoryUpdated": "更新记忆",
+      "memo": "读取 {{count}} 份备忘",
+      "memoWrite": "写入 {{count}} 份备忘",
+      "failed": "{{count}} 个失败",
+      "code": "执行 {{count}} 段代码",
+      "web": "发起 {{count}} 次网络请求",
+      "search": "执行 {{count}} 次搜索",
+      "fileRead": "读取 {{count}} 个文件",
+      "fileEdit": "编辑 {{count}} 个文件",
+      "generic": "运行 {{count}} 个步骤"
+    },
+    "a11y": {
+      "toolCallFailed": "工具调用失败",
+      "openInTab": "在 {{tab}} 中打开",
+      "collapseDiff": "折叠差异",
+      "expandDiff": "展开差异"
+    }
   },
   "setup": {
     "brandedHeader": "配置您的 LLM 提供商",

@@ -353,15 +353,6 @@ interface MessageListProps {
   flashContext?: { threadId: string; workspaceId: string } | null;
 }
 
-/**
- * MessageList Component
- *
- * Displays the chat message history with support for:
- * - Empty state when no messages exist
- * - User and assistant message bubbles
- * - Streaming indicators
- * - Error state styling
- */
 function MessageList({ messages, isLoading, isLoadingHistory, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onApprovePTCAgent, onRejectPTCAgent, onApproveSecretaryAction, onRejectSecretaryAction, onEditMessage, onRegenerate, onRetry, onThumbUp, onThumbDown, getFeedbackForMessage, onReportWithAgent, onWidgetSendPrompt, flashContext }: MessageListProps): React.ReactElement | null {
   const isMobile = useIsMobile();
 
@@ -499,11 +490,6 @@ interface MessageBubbleProps {
 }
 
 /**
- * MessageBubble Component
- *
- * Renders a single message bubble with appropriate styling
- * based on role (user/assistant) and state (streaming/error)
- *
  * Wrapped with React.memo — safe because updateMessage() in messageHelpers.ts
  * returns the same object reference for unchanged messages.
  */
@@ -1282,7 +1268,11 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
               toolCallId: seg.toolCallId,
               ...proc,
               _recentlyCompleted: true,
-              _liveState: 'completing',
+              // Failure flips the completing-window state to 'failed' so
+              // ActivityBlock renders the gray ✕ badge variant. Older failed
+              // calls drop to 'completed' below and merge into the accordion
+              // alongside successful ones.
+              _liveState: (proc.isFailed as boolean) ? 'failed' : 'completing',
             });
             const expiry = createdAt! + MIN_LIVE_EXPOSURE_MS;
             if (computedNextExpiry === null || expiry < computedNextExpiry) {

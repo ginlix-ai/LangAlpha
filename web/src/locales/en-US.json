@@ -1162,6 +1162,10 @@
       "listening": "Listening... (Type to cancel)",
       "permissionDenied": "Microphone permission denied",
       "serviceError": "Speech recognition service error"
+    },
+    "a11y": {
+      "toolCallCompleted": "completed",
+      "toolCallFailed": "failed"
     }
   },
   "context": {
@@ -1285,7 +1289,9 @@
     "emptyWorkspace": "No workspace memory yet.",
     "emptyHint": "The agent will create memory.md when it has something worth remembering.",
     "loadError": "Failed to load memory",
-    "readError": "Failed to read memory file"
+    "readError": "Failed to read memory file",
+    "notFound": "Entry \"{{key}}\" no longer exists. Showing all entries.",
+    "dismissNotFound": "Dismiss"
   },
   "memoPanel": {
     "title": "Memos",
@@ -1299,6 +1305,9 @@
     "selectedCount_other": "{{count}} selected",
     "deleteSelected": "Delete selected",
     "backToList": "Back to memos",
+    "unsavedDiscardConfirm": "You have unsaved memo edits. Discard them?",
+    "discardEditTitle": "Discard unsaved edits?",
+    "discardEdits": "Discard",
     "loading": "Loading…",
     "loadingList": "Loading memos…",
     "uploading": "Uploading…",
@@ -1340,6 +1349,8 @@
       "loadFailed": "Failed to load memos",
       "bulkDeleteFailed": "{{count}} memo(s) failed to delete. {{first}}"
     },
+    "notFound": "Memo \"{{key}}\" no longer exists. Showing all memos.",
+    "dismissNotFound": "Dismiss",
     "confirm": {
       "deleteTitle": "Delete memo",
       "deleteBody": "Permanently delete \"{{name}}\"? This cannot be undone.",
@@ -1588,10 +1599,11 @@
     "nSearchResults_other": "{{count}} results for \"{{query}}\"",
     "untitled": "Untitled",
     "nReasoning": "{{count}} reasoning",
+    "andMore": "and more …",
     "nToolCalls": "{{count}} tool call",
     "nToolCalls_other": "{{count}} tool calls",
-    "nStepsCompleted": "{{count}} step completed",
-    "nStepsCompleted_other": "{{count}} steps completed",
+    "nStepsCompleted": "completed {{count}} step",
+    "nStepsCompleted_other": "completed {{count}} steps",
     "reasoning": "Reasoning",
     "reasoningLabel": "Reasoning: {{title}}",
     "reasoningPending": "Reasoning...",
@@ -1629,9 +1641,42 @@
       "taskOutput": "Task Output",
       "automations": "Automations",
       "createAutomation": "Create Automation",
-      "manageAutomation": "Manage Automation"
+      "manageAutomation": "Manage Automation",
+      "skill": "Skill",
+      "memory": "Memory",
+      "workspaceMemory": "Workspace Memory",
+      "memo": "Memo"
+    },
+    "completed": {
+      "activatedSkill": "Activated skill",
+      "readMemory": "Read memory",
+      "readWorkspaceMemory": "Read workspace memory",
+      "addedMemory": "Added memory",
+      "updatedMemory": "Updated memory",
+      "readMemo": "Read memo",
+      "readMemoIndex": "Read memo index",
+      "wroteMemo": "Wrote memo",
+      "updatedMemo": "Updated memo"
     },
     "inProgress": {
+      "activatingSkill": "activating skill...",
+      "activatingSkillName": "activating skill {{name}}...",
+      "readingMemory": "reading memory...",
+      "readingMemoryTopic": "reading memory about {{topic}}...",
+      "readingWorkspaceMemory": "reading workspace memory...",
+      "readingWorkspaceMemoryTopic": "reading workspace memory about {{topic}}...",
+      "addingMemory": "adding memory...",
+      "addingMemoryTopic": "adding memory {{topic}}...",
+      "addingWorkspaceMemory": "adding workspace memory...",
+      "addingWorkspaceMemoryTopic": "adding workspace memory {{topic}}...",
+      "updatingMemory": "updating memory...",
+      "updatingMemoryTopic": "updating memory {{topic}}...",
+      "updatingWorkspaceMemory": "updating workspace memory...",
+      "updatingWorkspaceMemoryTopic": "updating workspace memory {{topic}}...",
+      "readingMemoIndex": "reading memo index...",
+      "readingMemoSlug": "reading memo {{slug}}...",
+      "writingMemoSlug": "writing memo {{slug}}...",
+      "updatingMemoSlug": "updating memo {{slug}}...",
       "fetchingSymbolPrices": "fetching {{symbol}} prices...",
       "fetchingPrices": "fetching prices...",
       "analyzingSymbol": "analyzing {{symbol}}...",
@@ -1675,7 +1720,37 @@
       "generating": "generating{{size}}..."
     },
     "nChars": "~{{count}} chars",
-    "nKB": "~{{size}} KB"
+    "nKB": "~{{size}} KB",
+    "categoryCount": {
+      "skill": "activated {{count}} skill",
+      "skill_other": "activated {{count}} skills",
+      "memoryRead": "read memory",
+      "memoryUpdated": "updated memory",
+      "memo": "read {{count}} memo",
+      "memo_other": "read {{count}} memos",
+      "memoWrite": "wrote {{count}} memo",
+      "memoWrite_other": "wrote {{count}} memos",
+      "failed": "{{count}} failed",
+      "failed_other": "{{count}} failed",
+      "code": "executed {{count}} code block",
+      "code_other": "executed {{count}} code blocks",
+      "web": "made {{count}} web call",
+      "web_other": "made {{count}} web calls",
+      "search": "ran {{count}} search",
+      "search_other": "ran {{count}} searches",
+      "fileRead": "read {{count}} file",
+      "fileRead_other": "read {{count}} files",
+      "fileEdit": "edited {{count}} file",
+      "fileEdit_other": "edited {{count}} files",
+      "generic": "ran {{count}} step",
+      "generic_other": "ran {{count}} steps"
+    },
+    "a11y": {
+      "toolCallFailed": "Tool call failed",
+      "openInTab": "Open in {{tab}}",
+      "collapseDiff": "Collapse diff",
+      "expandDiff": "Expand diff"
+    }
   },
   "setup": {
     "brandedHeader": "Configure your LLM providers",

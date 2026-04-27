@@ -3,7 +3,9 @@ import {
   TrendingUp, Building2, BarChart3, PieChart, Search, Globe,
   FilePlus, FileText, FilePen, FolderSearch, SquareChevronRight, Wrench,
   Newspaper, Brain, User, FileBarChart, Clock, ClipboardList, Zap, Settings, Terminal,
+  Sparkles, BookText, BookMarked, BookPlus,
 } from 'lucide-react';
+import { classifyAgentPath, topicFromMemoryKey, type AgentPathInfo } from '../utils/agentPaths';
 
 /** Translation function signature compatible with i18next's t() */
 type TFn = (key: string, opts?: Record<string, unknown>) => string;
@@ -89,19 +91,123 @@ export const TOOL_DISPLAY_CONFIG: Record<string, ToolDisplayEntry> = {
   manage_automation:        { displayName: 'Manage Automation',    i18nKey: 'manageAutomation',    icon: Settings },
 };
 
-export function getDisplayName(rawToolName: string, t?: TFn): string {
+// Single source of truth for "what tool name indicates a file
+// write/edit/read?" — these are the only tool decorators registered in the
+// agent (see src/ptc_agent/agent/tools/file_ops.py: @tool("Read"),
+// @tool("Write"), @tool("Edit")). Used by classifyFromArgs and categorizeTool.
+const FILE_WRITE_TOOLS = new Set(['Write', 'Edit']);
+const FILE_READ_TOOLS = new Set(['Read']);
+const FILE_PATH_TOOLS = new Set([...FILE_WRITE_TOOLS, ...FILE_READ_TOOLS]);
+
+/** Classifies the file_path arg for Read/Write/Edit. Returns null for all other tools. */
+function classifyFromArgs(toolName: string, args: ToolCallArgs | undefined): AgentPathInfo | null {
+  if (!args) return null;
+  if (!FILE_PATH_TOOLS.has(toolName)) return null;
+  const fp = (args.file_path || args.filePath) as string | undefined;
+  if (!fp) return null;
+  return classifyAgentPath(fp);
+}
+
+export function getDisplayName(rawToolName: string, t?: TFn, args?: ToolCallArgs): string {
+  const info = classifyFromArgs(rawToolName, args);
+  if (info) {
+    if (info.kind === 'skill') {
+      return t ? t('toolArtifact.tool.skill') : 'Skill';
+    }
+    if (info.kind === 'memory') {
+      const isWorkspaceTier = info.tier === 'workspace';
+      if (isWorkspaceTier) return t ? t('toolArtifact.tool.workspaceMemory') : 'Workspace Memory';
+      return t ? t('toolArtifact.tool.memory') : 'Memory';
+    }
+    if (info.kind === 'memo') {
+      return t ? t('toolArtifact.tool.memo') : 'Memo';
+    }
+  }
   const config = TOOL_DISPLAY_CONFIG[rawToolName];
   if (t && config?.i18nKey) return t(`toolArtifact.tool.${config.i18nKey}`);
   return config?.displayName || rawToolName;
 }
 
-export function getToolIcon(rawToolName: string): LucideIcon {
+export function getToolIcon(rawToolName: string, args?: ToolCallArgs): LucideIcon {
+  const info = classifyFromArgs(rawToolName, args);
+  if (info) {
+    if (info.kind === 'skill') return Sparkles;
+    if (info.kind === 'memory') return BookMarked;
+    if (info.kind === 'memo') {
+      // Distinguish memo writes/edits from reads with a "book + plus" glyph
+      // so the timeline row hints that the agent modified the memo (even
+      // though current backend rules make this read-only by design).
+      return FILE_WRITE_TOOLS.has(rawToolName) ? BookPlus : BookText;
+    }
+  }
   return TOOL_DISPLAY_CONFIG[rawToolName]?.icon || Wrench;
 }
 
 export function getInProgressText(rawToolName: string, toolCall: ToolCall | undefined, t?: TFn): string {
   const args = toolCall?.args;
   const tr = t ? (key: string, opts?: Record<string, unknown>) => t(`toolArtifact.inProgress.${key}`, opts) : null;
+
+  // Path-aware variants for store-backed paths. These short-circuit the
+  // generic Read/Write/Edit branches below.
+  const info = classifyFromArgs(rawToolName, args);
+  if (info) {
+    if (info.kind === 'skill' && rawToolName === 'Read') {
+      return info.name
+        ? (tr?.('activatingSkillName', { name: info.name }) ?? `activating skill ${info.name}...`)
+        : (tr?.('activatingSkill') ?? 'activating skill...');
+    }
+    if (info.kind === 'memory') {
+      const topic = topicFromMemoryKey(info.key);
+      const ws = info.tier === 'workspace';
+      if (rawToolName === 'Read') {
+        if (info.isIndex) {
+          return ws
+            ? (tr?.('readingWorkspaceMemory') ?? 'reading workspace memory...')
+            : (tr?.('readingMemory') ?? 'reading memory...');
+        }
+        return ws
+          ? (tr?.('readingWorkspaceMemoryTopic', { topic }) ?? `reading workspace memory about ${topic}...`)
+          : (tr?.('readingMemoryTopic', { topic }) ?? `reading memory about ${topic}...`);
+      }
+      if (rawToolName === 'Write') {
+        // Index writes shouldn't render the topic — `topicFromMemoryKey('memory.md')`
+        // returns 'memory', which would print "adding memory memory...".
+        if (info.isIndex) {
+          return ws
+            ? (tr?.('addingWorkspaceMemory') ?? 'adding workspace memory...')
+            : (tr?.('addingMemory') ?? 'adding memory...');
+        }
+        return ws
+          ? (tr?.('addingWorkspaceMemoryTopic', { topic }) ?? `adding workspace memory ${topic}...`)
+          : (tr?.('addingMemoryTopic', { topic }) ?? `adding memory ${topic}...`);
+      }
+      if (rawToolName === 'Edit') {
+        if (info.isIndex) {
+          return ws
+            ? (tr?.('updatingWorkspaceMemory') ?? 'updating workspace memory...')
+            : (tr?.('updatingMemory') ?? 'updating memory...');
+        }
+        return ws
+          ? (tr?.('updatingWorkspaceMemoryTopic', { topic }) ?? `updating workspace memory ${topic}...`)
+          : (tr?.('updatingMemoryTopic', { topic }) ?? `updating memory ${topic}...`);
+      }
+    }
+    if (info.kind === 'memo') {
+      if (rawToolName === 'Read') {
+        if (info.isIndex) {
+          return tr?.('readingMemoIndex') ?? 'reading memo index...';
+        }
+        return tr?.('readingMemoSlug', { slug: info.key }) ?? `reading memo ${info.key}...`;
+      }
+      if (rawToolName === 'Write') {
+        return tr?.('writingMemoSlug', { slug: info.key }) ?? `writing memo ${info.key}...`;
+      }
+      if (rawToolName === 'Edit') {
+        return tr?.('updatingMemoSlug', { slug: info.key }) ?? `updating memo ${info.key}...`;
+      }
+    }
+  }
+
   switch (rawToolName) {
     case 'get_stock_daily_prices':
       return args?.symbol
@@ -194,12 +300,30 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
 }
 
 /**
- * Extracts a short completed-state summary from tool call args.
- * Used in both live zone (completed but not yet in accordion) and accordion rows.
+ * `_t` (optional, currently unused) is accepted for parity with sibling
+ * helpers — the summary is a bare noun (topic / slug / skill name) that
+ * doesn't need localization today, but the param keeps call sites symmetric
+ * and reserves space for future translated variants.
  */
-export function getCompletedSummary(toolName: string, toolCall: ToolCall | undefined): string | null {
+export function getCompletedSummary(toolName: string, toolCall: ToolCall | undefined, _t?: TFn): string | null {
   const args = toolCall?.args;
   if (!args) return null;
+  // Path-aware summaries: emit just the meaningful object (skill name, topic,
+  // memo slug). The verb is carried by getDisplayName / row label.
+  const info = classifyFromArgs(toolName, args);
+  if (info) {
+    if (info.kind === 'skill') return info.name || null;
+    if (info.kind === 'memory') {
+      // Index files: no pill — the row title already says "Read memory" /
+      // "Added memory" etc., and the row itself becomes the click target.
+      if (info.isIndex) return null;
+      return topicFromMemoryKey(info.key) || null;
+    }
+    if (info.kind === 'memo') {
+      if (info.isIndex) return null;
+      return info.key || null;
+    }
+  }
   if (args.description) return args.description;
   if (args.symbol) return args.symbol;
   if (args.query) return args.query;
@@ -216,6 +340,112 @@ export function getCompletedSummary(toolName: string, toolCall: ToolCall | undef
     return fp!.split('/').pop() || null;
   }
   return null;
+}
+
+/**
+ * Full live-row label for the Active state. For path-aware tools this is a
+ * single coherent phrase ("Reading memory about <topic>") with no leading
+ * noun; for generic tools we fall back to the historic
+ * `${displayName} ${progressText}` concat.
+ */
+export function getActiveLabel(toolName: string, toolCall: ToolCall | undefined, t?: TFn): string {
+  const args = toolCall?.args;
+  const info = classifyFromArgs(toolName, args);
+  if (info && info.kind !== 'file') {
+    // getInProgressText already produces the full phrase for path-aware paths.
+    return getInProgressText(toolName, toolCall, t);
+  }
+  const dn = getDisplayName(toolName, t, args);
+  const pt = getInProgressText(toolName, toolCall, t);
+  return pt ? `${dn} ${pt}` : dn;
+}
+
+/**
+ * Title for completed timeline rows. Returns the past-tense verb phrase for
+ * path-aware tools ("Read memory", "Added memory", "Activated skill") and the
+ * generic displayName otherwise.
+ */
+export function getCompletedRowTitle(toolName: string, toolCall: ToolCall | undefined, t?: TFn): string {
+  const args = toolCall?.args;
+  const info = classifyFromArgs(toolName, args);
+  if (info) {
+    if (info.kind === 'skill' && toolName === 'Read') {
+      return t ? t('toolArtifact.completed.activatedSkill') : 'Activated skill';
+    }
+    if (info.kind === 'memory') {
+      const ws = info.tier === 'workspace';
+      if (toolName === 'Write') {
+        return t ? t('toolArtifact.completed.addedMemory') : 'Added memory';
+      }
+      if (toolName === 'Edit') {
+        return t ? t('toolArtifact.completed.updatedMemory') : 'Updated memory';
+      }
+      if (toolName === 'Read') {
+        if (ws) return t ? t('toolArtifact.completed.readWorkspaceMemory') : 'Read workspace memory';
+        return t ? t('toolArtifact.completed.readMemory') : 'Read memory';
+      }
+    }
+    if (info.kind === 'memo') {
+      if (toolName === 'Read') {
+        if (info.isIndex) return t ? t('toolArtifact.completed.readMemoIndex') : 'Read memo index';
+        return t ? t('toolArtifact.completed.readMemo') : 'Read memo';
+      }
+      // Distinguish Write vs Edit verbs so a regression that lets the agent
+      // mutate a memo surfaces with the correct framing instead of "Read memo".
+      if (toolName === 'Write') {
+        return t ? t('toolArtifact.completed.wroteMemo') : 'Wrote memo';
+      }
+      if (toolName === 'Edit') {
+        return t ? t('toolArtifact.completed.updatedMemo') : 'Updated memo';
+      }
+    }
+  }
+  return getDisplayName(toolName, t, args);
+}
+
+/**
+ * Discriminator used by the content-aware accordion header. Maps a completed
+ * tool call to a coarse category for counting. Memory is split into read vs
+ * write so the header can collapse a mixed sequence into a single fragment
+ * whose verb reflects whether anything was modified.
+ */
+export type ToolCategory =
+  | 'skill'
+  | 'memoryRead'
+  | 'memoryWrite'
+  | 'memo'        // Read on a memo path
+  | 'memoWrite'   // Write/Edit/Save on a memo path (rare — backend currently
+                  // restricts agents to read-only memo access — but we
+                  // surface modifications distinctly so any future regression
+                  // is visible to the user instead of being hidden behind the
+                  // generic "read N memos" framing.)
+  | 'code'
+  | 'web'
+  | 'search'      // Glob, Grep
+  | 'fileRead'    // Read on a non-store path
+  | 'fileEdit'    // Write/Edit/Save on a non-store path
+  | 'generic';    // anything else (TaskOutput, MCP tools without artifacts, ...)
+
+export function categorizeTool(toolName: string, toolCall: ToolCall | undefined): ToolCategory {
+  const args = toolCall?.args;
+  const info = classifyFromArgs(toolName, args);
+  if (info) {
+    if (info.kind === 'skill') return 'skill';
+    if (info.kind === 'memory') {
+      return FILE_WRITE_TOOLS.has(toolName) ? 'memoryWrite' : 'memoryRead';
+    }
+    if (info.kind === 'memo') {
+      return FILE_WRITE_TOOLS.has(toolName) ? 'memoWrite' : 'memo';
+    }
+    // info.kind === 'file' (a known file tool but path is generic) falls
+    // through to the per-tool bucketing below.
+  }
+  if (toolName === 'ExecuteCode' || toolName === 'Bash') return 'code';
+  if (toolName === 'WebSearch' || toolName === 'WebFetch') return 'web';
+  if (toolName === 'Glob' || toolName === 'Grep') return 'search';
+  if (FILE_READ_TOOLS.has(toolName)) return 'fileRead';
+  if (FILE_WRITE_TOOLS.has(toolName)) return 'fileEdit';
+  return 'generic';
 }
 
 function formatByteSize(bytes: number, t?: TFn): string | null {

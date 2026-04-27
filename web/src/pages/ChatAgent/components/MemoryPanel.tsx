@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'react';
-import { ArrowLeft, Brain, FileText, RefreshCw } from 'lucide-react';
+import { useCallback, useEffect, useState, useMemo } from 'react';
+import { ArrowLeft, Brain, FileText, RefreshCw, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   useUserMemory,
@@ -9,11 +9,22 @@ import {
 } from '../hooks/useMemory';
 import Markdown from './Markdown';
 import type { MemoryEntry } from '../utils/api';
+import { MEMORY_USER_DIR, MEMORY_WORKSPACE_DIR } from '../utils/agentPaths';
 
 type Tier = 'user' | 'workspace';
 
 interface MemoryPanelProps {
   workspaceId: string | null;
+  /** When set, the panel switches to this entry once the list resolves. */
+  targetKey?: string | null;
+  targetTier?: Tier | null;
+  /** Called once the panel has consumed (or rejected) the target. */
+  onTargetHandled?: () => void;
+  /** Routes a clicked link inside the rendered markdown body through the
+   * parent's path-aware router. The panel resolves bare sibling refs
+   * (e.g. `feedback_visualization_preference.md`) against the current
+   * memory tier's dir before calling. */
+  onOpenFile?: (path: string, workspaceId?: string) => void;
 }
 
 function formatBytes(n: number): string {
@@ -46,13 +57,63 @@ function sortEntries(entries: MemoryEntry[]): MemoryEntry[] {
   });
 }
 
-export default function MemoryPanel({ workspaceId }: MemoryPanelProps) {
+export default function MemoryPanel({
+  workspaceId,
+  targetKey,
+  targetTier,
+  onTargetHandled,
+  onOpenFile,
+}: MemoryPanelProps) {
   const { t } = useTranslation();
-  const [tier, setTier] = useState<Tier>('user');
+  const [tier, setTier] = useState<Tier>(targetTier ?? 'user');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [notFoundKey, setNotFoundKey] = useState<string | null>(null);
 
-  const user = useUserMemory(tier === 'user');
-  const ws = useWorkspaceMemory(workspaceId, tier === 'workspace');
+  // Markdown links inside a memory body usually reference sibling entries by
+  // bare filename (`feedback_visualization_preference.md`). Resolve those
+  // against the current tier's dir so the parent router classifies them as
+  // memory and pre-selects the right entry. Already-qualified hrefs
+  // (`.agents/...`, `__wsref__/...`, absolute, or `scheme://`) pass through.
+  //
+  // Heuristic: only `.md` / `.markdown` hrefs are treated as sibling memory
+  // entries (the canonical extension). Other extensions (`.pdf`, `.csv`,
+  // `.png`, etc.) are sandbox files referenced from the memory body — pass
+  // them through to file routing instead of forcing them into the memory
+  // store path (where they'd 404).
+  const handleBodyLinkOpen = useCallback(
+    (href: string, wsId?: string) => {
+      if (!onOpenFile || !href) return;
+      const isAlreadyQualified =
+        href.startsWith('.agents/') ||
+        href.startsWith('__wsref__/') ||
+        href.startsWith('/') ||
+        /^[a-z][a-z0-9+.-]*:/i.test(href);
+      if (isAlreadyQualified) {
+        onOpenFile(href, wsId);
+        return;
+      }
+      const clean = href.replace(/^\.\//, '');
+      const tail = clean.split('?')[0].split('#')[0];
+      const ext = (tail.split('.').pop() || '').toLowerCase();
+      const SIBLING_EXTS = new Set(['md', 'markdown']);
+      if (!SIBLING_EXTS.has(ext)) {
+        // Not a memory entry — let file routing decide where it belongs.
+        onOpenFile(clean, wsId);
+        return;
+      }
+      const dir = tier === 'user' ? MEMORY_USER_DIR : MEMORY_WORKSPACE_DIR;
+      onOpenFile(`${dir}/${clean}`, wsId);
+    },
+    [onOpenFile, tier],
+  );
+
+  // Both tiers must be active when we're chasing a target so the entry can
+  // be located regardless of which tier the user was last viewing.
+  const user = useUserMemory(tier === 'user' || (targetKey != null && targetTier === 'user'));
+  const ws = useWorkspaceMemory(
+    workspaceId,
+    tier === 'workspace' || (targetKey != null && targetTier === 'workspace'),
+  );
   const list = tier === 'user' ? user : ws;
 
   const sorted = useMemo(() => sortEntries(list.entries), [list.entries]);
@@ -68,7 +129,56 @@ export default function MemoryPanel({ workspaceId }: MemoryPanelProps) {
     if (next === tier) return;
     setTier(next);
     setSelectedKey(null);
+    setNotFoundKey(null);
   };
+
+  // Mirror an external targetKey into selected state once the corresponding
+  // list resolves. If the list loaded but the target isn't there, fall back
+  // to the list view with an inline not-found banner.
+  //
+  // Both `loading` and `isFetching` defer the not-found decision: `loading`
+  // covers the first-ever fetch, `isFetching` covers a background refetch
+  // triggered by an invalidation (e.g. the agent just wrote a new entry —
+  // we must wait for the refresh before declaring "not found").
+  useEffect(() => {
+    if (targetKey == null) return;
+    if (targetTier && targetTier !== tier) {
+      setTier(targetTier);
+      setSelectedKey(null);
+      // A banner from the prior tier's lookup would mislead after the flip —
+      // the new tier's lookup hasn't decided yet.
+      setNotFoundKey(null);
+      // Wait for the next render after tier switch.
+      return;
+    }
+    if (list.loading || list.isFetching) return;
+    const hit = list.entries.find((e) => e.key === targetKey);
+    if (hit) {
+      setSelectedKey(targetKey);
+      setNotFoundKey(null);
+    } else {
+      setSelectedKey(null);
+      setNotFoundKey(targetKey);
+    }
+    onTargetHandled?.();
+  }, [targetKey, targetTier, tier, list.loading, list.isFetching, list.entries, onTargetHandled]);
+
+  // If the agent later writes a new entry, the not-found banner for an old
+  // missing key should clear so it doesn't lie about the current list state.
+  // Keying on `entries.length` would miss the case where the user deletes
+  // the missing entry and the agent writes the previously-missing key in
+  // the same refetch (net length unchanged) — a stable signature of the
+  // entry keys catches every membership mutation.
+  const entriesSig = useMemo(
+    () => list.entries.map((e) => e.key).join('|'),
+    [list.entries],
+  );
+  useEffect(() => {
+    if (notFoundKey && list.entries.some((e) => e.key === notFoundKey)) {
+      setNotFoundKey(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entriesSig, notFoundKey]);
 
   const rootLabel =
     tier === 'user' ? '.agents/user/memory/' : '.agents/workspace/memory/';
@@ -105,7 +215,11 @@ export default function MemoryPanel({ workspaceId }: MemoryPanelProps) {
             </div>
           )}
           {read.data && (
-            <Markdown content={read.data.content} variant="panel" />
+            <Markdown
+              content={read.data.content}
+              variant="panel"
+              onOpenFile={onOpenFile ? handleBodyLinkOpen : undefined}
+            />
           )}
         </div>
       </div>
@@ -158,6 +272,28 @@ export default function MemoryPanel({ workspaceId }: MemoryPanelProps) {
            style={{ color: 'var(--color-text-tertiary)' }}>
         {rootLabel}
       </div>
+
+      {notFoundKey && (
+        <div
+          className="flex items-start justify-between gap-2 px-3 py-2 text-xs"
+          style={{
+            backgroundColor: 'var(--color-loss-soft)',
+            color: 'var(--color-loss)',
+          }}
+        >
+          <span className="min-w-0">
+            {t('memoryPanel.notFound', { key: notFoundKey })}
+          </span>
+          <button
+            type="button"
+            onClick={() => setNotFoundKey(null)}
+            className="flex-shrink-0"
+            title={t('memoryPanel.dismissNotFound')}
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* List body */}
       <div className="flex-1 overflow-y-auto">

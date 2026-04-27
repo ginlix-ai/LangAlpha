@@ -1,16 +1,16 @@
 import React, { useState } from 'react';
 import { ChevronDown, ChevronUp, FileText } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { TextShimmer } from '@/components/ui/text-shimmer';
-import { getDisplayName, getToolIcon, getInProgressText, stripLineNumbers, parseTruncatedResult } from './toolDisplayConfig';
+import { getDisplayName, getToolIcon, getActiveLabel, stripLineNumbers, parseTruncatedResult } from './toolDisplayConfig';
 import Markdown from './Markdown';
 import { parseDisplayableResults, buildRichResultMap, resolveSnippet } from './webSearchUtils';
 
 /**
  * File-related tool names that support opening in the file panel.
- * Backend uses PascalCase (LangChain SDK convention). Include both for backward compatibility
- * with older history that may have snake_case tool names.
+ * Mirrors the agent's @tool decorators in src/ptc_agent/agent/tools/file_ops.py.
  */
-const FILE_TOOLS = ['Write', 'Edit', 'Read', 'Save', 'write_file', 'edit_file', 'read_file', 'save_file'];
+const FILE_TOOLS = ['Write', 'Edit', 'Read'];
 
 /**
  * Inline tools — results are shown as a one-line summary directly in the row.
@@ -180,10 +180,8 @@ interface ToolCallMessageContentProps {
 }
 
 /**
- * ToolCallMessageContent Component
- *
- * Renders tool call information. Used in the agent panel (non-textOnly mode).
- * In the main chat textOnly mode, tool calls are rendered via ActivityAccordion/LiveActivity instead.
+ * ToolCallMessageContent -- used in the subagent/detail panel.
+ * In the main chat view, tool calls are rendered by ActivityBlock instead.
  */
 function ToolCallMessageContent({
   toolCallId: _toolCallId,
@@ -197,6 +195,7 @@ function ToolCallMessageContent({
   onDetailClick,
   mergedProcesses
 }: ToolCallMessageContentProps): React.ReactElement | null {
+  const { t } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(false);
 
   // Resolve display data: single from props or last of merged
@@ -205,7 +204,8 @@ function ToolCallMessageContent({
     : [{ toolName, toolCall, toolCallResult, isInProgress, isComplete, isFailed }];
   const displayProcess = processes[processes.length - 1];
   const rawToolName = displayProcess.toolName || displayProcess.toolCall?.name || 'Tool Call';
-  const displayName = getDisplayName(rawToolName);
+  const displayArgs = displayProcess.toolCall?.args;
+  const displayName = getDisplayName(rawToolName, t, displayArgs);
   const isFileTool = FILE_TOOLS.includes(rawToolName);
   const filePath = isFileTool ? getFilePathFromToolCall(displayProcess.toolCall) : null;
 
@@ -226,7 +226,7 @@ function ToolCallMessageContent({
     : [];
   const hasInlineResult = inlineSummaries.length > 0;
 
-  const IconComponent = getToolIcon(rawToolName);
+  const IconComponent = getToolIcon(rawToolName, displayArgs);
 
   // Inline tool rendering — compact row with summary
   if (isInlineTool) {
@@ -280,7 +280,7 @@ function ToolCallMessageContent({
                 className="font-medium text-[13px] [--base-color:var(--Labels-Secondary)] [--base-gradient-color:var(--color-text-primary)]"
                 duration={1.5}
               >
-                {`${displayName} ${getInProgressText(rawToolName, displayProcess.toolCall) || ''}`}
+                {getActiveLabel(rawToolName, displayProcess.toolCall, t)}
               </TextShimmer>
             ) : (
               <span style={{ fontWeight: 500 }}>{displayName}</span>
@@ -347,7 +347,7 @@ function ToolCallMessageContent({
             className="font-medium text-[13px] [--base-color:var(--Labels-Secondary)] [--base-gradient-color:var(--color-text-primary)]"
             duration={1.5}
           >
-            {`${displayName} ${getInProgressText(rawToolName, displayProcess.toolCall) || ''}`}
+            {getActiveLabel(rawToolName, displayProcess.toolCall, t)}
           </TextShimmer>
         ) : (
           <span style={{ color: 'inherit' }}>{displayName}</span>

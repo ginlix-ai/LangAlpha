@@ -46,6 +46,7 @@ import {
   type MemoMetadataStatus,
 } from '../utils/api';
 import Markdown from './Markdown';
+import { MEMO_USER_DIR } from '../utils/agentPaths';
 import './FilePanel.css';
 
 // --- Constants -------------------------------------------------------------
@@ -316,8 +317,51 @@ function ConfirmDialog({
 
 // --- Main component -------------------------------------------------------
 
-export default function MemoPanel() {
+interface MemoPanelProps {
+  /** When set, the panel selects this entry once the list resolves. */
+  targetKey?: string | null;
+  onTargetHandled?: () => void;
+  /** Routes a clicked link inside the rendered memo body through the
+   * parent's path-aware router. Bare sibling slugs are resolved against
+   * the memo dir before calling. */
+  onOpenFile?: (path: string, workspaceId?: string) => void;
+}
+
+export default function MemoPanel({ targetKey, onTargetHandled, onOpenFile }: MemoPanelProps = {}) {
   const { t } = useTranslation();
+  const [notFoundKey, setNotFoundKey] = useState<string | null>(null);
+
+  // Mirror MemoryPanel: bare sibling refs in a memo body resolve against the
+  // memo dir so they classify as memo and pre-select the right entry.
+  //
+  // Heuristic: memos can be any of md / txt / csv / json / pdf, so we can't
+  // gate on extension alone. Sibling memos are pure root-level slugs — any
+  // href containing a `/` (e.g. `reports/q1.pdf`) is a sandbox file
+  // referenced from the memo body and must pass through to file routing.
+  const handleBodyLinkOpen = useCallback(
+    (href: string, wsId?: string) => {
+      if (!onOpenFile || !href) return;
+      const isAlreadyQualified =
+        href.startsWith('.agents/') ||
+        href.startsWith('__wsref__/') ||
+        href.startsWith('/') ||
+        /^[a-z][a-z0-9+.-]*:/i.test(href);
+      if (isAlreadyQualified) {
+        onOpenFile(href, wsId);
+        return;
+      }
+      const clean = href.replace(/^\.\//, '');
+      // A subdirectory = not a memo sibling. Pass through so the file router
+      // (or a 404 in the file panel) handles it instead of fabricating a
+      // bogus `.agents/user/memo/reports/q1.pdf` path.
+      if (clean.includes('/')) {
+        onOpenFile(clean, wsId);
+        return;
+      }
+      onOpenFile(`${MEMO_USER_DIR}/${clean}`, wsId);
+    },
+    [onOpenFile],
+  );
 
   const list = useUserMemoList(true);
   const uploadMutation = useUploadUserMemo();
@@ -358,6 +402,37 @@ export default function MemoPanel() {
   const [editContent, setEditContent] = useState<string>('');
   const [deleteKey, setDeleteKey] = useState<string | null>(null);
   const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
+  // Non-blocking discard-confirm dialog. Replaces window.confirm() — a sync
+  // confirm freezes the JS event loop including the SSE reader, so streaming
+  // animations stutter while the dialog is up. The pending action runs on
+  // Discard; Cancel just closes the dialog and leaves the editor intact.
+  const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
+  const pendingDiscardActionRef = useRef<(() => void) | null>(null);
+  const handleDiscardConfirm = useCallback(() => {
+    const fn = pendingDiscardActionRef.current;
+    pendingDiscardActionRef.current = null;
+    setDiscardConfirmOpen(false);
+    fn?.();
+  }, []);
+  const handleDiscardCancel = useCallback(() => {
+    pendingDiscardActionRef.current = null;
+    setDiscardConfirmOpen(false);
+  }, []);
+  // Same dialog node is rendered in both the entry-view and list-view return
+  // branches. Both share `discardConfirmOpen` state, so only one is ever
+  // mounted at a time — but defining the JSX in one place keeps the two
+  // sites from drifting. NOTE: must be defined after `t` (line 331).
+  const discardConfirmDialog = (
+    <ConfirmDialog
+      open={discardConfirmOpen}
+      title={t('memoPanel.discardEditTitle')}
+      body={t('memoPanel.unsavedDiscardConfirm')}
+      confirmLabel={t('memoPanel.discardEdits')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={handleDiscardConfirm}
+      onCancel={handleDiscardCancel}
+    />
+  );
 
   // Panel width drives the responsive layout below.
   const { ref: bodyRef, width: panelWidth } = useElementWidth();
@@ -556,6 +631,78 @@ export default function MemoPanel() {
     setEditing(false);
     setEditContent('');
   }, []);
+
+  // Mirror an external targetKey into selected state once the list resolves.
+  // Empty-string targetKey is the "open Memo tab to LIST" sentinel used for
+  // the memo index path — drop any current entry view so the user actually
+  // lands on the LIST. Null means no target.
+  //
+  // Both `isLoading` and `isFetching` defer the not-found decision: the
+  // first covers the initial fetch, the second covers a background refetch
+  // (e.g. the agent just wrote a new memo and triggered an invalidation —
+  // we must wait for the refresh before declaring "not found").
+  useEffect(() => {
+    if (targetKey == null) return;
+    if (targetKey === '') {
+      // User has an unsaved edit in the editor — open the non-blocking
+      // discard-confirm dialog. We ack the target immediately so the parent
+      // clears it (no render loop); the actual discard runs on user click.
+      if (editing && editContent !== (read.data?.content ?? '')) {
+        pendingDiscardActionRef.current = () => {
+          setSelectedKey(null);
+          setEditing(false);
+          setEditContent('');
+          setNotFoundKey(null);
+        };
+        setDiscardConfirmOpen(true);
+        onTargetHandled?.();
+        return;
+      }
+      setSelectedKey(null);
+      setEditing(false);
+      setEditContent('');
+      setNotFoundKey(null);
+      onTargetHandled?.();
+      return;
+    }
+    if (list.isLoading || list.isFetching) return;
+    const hit = sortedEntries.find((e) => e.key === targetKey);
+    if (hit) {
+      handleOpen(targetKey);
+      setNotFoundKey(null);
+    } else {
+      setSelectedKey(null);
+      setNotFoundKey(targetKey);
+    }
+    onTargetHandled?.();
+  }, [
+    targetKey,
+    list.isLoading,
+    list.isFetching,
+    sortedEntries,
+    handleOpen,
+    onTargetHandled,
+    editing,
+    editContent,
+    read.data,
+  ]);
+
+  // Clear the not-found banner if the missing key later appears (e.g., the
+  // user uploaded the memo from a different surface). Avoids the banner
+  // outliving the condition it described. Using a stable key signature
+  // (instead of length) catches the case where the user deletes the missing
+  // entry and the agent uploads the previously-missing key in the same
+  // refetch — net length unchanged, but membership did change.
+  const memoEntriesSig = useMemo(
+    () => sortedEntries.map((e) => e.key).join('|'),
+    [sortedEntries],
+  );
+  useEffect(() => {
+    if (notFoundKey && sortedEntries.some((e) => e.key === notFoundKey)) {
+      setNotFoundKey(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [memoEntriesSig, notFoundKey]);
 
   const handleBackToList = useCallback(() => {
     setSelectedKey(null);
@@ -846,7 +993,11 @@ export default function MemoPanel() {
               {t('memoPanel.loading')}
             </div>
           ) : isMarkdown ? (
-            <Markdown content={content} variant="panel" />
+            <Markdown
+              content={content}
+              variant="panel"
+              onOpenFile={onOpenFile ? handleBodyLinkOpen : undefined}
+            />
           ) : (
             <pre
               className="whitespace-pre-wrap break-words text-xs font-mono"
@@ -870,6 +1021,7 @@ export default function MemoPanel() {
           onConfirm={handleConfirmDelete}
           onCancel={() => setDeleteKey(null)}
         />
+        {discardConfirmDialog}
       </div>
     );
   }
@@ -1033,6 +1185,28 @@ export default function MemoPanel() {
           }}
         >
           {listError}
+        </div>
+      )}
+
+      {notFoundKey && (
+        <div
+          className="flex items-start justify-between gap-2 px-3 py-2 text-xs"
+          style={{
+            backgroundColor: 'var(--color-loss-soft)',
+            color: 'var(--color-loss)',
+          }}
+        >
+          <span className="min-w-0">
+            {t('memoPanel.notFound', { key: notFoundKey })}
+          </span>
+          <button
+            type="button"
+            onClick={() => setNotFoundKey(null)}
+            className="flex-shrink-0"
+            title={t('memoPanel.dismissNotFound')}
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
         </div>
       )}
 
@@ -1250,6 +1424,7 @@ export default function MemoPanel() {
         onConfirm={handleBulkDelete}
         onCancel={() => setBulkDeleteOpen(false)}
       />
+      {discardConfirmDialog}
     </div>
   );
 }
