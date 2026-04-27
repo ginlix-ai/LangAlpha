@@ -3,6 +3,7 @@ import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { AnimatedTabs } from '@/components/ui/animated-tabs';
 import type { ContextPayload } from './FilePanel';
+import type { MemoryTier } from '../utils/agentPaths';
 
 const FilePanel = React.lazy(() => import('./FilePanel'));
 const MemoryPanel = React.lazy(() => import('./MemoryPanel'));
@@ -17,6 +18,17 @@ interface RightPanelProps {
   onTargetFileHandled?: () => void;
   targetDirectory?: string | null;
   onTargetDirHandled?: () => void;
+  /** Memory entry to pre-select when the Memory tab opens. */
+  targetMemoryKey?: string | null;
+  targetMemoryTier?: MemoryTier | null;
+  onTargetMemoryHandled?: () => void;
+  /** Memo entry to pre-select when the Memo tab opens. */
+  targetMemoKey?: string | null;
+  onTargetMemoHandled?: () => void;
+  /** Routes a clicked file/memory/memo path through ChatView's path-aware
+   * router. Lets in-panel markdown links (e.g., a sibling memory entry
+   * referenced from memory.md) jump to the right tab + entry. */
+  onOpenFile?: (path: string, workspaceId?: string) => void;
   files?: string[];
   filesLoading?: boolean;
   filesError?: string | null;
@@ -37,6 +49,12 @@ export default function RightPanel({
   onTargetFileHandled,
   targetDirectory,
   onTargetDirHandled,
+  targetMemoryKey,
+  targetMemoryTier,
+  onTargetMemoryHandled,
+  targetMemoKey,
+  onTargetMemoHandled,
+  onOpenFile,
   files,
   filesLoading,
   filesError,
@@ -60,11 +78,15 @@ export default function RightPanel({
     [t],
   );
 
-  // If the caller navigates to a specific file while the Memory tab is active,
-  // snap back to Files so the user sees what they asked for.
+  // Snap-back precedence: memory > memo > file. The parent (ChatView) clears
+  // sibling targets before setting one, so in steady state only one branch
+  // fires; this effect is the second line of defense if multiple are set
+  // in the same render.
   React.useEffect(() => {
-    if (targetFile || targetDirectory) setTab('files');
-  }, [targetFile, targetDirectory]);
+    if (targetMemoryKey != null) setTab('memory');
+    else if (targetMemoKey != null) setTab('memo');
+    else if (targetFile || targetDirectory) setTab('files');
+  }, [targetMemoryKey, targetMemoKey, targetFile, targetDirectory]);
 
   return (
     <div
@@ -118,8 +140,22 @@ export default function RightPanel({
               onSwitchToMemoTab={() => setTab('memo')}
             />
           )}
-          {tab === 'memory' && <MemoryPanel workspaceId={workspaceId} />}
-          {tab === 'memo' && <MemoPanel />}
+          {tab === 'memory' && (
+            <MemoryPanel
+              workspaceId={workspaceId}
+              targetKey={targetMemoryKey ?? null}
+              targetTier={targetMemoryTier ?? null}
+              onTargetHandled={onTargetMemoryHandled}
+              onOpenFile={onOpenFile}
+            />
+          )}
+          {tab === 'memo' && (
+            <MemoPanel
+              targetKey={targetMemoKey ?? null}
+              onTargetHandled={onTargetMemoHandled}
+              onOpenFile={onOpenFile}
+            />
+          )}
         </Suspense>
       </div>
     </div>

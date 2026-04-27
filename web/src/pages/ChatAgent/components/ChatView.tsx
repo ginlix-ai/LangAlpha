@@ -16,6 +16,8 @@ import type { PreviewData } from '../hooks/utils/types';
 import { clampPanelWidth as clampPanelWidthUtil } from '@/lib/panelUtils';
 import { useCardState } from '../hooks/useCardState';
 import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
+import { classifyAgentPath, computeAgentArtifactRouting, type MemoryTier } from '../utils/agentPaths';
+import { getCompletedRowTitle } from './toolDisplayConfig';
 import './FilePanel.css';
 import ChatInput, { type ChatInputHandle } from '../../../components/ui/chat-input';
 import { attachmentsToContexts, type Attachment } from '../utils/fileUpload';
@@ -200,9 +202,6 @@ const MAIN_AGENT: AgentInfo = {
   isMainAgent: true,
 };
 
-/**
- * SubagentStatusIndicator — inline status line for subagent view.
- */
 function SubagentStatusIndicator({ status, currentTool, toolCalls = 0, messages = [] }: SubagentStatusIndicatorProps): React.ReactElement {
   const { t } = useTranslation();
   // Derive streaming state from messages (self-sufficient, no subagent_status dependency)
@@ -262,20 +261,6 @@ function SubagentStatusIndicator({ status, currentTool, toolCalls = 0, messages 
   );
 }
 
-/**
- * ChatView Component
- *
- * Displays the chat interface for a specific workspace and thread.
- * Handles:
- * - Message display and streaming
- * - Auto-scrolling
- * - Navigation back to thread gallery
- * - Auto-sending initial message from navigation state
- *
- * @param {string} workspaceId - The workspace ID to chat in
- * @param {string} threadId - The thread ID to chat in
- * @param {Function} onBack - Callback to navigate back to thread gallery
- */
 function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName: initialWorkspaceName, isActive = true, onThreadResolved }: ChatViewProps): React.ReactElement | null {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
@@ -295,6 +280,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const [workspaceName, setWorkspaceName] = useState(initialWorkspaceName || '');
   const [filePanelTargetFile, setFilePanelTargetFile] = useState<string | null>(null);
   const [filePanelTargetDir, setFilePanelTargetDir] = useState<string | null>(null);
+  const [filePanelTargetMemoryKey, setFilePanelTargetMemoryKey] = useState<string | null>(null);
+  const [filePanelTargetMemoryTier, setFilePanelTargetMemoryTier] = useState<MemoryTier | null>(null);
+  const [filePanelTargetMemoKey, setFilePanelTargetMemoKey] = useState<string | null>(null);
   // Cross-workspace file panel: in flash mode, files live in PTC workspaces.
   // This tracks which workspace the file panel should fetch from.
   const [filePanelWorkspaceId, setFilePanelWorkspaceId] = useState<string | null>(null);
@@ -378,6 +366,16 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // Ref mirrors isActive prop for use in unmount cleanup closures (R1)
   const isActiveRef = useRef(isActive);
   isActiveRef.current = isActive;
+
+  // --- Aria-live announcement for screen readers ---
+  // String announced through a polite live region whenever a tool call
+  // transitions from in-progress → completed/failed. Auto-clears after 3s
+  // so re-focus on the live region doesn't replay stale announcements.
+  // Tool-call ids we've already announced so we don't re-trigger on every
+  // re-render once the transition has been observed.
+  const announcedToolCallIdsRef = useRef<Set<string>>(new Set());
+  const announcementClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [recentlyCompletedAnnouncement, setRecentlyCompletedAnnouncement] = useState('');
 
   // --- Scroll position memory for tab switching ---
   // Stores scrollTop per agentId so switching tabs preserves position
@@ -506,22 +504,25 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     refresh: refreshFiles,
   } = useWorkspaceFiles(effectiveFileWorkspaceId, { includeSystem: showSystemFiles });
 
-  // When the agent writes to a memory-tier path, invalidate the memory queries
-  // so the Memory tab reflects the new content without a manual refresh.
+  // When the agent writes to a memory- or memo-tier path, invalidate the
+  // matching queries so the Memory / Memo tab reflects the new content
+  // without a manual refresh. classifyAgentPath is the single source of
+  // truth — same logic the chat row click routing uses.
   const handleFileArtifact = useCallback((event: { payload?: Record<string, unknown> }) => {
     refreshFiles();
     const filePath = (event?.payload?.file_path as string | undefined) ?? '';
     if (!filePath) return;
-    const normalized = filePath.replace(/^\/+/, '');
-    const matchesUser = normalized.includes('.agents/user/memory/');
-    const matchesWorkspace = normalized.includes('.agents/workspace/memory/');
-    if (matchesUser) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.memory.user() });
-    }
-    if (matchesWorkspace && effectiveFileWorkspaceId) {
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.memory.workspace(effectiveFileWorkspaceId),
-      });
+    const info = classifyAgentPath(filePath);
+    if (info.kind === 'memory') {
+      if (info.tier === 'user') {
+        queryClient.invalidateQueries({ queryKey: queryKeys.memory.user() });
+      } else if (effectiveFileWorkspaceId) {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.memory.workspace(effectiveFileWorkspaceId),
+        });
+      }
+    } else if (info.kind === 'memo') {
+      queryClient.invalidateQueries({ queryKey: queryKeys.memo.all });
     }
   }, [refreshFiles, queryClient, effectiveFileWorkspaceId]);
 
@@ -997,23 +998,45 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     };
   }, []);
 
-  const handleOpenFileFromChat = useCallback((filePath: string, targetWorkspaceId?: string) => {
-    // For cross-workspace file references (ws:// links from flash), switch the file panel workspace
-    if (targetWorkspaceId) {
-      setFilePanelWorkspaceId(targetWorkspaceId);
+  /**
+   * Routes a click on a tool-call artifact to the right panel tab that owns
+   * its domain. The pure decision is computed by computeAgentArtifactRouting;
+   * we apply the result atomically (clear everything, then set).
+   */
+  const handleOpenAgentArtifactFromChat = useCallback((rawPath: string, targetWorkspaceId?: string) => {
+    const r = computeAgentArtifactRouting(rawPath, targetWorkspaceId);
+
+    setFilePanelTargetDir(null);
+    setFilePanelTargetFile(r.targetFile);
+    setFilePanelTargetMemoryKey(r.targetMemoryKey);
+    setFilePanelTargetMemoryTier(r.targetMemoryTier);
+    setFilePanelTargetMemoKey(r.targetMemoKey);
+    if (r.clearWorkspaceId) {
+      setFilePanelWorkspaceId(null);
+    } else if (r.setWorkspaceId) {
+      setFilePanelWorkspaceId(r.setWorkspaceId);
     }
+
     setRightPanelWidth(clampPanelWidth(850));
     setRightPanelType('file');
-    setFilePanelTargetDir(null);
-    setFilePanelTargetFile(filePath);
     pushPanelHistory();
   }, [clampPanelWidth, pushPanelHistory]);
 
-  // Open file panel filtered to a specific directory
+  // Alias kept for the existing callers (tool-call rows, ws:// flash links,
+  // file-panel handoffs) that still use the older name. Pure identity — the
+  // unified router does the path-aware classification on every call.
+  const handleOpenFileFromChat = handleOpenAgentArtifactFromChat;
+
+  // Open file panel filtered to a specific directory. Clears every other
+  // target first — symmetric with handleOpenAgentArtifactFromChat — so a
+  // pending memory/memo pre-select can't snap-back hijack the dir click.
   const handleOpenDirFromChat = useCallback((dirPath: string) => {
     setRightPanelWidth(clampPanelWidth(850));
     setRightPanelType('file');
     setFilePanelTargetFile(null);
+    setFilePanelTargetMemoryKey(null);
+    setFilePanelTargetMemoryTier(null);
+    setFilePanelTargetMemoKey(null);
     setFilePanelTargetDir(dirPath);
     pushPanelHistory();
   }, [clampPanelWidth, pushPanelHistory]);
@@ -1565,6 +1588,62 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     }
   }, [messages]);
 
+  // Aria-live announcements for tool call completion. Watches assistant
+  // messages for tool-call processes that have transitioned out of
+  // `isInProgress: true` and emits a path-aware "<verb> <object> completed/failed"
+  // string into a polite live region. Each tool-call id is announced at most
+  // once; the announcement auto-clears after 3s so re-focus doesn't replay it.
+  useEffect(() => {
+    const seen = announcedToolCallIdsRef.current;
+    let latestLabel: string | null = null;
+    let latestFailed = false;
+
+    for (const m of messages as unknown as Array<Record<string, unknown>>) {
+      if (m?.role !== 'assistant') continue;
+      const procs = m.toolCallProcesses as Record<string, Record<string, unknown>> | undefined;
+      if (!procs) continue;
+      for (const [id, proc] of Object.entries(procs)) {
+        if (!proc) continue;
+        if (proc.isInProgress) continue;
+        // Only announce once per tool-call id.
+        if (seen.has(id)) continue;
+        // Only announce real terminal states (completed or failed). Skip
+        // entries that haven't reached either yet.
+        const isFailed = proc.isFailed === true;
+        const isCompleted = proc.isComplete === true || proc.toolCallResult != null;
+        if (!isFailed && !isCompleted) continue;
+        seen.add(id);
+        const toolName = (proc.toolName as string) || '';
+        const toolCall = proc.toolCall as { args?: Record<string, unknown> } | undefined;
+        const baseTitle = getCompletedRowTitle(toolName, toolCall, t);
+        latestLabel = baseTitle;
+        latestFailed = isFailed;
+      }
+    }
+
+    if (latestLabel) {
+      const tail = latestFailed
+        ? t('chat.a11y.toolCallFailed', 'failed')
+        : t('chat.a11y.toolCallCompleted', 'completed');
+      setRecentlyCompletedAnnouncement(`${latestLabel} ${tail}`);
+      if (announcementClearTimerRef.current) clearTimeout(announcementClearTimerRef.current);
+      announcementClearTimerRef.current = setTimeout(() => {
+        setRecentlyCompletedAnnouncement('');
+        announcementClearTimerRef.current = null;
+      }, 3000);
+    }
+  }, [messages, t]);
+
+  // Clear announcement timer on unmount.
+  useEffect(() => {
+    return () => {
+      if (announcementClearTimerRef.current) {
+        clearTimeout(announcementClearTimerRef.current);
+        announcementClearTimerRef.current = null;
+      }
+    };
+  }, []);
+
   // Auto-scroll subagent view when active subagent's messages change
   // Uses the same smart-scroll logic: only scroll if user is near the bottom
   // Skipped when restoring a saved scroll position after tab switch
@@ -1637,6 +1716,11 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
         backgroundColor: 'var(--color-bg-page)',
       }}
     >
+      {/* Polite aria-live region for screen-reader announcements when tool
+          calls reach a terminal state. Visually hidden via sr-only. */}
+      <div aria-live="polite" aria-atomic="false" className="sr-only">
+        {recentlyCompletedAnnouncement}
+      </div>
       {/* Left Side: Topbar + Sidebar + Chat Window */}
       <div className="flex flex-col flex-1 min-w-0">
         {/* Top bar */}
@@ -2223,6 +2307,15 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                   onTargetFileHandled={() => setFilePanelTargetFile(null)}
                   targetDirectory={filePanelTargetDir}
                   onTargetDirHandled={() => setFilePanelTargetDir(null)}
+                  targetMemoryKey={filePanelTargetMemoryKey}
+                  targetMemoryTier={filePanelTargetMemoryTier}
+                  onTargetMemoryHandled={() => {
+                    setFilePanelTargetMemoryKey(null);
+                    setFilePanelTargetMemoryTier(null);
+                  }}
+                  targetMemoKey={filePanelTargetMemoKey}
+                  onTargetMemoHandled={() => setFilePanelTargetMemoKey(null)}
+                  onOpenFile={handleOpenFileFromChat}
                   files={workspaceFiles}
                   filesLoading={filesLoading}
                   filesError={filesError}
@@ -2276,6 +2369,15 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                       onTargetFileHandled={() => setFilePanelTargetFile(null)}
                       targetDirectory={filePanelTargetDir}
                       onTargetDirHandled={() => setFilePanelTargetDir(null)}
+                      targetMemoryKey={filePanelTargetMemoryKey}
+                      targetMemoryTier={filePanelTargetMemoryTier}
+                      onTargetMemoryHandled={() => {
+                        setFilePanelTargetMemoryKey(null);
+                        setFilePanelTargetMemoryTier(null);
+                      }}
+                      targetMemoKey={filePanelTargetMemoKey}
+                      onTargetMemoHandled={() => setFilePanelTargetMemoKey(null)}
+                      onOpenFile={handleOpenFileFromChat}
                       files={workspaceFiles}
                       filesLoading={filesLoading}
                       filesError={filesError}
