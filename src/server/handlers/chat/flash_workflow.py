@@ -270,20 +270,24 @@ async def astream_flash_workflow(
         # Skill Context Injection (Flash mode)
         loaded_skill_names = inject_skills(messages, request, config, mode="flash")
 
-        # Directive Context Injection (inline with user message) --
-        # Flash-specific
+        # Directive + Widget Context Injection (inline with user message) --
+        # Flash-specific. Skip on HITL resumes and checkpoint replay because
+        # `input_state` below replaces `messages` with `Command(resume=...)` /
+        # `None`, so anything appended here would be silently discarded.
+        # Mirrors the PTC guard at `ptc_workflow.py:620,638`.
+        skip_inline_injection = bool(request.hitl_response) or is_checkpoint_replay
+
         directives = parse_directive_contexts(request.additional_context)
         directive_reminder = build_directive_reminder(directives)
-        if directive_reminder:
+        if directive_reminder and not skip_inline_injection:
             _append_to_last_user_message(messages, directive_reminder)
             logger.info(
                 f"[FLASH_CHAT] Directive context injected inline "
                 f"({len(directives)} directives)"
             )
 
-        # Widget Context Injection (inline with user message) -- Flash-specific
         widget_reminder = build_widget_context_reminder(widget_ctxs)
-        if widget_reminder:
+        if widget_reminder and not skip_inline_injection:
             _append_to_last_user_message(messages, widget_reminder)
             logger.info(
                 f"[FLASH_CHAT] Widget context injected inline "
