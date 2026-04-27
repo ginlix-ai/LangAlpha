@@ -71,13 +71,6 @@ interface DetailPanelProps {
   onOpenSubagentTask?: (info: SubagentInfo) => void;
 }
 
-/**
- * DetailPanel Component
- *
- * Renders the detailed result of a single tool call in the right panel.
- * Routes artifact data to appropriate chart components when available,
- * otherwise falls back to markdown rendering.
- */
 function DetailPanel({ toolCallProcess, planData, onClose, onOpenFile, onOpenSubagentTask }: DetailPanelProps): React.ReactElement | null {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
@@ -129,9 +122,10 @@ function DetailPanel({ toolCallProcess, planData, onClose, onOpenFile, onOpenSub
   if (!toolCallProcess) return null;
 
   const toolName = toolCallProcess.toolName || '';
+  const toolArgs = toolCallProcess.toolCall?.args;
   const isTaskTool = toolName === 'Task' || toolName === 'task';
-  const displayName = isTaskTool ? t('toolArtifact.subagentTask') : getDisplayName(toolName, t);
-  const IconComponent = getToolIcon(toolName);
+  const displayName = isTaskTool ? t('toolArtifact.subagentTask') : getDisplayName(toolName, t, toolArgs);
+  const IconComponent = getToolIcon(toolName, toolArgs);
   const artifact = toolCallProcess.toolCallResult?.artifact;
   const content = toolCallProcess.toolCallResult?.content;
 

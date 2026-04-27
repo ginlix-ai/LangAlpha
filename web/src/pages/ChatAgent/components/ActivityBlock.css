@@ -1,0 +1,310 @@
+/* ActivityBlock — monochrome timeline + state visuals. */
+
+/* --- Live row state cues -------------------------------------------------- */
+
+.nrow {
+  position: relative;
+}
+
+/* Active state: 2px left rule + label shimmer (handled by TextShimmer). */
+.nrow.state-active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: var(--color-border-default, var(--color-text-secondary));
+  border-radius: 1px;
+}
+
+/* Completing/Failed/Preparing: no left rule, neutral state. */
+
+/* State badge — a small lucide icon overlaid on the tool icon. */
+.nrow-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--Labels-Secondary);
+  background: var(--color-bg-page);
+  border-radius: 999px;
+  padding: 1px;
+}
+
+/* --- Accordion timeline --------------------------------------------------- */
+
+.timeline {
+  position: relative;
+  list-style: none;
+  margin: 0;
+  padding: 6px 0 4px;
+}
+
+.titem {
+  position: relative;
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  gap: 12px;
+  align-items: start;
+  /* No left padding — icon column starts at 0 so center sits on the rule (11px). */
+  padding: 7px 8px 7px 0;
+  border-radius: 4px;
+  transition: background-color 80ms;
+}
+
+/* The vertical rule is segmented per row so it has visible padding around each
+ * icon (matches Claude's pattern). Two short segments: one above and one below
+ * the icon, both anchored to the row edges so they bridge the inter-row margin
+ * and visually connect into the neighboring row's segments. Segments extend
+ * 1px past the row top/bottom so the 2px row margin reads as a continuous line.
+ *
+ * Geometry (row padding 7px + icon container 20px, icon visual ~16px centered
+ * spans y=9..25 within the row):
+ *   - Upper: y=-1 → y=4     (stops 5px above icon visual top y=9)
+ *   - Lower: y=30 → y=row-bottom+1  (starts 5px below icon visual bottom y=25)
+ */
+.titem::before,
+.titem::after {
+  content: '';
+  position: absolute;
+  left: 11px;
+  width: 1px;
+  background: var(--color-border-default, var(--color-border-muted));
+  pointer-events: none;
+}
+
+.titem::before {
+  top: -1px;
+  height: 5px;
+}
+
+.titem::after {
+  top: 30px;
+  bottom: -1px;
+}
+
+/* First row has no segment going up (nothing above to connect to).
+ * Targets the parent <li> because each .titem is wrapped in its own <li>,
+ * which means .titem itself is always :first-child of that <li>. */
+.timeline > li:first-child .titem::before {
+  display: none;
+}
+
+/* Last row has no segment going down (nothing below to connect to). */
+.timeline > li:last-child .titem::after {
+  display: none;
+}
+
+.titem + .titem {
+  margin-top: 2px;
+}
+
+/* No hover background — keeps rows flush with body text and avoids visually
+ * "boxing" the timeline. Hover affordance is carried by the obj/title-button
+ * underline within the row, not the row container itself. */
+
+.titem-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* No background mask — rule passes behind icons; lucide stroke interrupts it
+   * naturally and a solid mask creates a visible block on hover. */
+  z-index: 2;
+  height: 20px;
+  color: var(--Labels-Secondary);
+}
+
+.titem-body {
+  min-width: 0;
+  padding-top: 1px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* First row inside body: verb on the left, pill (and any chevron) inline.
+ * `align-items: baseline` keeps mixed sans + mono text on the same baseline
+ * (centering aligns box midpoints, which drifts visually across fonts). */
+.titem-line {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.titem-title {
+  font-size: 13.5px;
+  font-weight: 400;
+  color: var(--color-text-primary);
+  line-height: 1.35;
+  letter-spacing: -0.005em;
+  /* Verb stays whole so the pill is what truncates if width gets tight. */
+  flex-shrink: 0;
+}
+
+/* Title acting as the row's click target (when no pill is rendered). */
+.titem-title-button {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  text-align: left;
+  transition: color 80ms;
+}
+
+.titem-title-button:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--color-border-default);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+
+.titem-title-button:focus-visible {
+  outline: 2px solid var(--color-accent-primary);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.titem-pill-wrap {
+  display: inline-flex;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+/* Pushed-right slot for trailing controls (chevron toggles, etc.).
+ * `align-self: center` overrides the line's baseline alignment for icon-only
+ * controls, which have no text baseline. */
+.titem-trail {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  color: var(--Labels-Tertiary);
+}
+
+/* "Done" terminus row anchors the timeline. */
+.titem.titem-done .titem-icon::after {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-border-default);
+}
+
+.titem.titem-done .titem-title {
+  color: var(--Labels-Tertiary);
+  font-weight: 400;
+}
+
+/* --- Object pill chip (clickable affordance) ------------------------------ */
+
+.obj {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 0;
+  background: transparent;
+  color: var(--Labels-Secondary);
+  border: 0;
+  border-radius: 0;
+  transition: color 80ms;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.obj:hover {
+  color: var(--color-text-primary);
+  text-decoration: underline;
+  text-decoration-color: var(--color-border-default);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+
+.obj:focus-visible {
+  outline: 2px solid var(--color-accent-primary);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+@media (pointer: coarse) {
+  .obj {
+    min-height: 28px;
+    padding: 0;
+  }
+}
+
+/* --- Content-aware accordion header -------------------------------------- */
+
+.nhdr {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--Labels-Tertiary);
+}
+
+.nhdr-frag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.nhdr-sep {
+  color: var(--Labels-Tertiary);
+  opacity: 0.5;
+  margin: 0 2px;
+}
+
+/* --- Reasoning content card (in timeline) -------------------------------- */
+
+.titem-reasoning-card {
+  margin-top: 4px;
+  padding: 0;
+  background: transparent;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--Labels-Secondary);
+}
+
+/* --- Responsive ---------------------------------------------------------- */
+
+@media (max-width: 600px) {
+  .timeline {
+    padding: 4px 0;
+  }
+  .titem {
+    grid-template-columns: 20px 1fr;
+    gap: 10px;
+    /* Icon column center = 10px → rule at left:9px (1px line, half-aligned). */
+    padding: 6px 6px 6px 0;
+  }
+  /* Mobile: re-anchor segmented rule to the 20px icon column.
+   * Row padding 6px + icon container 20px → icon center y=16, visual y=8..24.
+   * Same 5px breathing room above/below the icon. */
+  .titem::before,
+  .titem::after {
+    left: 9px;
+  }
+  .titem::before {
+    height: 4px;
+  }
+  .titem::after {
+    top: 29px;
+  }
+  .nhdr {
+    font-size: 11.5px;
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+}
