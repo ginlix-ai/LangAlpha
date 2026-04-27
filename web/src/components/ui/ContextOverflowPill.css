@@ -1,0 +1,61 @@
+.context-overflow-pill {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--color-bg-card, #ffffff);
+  border: 1px solid var(--color-border-elevated, rgba(20, 20, 23, 0.14));
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--color-text-primary, #1a1a1c);
+  cursor: pointer;
+  box-shadow:
+    0 16px 32px -10px rgba(20, 20, 23, 0.16),
+    0 4px 8px -4px rgba(20, 20, 23, 0.08);
+  transition:
+    transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 180ms ease;
+  animation: contextPillIn 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.context-overflow-pill:hover {
+  transform: translateY(-1px);
+  border-color: var(--color-accent-primary, #b88a2c);
+  box-shadow:
+    0 22px 40px -10px rgba(20, 20, 23, 0.18),
+    0 6px 12px -4px rgba(20, 20, 23, 0.10);
+}
+
+.context-overflow-pill:focus-visible {
+  outline: 2px solid var(--color-accent-primary, #b88a2c);
+  outline-offset: 2px;
+}
+
+.context-overflow-pill__count {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-accent-primary, #b88a2c);
+}
+
+.context-overflow-pill__label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--color-text-tertiary, #8a8a8a);
+}
+
+@keyframes contextPillIn {
+  from { opacity: 0; transform: translateY(8px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .context-overflow-pill {
+    animation: none;
+    transition: none;
+  }
+}

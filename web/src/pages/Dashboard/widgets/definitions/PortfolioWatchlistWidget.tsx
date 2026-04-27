@@ -4,8 +4,17 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Wallet } from 'lucide-react';
 import { useDashboardContext } from '../framework/DashboardDataContext';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { useWidgetContextExport } from '../framework/contextSnapshot';
+import {
+  serializeQuoteRowsToMarkdown,
+  serializeQuoteRowToMarkdown,
+  wrapWidgetContext,
+} from '../framework/snapshotSerializers';
 import { PortfolioWatchlistConfigSchema } from '../framework/configSchemas';
+import { RowAttachButton } from '../../components/RowAttachButton';
 import type { WidgetRenderProps } from '../types';
+import type { PortfolioRow } from '../../hooks/usePortfolioData';
+import type { WatchlistRow } from '../../hooks/useWatchlistData';
 import {
   HoldingsAddButton,
   HoldingsSkeleton,
@@ -13,6 +22,7 @@ import {
   PortfolioRowItem,
   WatchlistRowItem,
 } from './_holdingsPrimitives';
+import { formatPortfolioNavMarkdownLine, portfolioSummary } from './_holdingsHelpers';
 
 type PWTabKey = 'watchlist' | 'portfolio';
 
@@ -20,6 +30,25 @@ type PortfolioWatchlistConfig = {
   defaultTab?: PWTabKey;
   valuesHidden?: boolean;
 };
+
+function watchlistRowToQuote(r: WatchlistRow) {
+  return {
+    symbol: r.symbol,
+    price: r.price,
+    change: r.change,
+    changePercent: r.changePercent,
+  };
+}
+
+function portfolioRowToQuote(r: PortfolioRow) {
+  return {
+    symbol: r.symbol,
+    price: r.price,
+    shares: r.quantity ?? undefined,
+    marketValue: r.marketValue,
+    changePercent: r.unrealizedPlPercent ?? undefined,
+  };
+}
 
 function PortfolioWatchlistWidget({
   instance,
@@ -36,6 +65,100 @@ function PortfolioWatchlistWidget({
 
   const [activeTab, setActiveTab] = useState<PWTabKey>(instance.config.defaultTab ?? 'watchlist');
   const [valuesHidden, setValuesHidden] = useState(!!instance.config.valuesHidden);
+
+  // Snapshot exporter — full payload reflects whichever tab the user is viewing
+  // (the agent should see what the user sees). Per-row attach delegates to the
+  // active tab's row collection.
+  useWidgetContextExport(instance.id, {
+    full: () => {
+      if (activeTab === 'watchlist') {
+        const rows = watchlist.rows.map(watchlistRowToQuote);
+        const body = serializeQuoteRowsToMarkdown(rows);
+        const text = wrapWidgetContext(
+          'personal.portfolioWatchlist',
+          { tab: 'watchlist', count: rows.length },
+          body,
+        );
+        return {
+          widget_type: 'personal.portfolioWatchlist',
+          widget_id: instance.id,
+          label: `${t('dashboard.widgets.portfolioWatchlist.headerWatchlist')} · ${rows.length}`,
+          description: rows.length ? `${rows.length} symbol${rows.length === 1 ? '' : 's'}` : 'empty',
+          captured_at: new Date().toISOString(),
+          text,
+          data: { tab: 'watchlist', rows },
+        };
+      }
+      const rows = portfolio.rows.map(portfolioRowToQuote);
+      const summary = portfolioSummary(portfolio.rows);
+      const navLine = formatPortfolioNavMarkdownLine(summary);
+      const lines: string[] = [];
+      if (navLine) lines.push(navLine, '');
+      lines.push(serializeQuoteRowsToMarkdown(rows));
+      const text = wrapWidgetContext(
+        'personal.portfolioWatchlist',
+        { tab: 'portfolio', count: rows.length },
+        lines.join('\n'),
+      );
+      return {
+        widget_type: 'personal.portfolioWatchlist',
+        widget_id: instance.id,
+        label: `${t('dashboard.widgets.portfolioWatchlist.headerHoldings')} · ${rows.length}`,
+        description: rows.length ? `${rows.length} holding${rows.length === 1 ? '' : 's'}` : 'empty',
+        captured_at: new Date().toISOString(),
+        text,
+        data: { tab: 'portfolio', rows, summary },
+      };
+    },
+    rows: (rowId: string) => {
+      if (activeTab === 'watchlist') {
+        const row = watchlist.rows.find((r) => (r.watchlist_item_id ?? r.symbol) === rowId);
+        if (!row) return null;
+        const quote = watchlistRowToQuote(row);
+        const body = serializeQuoteRowToMarkdown(quote);
+        const text = wrapWidgetContext(
+          'personal.portfolioWatchlist/row',
+          { tab: 'watchlist', symbol: row.symbol },
+          body,
+        );
+        return {
+          widget_type: 'personal.portfolioWatchlist/row',
+          widget_id: `${instance.id}/${rowId}`,
+          label:
+            row.symbol +
+            (row.changePercent !== undefined
+              ? ` · ${row.changePercent >= 0 ? '+' : ''}${row.changePercent.toFixed(2)}%`
+              : ''),
+          description: t('dashboard.widgets.portfolioWatchlist.headerWatchlist'),
+          captured_at: new Date().toISOString(),
+          text,
+          data: { row: quote, tab: 'watchlist' },
+        };
+      }
+      const row = portfolio.rows.find((r) => (r.user_portfolio_id ?? r.symbol) === rowId);
+      if (!row) return null;
+      const quote = portfolioRowToQuote(row);
+      const body = serializeQuoteRowToMarkdown(quote);
+      const text = wrapWidgetContext(
+        'personal.portfolioWatchlist/row',
+        { tab: 'portfolio', symbol: row.symbol },
+        body,
+      );
+      return {
+        widget_type: 'personal.portfolioWatchlist/row',
+        widget_id: `${instance.id}/${rowId}`,
+        label:
+          row.symbol +
+          (row.unrealizedPlPercent != null
+            ? ` · ${row.unrealizedPlPercent >= 0 ? '+' : ''}${row.unrealizedPlPercent.toFixed(2)}%`
+            : ''),
+        description: t('dashboard.widgets.portfolioWatchlist.headerHoldings'),
+        captured_at: new Date().toISOString(),
+        text,
+        data: { row: quote, tab: 'portfolio' },
+      };
+    },
+  });
 
   const switchTab = (tab: PWTabKey) => {
     setActiveTab(tab);
@@ -140,13 +263,23 @@ function PortfolioWatchlistWidget({
                 <HoldingsSkeleton count={5} />
               ) : (
                 watchlist.rows.map((row, i) => (
-                  <WatchlistRowItem
+                  <div
                     key={row.watchlist_item_id ?? row.symbol}
-                    item={row}
-                    index={i}
-                    marketStatus={dashboard.marketStatus}
-                    onDelete={watchlistHandlers.onDelete}
-                  />
+                    className="row-attach-host relative"
+                  >
+                    <WatchlistRowItem
+                      item={row}
+                      index={i}
+                      marketStatus={dashboard.marketStatus}
+                      onDelete={watchlistHandlers.onDelete}
+                    />
+                    <span className="absolute right-1 top-1/2 -translate-y-1/2">
+                      <RowAttachButton
+                        instanceId={instance.id}
+                        rowId={String(row.watchlist_item_id ?? row.symbol)}
+                      />
+                    </span>
+                  </div>
                 ))
               )}
               <HoldingsAddButton label={t('dashboard.widgets.portfolioWatchlist.addSymbol')} onClick={watchlistHandlers.onAdd} />
@@ -171,15 +304,25 @@ function PortfolioWatchlistWidget({
                 <HoldingsSkeleton count={3} />
               ) : (
                 portfolio.rows.map((row, i) => (
-                  <PortfolioRowItem
+                  <div
                     key={row.user_portfolio_id ?? row.symbol}
-                    item={row}
-                    index={i}
-                    marketStatus={dashboard.marketStatus}
-                    valuesHidden={valuesHidden}
-                    onEdit={portfolioHandlers.onEdit}
-                    onDelete={portfolioHandlers.onDelete}
-                  />
+                    className="row-attach-host relative"
+                  >
+                    <PortfolioRowItem
+                      item={row}
+                      index={i}
+                      marketStatus={dashboard.marketStatus}
+                      valuesHidden={valuesHidden}
+                      onEdit={portfolioHandlers.onEdit}
+                      onDelete={portfolioHandlers.onDelete}
+                    />
+                    <span className="absolute right-1 top-1/2 -translate-y-1/2">
+                      <RowAttachButton
+                        instanceId={instance.id}
+                        rowId={String(row.user_portfolio_id ?? row.symbol)}
+                      />
+                    </span>
+                  </div>
                 ))
               )}
 

@@ -173,6 +173,12 @@ interface ModelOptions {
   model?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean | null;
+  /**
+   * Widget context snapshots attached to this send. Stored on the
+   * UserMessage so the chat history can render them as inline chip cards
+   * below the user bubble (like attachments).
+   */
+  widgetSnapshots?: import('@/pages/Dashboard/widgets/framework/contextSnapshot').WidgetContextSnapshot[];
 }
 
 /** Offload batch ref state. */
@@ -3535,15 +3541,7 @@ export function useChatMessages(
     }
   };
 
-  /**
-   * Handles sending a message and streaming the response
-   *
-   * @param {string} message - The user's message
-   * @param {boolean} planMode - Whether to use plan mode
-   * @param {Array|null} additionalContext - Optional additional context for skill loading
-   * @param {Array|null} attachmentMeta - Optional attachment metadata for user message display
-   */
-  const handleSendMessage = async (message: string, planMode: boolean = false, additionalContext: Record<string, unknown>[] | null = null, attachmentMeta: Record<string, unknown>[] | null = null, { model, reasoningEffort, fastMode }: ModelOptions = {}) => {
+  const handleSendMessage = async (message: string, planMode: boolean = false, additionalContext: Record<string, unknown>[] | null = null, attachmentMeta: Record<string, unknown>[] | null = null, { model, reasoningEffort, fastMode, widgetSnapshots }: ModelOptions = {}) => {
     const hasContent = message.trim() || (additionalContext && additionalContext.length > 0);
     if (!workspaceId || !hasContent) {
       return;
@@ -3580,7 +3578,11 @@ export function useChatMessages(
     }
 
     // Create and add user message
-    const userMessage = createUserMessage(message, attachmentMeta as AttachmentMeta[] | null);
+    const userMessage = createUserMessage(
+      message,
+      attachmentMeta as AttachmentMeta[] | null,
+      widgetSnapshots ?? null,
+    );
     recentlySentTrackerRef.current.track(message.trim(), userMessage.timestamp, userMessage.id);
 
     // Check if this is a new conversation

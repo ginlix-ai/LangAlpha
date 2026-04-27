@@ -10,6 +10,7 @@ import type {
   NotificationMessage,
   NotificationVariant,
 } from '@/types/chat';
+import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 
 // Re-export types for consumers
 export type { ChatMessage, AssistantMessage, UserMessage, NotificationMessage, NotificationVariant };
@@ -24,10 +25,11 @@ export interface AttachmentMeta {
   type: string;
 }
 
-/**
- * Creates a user message object
- */
-export function createUserMessage(message: string, attachments: AttachmentMeta[] | null = null): UserMessage {
+export function createUserMessage(
+  message: string,
+  attachments: AttachmentMeta[] | null = null,
+  widgetSnapshots: WidgetContextSnapshot[] | null = null,
+): UserMessage {
   const msg: UserMessage = {
     id: `user-${Date.now()}`,
     role: 'user',
@@ -42,12 +44,12 @@ export function createUserMessage(message: string, attachments: AttachmentMeta[]
     // At send time only AttachmentMeta fields are used, so store as-is.
     msg.attachments = attachments as any;
   }
+  if (widgetSnapshots && widgetSnapshots.length > 0) {
+    msg.widgetSnapshots = widgetSnapshots;
+  }
   return msg;
 }
 
-/**
- * Creates an assistant message placeholder
- */
 export function createAssistantMessage(messageId: string | null = null): AssistantMessage {
   const id = messageId || `assistant-${Date.now()}`;
   return {
@@ -64,9 +66,6 @@ export function createAssistantMessage(messageId: string | null = null): Assista
   };
 }
 
-/**
- * Updates a specific message in the messages array
- */
 export function updateMessage<T extends { id: string }>(
   messages: T[],
   messageId: string,
@@ -78,9 +77,6 @@ export function updateMessage<T extends { id: string }>(
   });
 }
 
-/**
- * Inserts a message at a specific index in the messages array
- */
 export function insertMessage<T extends { id: string }>(
   messages: T[],
   insertIndex: number,
@@ -93,9 +89,6 @@ export function insertMessage<T extends { id: string }>(
   ];
 }
 
-/**
- * Appends a message to the end of the messages array
- */
 export function appendMessage<T extends { id: string }>(messages: T[], newMessage: T): T[] {
   return [...messages, newMessage];
 }

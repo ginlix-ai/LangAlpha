@@ -258,7 +258,15 @@
         "menu": "小组件菜单",
         "duplicate": "复制",
         "remove": "移除",
-        "errorBoundary": "小组件渲染失败"
+        "errorBoundary": "小组件渲染失败",
+        "addToContext": "加入上下文",
+        "addToContextTitle": "把这个小组件加入聊天上下文",
+        "contextAttached": "已加入上下文",
+        "contextUnavailable": "小组件不可用",
+        "contextUnavailableHint": "该小组件尚未注册上下文导出器。",
+        "addRowToContext": "把这一行加入上下文",
+        "addRowToContextTitle": "把此条目加入聊天上下文",
+        "contextUnsupportedTradingView": "无法添加：该内容由 TradingView 提供，智能体无法访问。"
       },
       "addDialog": {
         "eyebrow": "小组件库",
@@ -1045,6 +1053,17 @@
     "anyoneWithLink": "任何拥有此链接的人都可以查看对话。"
   },
   "chat": {
+    "widgetContext": {
+      "inContext_one": "{{count}} 项上下文",
+      "inContext_other": "{{count}} 项上下文",
+      "fanHint": "点击展开",
+      "showLess": "收起",
+      "clear": "清空",
+      "removeAria": "从上下文中移除",
+      "overflowAria_one": "{{count}} 项已加入上下文 — 打开聊天",
+      "overflowAria_other": "{{count}} 项已加入上下文 — 打开聊天",
+      "overflowLabel": "上下文"
+    },
     "running": "运行中: {{tool}}",
     "completedWithCalls": "已完成 ({{count}} 次工具调用)",
     "completed": "已完成",

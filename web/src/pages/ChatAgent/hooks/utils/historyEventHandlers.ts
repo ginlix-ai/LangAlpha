@@ -45,8 +45,6 @@ interface HistorySteeringRefs {
  * Helper to check if an event is from a subagent.
  * Backend convention: agent field uses "task:{task_id}" format (e.g., "task:pkyRHQ").
  * This aligns with LangGraph namespace convention (tools:uuid, model:uuid, task:id).
- * @param {Object} event - The history event
- * @returns {boolean} True if event is from subagent
  */
 export function isSubagentHistoryEvent(event: HistoryEvent | null | undefined): boolean {
   const agent = event?.agent;
@@ -56,18 +54,7 @@ export function isSubagentHistoryEvent(event: HistoryEvent | null | undefined): 
   return agent.startsWith('task:');
 }
 
-/**
- * Handles user_message events from history replay
- * @param {Object} params - Handler parameters
- * @param {Object} params.event - The history event
- * @param {number} params.pairIndex - The pair index
- * @param {Map} params.assistantMessagesByPair - Map of turn_index to assistant message ID
- * @param {Map} params.pairStateByPair - Map of turn_index to pair state
- * @param {Object} params.refs - Refs object with recentlySentTracker, currentMessageRef, newMessagesStartIndexRef, historyMessagesRef
- * @param {Array} params.messages - Current messages array
- * @param {Function} params.setMessages - State setter for messages
- * @returns {boolean} True if assistant message was created/mapped, false otherwise
- */
+/** Handles user_message events from history replay. */
 export function handleHistoryUserMessage({
   event,
   pairIndex,
@@ -137,8 +124,18 @@ export function handleHistoryUserMessage({
       };
 
       // Restore attachment metadata from persisted query metadata
-      if ((event.metadata?.attachments as unknown[] | undefined)?.length as number > 0) {
+      const attachments = event.metadata?.attachments as unknown[] | undefined;
+      if (attachments && attachments.length > 0) {
         userMessage.attachments = event.metadata!.attachments;
+      }
+
+      // Restore widget snapshot metadata so the chip deck re-renders below
+      // this user message on history replay. Backend persists `text` so the
+      // preview modal can show what the agent saw; `image_jpeg_data_url` is
+      // live-only (image rides the multimodal channel and isn't persisted).
+      const widgetContexts = event.metadata?.widget_contexts as unknown[] | undefined;
+      if (widgetContexts && widgetContexts.length > 0) {
+        userMessage.widgetSnapshots = event.metadata!.widget_contexts;
       }
 
       setMessages((prev: MessageRecord[]) => {
@@ -201,16 +198,7 @@ export function handleHistoryUserMessage({
   return false;
 }
 
-/**
- * Handles reasoning signal events in history replay
- * @param {Object} params - Handler parameters
- * @param {string} params.assistantMessageId - ID of the assistant message
- * @param {string} params.signalContent - Signal content ('start' or 'complete')
- * @param {number} params.pairIndex - The pair index
- * @param {Object} params.pairState - The pair state object
- * @param {Function} params.setMessages - State setter for messages
- * @returns {boolean} True if event was handled
- */
+/** Handles reasoning signal events ('start' | 'complete') in history replay. */
 export function handleHistoryReasoningSignal({ assistantMessageId, signalContent, pairIndex, pairState, setMessages, eventId }: {
   assistantMessageId: string;
   signalContent: string;
@@ -286,15 +274,7 @@ export function handleHistoryReasoningSignal({ assistantMessageId, signalContent
   return false;
 }
 
-/**
- * Handles reasoning content in history replay
- * @param {Object} params - Handler parameters
- * @param {string} params.assistantMessageId - ID of the assistant message
- * @param {string} params.content - Reasoning content
- * @param {Object} params.pairState - The pair state object
- * @param {Function} params.setMessages - State setter for messages
- * @returns {boolean} True if event was handled
- */
+/** Handles reasoning content chunks in history replay. */
 export function handleHistoryReasoningContent({ assistantMessageId, content, pairState, setMessages }: {
   assistantMessageId: string;
   content: string;
@@ -329,16 +309,7 @@ export function handleHistoryReasoningContent({ assistantMessageId, content, pai
   return false;
 }
 
-/**
- * Handles text content in history replay
- * @param {Object} params - Handler parameters
- * @param {string} params.assistantMessageId - ID of the assistant message
- * @param {string} params.content - Text content
- * @param {string} params.finishReason - Optional finish reason
- * @param {Object} params.pairState - The pair state object
- * @param {Function} params.setMessages - State setter for messages
- * @returns {boolean} True if event was handled
- */
+/** Handles text content chunks and finish_reason in history replay. */
 export function handleHistoryTextContent({ assistantMessageId, content, finishReason, pairState, setMessages, eventId }: {
   assistantMessageId: string;
   content: string;
@@ -387,15 +358,7 @@ export function handleHistoryTextContent({ assistantMessageId, content, finishRe
   return false;
 }
 
-/**
- * Handles tool_calls events in history replay
- * @param {Object} params - Handler parameters
- * @param {string} params.assistantMessageId - ID of the assistant message
- * @param {Array} params.toolCalls - Array of tool call objects
- * @param {Object} params.pairState - The pair state object
- * @param {Function} params.setMessages - State setter for messages
- * @returns {boolean} True if event was handled
- */
+/** Handles tool_calls events in history replay. */
 export function handleHistoryToolCalls({ assistantMessageId, toolCalls, pairState, setMessages, eventId }: {
   assistantMessageId: string;
   toolCalls: ToolCallRecord[];
@@ -511,16 +474,7 @@ export function handleHistoryToolCalls({ assistantMessageId, toolCalls, pairStat
   return true;
 }
 
-/**
- * Handles tool_call_result events in history replay
- * @param {Object} params - Handler parameters
- * @param {string} params.assistantMessageId - ID of the assistant message
- * @param {string} params.toolCallId - ID of the tool call
- * @param {Object} params.result - Tool call result object
- * @param {Object} params.pairState - The pair state object
- * @param {Function} params.setMessages - State setter for messages
- * @returns {boolean} True if event was handled
- */
+/** Handles tool_call_result events in history replay. */
 export function handleHistoryToolCallResult({ assistantMessageId, toolCallId, result, pairState: _pairState, setMessages }: {
   assistantMessageId: string;
   toolCallId: string;
@@ -586,16 +540,9 @@ export function handleHistoryToolCallResult({ assistantMessageId, toolCallId, re
 }
 
 /**
- * Handles steering_delivered events in history replay.
- * Creates user bubble(s) for each steering message, then a new assistant placeholder
- * so subsequent events render in a fresh assistant bubble.
- * @param {Object} params - Handler parameters
- * @param {Object} params.event - The history event (contains messages array)
- * @param {number} params.pairIndex - The pair index
- * @param {Map} params.assistantMessagesByPair - Map of turn_index to assistant message ID
- * @param {Map} params.pairStateByPair - Map of turn_index to pair state
- * @param {Object} params.refs - Refs object with newMessagesStartIndexRef, historyMessagesRef
- * @param {Function} params.setMessages - State setter for messages
+ * Handles steering_delivered events in history replay. Creates user bubble(s)
+ * for each steering message, then a new assistant placeholder so subsequent
+ * events render in a fresh assistant bubble.
  */
 export function handleHistorySteeringDelivered({
   event,
@@ -673,17 +620,7 @@ export function handleHistorySteeringDelivered({
   });
 }
 
-/**
- * Handles artifact events with artifact_type: "todo_update" in history replay
- * @param {Object} params - Handler parameters
- * @param {string} params.assistantMessageId - ID of the assistant message
- * @param {string} params.artifactType - Type of artifact ("todo_update")
- * @param {string} params.artifactId - ID of the artifact
- * @param {Object} params.payload - Payload containing todos array and status counts
- * @param {Object} params.pairState - The pair state object
- * @param {Function} params.setMessages - State setter for messages
- * @returns {boolean} True if event was handled
- */
+/** Handles artifact events with artifact_type "todo_update" in history replay. */
 export function handleHistoryTodoUpdate({ assistantMessageId, artifactType, artifactId, payload, pairState, setMessages, eventId }: {
   assistantMessageId: string;
   artifactType: string;

@@ -1,6 +1,4 @@
-/**
- * File upload utilities for multimodal input
- */
+import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 
 export const ACCEPTED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 export const ACCEPTED_PDF_TYPES = ['application/pdf'];
@@ -13,7 +11,7 @@ export interface Attachment {
   type: string;
 }
 
-export interface ImageContext {
+export interface AttachmentContext {
   type: string;
   data: string;
   description: string;
@@ -24,9 +22,6 @@ export interface FileValidationResult {
   error?: string;
 }
 
-/**
- * Convert a File to a base64 data URL
- */
 export function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -40,7 +35,7 @@ export function readFileAsDataUrl(file: File): Promise<string> {
  * Convert attachments to additional_context format with accurate type tags.
  * Images → "image", PDFs → "pdf", everything else → "file".
  */
-export function attachmentsToContexts(attachments: Attachment[]): ImageContext[] {
+export function attachmentsToContexts(attachments: Attachment[]): AttachmentContext[] {
   return attachments
     .filter((a) => a.dataUrl != null)
     .map((a) => ({
@@ -50,6 +45,74 @@ export function attachmentsToContexts(attachments: Attachment[]): ImageContext[]
       data: a.dataUrl!,
       description: a.file.name,
     }));
+}
+
+/**
+ * Per-widget snapshot serialization for `additional_context`.
+ *
+ * Each snapshot becomes ONE `{type:"widget", ...}` item. Image-bearing
+ * snapshots additionally produce a sibling `{type:"image", ...}` item that
+ * rides the existing MultimodalContext channel — the backend modality gate
+ * handles vision-vs-text-only routing without further code changes.
+ *
+ * Pre-flight size guard: a structured-clone error from `navigate(state)` will
+ * crash the dashboard → chat handoff, so we cap the structured `data` payload
+ * at ~100KB per item. Oversized `data` is dropped (the rendered `text` and
+ * the optional image still ride along — those are what the agent reads).
+ */
+const MAX_DATA_BYTES_PER_SNAPSHOT = 100 * 1024;
+
+interface WidgetCtxItem {
+  type: 'widget';
+  widget_type: string;
+  widget_id: string;
+  label: string;
+  text: string;
+  data: Record<string, unknown>;
+  captured_at?: string;
+  description?: string;
+}
+
+interface WidgetImageItem {
+  type: 'image';
+  data: string;
+  description: string;
+}
+
+export function widgetSnapshotsToContexts(
+  snapshots: WidgetContextSnapshot[],
+): Array<WidgetCtxItem | WidgetImageItem> {
+  const out: Array<WidgetCtxItem | WidgetImageItem> = [];
+  for (const s of snapshots) {
+    let data = s.data ?? {};
+    try {
+      const sz = new Blob([JSON.stringify(data)]).size;
+      if (sz > MAX_DATA_BYTES_PER_SNAPSHOT) {
+        // Drop the structured payload; the rendered text + image still ship.
+        data = { _truncated: true, _original_bytes: sz };
+      }
+    } catch {
+      data = { _truncated: true };
+    }
+    out.push({
+      type: 'widget',
+      widget_type: s.widget_type,
+      widget_id: s.widget_id,
+      label: s.label,
+      text: s.text,
+      data,
+      captured_at: s.captured_at,
+      description: s.description,
+    });
+    if (s.image_jpeg_data_url) {
+      out.push({
+        type: 'image',
+        data: s.image_jpeg_data_url,
+        description: s.label,
+      });
+    }
+  }
+  return out;
 }
 
 /**

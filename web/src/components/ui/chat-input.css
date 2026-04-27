@@ -470,3 +470,244 @@
 .waveform-bar:nth-child(8) {
   animation-delay: 0.7s;
 }
+/* === WIDGET CONTEXT DECK === */
+.widget-deck-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 2px 6px;
+  border-bottom: 1px dashed var(--color-border-muted, rgba(20, 20, 23, 0.08));
+  margin-bottom: 4px;
+}
+
+.widget-deck-eyebrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 4px;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--color-accent-primary, #b88a2c);
+}
+
+.widget-deck-eyebrow-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.widget-deck-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--color-accent-primary, #b88a2c);
+  box-shadow: 0 0 5px rgba(184, 138, 44, 0.4);
+  flex-shrink: 0;
+}
+
+.widget-deck-hint {
+  text-transform: none;
+  letter-spacing: 0;
+  font-style: italic;
+  font-size: 11px;
+  margin-left: 6px;
+  opacity: 0.85;
+  font-family: var(--font-serif, "Instrument Serif", Georgia, serif);
+}
+
+.widget-deck-eyebrow-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.widget-deck-clear {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--color-text-tertiary, #8a8a8a);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.widget-deck-clear:hover {
+  color: var(--color-danger, #c43d3d);
+}
+
+/* Show-less pill — appears left of Clear when the deck is fanned. Pill
+ * shape mirrors Apple's stack-collapse affordance: rounded background,
+ * sentence-case label, sits inline with the uppercase eyebrow row. */
+.widget-deck-show-less {
+  appearance: none;
+  border: 1px solid var(--color-border-muted, rgba(20, 20, 23, 0.08));
+  background: var(--color-bg-card, rgba(255, 255, 255, 0.6));
+  font: inherit;
+  font-size: 11px;
+  font-family: var(--font-serif, "Instrument Serif", Georgia, serif);
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--color-text-secondary, #4a4a4a);
+  cursor: pointer;
+  padding: 2px 10px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  transition:
+    background 120ms cubic-bezier(0.16, 1, 0.3, 1),
+    color 120ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 120ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.widget-deck-show-less:hover {
+  color: var(--color-text-primary, #1a1a1c);
+  border-color: var(--color-border-default, rgba(20, 20, 23, 0.16));
+}
+
+.widget-deck-stack {
+  position: relative;
+  transition: height 260ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.widget-deck-card {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: grid;
+  grid-template-columns: 32px 1fr 24px;
+  align-items: center;
+  gap: 10px;
+  background: var(--color-bg-card, #ffffff);
+  border: 1px solid var(--color-border-muted, rgba(20, 20, 23, 0.08));
+  border-radius: 10px;
+  padding: 10px 12px;
+  box-shadow: 0 1px 2px rgba(20, 20, 23, 0.04);
+  transition:
+    transform 260ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 260ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 120ms cubic-bezier(0.16, 1, 0.3, 1);
+  animation: widgetDeckCardIn 280ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes widgetDeckCardIn {
+  from { opacity: 0; transform: translateY(-6px) scale(0.96); }
+}
+
+.widget-deck-stack.fanned .widget-deck-card {
+  box-shadow: 0 4px 12px rgba(20, 20, 23, 0.06), 0 1px 2px rgba(20, 20, 23, 0.04);
+}
+
+.widget-deck-card-thumb {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: rgba(184, 138, 44, 0.08);
+  color: var(--color-accent-primary, #b88a2c);
+  overflow: hidden;
+}
+
+.widget-deck-card-thumb.has-image {
+  background: linear-gradient(180deg, #1d1d1f 0%, #2a2a2e 100%);
+  position: relative;
+}
+
+.widget-deck-card-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.widget-deck-card-text {
+  min-width: 0;
+}
+
+.widget-deck-card-title {
+  font-weight: 500;
+  font-size: 13px;
+  line-height: 1.2;
+  color: var(--color-text-primary, #1a1a1c);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widget-deck-card-snippet {
+  font-size: 11px;
+  color: var(--color-text-tertiary, #8a8a8a);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 2px;
+  letter-spacing: 0.01em;
+}
+
+.widget-deck-card-remove {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-tertiary, #8a8a8a);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  padding: 0;
+  opacity: 0;
+  transition:
+    opacity 120ms cubic-bezier(0.16, 1, 0.3, 1),
+    background 120ms cubic-bezier(0.16, 1, 0.3, 1),
+    color 120ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.widget-deck-card-remove:hover {
+  color: var(--color-danger, #c43d3d);
+  background: rgba(196, 61, 61, 0.08);
+}
+
+/* Top card always shows its remove button. Fan-out reveals all of them. */
+.widget-deck-stack:not(.fanned) .widget-deck-card[data-i="0"] .widget-deck-card-remove,
+.widget-deck-stack.fanned .widget-deck-card-remove {
+  opacity: 1;
+}
+
+.widget-deck-fan-hint {
+  position: absolute;
+  top: -2px;
+  right: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: var(--color-text-tertiary, #8a8a8a);
+  pointer-events: none;
+  opacity: 0.6;
+  z-index: 100;
+  transition: opacity 120ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.widget-deck-stack.fanned .widget-deck-fan-hint {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .widget-deck-card,
+  .widget-deck-stack {
+    transition: none;
+    animation: none;
+  }
+}

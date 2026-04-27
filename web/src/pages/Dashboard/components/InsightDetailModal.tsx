@@ -1,11 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { X, ExternalLink, Sparkles, ChevronDown } from 'lucide-react';
+import { X, ExternalLink, Sparkles, ChevronDown, Paperclip } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import TopicBadge from './TopicBadge';
 import { getInsightDetail } from '../utils/api';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { MobileBottomSheet } from '@/components/ui/mobile-bottom-sheet';
+import { useToast } from '@/components/ui/use-toast';
+import { ContextBus } from '@/lib/contextBus';
+import { buildInsightWidgetSnapshot, normalizeInsight } from '../utils/insightFetch';
 import i18n from '@/i18n';
 
 interface InsightTopic {
@@ -65,12 +68,15 @@ function InsightBody({
   sourcesOpen,
   setSourcesOpen,
   isMobile,
+  onAttach,
 }: {
   detail: InsightDetail | null;
   loading: boolean;
   sourcesOpen: boolean;
   setSourcesOpen: React.Dispatch<React.SetStateAction<boolean>>;
   isMobile: boolean;
+  /** Optional handler. If provided, an Attach-to-chat button is rendered next to the eyebrow. */
+  onAttach?: () => void;
 }) {
   const { t } = useTranslation();
   if (loading) {
@@ -94,9 +100,7 @@ function InsightBody({
 
   return (
     <>
-      {/* Header */}
       <div className={isMobile ? '' : 'p-6 md:p-8 pb-0'}>
-        {/* Badge row */}
         <div className="flex items-center gap-2 sm:gap-3 mb-3 sm:mb-4 flex-wrap">
           <div
             className="px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full border flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-xs font-semibold uppercase tracking-wider"
@@ -125,9 +129,32 @@ function InsightBody({
               {formatDate(detail.completed_at)}
             </span>
           )}
+          {onAttach && (
+            <button
+              type="button"
+              onClick={onAttach}
+              className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] sm:text-xs font-medium transition-colors"
+              style={{
+                backgroundColor: 'var(--color-accent-soft)',
+                borderColor: 'var(--color-accent-overlay)',
+                color: 'var(--color-accent-primary)',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = 'var(--color-accent-primary)';
+                e.currentTarget.style.color = '#fff';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = 'var(--color-accent-soft)';
+                e.currentTarget.style.color = 'var(--color-accent-primary)';
+              }}
+              title={t('dashboard.widgets.frame.addToContext', { defaultValue: 'Attach to chat' })}
+            >
+              <Paperclip size={isMobile ? 12 : 13} />
+              {t('dashboard.widgets.frame.addToContext', { defaultValue: 'Attach to chat' })}
+            </button>
+          )}
         </div>
 
-        {/* Headline */}
         <h1
           className="text-xl sm:text-2xl md:text-3xl font-bold leading-tight mb-3 sm:mb-4"
           style={{ color: 'var(--color-text-primary)' }}
@@ -135,7 +162,6 @@ function InsightBody({
           {detail.headline}
         </h1>
 
-        {/* Topics */}
         {(detail.topics?.length ?? 0) > 0 && (
           <div className="flex flex-wrap gap-1.5 sm:gap-2 mb-4 sm:mb-6">
             {detail.topics!.map((topic) => (
@@ -144,7 +170,6 @@ function InsightBody({
           </div>
         )}
 
-        {/* Summary */}
         {detail.summary && (
           <p
             className="text-[13px] sm:text-sm leading-relaxed mb-4 sm:mb-6"
@@ -155,7 +180,6 @@ function InsightBody({
         )}
       </div>
 
-      {/* News Items */}
       <div className={isMobile ? '' : 'px-6 md:px-8 pb-6 md:pb-8'}>
         {(detail.content?.length ?? 0) > 0 && (
           <div
@@ -284,10 +308,28 @@ function InsightBody({
 }
 
 function InsightDetailModal({ marketInsightId, onClose }: InsightDetailModalProps) {
+  const { t } = useTranslation();
+  const { toast } = useToast();
   const [detail, setDetail] = useState<InsightDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const isMobile = useIsMobile();
+
+  const handleAttach = () => {
+    if (!detail || !marketInsightId) return;
+    const insight = normalizeInsight(detail as Parameters<typeof normalizeInsight>[0]);
+    const snapshot = buildInsightWidgetSnapshot({
+      instanceId: 'insight.detail',
+      rowId: marketInsightId,
+      insight,
+    });
+    ContextBus.attach(snapshot);
+    toast({
+      title: t('dashboard.widgets.frame.contextAttached', { defaultValue: 'Added to context' }),
+      description: 'Brief: ' + (detail.headline || ''),
+    });
+  };
+  const canAttach = !!detail && !!marketInsightId;
 
   useEffect(() => {
     if (!marketInsightId) {
@@ -310,7 +352,6 @@ function InsightDetailModal({ marketInsightId, onClose }: InsightDetailModalProp
     return () => { cancelled = true; };
   }, [marketInsightId]);
 
-  // Escape key
   useEffect(() => {
     if (!marketInsightId) return;
     const handleEsc = (e: KeyboardEvent) => {
@@ -327,6 +368,7 @@ function InsightDetailModal({ marketInsightId, onClose }: InsightDetailModalProp
       sourcesOpen={sourcesOpen}
       setSourcesOpen={setSourcesOpen}
       isMobile={isMobile}
+      onAttach={canAttach ? handleAttach : undefined}
     />
   );
 

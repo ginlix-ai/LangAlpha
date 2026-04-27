@@ -10,7 +10,10 @@ import { clearChatSession } from '@/pages/ChatAgent/hooks/utils/chatSessionResto
 import type { Thread, ThreadsResponse, Workspace } from '@/types/api';
 import { queryKeys } from '@/lib/queryKeys';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { useWidgetContextExport } from '../framework/contextSnapshot';
+import { serializeRowsToMarkdown, wrapWidgetContext } from '../framework/snapshotSerializers';
 import { RecentThreadsConfigSchema } from '../framework/configSchemas';
+import { RowAttachButton } from '../../components/RowAttachButton';
 import type { WidgetRenderProps } from '../types';
 
 type RecentThreadsConfig = { workspaceId?: 'all' | 'current' | string; limit?: number };
@@ -55,12 +58,14 @@ function ThreadRow({
   bucket,
   workspaceLabel,
   isFlash,
+  instanceId,
 }: {
   thread: Thread;
   onOpen: () => void;
   bucket: BucketKey;
   workspaceLabel?: string;
   isFlash?: boolean;
+  instanceId: string;
 }) {
   const { t } = useTranslation();
   const title =
@@ -71,6 +76,7 @@ function ThreadRow({
   const timeStr = updated ? formatThreadTime(updated, bucket) : '';
 
   return (
+    <div className="row-attach-host relative">
     <button
       type="button"
       onClick={onOpen}
@@ -137,6 +143,10 @@ function ThreadRow({
         </span>
       ) : null}
     </button>
+      <span className="absolute right-1 top-1/2 -translate-y-1/2">
+        <RowAttachButton instanceId={instanceId} rowId={String(thread.thread_id)} />
+      </span>
+    </div>
   );
 }
 
@@ -146,12 +156,14 @@ function BucketSection({
   bucket,
   onOpen,
   workspaceMap,
+  instanceId,
 }: {
   label: string;
   threads: Thread[];
   bucket: BucketKey;
   onOpen: (thread: Thread) => void;
   workspaceMap: Map<string, Workspace>;
+  instanceId: string;
 }) {
   const { t } = useTranslation();
   if (threads.length === 0) return null;
@@ -194,6 +206,7 @@ function BucketSection({
               onOpen={() => onOpen(thread)}
               workspaceLabel={workspaceLabel}
               isFlash={isFlash}
+              instanceId={instanceId}
             />
           );
         })}
@@ -257,6 +270,82 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
   const handleOpen = (thread: Thread) => {
     navigate(`/chat/t/${thread.thread_id}`);
   };
+
+  useWidgetContextExport(instance.id, {
+    full: () => {
+      const tableRows = threads.map((th) => {
+        const wsId = (th as { workspace_id?: string }).workspace_id;
+        const ws = wsId ? workspaceMap.get(wsId) : undefined;
+        return {
+          title:
+            th.title ||
+            ((th as { first_query_content?: string }).first_query_content as string | undefined) ||
+            t('dashboard.widgets.recentThreads.untitled'),
+          workspace: ws?.name ?? (ws?.status === 'flash' ? t('dashboard.widgets.recentThreads.flash') : ''),
+          when: th.updated_at ?? '',
+          thread_id: th.thread_id,
+        };
+      });
+      const body = threads.length
+        ? serializeRowsToMarkdown(tableRows, [
+            { key: 'title', label: 'title' },
+            { key: 'workspace', label: 'workspace' },
+            { key: 'when', label: 'when' },
+            { key: 'thread_id', label: 'thread_id' },
+          ])
+        : '_no recent threads_';
+      const text = wrapWidgetContext(
+        'threads.recent',
+        { count: threads.length, scope },
+        body,
+      );
+      return {
+        widget_type: 'threads.recent',
+        widget_id: instance.id,
+        label: `${t('dashboard.widgets.recentThreads.title')} · ${threads.length}`,
+        description: threads.length ? `${threads.length} thread${threads.length === 1 ? '' : 's'}` : 'empty',
+        captured_at: new Date().toISOString(),
+        text,
+        data: { scope, threads },
+      };
+    },
+    rows: (rowId: string) => {
+      const th = threads.find((x) => x.thread_id === rowId);
+      if (!th) return null;
+      const wsId = (th as { workspace_id?: string }).workspace_id;
+      const ws = wsId ? workspaceMap.get(wsId) : undefined;
+      const title =
+        th.title ||
+        ((th as { first_query_content?: string }).first_query_content as string | undefined) ||
+        t('dashboard.widgets.recentThreads.untitled');
+      const lines: string[] = [`**${title}**`];
+      if (ws?.name) lines.push(`Workspace: ${ws.name}`);
+      if (th.updated_at) lines.push(`Last active: ${th.updated_at}`);
+      lines.push(`Thread ID: ${th.thread_id}`);
+      const text = wrapWidgetContext(
+        'threads.recent/row',
+        { thread_id: th.thread_id },
+        lines.join('\n'),
+      );
+      return {
+        widget_type: 'threads.recent/row',
+        widget_id: `${instance.id}/${rowId}`,
+        label: title,
+        description: ws?.name ?? t('dashboard.widgets.recentThreads.title'),
+        captured_at: new Date().toISOString(),
+        text,
+        data: {
+          thread: {
+            thread_id: th.thread_id,
+            title,
+            updated_at: th.updated_at,
+            workspace_id: wsId,
+            workspace_name: ws?.name,
+          },
+        },
+      };
+    },
+  });
 
   const viewAllTarget = isAllScope
     ? '/chat'
@@ -347,9 +436,9 @@ function RecentThreadsWidget({ instance }: WidgetRenderProps<RecentThreadsConfig
           </div>
         ) : (
           <div className="flex flex-col gap-3">
-            <BucketSection label={t(BUCKET_KEY.today)} threads={grouped.today} bucket="today" onOpen={handleOpen} workspaceMap={workspaceMap} />
-            <BucketSection label={t(BUCKET_KEY.week)} threads={grouped.week} bucket="week" onOpen={handleOpen} workspaceMap={workspaceMap} />
-            <BucketSection label={t(BUCKET_KEY.older)} threads={grouped.older} bucket="older" onOpen={handleOpen} workspaceMap={workspaceMap} />
+            <BucketSection label={t(BUCKET_KEY.today)} threads={grouped.today} bucket="today" onOpen={handleOpen} workspaceMap={workspaceMap} instanceId={instance.id} />
+            <BucketSection label={t(BUCKET_KEY.week)} threads={grouped.week} bucket="week" onOpen={handleOpen} workspaceMap={workspaceMap} instanceId={instance.id} />
+            <BucketSection label={t(BUCKET_KEY.older)} threads={grouped.older} bucket="older" onOpen={handleOpen} workspaceMap={workspaceMap} instanceId={instance.id} />
           </div>
         )}
       </div>

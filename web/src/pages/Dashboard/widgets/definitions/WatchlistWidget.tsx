@@ -4,6 +4,13 @@ import { Eye } from 'lucide-react';
 import { useDashboardContext } from '../framework/DashboardDataContext';
 import { registerWidget } from '../framework/WidgetRegistry';
 import { WatchlistConfigSchema } from '../framework/configSchemas';
+import { useWidgetContextExport } from '../framework/contextSnapshot';
+import {
+  serializeQuoteRowsToMarkdown,
+  serializeQuoteRowToMarkdown,
+  wrapWidgetContext,
+} from '../framework/snapshotSerializers';
+import { RowAttachButton } from '../../components/RowAttachButton';
 import type { WidgetRenderProps } from '../types';
 import {
   HoldingsAddButton,
@@ -13,10 +20,60 @@ import {
 
 type WatchlistConfig = Record<string, never>;
 
-function WatchlistWidget(_props: WidgetRenderProps<WatchlistConfig>) {
+function WatchlistWidget({ instance }: WidgetRenderProps<WatchlistConfig>) {
   const { t } = useTranslation();
   const { watchlist, watchlistHandlers, dashboard } = useDashboardContext();
   const showSkeleton = watchlist.loading && watchlist.rows.length === 0;
+
+  // Register snapshot exporters: full table + per-row.
+  useWidgetContextExport(instance.id, {
+    full: () => {
+      const rows = watchlist.rows.map((r) => ({
+        symbol: r.symbol,
+        price: r.price,
+        change: r.change,
+        changePercent: r.changePercent,
+      }));
+      const body = serializeQuoteRowsToMarkdown(rows);
+      const text = wrapWidgetContext('watchlist.list', { count: rows.length }, body);
+      return {
+        widget_type: 'watchlist.list',
+        widget_id: instance.id,
+        label: t('dashboard.widgets.watchlist.title') + ' · ' + rows.length,
+        description: rows.length ? `${rows.length} symbol${rows.length === 1 ? '' : 's'}` : 'empty',
+        captured_at: new Date().toISOString(),
+        text,
+        data: { rows },
+      };
+    },
+    rows: (rowId: string) => {
+      const row = watchlist.rows.find((r) => (r.watchlist_item_id ?? r.symbol) === rowId);
+      if (!row) return null;
+      // Note: pre/post-market price is intentionally omitted. The QuoteRow
+      // contract treats preMarket/postMarket as *prices*, but the row data
+      // here only carries previousClose + a change-percent — passing
+      // previousClose under the preMarket key would label yesterday's close
+      // as the pre-market price in the agent's view. Adding correct ext-
+      // hours info would need marketStatus + getExtendedHoursInfo here.
+      const cleaned = {
+        symbol: row.symbol,
+        price: row.price,
+        change: row.change,
+        changePercent: row.changePercent,
+      };
+      const body = serializeQuoteRowToMarkdown(cleaned);
+      const text = wrapWidgetContext('watchlist.list/row', { symbol: row.symbol }, body);
+      return {
+        widget_type: 'watchlist.list/row',
+        widget_id: `${instance.id}/${rowId}`,
+        label: row.symbol + (row.changePercent !== undefined ? ` · ${row.changePercent >= 0 ? '+' : ''}${row.changePercent.toFixed(2)}%` : ''),
+        description: t('dashboard.widgets.watchlist.title'),
+        captured_at: new Date().toISOString(),
+        text,
+        data: { row: cleaned },
+      };
+    },
+  });
 
   return (
     <div className="dashboard-glass-card p-5 flex flex-col h-full">
@@ -56,13 +113,23 @@ function WatchlistWidget(_props: WidgetRenderProps<WatchlistConfig>) {
               <HoldingsSkeleton count={5} />
             ) : (
               watchlist.rows.map((row, i) => (
-                <WatchlistRowItem
+                <div
                   key={row.watchlist_item_id ?? row.symbol}
-                  item={row}
-                  index={i}
-                  marketStatus={dashboard.marketStatus}
-                  onDelete={watchlistHandlers.onDelete}
-                />
+                  className="row-attach-host relative"
+                >
+                  <WatchlistRowItem
+                    item={row}
+                    index={i}
+                    marketStatus={dashboard.marketStatus}
+                    onDelete={watchlistHandlers.onDelete}
+                  />
+                  <span className="absolute right-1 top-1/2 -translate-y-1/2">
+                    <RowAttachButton
+                      instanceId={instance.id}
+                      rowId={String(row.watchlist_item_id ?? row.symbol)}
+                    />
+                  </span>
+                </div>
               ))
             )}
 

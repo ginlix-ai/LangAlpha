@@ -5,6 +5,14 @@ import { Newspaper, Clock, Search, X } from 'lucide-react';
 import { useDashboardContext } from '../framework/DashboardDataContext';
 import { registerWidget } from '../framework/WidgetRegistry';
 import { NewsFeedConfigSchema } from '../framework/configSchemas';
+import { useWidgetContextExport } from '../framework/contextSnapshot';
+import {
+  serializeNewsItemsToMarkdown,
+  wrapWidgetContext,
+  type NewsArticleDetail,
+} from '../framework/snapshotSerializers';
+import { buildNewsArticleSnapshot } from '../../utils/newsArticleFetch';
+import { RowAttachButton } from '../../components/RowAttachButton';
 import type { WidgetRenderProps } from '../types';
 
 type NewsFeedSource = 'market' | 'portfolio' | 'watchlist';
@@ -212,6 +220,51 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
     return result;
   }, [items, tickerFilter, dateRange]);
 
+  // Snapshot exporter: full = visible filtered list, rows = single headline.
+  useWidgetContextExport(instance.id, {
+    full: () => {
+      const newsItems = filteredItems.map((it) => ({
+        title: it.title,
+        source: it.source,
+        publishedAt: it.time,
+        url: it.articleUrl ?? undefined,
+        tickers: it.tickers,
+      }));
+      const body = serializeNewsItemsToMarkdown(newsItems);
+      const text = wrapWidgetContext(
+        'news.feed',
+        { tab: activeTab, count: newsItems.length, dateRange, tickerFilter: tickerFilter || undefined },
+        body,
+      );
+      return {
+        widget_type: 'news.feed',
+        widget_id: instance.id,
+        label: t('dashboard.widgets.newsFeed.title') + ` · ${t(SOURCE_KEY[activeTab])}`,
+        description: `${newsItems.length} headline${newsItems.length === 1 ? '' : 's'}`,
+        captured_at: new Date().toISOString(),
+        text,
+        data: { items: newsItems, tab: activeTab, dateRange, tickerFilter },
+      };
+    },
+    rows: async (rowId) => {
+      const item = items.find((it) => String(it.id ?? `${it.title}`) === rowId);
+      if (!item) return null;
+      const fallback: NewsArticleDetail = {
+        title: item.title,
+        source: item.source,
+        publishedAt: item.time,
+        url: item.articleUrl ?? undefined,
+        tickers: item.tickers,
+      };
+      return buildNewsArticleSnapshot({
+        instanceId: instance.id,
+        rowId,
+        articleId: item.id,
+        fallback,
+      });
+    },
+  });
+
   return (
     <div className="dashboard-glass-card p-5 flex flex-col h-full">
       <div
@@ -387,16 +440,26 @@ function NewsFeedWidget({ instance, updateConfig }: WidgetRenderProps<NewsFeedCo
                 </div>
               </div>
             ) : (
-              filteredItems.map((item, idx) => (
-                <NewsRow
-                  key={item.id ?? `${idx}-${item.title}`}
-                  item={item}
-                  idx={idx}
-                  onClick={() => {
-                    if (item.id != null) modals.openNews(item.id, item.articleUrl ?? null);
-                  }}
-                />
-              ))
+              filteredItems.map((item, idx) => {
+                const rowId = String(item.id ?? `${item.title}`);
+                return (
+                  <div
+                    key={item.id ?? `${idx}-${item.title}`}
+                    className="row-attach-host relative"
+                  >
+                    <NewsRow
+                      item={item}
+                      idx={idx}
+                      onClick={() => {
+                        if (item.id != null) modals.openNews(item.id, item.articleUrl ?? null);
+                      }}
+                    />
+                    <span className="absolute right-1 top-1/2 -translate-y-1/2 z-10">
+                      <RowAttachButton instanceId={instance.id} rowId={rowId} />
+                    </span>
+                  </div>
+                );
+              })
             )}
           </motion.div>
         </AnimatePresence>

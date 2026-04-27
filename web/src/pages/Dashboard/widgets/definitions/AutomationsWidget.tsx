@@ -14,6 +14,8 @@ import { useAutomations } from '@/pages/Automations/hooks/useAutomations';
 import { useAutomationMutations } from '@/pages/Automations/hooks/useAutomationMutations';
 import type { Automation } from '@/types/automation';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { useWidgetContextExport } from '../framework/contextSnapshot';
+import { serializeRowsToMarkdown, wrapWidgetContext } from '../framework/snapshotSerializers';
 import { AutomationsConfigSchema } from '../framework/configSchemas';
 import type { WidgetRenderProps } from '../types';
 
@@ -271,6 +273,46 @@ function AutomationsWidget({ instance }: WidgetRenderProps<AutomationsConfig>) {
 
   const { automations, loading, refetch } = useAutomations();
   const { pause, resume, trigger, loading: mutating } = useAutomationMutations(refetch);
+
+  useWidgetContextExport(instance.id, {
+    full: () => {
+      const tableRows = automations.map((a) => ({
+        name: a.name || t('dashboard.widgets.automations.untitled'),
+        trigger: triggerLabel(a),
+        status: a.status ?? 'active',
+        next_run: a.next_run_at ?? '',
+        last_run: a.last_run_at ?? '',
+      }));
+      const counts = {
+        total: automations.length,
+        active: automations.filter((a) => a.status === 'active').length,
+        paused: automations.filter((a) => a.status === 'paused').length,
+        error: automations.filter((a) => a.status === 'error').length,
+      };
+      const body = automations.length
+        ? `**${counts.active} active · ${counts.paused} paused · ${counts.error} error**\n\n` +
+          serializeRowsToMarkdown(tableRows, [
+            { key: 'name', label: 'name' },
+            { key: 'trigger', label: 'trigger' },
+            { key: 'status', label: 'status' },
+            { key: 'next_run', label: 'next run' },
+            { key: 'last_run', label: 'last run' },
+          ])
+        : '_no automations_';
+      const text = wrapWidgetContext('automations.list', counts, body);
+      return {
+        widget_type: 'automations.list',
+        widget_id: instance.id,
+        label: `${t('dashboard.widgets.automations.title')} · ${counts.total}`,
+        description: counts.total
+          ? `${counts.active} active, ${counts.paused} paused${counts.error ? `, ${counts.error} error` : ''}`
+          : 'empty',
+        captured_at: new Date().toISOString(),
+        text,
+        data: { counts, automations },
+      };
+    },
+  });
 
   const grouped = useMemo(() => {
     const buckets: Record<BucketKey, Automation[]> = { active: [], paused: [], error: [] };

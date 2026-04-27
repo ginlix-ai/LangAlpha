@@ -2,6 +2,7 @@ import React, { Suspense } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { ContextOverflowPill } from '@/components/ui/ContextOverflowPill';
 
 const Dashboard = React.lazy(() => import('../../pages/Dashboard/DashboardRouter'));
 const ChatAgent = React.lazy(() => import('../../pages/ChatAgent/ChatAgent'));
@@ -37,7 +38,12 @@ function Main() {
 
   // On mobile, skip AnimatePresence — instant page switches feel snappier
   if (isMobile) {
-    return <div className="main" style={{ height: '100%' }}>{routes}</div>;
+    return (
+      <div className="main" style={{ height: '100%' }}>
+        {routes}
+        <ContextOverflowPill />
+      </div>
+    );
   }
 
   return (
@@ -54,6 +60,7 @@ function Main() {
           {routes}
         </motion.div>
       </AnimatePresence>
+      <ContextOverflowPill />
     </div>
   );
 }

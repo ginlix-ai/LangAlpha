@@ -5,7 +5,10 @@ import { useQuery } from '@tanstack/react-query';
 import { CalendarDays } from 'lucide-react';
 import { getEarningsCalendar } from '../../utils/api';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { useWidgetContextExport } from '../framework/contextSnapshot';
+import { serializeRowsToMarkdown, wrapWidgetContext } from '../framework/snapshotSerializers';
 import { EarningsConfigSchema } from '../framework/configSchemas';
+import { RowAttachButton } from '../../components/RowAttachButton';
 import type { WidgetRenderProps } from '../types';
 
 /** Local-date YYYY-MM-DD. We can't use toISOString() because that emits UTC,
@@ -66,7 +69,24 @@ function formatDateRight(dateStr: string, bucket: BucketKey): string {
   return d.toLocaleDateString(i18n.language, { month: 'short', day: 'numeric' });
 }
 
-function EarningsRow({ item, bucket }: { item: EarningsEntry; bucket: BucketKey }) {
+function serializeEarningsToMarkdown(items: EarningsEntry[]): string {
+  if (!items.length) return '_no upcoming earnings in window_';
+  return serializeRowsToMarkdown(items, [
+    { key: 'symbol', label: 'symbol' },
+    { key: 'date', label: 'date' },
+    { key: 'companyName', label: 'company', format: (v) => (typeof v === 'string' ? v : '') },
+  ]);
+}
+
+function EarningsRow({
+  item,
+  bucket,
+  instanceId,
+}: {
+  item: EarningsEntry;
+  bucket: BucketKey;
+  instanceId: string;
+}) {
   const { t } = useTranslation();
   // formatDateRight returns 'Today'/'Tomorrow' fallthrough or the locale's
   // weekday/short-month string. Translate the today/tomorrow shortcuts so
@@ -79,7 +99,7 @@ function EarningsRow({ item, bucket }: { item: EarningsEntry; bucket: BucketKey 
       : raw;
   return (
     <div
-      className="group flex items-center gap-3 px-2 py-2 rounded-md border border-transparent transition-colors"
+      className="row-attach-host group relative flex items-center gap-3 px-2 py-2 rounded-md border border-transparent transition-colors"
       onMouseEnter={(e) => {
         e.currentTarget.style.backgroundColor = 'var(--color-bg-hover)';
       }}
@@ -121,6 +141,9 @@ function EarningsRow({ item, bucket }: { item: EarningsEntry; bucket: BucketKey 
       >
         {label}
       </span>
+      <span className="absolute right-1 top-1/2 -translate-y-1/2">
+        <RowAttachButton instanceId={instanceId} rowId={`${item.symbol}-${item.date}`} />
+      </span>
     </div>
   );
 }
@@ -129,10 +152,12 @@ function BucketSection({
   label,
   items,
   bucket,
+  instanceId,
 }: {
   label: string;
   items: EarningsEntry[];
   bucket: BucketKey;
+  instanceId: string;
 }) {
   if (items.length === 0) return null;
   return (
@@ -160,7 +185,12 @@ function BucketSection({
       </div>
       <div className="flex flex-col">
         {items.map((item, i) => (
-          <EarningsRow key={`${item.symbol}-${item.date}-${i}`} item={item} bucket={bucket} />
+          <EarningsRow
+            key={`${item.symbol}-${item.date}-${i}`}
+            item={item}
+            bucket={bucket}
+            instanceId={instanceId}
+          />
         ))}
       </div>
     </div>
@@ -209,6 +239,62 @@ function EarningsCalendarWidget({ instance }: WidgetRenderProps<EarningsConfig>)
     }
     return buckets;
   }, [upcoming]);
+
+  useWidgetContextExport(instance.id, {
+    full: () => {
+      const sections: string[] = [];
+      const counts: Record<BucketKey, number> = {
+        today: grouped.today.length,
+        tomorrow: grouped.tomorrow.length,
+        week: grouped.week.length,
+        next: grouped.next.length,
+        later: grouped.later.length,
+      };
+      (Object.keys(grouped) as BucketKey[]).forEach((b) => {
+        if (grouped[b].length === 0) return;
+        sections.push(`### ${t(BUCKET_KEY[b])} (${grouped[b].length})`, '', serializeEarningsToMarkdown(grouped[b]), '');
+      });
+      const body = sections.length
+        ? sections.join('\n').trimEnd()
+        : `_no upcoming earnings in next ${windowDays}d_`;
+      const text = wrapWidgetContext(
+        'calendar.earnings',
+        { window_days: windowDays, count: upcoming.length, from: todayStr, to: toStr },
+        body,
+      );
+      return {
+        widget_type: 'calendar.earnings',
+        widget_id: instance.id,
+        label: `${t('dashboard.widgets.earningsCalendar.title')} · ${upcoming.length}`,
+        description: `next ${windowDays}d`,
+        captured_at: new Date().toISOString(),
+        text,
+        data: { window_days: windowDays, from: todayStr, to: toStr, counts, upcoming },
+      };
+    },
+    rows: (rowId: string) => {
+      const item = upcoming.find((e) => `${e.symbol}-${e.date}` === rowId);
+      if (!item) return null;
+      const lines = [
+        `**${item.symbol}** · ${item.date}`,
+      ];
+      if (item.companyName) lines.push(item.companyName);
+      const text = wrapWidgetContext(
+        'calendar.earnings/row',
+        { symbol: item.symbol, date: item.date },
+        lines.join('\n'),
+      );
+      return {
+        widget_type: 'calendar.earnings/row',
+        widget_id: `${instance.id}/${rowId}`,
+        label: `${item.symbol} · ${item.date}`,
+        description: t('dashboard.widgets.earningsCalendar.title'),
+        captured_at: new Date().toISOString(),
+        text,
+        data: { row: { symbol: item.symbol, date: item.date, companyName: item.companyName } },
+      };
+    },
+  });
 
   return (
     <div className="dashboard-glass-card p-5 flex flex-col h-full">
@@ -281,11 +367,11 @@ function EarningsCalendarWidget({ instance }: WidgetRenderProps<EarningsConfig>)
           </div>
         ) : (
           <div className="flex flex-col gap-3">
-            <BucketSection label={t(BUCKET_KEY.today)} items={grouped.today} bucket="today" />
-            <BucketSection label={t(BUCKET_KEY.tomorrow)} items={grouped.tomorrow} bucket="tomorrow" />
-            <BucketSection label={t(BUCKET_KEY.week)} items={grouped.week} bucket="week" />
-            <BucketSection label={t(BUCKET_KEY.next)} items={grouped.next} bucket="next" />
-            <BucketSection label={t(BUCKET_KEY.later)} items={grouped.later} bucket="later" />
+            <BucketSection label={t(BUCKET_KEY.today)} items={grouped.today} bucket="today" instanceId={instance.id} />
+            <BucketSection label={t(BUCKET_KEY.tomorrow)} items={grouped.tomorrow} bucket="tomorrow" instanceId={instance.id} />
+            <BucketSection label={t(BUCKET_KEY.week)} items={grouped.week} bucket="week" instanceId={instance.id} />
+            <BucketSection label={t(BUCKET_KEY.next)} items={grouped.next} bucket="next" instanceId={instance.id} />
+            <BucketSection label={t(BUCKET_KEY.later)} items={grouped.later} bucket="later" instanceId={instance.id} />
           </div>
         )}
       </div>

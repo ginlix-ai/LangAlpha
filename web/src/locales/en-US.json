@@ -258,7 +258,15 @@
         "menu": "Widget menu",
         "duplicate": "Duplicate",
         "remove": "Remove",
-        "errorBoundary": "Widget failed to render"
+        "errorBoundary": "Widget failed to render",
+        "addToContext": "Add to context",
+        "addToContextTitle": "Add this widget to chat context",
+        "contextAttached": "Added to context",
+        "contextUnavailable": "Widget not available",
+        "contextUnavailableHint": "This widget has not registered a context exporter yet.",
+        "addRowToContext": "Add row to context",
+        "addRowToContextTitle": "Add this row to chat context",
+        "contextUnsupportedTradingView": "Can't attach this — the content is managed by TradingView, so the agent can't access it."
       },
       "addDialog": {
         "eyebrow": "Widget Gallery",
@@ -1045,6 +1053,17 @@
     "anyoneWithLink": "Anyone with this link can view the conversation."
   },
   "chat": {
+    "widgetContext": {
+      "inContext_one": "{{count}} in context",
+      "inContext_other": "{{count}} in context",
+      "fanHint": "click to fan",
+      "showLess": "Show less",
+      "clear": "Clear",
+      "removeAria": "Remove from context",
+      "overflowAria_one": "{{count}} item in context — open chat",
+      "overflowAria_other": "{{count}} items in context — open chat",
+      "overflowLabel": "in context"
+    },
     "running": "Running: {{tool}}",
     "completedWithCalls": "Completed ({{count}} tool calls)",
     "completed": "Completed",

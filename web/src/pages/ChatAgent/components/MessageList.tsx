@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Bot, User, FileText, ImageIcon, Pencil, RefreshCw, RotateCcw, Copy, Check, Info, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { type WidgetContextPreviewShape } from '@/pages/Dashboard/widgets/framework/WidgetContextPreview';
+import { WidgetContextDeck } from '@/pages/Dashboard/widgets/framework/WidgetContextDeck';
 import { useIsMobile } from '@/hooks/useIsMobile';
 
 import ThumbDownModal from './ThumbDownModal';
@@ -165,6 +167,35 @@ interface AttachmentData {
 
 interface AttachmentCardProps {
   attachment: AttachmentData;
+}
+
+/** Local alias for the preview shape — keeps inline-deck internals decoupled from the import path. */
+type WidgetChipShape = WidgetContextPreviewShape;
+
+/**
+ * Static read-only deck rendered below the user message bubble. Reuses the
+ * shared `WidgetContextDeck` — no eyebrow, no remove buttons, just the
+ * stacked cards with click-to-fan / click-to-preview semantics. Width is
+ * pinned at 320px since the user-message column has a `max-w-[80%]`
+ * constraint that would otherwise collapse absolute-positioned cards.
+ */
+function InlineWidgetDeck({ snapshots }: { snapshots: WidgetChipShape[] }) {
+  const [fanned, setFanned] = useState(false);
+  return (
+    <WidgetContextDeck
+      snapshots={snapshots}
+      fanned={fanned}
+      onToggleFan={() => setFanned((p) => !p)}
+      onCollapse={() => setFanned(false)}
+      compactCardGrid
+      style={{
+        width: 320,
+        borderBottom: 'none',
+        marginBottom: 0,
+        paddingBottom: 0,
+      }}
+    />
+  );
 }
 
 /**
@@ -486,6 +517,8 @@ const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvat
   const isPendingDelivery = isUser && ((message.isPending as boolean) || (message.steering as boolean));
   const attachments = message.attachments as AttachmentData[] | undefined;
   const hasAttachments = isUser && attachments && attachments.length > 0;
+  const widgetSnapshots = message.widgetSnapshots as WidgetChipShape[] | undefined;
+  const hasWidgetSnapshots = isUser && widgetSnapshots && widgetSnapshots.length > 0;
 
   // Edit mode state
   const [isEditing, setIsEditing] = useState(false);
@@ -770,6 +803,13 @@ const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvat
               <AttachmentCard key={idx} attachment={att} />
             ))}
           </div>
+        )}
+
+        {/* Widget context deck -- stacked chip cards below the bubble,
+            mirroring the chat-input deck visuals. Read-only: chips are
+            scoped to the message that attached them. */}
+        {hasWidgetSnapshots && (
+          <InlineWidgetDeck snapshots={widgetSnapshots!} />
         )}
         </>
         )}

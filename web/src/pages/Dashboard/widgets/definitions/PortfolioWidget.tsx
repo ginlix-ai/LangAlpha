@@ -4,20 +4,80 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Briefcase } from 'lucide-react';
 import { useDashboardContext } from '../framework/DashboardDataContext';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { useWidgetContextExport } from '../framework/contextSnapshot';
+import {
+  serializeQuoteRowsToMarkdown,
+  serializeQuoteRowToMarkdown,
+  wrapWidgetContext,
+} from '../framework/snapshotSerializers';
 import { PortfolioConfigSchema } from '../framework/configSchemas';
+import { RowAttachButton } from '../../components/RowAttachButton';
 import type { WidgetRenderProps } from '../types';
+import type { PortfolioRow } from '../../hooks/usePortfolioData';
 import {
   HoldingsAddButton,
   HoldingsSkeleton,
   PortfolioNavSummary,
   PortfolioRowItem,
 } from './_holdingsPrimitives';
+import { formatPortfolioNavMarkdownLine, portfolioSummary } from './_holdingsHelpers';
 
 type PortfolioConfig = { valuesHidden?: boolean };
+
+function rowToQuote(r: PortfolioRow) {
+  return {
+    symbol: r.symbol,
+    price: r.price,
+    shares: r.quantity ?? undefined,
+    marketValue: r.marketValue,
+    changePercent: r.unrealizedPlPercent ?? undefined,
+  };
+}
 
 function PortfolioWidget({ instance, updateConfig }: WidgetRenderProps<PortfolioConfig>) {
   const { t } = useTranslation();
   const { portfolio, portfolioHandlers, dashboard } = useDashboardContext();
+
+  useWidgetContextExport(instance.id, {
+    full: () => {
+      const rows = portfolio.rows.map(rowToQuote);
+      const summary = portfolioSummary(portfolio.rows);
+      const navLine = formatPortfolioNavMarkdownLine(summary);
+      const lines: string[] = [];
+      if (navLine) lines.push(navLine, '');
+      lines.push(serializeQuoteRowsToMarkdown(rows));
+      const text = wrapWidgetContext('portfolio.holdings', { count: rows.length }, lines.join('\n'));
+      return {
+        widget_type: 'portfolio.holdings',
+        widget_id: instance.id,
+        label: `${t('dashboard.widgets.portfolio.title')} · ${rows.length}`,
+        description: rows.length ? `${rows.length} holding${rows.length === 1 ? '' : 's'}` : 'empty',
+        captured_at: new Date().toISOString(),
+        text,
+        data: { rows, summary },
+      };
+    },
+    rows: (rowId: string) => {
+      const row = portfolio.rows.find((r) => (r.user_portfolio_id ?? r.symbol) === rowId);
+      if (!row) return null;
+      const quote = rowToQuote(row);
+      const body = serializeQuoteRowToMarkdown(quote);
+      const text = wrapWidgetContext('portfolio.holdings/row', { symbol: row.symbol }, body);
+      return {
+        widget_type: 'portfolio.holdings/row',
+        widget_id: `${instance.id}/${rowId}`,
+        label:
+          row.symbol +
+          (row.unrealizedPlPercent != null
+            ? ` · ${row.unrealizedPlPercent >= 0 ? '+' : ''}${row.unrealizedPlPercent.toFixed(2)}%`
+            : ''),
+        description: t('dashboard.widgets.portfolio.title'),
+        captured_at: new Date().toISOString(),
+        text,
+        data: { row: quote },
+      };
+    },
+  });
   const [valuesHidden, setValuesHidden] = useState(!!instance.config.valuesHidden);
 
   const toggleHidden = () => {
@@ -75,15 +135,25 @@ function PortfolioWidget({ instance, updateConfig }: WidgetRenderProps<Portfolio
               <HoldingsSkeleton count={3} />
             ) : (
               portfolio.rows.map((row, i) => (
-                <PortfolioRowItem
+                <div
                   key={row.user_portfolio_id ?? row.symbol}
-                  item={row}
-                  index={i}
-                  marketStatus={dashboard.marketStatus}
-                  valuesHidden={valuesHidden}
-                  onEdit={portfolioHandlers.onEdit}
-                  onDelete={portfolioHandlers.onDelete}
-                />
+                  className="row-attach-host relative"
+                >
+                  <PortfolioRowItem
+                    item={row}
+                    index={i}
+                    marketStatus={dashboard.marketStatus}
+                    valuesHidden={valuesHidden}
+                    onEdit={portfolioHandlers.onEdit}
+                    onDelete={portfolioHandlers.onDelete}
+                  />
+                  <span className="absolute right-1 top-1/2 -translate-y-1/2">
+                    <RowAttachButton
+                      instanceId={instance.id}
+                      rowId={String(row.user_portfolio_id ?? row.symbol)}
+                    />
+                  </span>
+                </div>
               ))
             )}
 

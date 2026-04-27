@@ -18,7 +18,8 @@ import { useCardState } from '../hooks/useCardState';
 import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
 import './FilePanel.css';
 import ChatInput, { type ChatInputHandle } from '../../../components/ui/chat-input';
-import { attachmentsToContexts, type Attachment } from '../utils/fileUpload';
+import { attachmentsToContexts, widgetSnapshotsToContexts, type Attachment } from '../utils/fileUpload';
+import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 import MessageList, { normalizeSubagentText } from './MessageList';
 import Markdown from './Markdown';
 import NavigationPanel from './NavigationPanel';
@@ -70,6 +71,14 @@ interface LocationState {
   workspaceName?: string;
   fromThreadId?: string;
   fromWorkspaceId?: string;
+  /**
+   * Widget context snapshots forwarded from the dashboard's send. Re-seeds
+   * the chat input's deck rail on mount so the user sees the same chips they
+   * had on the dashboard. The auto-fire effect already includes the same
+   * snapshots in `additionalContext`, so the first message is unaffected;
+   * the bus state powers the visual chips and any follow-up the user types.
+   */
+  widgetSnapshots?: WidgetContextSnapshot[];
   [key: string]: unknown;
 }
 
@@ -141,6 +150,12 @@ interface SlashCommand {
 interface ModelOptions {
   model?: string | null;
   reasoningEffort?: string | null;
+  /**
+   * Widget context snapshots from the chat input's deck rail. Serialized into
+   * `additional_context` items (one widget directive + optional sibling image
+   * per snapshot) by `handleSendWithAttachments`.
+   */
+  widgetSnapshots?: WidgetContextSnapshot[];
 }
 
 interface ActionCommand {
@@ -317,6 +332,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
 
   // Clear the drag-just-ended flag after each render so future transitions animate normally.
   useEffect(() => { dragJustEndedRef.current = false; });
+
   // Clear preview cache and cross-workspace state when workspace changes to avoid leaking old workspace data.
   useEffect(() => {
     previewMapRef.current.clear();
@@ -687,6 +703,16 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       } else if (cmd.type === 'subagent') {
         contexts.push({ type: 'directive', content: 'User wishes you to complete this task using subagents.' });
       }
+    }
+
+    // Widget context snapshots from the deck rail. Each snapshot becomes one
+    // `{type:"widget"}` item plus an optional sibling `{type:"image"}` item
+    // (the existing MultimodalContext channel handles vision-vs-text-only
+    // routing). The same snapshots are also forwarded to handleSendMessage so
+    // the user message renders chip cards inline below its bubble.
+    if (modelOptions.widgetSnapshots && modelOptions.widgetSnapshots.length > 0) {
+      const items = widgetSnapshotsToContexts(modelOptions.widgetSnapshots);
+      contexts.push(...(items as unknown as Record<string, unknown>[]));
     }
 
     const additionalContext = contexts.length > 0 ? contexts : null;
@@ -1497,28 +1523,43 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
         // New thread - send immediately
         initialMessageSentRef.current = true;
         // Capture state values before clearing (navigate may update location ref)
-        const { initialMessage, planMode, additionalContext, attachmentMeta, model, reasoningEffort } = location.state;
+        const { initialMessage, planMode, additionalContext, attachmentMeta, model, reasoningEffort, widgetSnapshots } = location.state;
         // Clear navigation state to prevent re-sending on re-renders
         navigate(location.pathname, { replace: true, state: {} });
         // Small delay to ensure component is fully mounted
         setTimeout(() => {
-          handleSendMessage(initialMessage, planMode || false, additionalContext || null, attachmentMeta || null, { model, reasoningEffort });
+          handleSendMessage(initialMessage, planMode || false, additionalContext || null, attachmentMeta || null, { model, reasoningEffort, widgetSnapshots });
         }, 100);
       } else if (!isLoadingHistory && !isLoading) {
         // Existing thread - wait for history to load, then send
         // This ensures we don't send duplicate messages
         initialMessageSentRef.current = true;
         // Capture state values before clearing (navigate may update location ref)
-        const { initialMessage, planMode, additionalContext, attachmentMeta, model, reasoningEffort } = location.state;
+        const { initialMessage, planMode, additionalContext, attachmentMeta, model, reasoningEffort, widgetSnapshots } = location.state;
         // Clear navigation state to prevent re-sending on re-renders
         navigate(location.pathname, { replace: true, state: {} });
         // Small delay to ensure component is fully mounted
         setTimeout(() => {
-          handleSendMessage(initialMessage, planMode || false, additionalContext || null, attachmentMeta || null, { model, reasoningEffort });
+          handleSendMessage(initialMessage, planMode || false, additionalContext || null, attachmentMeta || null, { model, reasoningEffort, widgetSnapshots });
         }, 100);
       }
     }
   }, [location.state, workspaceId, threadId, isLoading, isLoadingHistory, handleSendMessage, navigate, location.pathname, isActive]);
+
+  // Re-seed the widget context deck from navigation state when there's no
+  // initialMessage (the auto-send branch above already consumes them inline).
+  // Used by the ContextOverflowPill click handoff: dashboard → /chat with
+  // queued widget cards but no auto-send.
+  const widgetSnapshotReseedRef = useRef(false);
+  useEffect(() => {
+    if (widgetSnapshotReseedRef.current) return;
+    const navState = location.state as LocationState | null;
+    const snaps = navState?.widgetSnapshots;
+    if (!snaps?.length || navState?.initialMessage) return;
+    widgetSnapshotReseedRef.current = true;
+    snaps.forEach((s) => chatInputRef.current?.addWidgetSnapshot(s));
+    navigate(location.pathname, { replace: true, state: { ...navState, widgetSnapshots: undefined } });
+  }, [location.state, location.pathname, navigate]);
 
   // Smart auto-scroll: only scroll to bottom when user is already near the bottom
   const isNearBottomRef = useRef(true);

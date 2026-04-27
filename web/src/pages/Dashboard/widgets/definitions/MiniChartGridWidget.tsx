@@ -5,6 +5,11 @@ import { Grid2x2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useDashboardContext } from '../framework/DashboardDataContext';
 import { registerWidget } from '../framework/WidgetRegistry';
+import { useWidgetContextExport } from '../framework/contextSnapshot';
+import {
+  serializeRowsToMarkdown,
+  wrapWidgetContext,
+} from '../framework/snapshotSerializers';
 import { MiniChartGridConfigSchema } from '../framework/configSchemas';
 import { fetchStockData } from '@/pages/MarketView/utils/api';
 import { DEFAULT_BLUE_CHIPS } from '../framework/defaults';
@@ -118,6 +123,49 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
     staleTime: 60_000,
     refetchInterval: 120_000,
     refetchIntervalInBackground: false,
+  });
+
+  useWidgetContextExport(instance.id, {
+    full: () => {
+      const cells = data ?? [];
+      const rows = cells.map((c) => {
+        const change = c.last - c.prev;
+        const changePct = c.prev === 0 ? 0 : (change / c.prev) * 100;
+        const min = Math.min(...c.closes);
+        const max = Math.max(...c.closes);
+        return {
+          symbol: c.symbol,
+          last: c.last,
+          first: c.prev,
+          changePct,
+          range: `${min.toFixed(2)}–${max.toFixed(2)}`,
+          bars: c.closes.length,
+        };
+      });
+      const body = rows.length
+        ? serializeRowsToMarkdown(rows, [
+            { key: 'symbol', label: 'symbol' },
+            { key: 'last', label: 'last', format: (v) => Number(v).toFixed(2) },
+            { key: 'first', label: `${SPARK_DAYS}d ago`, format: (v) => Number(v).toFixed(2) },
+            { key: 'changePct', label: 'change%', format: (v) => `${(v as number).toFixed(2)}%` },
+            { key: 'range', label: `${SPARK_DAYS}d range` },
+          ])
+        : '_no chart cells loaded_';
+      const text = wrapWidgetContext(
+        'markets.miniChartGrid',
+        { count: rows.length, span_days: SPARK_DAYS, symbols: effectiveSymbols.join(',') },
+        body,
+      );
+      return {
+        widget_type: 'markets.miniChartGrid',
+        widget_id: instance.id,
+        label: `${t('dashboard.widgets.miniChartGrid.title')} · ${rows.length}`,
+        description: rows.length ? `${rows.length} symbols, last ${SPARK_DAYS}d` : 'empty',
+        captured_at: new Date().toISOString(),
+        text,
+        data: { span_days: SPARK_DAYS, cells: rows },
+      };
+    },
   });
 
   return (

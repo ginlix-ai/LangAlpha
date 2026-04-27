@@ -17,6 +17,9 @@ import { useIsMobile } from '@/hooks/useIsMobile';
 import { supportsXhighEffort } from '@/lib/modelCapabilities';
 import { getSkills, getModelMetadata } from '../../pages/ChatAgent/utils/api';
 import { useToast } from './use-toast';
+import { ChatInputRegistry, ContextBus } from '@/lib/contextBus';
+import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
+import { WidgetContextDeck } from '@/pages/Dashboard/widgets/framework/WidgetContextDeck';
 import './chat-input.css';
 
 /* --- TYPES --- */
@@ -52,6 +55,13 @@ interface ModelOptions {
   model: string | null;
   reasoningEffort: string | null;
   fastMode: boolean;
+  /**
+   * Widget context snapshots attached via the deck rail. Forwarded to the
+   * backend as `additional_context` items of `type: "widget"`. Image-bearing
+   * snapshots also produce a sibling `type: "image"` MultimodalContext item;
+   * see `widgetSnapshotsToContexts` in `pages/ChatAgent/utils/fileUpload.ts`.
+   */
+  widgetSnapshots?: WidgetContextSnapshot[];
 }
 
 interface ReadyAttachment {
@@ -64,6 +74,14 @@ interface ReadyAttachment {
 export interface ChatInputHandle {
   getModelOptions: () => ModelOptions;
   addContext: (ctx: { path?: string; snippet?: string; label?: string; lineStart?: number; lineEnd?: number; lineCount?: number; source?: string }) => void;
+  /**
+   * Imperatively add a widget context snapshot to the deck. Local-only —
+   * this does NOT publish to ContextBus. Use this when re-seeding the deck
+   * from `location.state` after a navigate (e.g. dashboard → chat handoff).
+   * Use `ContextBus.attach` when the user clicks "+" on a widget so every
+   * mounted chat input sees it.
+   */
+  addWidgetSnapshot: (snapshot: WidgetContextSnapshot) => void;
   setValue: (text: string) => void;
 }
 
@@ -212,27 +230,100 @@ function areModelsCompatible(modelA: string | null, modelB: string | null, metad
 
 /* --- MAIN COMPONENT --- */
 
-/**
- * ChatInput — unified chat input component used across the entire app.
- *
- * @param {Function}  onSend              - (message, planMode, attachments, slashCommands) => void
- * @param {boolean}   disabled
- * @param {boolean}   isLoading
- * @param {Function}  onStop
- * @param {string}    placeholder
- * @param {string[]}  files               - workspace file paths for @mention autocomplete
- * @param {string}    mode                - 'fast' | 'ptc' — undefined = no toggle shown
- * @param {Function}  onModeChange        - (newMode) => void
- * @param {Array}     workspaces          - [{ workspace_id, name }] — null = hidden
- * @param {string}    selectedWorkspaceId
- * @param {Function}  onWorkspaceChange   - (wsId) => void
- * @param {Function}  onCaptureChart      - triggers chart screenshot capture (trading only)
- * @param {string}    chartImage          - base64 data URL of captured chart
- * @param {Function}  onRemoveChartImage
- * @param {string}    prefillMessage
- * @param {Function}  onClearPrefill
- */
 const speechSupported = typeof window !== 'undefined' && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+
+/* --- WIDGET CONTEXT DECK ---
+ *
+ * The chat-input live deck is a thin wrapper around the shared
+ * `WidgetContextDeck` component (in `pages/Dashboard/widgets/framework/`).
+ * The shared component owns card geometry, fanning, outside-click collapse,
+ * and the preview modal; we supply the live-deck-only chrome (eyebrow row
+ * with clear button, per-card remove `×`, fan-hint chevron) via render
+ * slots so the visual + behavioral contract stays identical to the
+ * chat-view inline deck.
+ */
+function ChatInputWidgetDeck({
+  snapshots,
+  fanned,
+  onToggle,
+  onCollapse,
+  onRemove,
+  onClear,
+  boundaryRef,
+}: {
+  snapshots: WidgetContextSnapshot[];
+  fanned: boolean;
+  onToggle: () => void;
+  onCollapse: () => void;
+  onRemove: (widgetId: string) => void;
+  onClear: () => void;
+  /** The chat-input outer container. Clicks within this boundary (textarea,
+   *  send button, attach controls) keep the deck fanned; only clicks fully
+   *  outside the chat input collapse it. */
+  boundaryRef: React.RefObject<HTMLElement | null>;
+}) {
+  const { t } = useTranslation();
+  const cardCount = snapshots.length;
+  return (
+    <WidgetContextDeck
+      snapshots={snapshots}
+      fanned={fanned}
+      onToggleFan={onToggle}
+      onCollapse={onCollapse}
+      boundaryRef={boundaryRef}
+      className="widget-drag-cancel"
+      testId="widget-context-deck"
+      eyebrow={
+        <div className="widget-deck-eyebrow">
+          <span className="widget-deck-eyebrow-left">
+            <span className="widget-deck-dot" />
+            {t('chat.widgetContext.inContext', { count: cardCount, defaultValue: '{{count}} in context' })}
+            {cardCount > 1 && !fanned && (
+              <span className="widget-deck-hint">{t('chat.widgetContext.fanHint', { defaultValue: 'click to fan' })}</span>
+            )}
+          </span>
+          <span className="widget-deck-eyebrow-right">
+            {fanned && cardCount > 1 && (
+              <button
+                type="button"
+                className="widget-deck-show-less"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCollapse();
+                }}
+              >
+                {t('chat.widgetContext.showLess', { defaultValue: 'Show less' })}
+              </button>
+            )}
+            <button
+              type="button"
+              className="widget-deck-clear"
+              onClick={(e) => {
+                e.stopPropagation();
+                onClear();
+              }}
+            >
+              {t('chat.widgetContext.clear', { defaultValue: 'Clear' })}
+            </button>
+          </span>
+        </div>
+      }
+      renderCardSlotEnd={(s) => (
+        <button
+          type="button"
+          className="widget-deck-card-remove"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove(s.widget_id);
+          }}
+          aria-label={t('chat.widgetContext.removeAria', { defaultValue: 'Remove from context' })}
+        >
+          <X className="h-3 w-3" />
+        </button>
+      )}
+    />
+  );
+}
 
 const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput({
   onSend,
@@ -306,6 +397,14 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
 
   // @file mention state
   const [mentionedFiles, setMentionedFiles] = useState<MentionedFile[]>([]);
+
+  // Widget context deck state. Snapshots arrive via ContextBus.attach (when
+  // the user clicks "+" on any widget on the page) or via addWidgetSnapshot
+  // (when re-seeding from location.state after a navigate). Each input
+  // mirrors the same global ContextBus state so two visible inputs always
+  // show the same deck.
+  const [widgetSnapshots, setWidgetSnapshots] = useState<WidgetContextSnapshot[]>([]);
+  const [deckFanned, setDeckFanned] = useState(false);
   const [showAutocomplete, setShowAutocomplete] = useState(false);
   const [autocompleteQuery, setAutocompleteQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
@@ -478,6 +577,12 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       // Focus the textarea
       setTimeout(() => textareaRef.current?.focus(), 0);
     },
+    addWidgetSnapshot(snapshot) {
+      setWidgetSnapshots((prev) => {
+        if (prev.some((s) => s.widget_id === snapshot.widget_id)) return prev;
+        return [...prev, snapshot];
+      });
+    },
     setValue(text) {
       setMessage(text);
       setTimeout(() => textareaRef.current?.focus(), 0);
@@ -494,6 +599,37 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   const autocompleteRef = useRef<HTMLDivElement>(null);
   const slashMenuRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
+
+  // Subscribe to ContextBus so this input mirrors the global widget-context
+  // deck. Multiple chat inputs can be visible simultaneously (hero card +
+  // ConversationWidget): they all subscribe and stay in sync. Detach events
+  // come from another input's deck card "×" — we filter our own state to
+  // match.
+  useEffect(() => {
+    const off = ContextBus.subscribe((event) => {
+      if (event.type === 'attach') {
+        setWidgetSnapshots((prev) => {
+          if (prev.some((s) => s.widget_id === event.snapshot.widget_id)) return prev;
+          return [...prev, event.snapshot];
+        });
+      } else if (event.type === 'detach') {
+        setWidgetSnapshots((prev) => prev.filter((s) => s.widget_id !== event.widgetId));
+      } else if (event.type === 'clear') {
+        setWidgetSnapshots([]);
+      }
+    });
+    return off;
+  }, []);
+
+  // Register this chat input's root element so the global ContextOverflowPill
+  // can probe visibility via IntersectionObserver and only show when zero
+  // chat inputs are in the viewport.
+  useEffect(() => {
+    const el = chatContainerRef.current;
+    if (!el) return;
+    const off = ChatInputRegistry.register(el);
+    return off;
+  }, []);
 
   const hasModeToggle = mode !== undefined && onModeChange !== undefined;
 
@@ -877,7 +1013,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   }, []);
 
   // --- Send ---
-  const hasContent = message.trim() || attachedFiles.length > 0 || !!chartImage || mentionedFiles.some((f) => f.snippet);
+  const hasContent = message.trim() || attachedFiles.length > 0 || !!chartImage || mentionedFiles.some((f) => f.snippet) || widgetSnapshots.length > 0;
 
   const handleSend = useCallback(() => {
     if (!hasContent || disabled) return;
@@ -904,18 +1040,30 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       });
       finalMessage = finalMessage.trimEnd() + '\n' + blocks.join('\n');
     }
-    onSend(finalMessage, planMode, readyAttachments, slashCommands, { model: selectedModel, reasoningEffort, fastMode });
+    onSend(finalMessage, planMode, readyAttachments, slashCommands, {
+      model: selectedModel,
+      reasoningEffort,
+      fastMode,
+      widgetSnapshots: widgetSnapshots.length ? widgetSnapshots : undefined,
+    });
     setMessage('');
     attachedFiles.forEach(f => { if (f.preview) URL.revokeObjectURL(f.preview); });
     setAttachedFiles([]);
     setMentionedFiles([]);
     setSlashCommands([]);
+    // Clear widget deck on send. Other mounted chat inputs hear the same
+    // clear via ContextBus so the deck empties everywhere — single source
+    // of truth.
+    if (widgetSnapshots.length > 0) {
+      ContextBus.clear();
+    }
+    setDeckFanned(false);
     setShowAutocomplete(false);
     setShowSlashMenu(false);
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [hasContent, disabled, message, planMode, attachedFiles, onSend, mentionedFiles, slashCommands, selectedModel, reasoningEffort, fastMode, t]);
+  }, [hasContent, disabled, message, planMode, attachedFiles, onSend, mentionedFiles, slashCommands, selectedModel, reasoningEffort, fastMode, widgetSnapshots, t]);
 
   // --- Keyboard & Language Detection ---
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1046,6 +1194,27 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
           </>
         )}
         <div className="flex flex-col px-3 pt-3 pb-2 gap-2">
+
+          {/* Widget context deck — top card visible, others peek behind */}
+          {widgetSnapshots.length > 0 && (
+            <ChatInputWidgetDeck
+              snapshots={widgetSnapshots}
+              fanned={deckFanned}
+              boundaryRef={chatContainerRef}
+              onToggle={() => setDeckFanned((p) => !p)}
+              onCollapse={() => setDeckFanned(false)}
+              onRemove={(widgetId) => {
+                // Local + bus: remove from this input AND publish detach so
+                // every other mounted input drops the same card.
+                setWidgetSnapshots((prev) => prev.filter((s) => s.widget_id !== widgetId));
+                ContextBus.detach(widgetId);
+              }}
+              onClear={() => {
+                ContextBus.clear();
+                setDeckFanned(false);
+              }}
+            />
+          )}
 
           {/* Slash command pills + Mention pills */}
           {(slashCommands.length > 0 || mentionedFiles.length > 0) && (
