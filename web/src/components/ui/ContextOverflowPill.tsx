@@ -90,7 +90,10 @@ export function ContextOverflowPill() {
       els[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
-    navigate('/chat/t/__default__', { state: { widgetSnapshots: snapshots } });
+    // Strip image data URLs — chip rendering doesn't need them and a couple of
+    // chart captures can blow past Firefox's 640KB structured-clone ceiling.
+    const lite = snapshots.map(({ image_jpeg_data_url: _img, ...rest }) => rest);
+    navigate('/chat/t/__default__', { state: { widgetSnapshots: lite } });
   };
 
   return (

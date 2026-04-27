@@ -177,10 +177,9 @@ export function useChatInput() {
           },
         });
       }
-      // Send succeeded — clear the dashboard's deck so the cards don't
-      // linger after the user navigates to chat. The chat input on the
-      // /chat route will re-seed from location.state via addWidgetSnapshot
-      // on mount.
+      // Clear the dashboard deck so cards don't linger after navigate.
+      // Snapshots ride `location.state` and are consumed inline by the
+      // chat-side auto-send effect (no deck re-seed on this path).
       if (widgetSnapshots && widgetSnapshots.length > 0) {
         ContextBus.clear();
       }

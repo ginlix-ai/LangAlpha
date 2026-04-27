@@ -1546,6 +1546,21 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     }
   }, [location.state, workspaceId, threadId, isLoading, isLoadingHistory, handleSendMessage, navigate, location.pathname, isActive]);
 
+  // Re-seed the widget context deck from navigation state when there's no
+  // initialMessage (the auto-send branch above already consumes them inline).
+  // Used by the ContextOverflowPill click handoff: dashboard → /chat with
+  // queued widget cards but no auto-send.
+  const widgetSnapshotReseedRef = useRef(false);
+  useEffect(() => {
+    if (widgetSnapshotReseedRef.current) return;
+    const navState = location.state as LocationState | null;
+    const snaps = navState?.widgetSnapshots;
+    if (!snaps?.length || navState?.initialMessage) return;
+    widgetSnapshotReseedRef.current = true;
+    snaps.forEach((s) => chatInputRef.current?.addWidgetSnapshot(s));
+    navigate(location.pathname, { replace: true, state: { ...navState, widgetSnapshots: undefined } });
+  }, [location.state, location.pathname, navigate]);
+
   // Smart auto-scroll: only scroll to bottom when user is already near the bottom
   const isNearBottomRef = useRef(true);
   const isSubagentNearBottomRef = useRef(true);
