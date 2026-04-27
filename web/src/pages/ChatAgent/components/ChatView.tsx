@@ -283,6 +283,17 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const [filePanelTargetMemoryKey, setFilePanelTargetMemoryKey] = useState<string | null>(null);
   const [filePanelTargetMemoryTier, setFilePanelTargetMemoryTier] = useState<MemoryTier | null>(null);
   const [filePanelTargetMemoKey, setFilePanelTargetMemoKey] = useState<string | null>(null);
+  // Stable handlers — these land in useEffect deps in MemoryPanel/MemoPanel/
+  // FilePanel. Inline arrows would create a new identity on every ChatView
+  // render, re-triggering those effects on every streaming chunk (the
+  // `targetKey == null` guard makes them no-ops, but the wakeup is wasted).
+  const handleTargetFileHandled = useCallback(() => setFilePanelTargetFile(null), []);
+  const handleTargetDirHandled = useCallback(() => setFilePanelTargetDir(null), []);
+  const handleTargetMemoryHandled = useCallback(() => {
+    setFilePanelTargetMemoryKey(null);
+    setFilePanelTargetMemoryTier(null);
+  }, []);
+  const handleTargetMemoHandled = useCallback(() => setFilePanelTargetMemoKey(null), []);
   // Cross-workspace file panel: in flash mode, files live in PTC workspaces.
   // This tracks which workspace the file panel should fetch from.
   const [filePanelWorkspaceId, setFilePanelWorkspaceId] = useState<string | null>(null);
@@ -2319,17 +2330,14 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                   workspaceId={effectiveFileWorkspaceId || workspaceId}
                   onClose={() => { setRightPanelType(null); popPanelHistory(); }}
                   targetFile={filePanelTargetFile}
-                  onTargetFileHandled={() => setFilePanelTargetFile(null)}
+                  onTargetFileHandled={handleTargetFileHandled}
                   targetDirectory={filePanelTargetDir}
-                  onTargetDirHandled={() => setFilePanelTargetDir(null)}
+                  onTargetDirHandled={handleTargetDirHandled}
                   targetMemoryKey={filePanelTargetMemoryKey}
                   targetMemoryTier={filePanelTargetMemoryTier}
-                  onTargetMemoryHandled={() => {
-                    setFilePanelTargetMemoryKey(null);
-                    setFilePanelTargetMemoryTier(null);
-                  }}
+                  onTargetMemoryHandled={handleTargetMemoryHandled}
                   targetMemoKey={filePanelTargetMemoKey}
-                  onTargetMemoHandled={() => setFilePanelTargetMemoKey(null)}
+                  onTargetMemoHandled={handleTargetMemoHandled}
                   onOpenFile={handleOpenFileFromChat}
                   files={workspaceFiles}
                   filesLoading={filesLoading}
@@ -2381,17 +2389,14 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                       workspaceId={effectiveFileWorkspaceId || workspaceId}
                       onClose={() => { setRightPanelType(null); popPanelHistory(); }}
                       targetFile={filePanelTargetFile}
-                      onTargetFileHandled={() => setFilePanelTargetFile(null)}
+                      onTargetFileHandled={handleTargetFileHandled}
                       targetDirectory={filePanelTargetDir}
-                      onTargetDirHandled={() => setFilePanelTargetDir(null)}
+                      onTargetDirHandled={handleTargetDirHandled}
                       targetMemoryKey={filePanelTargetMemoryKey}
                       targetMemoryTier={filePanelTargetMemoryTier}
-                      onTargetMemoryHandled={() => {
-                        setFilePanelTargetMemoryKey(null);
-                        setFilePanelTargetMemoryTier(null);
-                      }}
+                      onTargetMemoryHandled={handleTargetMemoryHandled}
                       targetMemoKey={filePanelTargetMemoKey}
-                      onTargetMemoHandled={() => setFilePanelTargetMemoKey(null)}
+                      onTargetMemoHandled={handleTargetMemoHandled}
                       onOpenFile={handleOpenFileFromChat}
                       files={workspaceFiles}
                       filesLoading={filesLoading}
