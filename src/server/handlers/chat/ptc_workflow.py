@@ -37,6 +37,11 @@ from src.server.utils.directive_context import (
     build_directive_reminder,
     parse_directive_contexts,
 )
+from src.server.utils.widget_context import (
+    build_widget_context_reminder,
+    parse_widget_contexts,
+    serialize_widget_contexts_for_metadata,
+)
 from src.llms.llm import get_input_modalities
 from src.server.utils.multimodal_context import (
     build_attachment_metadata,
@@ -199,18 +204,9 @@ async def astream_ptc_workflow(
 ):
     """Async generator that streams PTC agent workflow events.
 
-    Uses build_ptc_graph to create a per-workspace LangGraph graph,
-    then reuses the standard WorkflowStreamHandler for SSE streaming.
-
-    Args:
-        request: The chat request
-        thread_id: Thread identifier
-        user_input: Extracted user input text
-        user_id: User identifier
-        workspace_id: Workspace identifier
-
-    Yields:
-        SSE-formatted event strings
+    Builds a per-workspace LangGraph graph and delegates streaming to
+    WorkflowStreamHandler. Workspace startup, background orchestration,
+    HITL resume, and completion persistence are all handled inline.
     """
     start_time = time.time()
     handler = None
@@ -231,12 +227,10 @@ async def astream_ptc_workflow(
         _phase_times[name] = (now - _phase_t0) * 1000  # ms
         _phase_t0 = now
 
-    # Start execution tracking to capture agent messages
     ExecutionTracker.start_tracking()
 
     slot_owned = True
     try:
-        # Validate agent_config is available
         if not setup.agent_config:
             raise HTTPException(
                 status_code=503,
@@ -247,7 +241,6 @@ async def astream_ptc_workflow(
         # Phase 1: Database Persistence Setup
         # =====================================================================
 
-        # Ensure thread exists in database (linked to workspace)
         await ensure_thread(
             request, thread_id, workspace_id, user_id, msg_type="ptc",
             initial_query=user_input,
@@ -280,6 +273,11 @@ async def astream_ptc_workflow(
             if multimodal_ctxs:
                 query_metadata["attachments"] = await build_attachment_metadata(
                     multimodal_ctxs, thread_id
+                )
+            widget_ctxs = parse_widget_contexts(request.additional_context)
+            if widget_ctxs:
+                query_metadata["widget_contexts"] = serialize_widget_contexts_for_metadata(
+                    widget_ctxs
                 )
 
         # Persist lightweight additional_context + slash command fallback
@@ -347,7 +345,6 @@ async def astream_ptc_workflow(
         subagents = request.subagents_enabled or config.subagents.enabled
         sandbox_id = None
 
-        # Use WorkspaceManager for workspace-based sessions
         workspace_manager = WorkspaceManager.get_instance()
 
         # Check if workspace needs startup — emit early SSE so frontend
@@ -467,7 +464,6 @@ async def astream_ptc_workflow(
         # PTC-only: set global for snapshot access
         setup.graph = ptc_graph
 
-        # Build input state from messages
         messages = normalize_request_messages(request)
 
         # =====================================================================
@@ -631,6 +627,25 @@ async def astream_ptc_workflow(
                 )
 
         # =====================================================================
+        # Widget Context Injection (inline with user message)
+        # =====================================================================
+        # Each WidgetContext carries pre-rendered <widget-context>...</widget-context>
+        # text. We concatenate them into one <system-reminder> envelope and append
+        # to the last user message. Image bytes for chart-type widgets travel as
+        # MultimodalContext(type='image') items above and use the existing modality
+        # gate — no special handling here.
+        widgets = parse_widget_contexts(request.additional_context)
+        widget_reminder = build_widget_context_reminder(widgets)
+        if widget_reminder and not request.hitl_response:
+            if isinstance(input_state, dict) and input_state.get("messages"):
+                _append_to_last_user_message(
+                    input_state["messages"], widget_reminder
+                )
+                logger.info(
+                    f"[PTC_CHAT] Widget context injected inline ({len(widgets)} widgets)"
+                )
+
+        # =====================================================================
         # Save user request to system thread directory (non-critical)
         # =====================================================================
         if not request.hitl_response and session.sandbox:
@@ -675,7 +690,6 @@ async def astream_ptc_workflow(
                 f"[PTC_CHAT] Background registry attached for thread_id={thread_id}"
             )
 
-        # Reuse WorkflowStreamHandler for SSE streaming
         handler = WorkflowStreamHandler(
             thread_id=thread_id,
             token_callback=token_callback,
@@ -687,7 +701,6 @@ async def astream_ptc_workflow(
         # Track steering messages injected mid-workflow for post-completion backfill
         setup_steering_tracking(handler)
 
-        # Initialize workflow tracker (fire-and-forget — return value unused)
         tracker = WorkflowTracker.get_instance()
         _fire_and_forget(
             tracker.mark_active(
@@ -757,15 +770,12 @@ async def astream_ptc_workflow(
                     lambda: manager.clear_event_buffer(thread_id)
                 )
 
-                # Get per-call records for usage tracking
                 _per_call_records = _token_cb.per_call_records if _token_cb else None
 
-                # Get tool usage summary from handler
                 _tool_usage = None
                 if _handler:
                     _tool_usage = _handler.get_tool_usage()
 
-                # Persist completion to database
                 _sse_events = _handler.get_sse_events() if _handler else None
 
                 # Capture sandbox images -> upload to cloud storage -> rewrite storage URLs
@@ -886,7 +896,6 @@ async def astream_ptc_workflow(
             f"[PTC_TIMING] thread_id={thread_id} model={model_tag} total={total_ms:.0f}ms ({phases})"
         )
 
-        # Stream live SSE events to the client
         async for event in stream_live_events(
             manager=manager,
             tracker=tracker,
