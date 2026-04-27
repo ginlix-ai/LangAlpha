@@ -31,44 +31,29 @@ def parse_widget_contexts(
                 contexts.append(_from_dict(ctx))
         elif isinstance(ctx, WidgetContext):
             contexts.append(ctx)
-        elif hasattr(ctx, "type") and ctx.type == "widget":
-            contexts.append(
-                WidgetContext(
-                    type="widget",
-                    widget_type=getattr(ctx, "widget_type", ""),
-                    widget_id=getattr(ctx, "widget_id", ""),
-                    label=getattr(ctx, "label", ""),
-                    text=getattr(ctx, "text", ""),
-                    data=getattr(ctx, "data", {}) or {},
-                    captured_at=getattr(ctx, "captured_at", None),
-                    description=getattr(ctx, "description", None),
-                )
-            )
 
     return contexts
 
 
 def _from_dict(ctx: dict) -> WidgetContext:
-    captured_raw = ctx.get("captured_at")
-    captured: Optional[datetime] = None
-    if isinstance(captured_raw, datetime):
-        captured = captured_raw
-    elif isinstance(captured_raw, str) and captured_raw:
-        try:
-            captured = datetime.fromisoformat(captured_raw.replace("Z", "+00:00"))
-        except ValueError:
-            captured = None
+    """Convert a raw dict to ``WidgetContext`` via Pydantic validation.
 
-    return WidgetContext(
-        type="widget",
-        widget_type=ctx.get("widget_type", ""),
-        widget_id=ctx.get("widget_id", ""),
-        label=ctx.get("label", ""),
-        text=ctx.get("text", ""),
-        data=ctx.get("data") or {},
-        captured_at=captured,
-        description=ctx.get("description"),
-    )
+    Pre-cleans two fields to preserve legacy lenient behavior the API has
+    always offered: unparseable ``captured_at`` strings become ``None``
+    (instead of 422) and ``data: None`` falls through to the default ``{}``.
+    Everything else is delegated to ``WidgetContext.model_validate`` so new
+    required fields added later don't get silently defaulted.
+    """
+    cleaned = dict(ctx)
+    captured_raw = cleaned.get("captured_at")
+    if isinstance(captured_raw, str) and captured_raw:
+        try:
+            datetime.fromisoformat(captured_raw.replace("Z", "+00:00"))
+        except ValueError:
+            cleaned["captured_at"] = None
+    if cleaned.get("data") is None:
+        cleaned.pop("data", None)
+    return WidgetContext.model_validate(cleaned)
 
 
 _WIDGET_CONTEXT_PREAMBLE = (

@@ -268,13 +268,13 @@ async def astream_ptc_workflow(
 
         # Extract attachment and context metadata for display in history
         # (PTC skips this block for HITL resumes — contrast with Flash)
+        widget_ctxs = parse_widget_contexts(request.additional_context)
         if request.additional_context and not request.hitl_response:
             multimodal_ctxs = parse_multimodal_contexts(request.additional_context)
             if multimodal_ctxs:
                 query_metadata["attachments"] = await build_attachment_metadata(
                     multimodal_ctxs, thread_id
                 )
-            widget_ctxs = parse_widget_contexts(request.additional_context)
             if widget_ctxs:
                 query_metadata["widget_contexts"] = serialize_widget_contexts_for_metadata(
                     widget_ctxs
@@ -634,15 +634,14 @@ async def astream_ptc_workflow(
         # to the last user message. Image bytes for chart-type widgets travel as
         # MultimodalContext(type='image') items above and use the existing modality
         # gate — no special handling here.
-        widgets = parse_widget_contexts(request.additional_context)
-        widget_reminder = build_widget_context_reminder(widgets)
+        widget_reminder = build_widget_context_reminder(widget_ctxs)
         if widget_reminder and not request.hitl_response:
             if isinstance(input_state, dict) and input_state.get("messages"):
                 _append_to_last_user_message(
                     input_state["messages"], widget_reminder
                 )
                 logger.info(
-                    f"[PTC_CHAT] Widget context injected inline ({len(widgets)} widgets)"
+                    f"[PTC_CHAT] Widget context injected inline ({len(widget_ctxs)} widgets)"
                 )
 
         # =====================================================================

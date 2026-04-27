@@ -89,6 +89,12 @@ export function useWidgetContextExport(
   // Stash the exporters in the registry so the (latest) closure is what runs
   // when the user clicks "+". Re-running this effect on every render keeps
   // the closures fresh without forcing each widget to memoize its serializer.
+  // Perf tradeoff (intentional): callers pass `exporters` inline, so its
+  // identity changes every render; the effect runs and `notify()` fires twice
+  // (cleanup + setup) per widget per dashboard render. `useSyncExternalStore`
+  // snapshot equality (`registry.has(instanceId)` stays true) prevents downstream
+  // re-renders. Don't `useMemo` this in callers — that would break the
+  // closure-freshness guarantee.
   useEffect(() => {
     registry.set(instanceId, exporters);
     notify();

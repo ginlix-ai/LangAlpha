@@ -141,13 +141,13 @@ async def astream_flash_workflow(
         query_metadata = {"msg_type": "flash"}
         if effective_model:
             query_metadata["llm_model"] = effective_model
+        widget_ctxs = parse_widget_contexts(request.additional_context)
         if request.additional_context:
             multimodal_ctxs = parse_multimodal_contexts(request.additional_context)
             if multimodal_ctxs:
                 query_metadata["attachments"] = await build_attachment_metadata(
                     multimodal_ctxs, thread_id
                 )
-            widget_ctxs = parse_widget_contexts(request.additional_context)
             if widget_ctxs:
                 query_metadata["widget_contexts"] = serialize_widget_contexts_for_metadata(
                     widget_ctxs
@@ -282,13 +282,12 @@ async def astream_flash_workflow(
             )
 
         # Widget Context Injection (inline with user message) -- Flash-specific
-        widgets = parse_widget_contexts(request.additional_context)
-        widget_reminder = build_widget_context_reminder(widgets)
+        widget_reminder = build_widget_context_reminder(widget_ctxs)
         if widget_reminder:
             _append_to_last_user_message(messages, widget_reminder)
             logger.info(
                 f"[FLASH_CHAT] Widget context injected inline "
-                f"({len(widgets)} widgets)"
+                f"({len(widget_ctxs)} widgets)"
             )
 
         # Build input state or resume command -- Flash-specific (no

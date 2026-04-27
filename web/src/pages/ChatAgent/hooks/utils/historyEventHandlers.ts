@@ -124,7 +124,8 @@ export function handleHistoryUserMessage({
       };
 
       // Restore attachment metadata from persisted query metadata
-      if ((event.metadata?.attachments as unknown[] | undefined)?.length as number > 0) {
+      const attachments = event.metadata?.attachments as unknown[] | undefined;
+      if (attachments && attachments.length > 0) {
         userMessage.attachments = event.metadata!.attachments;
       }
 
@@ -132,7 +133,8 @@ export function handleHistoryUserMessage({
       // this user message on history replay. Backend persists `text` so the
       // preview modal can show what the agent saw; `image_jpeg_data_url` is
       // live-only (image rides the multimodal channel and isn't persisted).
-      if ((event.metadata?.widget_contexts as unknown[] | undefined)?.length as number > 0) {
+      const widgetContexts = event.metadata?.widget_contexts as unknown[] | undefined;
+      if (widgetContexts && widgetContexts.length > 0) {
         userMessage.widgetSnapshots = event.metadata!.widget_contexts;
       }
 
