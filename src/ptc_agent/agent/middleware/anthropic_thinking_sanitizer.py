@@ -1,23 +1,14 @@
-"""Sanitize malformed Anthropic thinking blocks before they reach the API.
+"""Repair orphan Anthropic thinking blocks before the API call.
 
-On Claude Opus 4.7 with adaptive thinking + default `display: "omitted"`,
-the Anthropic stream only emits `signature_delta` events (no `thinking_delta`).
-langchain-anthropic's stream handler turns each delta into a standalone
-content block: `{"type": "thinking", "signature": "...", "index": N}` — with
-no `thinking` field. The merged AIMessage lands in LangGraph state that way,
-and the next turn replaying it to Anthropic fails with:
-
-    messages.<i>.content.<j>.thinking.thinking: Field required
-
-Anthropic's contract is that `type="thinking"` blocks must always carry a
-`thinking` field, even when omitted (empty string is valid). This middleware
-walks every AIMessage in the outgoing request and injects `thinking: ""` on
-blocks that have a signature but are missing the `thinking` key. Signature
-continuity is preserved; the schema is satisfied.
+langchain-anthropic streams `signature_delta` events into content blocks shaped
+`{"type": "thinking", "signature": "...", "index": N}` — no `thinking` field.
+LangGraph checkpoints them, and the next turn fails with
+`messages[i].content: missing field 'thinking'`. We inject `thinking: ""`
+on blocks that have a non-empty signature; blocks lacking a signature are
+unrecoverable corruption and are passed through so the API rejects them.
 """
 
 from collections.abc import Awaitable, Callable
-from copy import deepcopy
 import logging
 from typing import Any
 
@@ -28,18 +19,17 @@ logger = logging.getLogger(__name__)
 
 
 def _sanitize_thinking_block(block: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    """Return (block, changed). Injects thinking='' on orphan signature-only blocks."""
     if block.get("type") != "thinking":
         return block, False
-    thinking = block.get("thinking")
-    if isinstance(thinking, str):
+    if isinstance(block.get("thinking"), str):
         return block, False
-    repaired = {**block, "thinking": ""}
-    return repaired, True
+    signature = block.get("signature")
+    if not (isinstance(signature, str) and signature):
+        return block, False
+    return {**block, "thinking": ""}, True
 
 
 def _sanitize_message(msg: AnyMessage) -> tuple[AnyMessage, int]:
-    """Return (maybe-new message, count of blocks repaired)."""
     if not isinstance(msg, AIMessage):
         return msg, 0
     content = msg.content
@@ -63,13 +53,10 @@ def _sanitize_message(msg: AnyMessage) -> tuple[AnyMessage, int]:
     if not changed:
         return msg, 0
 
-    new_msg = deepcopy(msg)
-    new_msg.content = new_blocks
-    return new_msg, repaired_count
+    return msg.model_copy(update={"content": new_blocks}), repaired_count
 
 
 def _sanitize_messages(messages: list[AnyMessage]) -> tuple[list[AnyMessage], int]:
-    """Return (messages, total_blocks_repaired). Same list object if nothing changed."""
     result: list[AnyMessage] = []
     total = 0
     changed = False
@@ -83,13 +70,6 @@ def _sanitize_messages(messages: list[AnyMessage]) -> tuple[list[AnyMessage], in
 
 
 class AnthropicThinkingSanitizerMiddleware(AgentMiddleware):
-    """Repair orphan thinking blocks (missing `thinking` text) before the LLM call.
-
-    See module docstring for root cause. This middleware should run innermost so
-    it catches blocks introduced by any upstream middleware and it is the last
-    thing to touch messages before the API call.
-    """
-
     def wrap_model_call(
         self,
         request: ModelRequest,
@@ -98,9 +78,7 @@ class AnthropicThinkingSanitizerMiddleware(AgentMiddleware):
         sanitized, repaired = _sanitize_messages(request.messages)
         if repaired:
             logger.warning(
-                "[ThinkingSanitizer] Repaired %d orphan thinking block(s) "
-                "(injected thinking='') before Anthropic call",
-                repaired,
+                "[ThinkingSanitizer] repaired %d orphan thinking block(s)", repaired
             )
             request = request.override(messages=sanitized)
         return handler(request)
@@ -113,9 +91,7 @@ class AnthropicThinkingSanitizerMiddleware(AgentMiddleware):
         sanitized, repaired = _sanitize_messages(request.messages)
         if repaired:
             logger.warning(
-                "[ThinkingSanitizer] Repaired %d orphan thinking block(s) "
-                "(injected thinking='') before Anthropic call",
-                repaired,
+                "[ThinkingSanitizer] repaired %d orphan thinking block(s)", repaired
             )
             request = request.override(messages=sanitized)
         return await handler(request)
