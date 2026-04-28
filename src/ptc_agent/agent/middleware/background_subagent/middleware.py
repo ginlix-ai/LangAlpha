@@ -250,6 +250,54 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             )
             return False
 
+    async def _reset_task_for_resume(self, task: BackgroundTask) -> None:
+        """Reset a completed task's state so it can be re-run.
+
+        Clears the Redis spool first (events list + meta hash). Without this
+        the new run's records would RPUSH onto the prior run's list and
+        reconnect/persistence would replay both runs interleaved (the seq
+        counter is reset to 0 below, so seqs collide).
+        """
+        if self.registry.thread_id:
+            try:
+                from src.utils.cache.redis_cache import get_cache_client
+
+                cache = get_cache_client()
+                if getattr(cache, "enabled", False):
+                    await cache.delete(
+                        f"subagent:events:{self.registry.thread_id}:{task.task_id}"
+                    )
+                    await cache.delete(
+                        f"subagent:events:meta:{self.registry.thread_id}:{task.task_id}"
+                    )
+            except Exception:
+                logger.warning(
+                    "Failed to clear Redis spool on resume; replay may include stale events",
+                    task_id=task.task_id,
+                    exc_info=True,
+                )
+        task.completed = False
+        task.result = None
+        task.result_seen = False
+        task.error = None
+        task.captured_events_tail.clear()
+        task.captured_event_seq = 0
+        task.captured_event_count = 0
+        task.captured_event_bytes = 0
+        task.redis_write_failed = False
+        task.collector_response_id = None
+        task.sse_drain_complete = asyncio.Event()
+        # Wake any consumer still awaiting the prior Event before we drop
+        # the reference — otherwise they'd sit on the stale event until
+        # the 5s safety timeout.
+        task.new_event_signal.set()
+        task.new_event_signal = asyncio.Event()
+        task.sse_consumer_count = 0
+        # Reset timestamps so the LLM sees honest staleness for the
+        # resumed run, not leftover values from the prior asyncio.Task.
+        task.last_checked_at = time.time()
+        task.last_updated_at = time.time()
+
     async def _resolve_or_error(
         self,
         target_task_id: str | None,
@@ -500,25 +548,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 checkpoint_ns=task.task_id,
             )
 
-            # Reset task state for the new run
-            task.completed = False
-            task.result = None
-            task.result_seen = False
-            task.error = None
-            task.captured_events = []
-            task.collector_response_id = None  # Allow next collector to claim
-            task.sse_drain_complete = asyncio.Event()  # Fresh event for new SSE stream
-            # Wake any consumer still awaiting the prior Event before we
-            # drop the reference — otherwise they'd sit on the stale event
-            # until the 5s safety timeout.
-            task.new_event_signal.set()
-            task.new_event_signal = asyncio.Event()  # Fresh wake signal
-            task.sse_consumer_count = 0
-            task.sse_redis_writer_claimed = False
-            # Reset timestamps so the LLM sees honest staleness for the
-            # resumed run (not leftover values from the prior asyncio.Task).
-            task.last_checked_at = time.time()
-            task.last_updated_at = time.time()
+            await self._reset_task_for_resume(task)
 
             # Clear stale namespace mappings so new ones can be registered
             self.registry.clear_namespaces_for_task(task.tool_call_id)

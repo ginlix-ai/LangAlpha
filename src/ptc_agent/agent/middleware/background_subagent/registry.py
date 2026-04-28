@@ -7,9 +7,11 @@ spawned by the BackgroundSubagentMiddleware.
 from __future__ import annotations
 
 import asyncio
+import json
 import secrets
 import time
 import uuid as uuid_mod
+from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -19,6 +21,45 @@ if TYPE_CHECKING:
     from ptc_agent.agent.middleware.background_subagent.utils import MessageChecker
 
 logger = structlog.get_logger(__name__)
+
+
+# Default cap for the in-memory hot tail. Older events are spilled to Redis
+# so the in-memory footprint of a long-running subagent stays bounded
+# regardless of workflow length. Overridable via config.
+DEFAULT_TAIL_MAX_EVENTS = 1000
+
+# Per-call cap for the durable Redis spill on the subagent hot path. A healthy
+# pipeline acks in <10ms; this cap bounds the worst case so a degraded Redis
+# can't pace subagent execution. After one timeout/failure the per-task circuit
+# stays open for the rest of the run (see ``_spill_record_to_redis``).
+_SPILL_TIMEOUT_SECONDS = 0.5
+
+
+def _estimate_record_bytes(record: dict[str, Any]) -> int:
+    """Cheap upper-bound estimate of a captured-event record's serialized size.
+
+    Used purely for telemetry — never on the hot path's blocking section.
+    Falls back to a conservative constant if json.dumps trips on something.
+    """
+    try:
+        return len(json.dumps(record, ensure_ascii=False, default=str))
+    except Exception:
+        return 256
+
+
+def _resolve_tail_maxlen() -> int:
+    """Read the configured tail size, falling back to the module default.
+
+    Pulled out so test fixtures can ``monkeypatch`` the settings module
+    without forcing the registry to import config at module load time.
+    """
+    try:
+        from src.config.settings import get_in_memory_event_tail_max_events
+
+        value = int(get_in_memory_event_tail_max_events())
+        return value if value > 0 else DEFAULT_TAIL_MAX_EVENTS
+    except Exception:
+        return DEFAULT_TAIL_MAX_EVENTS
 
 
 @dataclass
@@ -94,10 +135,36 @@ class BackgroundTask:
     agent_id: str = ""
     """Stable unique identity: '{subagent_type}:{uuid4}'."""
 
-    captured_events: list[dict[str, Any]] = field(default_factory=list)
-    """SSE-shaped events captured by middleware for post-interrupt persistence.
-    Each event: {"event": "message_chunk"|"tool_calls"|"tool_call_result", "data": {...}, "ts": float}
+    captured_events_tail: deque[dict[str, Any]] = field(
+        default_factory=lambda: deque(maxlen=DEFAULT_TAIL_MAX_EVENTS)
+    )
+    """Bounded in-memory hot tail of captured SSE-shaped events.
+
+    Each entry is a self-contained record::
+
+        {"seq": int, "event": str, "data": dict, "agent_id": str | None}
+
+    where ``seq`` starts at 1 and is monotonic. Older events that fall off the
+    tail are still available via the Redis spill — see
+    ``BackgroundTaskRegistry.append_captured_event`` and the per-task Redis key
+    ``subagent:events:{thread_id}:{task_id}``.
     """
+
+    captured_event_seq: int = 0
+    """High-water mark for ``captured_events_tail`` ``seq`` values. The next
+    appended record gets ``captured_event_seq + 1``."""
+
+    captured_event_count: int = 0
+    """Total events ever captured (== ``captured_event_seq`` once monotonic).
+    Tracked separately so cleanup can drop the tail without wiping the count
+    used for sort ordering and progress checks."""
+
+    captured_event_bytes: int = 0
+    """Cumulative bytes captured (telemetry only; estimated)."""
+
+    redis_write_failed: bool = False
+    """Set if any Redis spill failed for this task. Telemetry only — degraded
+    mode still keeps streaming working via the in-memory tail."""
 
     cancelled: bool = False
     """Whether the task was explicitly cancelled (distinct from completed with error)."""
@@ -115,7 +182,7 @@ class BackgroundTask:
 
     sse_drain_complete: asyncio.Event = field(default_factory=asyncio.Event)
     """Set by stream_subagent_task_events after its final drain.
-    The collector awaits this before clearing captured_events so that
+    The collector awaits this before clearing the captured-event tail so that
     live SSE consumers are guaranteed to have emitted all events."""
 
     new_event_signal: asyncio.Event = field(default_factory=asyncio.Event)
@@ -127,17 +194,37 @@ class BackgroundTask:
     sse_consumer_count: int = 0
     """Number of active SSE consumers for this task. sse_drain_complete is
     only set when the last consumer finishes, preventing the collector from
-    clearing captured_events while another consumer is still draining."""
+    clearing the captured-event tail while another consumer is still draining."""
 
-    sse_redis_writer_claimed: bool = False
-    """Whether an SSE consumer has claimed the Redis write role. Only the
-    first consumer writes replay buffer entries; subsequent consumers still
-    yield SSE but skip Redis to avoid duplicate `id:` sequences."""
+    redis_spill_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    """Per-task lock that serializes Redis spills so concurrent appends to
+    the same task can't interleave RPUSH commands. Without this, two appends
+    that release the registry-wide lock back-to-back can hit different
+    Redis pool connections and land at the server in reverse order — the
+    Redis list ends up out of seq order, and both the post-turn collector
+    and SSE reconnect replay yield events in the wrong sequence. We keep
+    this off the registry-wide lock so a slow Redis blip on one task can't
+    stall appends to other tasks."""
 
     @property
     def display_id(self) -> str:
         """Return Task-<id> format for display."""
         return f"Task-{self.task_id}"
+
+    @property
+    def captured_events(self) -> list[dict[str, Any]]:
+        """Compatibility view of the in-memory tail in legacy event shape.
+
+        Returns a freshly built list of ``{"event", "data", "ts"}`` dicts —
+        the historical shape used by collector code paths. Older events that
+        fell off the tail are NOT included; callers that need the full history
+        must use the Redis-fallback collector helper. Reads are cheap (deque
+        copy) and do not block the producer.
+        """
+        return [
+            {"event": rec.get("event"), "data": rec.get("data") or {}, "ts": rec.get("ts")}
+            for rec in list(self.captured_events_tail)
+        ]
 
     @property
     def is_pending(self) -> bool:
@@ -161,8 +248,16 @@ class BackgroundTaskRegistry:
     new tasks, poll for completion, and collect results.
     """
 
-    def __init__(self) -> None:
-        """Initialize the registry."""
+    def __init__(self, thread_id: str = "") -> None:
+        """Initialize the registry.
+
+        Args:
+            thread_id: The parent thread_id this registry serves. Used to
+                build per-task Redis keys
+                (``subagent:events:{thread_id}:{task_id}``) during event
+                spill. Empty string means "no Redis spill" — kept for tests
+                that construct a bare registry without a thread.
+        """
         self._tasks: dict[str, BackgroundTask] = {}
         self._task_id_to_tool_call_id: dict[str, str] = {}  # task_id -> tool_call_id
         self._ns_uuid_to_tool_call_id: dict[
@@ -171,6 +266,7 @@ class BackgroundTaskRegistry:
         self._lock = asyncio.Lock()
         self._results: dict[str, Any] = {}
         self.current_turn_index: int = 0
+        self.thread_id: str = thread_id
 
     async def register(
         self,
@@ -197,6 +293,7 @@ class BackgroundTaskRegistry:
             task_id = secrets.token_urlsafe(4)[:6]
 
             agent_id = f"{subagent_type}:{uuid_mod.uuid4()}"
+            tail_maxlen = _resolve_tail_maxlen()
             task = BackgroundTask(
                 tool_call_id=tool_call_id,
                 task_id=task_id,
@@ -206,6 +303,7 @@ class BackgroundTaskRegistry:
                 asyncio_task=asyncio_task,
                 agent_id=agent_id,
                 spawned_turn_index=self.current_turn_index,
+                captured_events_tail=deque(maxlen=tail_maxlen),
             )
             self._tasks[tool_call_id] = task
             self._task_id_to_tool_call_id[task_id] = tool_call_id
@@ -334,26 +432,182 @@ class BackgroundTaskRegistry:
     ) -> None:
         """Append a captured SSE event to a background task.
 
-        Called by SubagentEventCaptureMiddleware to capture events for
-        post-interrupt persistence.
-
-        Args:
-            tool_call_id: The task's tool_call_id
-            event: SSE-shaped event dict
+        Called by SubagentEventCaptureMiddleware (and steering) to capture
+        events for per-task SSE replay and post-interrupt persistence. The
+        record is appended to the bounded in-memory tail and (best-effort)
+        spilled to Redis so older events stay reachable for reconnect /
+        full-history collectors.
         """
         async with self._lock:
             task = self._tasks.get(tool_call_id)
-            if task:
-                task.captured_events.append(event)
-                task.new_event_signal.set()
-                # Bump last_updated_at only on user-visible text output.
-                # reasoning_signal / reasoning / tool_calls / tool_call_result
-                # events are excluded — they're pacing noise.
-                if (
-                    event.get("event") == "message_chunk"
-                    and event.get("data", {}).get("content_type") == "text"
-                ):
-                    task.last_updated_at = time.time()
+            if not task:
+                return
+
+            task.captured_event_seq += 1
+            seq = task.captured_event_seq
+            ts = event.get("ts")
+            record: dict[str, Any] = {
+                "seq": seq,
+                "event": event.get("event"),
+                "data": event.get("data") or {},
+                "agent_id": task.agent_id,
+            }
+            if ts is not None:
+                record["ts"] = ts
+
+            task.captured_events_tail.append(record)
+            task.captured_event_count = seq
+            task.captured_event_bytes += _estimate_record_bytes(record)
+            task.new_event_signal.set()
+            # Bump last_updated_at only on user-visible text output.
+            # reasoning_signal / reasoning / tool_calls / tool_call_result
+            # events are excluded — they're pacing noise.
+            if (
+                event.get("event") == "message_chunk"
+                and (event.get("data") or {}).get("content_type") == "text"
+            ):
+                task.last_updated_at = time.time()
+
+        # Spill OUTSIDE the lock — Redis I/O must not block subsequent appends.
+        await self._spill_record_to_redis(task, record)
+
+    async def _spill_record_to_redis(
+        self, task: BackgroundTask, record: dict[str, Any]
+    ) -> None:
+        """Best-effort write of a captured record to the per-task Redis list.
+
+        Uses the shared atomic pipeline helper (RPUSH+LTRIM+EXPIRE+HINCRBY+
+        HSETNX+HSET) so the whole spill is one pool checkout. Any failure is
+        logged and recorded on ``task.redis_write_failed`` but never raised —
+        live SSE delivery stays unaffected via the in-memory tail.
+
+        Skipped silently when:
+        - ``task.redis_write_failed`` is set (sticky circuit-break — one
+          prior failure for this task means we stop trying so a degraded
+          Redis can't pace the subagent's hot path; persisted history is
+          honestly truncated by ``iter_subagent_events_full``),
+        - the ``spill_subagent_events_to_redis`` feature flag is off,
+        - the registry has no thread_id (test fixtures),
+        - the cache client is unavailable / disabled.
+        """
+        if task.redis_write_failed:
+            return
+
+        if not self.thread_id:
+            return
+
+        # Lazy import to avoid circular imports during test collection.
+        try:
+            from src.config.settings import (
+                get_max_stored_messages_per_agent,
+                get_redis_ttl_workflow_events,
+                is_subagent_event_redis_spill_enabled,
+            )
+        except Exception:
+            return
+
+        try:
+            if not is_subagent_event_redis_spill_enabled():
+                return
+        except Exception:
+            return
+
+        try:
+            from src.utils.cache.redis_cache import get_cache_client
+
+            cache = get_cache_client()
+        except Exception as exc:
+            task.redis_write_failed = True
+            logger.warning(
+                "subagent_event_spill_failed",
+                phase="cache_init",
+                tool_call_id=task.tool_call_id,
+                task_id=task.task_id,
+                error=str(exc),
+            )
+            return
+
+        if not getattr(cache, "enabled", False):
+            return
+
+        # Records are JSON-serialized ``{"seq", "event", "data", "agent_id", "ts"}``
+        # dicts. In-flight subagents at deploy time may have a list of legacy
+        # raw-SSE strings under this key; the JSON reader skips entries that
+        # fail to parse — those events are intentionally abandoned at the
+        # deploy boundary. New runs write fresh records.
+        events_key = f"subagent:events:{self.thread_id}:{task.task_id}"
+        meta_key = f"subagent:events:meta:{self.thread_id}:{task.task_id}"
+
+        try:
+            payload = json.dumps(record, ensure_ascii=False, default=str)
+        except Exception as exc:
+            task.redis_write_failed = True
+            logger.warning(
+                "subagent_event_spill_failed",
+                phase="serialize",
+                tool_call_id=task.tool_call_id,
+                task_id=task.task_id,
+                seq=record.get("seq"),
+                error=str(exc),
+            )
+            return
+
+        # Serialize spills per task. The registry-wide lock is released
+        # before this call so multiple tasks can spill in parallel; the
+        # per-task lock guarantees that for any two appends to the SAME
+        # task, the second's pipeline cannot start until the first's
+        # pipeline has acked at Redis. Without this, two appends that
+        # acquired distinct seq numbers can race to the server via
+        # different pool connections and land out of order.
+        try:
+            async with task.redis_spill_lock:
+                # The spool is the durable record used by the post-turn
+                # collector to rebuild the full subagent event history for
+                # ``conversation_responses.sse_events``. It must use the
+                # same cap and TTL as the main-workflow buffer — the
+                # per-task replay buffer cap sized for SSE reconnect would
+                # silently drop events for any subagent that runs longer
+                # than the cap.
+                success, _seq = await asyncio.wait_for(
+                    cache.pipelined_event_buffer(
+                        events_key=events_key,
+                        meta_key=meta_key,
+                        event=payload,
+                        max_size=get_max_stored_messages_per_agent(),
+                        ttl=get_redis_ttl_workflow_events(),
+                        last_event_id=record.get("seq"),
+                    ),
+                    timeout=_SPILL_TIMEOUT_SECONDS,
+                )
+            if not success:
+                task.redis_write_failed = True
+                logger.warning(
+                    "subagent_event_spill_failed",
+                    phase="pipeline",
+                    tool_call_id=task.tool_call_id,
+                    task_id=task.task_id,
+                    seq=record.get("seq"),
+                )
+        except asyncio.TimeoutError:
+            task.redis_write_failed = True
+            logger.warning(
+                "subagent_event_spill_failed",
+                phase="timeout",
+                tool_call_id=task.tool_call_id,
+                task_id=task.task_id,
+                seq=record.get("seq"),
+                timeout_seconds=_SPILL_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            task.redis_write_failed = True
+            logger.warning(
+                "subagent_event_spill_failed",
+                phase="exception",
+                tool_call_id=task.tool_call_id,
+                task_id=task.task_id,
+                seq=record.get("seq"),
+                error=str(exc),
+            )
 
     async def update_metrics(self, tool_call_id: str, tool_name: str) -> None:
         """Update tool call metrics for a task.

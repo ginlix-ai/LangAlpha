@@ -12,7 +12,6 @@ import json
 
 from fastapi import HTTPException
 
-from ptc_agent.agent.middleware.background_subagent.registry import BackgroundTask
 from src.server.services.background_registry_store import BackgroundRegistryStore
 from src.server.services.background_task_manager import (
     BackgroundTaskManager,
@@ -22,8 +21,6 @@ from src.server.services.workflow_tracker import WorkflowTracker
 
 from src.config.settings import (
     get_live_queue_maxsize,
-    get_subagent_event_buffer_size,
-    get_subagent_event_buffer_ttl,
     get_subagent_task_max_wait,
 )
 
@@ -126,8 +123,12 @@ async def stream_subagent_task_events(
 ):
     """SSE stream of a single subagent's content events.
 
-    Per-task SSE stream with its own Redis buffer. Events are
-    message_chunk, tool_calls, tool_call_result, and steering_accepted.
+    Producer-driven Redis writes: every captured event is spilled to
+    ``subagent:events:{thread_id}:{task_id}`` by the registry's
+    ``append_captured_event`` so this consumer never writes Redis. On
+    reconnect the consumer replays the durable JSON records from Redis;
+    during live streaming it drains the in-memory tail by seq cursor and
+    falls back to Redis when the tail rotated past the consumer's cursor.
 
     Redis key: subagent:events:{thread_id}:{task_id}
     Cleared after task completion + persistence (mirrors main stream per-turn clearing).
@@ -146,6 +147,8 @@ async def stream_subagent_task_events(
     registry_store = BackgroundRegistryStore.get_instance()
     cache = get_cache_client()
     redis_key = f"subagent:events:{thread_id}:{task_id}"
+    # ``cursor`` is the last-emitted seq (NOT a list index). 0 means
+    # "haven't emitted anything yet"; first record is seq=1.
     cursor = 0
     max_wait, waited = get_subagent_task_max_wait(), 0
     # Poll cadence for the pre-registry / pre-task startup window. Once the
@@ -158,40 +161,64 @@ async def stream_subagent_task_events(
             _sse_logger.info(result)
         return result
 
-    def _parse_sse_id(raw_sse: str) -> int | None:
-        """Extract event ID from raw SSE string."""
-        try:
-            first_line = raw_sse.split("\n", 1)[0]
-            if first_line.startswith("id: "):
-                return int(first_line[4:].strip())
-        except (ValueError, IndexError):
-            pass
-        return None
+    def _record_to_sse(record: dict) -> str:
+        """Render a stored record (dict) into the SSE wire format."""
+        seq = int(record.get("seq") or 0)
+        data = {
+            "thread_id": thread_id,
+            "agent": record.get("agent_id") or f"task:{task_id}",
+            **(record.get("data") or {}),
+        }
+        return _format_sse(seq, record.get("event") or "message_chunk", data)
 
-    # Phase 1: Replay from Redis buffer on reconnect
-    # Snapshot the cursor BEFORE Redis replay so events appended during the
-    # replay window aren't skipped (they'd be absent from Redis and past our
-    # cursor). Possible duplicates at the boundary are tolerable — clients
-    # dedupe via ``last_event_id``.
-    if last_event_id is not None:
-        registry = await registry_store.get_registry(thread_id)
-        if registry:
-            task = await registry.get_task_by_task_id(task_id)
-            if task:
-                cursor = len(task.captured_events)
+    async def _replay_from_redis(after_seq: int) -> tuple[list[str], int]:
+        """Read the durable Redis buffer once and return formatted SSEs.
 
+        Returns ``(sse_strings, max_seq)`` where ``max_seq`` is the highest
+        seq seen in Redis (used to advance the live cursor when Redis
+        already covers events the in-memory tail no longer holds).
+        """
+        out: list[str] = []
+        max_seq = after_seq
         try:
             stored = await cache.list_range(redis_key, 0, -1) or []
-            for raw_sse in stored:
-                eid = _parse_sse_id(raw_sse)
-                if eid is not None and eid > last_event_id:
-                    yield raw_sse
-        except Exception as e:
-            logger.warning(f"[SubagentStream:{task_id}] Redis replay failed: {e}")
+        except Exception as exc:
+            logger.warning(f"[SubagentStream:{task_id}] Redis replay failed: {exc}")
+            return out, max_seq
+        for raw in stored:
+            if not raw:
+                continue
+            try:
+                record = json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                logger.warning(
+                    f"[SubagentStream:{task_id}] Skipped malformed Redis record"
+                )
+                continue
+            seq = record.get("seq")
+            if not isinstance(seq, int) or seq <= after_seq:
+                continue
+            out.append(_record_to_sse(record))
+            if seq > max_seq:
+                max_seq = seq
+        return out, max_seq
 
-    # Phase 2: Live streaming (event-driven, with consumer reference counting)
-    is_writer = False
-    consumer_registered_on: BackgroundTask | None = None
+    # Phase 1: Replay from Redis on reconnect. Records are stored as JSON
+    # by the producer; we render them at yield time so the wire format is
+    # identical to the live path even if rendering changes shape later.
+    if last_event_id is not None:
+        replayed, replay_max = await _replay_from_redis(last_event_id)
+        for sse in replayed:
+            yield sse
+        # Advance the live cursor past whatever Redis already covered so the
+        # subsequent in-memory tail drain doesn't double-emit.
+        if replay_max > cursor:
+            cursor = replay_max
+
+    # Phase 2: Live streaming (event-driven). The producer is the sole
+    # Redis writer — this consumer only reads the in-memory tail and (on
+    # cursor lag) the Redis buffer.
+    consumer_registered_on = None
     try:
         while True:
             registry = await registry_store.get_registry(thread_id)
@@ -218,39 +245,42 @@ async def stream_subagent_task_events(
                 task.sse_consumer_count += 1
                 consumer_registered_on = task
 
-            # Claim the Redis writer role — either as first consumer, or as
-            # a takeover if the prior writer disconnected while the task is
-            # still running. Without this reclaim, a solo-writer drop would
-            # leave the Redis replay buffer stagnant for the rest of the run.
-            # Check-and-set is atomic under CPython asyncio (no await between).
-            if not is_writer and not task.sse_redis_writer_claimed:
-                task.sse_redis_writer_claimed = True
-                is_writer = True
-
             # Clear before drain: any set() during/after drain stays visible
             # to the next wait().
             task.new_event_signal.clear()
 
-            # Drain new captured_events (shared helper). The snapshot_index
-            # (captured_events position) doubles as the SSE ``id:`` value so
-            # ordering stays globally monotonic across writer handovers —
-            # different consumers writing the same Redis replay buffer cannot
-            # collide on ``id:`` because index is shared state on the task.
+            # If the in-memory tail rotated past our cursor, fill the gap
+            # from Redis before draining the tail. Live consumers normally
+            # never hit this — only slow ones falling behind tail maxlen do.
+            tail_snapshot = list(task.captured_events_tail)
+            tail_front_seq = (
+                tail_snapshot[0]["seq"]
+                if tail_snapshot and isinstance(tail_snapshot[0].get("seq"), int)
+                else None
+            )
+            if (
+                tail_front_seq is not None
+                and tail_front_seq > cursor + 1
+                and cursor < task.captured_event_seq
+            ):
+                replayed, replay_max = await _replay_from_redis(cursor)
+                for sse in replayed:
+                    yield sse
+                # Advance cursor past the replay so the tail drain below only
+                # emits seq > replay_max — the boundary stays gap-free without
+                # any clipping in the Redis loop.
+                if replay_max > cursor:
+                    cursor = replay_max
+
+            # Drain new tail records (seq > cursor) via shared helper.
             items, new_cursor = drain_task_captured_events(task, cursor)
-            for ev, agent_id, snapshot_index in items:
-                seq = snapshot_index + 1  # 1-based for SSE id:
-                data = {"thread_id": thread_id, "agent": agent_id, **ev["data"]}
-                sse = _format_sse(seq, ev["event"], data)
-                if is_writer:
-                    try:
-                        await cache.list_append(redis_key, sse, max_size=get_subagent_event_buffer_size(), ttl=get_subagent_event_buffer_ttl())
-                    except Exception:
-                        pass  # Non-fatal: live delivery still works
-                yield sse
-            # Advance to the snapshot length (not live length) so events
+            for record, _agent_id, _seq in items:
+                yield _record_to_sse(record)
+            # Advance to the high-water snapshot (not live count) so events
             # appended during the yield loop are re-drained on the next
             # iteration instead of being skipped.
-            cursor = new_cursor
+            if new_cursor > cursor:
+                cursor = new_cursor
 
             # Task done -> final drain complete -> close
             if task.completed or (task.asyncio_task and task.asyncio_task.done()):
@@ -264,11 +294,6 @@ async def stream_subagent_task_events(
                 pass
     finally:
         if consumer_registered_on is not None:
-            # Release the writer claim so another active consumer can take
-            # over on their next loop iteration. Without this, a writer
-            # disconnect mid-stream leaves no one writing to Redis.
-            if is_writer:
-                consumer_registered_on.sse_redis_writer_claimed = False
             consumer_registered_on.sse_consumer_count -= 1
             if consumer_registered_on.sse_consumer_count <= 0:
                 consumer_registered_on.sse_drain_complete.set()
