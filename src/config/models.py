@@ -48,14 +48,25 @@ class BackgroundExecutionConfig(BaseModel):
     live_queue_maxsize: int = Field(
         default=5000, description="Max backpressure for live SSE subscriber queues"
     )
-    subagent_event_buffer_size: int = Field(
-        default=2000, description="Max events per subagent task in Redis buffer"
-    )
-    subagent_event_buffer_ttl: int = Field(
-        default=7200, description="TTL (seconds) for per-task subagent Redis event buffer"
-    )
     subagent_task_max_wait: int = Field(
         default=30, description="Max seconds to wait for subagent task to appear in registry"
+    )
+
+    # Subagent event capture — Redis-first
+    in_memory_event_tail_max_events: int = Field(
+        default=1000,
+        description=(
+            "Max number of captured-event records held in the in-memory hot tail "
+            "per subagent task. Older events are spilled to Redis."
+        ),
+    )
+    spill_subagent_events_to_redis: bool = Field(
+        default=True,
+        description=(
+            "Kill-switch: when True, every captured subagent event is spilled "
+            "atomically to Redis so the in-memory tail can stay bounded "
+            "without losing events for reconnect / full-history collectors."
+        ),
     )
 
     # Timeout settings

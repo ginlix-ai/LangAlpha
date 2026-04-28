@@ -3,8 +3,8 @@
 Injected into subagents running in the background. It:
 
 - Captures LLM output events (message_chunk/tool_calls/tool_call_result) into
-  ``BackgroundTask.captured_events`` for post-interrupt persistence and per-task
-  SSE replay.
+  ``BackgroundTask.captured_events_tail`` for post-interrupt persistence and
+  per-task SSE replay.
 - Emits a ``subagent_identity`` custom stream event on the first model call so
   the streaming handler can map LangGraph namespace UUIDs to stable background
   task identities.
@@ -28,10 +28,10 @@ from ptc_agent.agent.middleware.background_subagent.registry import BackgroundTa
 logger = structlog.get_logger(__name__)
 
 # Hard cap on per-event captured content. Captured events live in memory on
-# BackgroundTask.captured_events until task completion; a single huge tool
-# result (e.g., bash dumping a multi-MB file) would otherwise sit in RAM for
-# the rest of the task lifetime. The LLM sees the full result via the normal
-# LangGraph message flow — this cap only affects the SSE display copy.
+# BackgroundTask.captured_events_tail until task completion; a single huge
+# tool result (e.g., bash dumping a multi-MB file) would otherwise sit in RAM
+# for the rest of the task lifetime. The LLM sees the full result via the
+# normal LangGraph message flow — this cap only affects the SSE display copy.
 _MAX_CAPTURED_CONTENT_BYTES = 256 * 1024
 
 
@@ -78,8 +78,8 @@ class SubagentEventCaptureMiddleware(AgentMiddleware):
     Responsibilities:
 
     - Capture LLM output events (reasoning, text, tool_calls, tool_call_result)
-      into ``BackgroundTask.captured_events`` so they can be replayed to SSE
-      clients that connect (or reconnect) to a per-task stream.
+      into ``BackgroundTask.captured_events_tail`` so they can be replayed to
+      SSE clients that connect (or reconnect) to a per-task stream.
     - Emit a ``subagent_identity`` custom stream event on the first model call.
       The streaming handler receives this event *with* the LangGraph namespace
       tuple attached, which lets it register the mapping from opaque

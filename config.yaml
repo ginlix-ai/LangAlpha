@@ -59,7 +59,15 @@ allowed_origins:
 background_execution:
   max_concurrent_workflows: 100  # Maximum number of concurrent background workflows
   workflow_result_ttl: 86400  # Workflow result retention time in seconds (24 hours)
-  abandoned_workflow_timeout: 3600  # Auto-cleanup timeout for workflows with no active connections (1 hour)
+  # Safety-net reaper. Fires only when a workflow has NO active SSE connections
+  # for the full window (not based on producer activity). At 6h, a user can close
+  # their tab and reconnect within the day to continue. The trade-off: a stuck
+  # workflow with no producer holds a worker slot for up to 6h. This is acceptable
+  # because per-workflow heap is bounded (terminal-ref cleanup, asyncio handle drop,
+  # bounded captured-events tail), so a wedged workflow stays bounded in memory
+  # while it waits for the reaper. If you see RSS climbing during long disconnect
+  # windows, revisit this knob first.
+  abandoned_workflow_timeout: 21600
   cleanup_interval: 300  # Background cleanup task interval in seconds (5 minutes)
   enable_intermediate_storage: true  # Store intermediate results during execution
   max_stored_messages_per_agent: 150000  # Maximum events to buffer per workflow (increased for long-running research)
@@ -74,9 +82,11 @@ background_execution:
 
   # Streaming & queue settings
   live_queue_maxsize: 5000              # Max backpressure for live SSE subscriber queues
-  subagent_event_buffer_size: 2000      # Max events per subagent task in Redis buffer
-  subagent_event_buffer_ttl: 7200       # Per-task subagent Redis event buffer TTL in seconds (2 hours)
   subagent_task_max_wait: 30            # Max seconds to wait for subagent task to appear in registry
+
+  # Subagent captured-event memory bounds (Redis-First refactor)
+  in_memory_event_tail_max_events: 1000  # Per-subagent hot tail size (older events spill to Redis)
+  spill_subagent_events_to_redis: true   # Kill-switch for per-event Redis spill
 
   # Timeout settings
   sse_drain_timeout: 30                 # Seconds to wait for per-task SSE drain before clearing events

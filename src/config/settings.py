@@ -386,19 +386,19 @@ def get_live_queue_maxsize() -> int:
     return get_infrastructure_config().background_execution.live_queue_maxsize
 
 
-def get_subagent_event_buffer_size() -> int:
-    """Get max events per subagent task in Redis buffer."""
-    return get_infrastructure_config().background_execution.subagent_event_buffer_size
-
-
-def get_subagent_event_buffer_ttl() -> int:
-    """Get TTL (seconds) for per-task subagent Redis event buffer."""
-    return get_infrastructure_config().background_execution.subagent_event_buffer_ttl
-
-
 def get_subagent_task_max_wait() -> int:
     """Get max seconds to wait for subagent task to appear in registry."""
     return get_infrastructure_config().background_execution.subagent_task_max_wait
+
+
+def get_in_memory_event_tail_max_events() -> int:
+    """Max captured-event records held in the per-subagent in-memory hot tail."""
+    return get_infrastructure_config().background_execution.in_memory_event_tail_max_events
+
+
+def is_subagent_event_redis_spill_enabled() -> bool:
+    """Kill-switch for the per-event Redis spill of subagent captured events."""
+    return get_infrastructure_config().background_execution.spill_subagent_events_to_redis
 
 
 def get_sse_drain_timeout() -> float:

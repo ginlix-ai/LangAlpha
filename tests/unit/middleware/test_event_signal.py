@@ -216,84 +216,70 @@ async def test_consumer_count_prevents_early_drain_complete() -> None:
 
 @pytest.mark.asyncio
 async def test_drain_snapshot_isolation() -> None:
-    """drain_task_captured_events snapshots captured_events so a concurrent
-    replacement doesn't truncate iteration."""
+    """drain_task_captured_events copies the deque so a concurrent clear
+    doesn't truncate iteration."""
     registry = BackgroundTaskRegistry()
     task = await _register(registry)
-    task.captured_events = [_text_chunk(f"a{i}") for i in range(3)]
+    for i in range(3):
+        await registry.append_captured_event(task.tool_call_id, _text_chunk(f"a{i}"))
 
     items, new_cursor = drain_task_captured_events(task, cursor=0)
-    # Simulate collector replacing the list mid-iteration — snapshot is
-    # already taken, so iteration below is unaffected.
-    task.captured_events = []
+    # Simulate cleanup clearing the tail mid-iteration — already returned
+    # items are unaffected.
+    task.captured_events_tail.clear()
 
     assert len(items) == 3, f"snapshot should yield 3 events, got {len(items)}"
-    assert new_cursor == 3
+    assert new_cursor == 3  # high-water seq
     assert items[0][0]["data"]["content"] == "a0"
-    # snapshot_index is the third element of the tuple and should equal the
-    # captured_events index at snapshot time (0, 1, 2).
-    assert [idx for _, _, idx in items] == [0, 1, 2]
+    # The third element of the tuple is the seq (1-based, monotonic).
+    assert [seq for _, _, seq in items] == [1, 2, 3]
 
 
 @pytest.mark.asyncio
-async def test_drain_returns_cursor_equal_to_snapshot_length_not_live_length() -> None:
-    """After drain, new_cursor reflects the snapshot length so events appended
+async def test_drain_returns_high_water_seq_not_live_count() -> None:
+    """After drain, new_cursor reflects the high-water seq so events appended
     during the yield loop are re-drained next iteration instead of being
-    skipped. Regression test for the cursor-skip bug in stream_reconnect.py."""
+    skipped."""
     registry = BackgroundTaskRegistry()
     task = await _register(registry)
-    task.captured_events = [_text_chunk(f"a{i}") for i in range(3)]
+    for i in range(3):
+        await registry.append_captured_event(task.tool_call_id, _text_chunk(f"a{i}"))
 
     items, new_cursor = drain_task_captured_events(task, cursor=0)
-    assert new_cursor == 3  # snapshot length at drain time
+    assert new_cursor == 3
+    assert [seq for _, _, seq in items] == [1, 2, 3]
 
     # Simulate append during the "yield loop" window
-    task.captured_events.append(_text_chunk("a3"))
+    await registry.append_captured_event(task.tool_call_id, _text_chunk("a3"))
 
-    # new_cursor was 3; next drain starts at 3 and finds a3 (not skipped).
     items2, new_cursor2 = drain_task_captured_events(task, cursor=new_cursor)
     assert len(items2) == 1
     assert items2[0][0]["data"]["content"] == "a3"
+    assert items2[0][2] == 4
     assert new_cursor2 == 4
 
 
 @pytest.mark.asyncio
-async def test_drain_resets_cursor_after_collector_clear() -> None:
-    """When captured_events is cleared (len < cursor), drain resets cursor
-    to 0 and yields the full rebuilt list."""
+async def test_drain_with_cursor_at_high_water_returns_empty() -> None:
+    """Calling drain again with cursor==high_water yields nothing."""
     registry = BackgroundTaskRegistry()
     task = await _register(registry)
-    task.captured_events = [_text_chunk(f"a{i}") for i in range(5)]
+    for i in range(2):
+        await registry.append_captured_event(task.tool_call_id, _text_chunk(f"a{i}"))
 
-    items, new_cursor = drain_task_captured_events(task, cursor=0)
-    assert new_cursor == 5
-
-    # Collector clears, then new events arrive.
-    task.captured_events = [_text_chunk("new1"), _text_chunk("new2")]
-
+    _, new_cursor = drain_task_captured_events(task, cursor=0)
     items2, new_cursor2 = drain_task_captured_events(task, cursor=new_cursor)
-    assert len(items2) == 2, "cursor should reset and yield both new events"
-    assert [ev["data"]["content"] for ev, _, _ in items2] == ["new1", "new2"]
-    assert new_cursor2 == 2
+    assert items2 == []
+    assert new_cursor2 == new_cursor
 
 
 @pytest.mark.asyncio
-async def test_writer_designation_single_writer() -> None:
-    """Only the first consumer to observe sse_redis_writer_claimed=False claims it."""
+async def test_writer_claim_field_removed() -> None:
+    """The sse_redis_writer_claimed field is gone — producer is the sole
+    Redis writer in the Redis-First refactor."""
     registry = BackgroundTaskRegistry()
     task = await _register(registry)
-    assert task.sse_redis_writer_claimed is False
-
-    first_is_writer = not task.sse_redis_writer_claimed
-    if first_is_writer:
-        task.sse_redis_writer_claimed = True
-
-    second_is_writer = not task.sse_redis_writer_claimed
-    if second_is_writer:
-        task.sse_redis_writer_claimed = True
-
-    assert first_is_writer is True
-    assert second_is_writer is False
+    assert not hasattr(task, "sse_redis_writer_claimed")
 
 
 # ---------------------------------------------------------------------------
@@ -473,8 +459,9 @@ async def test_resume_action_resets_timestamps_through_middleware() -> None:
     assert task.last_updated_at > stale + 10, "resume must bump last_updated_at"
     # Fresh wake signal / consumer counters were reset too
     assert task.sse_consumer_count == 0
-    assert task.sse_redis_writer_claimed is False
-    assert task.captured_events == []
+    assert len(task.captured_events_tail) == 0
+    assert task.captured_event_seq == 0
+    assert task.captured_event_count == 0
 
     # Clean up the spawned asyncio task so pytest doesn't warn on unawaited
     if task.asyncio_task is not None:
@@ -539,7 +526,7 @@ async def test_orphan_collector_liveness_with_tool_calls_only() -> None:
     """
     registry = BackgroundTaskRegistry()
     task = await _register(registry)
-    prev_events = len(task.captured_events)
+    prev_events = task.captured_event_count
     prev_update = task.last_updated_at
 
     # Simulate only tool-call activity — last_updated_at stays, events grow
@@ -547,9 +534,9 @@ async def test_orphan_collector_liveness_with_tool_calls_only() -> None:
     await registry.append_captured_event(task.tool_call_id, _tool_calls_event())
 
     cur_update = task.last_updated_at
-    cur_events = len(task.captured_events)
+    cur_events = task.captured_event_count
 
-    # Mirror the liveness check at background_task_manager.py:1137
+    # Mirror the liveness check in the orphan collector
     progressing = cur_update > prev_update or cur_events > prev_events
     assert progressing, "tool-call-only progression must still count as liveness"
     assert cur_update == prev_update  # timestamp stayed
@@ -787,7 +774,7 @@ async def test_event_capture_emits_reasoning_signals_text_and_tool_calls(monkeyp
     request = MagicMock()
     await mw.awrap_model_call(request, handler)
 
-    events = task.captured_events
+    events = list(task.captured_events_tail)
     content_types = [e["data"].get("content_type") for e in events if e["event"] == "message_chunk"]
     # reasoning_signal(start), reasoning, reasoning_signal(complete), text
     assert "reasoning_signal" in content_types
@@ -891,7 +878,7 @@ async def test_tool_message_captured_event_is_truncated_for_huge_payload() -> No
 
     await mw.awrap_tool_call(request, handler)
 
-    tcr = [e for e in task.captured_events if e["event"] == "tool_call_result"][0]
+    tcr = [e for e in task.captured_events_tail if e["event"] == "tool_call_result"][0]
     captured_len = len(tcr["data"]["content"].encode("utf-8"))
     assert captured_len <= _MAX_CAPTURED_CONTENT_BYTES + 200  # cap + small marker
     assert "[...truncated," in tcr["data"]["content"]
@@ -919,7 +906,7 @@ async def test_event_capture_tool_call_result_captured(monkeypatch) -> None:
 
     await mw.awrap_tool_call(request, handler)
 
-    tcr_events = [e for e in task.captured_events if e["event"] == "tool_call_result"]
+    tcr_events = [e for e in task.captured_events_tail if e["event"] == "tool_call_result"]
     assert len(tcr_events) == 1
     assert tcr_events[0]["data"]["content"] == "hi"
     assert task.total_tool_calls == 1
@@ -932,13 +919,18 @@ async def test_event_capture_tool_call_result_captured(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_stream_subagent_task_events_single_consumer_lifecycle(monkeypatch) -> None:
-    """One consumer: claims writer, receives events, on close decrements count
-    and releases writer, and sse_drain_complete is set on final consumer exit."""
+    """One consumer: receives events, decrements count on close, sse_drain_complete
+    is set on final consumer exit. Producer is the sole Redis writer (no
+    list_append from the consumer)."""
     from src.server.handlers.chat import stream_reconnect
 
     registry = BackgroundTaskRegistry()
     task = await _register(registry, task_id_override="xy1234")
-    task.captured_events = [_text_chunk("e0"), _text_chunk("e1")]
+    # Producer-driven: emulate two prior captures via the registry. Spill
+    # is gated by thread_id+enabled flag so the bare-registry fixture skips
+    # the Redis path silently.
+    await registry.append_captured_event(task.tool_call_id, _text_chunk("e0"))
+    await registry.append_captured_event(task.tool_call_id, _text_chunk("e1"))
 
     fake_store = MagicMock()
     fake_store.get_registry = AsyncMock(return_value=registry)
@@ -956,44 +948,44 @@ async def test_stream_subagent_task_events_single_consumer_lifecycle(monkeypatch
 
     gen = stream_reconnect.stream_subagent_task_events("t1", "xy1234").__aiter__()
 
-    # Drive one iteration: read both events
     e0 = await asyncio.wait_for(gen.__anext__(), timeout=1.0)
     e1 = await asyncio.wait_for(gen.__anext__(), timeout=1.0)
 
     assert "event: message_chunk" in e0
-    assert "id: 1" in e0  # snapshot_index 0 -> seq 1
+    assert "id: 1" in e0  # first captured event -> seq 1
     assert "id: 2" in e1
     assert task.sse_consumer_count == 1
-    assert task.sse_redis_writer_claimed is True
+    # Writer-claim machinery is gone — no field, no attribute.
+    assert not hasattr(task, "sse_redis_writer_claimed")
 
     # Mark completion so loop breaks
     task.completed = True
     task.new_event_signal.set()
-    remaining = []
     try:
         while True:
-            remaining.append(await asyncio.wait_for(gen.__anext__(), timeout=0.5))
+            await asyncio.wait_for(gen.__anext__(), timeout=0.5)
     except (StopAsyncIteration, asyncio.TimeoutError):
         pass
 
     await gen.aclose()
     assert task.sse_consumer_count == 0
-    assert task.sse_redis_writer_claimed is False
     assert task.sse_drain_complete.is_set()
-    # Writer wrote every event to Redis replay buffer
-    assert fake_cache.list_append.await_count == 2
+    # Consumer never writes Redis — the producer is the sole writer.
+    assert fake_cache.list_append.await_count == 0
 
 
 @pytest.mark.asyncio
-async def test_stream_subagent_task_events_cursor_skip_regression(monkeypatch) -> None:
-    """If an event is appended to captured_events WHILE the drain loop is
-    yielding (simulated via a side_effect on list_append), the next iteration
-    must pick it up — not skip it. Regression for the cursor-skip bug."""
+async def test_stream_subagent_task_events_cursor_advances_with_concurrent_append(
+    monkeypatch,
+) -> None:
+    """If an event is appended while the consumer is awaiting the wake signal,
+    the next drain iteration must pick it up — not skip it. The cursor
+    advances by seq, not list index."""
     from src.server.handlers.chat import stream_reconnect
 
     registry = BackgroundTaskRegistry()
     task = await _register(registry, task_id_override="xy1234")
-    task.captured_events = [_text_chunk("e0")]
+    await registry.append_captured_event(task.tool_call_id, _text_chunk("e0"))
 
     fake_store = MagicMock()
     fake_store.get_registry = AsyncMock(return_value=registry)
@@ -1002,18 +994,8 @@ async def test_stream_subagent_task_events_cursor_skip_regression(monkeypatch) -
         lambda: fake_store,
     )
 
-    injected = False
-
-    async def _inject_during_redis_write(*_args, **_kwargs):
-        # Simulate append_captured_event firing while list_append awaits.
-        nonlocal injected
-        if not injected:
-            task.captured_events.append(_text_chunk("e_injected"))
-            task.new_event_signal.set()
-            injected = True
-
     fake_cache = MagicMock()
-    fake_cache.list_append = AsyncMock(side_effect=_inject_during_redis_write)
+    fake_cache.list_append = AsyncMock()
     fake_cache.list_range = AsyncMock(return_value=[])
     monkeypatch.setattr(
         "src.utils.cache.redis_cache.get_cache_client", lambda: fake_cache
@@ -1021,12 +1003,16 @@ async def test_stream_subagent_task_events_cursor_skip_regression(monkeypatch) -
 
     gen = stream_reconnect.stream_subagent_task_events("t1", "xy1234").__aiter__()
     first = await asyncio.wait_for(gen.__anext__(), timeout=1.0)
-    second = await asyncio.wait_for(gen.__anext__(), timeout=1.0)
+
+    # Inject second event after the consumer began awaiting the wake signal.
+    await registry.append_captured_event(task.tool_call_id, _text_chunk("e_injected"))
+
+    second = await asyncio.wait_for(gen.__anext__(), timeout=2.0)
 
     assert '"content": "e0"' in first
-    assert '"content": "e_injected"' in second, (
-        "Event appended during the drain/yield window must not be skipped."
-    )
+    assert '"content": "e_injected"' in second
+    assert "id: 1" in first
+    assert "id: 2" in second
 
     task.completed = True
     task.new_event_signal.set()

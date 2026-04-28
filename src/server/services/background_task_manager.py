@@ -37,10 +37,11 @@ Usage:
 """
 
 import asyncio
+import json
 import logging
 import time
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, Callable, Coroutine
+from typing import Dict, Any, AsyncIterator, Optional, Callable, Coroutine
 from enum import Enum
 from dataclasses import dataclass, field
 from collections import deque
@@ -80,46 +81,162 @@ logger = logging.getLogger(__name__)
 
 
 def drain_task_captured_events(task, cursor: int):
-    """Return new captured_events from a single task since cursor position.
+    """Return new captured-event records from a single task since ``cursor``.
 
-    Snapshots ``task.captured_events`` once, then returns the (event, agent_id,
-    snapshot_index) triples at indices ``[cursor, snapshot_len)`` along with the
-    snapshot length so the caller can advance cursor to exactly what was
-    returned — not ``len(task.captured_events)`` after the loop, which would
-    skip events appended concurrently during the yield/await cycle.
+    ``cursor`` is the last-seen ``seq`` value (NOT a list index). This snapshot
+    walks ``task.captured_events_tail`` once and returns every record with
+    ``seq > cursor`` along with the task's high-water mark so the caller can
+    advance the cursor to exactly what was returned.
 
-    The ``snapshot_index`` is stable across writer handovers: the same event
-    always has the same index regardless of which SSE consumer is emitting it,
-    which lets callers derive a globally monotonic SSE ``id:`` from it.
+    Returned items are 3-tuples ``(record, agent_id, seq)`` where ``record``
+    carries the full ``{"seq", "event", "data", "agent_id", ...}`` shape,
+    ``agent_id`` mirrors ``record["agent_id"]`` (resolved from the task), and
+    ``seq`` is the global monotonic identifier — stable across SSE consumers,
+    which is what lets multiple consumers emit the same SSE ``id:`` without
+    collisions.
 
-    Handles cursor reset when captured_events is cleared (len < cursor).
+    NOTE: Records returned here come ONLY from the in-memory tail. If the tail
+    rotated past ``cursor`` (i.e. ``cursor`` < the front-of-tail seq), older
+    events are NOT returned — callers that need full history must use the
+    Redis-fallback collector helper. Live drain paths never hit this case
+    because their cursor only advances. See ``iter_subagent_events_full``.
 
     Args:
-        task: A BackgroundTask with captured_events list
-        cursor: Last-read position in captured_events
+        task: A BackgroundTask with ``captured_events_tail``
+        cursor: Last-seen ``seq`` value (0 means "from the beginning")
 
     Returns:
-        (items, new_cursor): ``items`` is a list of ``(event, agent_id,
-        snapshot_index)`` tuples; ``new_cursor`` is the snapshot length to
-        assign back to the caller's cursor after iteration.
+        (items, new_cursor): ``items`` is a list of ``(record, agent_id, seq)``
+        triples; ``new_cursor`` is the task's high-water seq to assign back to
+        the caller's cursor after iteration.
     """
-    # Bind to a local reference. The collector replaces the list via
-    # ``task.captured_events = []``, so our local binding continues to point
-    # at the OLD list (safe). ``list.append`` is atomic under the GIL, so
-    # concurrent appends during the len()/slice reads below are consistent.
-    # We snapshot only the LENGTH here so the slice below is O(delta) — not
-    # O(history) — even for long-running subagents.
-    events = task.captured_events
-    snapshot_len = len(events)
-    # Reset cursor if captured_events was cleared (e.g. by collector)
-    if cursor > 0 and snapshot_len < cursor:
-        cursor = 0
+    # Snapshot the deque to a stable list so iteration is GIL-safe and not
+    # affected by a concurrent producer rotating the tail mid-walk.
+    snapshot = list(task.captured_events_tail)
+    high_water = task.captured_event_seq
     agent_id = f"task:{task.task_id}"
     items = [
-        (ev, agent_id, idx)
-        for idx, ev in enumerate(events[cursor:snapshot_len], start=cursor)
+        (rec, rec.get("agent_id") or agent_id, rec["seq"])
+        for rec in snapshot
+        if rec.get("seq", 0) > cursor
     ]
-    return items, snapshot_len
+    return items, high_water
+
+
+async def iter_subagent_events_full(
+    thread_id: str, task
+) -> AsyncIterator[dict]:
+    """Yield every captured record for a subagent in seq order, using Redis
+    as the durable store when the in-memory tail no longer covers full history.
+
+    Freezes the high-water mark at iteration entry so events appended after
+    the snapshot don't leak into the current pass — they roll into the next
+    collector iteration just like before the refactor.
+
+    Memory note: when the tail has rotated past the run's start, this
+    materializes the full Redis spill list (``cache.list_range(key, 0, -1)``)
+    into Python memory in one call. Bounded by ``max_stored_messages_per_agent``
+    and per-event byte caps, but operators raising those limits should expect
+    proportional collector-time RAM use. Off the hot path — runs at turn end
+    and on persistence, not during streaming.
+
+    Yields dicts with shape::
+
+        {"seq": int, "event": str, "data": dict, "agent_id": str | None,
+         "ts": float (optional)}
+    """
+    if task is None:
+        return
+
+    high_water = int(getattr(task, "captured_event_seq", 0) or 0)
+    if high_water <= 0:
+        return
+
+    snapshot = list(getattr(task, "captured_events_tail", ()) or [])
+    tail_front_seq = snapshot[0]["seq"] if snapshot else high_water + 1
+
+    redis_yielded = 0
+
+    # 1. Redis-fallback for the [1, tail_front_seq) gap when the tail rotated
+    #    past the start of the run. Skipped entirely when the tail still
+    #    covers everything (or thread_id is empty in tests).
+    if tail_front_seq > 1 and thread_id:
+        try:
+            cache = get_cache_client()
+        except Exception as exc:
+            logger.warning(
+                "[SubagentCollector] Failed to obtain cache client for "
+                f"task {getattr(task, 'task_id', '?')}: {exc}"
+            )
+            cache = None
+        if cache is not None and getattr(cache, "enabled", False):
+            events_key = f"subagent:events:{thread_id}:{task.task_id}"
+            try:
+                stored = await cache.list_range(events_key, 0, -1) or []
+            except Exception as exc:
+                logger.warning(
+                    f"[SubagentCollector] Redis list_range failed for "
+                    f"{events_key}: {exc}"
+                )
+                stored = []
+            for raw in stored:
+                if not raw:
+                    continue
+                try:
+                    record = json.loads(raw)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                seq = record.get("seq")
+                if not isinstance(seq, int):
+                    continue
+                if 1 <= seq < tail_front_seq:
+                    redis_yielded += 1
+                    yield record
+
+    # Honesty check: when the tail rotated past the run's start, [1, tail_front_seq)
+    # must come from Redis. If we yielded fewer records than that range, persisted
+    # history is truncated — surface it so the gap is observable in production logs
+    # rather than silently shipping incomplete ``conversation_responses.sse_events``.
+    expected_from_redis = tail_front_seq - 1
+    if tail_front_seq > 1 and thread_id and redis_yielded < expected_from_redis:
+        logger.warning(
+            "subagent_history_truncated",
+            extra={
+                "thread_id": thread_id,
+                "task_id": getattr(task, "task_id", None),
+                "expected": expected_from_redis,
+                "recovered": redis_yielded,
+                "missing": expected_from_redis - redis_yielded,
+                "redis_write_failed": bool(getattr(task, "redis_write_failed", False)),
+            },
+        )
+
+    # 2. In-memory tail (clipped to high_water snapshot)
+    for record in snapshot:
+        seq = record.get("seq")
+        if isinstance(seq, int) and seq <= high_water:
+            yield record
+
+
+def _record_to_persist_event(record: dict, thread_id: str) -> dict:
+    """Convert a captured-event record into the legacy persistence shape.
+
+    Collector code paths persist events as ``{"event": str, "data": dict}``
+    (with ``data`` containing ``thread_id`` for downstream consumers and any
+    captured payload fields). This helper enriches a Redis-stored or
+    in-memory record with the running ``thread_id`` while leaving the
+    underlying ``data`` dict untouched at its source.
+    """
+    data = dict(record.get("data") or {})
+    data["thread_id"] = thread_id
+    out: dict = {
+        "event": record.get("event"),
+        "data": data,
+    }
+    ts = record.get("ts")
+    if ts is not None:
+        out["ts"] = ts
+    return out
 
 
 class TaskStatus(str, Enum):
@@ -157,7 +274,11 @@ class TaskInfo:
     soft_interrupted: bool = False
 
     # Result storage
-    result_buffer: deque = field(default_factory=deque)  # Stores SSE events
+    # Bounded fallback used only when Redis is unavailable (local dev / tests).
+    # Drops events past the cap to keep memory bounded — for full retention
+    # rely on Redis (capped at max_stored_messages_per_agent, default 150k,
+    # see settings.get_max_stored_messages_per_agent).
+    result_buffer: deque = field(default_factory=lambda: deque(maxlen=1000))
     final_result: Optional[Any] = None
 
     # Connection tracking
@@ -782,14 +903,17 @@ class BackgroundTaskManager:
             )
 
     async def _append_to_in_memory_buffer(self, thread_id: str, event: str) -> None:
-        """Append an SSE event to the per-task in-memory deque (fallback path)."""
+        """Append an SSE event to the per-task in-memory deque (fallback path).
+
+        The deque has a hardcoded ``maxlen=1000`` (intentionally smaller than
+        the Redis-backed ``max_stored_messages_per_agent`` cap) so it
+        self-trims FIFO without a manual capacity check.
+        """
         async with self.task_lock:
             task_info = self.tasks.get(thread_id)
             if not task_info:
                 return
             task_info.result_buffer.append(event)
-            if len(task_info.result_buffer) > self.max_stored_messages:
-                task_info.result_buffer.popleft()
 
     async def _collect_subagent_results_for_turn(
         self,
@@ -808,8 +932,6 @@ class BackgroundTaskManager:
         Similar to _collect_subagent_results_after_interrupt but operates on
         a specific list of tasks (filtered by spawned_turn_index).
         """
-        import copy
-
         if timeout is None:
             timeout = get_subagent_collector_timeout()
 
@@ -834,12 +956,12 @@ class BackgroundTaskManager:
 
             all_subagent_events: list[dict] = []
 
-            # Collect from already-completed tasks
+            # Collect from already-completed tasks (Redis-fallback for any
+            # events that rotated past the in-memory tail during the run).
             for task in tasks:
-                if task.completed and task.captured_events:
-                    for event in task.captured_events:
-                        enriched = copy.deepcopy(event)
-                        enriched["data"]["thread_id"] = thread_id
+                if task.completed and task.captured_event_count > 0:
+                    async for record in iter_subagent_events_full(thread_id, task):
+                        enriched = _record_to_persist_event(record, thread_id)
                         all_subagent_events.append(enriched)
 
             # Get pending tasks
@@ -862,7 +984,7 @@ class BackgroundTaskManager:
                     is_byok=is_byok,
                 )
                 # Deferred cleanup: wait for per-task SSE streams to finish their
-                # final drain before clearing captured_events and Redis buffers.
+                # final drain before clearing the captured-event tail and Redis buffers.
                 await self._await_drain_and_cleanup_tasks(tasks, thread_id)
                 return
 
@@ -897,10 +1019,9 @@ class BackgroundTaskManager:
                             task.error = str(e)
                             task.result = {"success": False, "error": str(e)}
 
-                    if task.captured_events:
-                        for event in task.captured_events:
-                            enriched = copy.deepcopy(event)
-                            enriched["data"]["thread_id"] = thread_id
+                    if task.captured_event_count > 0:
+                        async for record in iter_subagent_events_full(thread_id, task):
+                            enriched = _record_to_persist_event(record, thread_id)
                             all_subagent_events.append(enriched)
 
                 if all_subagent_events:
@@ -971,14 +1092,53 @@ class BackgroundTaskManager:
 
         await asyncio.gather(*[_wait_one(t.sse_drain_complete) for t in tasks])
 
-        cache = get_cache_client()
+        try:
+            cache = get_cache_client()
+        except Exception as exc:
+            cache = None
+            logger.warning(
+                f"[SubagentCleanup] Cache client unavailable during cleanup "
+                f"for thread_id={thread_id}: {exc}"
+            )
         for task in tasks:
-            task.captured_events = []
-            task.per_call_records = []
             try:
-                await cache.delete(f"subagent:events:{thread_id}:{task.task_id}")
+                task.captured_events_tail.clear()
             except Exception:
                 pass
+            task.per_call_records = []
+            # Drop asyncio handles — the asyncio.Task object holds the
+            # coroutine frame, which can keep middleware/tool/LLM-callback
+            # closures alive long after the task itself is done.
+            task.asyncio_task = None
+            task.handler_task = None
+            try:
+                task.new_event_signal.clear()
+            except Exception:
+                pass
+            if cache is not None:
+                try:
+                    await cache.delete(
+                        f"subagent:events:{thread_id}:{task.task_id}"
+                    )
+                except Exception:
+                    pass
+                try:
+                    await cache.delete(
+                        f"subagent:events:meta:{thread_id}:{task.task_id}"
+                    )
+                except Exception:
+                    pass
+            logger.info(
+                "task_heavy_refs_released",
+                extra={
+                    "thread_id": thread_id,
+                    "task_id": task.task_id,
+                    "tool_call_id": task.tool_call_id,
+                    "captured_event_count": getattr(task, "captured_event_count", 0),
+                    "captured_event_bytes": getattr(task, "captured_event_bytes", 0),
+                    "redis_write_failed": getattr(task, "redis_write_failed", False),
+                },
+            )
 
     async def _collect_orphaned_subagent_results(
         self,
@@ -1004,8 +1164,6 @@ class BackgroundTaskManager:
         The tasks' collector_response_id is already set (retained from the initial
         collector), preventing other collectors from double-claiming.
         """
-        import copy
-
         idle_timeout = get_subagent_orphan_collector_timeout()
         # How often to poll for progress when no task completes
         poll_interval = min(30.0, idle_timeout)
@@ -1030,10 +1188,13 @@ class BackgroundTaskManager:
 
             # Collect events from tasks that completed in the gap
             for task in tasks:
-                if task.completed and task.captured_events and task not in pending.values():
-                    for event in task.captured_events:
-                        enriched = copy.deepcopy(event)
-                        enriched["data"]["thread_id"] = thread_id
+                if (
+                    task.completed
+                    and task.captured_event_count > 0
+                    and task not in pending.values()
+                ):
+                    async for record in iter_subagent_events_full(thread_id, task):
+                        enriched = _record_to_persist_event(record, thread_id)
                         all_subagent_events.append(enriched)
 
             if not pending:
@@ -1059,9 +1220,12 @@ class BackgroundTaskManager:
                 f"{idle_timeout}s idle timeout, thread_id={thread_id}"
             )
 
-            # Snapshot current activity state per pending task
+            # Snapshot current activity state per pending task. ``count`` is
+            # the total events ever captured (includes those rotated out of
+            # the in-memory tail) so the liveness check stays correct even
+            # when subagents emit far past the tail size.
             last_activity: dict[asyncio.Task, tuple[float, int]] = {
-                at: (t.last_updated_at, len(t.captured_events))
+                at: (t.last_updated_at, t.captured_event_count)
                 for at, t in pending.items()
             }
             last_progress_time = time.time()
@@ -1096,10 +1260,9 @@ class BackgroundTaskManager:
                                 task.error = str(e)
                                 task.result = {"success": False, "error": str(e)}
 
-                        if task.captured_events:
-                            for event in task.captured_events:
-                                enriched = copy.deepcopy(event)
-                                enriched["data"]["thread_id"] = thread_id
+                        if task.captured_event_count > 0:
+                            async for record in iter_subagent_events_full(thread_id, task):
+                                enriched = _record_to_persist_event(record, thread_id)
                                 all_subagent_events.append(enriched)
 
                         logger.info(
@@ -1119,7 +1282,7 @@ class BackgroundTaskManager:
                             asyncio_task, (0.0, 0)
                         )
                         cur_update = task.last_updated_at
-                        cur_events = len(task.captured_events)
+                        cur_events = task.captured_event_count
                         if cur_update > prev_update or cur_events > prev_events:
                             last_progress_time = time.time()
                             last_activity[asyncio_task] = (cur_update, cur_events)
@@ -1153,6 +1316,25 @@ class BackgroundTaskManager:
                     task.collector_response_id = None
 
     # ========== Workflow Completion & Error Handlers ==========
+
+    def _release_terminal_refs(self, thread_id: str) -> None:
+        """Drop heavy in-process refs once a TaskInfo is in terminal state.
+
+        Idempotent. Preserves small scalars used by /status, debug paths, and
+        downstream readers (workspace_id, user_id, is_byok, dispatch_kind,
+        response_id).
+        """
+        info = self.tasks.get(thread_id)
+        if not info:
+            return
+        info.graph = None
+        info.completion_callback = None
+        if info.inner_task is not None and info.inner_task.done():
+            info.inner_task = None
+        info.result_buffer.clear()
+        info.metadata.pop("handler", None)
+        info.metadata.pop("token_callback", None)
+        info.metadata.pop("sandbox", None)
 
     async def _mark_completed(self, thread_id: str):
         """Mark workflow as completed and notify live subscribers.
@@ -1288,8 +1470,11 @@ class BackgroundTaskManager:
                         f"[BackgroundTaskManager] Completion callback failed for {thread_id}: {e}",
                         exc_info=True
                     )
-                    # Update workflow status to error when callback fails
+                    # Update workflow status to error when callback fails.
+                    # Returning short-circuits the post-else collector spawn and
+                    # the second release_burst_slot — _mark_failed handles both.
                     await self._mark_failed(thread_id, f"Completion callback failed: {str(e)}")
+                    return
 
         # Spawn collector for subagent events + usage merge
         from src.server.services.persistence.conversation import ConversationPersistenceService
@@ -1308,7 +1493,7 @@ class BackgroundTaskManager:
                 for t in bg_registry._tasks.values():
                     if t.collector_response_id:
                         continue  # Already claimed by another turn's collector
-                    if t.is_pending or t.captured_events or t.per_call_records:
+                    if t.is_pending or t.captured_event_count > 0 or t.per_call_records:
                         t.collector_response_id = response_id
                         tasks_to_collect.append(t)
                 if tasks_to_collect:
@@ -1341,6 +1526,7 @@ class BackgroundTaskManager:
             task_info = self.tasks.get(thread_id)
             if task_info:
                 task_info.persistence_complete.set()
+            self._release_terminal_refs(thread_id)
 
     async def wait_for_persistence(self, thread_id: str, timeout: float | None = None) -> bool:
         """Wait until _mark_completed has finished persisting for *thread_id*.
@@ -1451,6 +1637,12 @@ class BackgroundTaskManager:
         # Release burst slot for failure path
         if user_id:
             await release_burst_slot(user_id)
+
+        async with self.task_lock:
+            task_info = self.tasks.get(thread_id)
+            if task_info:
+                task_info.persistence_complete.set()
+            self._release_terminal_refs(thread_id)
 
     async def _mark_soft_interrupted(self, thread_id: str) -> None:
         """Mark workflow as soft-interrupted (ESC).
@@ -1564,6 +1756,12 @@ class BackgroundTaskManager:
         if user_id:
             await release_burst_slot(user_id)
 
+        async with self.task_lock:
+            task_info = self.tasks.get(thread_id)
+            if task_info:
+                task_info.persistence_complete.set()
+            self._release_terminal_refs(thread_id)
+
     async def _collect_subagent_results_after_interrupt(
         self,
         thread_id: str,
@@ -1585,8 +1783,6 @@ class BackgroundTaskManager:
         """
         if timeout is None:
             timeout = get_subagent_collector_timeout()
-
-        import copy
 
         try:
             # Claim uncollected tasks atomically to prevent double-persist
@@ -1625,12 +1821,12 @@ class BackgroundTaskManager:
             # Accumulate subagent events across iterations
             all_subagent_events: list[dict] = []
 
-            # Collect from already-completed tasks
+            # Collect from already-completed tasks (Redis-fallback covers
+            # events that rotated past the in-memory tail during the run)
             for task in all_tasks:
-                if task.completed and task.captured_events:
-                    for event in task.captured_events:
-                        enriched = copy.deepcopy(event)
-                        enriched["data"]["thread_id"] = thread_id
+                if task.completed and task.captured_event_count > 0:
+                    async for record in iter_subagent_events_full(thread_id, task):
+                        enriched = _record_to_persist_event(record, thread_id)
                         all_subagent_events.append(enriched)
 
             # Get pending tasks
@@ -1694,10 +1890,9 @@ class BackgroundTaskManager:
                             task.result = {"success": False, "error": str(e)}
 
                     # Collect this task's captured events
-                    if task.captured_events:
-                        for event in task.captured_events:
-                            enriched = copy.deepcopy(event)
-                            enriched["data"]["thread_id"] = thread_id
+                    if task.captured_event_count > 0:
+                        async for record in iter_subagent_events_full(thread_id, task):
+                            enriched = _record_to_persist_event(record, thread_id)
                             all_subagent_events.append(enriched)
 
                     logger.info(
@@ -1954,6 +2149,12 @@ class BackgroundTaskManager:
         # Release burst slot for cancellation path
         if user_id:
             await release_burst_slot(user_id)
+
+        async with self.task_lock:
+            task_info = self.tasks.get(thread_id)
+            if task_info:
+                task_info.persistence_complete.set()
+            self._release_terminal_refs(thread_id)
 
     async def get_task_status(self, thread_id: str) -> Optional[TaskStatus]:
         """

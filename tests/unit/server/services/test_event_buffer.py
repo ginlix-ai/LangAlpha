@@ -117,12 +117,10 @@ class TestBufferEventRedisFallback:
 
     @pytest.mark.asyncio
     async def test_cache_client_raises_falls_back_to_in_memory(self):
-        """REGRESSION: if get_cache_client() itself throws, event still lands in deque.
+        """Regression: if get_cache_client() raises, the event must still land in the deque.
 
-        Pre-fix, the getter call sat outside the try/except. A misconfigured
-        singleton would leak an exception out of _buffer_event_redis and kill
-        the streaming handler for the thread. Now it's guarded — getter
-        failure falls back to in-memory just like a pipeline failure.
+        A misconfigured singleton leaking out of _buffer_event_redis would kill the streaming
+        handler for the thread. The getter is guarded so its failure falls back to in-memory.
         """
         btm = _make_btm(fallback=True)
         task_info = _register_task(btm)
@@ -174,11 +172,18 @@ class TestBufferEventRedisFallback:
         assert len(task_info.result_buffer) == 1
 
     @pytest.mark.asyncio
-    async def test_in_memory_buffer_respects_max_size(self):
-        """Fallback path enforces max_stored_messages via popleft."""
+    async def test_in_memory_buffer_self_trims_via_deque_maxlen(self):
+        """Fallback deque has a fixed maxlen — older events are FIFO-evicted.
+
+        The in-memory buffer cap is intentionally smaller than the Redis
+        ``max_stored_messages_per_agent`` cap and is decoupled from it; the
+        deque's ``maxlen`` self-trims without an explicit popleft.
+        """
         btm = _make_btm(fallback=True)
         task_info = _register_task(btm)
-        btm.max_stored_messages = 3
+        # Shrink the deque maxlen for this test — production keeps 1000.
+        from collections import deque
+        task_info.result_buffer = deque(maxlen=3)
 
         mock_cache = MagicMock()
         mock_cache.enabled = True
