@@ -50,8 +50,11 @@ def _estimate_record_bytes(record: dict[str, Any]) -> int:
 def _resolve_tail_maxlen() -> int:
     """Read the configured tail size, falling back to the module default.
 
-    Pulled out so test fixtures can ``monkeypatch`` the settings module
-    without forcing the registry to import config at module load time.
+    Called by ``register()`` on every task creation so the runtime tail
+    cap reflects ``in_memory_event_tail_max_events`` from config. Pulled
+    into a function (rather than evaluated at import time) so the registry
+    doesn't force a config import at module load, and so test fixtures
+    can ``monkeypatch`` the settings module between tasks.
     """
     try:
         from src.config.settings import get_in_memory_event_tail_max_events
