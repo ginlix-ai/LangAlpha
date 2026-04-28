@@ -2415,11 +2415,14 @@ export function useChatMessages(
         if (updateSubagentCard) {
           updateSubagentCard(`task:${shortTaskId}`, { status: 'completed', isActive: false });
         }
-        // If this was the last open stream, clean up
+        // Flip the chat-card status for the just-closed task. The function
+        // skips tasks whose stream is still in subagentStreamsRef (active),
+        // so calling on every close marks only the just-finished one.
+        markAllSubagentTasksCompleted();
+        // Workflow-level cleanup only when ALL streams have closed.
         if (subagentStreamsRef.current.size === 0) {
           setHasActiveSubagents(false);
           if (inactivateAllSubagents) inactivateAllSubagents();
-          markAllSubagentTasksCompleted();
         }
       });
   };
