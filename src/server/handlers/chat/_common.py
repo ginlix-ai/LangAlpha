@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING, Optional
 import psycopg
 from fastapi import HTTPException
 
-from src.config.langsmith import get_filtered_langsmith_tracer
 from src.config.settings import (
     get_langsmith_metadata,
     get_langsmith_tags,
@@ -684,17 +683,10 @@ def build_graph_config(
     if request.checkpoint_id:
         graph_config["configurable"]["checkpoint_id"] = request.checkpoint_id
 
-    # Add callbacks: token tracking + LangSmith trace filtering
-    callbacks: list = []
+    # Token tracking callback. LangSmith tracing is handled by the SDK's
+    # ambient auto-tracer activated via LANGSMITH_TRACING env var.
     if token_callback:
-        callbacks.append(token_callback)
-
-    langsmith_tracer = get_filtered_langsmith_tracer()
-    if langsmith_tracer:
-        callbacks.append(langsmith_tracer)
-
-    if callbacks:
-        graph_config["callbacks"] = callbacks
+        graph_config["callbacks"] = [token_callback]
 
     return graph_config
 
