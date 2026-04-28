@@ -72,6 +72,18 @@ _OUT_GET_FINANCIAL_STATEMENTS = output_model(
 )
 
 
+def _add_quarterly_empty_note(result: dict, period: str) -> None:
+    count = result.get("count")
+    is_empty = count == 0 or (
+        isinstance(count, dict) and all(value == 0 for value in count.values())
+    )
+    if period == "quarter" and is_empty:
+        result["note"] = (
+            "Quarterly data returned 0 records. Some FMP subscription tiers do "
+            "not include quarterly fundamentals. Try period='annual'."
+        )
+
+
 @mcp.tool()
 async def get_financial_statements(
     symbol: str,
@@ -119,7 +131,7 @@ async def get_financial_statements(
                 "cash_flow": cash_flow or [],
             }
 
-        return make_response(
+        result = make_response(
             data if statement_type == "all" else (data or []),
             source=_SOURCE,
             symbol=disp,
@@ -127,6 +139,9 @@ async def get_financial_statements(
             statement_type=statement_type,
             period=period,
         )
+        _add_quarterly_empty_note(result, period)
+
+        return result
 
     except Exception as e:  # noqa: BLE001
         return error_from_exception(e, _UPSTREAM_FAILED, symbol=disp)
@@ -175,13 +190,16 @@ async def get_financial_ratios(
         key_metrics = await client.get_key_metrics(symbol, period=period, limit=limit)
         ratios = await client.get_financial_ratios(symbol, period=period, limit=limit)
 
-        return make_response(
+        result = make_response(
             {"key_metrics": key_metrics or [], "ratios": ratios or []},
             source=_SOURCE,
             symbol=disp,
             data_type="financial_ratios",
             period=period,
         )
+        _add_quarterly_empty_note(result, period)
+
+        return result
 
     except Exception as e:  # noqa: BLE001
         return error_from_exception(e, _UPSTREAM_FAILED, symbol=disp)
@@ -231,7 +249,7 @@ async def get_growth_metrics(
         financial_growth = await client.get_financial_growth(symbol, period=period, limit=limit)
         income_growth = await client.get_income_statement_growth(symbol, period=period, limit=limit)
 
-        return make_response(
+        result = make_response(
             {
                 "financial_growth": financial_growth or [],
                 "income_statement_growth": income_growth or [],
@@ -241,6 +259,9 @@ async def get_growth_metrics(
             data_type="growth_metrics",
             period=period,
         )
+        _add_quarterly_empty_note(result, period)
+
+        return result
 
     except Exception as e:  # noqa: BLE001
         return error_from_exception(e, _UPSTREAM_FAILED, symbol=disp)
