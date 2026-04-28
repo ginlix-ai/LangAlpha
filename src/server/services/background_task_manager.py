@@ -193,14 +193,15 @@ async def iter_subagent_events_full(
     expected_from_redis = tail_front_seq - 1
     if tail_front_seq > 1 and thread_id and redis_yielded < expected_from_redis:
         logger.warning(
-            "subagent_history_truncated thread_id=%s task_id=%s expected=%d "
-            "recovered=%d missing=%d redis_write_failed=%s",
-            thread_id,
-            getattr(task, "task_id", None),
-            expected_from_redis,
-            redis_yielded,
-            expected_from_redis - redis_yielded,
-            bool(getattr(task, "redis_write_failed", False)),
+            "subagent_history_truncated",
+            extra={
+                "thread_id": thread_id,
+                "task_id": getattr(task, "task_id", None),
+                "expected": expected_from_redis,
+                "recovered": redis_yielded,
+                "missing": expected_from_redis - redis_yielded,
+                "redis_write_failed": bool(getattr(task, "redis_write_failed", False)),
+            },
         )
 
     # 2. In-memory tail (clipped to high_water snapshot)

@@ -774,7 +774,7 @@ async def test_event_capture_emits_reasoning_signals_text_and_tool_calls(monkeyp
     request = MagicMock()
     await mw.awrap_model_call(request, handler)
 
-    events = task.captured_events
+    events = list(task.captured_events_tail)
     content_types = [e["data"].get("content_type") for e in events if e["event"] == "message_chunk"]
     # reasoning_signal(start), reasoning, reasoning_signal(complete), text
     assert "reasoning_signal" in content_types
@@ -878,7 +878,7 @@ async def test_tool_message_captured_event_is_truncated_for_huge_payload() -> No
 
     await mw.awrap_tool_call(request, handler)
 
-    tcr = [e for e in task.captured_events if e["event"] == "tool_call_result"][0]
+    tcr = [e for e in task.captured_events_tail if e["event"] == "tool_call_result"][0]
     captured_len = len(tcr["data"]["content"].encode("utf-8"))
     assert captured_len <= _MAX_CAPTURED_CONTENT_BYTES + 200  # cap + small marker
     assert "[...truncated," in tcr["data"]["content"]
@@ -906,7 +906,7 @@ async def test_event_capture_tool_call_result_captured(monkeypatch) -> None:
 
     await mw.awrap_tool_call(request, handler)
 
-    tcr_events = [e for e in task.captured_events if e["event"] == "tool_call_result"]
+    tcr_events = [e for e in task.captured_events_tail if e["event"] == "tool_call_result"]
     assert len(tcr_events) == 1
     assert tcr_events[0]["data"]["content"] == "hi"
     assert task.total_tool_calls == 1

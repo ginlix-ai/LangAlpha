@@ -212,21 +212,6 @@ class BackgroundTask:
         return f"Task-{self.task_id}"
 
     @property
-    def captured_events(self) -> list[dict[str, Any]]:
-        """Compatibility view of the in-memory tail in legacy event shape.
-
-        Returns a freshly built list of ``{"event", "data", "ts"}`` dicts —
-        the historical shape used by collector code paths. Older events that
-        fell off the tail are NOT included; callers that need the full history
-        must use the Redis-fallback collector helper. Reads are cheap (deque
-        copy) and do not block the producer.
-        """
-        return [
-            {"event": rec.get("event"), "data": rec.get("data") or {}, "ts": rec.get("ts")}
-            for rec in list(self.captured_events_tail)
-        ]
-
-    @property
     def is_pending(self) -> bool:
         """Check if this task is still pending (not yet completed).
 

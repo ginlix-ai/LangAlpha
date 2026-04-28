@@ -252,12 +252,13 @@ async def stream_subagent_task_events(
             # If the in-memory tail rotated past our cursor, fill the gap
             # from Redis before draining the tail. Live consumers normally
             # never hit this — only slow ones falling behind tail maxlen do.
-            tail_snapshot = list(task.captured_events_tail)
-            tail_front_seq = (
-                tail_snapshot[0]["seq"]
-                if tail_snapshot and isinstance(tail_snapshot[0].get("seq"), int)
-                else None
-            )
+            # deque[0] is O(1) and GIL-atomic, so read the front directly
+            # instead of copying the whole tail to inspect one element.
+            tail_front_seq: int | None = None
+            if task.captured_events_tail:
+                front_seq = task.captured_events_tail[0].get("seq")
+                if isinstance(front_seq, int):
+                    tail_front_seq = front_seq
             if (
                 tail_front_seq is not None
                 and tail_front_seq > cursor + 1
