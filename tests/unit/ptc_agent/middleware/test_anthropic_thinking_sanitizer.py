@@ -72,6 +72,20 @@ class TestSanitizeBlock:
         assert changed is False
         assert out is block
 
+    @pytest.mark.parametrize(
+        "block",
+        [
+            {"type": "thinking"},
+            {"type": "thinking", "signature": ""},
+            {"type": "thinking", "signature": None},
+            {"type": "thinking", "thinking": None},
+        ],
+    )
+    def test_no_signature_blocks_left_alone(self, block):
+        out, changed = _sanitize_thinking_block(block)
+        assert changed is False
+        assert out is block
+
 
 # ---------------------------------------------------------------------------
 # _sanitize_message — whole-message scan
