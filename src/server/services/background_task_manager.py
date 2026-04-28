@@ -133,6 +133,13 @@ async def iter_subagent_events_full(
     the snapshot don't leak into the current pass — they roll into the next
     collector iteration just like before the refactor.
 
+    Memory note: when the tail has rotated past the run's start, this
+    materializes the full Redis spill list (``cache.list_range(key, 0, -1)``)
+    into Python memory in one call. Bounded by ``max_stored_messages_per_agent``
+    and per-event byte caps, but operators raising those limits should expect
+    proportional collector-time RAM use. Off the hot path — runs at turn end
+    and on persistence, not during streaming.
+
     Yields dicts with shape::
 
         {"seq": int, "event": str, "data": dict, "agent_id": str | None,
