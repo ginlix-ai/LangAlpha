@@ -300,13 +300,8 @@ def _create_task_tool(
         subagent_state["messages"] = [HumanMessage(content=prompt)]
         return subagent, subagent_state
 
-    def _get_resume_info() -> tuple[str | None, str | None]:
-        """Check if this invocation is a resume (BackgroundSubagentMiddleware set ContextVars).
-
-        Returns:
-            Tuple of (checkpoint_ns, subagent_type) or (None, None).
-            checkpoint_ns is "task:{task_id}" matching LangGraph namespace convention.
-        """
+    def _get_background_task_context() -> tuple[str | None, str | None]:
+        """Return ``(checkpoint_ns, subagent_type)`` for the BackgroundTask in context, or ``(None, None)`` outside a managed background invocation."""
         if registry is None:
             return None, None
         bg_task_id = current_background_tool_call_id.get()
@@ -314,7 +309,6 @@ def _create_task_tool(
             return None, None
         bg_task = registry.get_by_tool_call_id(bg_task_id)
         if bg_task and bg_task.completed is False:
-            # Task was reset for resume by BackgroundSubagentMiddleware
             return f"task:{bg_task.task_id}", bg_task.subagent_type
         return None, None
 
@@ -345,7 +339,7 @@ def _create_task_tool(
         effective_type = subagent_type
         if action == "update" or action == "resume":
             # For resume/follow-up, type is inferred; validate if explicitly provided
-            _resume_task_id, resume_type = _get_resume_info()
+            _bg_checkpoint_ns, resume_type = _get_background_task_context()
             effective_type = effective_type or resume_type or "general-purpose"
             if effective_type not in subagent_graphs:
                 allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
@@ -362,11 +356,18 @@ def _create_task_tool(
             effective_type, prompt, runtime
         )
 
-        # Build config: use parent's thread_id + checkpoint_ns for isolation
-        # Merge into parent config to preserve streaming callbacks/namespace
+        # Build config: use parent's thread_id + checkpoint_ns for isolation.
+        # Drop parent callbacks entirely — the parent runtime registers its
+        # own PerCallTokenTracker on the workflow run, and inheriting it
+        # would double-bill every subagent LLM call (parent's tracker AND
+        # bg_tracker both record on_llm_end). LangSmith tracing rides on
+        # the SDK's ambient auto-tracer (ContextVar-propagated), so dropping
+        # the explicit callbacks list does not affect trace coverage.
+        raw_parent_config = get_config()
+        parent_config = {k: v for k, v in raw_parent_config.items() if k != "callbacks"}
+        parent_configurable = parent_config.get("configurable", {})
+
         if checkpointer:
-            parent_config = get_config()
-            parent_configurable = parent_config.get("configurable", {})
             # Get task_id from BackgroundTask via ContextVar
             bg_tool_call_id = current_background_tool_call_id.get()
             bg_task = (
@@ -389,6 +390,13 @@ def _create_task_tool(
             }
         else:
             config = {}
+
+        bg_tracker = current_background_token_tracker.get(None)
+        if bg_tracker is not None:
+            if not config:
+                config = {}
+            config["callbacks"] = [bg_tracker]
+
         result = subagent.invoke(subagent_state, config)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
@@ -421,11 +429,11 @@ def _create_task_tool(
         # Resolve subagent_type based on action
         effective_type = subagent_type
 
-        # Check if this is a resume (BackgroundSubagentMiddleware set up the ContextVar)
-        resume_task_id, resume_type = _get_resume_info()
-        is_resume = resume_task_id is not None
+        # Set for both init and resume of managed background tasks.
+        bg_checkpoint_ns, resume_type = _get_background_task_context()
+        has_bg_task_context = bg_checkpoint_ns is not None
 
-        if action == "update" or action == "resume" or is_resume:
+        if action == "update" or action == "resume" or has_bg_task_context:
             # For resume/follow-up, type is inferred; validate if explicitly provided
             effective_type = effective_type or resume_type or "general-purpose"
             if effective_type not in subagent_graphs:
@@ -441,40 +449,51 @@ def _create_task_tool(
 
         subagent = subagent_graphs[effective_type]
 
-        # Get parent config to preserve streaming callbacks/namespace
-        parent_config = get_config()
-        parent_configurable = parent_config.get("configurable", {})
+        # Get parent config to preserve streaming namespace.
+        # Drop parent callbacks entirely — the parent runtime registers its
+        # own PerCallTokenTracker on the workflow run, and inheriting it
+        # would double-bill every subagent LLM call. LangSmith tracing
+        # rides on the SDK's ambient auto-tracer (ContextVar-propagated),
+        # so dropping the explicit callbacks list does not affect coverage.
+        raw_parent_config: dict[str, Any] = dict(get_config())
+        parent_config: dict[str, Any] = {
+            k: v for k, v in raw_parent_config.items() if k != "callbacks"
+        }
+        parent_configurable: dict[str, Any] = parent_config.get("configurable", {})
 
-        if is_resume and checkpointer:
-            # Resume: invoke with parent's thread_id + checkpoint_ns -> LangGraph loads checkpoint
-            resume_state = {
+        def _compose_callbacks() -> list[Any]:
+            bg_tracker = current_background_token_tracker.get(None)
+            return [bg_tracker] if bg_tracker is not None else []
+
+        if has_bg_task_context and checkpointer:
+            # Per-task checkpoint_ns; LangGraph hydrates from prior checkpoint if present.
+            invoke_state = {
                 k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS
             }
-            resume_state["messages"] = [HumanMessage(content=prompt)]
+            invoke_state["messages"] = [HumanMessage(content=prompt)]
             config = {
                 **parent_config,
                 "configurable": {
                     **parent_configurable,
                     "thread_id": parent_configurable.get("thread_id", ""),
-                    "checkpoint_ns": resume_task_id,
+                    "checkpoint_ns": bg_checkpoint_ns,
                 },
                 "metadata": {
                     "subagent_type": effective_type,
                     "description": prompt[:200],
                 },
             }
-            # Override callbacks with subagent-specific token tracker if available
-            bg_tracker = current_background_token_tracker.get(None)
-            if bg_tracker:
-                config["callbacks"] = [bg_tracker]
+            callbacks = _compose_callbacks()
+            if callbacks:
+                config["callbacks"] = callbacks
 
             logger.info(
-                "Resuming subagent from checkpoint",
-                checkpoint_ns=resume_task_id,
+                "Invoking subagent with task checkpoint_ns",
+                checkpoint_ns=bg_checkpoint_ns,
                 parent_thread_id=parent_configurable.get("thread_id", ""),
                 subagent_type=effective_type,
             )
-            result = await subagent.ainvoke(resume_state, config)
+            result = await subagent.ainvoke(invoke_state, config)
         else:
             # New task: use parent's thread_id + checkpoint_ns for isolation
             _subagent, subagent_state = _validate_and_prepare_state(
@@ -504,12 +523,11 @@ def _create_task_tool(
             else:
                 config = {}
 
-            # Override callbacks with subagent-specific token tracker if available
-            bg_tracker = current_background_token_tracker.get(None)
-            if bg_tracker:
+            callbacks = _compose_callbacks()
+            if callbacks:
                 if not config:
                     config = {}
-                config["callbacks"] = [bg_tracker]
+                config["callbacks"] = callbacks
 
             result = await subagent.ainvoke(subagent_state, config)
 
