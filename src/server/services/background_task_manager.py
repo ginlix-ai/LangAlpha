@@ -1643,7 +1643,7 @@ class BackgroundTaskManager:
         # expiry. Mirrors mark_completed/mark_cancelled.
         try:
             tracker = WorkflowTracker.get_instance()
-            await tracker.mark_failed(thread_id, error)
+            await tracker.mark_failed(thread_id, error=error)
         except Exception as tracker_err:
             logger.warning(
                 f"[BackgroundTaskManager] tracker.mark_failed failed for {thread_id}: {tracker_err}"

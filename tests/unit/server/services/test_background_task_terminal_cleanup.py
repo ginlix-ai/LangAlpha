@@ -151,11 +151,12 @@ class TestMarkCompletedReleases:
 
 
 def _patch_tracker():
-    """Replace WorkflowTracker singleton with a mock that records mark_* calls."""
+    """Replace WorkflowTracker singleton with a mock that records mark_* calls.
+
+    AsyncMock auto-specs async attributes on access, so the mark_* methods
+    don't need explicit assignment — calls + asserts work either way.
+    """
     mock_tracker = AsyncMock()
-    mock_tracker.mark_failed = AsyncMock(return_value=True)
-    mock_tracker.mark_cancelled = AsyncMock(return_value=True)
-    mock_tracker.mark_soft_interrupted = AsyncMock(return_value=True)
     return patch(
         "src.server.services.background_task_manager.WorkflowTracker.get_instance",
         return_value=mock_tracker,
@@ -181,7 +182,7 @@ class TestMarkFailedReleases:
         assert info.metadata["user_id"] == "u-1"
         # Wiring: tracker.mark_failed called so /status reports FAILED with
         # bounded TTL instead of leaving the key as ACTIVE/DISCONNECTED.
-        mock_tracker.mark_failed.assert_awaited_once_with("t-1", "boom")
+        mock_tracker.mark_failed.assert_awaited_once_with("t-1", error="boom")
 
 
 class TestMarkCancelledReleases:
