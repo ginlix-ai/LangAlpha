@@ -9,7 +9,7 @@ import structlog
 
 from ptc_agent.config.core import CoreConfig
 
-from .mcp_registry import MCPRegistry
+from .mcp_registry import MCPRegistry, get_global_registry
 from .sandbox import PTCSandbox
 
 logger = structlog.get_logger(__name__)
@@ -29,6 +29,9 @@ class Session:
         self.config = config
         self.sandbox: PTCSandbox | None = None
         self.mcp_registry: MCPRegistry | None = None
+        # False means we're borrowing the process-global frozen registry;
+        # stop/cleanup must NOT call disconnect_all on a borrowed instance.
+        self._owns_mcp_registry: bool = False
         self._initialized = False
 
         # agent.md cache with dirty flag (force first read)
@@ -90,16 +93,19 @@ class Session:
             reconnecting=sandbox_id is not None,
         )
 
-        # Initialize MCP registry
-        self.mcp_registry = MCPRegistry(self.config)
+        # Borrow the global frozen registry when available; otherwise own one.
+        global_registry = get_global_registry()
+        if global_registry is not None:
+            self.mcp_registry = global_registry
+            self._owns_mcp_registry = False
+        else:
+            self.mcp_registry = MCPRegistry(self.config)
+            self._owns_mcp_registry = True
 
         if sandbox_id:
             # RECONNECT MODE: Run MCP connections and sandbox start in parallel
-
-            # Create sandbox instance without mcp_registry
             self.sandbox = PTCSandbox(self.config, None)
 
-            # Run both operations in parallel
             try:
                 await asyncio.gather(
                     self.mcp_registry.connect_all(),
@@ -108,13 +114,13 @@ class Session:
                     ),
                 )
             except Exception:
-                # Clean up MCP connections to avoid leaks
-                if self.mcp_registry:
+                if self.mcp_registry and self._owns_mcp_registry:
                     try:
                         await self.mcp_registry.disconnect_all()
                     except Exception:
                         pass
-                    self.mcp_registry = None
+                self.mcp_registry = None
+                self._owns_mcp_registry = False
                 self.sandbox = None
                 raise
 
@@ -135,12 +141,13 @@ class Session:
                     self.mcp_registry.connect_all(),
                 )
             except Exception:
-                if self.mcp_registry:
+                if self.mcp_registry and self._owns_mcp_registry:
                     try:
                         await self.mcp_registry.disconnect_all()
                     except Exception:
                         pass
-                    self.mcp_registry = None
+                self.mcp_registry = None
+                self._owns_mcp_registry = False
                 self.sandbox = None
                 raise
 
@@ -194,10 +201,15 @@ class Session:
         self.sandbox = PTCSandbox(self.config, mcp_registry=None)
         self.sandbox.start_lazy_init(sandbox_id, on_state_observed=on_state_observed)
 
-        # Initialize MCP registry (required for system prompt) — runs in
-        # parallel with the Daytona sandbox start above.
-        self.mcp_registry = MCPRegistry(self.config)
-        await self.mcp_registry.connect_all()
+        # Borrow the global frozen registry when available; otherwise own one.
+        global_registry = get_global_registry()
+        if global_registry is not None:
+            self.mcp_registry = global_registry
+            self._owns_mcp_registry = False
+        else:
+            self.mcp_registry = MCPRegistry(self.config)
+            self._owns_mcp_registry = True
+            await self.mcp_registry.connect_all()
         mcp_ms = (time.time() - _t0) * 1000
 
         # Attach registry to sandbox (needed later for sync_sandbox_assets)
@@ -206,7 +218,8 @@ class Session:
         self._initialized = True
 
         logger.info(
-            f"[LAZY_INIT] sandbox_id={sandbox_id} mcp_connect={mcp_ms:.0f}ms",
+            f"[LAZY_INIT] sandbox_id={sandbox_id} mcp_connect={mcp_ms:.0f}ms "
+            f"borrowed_global={not self._owns_mcp_registry}",
         )
 
     async def get_sandbox(self) -> PTCSandbox | None:
@@ -228,9 +241,10 @@ class Session:
             await self.sandbox.cleanup()
             self.sandbox = None
 
-        if self.mcp_registry:
+        if self.mcp_registry and self._owns_mcp_registry:
             await self.mcp_registry.disconnect_all()
-            self.mcp_registry = None
+        self.mcp_registry = None
+        self._owns_mcp_registry = False
 
         self._initialized = False
         self._agent_md_dirty = True
@@ -259,7 +273,7 @@ class Session:
             except Exception:
                 pass
 
-        if self.mcp_registry:
+        if self.mcp_registry and self._owns_mcp_registry:
             await self.mcp_registry.disconnect_all()
 
         # Mark as uninitialized so the next restart will reconnect.
@@ -269,6 +283,7 @@ class Session:
         self._agent_md_dirty = True
         self.sandbox = None
         self.mcp_registry = None
+        self._owns_mcp_registry = False
 
         logger.info("Session stopped", conversation_id=self.conversation_id)
 
