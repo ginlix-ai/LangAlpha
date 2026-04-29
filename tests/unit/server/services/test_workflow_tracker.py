@@ -6,12 +6,12 @@ completed/cancelled/interrupted, cancel flags, retry counts, and graceful
 degradation when Redis is unavailable.
 """
 
-import inspect
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.config.settings import get_redis_ttl_workflow_status
 from src.server.services.workflow_tracker import (
     RECONNECTABLE_STATUSES,
     TERMINAL_STATUSES,
@@ -37,6 +37,50 @@ def _make_tracker(enabled=True):
 
         tracker = WorkflowTracker()
         return tracker, mock_cache
+
+
+async def _call_get_workflow_status(status: WorkflowStatus, bg_status: str) -> dict:
+    """Drive workflow_handler.get_workflow_status with the supplied tracker
+    status, stubbing every other dependency. Returns the response dict."""
+    from src.server.handlers import workflow_handler
+
+    tracker = MagicMock()
+    tracker.get_status = AsyncMock(return_value={
+        "status": status,
+        "last_update": None,
+        "workspace_id": "ws-1",
+        "user_id": "u-1",
+    })
+    tracker.mark_completed = AsyncMock(return_value=True)
+    tracker.delete_status = AsyncMock(return_value=True)
+
+    bg_manager = MagicMock()
+    bg_manager.get_workflow_status = AsyncMock(return_value={
+        "status": bg_status,
+        "active_tasks": [],
+        "soft_interrupted": False,
+    })
+
+    cache = MagicMock()
+    cache.enabled = False
+    cache.client = None
+
+    with patch(
+        "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
+        return_value=tracker,
+    ), patch.object(
+        workflow_handler, "get_checkpoint_tuple", new=AsyncMock(return_value=None)
+    ), patch(
+        "src.server.services.background_task_manager.BackgroundTaskManager.get_instance",
+        return_value=bg_manager,
+    ), patch(
+        "src.server.database.conversation.get_thread_by_id",
+        new=AsyncMock(return_value=None),
+    ), patch(
+        "src.utils.cache.redis_cache.get_cache_client",
+        return_value=cache,
+    ):
+        return await workflow_handler.get_workflow_status("t-1")
 
 
 # ---------------------------------------------------------------------------
@@ -145,9 +189,9 @@ class TestMarkTransitions:
 
         assert result is True
         call_kwargs = mock_cache.set.call_args
-        # TTL should be COMPLETED_TTL (3600)
-        assert call_kwargs.kwargs.get("ttl") == 3600 or (
-            len(call_kwargs.args) > 2 and call_kwargs.args[2] == 3600
+        expected_ttl = get_redis_ttl_workflow_status()
+        assert call_kwargs.kwargs.get("ttl") == expected_ttl or (
+            len(call_kwargs.args) > 2 and call_kwargs.args[2] == expected_ttl
         )
 
     @pytest.mark.asyncio
@@ -195,7 +239,7 @@ class TestMarkTransitions:
         ttl = call_args.kwargs.get("ttl") or (
             call_args.args[2] if len(call_args.args) > 2 else None
         )
-        assert ttl == 3600
+        assert ttl == get_redis_ttl_workflow_status()
 
     @pytest.mark.asyncio
     async def test_mark_failed_without_error_omits_metadata(self):
@@ -207,8 +251,10 @@ class TestMarkTransitions:
         assert result is True
         call_args = mock_cache.set.call_args
         persisted = call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs.get("value")
-        # No metadata block when error is None — matches mark_cancelled.
-        assert "metadata" not in persisted or persisted["metadata"] == {}
+        # _update_status_with_metadata only writes the key when metadata is
+        # truthy — match the implementation exactly so a regression to
+        # ``{"metadata": {}}`` would fail this test.
+        assert "metadata" not in persisted
 
     @pytest.mark.asyncio
     async def test_mark_soft_interrupted_sets_ttl(self):
@@ -225,7 +271,7 @@ class TestMarkTransitions:
             call_args.args[2] if len(call_args.args) > 2 else None
         )
         # Distinct from INTERRUPTED (which uses ttl=None) — bounded TTL.
-        assert ttl == 3600
+        assert ttl == get_redis_ttl_workflow_status()
 
     @pytest.mark.asyncio
     async def test_all_methods_disabled(self):
@@ -261,13 +307,23 @@ class TestStatusSetInvariants:
         partition = TERMINAL_STATUSES | RECONNECTABLE_STATUSES | intermediate
         assert set(WorkflowStatus) == partition
 
-    def test_workflow_handler_uses_reconnectable_constant(self):
-        # get_workflow_status reads from RECONNECTABLE_STATUSES so the
-        # invariant above actually pins the production reconnect decision.
-        from src.server.handlers import workflow_handler
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", sorted(RECONNECTABLE_STATUSES))
+    async def test_get_workflow_status_reconnectable(self, status):
+        # Reconnectable statuses must surface ``can_reconnect=True`` so the
+        # frontend retries the SSE stream. Pins the actual decision.
+        result = await _call_get_workflow_status(status, bg_status="active")
+        assert result["can_reconnect"] is True
+        assert result["status"] == status
 
-        source = inspect.getsource(workflow_handler.get_workflow_status)
-        assert "RECONNECTABLE_STATUSES" in source
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", sorted(TERMINAL_STATUSES))
+    async def test_get_workflow_status_terminal_blocks_reconnect(self, status):
+        # Terminal statuses must surface ``can_reconnect=False`` so the
+        # frontend stops attempting to reattach.
+        result = await _call_get_workflow_status(status, bg_status="completed")
+        assert result["can_reconnect"] is False
+        assert result["status"] == status
 
 
 # ---------------------------------------------------------------------------
