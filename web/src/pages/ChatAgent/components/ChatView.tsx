@@ -204,7 +204,7 @@ const _sharedNav = { visible: false, locked: false };
 // Static main agent object — never changes, so defined once at module level
 const MAIN_AGENT: AgentInfo = {
   id: 'main',
-  name: 'Boss',
+  name: 'Lead Agent',
   displayName: 'LangAlpha',
   taskId: '',
   description: '',

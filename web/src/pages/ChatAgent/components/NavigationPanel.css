@@ -68,6 +68,22 @@
   background-color: var(--color-border-muted);
 }
 
+/* Hierarchy glyph for subagent rows. Width is glyph (text-xs ~12px) + 2px
+   optical correction so the label column aligns with main-agent rows. The
+   monospace stack guards against system fonts missing U+2514 / U+2500. */
+.nav-panel-agent-glyph {
+  width: 14px;
+  flex-shrink: 0;
+  color: var(--color-icon-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+/* Lift the glyph one shade when its row is selected so the connector
+   participates in the selection state alongside the label. */
+.nav-panel-agent-row.is-selected .nav-panel-agent-glyph {
+  color: var(--color-text-secondary);
+}
+
 /* Dismiss buttons (minimize + fold) */
 .nav-panel-dismiss-btn {
   opacity: 0.4;
