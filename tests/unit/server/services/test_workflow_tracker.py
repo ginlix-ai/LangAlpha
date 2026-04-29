@@ -6,12 +6,18 @@ completed/cancelled/interrupted, cancel flags, retry counts, and graceful
 degradation when Redis is unavailable.
 """
 
+import inspect
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.server.services.workflow_tracker import WorkflowStatus, WorkflowTracker
+from src.server.services.workflow_tracker import (
+    RECONNECTABLE_STATUSES,
+    TERMINAL_STATUSES,
+    WorkflowStatus,
+    WorkflowTracker,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +179,55 @@ class TestMarkTransitions:
         assert result is True
 
     @pytest.mark.asyncio
+    async def test_mark_failed_sets_ttl_and_status(self):
+        tracker, mock_cache = _make_tracker(enabled=True)
+        thread_id = str(uuid.uuid4())
+
+        result = await tracker.mark_failed(thread_id, error="boom")
+
+        assert result is True
+        # Last positional/kwarg holds the persisted status object.
+        call_args = mock_cache.set.call_args
+        persisted = call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs.get("value")
+        assert persisted["status"] == "failed"
+        assert persisted["metadata"]["error"] == "boom"
+        # Bounded TTL (matches mark_completed/mark_cancelled).
+        ttl = call_args.kwargs.get("ttl") or (
+            call_args.args[2] if len(call_args.args) > 2 else None
+        )
+        assert ttl == 3600
+
+    @pytest.mark.asyncio
+    async def test_mark_failed_without_error_omits_metadata(self):
+        tracker, mock_cache = _make_tracker(enabled=True)
+        thread_id = str(uuid.uuid4())
+
+        result = await tracker.mark_failed(thread_id)
+
+        assert result is True
+        call_args = mock_cache.set.call_args
+        persisted = call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs.get("value")
+        # No metadata block when error is None — matches mark_cancelled.
+        assert "metadata" not in persisted or persisted["metadata"] == {}
+
+    @pytest.mark.asyncio
+    async def test_mark_soft_interrupted_sets_ttl(self):
+        tracker, mock_cache = _make_tracker(enabled=True)
+        thread_id = str(uuid.uuid4())
+
+        result = await tracker.mark_soft_interrupted(thread_id)
+
+        assert result is True
+        call_args = mock_cache.set.call_args
+        persisted = call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs.get("value")
+        assert persisted["status"] == "soft_interrupted"
+        ttl = call_args.kwargs.get("ttl") or (
+            call_args.args[2] if len(call_args.args) > 2 else None
+        )
+        # Distinct from INTERRUPTED (which uses ttl=None) — bounded TTL.
+        assert ttl == 3600
+
+    @pytest.mark.asyncio
     async def test_all_methods_disabled(self):
         tracker, _ = _make_tracker(enabled=False)
         tid = "t-1"
@@ -181,6 +236,38 @@ class TestMarkTransitions:
         assert await tracker.mark_disconnected(tid) is False
         assert await tracker.mark_interrupted(tid) is False
         assert await tracker.mark_cancelled(tid) is False
+        assert await tracker.mark_failed(tid, error="x") is False
+        assert await tracker.mark_soft_interrupted(tid) is False
+
+
+# ---------------------------------------------------------------------------
+# Status set invariants
+# ---------------------------------------------------------------------------
+
+class TestStatusSetInvariants:
+    """Pin TERMINAL_STATUSES / RECONNECTABLE_STATUSES against workflow_handler."""
+
+    def test_terminal_disjoint_from_reconnectable(self):
+        # If both sets share a state, ``can_reconnect`` would return True for a
+        # terminal workflow — frontend would attach to a stream that never
+        # produces events.
+        assert TERMINAL_STATUSES.isdisjoint(RECONNECTABLE_STATUSES)
+
+    def test_every_status_categorized(self):
+        # Every WorkflowStatus is either terminal, reconnectable, or one of the
+        # known intermediate/sentinel states. Adding a new status without
+        # placing it in this partition fails the test.
+        intermediate = {WorkflowStatus.INTERRUPTED, WorkflowStatus.UNKNOWN}
+        partition = TERMINAL_STATUSES | RECONNECTABLE_STATUSES | intermediate
+        assert set(WorkflowStatus) == partition
+
+    def test_workflow_handler_uses_reconnectable_constant(self):
+        # get_workflow_status reads from RECONNECTABLE_STATUSES so the
+        # invariant above actually pins the production reconnect decision.
+        from src.server.handlers import workflow_handler
+
+        source = inspect.getsource(workflow_handler.get_workflow_status)
+        assert "RECONNECTABLE_STATUSES" in source
 
 
 # ---------------------------------------------------------------------------

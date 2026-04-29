@@ -889,9 +889,13 @@ async def handle_workflow_error(
                 f"thread_id={thread_id}: {type(e).__name__}: {str(e)[:100]}"
             )
 
+            error_msg = (
+                f"Max retries exceeded ({retry_count}/{MAX_RETRIES}): "
+                f"{type(e).__name__}: {str(e)}"
+            )
+
             if persistence_service:
                 try:
-                    error_msg = f"Max retries exceeded ({retry_count}/{MAX_RETRIES}): {type(e).__name__}: {str(e)}"
                     await persistence_service.persist_error(
                         error_message=error_msg,
                         errors=[error_msg],
@@ -905,6 +909,18 @@ async def handle_workflow_error(
                     logger.error(
                         f"[{log_prefix}] Failed to persist error: {persist_error}"
                     )
+
+            # Push terminal status to Redis so /status reports FAILED with
+            # bounded TTL instead of leaving the key as ACTIVE/DISCONNECTED.
+            # The setup-error path runs outside BackgroundTaskManager's
+            # _mark_failed, so this is the only chance to update tracker.
+            try:
+                await tracker.mark_failed(thread_id, error=error_msg)
+            except Exception as tracker_err:
+                logger.warning(
+                    f"[{log_prefix}] tracker.mark_failed failed for "
+                    f"{thread_id}: {tracker_err}"
+                )
 
             error_data = {
                 "message": f"Workflow failed after {MAX_RETRIES} retry attempts",
@@ -951,6 +967,20 @@ async def handle_workflow_error(
                 )
             except Exception as persist_error:
                 logger.error(f"[{log_prefix}] Failed to persist error: {persist_error}")
+
+        # Mirror the recoverable max-retries branch: push FAILED to Redis with
+        # bounded TTL. Without this, /status keeps reporting ACTIVE for the
+        # full mark_active TTL window after a non-recoverable workflow error.
+        try:
+            tracker = WorkflowTracker.get_instance()
+            await tracker.mark_failed(
+                thread_id, error=f"{type(e).__name__}: {str(e)}"
+            )
+        except Exception as tracker_err:
+            logger.warning(
+                f"[{log_prefix}] tracker.mark_failed failed for "
+                f"{thread_id}: {tracker_err}"
+            )
 
         if handler:
             error_event = handler._format_sse_event(
