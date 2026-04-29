@@ -23,7 +23,7 @@ _devnull = open(os.devnull, "w")  # noqa: SIM115
 
 
 class MCPToolInfo:
-    """Information about an MCP tool."""
+    """Snapshot of a single tool's schema as reported by its MCP server."""
 
     def __init__(
         self,
@@ -32,25 +32,13 @@ class MCPToolInfo:
         input_schema: dict[str, Any],
         server_name: str,
     ) -> None:
-        """Initialize tool info.
-
-        Args:
-            name: Tool name
-            description: Tool description
-            input_schema: JSON schema for tool input
-            server_name: Name of the MCP server providing this tool
-        """
         self.name = name
         self.description = description
         self.input_schema = input_schema
         self.server_name = server_name
 
     def get_parameters(self) -> dict[str, Any]:
-        """Extract parameter information from input schema.
-
-        Returns:
-            Dictionary mapping parameter names to their info
-        """
+        """Return ``{param_name: {type, description, required, default}}`` from input_schema."""
         params = {}
 
         if "properties" in self.input_schema:
@@ -129,11 +117,6 @@ class MCPServerConnector:
     """
 
     def __init__(self, config: MCPServerConfig) -> None:
-        """Initialize server connector.
-
-        Args:
-            config: Server configuration
-        """
         self.config = config
         self.session: ClientSession | None = None
         self.tools: list[MCPToolInfo] = []
@@ -180,7 +163,6 @@ class MCPServerConnector:
         if not self.config.env:
             return base_env
 
-        # Expand each configured env var and merge
         for key, value in self.config.env.items():
             if isinstance(value, str):
                 expanded_value = os.path.expandvars(value)
@@ -199,15 +181,10 @@ class MCPServerConnector:
         return base_env
 
     def _expand_url(self) -> str | None:
-        """Expand environment variable placeholders in URL.
-
-        Returns:
-            Expanded URL or None if no URL configured
-        """
+        """Return the URL with ``${VAR}`` placeholders expanded, or None if unconfigured."""
         if not self.config.url:
             return None
 
-        # Expand environment variable placeholders like ${VAR}
         expanded_url = os.path.expandvars(self.config.url)
 
         if "${" in self.config.url and expanded_url != self.config.url:
@@ -227,11 +204,7 @@ class MCPServerConnector:
         return expanded_url
 
     async def __aenter__(self) -> "MCPServerConnector":
-        """Enter async context manager - start connection task.
-
-        Returns:
-            Self for use in async with statement
-        """
+        """Start the background connection task and wait for it to be ready."""
         logger.debug("Connecting to MCP server", server=self.config.name)
 
         # Start background task that keeps nested contexts alive
@@ -243,7 +216,6 @@ class MCPServerConnector:
         await self._ready.wait()
 
         if self._connection_error:
-            # Connection failed, raise the error
             raise self._connection_error
 
         logger.debug(
@@ -366,7 +338,6 @@ class MCPServerConnector:
             self._connection_error = e
             self._ready.set()
 
-            # Log with full exception details
             import traceback
             error_details = traceback.format_exc()
 
@@ -384,7 +355,6 @@ class MCPServerConnector:
             raise RuntimeError("Not connected to server")
 
         try:
-            # List tools
             tools_response = await self.session.list_tools()
 
             self.tools = []
@@ -414,7 +384,6 @@ class MCPServerConnector:
     async def _discover_tools_http(self) -> None:
         """Discover available tools via HTTP transport."""
         try:
-            # Send tools/list request
             self._message_id += 1
             request = {
                 "jsonrpc": "2.0",
@@ -435,7 +404,6 @@ class MCPServerConnector:
                 msg = f"MCP error: {result['error']}"
                 raise RuntimeError(msg)
 
-            # Parse tools from response
             tools_data = result.get("result", {}).get("tools", [])
             self.tools = []
 
@@ -556,18 +524,17 @@ class MCPServerConnector:
         )
 
         try:
-            # Route to appropriate transport
             if self.config.transport == "http":
                 result = await self._call_tool_http(tool_name, arguments)
                 logger.debug("MCP tool call completed", server=self.config.name, tool=tool_name)
 
-                # HTTP returns dict directly
+                # HTTP returns dict directly; unwrap text content when present.
                 if isinstance(result, dict) and "content" in result:
                     content = result["content"]
                     if isinstance(content, list) and len(content) > 0:
-                        first = content[0]
-                        if isinstance(first, dict) and "text" in first:
-                            return first["text"]
+                        content_item = content[0]
+                        if isinstance(content_item, dict) and "text" in content_item:
+                            return content_item["text"]
                 return result
 
             # SSE/stdio transport uses session
@@ -578,9 +545,7 @@ class MCPServerConnector:
 
             logger.debug("MCP tool call completed", server=self.config.name, tool=tool_name)
 
-            # Extract content from result
             if hasattr(result, "content") and result.content and len(result.content) > 0:
-                # Return first content item's text
                 content_item = result.content[0]
                 if hasattr(content_item, "text"):
                     return content_item.text
@@ -603,13 +568,7 @@ class MCPServerConnector:
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        """Exit async context manager - signal disconnect and wait for task.
-
-        Args:
-            exc_type: Exception type if an exception occurred
-            exc_val: Exception value if an exception occurred
-            exc_tb: Exception traceback if an exception occurred
-        """
+        """Signal the background task to disconnect and wait for it to finish."""
         logger.info("Disconnecting from MCP server", server=self.config.name)
 
         # Signal the background task to disconnect
@@ -637,27 +596,75 @@ class MCPServerConnector:
 
 
 class MCPRegistry:
-    """Registry of all configured MCP servers."""
+    """Registry of all configured MCP servers.
+
+    Connects to each server on startup, then optionally freezes (terminates
+    subprocesses, retains tool schema snapshot) for process-lifetime sharing.
+    """
 
     def __init__(self, config: CoreConfig) -> None:
-        """Initialize MCP registry.
-
-        Args:
-            config: Application configuration
-        """
         self.config = config
         self.connectors: dict[str, MCPServerConnector] = {}
+        self._frozen: bool = False
 
         logger.debug("Initialized MCPRegistry")
 
-    async def connect_all(self) -> None:
-        """Connect to all configured MCP servers.
+    @property
+    def frozen(self) -> bool:
+        """True once subprocesses are shut down but the tool snapshot is retained."""
+        return self._frozen
 
-        This method enters the async context for each connector,
-        following the proper async with pattern.
-        Disabled servers (enabled=False) are skipped.
+    # Bounded so a hanging stdio cleanup can't deadlock lifespan startup;
+    # any pending __aexit__ work is cancelled on expiry and subprocesses
+    # may leak (process exit reaps them).
+    FREEZE_TIMEOUT_S = 10.0
+
+    async def freeze(self) -> None:
+        """Terminate stdio subprocesses while preserving each connector's ``tools``.
+
+        After this returns, ``connect_all``/``disconnect_all`` are no-ops, so the
+        instance is safe to share across Sessions. Idempotent.
         """
-        # Filter to only enabled servers
+        if self._frozen:
+            return
+
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(
+                    *[
+                        connector.__aexit__(None, None, None)
+                        for connector in self.connectors.values()
+                    ],
+                    return_exceptions=True,
+                ),
+                timeout=self.FREEZE_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "MCP registry freeze timed out; pending __aexit__ tasks "
+                "cancelled, some stdio subprocesses may be leaked until "
+                "process exit",
+                timeout_s=self.FREEZE_TIMEOUT_S,
+                servers=len(self.connectors),
+            )
+
+        self._frozen = True
+
+        total_tools = sum(len(c.tools) for c in self.connectors.values())
+        logger.info(
+            "MCP registry frozen",
+            servers=len(self.connectors),
+            tools=total_tools,
+        )
+
+    async def connect_all(self) -> None:
+        """Connect to all configured MCP servers. Skips servers with enabled=False.
+
+        No-op when the registry is frozen.
+        """
+        if self._frozen:
+            return
+
         enabled_servers = [s for s in self.config.mcp.servers if s.enabled]
         disabled_count = len(self.config.mcp.servers) - len(enabled_servers)
 
@@ -673,38 +680,43 @@ class MCPRegistry:
             server_count=len(enabled_servers),
         )
 
-        # Create connectors for enabled servers only
         for server_config in enabled_servers:
             connector = MCPServerConnector(server_config)
             self.connectors[server_config.name] = connector
 
-        # Enter all connector contexts in parallel using proper async with pattern
-        # We collect the futures to handle errors properly
+        connector_names = list(self.connectors.keys())
         results = await asyncio.gather(
-            *[connector.__aenter__() for connector in self.connectors.values()],
+            *[self.connectors[name].__aenter__() for name in connector_names],
             return_exceptions=True,
         )
 
-        # Check for connection errors
-        errors = [r for r in results if isinstance(r, Exception)]
-        if errors:
+        # Drop connectors that failed to connect so a frozen snapshot never
+        # contains a server with empty tools. Pre-refactor, a per-workspace
+        # registry would retry on next workspace start; post-refactor, one bad
+        # boot would otherwise degrade the process for its lifetime.
+        failed: list[tuple[str, Exception]] = []
+        for name, result in zip(connector_names, results, strict=True):
+            if isinstance(result, Exception):
+                failed.append((name, result))
+                self.connectors.pop(name, None)
+
+        if failed:
             logger.warning(
-                "Some MCP servers failed to connect",
-                error_count=len(errors),
-                errors=[str(e) for e in errors],
+                "Some MCP servers failed to connect; dropped from registry",
+                error_count=len(failed),
+                failed_servers=[name for name, _ in failed],
+                errors=[str(exc) for _, exc in failed],
             )
 
         logger.debug("MCP servers connected", servers=list(self.connectors.keys()))
 
     async def disconnect_all(self) -> None:
-        """Disconnect from all MCP servers.
+        """Exit all connector contexts in parallel. No-op when frozen."""
+        if self._frozen:
+            return
 
-        This method exits the async context for each connector,
-        ensuring proper cleanup in reverse order.
-        """
         logger.info("Disconnecting from all MCP servers")
 
-        # Exit all connector contexts in parallel
         await asyncio.gather(
             *[
                 connector.__aexit__(None, None, None)
@@ -715,12 +727,27 @@ class MCPRegistry:
 
         self.connectors.clear()
 
-    def get_all_tools(self) -> dict[str, list[MCPToolInfo]]:
-        """Get all tools organized by server.
+    async def _force_disconnect_all(self) -> None:
+        """Tear down every connector regardless of ``_frozen`` state.
 
-        Returns:
-            Dictionary mapping server names to lists of tools
+        For lifespan-startup error rollback, where a partially-frozen registry
+        could otherwise leak its already-spawned subprocesses past the failure
+        point. Do not call from normal Session paths — use ``disconnect_all``.
         """
+        if not self.connectors:
+            return
+
+        await asyncio.gather(
+            *[
+                connector.__aexit__(None, None, None)
+                for connector in self.connectors.values()
+            ],
+            return_exceptions=True,
+        )
+        self.connectors.clear()
+
+    def get_all_tools(self) -> dict[str, list[MCPToolInfo]]:
+        """Return tools grouped by server name."""
         tools_by_server = {}
 
         for server_name, connector in self.connectors.items():
@@ -764,6 +791,11 @@ class MCPRegistry:
         Returns:
             Tool result
         """
+        if self._frozen:
+            raise RuntimeError(
+                "call_tool unsupported on frozen MCPRegistry; "
+                "route MCP calls via the sandbox-side cohort."
+            )
         connector = self.connectors.get(server_name)
         if not connector:
             msg = f"Server not found: {server_name}"
@@ -784,3 +816,37 @@ class MCPRegistry:
     ) -> None:
         """Async context manager exit."""
         await self.disconnect_all()
+
+
+# Process-global frozen registry installed at server lifespan startup
+# (see src/server/app/setup.py). Sessions borrow this snapshot; when None,
+# Session falls back to creating a per-instance registry (tests, standalone).
+#
+# TODO(option-c): eliminate the backend cohort by having the sandbox emit its
+# own tool schemas at boot via a one-shot ``--describe`` mode.
+_GLOBAL_REGISTRY: MCPRegistry | None = None
+
+
+def get_global_registry() -> MCPRegistry | None:
+    """Return the process-global frozen registry, or None if not installed."""
+    return _GLOBAL_REGISTRY
+
+
+def set_global_registry(registry: MCPRegistry) -> None:
+    """Install the process-global registry. The registry must be frozen so
+    Sessions borrowing it can rely on the snapshot invariant (no live stdio
+    subprocesses, schemas are immutable for the process lifetime).
+    """
+    if not registry.frozen:
+        raise ValueError(
+            "Global MCP registry must be frozen before installing; call "
+            "registry.freeze() first."
+        )
+    global _GLOBAL_REGISTRY
+    _GLOBAL_REGISTRY = registry
+
+
+def clear_global_registry() -> None:
+    """Drop the process-global registry reference."""
+    global _GLOBAL_REGISTRY
+    _GLOBAL_REGISTRY = None
