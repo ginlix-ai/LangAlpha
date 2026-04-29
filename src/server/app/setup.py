@@ -199,6 +199,43 @@ async def lifespan(app: FastAPI):
         agent_config.validate_api_keys()
         logger.info("PTC Agent configuration loaded successfully")
 
+        # Connect once, freeze, install as the process-global registry so every
+        # Session borrows the same tool snapshot instead of spawning its own
+        # MCP cohort. Failures here are non-fatal: Sessions fall back to a
+        # per-instance registry.
+        from ptc_agent.core.mcp_registry import (
+            MCPRegistry,
+            set_global_registry,
+        )
+
+        mcp_registry = None
+        try:
+            core_config = agent_config.to_core_config()
+            mcp_registry = MCPRegistry(core_config)
+            await mcp_registry.connect_all()
+            await mcp_registry.freeze()
+            set_global_registry(mcp_registry)
+            logger.info(
+                "Global MCP registry frozen at startup (servers=%d)",
+                len(mcp_registry.connectors),
+            )
+        except Exception as exc:
+            # Tear down any subprocesses connect_all already spawned, regardless
+            # of how far freeze() got. ``disconnect_all`` short-circuits when
+            # _frozen=True, so use the force variant here to avoid leaks if the
+            # exception fired between freeze setting _frozen and the install.
+            if mcp_registry is not None:
+                try:
+                    await mcp_registry._force_disconnect_all()
+                except Exception:
+                    pass
+            logger.warning(
+                "Failed to install global MCP registry "
+                "(error_type=%s); sessions will fall back to per-instance "
+                "registries.",
+                type(exc).__name__,
+            )
+
         # Initialize generic one-shot LLM call wrapper. Constructed once so
         # every server-side utility LLM call (memo metadata, thread titles,
         # follow-up suggestions, etc.) shares a single BYOK/OAuth-aware entry
@@ -384,6 +421,15 @@ async def lifespan(app: FastAPI):
             logger.info("PTC Session Service shutdown complete")
         except Exception as e:
             logger.warning(f"Error during PTC Session Service shutdown: {e}")
+
+    # 4.5. Drop the global MCP registry reference (frozen snapshot — no
+    # subprocesses to terminate). Hygiene only.
+    try:
+        from ptc_agent.core.mcp_registry import clear_global_registry
+
+        clear_global_registry()
+    except Exception as e:
+        logger.debug(f"Error clearing global MCP registry: {e}")
 
     # 5. Close PTC Agent checkpointer pool
     if checkpointer is not None:
