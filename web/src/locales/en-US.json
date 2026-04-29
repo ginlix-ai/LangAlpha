@@ -1730,8 +1730,6 @@
       "memo_other": "read {{count}} memos",
       "memoWrite": "wrote {{count}} memo",
       "memoWrite_other": "wrote {{count}} memos",
-      "failed": "{{count}} failed",
-      "failed_other": "{{count}} failed",
       "code": "executed {{count}} code block",
       "code_other": "executed {{count}} code blocks",
       "web": "made {{count}} web call",
