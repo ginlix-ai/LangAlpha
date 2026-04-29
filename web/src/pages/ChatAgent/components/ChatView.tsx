@@ -874,19 +874,43 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
 
   // Per-subagent telemetry resolver consumed by MessageList. Maps a message
   // segment's `subagentId` (a toolCallId) through `resolveSubagentIdToAgentId`
-  // and reads tool count + token usage off the matching card. Keeping the
-  // resolution in this closure means MessageList never touches the cards or
-  // the toolCallId map directly.
+  // and reads tool count + token usage off the matching card. Falls back to
+  // the history entry on a fresh load — cards are created lazily on click,
+  // so without this fallback the inline row would stay hidden after refresh
+  // until the user clicks into the subagent. Keeping the resolution in this
+  // closure means MessageList never touches the cards or the toolCallId map
+  // directly.
   const resolveSubagentTelemetry = useCallback((subagentId: string) => {
-    const agentId = resolveSubagentIdToAgentId(subagentId);
-    const card = cards[`subagent-${agentId}`];
+    const card = cards[`subagent-${resolveSubagentIdToAgentId(subagentId)}`];
     const sd = card?.subagentData as Record<string, unknown> | undefined;
+    const sdMessages = sd?.messages as SubagentMessage[] | undefined;
+    const sdTokenUsage = sd?.tokenUsage as SubagentTokenUsage | undefined;
+
+    // Card path: prefer live state, but only when it has actually been
+    // populated. A click-created card with empty messages should still
+    // pull from history below.
+    if (sd && (sdMessages?.length || (sdTokenUsage?.total ?? 0) > 0)) {
+      return {
+        toolCalls: countToolCalls(sdMessages),
+        tokenUsage: sdTokenUsage ?? ZERO_USAGE,
+      };
+    }
+
+    // History fallback: post-refresh path before the user opens the card.
+    const history = getSubagentHistory?.(subagentId);
+    if (history) {
+      return {
+        toolCalls: history.toolCalls ?? countToolCalls(history.messages as SubagentMessage[] | undefined),
+        tokenUsage: (history.tokenUsage as SubagentTokenUsage | undefined) ?? ZERO_USAGE,
+      };
+    }
+
     if (!sd) return undefined;
     return {
-      toolCalls: countToolCalls(sd.messages as SubagentMessage[] | undefined),
-      tokenUsage: (sd.tokenUsage as SubagentTokenUsage | undefined) ?? ZERO_USAGE,
+      toolCalls: countToolCalls(sdMessages),
+      tokenUsage: sdTokenUsage ?? ZERO_USAGE,
     };
-  }, [cards, resolveSubagentIdToAgentId]);
+  }, [cards, resolveSubagentIdToAgentId, getSubagentHistory]);
 
   // Auto-hide excess agents (beyond 11 subagents)
   const excessIds = useMemo(() => excessSubagents.map(a => a.id).join(','), [excessSubagents]);

@@ -200,6 +200,7 @@ class SubagentEventCaptureMiddleware(AgentMiddleware):
                                 "ts": time.time(),
                             },
                         )
+
             except Exception as e:
                 # Never break the agent for capture failures, but leave a
                 # breadcrumb so capture regressions are debuggable.

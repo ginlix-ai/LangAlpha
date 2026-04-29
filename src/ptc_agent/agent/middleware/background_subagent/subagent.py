@@ -161,6 +161,26 @@ class _SubagentTokenForwarder:
 
         self._last_msg_id = msg_id
 
+    async def forward_custom(self, data: Any) -> None:
+        """Forward a ``custom``-mode event from inside the subagent's astream
+        into the per-task captured-event buffer.
+
+        Compaction middleware emits ``context_window`` events (token_usage,
+        summarize, offload) via ``get_stream_writer``. Without ``custom`` in
+        the subagent's ``stream_mode``, those would die at the astream
+        boundary. We tag with the stable ``task:{task_id}`` agent_id so the
+        per-task SSE consumer and frontend can route the event.
+        """
+        if not isinstance(data, dict):
+            return
+        event_type = data.get("type") or "custom"
+        payload = {k: v for k, v in data.items() if k != "type"}
+        payload["agent"] = self.agent_id
+        await self.registry.append_captured_event(
+            self.tool_call_id,
+            {"event": event_type, "data": payload, "ts": time.time()},
+        )
+
     async def finalize(self) -> None:
         """Close any still-open reasoning lifecycle and signal stream-end.
 
@@ -399,16 +419,16 @@ def _create_task_tool(
         state: dict,
         config: dict,
     ) -> dict:
-        """Drive the subagent through ``astream`` with combined ``values`` and
-        ``messages`` modes; return the final state.
+        """Drive the subagent through ``astream`` with combined ``values``,
+        ``messages``, and ``custom`` modes; return the final state.
 
         ``values`` mode yields full state snapshots; the last one is the
         tool's return value. ``messages`` mode yields per-token
         ``AIMessageChunk`` deltas forwarded to the registry as
-        ``message_chunk`` records for per-task SSE granularity.
-
-        ``stream_mode=["values", "messages"]`` yields ``(mode, data)`` tuples;
-        ``messages`` data is ``(message_chunk, metadata)``.
+        ``message_chunk`` records for per-task SSE granularity. ``custom``
+        mode surfaces ``get_stream_writer()`` events emitted from inside the
+        subagent (e.g. compaction's ``context_window`` token_usage / summarize
+        / offload signals) which would otherwise die at the astream boundary.
         """
         last_state: dict | None = None
         forwarder: _SubagentTokenForwarder | None = None
@@ -426,7 +446,7 @@ def _create_task_tool(
 
         try:
             async for mode, data in subagent.astream(
-                state, config, stream_mode=["values", "messages"]
+                state, config, stream_mode=["values", "messages", "custom"]
             ):
                 if mode == "values":
                     last_state = data
@@ -455,6 +475,14 @@ def _create_task_tool(
                                 "Subagent token forwarding failed",
                                 error=str(exc),
                             )
+                elif mode == "custom" and forwarder is not None:
+                    try:
+                        await forwarder.forward_custom(data)
+                    except Exception as exc:
+                        logger.debug(
+                            "Subagent custom-event forwarding failed",
+                            error=str(exc),
+                        )
         finally:
             if forwarder is not None:
                 try:
