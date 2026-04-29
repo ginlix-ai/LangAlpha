@@ -28,6 +28,18 @@ from data_client.fmp import get_fmp_client, fmp_lifespan
 mcp = FastMCP("FundamentalsMCP", lifespan=fmp_lifespan)
 
 
+def _add_quarterly_empty_note(result: dict, period: str) -> None:
+    count = result.get("count")
+    is_empty = count == 0 or (
+        isinstance(count, dict) and all(value == 0 for value in count.values())
+    )
+    if period == "quarter" and is_empty:
+        result["note"] = (
+            "Quarterly data returned 0 records. Some FMP subscription tiers do "
+            "not include quarterly fundamentals. Try period='annual'."
+        )
+
+
 @mcp.tool()
 async def get_financial_statements(
     symbol: str,
@@ -106,6 +118,8 @@ async def get_financial_statements(
                 "cash_flow": len(cash_flow) if cash_flow else 0,
             }
 
+        _add_quarterly_empty_note(result, period)
+
         return result
 
     except Exception as e:  # noqa: BLE001
@@ -132,6 +146,9 @@ async def get_financial_ratios(
 
     Returns:
         Raw JSON with key metrics and financial ratios per period
+
+    Note: historical depth is approximately 2 years on standard FMP subscription
+    tiers; older data may not be returned.
     """
     try:
         client = await get_fmp_client()
@@ -146,7 +163,7 @@ async def get_financial_ratios(
             symbol, period=period, limit=limit
         )
 
-        return {
+        result = {
             "symbol": symbol,
             "data_type": "financial_ratios",
             "period": period,
@@ -160,6 +177,9 @@ async def get_financial_ratios(
             },
             "source": "fmp",
         }
+        _add_quarterly_empty_note(result, period)
+
+        return result
 
     except Exception as e:  # noqa: BLE001
         return {"error": str(e), "symbol": symbol}
@@ -185,6 +205,9 @@ async def get_growth_metrics(
 
     Returns:
         Raw JSON with growth rates per period
+
+    Note: historical depth is approximately 2 years on standard FMP subscription
+    tiers; older data may not be returned.
     """
     try:
         client = await get_fmp_client()
@@ -199,7 +222,7 @@ async def get_growth_metrics(
             symbol, period=period, limit=limit
         )
 
-        return {
+        result = {
             "symbol": symbol,
             "data_type": "growth_metrics",
             "period": period,
@@ -213,6 +236,9 @@ async def get_growth_metrics(
             },
             "source": "fmp",
         }
+        _add_quarterly_empty_note(result, period)
+
+        return result
 
     except Exception as e:  # noqa: BLE001
         return {"error": str(e), "symbol": symbol}
