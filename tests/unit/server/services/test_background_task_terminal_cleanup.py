@@ -150,6 +150,19 @@ class TestMarkCompletedReleases:
         assert info.metadata["workspace_id"] == "ws-1"
 
 
+def _patch_tracker():
+    """Replace WorkflowTracker singleton with a mock that records mark_* calls.
+
+    AsyncMock auto-specs async attributes on access, so the mark_* methods
+    don't need explicit assignment — calls + asserts work either way.
+    """
+    mock_tracker = AsyncMock()
+    return patch(
+        "src.server.services.background_task_manager.WorkflowTracker.get_instance",
+        return_value=mock_tracker,
+    ), mock_tracker
+
+
 class TestMarkFailedReleases:
 
     @pytest.mark.asyncio
@@ -159,12 +172,17 @@ class TestMarkFailedReleases:
         info.metadata["workspace_id"] = None  # Skip persistence body
         btm.tasks["t-1"] = info
 
-        with patch("src.server.services.background_task_manager.release_burst_slot", new=AsyncMock()):
+        tracker_patch, mock_tracker = _patch_tracker()
+        with patch("src.server.services.background_task_manager.release_burst_slot", new=AsyncMock()), \
+             tracker_patch:
             await btm._mark_failed("t-1", "boom")
 
         assert info.persistence_complete.is_set()
         assert info.graph is None
         assert info.metadata["user_id"] == "u-1"
+        # Wiring: tracker.mark_failed called so /status reports FAILED with
+        # bounded TTL instead of leaving the key as ACTIVE/DISCONNECTED.
+        mock_tracker.mark_failed.assert_awaited_once_with("t-1", error="boom")
 
 
 class TestMarkCancelledReleases:
@@ -176,12 +194,17 @@ class TestMarkCancelledReleases:
         info.metadata["workspace_id"] = None  # Skip persistence body
         btm.tasks["t-1"] = info
 
-        with patch("src.server.services.background_task_manager.release_burst_slot", new=AsyncMock()):
+        tracker_patch, mock_tracker = _patch_tracker()
+        with patch("src.server.services.background_task_manager.release_burst_slot", new=AsyncMock()), \
+             tracker_patch:
             await btm._mark_cancelled("t-1")
 
         assert info.persistence_complete.is_set()
         assert info.graph is None
         assert info.metadata["dispatch_kind"] == "foreground"
+        # Wiring: tracker.mark_cancelled called from the canonical site so
+        # stale-cancel reaper / soft-interrupt-abort paths also update Redis.
+        mock_tracker.mark_cancelled.assert_awaited_once_with("t-1")
 
 
 class TestMarkSoftInterruptedReleases:
@@ -193,11 +216,14 @@ class TestMarkSoftInterruptedReleases:
         info.metadata["workspace_id"] = None  # Skip persistence body
         btm.tasks["t-1"] = info
 
-        with patch("src.server.services.background_task_manager.release_burst_slot", new=AsyncMock()):
+        tracker_patch, mock_tracker = _patch_tracker()
+        with patch("src.server.services.background_task_manager.release_burst_slot", new=AsyncMock()), \
+             tracker_patch:
             await btm._mark_soft_interrupted("t-1")
 
         assert info.persistence_complete.is_set()
         assert info.graph is None
+        mock_tracker.mark_soft_interrupted.assert_awaited_once_with("t-1")
 
 
 # ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@ Manages workflow execution state in Redis to support background execution
 and reconnection after client disconnect.
 
 Key Features:
-- Track workflow status (active/disconnected/completed/cancelled)
+- Track workflow status (active/disconnected/completed/cancelled/failed/soft_interrupted)
 - Detect explicit user cancellation vs accidental disconnect
 - TTL-based cleanup of completed workflows
 - Graceful degradation if Redis unavailable
@@ -30,7 +30,31 @@ class WorkflowStatus(str, Enum):
     COMPLETED = "completed"
     INTERRUPTED = "interrupted"
     CANCELLED = "cancelled"
+    FAILED = "failed"
+    SOFT_INTERRUPTED = "soft_interrupted"
     UNKNOWN = "unknown"
+
+
+# Terminal states — no further transitions, ``can_reconnect`` returns False.
+# Adding a new terminal state requires wiring it into
+# ``BackgroundTaskManager``'s corresponding ``_mark_*`` method so Postgres +
+# Redis stay in sync. ``test_terminal_disjoint_from_reconnectable`` pins the
+# invariant against ``RECONNECTABLE_STATUSES``.
+TERMINAL_STATUSES: frozenset[WorkflowStatus] = frozenset({
+    WorkflowStatus.COMPLETED,
+    WorkflowStatus.CANCELLED,
+    WorkflowStatus.FAILED,
+    WorkflowStatus.SOFT_INTERRUPTED,
+})
+
+
+# Statuses for which a client may reconnect to a live SSE stream. Source of
+# truth for ``workflow_handler.get_workflow_status``'s ``can_reconnect``
+# decision; must stay disjoint with ``TERMINAL_STATUSES``.
+RECONNECTABLE_STATUSES: frozenset[WorkflowStatus] = frozenset({
+    WorkflowStatus.ACTIVE,
+    WorkflowStatus.DISCONNECTED,
+})
 
 
 class WorkflowTracker:
@@ -317,6 +341,59 @@ class WorkflowTracker:
         if success:
             logger.info(
                 f"[WorkflowTracker] Marked workflow as cancelled: {thread_id}"
+            )
+
+        return success
+
+    async def mark_failed(
+        self,
+        thread_id: str,
+        error: Optional[str] = None,
+    ) -> bool:
+        """Mark workflow as failed (uncaught exception or unrecoverable error).
+
+        Mirrors mark_completed/mark_cancelled — bounded TTL so /status correctly
+        reports a terminal state instead of leaving the key as ACTIVE until
+        natural Redis expiry.
+        """
+        if not self.enabled:
+            return False
+
+        success = await self._update_status_with_metadata(
+            thread_id=thread_id,
+            new_status=WorkflowStatus.FAILED,
+            timestamp_field="failed_at",
+            metadata={"error": error} if error else None,
+            ttl=get_redis_ttl_workflow_status(),
+        )
+
+        if success:
+            logger.info(
+                f"[WorkflowTracker] Marked workflow as failed: {thread_id}"
+            )
+
+        return success
+
+    async def mark_soft_interrupted(self, thread_id: str) -> bool:
+        """Mark workflow as soft-interrupted (main agent paused, subagents can still complete).
+
+        Distinct from INTERRUPTED (HITL pause, indefinite TTL): SOFT_INTERRUPTED
+        is a terminal-for-the-turn state with bounded TTL.
+        """
+        if not self.enabled:
+            return False
+
+        success = await self._update_status_with_metadata(
+            thread_id=thread_id,
+            new_status=WorkflowStatus.SOFT_INTERRUPTED,
+            timestamp_field="soft_interrupted_at",
+            metadata=None,
+            ttl=get_redis_ttl_workflow_status(),
+        )
+
+        if success:
+            logger.info(
+                f"[WorkflowTracker] Marked workflow as soft-interrupted: {thread_id}"
             )
 
         return success

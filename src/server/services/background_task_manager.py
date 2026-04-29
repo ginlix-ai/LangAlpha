@@ -67,6 +67,7 @@ from src.config.settings import (
 )
 from src.utils.cache.redis_cache import get_cache_client
 from src.server.dependencies.usage_limits import release_burst_slot
+from src.server.services.workflow_tracker import WorkflowTracker
 from src.server.utils.persistence_utils import (
     get_token_usage_from_callback,
     get_tool_usage_from_handler,
@@ -1449,7 +1450,6 @@ class BackgroundTaskManager:
 
                     # Update Redis workflow tracker to interrupted
                     # (prevents frontend from reconnecting to a paused workflow)
-                    from src.server.services.workflow_tracker import WorkflowTracker
                     tracker = WorkflowTracker.get_instance()
                     await tracker.mark_interrupted(
                         thread_id=thread_id,
@@ -1638,6 +1638,17 @@ class BackgroundTaskManager:
         if user_id:
             await release_burst_slot(user_id)
 
+        # Push terminal status to Redis so /status reports FAILED with bounded
+        # TTL instead of leaving the key as ACTIVE/DISCONNECTED until natural
+        # expiry. Mirrors mark_completed/mark_cancelled.
+        try:
+            tracker = WorkflowTracker.get_instance()
+            await tracker.mark_failed(thread_id, error=error)
+        except Exception as tracker_err:
+            logger.warning(
+                f"[BackgroundTaskManager] tracker.mark_failed failed for {thread_id}: {tracker_err}"
+            )
+
         async with self.task_lock:
             task_info = self.tasks.get(thread_id)
             if task_info:
@@ -1755,6 +1766,15 @@ class BackgroundTaskManager:
         # Release burst slot for soft interrupt path
         if user_id:
             await release_burst_slot(user_id)
+
+        # Push terminal status to Redis (bounded TTL).
+        try:
+            tracker = WorkflowTracker.get_instance()
+            await tracker.mark_soft_interrupted(thread_id)
+        except Exception as tracker_err:
+            logger.warning(
+                f"[BackgroundTaskManager] tracker.mark_soft_interrupted failed for {thread_id}: {tracker_err}"
+            )
 
         async with self.task_lock:
             task_info = self.tasks.get(thread_id)
@@ -2149,6 +2169,19 @@ class BackgroundTaskManager:
         # Release burst slot for cancellation path
         if user_id:
             await release_burst_slot(user_id)
+
+        # Push terminal status to Redis from the single canonical site so
+        # every cancel path (cancel endpoint, stale-cancel reaper, soft-
+        # interrupt-abort) updates Redis — not just the explicit-cancel
+        # branch in chat/_common.py:_handle_sse_disconnect that already
+        # calls tracker.mark_cancelled directly.
+        try:
+            tracker = WorkflowTracker.get_instance()
+            await tracker.mark_cancelled(thread_id)
+        except Exception as tracker_err:
+            logger.warning(
+                f"[BackgroundTaskManager] tracker.mark_cancelled failed for {thread_id}: {tracker_err}"
+            )
 
         async with self.task_lock:
             task_info = self.tasks.get(thread_id)

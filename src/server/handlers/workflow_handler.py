@@ -168,7 +168,11 @@ async def get_workflow_status(thread_id: str) -> dict:
         Dict with current status, reconnectability, and progress info
     """
     try:
-        from src.server.services.workflow_tracker import WorkflowTracker, WorkflowStatus
+        from src.server.services.workflow_tracker import (
+            RECONNECTABLE_STATUSES,
+            WorkflowStatus,
+            WorkflowTracker,
+        )
 
         tracker = WorkflowTracker.get_instance()
 
@@ -216,7 +220,7 @@ async def get_workflow_status(thread_id: str) -> dict:
             user_id = None
 
         # Determine if reconnection is possible
-        can_reconnect = status in [WorkflowStatus.ACTIVE, WorkflowStatus.DISCONNECTED]
+        can_reconnect = status in RECONNECTABLE_STATUSES
 
         # Get subagent info from background task manager
         active_tasks = []
