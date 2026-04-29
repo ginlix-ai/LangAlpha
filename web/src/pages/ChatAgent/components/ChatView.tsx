@@ -17,6 +17,8 @@ import { clampPanelWidth as clampPanelWidthUtil } from '@/lib/panelUtils';
 import { useCardState } from '../hooks/useCardState';
 import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
 import { classifyAgentPath, computeAgentArtifactRouting, type MemoryTier } from '../utils/agentPaths';
+import { countToolCalls } from '../utils/subagentMetrics';
+import { type SubagentTokenUsage, ZERO_USAGE } from '../utils/tokenUsage';
 import { getCompletedRowTitle } from './toolDisplayConfig';
 import './FilePanel.css';
 import ChatInput, { type ChatInputHandle } from '../../../components/ui/chat-input';
@@ -112,6 +114,7 @@ interface AgentInfo {
   type: string;
   status: string;
   toolCalls: number;
+  tokenUsage: SubagentTokenUsage;
   currentTool: string;
   messages: SubagentMessage[];
   isActive: boolean;
@@ -129,7 +132,6 @@ interface SubagentUpdateData {
   isHistory: boolean;
   isActive: boolean;
   status?: string;
-  toolCalls?: number;
   currentTool?: string;
   messages?: SubagentMessage[];
   [key: string]: unknown;
@@ -211,6 +213,7 @@ const MAIN_AGENT: AgentInfo = {
   type: 'main',
   status: 'active',
   toolCalls: 0,
+  tokenUsage: ZERO_USAGE,
   currentTool: '',
   messages: [],
   isActive: true,
@@ -853,7 +856,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
           prompt: (sd?.prompt as string) || '',
           type: (sd?.type as string) || 'general-purpose',
           status: (sd?.status as string) || 'active',
-          toolCalls: (sd?.toolCalls as number) || 0,
+          toolCalls: countToolCalls(sd?.messages as SubagentMessage[] | undefined),
+          tokenUsage: (sd?.tokenUsage as SubagentTokenUsage | undefined) ?? ZERO_USAGE,
           currentTool: (sd?.currentTool as string) || '',
           messages: (sd?.messages as SubagentMessage[]) || [],
           isActive: sd?.isActive !== false,
@@ -867,6 +871,22 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       excessSubagents: visible.slice(maxSubagents),
     };
   }, [cards, hiddenAgentIds, t]);
+
+  // Per-subagent telemetry resolver consumed by MessageList. Maps a message
+  // segment's `subagentId` (a toolCallId) through `resolveSubagentIdToAgentId`
+  // and reads tool count + token usage off the matching card. Keeping the
+  // resolution in this closure means MessageList never touches the cards or
+  // the toolCallId map directly.
+  const resolveSubagentTelemetry = useCallback((subagentId: string) => {
+    const agentId = resolveSubagentIdToAgentId(subagentId);
+    const card = cards[`subagent-${agentId}`];
+    const sd = card?.subagentData as Record<string, unknown> | undefined;
+    if (!sd) return undefined;
+    return {
+      toolCalls: countToolCalls(sd.messages as SubagentMessage[] | undefined),
+      tokenUsage: (sd.tokenUsage as SubagentTokenUsage | undefined) ?? ZERO_USAGE,
+    };
+  }, [cards, resolveSubagentIdToAgentId]);
 
   // Auto-hide excess agents (beyond 11 subagents)
   const excessIds = useMemo(() => excessSubagents.map(a => a.id).join(','), [excessSubagents]);
@@ -1402,11 +1422,10 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       isActive: !history,
     };
     if (isLive) {
-      // Card is actively streaming — preserve its current status, toolCalls, and currentTool.
+      // Card is actively streaming — preserve its current status and currentTool.
       // Overwriting these causes a brief "completed" flash in the SubagentStatusBar.
     } else {
       updateData.status = finalStatus;
-      updateData.toolCalls = 0;
       updateData.currentTool = '';
     }
     if (history) {
@@ -2058,6 +2077,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                           handleSendMessage(`/self-improve ${instruction}`);
                         }}
                         onWidgetSendPrompt={handleSendMessage}
+                        resolveSubagentTelemetry={resolveSubagentTelemetry}
                       />
                     </div>
                   </div>
@@ -2106,6 +2126,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                             hideAvatar={true}
                             onOpenFile={handleOpenFileFromChat}
                             onToolCallDetailClick={handleToolCallDetailClick}
+                            resolveSubagentTelemetry={resolveSubagentTelemetry}
                           />
                         </div>
                       )}

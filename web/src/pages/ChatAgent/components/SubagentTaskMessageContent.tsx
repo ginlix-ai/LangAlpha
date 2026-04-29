@@ -2,6 +2,8 @@ import React from 'react';
 import { Check, Loader2, ArrowRight, RotateCw, RefreshCw } from 'lucide-react';
 import iconRobo from '../../../assets/img/icon-robo.png';
 import iconRoboSing from '../../../assets/img/icon-robo-sing.png';
+import { compactNumber } from '@/lib/format';
+import { type SubagentTokenUsage } from '../utils/tokenUsage';
 import './NavigationPanel.css';
 
 /**
@@ -45,6 +47,10 @@ interface SubagentTaskMessageContentProps {
   onOpen?: (info: SubagentInfo) => void;
   onDetailOpen?: (process: ToolCallProcess) => void;
   toolCallProcess?: ToolCallProcess;
+  /** Live tool-call count for this subagent — derived from card state at the call site. */
+  toolCalls?: number;
+  /** Live cumulative token usage for this subagent — derived from card state at the call site. */
+  tokenUsage?: SubagentTokenUsage;
 }
 
 /**
@@ -64,6 +70,8 @@ function SubagentTaskMessageContent({
   onOpen,
   onDetailOpen,
   toolCallProcess,
+  toolCalls = 0,
+  tokenUsage,
 }: SubagentTaskMessageContentProps): React.ReactElement | null {
   if (!subagentId && !description) {
     return null;
@@ -147,6 +155,28 @@ function SubagentTaskMessageContent({
           {action === 'update' ? 'Updated' : action === 'resume' ? 'Resumed' : isRunning ? 'Running' : isCompleted ? 'Completed' : status}
         </span>
       </div>
+      {/* Telemetry row: live tool-call count + cumulative token total. Hidden
+          when both are zero so freshly-spawned cards stay visually quiet. */}
+      {(toolCalls > 0 || (tokenUsage?.total ?? 0) > 0) && (
+        <div
+          data-testid="subagent-telemetry"
+          style={{
+            marginTop: 6,
+            display: 'flex',
+            gap: 10,
+            fontSize: 11,
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+            color: 'var(--color-text-tertiary)',
+          }}
+        >
+          {toolCalls > 0 && <span>{toolCalls} {toolCalls === 1 ? 'tool' : 'tools'}</span>}
+          {(tokenUsage?.total ?? 0) > 0 && (
+            <span title={`${tokenUsage!.input} in · ${tokenUsage!.output} out`}>
+              {toolCalls > 0 ? '· ' : ''}{compactNumber(tokenUsage!.total)} tokens
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }

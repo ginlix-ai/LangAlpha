@@ -60,3 +60,8 @@ export function createDateFormatter(opts: Intl.DateTimeFormatOptions): (d: Date 
     return fmt.format(d);
   };
 }
+
+// Compact short-form integer formatter — `1234 → "1.2K"`, `5_142 → "5.1K"`,
+// `1_500_000 → "1.5M"`. Locale-aware via Intl. Numbers under 1000 render in
+// full; suffix style follows the active locale (en `K`, zh `万`, etc).
+export const compactNumber = createFormatter({ notation: 'compact', maximumFractionDigits: 1 });

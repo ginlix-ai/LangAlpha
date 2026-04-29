@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import i18n from '@/i18n';
-import { createFormatter, createDateFormatter } from '@/lib/format';
+import { createFormatter, createDateFormatter, compactNumber } from '@/lib/format';
 
 describe('createFormatter', () => {
   beforeEach(() => {
@@ -50,6 +50,25 @@ describe('createDateFormatter', () => {
     i18n.changeLanguage('zh-CN');
     const zh = fmt(new Date('2026-04-25T00:00:00Z'));
     expect(en).not.toBe(zh);
+  });
+});
+
+describe('compactNumber', () => {
+  beforeEach(() => {
+    i18n.changeLanguage('en-US');
+  });
+
+  it('renders sub-thousand values verbatim (no suffix)', () => {
+    expect(compactNumber(0)).toBe('0');
+    expect(compactNumber(7)).toBe('7');
+    expect(compactNumber(999)).toBe('999');
+  });
+
+  it('compacts 4-digit-and-up values with locale suffix', () => {
+    expect(compactNumber(1000)).toMatch(/^1K$/);
+    expect(compactNumber(1234)).toMatch(/^1\.2K$/);
+    expect(compactNumber(5142)).toMatch(/^5\.1K$/);
+    expect(compactNumber(1_500_000)).toMatch(/^1\.5M$/);
   });
 });
 
