@@ -5,7 +5,7 @@ Manages workflow execution state in Redis to support background execution
 and reconnection after client disconnect.
 
 Key Features:
-- Track workflow status (active/disconnected/completed/cancelled)
+- Track workflow status (active/disconnected/completed/cancelled/failed/soft_interrupted)
 - Detect explicit user cancellation vs accidental disconnect
 - TTL-based cleanup of completed workflows
 - Graceful degradation if Redis unavailable
@@ -49,7 +49,7 @@ TERMINAL_STATUSES: frozenset[WorkflowStatus] = frozenset({
 
 
 # Statuses for which a client may reconnect to a live SSE stream. Source of
-# truth for ``workflow_handler.check_workflow_status``'s ``can_reconnect``
+# truth for ``workflow_handler.get_workflow_status``'s ``can_reconnect``
 # decision; must stay disjoint with ``TERMINAL_STATUSES``.
 RECONNECTABLE_STATUSES: frozenset[WorkflowStatus] = frozenset({
     WorkflowStatus.ACTIVE,
@@ -355,13 +355,6 @@ class WorkflowTracker:
         Mirrors mark_completed/mark_cancelled — bounded TTL so /status correctly
         reports a terminal state instead of leaving the key as ACTIVE until
         natural Redis expiry.
-
-        Args:
-            thread_id: Thread/workflow identifier
-            error: Optional error message stored in metadata
-
-        Returns:
-            True if successfully marked, False otherwise
         """
         if not self.enabled:
             return False
@@ -386,12 +379,6 @@ class WorkflowTracker:
 
         Distinct from INTERRUPTED (HITL pause, indefinite TTL): SOFT_INTERRUPTED
         is a terminal-for-the-turn state with bounded TTL.
-
-        Args:
-            thread_id: Thread/workflow identifier
-
-        Returns:
-            True if successfully marked, False otherwise
         """
         if not self.enabled:
             return False
