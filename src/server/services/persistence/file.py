@@ -87,11 +87,10 @@ def _detect_is_binary(file_path: str, content: bytes) -> bool:
     """Detect whether file content is binary."""
     if _is_binary_extension(file_path):
         return True
-    sample = content[:8192]
-    if b"\x00" in sample:
+    if b"\x00" in content[:65536]:
         return True
     try:
-        sample.decode("utf-8")
+        content[:8192].decode("utf-8")
         return False
     except UnicodeDecodeError:
         return True
