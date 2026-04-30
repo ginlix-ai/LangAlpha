@@ -16,6 +16,7 @@ from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
 
 from src.config.settings import get_conversation_pool_max
+from src.server.utils.pg_sanitize import SafeJson, strip_pg_nul_str
 
 logger = logging.getLogger(__name__)
 
@@ -802,6 +803,11 @@ async def create_query(
     if created_at is None:
         created_at = datetime.now(timezone.utc)
 
+    # Sanitize user-typed input — `content` is a TEXT column, `metadata` is JSONB.
+    # User can paste anything (binary copy/paste, terminal escapes), so adversarial
+    # NUL bytes are realistic here. Strip once so all code paths below see clean data.
+    content = strip_pg_nul_str(content)
+
     try:
         if conn:
             # Reuse provided connection
@@ -831,7 +837,7 @@ async def create_query(
                             content,
                             query_type,
                             feedback_action,
-                            Json(metadata or {}),
+                            SafeJson(metadata or {}),
                             created_at,
                         ),
                     )
@@ -854,7 +860,7 @@ async def create_query(
                             content,
                             query_type,
                             feedback_action,
-                            Json(metadata or {}),
+                            SafeJson(metadata or {}),
                             created_at,
                         ),
                     )
@@ -892,7 +898,7 @@ async def create_query(
                                 content,
                                 query_type,
                                 feedback_action,
-                                Json(metadata or {}),
+                                SafeJson(metadata or {}),
                                 created_at,
                             ),
                         )
@@ -915,7 +921,7 @@ async def create_query(
                                 content,
                                 query_type,
                                 feedback_action,
-                                Json(metadata or {}),
+                                SafeJson(metadata or {}),
                                 created_at,
                             ),
                         )
@@ -1059,12 +1065,12 @@ async def create_response(
                             turn_index,
                             status,
                             interrupt_reason,
-                            Json(metadata or {}),
+                            SafeJson(metadata or {}),
                             warnings or [],
                             errors or [],
                             execution_time,
                             created_at,
-                            Json(sse_events) if sse_events else None,
+                            SafeJson(sse_events) if sse_events else None,
                         ),
                     )
                 else:
@@ -1089,12 +1095,12 @@ async def create_response(
                             turn_index,
                             status,
                             interrupt_reason,
-                            Json(metadata or {}),
+                            SafeJson(metadata or {}),
                             warnings or [],
                             errors or [],
                             execution_time,
                             created_at,
-                            Json(sse_events) if sse_events else None,
+                            SafeJson(sse_events) if sse_events else None,
                         ),
                     )
                 result = await cur.fetchone()
@@ -1137,12 +1143,12 @@ async def create_response(
                                 turn_index,
                                 status,
                                 interrupt_reason,
-                                Json(metadata or {}),
+                                SafeJson(metadata or {}),
                                 warnings or [],
                                 errors or [],
                                 execution_time,
                                 created_at,
-                                Json(sse_events) if sse_events else None,
+                                SafeJson(sse_events) if sse_events else None,
                             ),
                         )
                     else:
@@ -1167,12 +1173,12 @@ async def create_response(
                                 turn_index,
                                 status,
                                 interrupt_reason,
-                                Json(metadata or {}),
+                                SafeJson(metadata or {}),
                                 warnings or [],
                                 errors or [],
                                 execution_time,
                                 created_at,
-                                Json(sse_events) if sse_events else None,
+                                SafeJson(sse_events) if sse_events else None,
                             ),
                         )
                     result = await cur.fetchone()
@@ -1214,7 +1220,7 @@ async def update_sse_events(
                     SET sse_events = %s
                     WHERE conversation_response_id = %s
                     """,
-                    (Json(sse_events), conversation_response_id),
+                    (SafeJson(sse_events), conversation_response_id),
                 )
                 updated = cur.rowcount > 0
         else:
@@ -1226,7 +1232,7 @@ async def update_sse_events(
                         SET sse_events = %s
                         WHERE conversation_response_id = %s
                         """,
-                        (Json(sse_events), conversation_response_id),
+                        (SafeJson(sse_events), conversation_response_id),
                     )
                     updated = cur.rowcount > 0
 

@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from psycopg.rows import dict_row
 
 from src.server.database.conversation import get_db_connection
+from src.server.utils.pg_sanitize import strip_pg_nul_str
 
 logger = logging.getLogger(__name__)
 
@@ -66,18 +67,22 @@ async def bulk_upsert_files(
             updated_at = NOW()
     """
 
+    # Strip NUL bytes from any string bound to a TEXT/VARCHAR column. Sandbox
+    # files (and the find listings that name them) can carry `\x00` which
+    # Postgres rejects with `cannot contain NUL`, killing the whole 50-row
+    # transaction. content_binary is BYTEA and accepts NUL fine.
     params_list = [
         (
             workspace_id,
-            f["file_path"],
-            f["file_name"],
+            strip_pg_nul_str(f["file_path"]),
+            strip_pg_nul_str(f["file_name"]),
             f["file_size"],
             f.get("content_hash"),
-            f.get("content_text"),
+            strip_pg_nul_str(f.get("content_text")),
             f.get("content_binary"),
-            f.get("mime_type"),
+            strip_pg_nul_str(f.get("mime_type")),
             f.get("is_binary", False),
-            f.get("permissions"),
+            strip_pg_nul_str(f.get("permissions")),
             f.get("sandbox_modified_at"),
         )
         for f in files
