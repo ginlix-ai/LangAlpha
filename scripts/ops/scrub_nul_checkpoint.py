@@ -46,9 +46,7 @@ def _strip_nul(value: Any) -> tuple[Any, int]:
             return value.replace("\x00", ""), 1
         return value, 0
     if isinstance(value, bytes):
-        if b"\x00" in value:
-            # Bytes are legal — leave them alone. They never bind to TEXT.
-            return value, 0
+        # Bytes are legal — they never bind to TEXT.
         return value, 0
     if isinstance(value, dict):
         out: dict = {}

@@ -91,6 +91,14 @@ class TestNulStripping:
     def test_multiple_nuls_all_stripped(self, mw):
         assert mw._normalize_result("\x00a\x00b\x00c\x00") == "abc"
 
+    def test_literal_unicode_escape_in_string_preserved(self, mw, caplog):
+        # On the string-passthrough path, the six-char sequence `\u0000` is
+        # just text — Postgres TEXT accepts it. Stripping would mangle docs
+        # or LLM output that explains Unicode escapes literally.
+        text = "the unicode escape \\u0000 represents NUL"
+        assert mw._normalize_result(text) == text
+        assert not any("Stripped NUL" in r.message for r in caplog.records)
+
 
 # ---------------------------------------------------------------------------
 # wrap_tool_call / awrap_tool_call — integration with ToolMessage

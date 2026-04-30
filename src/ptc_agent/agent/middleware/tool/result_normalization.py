@@ -40,37 +40,34 @@ class ToolResultNormalizationMiddleware(AgentMiddleware):
         Returns:
             Normalized string representation with NUL bytes stripped.
         """
-        # Already a string - pass through
+        # Track whether `s` came from json.dumps so the `\u0000` escape check
+        # only runs on serialized output. On the string-passthrough path the
+        # literal six-char sequence `\u0000` is just text and Postgres TEXT
+        # accepts it fine — stripping it there would mangle docs/LLM output
+        # that happens to mention the escape.
+        from_dumps = False
+
         if isinstance(result, str):
             s = result
-
-        # None - return empty JSON array
         elif result is None:
             s = json.dumps([])
-
-        # Lists and dicts - convert to JSON string
         elif isinstance(result, (list, dict)):
             try:
                 s = json.dumps(result, ensure_ascii=False)
+                from_dumps = True
             except (TypeError, ValueError) as e:
                 logger.warning(f"Failed to JSON serialize tool result: {e}, falling back to str()")
                 s = str(result)
-
-        # Other types - convert to string
         else:
             s = str(result)
 
         # Strip NUL bytes so the result is safe to persist to PG TEXT/JSONB.
-        # Two forms to catch:
-        #   - Literal `\x00` byte (string-passthrough path: tool returned a str
-        #     with embedded NUL, e.g. sandbox stdout).
-        #   - JSON unicode-escape sequence (dict/list path: json.dumps always
-        #     escapes control chars regardless of ensure_ascii — so a NUL
-        #     inside a dict value re-emerges as a six-char escape here).
-        # Both `in` checks are C-level and short-circuit the no-op case
-        # without allocating a new string.
+        # Raw `\x00` is the only form that reaches a TEXT bind; the `\u0000`
+        # escape is what json.dumps emits for an embedded NUL, which JSONB
+        # then rejects. Both `in` checks are C-level so the clean path costs
+        # one scan and no allocation.
         has_raw = "\x00" in s
-        has_esc = "\\u0000" in s
+        has_esc = from_dumps and "\\u0000" in s
         if has_raw or has_esc:
             logger.warning("Stripped NUL bytes from tool result")
             if has_raw:
