@@ -214,31 +214,29 @@ async def patched_get_db_connection(test_db_pool):
         async with test_db_pool.connection() as conn:
             yield conn
 
-    with patch(
+    # Every module that does a module-level `from .conversation import
+    # get_db_connection` holds its own local reference, so each one needs
+    # its own patch target. Modules that import lazily inside a function
+    # (market_insight, services.workspace_manager) automatically pick up
+    # the source patch on conversation.get_db_connection.
+    targets = [
         "src.server.database.conversation.get_db_connection",
-        _test_get_db_connection,
-    ):
-        # Also patch the re-export in every database module that imports it
-        with patch(
-            "src.server.database.workspace.get_db_connection",
-            _test_get_db_connection,
-        ), patch(
-            "src.server.database.user.get_db_connection",
-            _test_get_db_connection,
-        ), patch(
-            "src.server.database.watchlist.get_db_connection",
-            _test_get_db_connection,
-        ), patch(
-            "src.server.database.portfolio.get_db_connection",
-            _test_get_db_connection,
-        ), patch(
-            "src.server.database.api_keys.get_db_connection",
-            _test_get_db_connection,
-        ), patch(
-            "src.server.database.automation.get_db_connection",
-            _test_get_db_connection,
-        ):
-            yield _test_get_db_connection
+        "src.server.database.workspace.get_db_connection",
+        "src.server.database.workspace_file.get_db_connection",
+        "src.server.database.user.get_db_connection",
+        "src.server.database.watchlist.get_db_connection",
+        "src.server.database.portfolio.get_db_connection",
+        "src.server.database.api_keys.get_db_connection",
+        "src.server.database.automation.get_db_connection",
+        "src.server.database.oauth_tokens.get_db_connection",
+        "src.server.database.vault_secrets.get_db_connection",
+    ]
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        for target in targets:
+            stack.enter_context(patch(target, _test_get_db_connection))
+        yield _test_get_db_connection
 
 
 @pytest.fixture
