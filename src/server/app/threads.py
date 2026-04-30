@@ -484,6 +484,7 @@ async def _handle_send_message(
             mode=agent_mode,
             reasoning_effort=getattr(request, "reasoning_effort", None),
             fast_mode=getattr(request, "fast_mode", None),
+            thread_id=thread_id,
         )
 
         # is_byok reflects whether THIS request actually uses a user-provided key

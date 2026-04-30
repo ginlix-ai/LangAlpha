@@ -1261,6 +1261,7 @@
       "access_type": "api_key",
       "byok_eligible": true,
       "use_response_api": true,
+      "prompt_cache_key": true,
       "display_name": "OpenAI",
       "variants": {
         "codex-oauth": {

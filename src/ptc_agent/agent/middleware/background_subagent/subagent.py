@@ -172,6 +172,10 @@ def _get_subagents(
     # Use empty list if None (no default middleware)
     default_subagent_middleware = default_middleware or []
 
+    # Per-name suffix on ``prompt_cache_key`` so each subagent type lands on
+    # its own cache shard. No-op for models without the key set.
+    from src.llms.llm import narrow_prompt_cache_key
+
     agents: dict[str, Any] = {}
     subagent_descriptions = []
 
@@ -183,7 +187,7 @@ def _get_subagents(
                 HumanInTheLoopMiddleware(interrupt_on=default_interrupt_on)
             )
         general_purpose_subagent = create_agent(
-            default_model,
+            narrow_prompt_cache_key(default_model, "general-purpose"),
             system_prompt=DEFAULT_SUBAGENT_PROMPT,
             tools=default_tools,
             middleware=general_purpose_middleware,
@@ -217,7 +221,7 @@ def _get_subagents(
             _middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
         agents[agent_["name"]] = create_agent(
-            subagent_model,
+            narrow_prompt_cache_key(subagent_model, agent_["name"]),
             system_prompt=agent_["system_prompt"],
             tools=_tools,
             middleware=_middleware,

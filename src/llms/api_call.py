@@ -36,13 +36,19 @@ def maybe_disable_streaming(model: object) -> None:
     share the instance across requests MUST deep-copy first (see
     ``workflow_handler.py::compact`` and ``fetch.py::_extract_with_llm``
     for the reference pattern).
+
+    The ``RunnableBindingBase`` unwrap is defensive — keeps the Codex guard
+    and streaming flip working even if a caller wraps via ``bind()``.
     """
+    from langchain_core.runnables.base import RunnableBindingBase
     from src.llms.extension.codex import ChatCodexOpenAI
 
-    if isinstance(model, ChatCodexOpenAI):
+    target = model.bound if isinstance(model, RunnableBindingBase) else model
+
+    if isinstance(target, ChatCodexOpenAI):
         return
-    if hasattr(model, "streaming"):
-        model.streaming = False
+    if hasattr(target, "streaming"):
+        target.streaming = False
 
 
 async def make_api_call(

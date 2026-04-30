@@ -651,7 +651,7 @@ class PTCAgent:
             if compaction_client:
                 compaction_config["_llm_client"] = compaction_client
             elif self.config.llm_client:
-                # Deep-copy so CompactionMiddleware.from_config() can set
+                # Copy so CompactionMiddleware.from_config() can set
                 # streaming=False without mutating the main agent's model.
                 compaction_config["_llm_client"] = self.config.llm_client.model_copy()
         elif self.config.llm_client:

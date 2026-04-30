@@ -494,6 +494,7 @@ async def trigger_compaction(
                     request_model=None,
                     is_byok=is_byok,
                     mode="ptc",
+                    thread_id=thread_id,
                 )
             except HTTPException:
                 # 402 insufficient credits, 403 revoked key, etc. are intentional
@@ -516,7 +517,7 @@ async def trigger_compaction(
         model_name = (agent_cfg.llm.compaction or "") if agent_cfg and agent_cfg.llm else ""
 
         # Mirror PTCAgent.create_agent client priority: subsidiary → main → factory.
-        # Deep-copy before handing the client to compact_messages — it calls
+        # Copy before handing the client to compact_messages — it calls
         # maybe_disable_streaming (src/llms/api_call.py) which sets
         # streaming=False in-place. Without the copy, the fallback path
         # (agent_cfg == setup.agent_config) would permanently mutate the

@@ -242,6 +242,7 @@ async def resolve_byok_llm_client(
     is_byok: bool,
     reasoning_effort: str | None = None,
     _pref_cache: dict | None = None,
+    cache_key: str | None = None,
 ):
     """
     If BYOK is active, build an LLM client for ``model_name``. Returns None
@@ -297,6 +298,7 @@ async def resolve_byok_llm_client(
             custom_config,
             api_key=byok_config["api_key"],
             base_url=base_url,
+            cache_key=cache_key,
         )
 
     # Unknown name — last-chance check for a custom-provider slug. Covers the
@@ -321,6 +323,7 @@ async def resolve_byok_llm_client(
             custom_config,
             api_key=byok_config["api_key"],
             base_url=base_url,
+            cache_key=cache_key,
         )
 
     # System model — BYOK key lives under the parent provider.
@@ -342,6 +345,7 @@ async def resolve_byok_llm_client(
         api_key=byok_config["api_key"],
         base_url=base_url,
         reasoning_effort=reasoning_effort,
+        cache_key=cache_key,
     )
 
 
@@ -350,6 +354,7 @@ async def resolve_oauth_llm_client(
     model_name: str,
     reasoning_effort: str | None = None,
     service_tier: str | None = None,
+    cache_key: str | None = None,
 ):
     """Resolve OAuth-connected LLM client. Independent of BYOK toggle."""
     from src.llms.llm import LLM as LLMFactory, create_llm
@@ -406,6 +411,7 @@ async def resolve_oauth_llm_client(
         api_key=access_token,
         default_headers=headers if headers else None,
         reasoning_effort=reasoning_effort,
+        cache_key=cache_key,
         **({"service_tier": service_tier} if service_tier and provider != "claude-oauth" else {}),
     )
 
@@ -491,6 +497,7 @@ async def resolve_llm_config(
     mode: str = "ptc",
     reasoning_effort: str | None = None,
     fast_mode: bool | None = None,
+    thread_id: str | None = None,
 ):
     """
     Resolve final LLM config with priority:
@@ -653,6 +660,7 @@ async def resolve_llm_config(
     oauth_client = await resolve_oauth_llm_client(
         user_id, effective_model, effective_reasoning,
         service_tier=effective_service_tier,
+        cache_key=thread_id,
     )
     if oauth_client:
         if config is base_config:
@@ -663,6 +671,7 @@ async def resolve_llm_config(
         byok_client = await resolve_byok_llm_client(
             user_id, effective_model, is_byok, effective_reasoning,
             _pref_cache=model_pref,
+            cache_key=thread_id,
         )
         if byok_client:
             if config is base_config:
@@ -680,11 +689,20 @@ async def resolve_llm_config(
         if config is base_config:
             config = config.model_copy(deep=True)
         config.llm_client = create_llm(
-            effective_model, reasoning_effort=effective_reasoning
+            effective_model,
+            reasoning_effort=effective_reasoning,
+            cache_key=thread_id,
         )
         logger.debug(
             f"[CHAT] Applied reasoning_effort={effective_reasoning} to {effective_model}"
         )
+
+    # Stash on config so the lazy ``AgentConfig.get_llm_client()`` path forwards
+    # it to ``create_llm`` when no OAuth/BYOK/reasoning branch pre-built the client.
+    if thread_id and config.cache_key != thread_id:
+        if config is base_config:
+            config = config.model_copy(deep=True)
+        config.cache_key = thread_id
 
     # Resolve OAuth/BYOK for subsidiary + fallback models in parallel.
     # Each model tries OAuth first, then BYOK if OAuth fails.
@@ -702,11 +720,14 @@ async def resolve_llm_config(
             source, _ = await classify_model(
                 user_id, model_name, _pref_cache=model_pref,
             )
-            client = await resolve_oauth_llm_client(user_id, model_name)
+            client = await resolve_oauth_llm_client(
+                user_id, model_name, cache_key=thread_id,
+            )
             if not client and is_byok:
                 client = await resolve_byok_llm_client(
                     user_id, model_name, is_byok,
                     _pref_cache=model_pref,
+                    cache_key=thread_id,
                 )
             return client, source
         except Exception:
@@ -772,7 +793,7 @@ async def resolve_llm_config(
                 )
                 continue
             try:
-                merged_fallbacks.append(_create_llm(model_name))
+                merged_fallbacks.append(_create_llm(model_name, cache_key=thread_id))
             except Exception:
                 logger.warning("[CHAT] Failed to create platform fallback for %s, skipping", model_name)
 

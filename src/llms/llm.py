@@ -289,6 +289,10 @@ class LLM:
         # Store response API flags for OpenAI SDK
         self.use_response_api = self.provider_info.get("use_response_api", False) if self.sdk in ("openai", "codex") else False
         self.use_previous_response_id = self.provider_info.get("use_previous_response_id", False) if self.sdk == "openai" else False
+        # prompt_cache_key: opt-in for sdk="openai"; codex applies it always-on.
+        self.prompt_cache_key_enabled = (
+            bool(self.provider_info.get("prompt_cache_key", False)) if self.sdk == "openai" else False
+        )
 
         # Optional default headers from provider config, with model-level beta merging
         self.default_headers = self.provider_info.get("default_headers")
@@ -309,6 +313,7 @@ class LLM:
         config: dict,
         api_key: str | None = None,
         base_url_override=_UNSET,
+        cache_key: str | None = None,
         **override_params,
     ):
         """
@@ -321,6 +326,8 @@ class LLM:
             config: Dict with keys: model_id, provider, and optional parameters/extra_body.
             api_key: Optional API key override (e.g. from BYOK).
             base_url_override: Override base URL. _UNSET = no override.
+            cache_key: Session-stable key sent as ``prompt_cache_key`` on
+                OpenAI/Codex requests (always-on for Codex; opt-in for OpenAI).
             **override_params: Additional parameters to override defaults.
 
         Returns:
@@ -362,9 +369,14 @@ class LLM:
             if instance.sdk == "openai"
             else False
         )
+        instance.prompt_cache_key_enabled = (
+            bool(instance.provider_info.get("prompt_cache_key", False))
+            if instance.sdk == "openai"
+            else False
+        )
         instance.default_headers = instance.provider_info.get("default_headers")
         instance._merge_additional_betas(config.get("additional_betas"))
-        return instance.get_llm()
+        return instance.get_llm(cache_key=cache_key)
 
     def _resolve_billing_type(self) -> str:
         """Determine billing type based on how this LLM was constructed.
@@ -380,21 +392,25 @@ class LLM:
             return "byok"
         return "platform"
 
-    def get_llm(self):
-        """
-        Initializes and returns a LangChain LLM client for the configured provider.
+    def get_llm(self, cache_key: str | None = None):
+        """Build the LangChain LLM client for the configured provider.
 
-        Returns:
-            A LangChain chat model instance with billing_type metadata attached.
-
-        Raises:
-            ValueError: If required API keys are not set or provider is unsupported.
+        ``cache_key`` becomes ``prompt_cache_key`` on OpenAI/Codex requests via
+        ``model_kwargs`` (not ``bind()``) so it survives ``bind_tools()`` and
+        ``with_structured_output()``. Codex always applies the key; regular
+        OpenAI applies it only when the provider opts in via providers.json.
         """
-        # Use the resolved SDK (already determined in __init__)
+        effective_cache_key: str | None = None
+        if cache_key and (
+            self.sdk == "codex"
+            or (self.sdk == "openai" and self.prompt_cache_key_enabled)
+        ):
+            effective_cache_key = str(cache_key)
+
         if self.sdk == "openai":
-            client = self._get_openai_llm()
+            client = self._get_openai_llm(cache_key=effective_cache_key)
         elif self.sdk == "codex":
-            client = self._get_codex_llm()
+            client = self._get_codex_llm(cache_key=effective_cache_key)
         elif self.sdk == "deepseek":
             client = self._get_deepseek_llm()
         elif self.sdk == "qwq":
@@ -440,7 +456,7 @@ class LLM:
             url = url.replace("{HOST_IP}", HOST_IP)
         return {param_name: url}
 
-    def _get_openai_llm(self):
+    def _get_openai_llm(self, cache_key: str | None = None):
         """Get OpenAI or OpenAI-compatible LLM."""
         params = {
             "model": self.model,
@@ -469,9 +485,14 @@ class LLM:
         if self.extra_body:
             params["extra_body"] = self.extra_body
 
+        # model_kwargs (not bind) so the key survives bind_tools / with_structured_output.
+        if cache_key:
+            existing_mk = params.get("model_kwargs") or {}
+            params["model_kwargs"] = {**existing_mk, "prompt_cache_key": cache_key}
+
         return ChatOpenAI(**params)
 
-    def _get_codex_llm(self):
+    def _get_codex_llm(self, cache_key: str | None = None):
         """Get Codex OAuth LLM (store=false, stateless)."""
         from src.llms.extension import ChatCodexOpenAI
 
@@ -495,6 +516,10 @@ class LLM:
 
         if self.extra_body:
             params["extra_body"] = self.extra_body
+
+        if cache_key:
+            existing_mk = params.get("model_kwargs") or {}
+            params["model_kwargs"] = {**existing_mk, "prompt_cache_key": cache_key}
 
         return ChatCodexOpenAI(**params)
 
@@ -607,6 +632,7 @@ def create_llm(
     default_headers: dict | None = None,
     base_url=_UNSET,
     reasoning_effort: str | None = None,
+    cache_key: str | None = None,
     **kwargs,
 ):
     """
@@ -619,6 +645,8 @@ def create_llm(
             (e.g. ChatGPT-Account-Id for Codex OAuth)
         base_url: Override base URL. None = SDK default, str = custom URL.
         reasoning_effort: Optional reasoning effort level ("low", "medium", "high").
+        cache_key: Session-stable key sent as ``prompt_cache_key`` on
+            OpenAI/Codex requests (always-on for Codex; opt-in for OpenAI).
         **kwargs: Additional parameters to override
 
     Returns:
@@ -634,13 +662,14 @@ def create_llm(
     if default_headers:
         existing = instance.default_headers or {}
         instance.default_headers = {**existing, **default_headers}
-    return instance.get_llm()
+    return instance.get_llm(cache_key=cache_key)
 
 
 def create_llm_from_custom(
     config: dict,
     api_key: str | None = None,
     base_url=_UNSET,
+    cache_key: str | None = None,
     **kwargs,
 ):
     """
@@ -650,12 +679,36 @@ def create_llm_from_custom(
         config: Dict with model_id, provider, and optional parameters/extra_body.
         api_key: Optional API key override (e.g. from BYOK).
         base_url: Override base URL. _UNSET = no override, None = SDK default.
+        cache_key: Session-stable key sent as ``prompt_cache_key`` on
+            OpenAI/Codex requests (always-on for Codex; opt-in for OpenAI).
         **kwargs: Additional parameters to override.
 
     Returns:
         A LangChain chat model instance.
     """
-    return LLM.from_custom_config(config, api_key=api_key, base_url_override=base_url, **kwargs)
+    return LLM.from_custom_config(
+        config, api_key=api_key, base_url_override=base_url, cache_key=cache_key, **kwargs
+    )
+
+
+def narrow_prompt_cache_key(model: Any, suffix: str) -> Any:
+    """Return a copy of ``model`` with ``:suffix`` appended to its ``prompt_cache_key``.
+
+    Used to namespace parallel sub-tasks (subagent fanout, compaction) onto
+    separate OpenAI cache shards — OpenAI rate-limits at ~15 RPM per
+    (prefix + ``prompt_cache_key``) bucket. No-op when the model has no
+    ``prompt_cache_key`` set or ``suffix`` is empty.
+    """
+    if not suffix:
+        return model
+    if not isinstance(model, BaseChatModel):
+        return model
+    mk = getattr(model, "model_kwargs", None) or {}
+    parent_key = mk.get("prompt_cache_key")
+    if not parent_key:
+        return model
+    new_mk = {**mk, "prompt_cache_key": f"{parent_key}:{suffix}"}
+    return model.model_copy(update={"model_kwargs": new_mk})
 
 
 def get_llm_by_type(llm_type: str) -> BaseChatModel:

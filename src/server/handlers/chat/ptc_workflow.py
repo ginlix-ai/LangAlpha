@@ -335,6 +335,7 @@ async def astream_ptc_workflow(
                 setup.agent_config, user_id, request.llm_model, is_byok, mode="ptc",
                 reasoning_effort=getattr(request, "reasoning_effort", None),
                 fast_mode=getattr(request, "fast_mode", None),
+                thread_id=thread_id,
             )
 
         # Propagate fetch model override to tool context

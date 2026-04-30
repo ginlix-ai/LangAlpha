@@ -55,3 +55,33 @@ def test_object_without_streaming_attr_is_noop():
     maybe_disable_streaming(llm)
 
     assert not hasattr(llm, "streaming")
+
+
+def test_bound_codex_streaming_preserved():
+    """Defensive: if any caller wraps codex in a ``RunnableBinding`` via
+    ``bind(...)``, the isinstance guard must still unwrap so streaming stays
+    True (Codex proxy returns HTTP 400 otherwise). Production wires
+    ``prompt_cache_key`` through ``model_kwargs`` instead, so the model is
+    normally a plain ChatCodexOpenAI."""
+    llm = _make_codex()
+    bound = llm.bind(prompt_cache_key="thread-abc-123")
+    assert llm.streaming is True
+
+    maybe_disable_streaming(bound)
+
+    assert llm.streaming is True
+
+
+def test_bound_plain_llm_streaming_disabled():
+    """For non-codex models, the binding wrapper must not block the
+    ``streaming=False`` flip on the underlying model."""
+    from langchain_core.runnables.base import RunnableBindingBase
+
+    llm = _PlainLLM(streaming=True)
+    bound = RunnableBindingBase.model_construct(
+        bound=llm, kwargs={"prompt_cache_key": "x"}
+    )
+
+    maybe_disable_streaming(bound)
+
+    assert llm.streaming is False

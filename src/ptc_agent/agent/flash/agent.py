@@ -90,7 +90,7 @@ class FlashAgent:
                 # because the name is a typo. Raise a neutral error instead of
                 # the generic factory one.
                 ensure_model_in_manifest(config.llm.flash)
-                self.llm = create_llm(config.llm.flash)
+                self.llm = create_llm(config.llm.flash, cache_key=config.cache_key)
             model = config.llm.flash
             provider = "llm_config"
         else:
@@ -246,7 +246,7 @@ class FlashAgent:
             if compaction_client:
                 compaction_config["_llm_client"] = compaction_client
             elif self.config.llm_client:
-                # Deep-copy so CompactionMiddleware.from_config() can set
+                # Copy so CompactionMiddleware.from_config() can set
                 # streaming=False without mutating the main agent's model.
                 compaction_config["_llm_client"] = self.config.llm_client.model_copy()
         compaction = CompactionMiddleware.from_config(config=compaction_config, backend=None)
