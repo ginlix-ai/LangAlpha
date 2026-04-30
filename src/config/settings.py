@@ -401,6 +401,15 @@ def is_subagent_event_redis_spill_enabled() -> bool:
     return get_infrastructure_config().background_execution.spill_subagent_events_to_redis
 
 
+def is_use_redis_stream_sse_enabled() -> bool:
+    """Return True when ``USE_REDIS_STREAM_SSE`` env var is set.
+
+    Routes both first-connect and reconnect SSE through the XREAD BLOCK
+    consumer (``workflow:stream:*`` / ``subagent:stream:*``). Default: False.
+    """
+    return os.getenv("USE_REDIS_STREAM_SSE", "false").lower() in ("true", "1", "yes")
+
+
 def get_sse_drain_timeout() -> float:
     """Get seconds to wait for per-task SSE drain before clearing events."""
     return get_infrastructure_config().background_execution.sse_drain_timeout

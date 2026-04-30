@@ -20,7 +20,7 @@ import asyncio
 import hmac
 import os
 
-from fastapi import APIRouter, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.server.utils.api import (
@@ -601,14 +601,23 @@ async def reconnect_to_stream(
     thread_id: str,
     x_user_id: CurrentUserId,
     last_event_id: Optional[int] = Query(None, description="Last received event ID"),
+    last_event_id_header: Optional[str] = Header(None, alias="Last-Event-ID"),
 ):
     """
     Reconnect to a running or completed workflow's SSE stream.
 
     Replays buffered events, then attaches to live stream if still running.
+    Accepts the cursor as either ``?last_event_id=N`` (existing) or the
+    SSE-spec ``Last-Event-ID`` HTTP header (preferred when present).
     """
     await require_thread_owner(thread_id, x_user_id)
     from src.server.handlers.chat import reconnect_to_workflow_stream
+
+    if last_event_id is None and last_event_id_header is not None:
+        try:
+            last_event_id = int(last_event_id_header)
+        except ValueError:
+            pass  # Invalid header → fall through, treated as no resume.
 
     async def stream_reconnection():
         try:
@@ -923,10 +932,21 @@ async def stream_subagent_task(
     last_event_id: Optional[int] = Query(
         None, description="Last received event ID for reconnect"
     ),
+    last_event_id_header: Optional[str] = Header(None, alias="Last-Event-ID"),
 ):
-    """Stream a single subagent's content events (message_chunk, tool_calls, etc.)."""
+    """Stream a single subagent's content events (message_chunk, tool_calls, etc.).
+
+    Accepts the cursor as either ``?last_event_id=N`` or the SSE-spec
+    ``Last-Event-ID`` HTTP header.
+    """
     await require_thread_owner(thread_id, x_user_id)
     from src.server.handlers.chat import stream_subagent_task_events
+
+    if last_event_id is None and last_event_id_header is not None:
+        try:
+            last_event_id = int(last_event_id_header)
+        except ValueError:
+            pass
 
     return StreamingResponse(
         stream_subagent_task_events(thread_id, task_id, last_event_id),
