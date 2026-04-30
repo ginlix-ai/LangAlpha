@@ -270,6 +270,9 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                     await cache.delete(
                         f"subagent:events:meta:{self.registry.thread_id}:{task.task_id}"
                     )
+                    await cache.delete(
+                        f"subagent:stream:{self.registry.thread_id}:{task.task_id}"
+                    )
             except Exception:
                 logger.warning(
                     "Failed to clear Redis spool on resume; replay may include stale events",

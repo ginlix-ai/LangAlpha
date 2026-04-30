@@ -137,6 +137,11 @@ async def test_redis_spill_called_for_every_event(monkeypatch) -> None:
         for call in fake_cache.pipelined_event_buffer.await_args_list
     }
     assert meta_keys == {f"subagent:events:meta:thread-x:{task.task_id}"}
+    stream_keys = {
+        call.kwargs["stream_key"]
+        for call in fake_cache.pipelined_event_buffer.await_args_list
+    }
+    assert stream_keys == {f"subagent:stream:thread-x:{task.task_id}"}
     assert not task.redis_write_failed
 
 

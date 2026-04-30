@@ -525,6 +525,7 @@ class BackgroundTaskRegistry:
         # deploy boundary. New runs write fresh records.
         events_key = f"subagent:events:{self.thread_id}:{task.task_id}"
         meta_key = f"subagent:events:meta:{self.thread_id}:{task.task_id}"
+        stream_key = f"subagent:stream:{self.thread_id}:{task.task_id}"
 
         try:
             payload = json.dumps(record, ensure_ascii=False, default=str)
@@ -564,6 +565,7 @@ class BackgroundTaskRegistry:
                         max_size=get_max_stored_messages_per_agent(),
                         ttl=get_redis_ttl_workflow_events(),
                         last_event_id=record.get("seq"),
+                        stream_key=stream_key,
                     ),
                     timeout=_SPILL_TIMEOUT_SECONDS,
                 )

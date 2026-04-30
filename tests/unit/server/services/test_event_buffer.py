@@ -69,6 +69,7 @@ class TestBufferEventRedisHappyPath:
         call = mock_cache.pipelined_event_buffer.await_args
         assert call.kwargs["events_key"] == "workflow:events:thread-1"
         assert call.kwargs["meta_key"] == "workflow:events:meta:thread-1"
+        assert call.kwargs["stream_key"] == "workflow:stream:thread-1"
         assert call.kwargs["last_event_id"] == 42
         assert call.kwargs["max_size"] == 1000
         assert call.kwargs["ttl"] == 86400
