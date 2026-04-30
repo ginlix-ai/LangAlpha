@@ -120,44 +120,6 @@ class TestNonOpenAIProvidersUnaffected:
         assert calls == [{}]
 
 
-class TestProviderFlagExtraction:
-    """``LLM._extract_provider_info`` must read the flag only for sdk == 'openai'.
-    For codex and other SDKs the attribute should default to False."""
-
-    def test_codex_provider_flag_defaults_false(self):
-        llm = LLM.__new__(LLM)
-        llm.sdk = "codex"
-        llm.provider_info = {"prompt_cache_key": True}
-        llm.prompt_cache_key_enabled = (
-            bool(llm.provider_info.get("prompt_cache_key", False))
-            if llm.sdk == "openai"
-            else False
-        )
-        assert llm.prompt_cache_key_enabled is False
-
-    def test_openai_provider_flag_true(self):
-        llm = LLM.__new__(LLM)
-        llm.sdk = "openai"
-        llm.provider_info = {"prompt_cache_key": True}
-        llm.prompt_cache_key_enabled = (
-            bool(llm.provider_info.get("prompt_cache_key", False))
-            if llm.sdk == "openai"
-            else False
-        )
-        assert llm.prompt_cache_key_enabled is True
-
-    def test_openai_provider_flag_absent_defaults_false(self):
-        llm = LLM.__new__(LLM)
-        llm.sdk = "openai"
-        llm.provider_info = {}
-        llm.prompt_cache_key_enabled = (
-            bool(llm.provider_info.get("prompt_cache_key", False))
-            if llm.sdk == "openai"
-            else False
-        )
-        assert llm.prompt_cache_key_enabled is False
-
-
 class TestModelKwargsInjection:
     """End-to-end: building a real ChatOpenAI / ChatCodexOpenAI through the
     factory should land ``prompt_cache_key`` in ``model_kwargs`` and survive

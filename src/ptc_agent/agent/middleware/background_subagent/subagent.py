@@ -25,6 +25,7 @@ from ptc_agent.agent.middleware.background_subagent.middleware import (
 )
 from ptc_agent.agent.middleware.background_subagent.registry import BackgroundTaskRegistry
 from ptc_agent.agent.middleware._utils import append_to_system_message
+from src.llms.llm import narrow_prompt_cache_key
 
 logger = structlog.get_logger(__name__)
 
@@ -171,10 +172,6 @@ def _get_subagents(
     """
     # Use empty list if None (no default middleware)
     default_subagent_middleware = default_middleware or []
-
-    # Per-name suffix on ``prompt_cache_key`` so each subagent type lands on
-    # its own cache shard. No-op for models without the key set.
-    from src.llms.llm import narrow_prompt_cache_key
 
     agents: dict[str, Any] = {}
     subagent_descriptions = []
