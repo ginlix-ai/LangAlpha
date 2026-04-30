@@ -493,6 +493,32 @@ class TestBYOKResolution:
             )
         mock_resolve.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_default_platform_path_stashes_cache_key(self, base_config):
+        """Regression: the default platform path (no OAuth, no BYOK, no
+        reasoning) must stash ``thread_id`` on ``config.cache_key`` so the
+        lazy ``AgentConfig.get_llm_client()`` can pass it through to
+        ``create_llm(cache_key=...)``. Without this, the most common chat
+        path silently drops ``prompt_cache_key``."""
+        from src.server.handlers.chat.llm_config import resolve_llm_config
+
+        mock_mc = _mock_model_config()
+        with (
+            patch(f"{HANDLER}.get_model_preference", new_callable=AsyncMock, return_value={}),
+            patch(f"{HANDLER}.resolve_oauth_llm_client", new_callable=AsyncMock, return_value=None),
+            patch(f"{HANDLER}.resolve_byok_llm_client", new_callable=AsyncMock, return_value=None),
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        ):
+            config = await resolve_llm_config(
+                base_config,
+                "user-1",
+                None,
+                False,
+                thread_id="thread-platform-path",
+            )
+        assert config.llm_client is None  # lazy build via get_llm_client()
+        assert config.cache_key == "thread-platform-path"
+
 
 # ---------------------------------------------------------------------------
 # OAuth path

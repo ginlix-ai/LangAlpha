@@ -249,8 +249,10 @@ async def test_manual_compact_forwards_subsidiary_oauth_client(base_config):
     )
 
     oauth_client = MagicMock(name="oauth-codex-client")
+    resolve_kwargs: dict = {}
 
-    async def _resolve_stub(base_cfg, user_id, request_model, is_byok, mode="ptc"):
+    async def _resolve_stub(base_cfg, user_id, request_model, is_byok, mode="ptc", **kwargs):
+        resolve_kwargs.update(kwargs)
         cfg = base_cfg.model_copy(deep=True)
         cfg.llm.compaction = "user-compaction-model"
         cfg.subsidiary_llm_clients["compaction"] = oauth_client
@@ -283,6 +285,9 @@ async def test_manual_compact_forwards_subsidiary_oauth_client(base_config):
         "compaction client so compact_messages doesn't rebuild a bare "
         "system-auth client."
     )
+    # thread_id must reach resolve_llm_config so prompt_cache_key binds to the
+    # session shard when running on an OpenAI-family compaction model.
+    assert resolve_kwargs.get("thread_id") == "thread-1"
 
 
 @pytest.mark.asyncio
@@ -306,8 +311,10 @@ async def test_manual_compact_falls_back_to_main_llm_client(base_config):
     )
 
     main_client = MagicMock(name="main-byok-client")
+    resolve_kwargs: dict = {}
 
-    async def _resolve_stub(base_cfg, user_id, request_model, is_byok, mode="ptc"):
+    async def _resolve_stub(base_cfg, user_id, request_model, is_byok, mode="ptc", **kwargs):
+        resolve_kwargs.update(kwargs)
         cfg = base_cfg.model_copy(deep=True)
         cfg.llm_client = main_client
         # No subsidiary compaction client — user picked default compaction model.
@@ -336,6 +343,7 @@ async def test_manual_compact_falls_back_to_main_llm_client(base_config):
     # permanently set streaming=False on the main agent's shared llm_client.
     main_client.model_copy.assert_called_once_with()
     assert kwargs["llm_client"] is main_client.model_copy.return_value
+    assert resolve_kwargs.get("thread_id") == "thread-1"
 
 
 @pytest.mark.asyncio

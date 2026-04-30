@@ -262,6 +262,25 @@ class TestAgentConfigGetLlmClient:
             with pytest.raises(ValueError, match="not defined in models.json"):
                 config.get_llm_client()
 
+    def test_falls_back_forwards_cache_key(self):
+        """Regression: on the lazy factory path, ``cache_key`` stashed on the
+        config (by ``resolve_llm_config``) must reach ``create_llm`` so the
+        OpenAI/Codex factory can pin the prompt cache shard."""
+        config = _minimal_config()
+        config.cache_key = "thread-cache-xyz"
+        mock_created = MagicMock()
+        mock_mc = MagicMock()
+        mock_mc.get_model_config.return_value = {"provider": "openai"}
+        with (
+            patch("src.llms.create_llm", return_value=mock_created) as mock_create,
+            patch("src.llms.llm.LLM.get_model_config", return_value=mock_mc),
+        ):
+            result = config.get_llm_client()
+        assert result is mock_created
+        mock_create.assert_called_once()
+        _args, kwargs = mock_create.call_args
+        assert kwargs.get("cache_key") == "thread-cache-xyz"
+
 
 # ---------------------------------------------------------------------------
 # SubagentConfig / SubagentsConfig

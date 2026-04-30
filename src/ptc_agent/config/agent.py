@@ -238,6 +238,9 @@ class AgentConfig(BaseModel):
     llm_client: Any | None = Field(default=None, exclude=True)  # BaseChatModel instance
     subsidiary_llm_clients: dict[str, Any] = Field(default_factory=dict, exclude=True)
     fallback_llm_clients: list[Any] | None = Field(default=None, exclude=True)  # Pre-resolved fallback instances
+    # Forwarded by ``get_llm_client()`` to ``create_llm(cache_key=...)`` for
+    # the lazy factory path.
+    cache_key: str | None = Field(default=None, exclude=True)
     config_file_dir: Path | None = Field(
         default=None, exclude=True
     )  # For path resolution
@@ -486,7 +489,7 @@ class AgentConfig(BaseModel):
         from src.llms.llm import ensure_model_in_manifest
 
         ensure_model_in_manifest(self.llm.name)
-        return create_llm(self.llm.name)
+        return create_llm(self.llm.name, cache_key=self.cache_key)
 
     def to_core_config(self) -> CoreConfig:
         """Convert to CoreConfig for use with SessionManager.

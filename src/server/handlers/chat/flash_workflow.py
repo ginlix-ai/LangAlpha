@@ -206,6 +206,7 @@ async def astream_flash_workflow(
                 mode="flash",
                 reasoning_effort=getattr(request, "reasoning_effort", None),
                 fast_mode=getattr(request, "fast_mode", None),
+                thread_id=thread_id,
             )
 
         # Resolve timezone for metadata (observability only -- agent clock

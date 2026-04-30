@@ -25,6 +25,7 @@ from ptc_agent.agent.middleware.background_subagent.middleware import (
 )
 from ptc_agent.agent.middleware.background_subagent.registry import BackgroundTaskRegistry
 from ptc_agent.agent.middleware._utils import append_to_system_message
+from src.llms.llm import narrow_prompt_cache_key
 
 logger = structlog.get_logger(__name__)
 
@@ -183,7 +184,7 @@ def _get_subagents(
                 HumanInTheLoopMiddleware(interrupt_on=default_interrupt_on)
             )
         general_purpose_subagent = create_agent(
-            default_model,
+            narrow_prompt_cache_key(default_model, "general-purpose"),
             system_prompt=DEFAULT_SUBAGENT_PROMPT,
             tools=default_tools,
             middleware=general_purpose_middleware,
@@ -217,7 +218,7 @@ def _get_subagents(
             _middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
         agents[agent_["name"]] = create_agent(
-            subagent_model,
+            narrow_prompt_cache_key(subagent_model, agent_["name"]),
             system_prompt=agent_["system_prompt"],
             tools=_tools,
             middleware=_middleware,
