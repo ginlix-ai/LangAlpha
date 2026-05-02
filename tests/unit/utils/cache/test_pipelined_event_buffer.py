@@ -208,6 +208,34 @@ async def test_no_dirty_resume_del_when_last_event_id_is_not_one():
 
 
 @pytest.mark.asyncio
+async def test_stream_event_overrides_xadd_payload_when_provided():
+    """Subagent producer renders SSE wire format inline and passes it as
+    stream_event so the consumer is a pass-through. The List still gets the
+    JSON record (legacy compat)."""
+    pipe, pipeline_ctx = _make_pipeline_mock()
+    cache = _make_client_with_pipeline(pipeline_ctx)
+
+    await cache.pipelined_event_buffer(
+        events_key="subagent:events:t1:abc",
+        meta_key="subagent:events:meta:t1:abc",
+        event='{"seq": 5, "event": "message_chunk"}',  # JSON for the List
+        max_size=1000,
+        ttl=86400,
+        last_event_id=5,
+        stream_key="subagent:stream:t1:abc",
+        stream_event="id: 5\nevent: message_chunk\ndata: {}\n\n",
+    )
+
+    pipe.rpush.assert_called_once()
+    rpush_args = pipe.rpush.call_args.args
+    assert rpush_args[1] == '{"seq": 5, "event": "message_chunk"}'
+
+    pipe.xadd.assert_called_once()
+    xadd_args = pipe.xadd.call_args.args
+    assert xadd_args[1] == {b"event": b"id: 5\nevent: message_chunk\ndata: {}\n\n"}
+
+
+@pytest.mark.asyncio
 async def test_returns_false_zero_when_disabled():
     cache = RedisCacheClient.__new__(RedisCacheClient)
     cache.enabled = False

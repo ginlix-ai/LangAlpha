@@ -838,31 +838,26 @@ export function handleSubagentMessageChunk({
         messageIndex = updatedMessages.length - 1;
       }
 
-      const msg = updatedMessages[messageIndex];
-      msg.contentSegments = [
-        ...((msg.contentSegments as unknown[]) || []),
-        {
-          type: 'reasoning',
-          reasoningId,
-          order: currentOrder,
-        },
-      ];
-      msg.reasoningProcesses = {
-        ...((msg.reasoningProcesses as Record<string, unknown>) || {}),
-        [reasoningId]: {
-          content: '',
-          isReasoning: true,
-          reasoningComplete: false,
-          order: currentOrder,
+      const prev = updatedMessages[messageIndex];
+      updatedMessages[messageIndex] = {
+        ...prev,
+        contentSegments: [
+          ...((prev.contentSegments as unknown[]) || []),
+          { type: 'reasoning', reasoningId, order: currentOrder },
+        ],
+        reasoningProcesses: {
+          ...((prev.reasoningProcesses as Record<string, unknown>) || {}),
+          [reasoningId]: {
+            content: '',
+            isReasoning: true,
+            reasoningComplete: false,
+            order: currentOrder,
+          },
         },
       };
 
       taskRefs.messages = updatedMessages;
-      // Update card with messages only - don't update status here
-      // Status is managed by per-task stream close to prevent overwriting 'completed' status
-      updateSubagentCard(taskId, {
-        messages: updatedMessages,
-      });
+      updateSubagentCard(taskId, { messages: updatedMessages });
       return true;
     } else if (signalContent === 'complete') {
       if (currentReasoningIdRef.current) {
@@ -871,8 +866,8 @@ export function handleSubagentMessageChunk({
         const messageIndex = updatedMessages.findIndex((m: MessageRecord) => m.id === assistantMessageId);
 
         if (messageIndex !== -1) {
-          const msg = updatedMessages[messageIndex];
-          const reasoningProcesses = { ...((msg.reasoningProcesses as Record<string, Record<string, unknown>>) || {}) };
+          const prev = updatedMessages[messageIndex];
+          const reasoningProcesses = { ...((prev.reasoningProcesses as Record<string, Record<string, unknown>>) || {}) };
           if (reasoningProcesses[reasoningId]) {
             reasoningProcesses[reasoningId] = {
               ...reasoningProcesses[reasoningId],
@@ -882,7 +877,7 @@ export function handleSubagentMessageChunk({
               _completedAt: refs.isReconnect ? 1 : Date.now(),
             };
           }
-          msg.reasoningProcesses = reasoningProcesses;
+          updatedMessages[messageIndex] = { ...prev, reasoningProcesses };
           taskRefs.messages = updatedMessages;
           updateSubagentCard(taskId, { messages: updatedMessages });
         }
@@ -911,22 +906,18 @@ export function handleSubagentMessageChunk({
       messageIndex = updatedMessages.length - 1;
     }
 
-    const msg = updatedMessages[messageIndex];
-    const reasoningProcesses = { ...((msg.reasoningProcesses as Record<string, Record<string, unknown>>) || {}) };
+    const prev = updatedMessages[messageIndex];
+    const reasoningProcesses = { ...((prev.reasoningProcesses as Record<string, Record<string, unknown>>) || {}) };
+    let nextContentSegments = (prev.contentSegments as unknown[]) || [];
 
     // Create reasoning process if it doesn't exist (edge case: reasoning content arrives before start signal)
     if (!reasoningProcesses[reasoningId]) {
-      // Need to add the reasoning segment to contentSegments as well
       contentOrderCounterRef.current++;
       const currentOrder = contentOrderCounterRef.current;
 
-      msg.contentSegments = [
-        ...((msg.contentSegments as unknown[]) || []),
-        {
-          type: 'reasoning',
-          reasoningId,
-          order: currentOrder,
-        },
+      nextContentSegments = [
+        ...nextContentSegments,
+        { type: 'reasoning', reasoningId, order: currentOrder },
       ];
 
       reasoningProcesses[reasoningId] = {
@@ -959,7 +950,14 @@ export function handleSubagentMessageChunk({
       reasoningTitle,
     };
 
-    msg.reasoningProcesses = reasoningProcesses;
+    // Replace the message with a fresh object so ``React.memo`` invalidates;
+    // mutating ``prev`` in place would freeze the rendered card until the
+    // next lifecycle event.
+    updatedMessages[messageIndex] = {
+      ...prev,
+      contentSegments: nextContentSegments,
+      reasoningProcesses,
+    };
     taskRefs.messages = updatedMessages;
     updateSubagentCard(taskId, { messages: updatedMessages });
     return true;
@@ -986,18 +984,20 @@ export function handleSubagentMessageChunk({
       messageIndex = updatedMessages.length - 1;
     }
 
-    const msg = updatedMessages[messageIndex];
-    msg.contentSegments = [
-      ...((msg.contentSegments as unknown[]) || []),
-      {
-        type: 'text',
-        content,
-        order: currentOrder,
-      },
-    ];
-    msg.content = ((msg.content as string) || '') + content;
-    msg.contentType = 'text';
-    msg.isStreaming = true;
+    // Replace with a fresh object: ``MessageBubble`` is ``React.memo``'d
+    // on the message ref, so mutation would skip per-token re-renders and
+    // content would only land at the next lifecycle event.
+    const prev = updatedMessages[messageIndex];
+    updatedMessages[messageIndex] = {
+      ...prev,
+      contentSegments: [
+        ...((prev.contentSegments as unknown[]) || []),
+        { type: 'text', content, order: currentOrder },
+      ],
+      content: ((prev.content as string) || '') + content,
+      contentType: 'text',
+      isStreaming: true,
+    };
 
     taskRefs.messages = updatedMessages;
     updateSubagentCard(taskId, { messages: updatedMessages });

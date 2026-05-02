@@ -34,6 +34,13 @@ DEFAULT_TAIL_MAX_EVENTS = 1000
 # stays open for the rest of the run (see ``_spill_record_to_redis``).
 _SPILL_TIMEOUT_SECONDS = 0.5
 
+# Event-type marker for the per-task stream-end sentinel. The producer writes
+# one of these via ``append_sentinel_to_stream`` when the subagent finishes
+# streaming; the per-task SSE consumer treats it as "drain complete" and exits.
+# Shared between producer (registry) and consumer (stream_from_log) so the
+# string lives in exactly one place.
+SUBAGENT_STREAM_END_EVENT = "subagent_stream_end"
+
 
 def _estimate_record_bytes(record: dict[str, Any]) -> int:
     """Cheap upper-bound estimate of a captured-event record's serialized size.
@@ -541,6 +548,35 @@ class BackgroundTaskRegistry:
             )
             return
 
+        # Pre-render the SSE wire format for the Stream so the consumer can
+        # yield bytes verbatim — no JSON-decode + re-render branch in the read
+        # path. The List keeps storing JSON because the legacy consumer (still
+        # active under USE_REDIS_STREAM_SSE=false) and the post-turn collector
+        # both expect JSON records.
+        try:
+            seq = int(record.get("seq") or 0)
+            data = {
+                **(record.get("data") or {}),
+                "thread_id": self.thread_id,
+                "agent": f"task:{task.task_id}",
+            }
+            stream_payload = (
+                f"id: {seq}\n"
+                f"event: {record.get('event') or 'message_chunk'}\n"
+                f"data: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
+            )
+        except Exception as exc:
+            task.redis_write_failed = True
+            logger.warning(
+                "subagent_event_spill_failed",
+                phase="render_sse",
+                tool_call_id=task.tool_call_id,
+                task_id=task.task_id,
+                seq=record.get("seq"),
+                error=str(exc),
+            )
+            return
+
         # Serialize spills per task. The registry-wide lock is released
         # before this call so multiple tasks can spill in parallel; the
         # per-task lock guarantees that for any two appends to the SAME
@@ -566,6 +602,7 @@ class BackgroundTaskRegistry:
                         ttl=get_redis_ttl_workflow_events(),
                         last_event_id=record.get("seq"),
                         stream_key=stream_key,
+                        stream_event=stream_payload,
                     ),
                     timeout=_SPILL_TIMEOUT_SECONDS,
                 )
@@ -596,6 +633,90 @@ class BackgroundTaskRegistry:
                 tool_call_id=task.tool_call_id,
                 task_id=task.task_id,
                 seq=record.get("seq"),
+                error=str(exc),
+            )
+
+    async def append_sentinel_to_stream(self, tool_call_id: str) -> None:
+        """Write a stream-end sentinel to the per-task Redis Stream.
+
+        The forwarder calls this once when ``_arun_subagent_streaming`` exits
+        its astream loop — the canonical "no more events coming" moment. The
+        per-task SSE consumer recognises the record and closes immediately,
+        instead of polling ``task.asyncio_task.done()`` between BLOCK timeouts.
+
+        Bypasses ``captured_events_tail`` / Redis List / Postgres persistence:
+        this is a transport-level signal, not content. Best-effort — if it
+        fails, ``terminal_check`` still closes the stream once the asyncio
+        task finishes (just slower).
+        """
+        if not self.thread_id:
+            return
+
+        async with self._lock:
+            task = self._tasks.get(tool_call_id)
+            if not task:
+                return
+
+        if task.redis_write_failed:
+            return
+
+        try:
+            from src.config.settings import (
+                get_max_stored_messages_per_agent,
+                get_redis_ttl_workflow_events,
+                is_subagent_event_redis_spill_enabled,
+            )
+        except Exception:
+            return
+
+        try:
+            if not is_subagent_event_redis_spill_enabled():
+                return
+        except Exception:
+            return
+
+        try:
+            from src.utils.cache.redis_cache import get_cache_client
+
+            cache = get_cache_client()
+        except Exception:
+            return
+
+        if not getattr(cache, "enabled", False) or not getattr(cache, "client", None):
+            return
+
+        stream_key = f"subagent:stream:{self.thread_id}:{task.task_id}"
+        payload = json.dumps(
+            {"event": SUBAGENT_STREAM_END_EVENT}, ensure_ascii=False
+        ).encode("utf-8")
+
+        # Hold redis_spill_lock across pipe.execute() so the sentinel cannot
+        # land before an in-flight content spill on the same task. Auto-id
+        # XADD ordering is only a server-side guarantee — once two pipelines
+        # are both in flight, either can win the race. The per-task lock is
+        # the issue-order guarantee: a concurrent content spill must finish
+        # its XADD before the sentinel's pipeline opens; otherwise the
+        # consumer exits on the sentinel and the late content event is lost.
+        # _SPILL_TIMEOUT_SECONDS caps queue depth under load.
+        try:
+            async with task.redis_spill_lock:
+                async with cache.client.pipeline(transaction=False) as pipe:
+                    pipe.xadd(
+                        stream_key,
+                        {b"event": payload},
+                        maxlen=get_max_stored_messages_per_agent(),
+                        approximate=True,
+                    )
+                    pipe.expire(stream_key, get_redis_ttl_workflow_events())
+                    await asyncio.wait_for(
+                        pipe.execute(),
+                        timeout=_SPILL_TIMEOUT_SECONDS,
+                    )
+        except Exception as exc:
+            logger.debug(
+                "subagent_stream_end_sentinel_failed",
+                tool_call_id=tool_call_id,
+                task_id=task.task_id,
                 error=str(exc),
             )
 

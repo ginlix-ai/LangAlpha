@@ -609,6 +609,7 @@ class RedisCacheClient:
         ttl: int,
         last_event_id: Optional[int] = None,
         stream_key: Optional[str] = None,
+        stream_event: Optional[str] = None,
     ) -> tuple[bool, int]:
         """Atomic pipeline for the SSE event-buffer hot path.
 
@@ -616,11 +617,13 @@ class RedisCacheClient:
         optional stream append) into one MULTI/EXEC so the whole spill takes
         one pool checkout.
 
-        When ``stream_key`` and ``last_event_id`` are both provided, the same
-        event is dual-written to a Redis Stream at ``stream_key`` with explicit
-        ID ``f"{last_event_id}-0"``. This is the dual-write phase of the
-        Streams refactor — readers continue reading the List during this phase
-        while the Stream gets populated for parity verification.
+        When ``stream_key`` and ``last_event_id`` are both provided, the event
+        is dual-written to a Redis Stream at ``stream_key`` with explicit
+        ID ``f"{last_event_id}-0"``. ``stream_event`` defaults to ``event``
+        but lets callers store a different wire format in the Stream than in
+        the List — used by the subagent producer, which keeps JSON records in
+        the legacy List for in-flight reads but writes pre-rendered SSE wire
+        strings to the Stream so the consumer doesn't need a JSON-render step.
 
         Returns (success, seq). On success `seq` is the new event count (1+);
         on failure it's 0.
@@ -674,7 +677,8 @@ class RedisCacheClient:
                 # the frontend's parseInt-based last_event_id parsing while
                 # preserving Redis Streams' lexicographic ordering.
                 if stream_key is not None and last_event_id is not None:
-                    payload = event.encode("utf-8") if isinstance(event, str) else event
+                    raw = stream_event if stream_event is not None else event
+                    payload = raw.encode("utf-8") if isinstance(raw, str) else raw
                     pipe.xadd(
                         stream_key,
                         {b"event": payload},

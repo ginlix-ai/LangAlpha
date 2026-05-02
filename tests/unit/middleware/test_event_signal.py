@@ -749,9 +749,11 @@ class _FakeModelResponse:
 
 
 @pytest.mark.asyncio
-async def test_event_capture_emits_reasoning_signals_text_and_tool_calls(monkeypatch) -> None:
-    """awrap_model_call emits reasoning start/body/complete, text, and tool_calls
-    into the task's captured_events in the expected order."""
+async def test_event_capture_emits_only_tool_calls_no_text_or_reasoning(monkeypatch) -> None:
+    """awrap_model_call no longer emits per-call text/reasoning chunks — those
+    moved to the per-token streaming forwarder so the per-task SSE stream
+    matches the main workflow's token-level granularity. Tool_calls still
+    fire here (no streaming counterpart for accumulated tool args)."""
     from ptc_agent.agent.middleware.background_subagent.event_capture import (
         SubagentEventCaptureMiddleware,
     )
@@ -764,7 +766,6 @@ async def test_event_capture_emits_reasoning_signals_text_and_tool_calls(monkeyp
     current_background_tool_call_id.set(task.tool_call_id)
     mw = SubagentEventCaptureMiddleware(registry=registry)
 
-    _patch_format_llm_content(monkeypatch, reasoning="thinking", text="hello")
     ai = _make_ai_message(
         text="hello",
         tool_calls=[{"name": "bash", "args": {"cmd": "ls"}, "id": "tc-1"}],
@@ -775,12 +776,14 @@ async def test_event_capture_emits_reasoning_signals_text_and_tool_calls(monkeyp
     await mw.awrap_model_call(request, handler)
 
     events = list(task.captured_events_tail)
-    content_types = [e["data"].get("content_type") for e in events if e["event"] == "message_chunk"]
-    # reasoning_signal(start), reasoning, reasoning_signal(complete), text
-    assert "reasoning_signal" in content_types
-    assert content_types.count("reasoning_signal") == 2
-    assert "reasoning" in content_types
-    assert "text" in content_types
+    content_types = [
+        e["data"].get("content_type") for e in events if e["event"] == "message_chunk"
+    ]
+    # The streaming forwarder owns text/reasoning emission now — middleware
+    # must NOT emit any of those types.
+    assert "reasoning_signal" not in content_types
+    assert "reasoning" not in content_types
+    assert "text" not in content_types
 
     tool_call_events = [e for e in events if e["event"] == "tool_calls"]
     assert len(tool_call_events) == 1
@@ -922,6 +925,9 @@ async def test_stream_subagent_task_events_single_consumer_lifecycle(monkeypatch
     """One consumer: receives events, decrements count on close, sse_drain_complete
     is set on final consumer exit. Producer is the sole Redis writer (no
     list_append from the consumer)."""
+    # Pin the legacy code path — see _wire_fakes in test_subagent_stream_reconnect.py
+    monkeypatch.setenv("USE_REDIS_STREAM_SSE", "false")
+
     from src.server.handlers.chat import stream_reconnect
 
     registry = BackgroundTaskRegistry()
@@ -981,6 +987,9 @@ async def test_stream_subagent_task_events_cursor_advances_with_concurrent_appen
     """If an event is appended while the consumer is awaiting the wake signal,
     the next drain iteration must pick it up — not skip it. The cursor
     advances by seq, not list index."""
+    # Pin the legacy code path.
+    monkeypatch.setenv("USE_REDIS_STREAM_SSE", "false")
+
     from src.server.handlers.chat import stream_reconnect
 
     registry = BackgroundTaskRegistry()
