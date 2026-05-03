@@ -862,6 +862,7 @@ class BackgroundTaskManager:
 
         events_key = f"workflow:events:{thread_id}"
         meta_key = f"workflow:events:meta:{thread_id}"
+        stream_key = f"workflow:stream:{thread_id}"
 
         success, seq = await cache.pipelined_event_buffer(
             events_key=events_key,
@@ -870,6 +871,7 @@ class BackgroundTaskManager:
             max_size=self.max_stored_messages,
             ttl=self.redis_event_ttl,
             last_event_id=event_id,
+            stream_key=stream_key,
         )
 
         if not success:
@@ -1126,6 +1128,12 @@ class BackgroundTaskManager:
                 try:
                     await cache.delete(
                         f"subagent:events:meta:{thread_id}:{task.task_id}"
+                    )
+                except Exception:
+                    pass
+                try:
+                    await cache.delete(
+                        f"subagent:stream:{thread_id}:{task.task_id}"
                     )
                 except Exception:
                     pass
@@ -2386,10 +2394,12 @@ class BackgroundTaskManager:
             if self.event_storage_backend == "redis" and cache.enabled:
                 events_key = f"workflow:events:{thread_id}"
                 meta_key = f"workflow:events:meta:{thread_id}"
+                stream_key = f"workflow:stream:{thread_id}"
 
-                # Delete both the event list and metadata
+                # Delete event list, metadata, and the dual-write Stream key.
                 await cache.delete(events_key)
                 await cache.delete(meta_key)
+                await cache.delete(stream_key)
 
                 logger.debug(f"[EventBuffer] Cleared Redis event buffer for {thread_id}")
 

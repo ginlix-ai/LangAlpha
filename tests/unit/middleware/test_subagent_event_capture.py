@@ -137,6 +137,11 @@ async def test_redis_spill_called_for_every_event(monkeypatch) -> None:
         for call in fake_cache.pipelined_event_buffer.await_args_list
     }
     assert meta_keys == {f"subagent:events:meta:thread-x:{task.task_id}"}
+    stream_keys = {
+        call.kwargs["stream_key"]
+        for call in fake_cache.pipelined_event_buffer.await_args_list
+    }
+    assert stream_keys == {f"subagent:stream:thread-x:{task.task_id}"}
     assert not task.redis_write_failed
 
 
@@ -372,6 +377,199 @@ async def test_per_task_lock_serializes_concurrent_spills(monkeypatch) -> None:
         for call in fake_cache.pipelined_event_buffer.await_args_list
     ]
     assert seqs_in_call_order == [1, 2]
+
+
+def _make_pipeline_capture(execute_return=None):
+    """Build a fake redis pipeline that records xadd/expire calls.
+
+    The registry's ``append_sentinel_to_stream`` opens a non-transactional
+    pipeline, queues XADD + EXPIRE, then awaits ``pipe.execute()``. The
+    fake mirrors that contract and records what was queued so tests can
+    assert the stream key, fields, MAXLEN, and TTL refresh.
+    """
+    queued: dict[str, list] = {"xadd": [], "expire": []}
+
+    class _FakePipe:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        def xadd(self, name, fields, maxlen=None, approximate=True):
+            queued["xadd"].append(
+                {
+                    "name": name,
+                    "fields": fields,
+                    "maxlen": maxlen,
+                    "approximate": approximate,
+                }
+            )
+            return self
+
+        def expire(self, name, ttl):
+            queued["expire"].append({"name": name, "ttl": ttl})
+            return self
+
+        async def execute(self):
+            if isinstance(execute_return, BaseException):
+                raise execute_return
+            return execute_return or []
+
+    pipe = _FakePipe()
+
+    def _new_pipe(transaction=False):
+        # Mirror the registry's call signature; transaction kwarg ignored.
+        return pipe
+
+    return queued, _new_pipe
+
+
+@pytest.mark.asyncio
+async def test_sentinel_writes_xadd_only_no_deque_no_persistence(monkeypatch) -> None:
+    """``append_sentinel_to_stream`` writes one XADD on the per-task Stream
+    key and bumps its TTL. It MUST NOT write to ``captured_events_tail``
+    (which gets persisted to Postgres + replayed) or to the legacy
+    Redis List (read by the pre-flag consumer). The sentinel is a
+    transport signal, not content.
+    """
+    fake_cache = MagicMock()
+    fake_cache.enabled = True
+    fake_cache.client = MagicMock()
+    queued, _new_pipe = _make_pipeline_capture()
+    fake_cache.client.pipeline = _new_pipe
+    monkeypatch.setattr(
+        "src.utils.cache.redis_cache.get_cache_client", lambda: fake_cache
+    )
+    monkeypatch.setattr(
+        "src.config.settings.is_subagent_event_redis_spill_enabled", lambda: True
+    )
+    monkeypatch.setattr(
+        "src.config.settings.get_max_stored_messages_per_agent", lambda: 1000
+    )
+    monkeypatch.setattr(
+        "src.config.settings.get_redis_ttl_workflow_events", lambda: 86400
+    )
+
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+
+    await registry.append_sentinel_to_stream(task.tool_call_id)
+
+    # Exactly one XADD on the per-task Stream key.
+    assert len(queued["xadd"]) == 1
+    write = queued["xadd"][0]
+    assert write["name"] == f"subagent:stream:thread-x:{task.task_id}"
+    assert write["maxlen"] == 1000
+    assert write["approximate"] is True
+    # Payload is the sentinel JSON record under the canonical b"event" field.
+    fields = write["fields"]
+    assert b"event" in fields
+    payload = fields[b"event"]
+    assert isinstance(payload, bytes)
+    assert b'"event": "subagent_stream_end"' in payload
+
+    # TTL refresh on the same stream key.
+    assert queued["expire"] == [
+        {"name": f"subagent:stream:thread-x:{task.task_id}", "ttl": 86400}
+    ]
+
+    # Crucial: NOT in the in-memory tail (which feeds Postgres persistence)
+    # and the seq counter is not bumped (sentinel is not a content event).
+    assert all(
+        e.get("event") != "subagent_stream_end"
+        for e in task.captured_events_tail
+    )
+    assert task.captured_event_seq == 0
+    assert task.captured_event_count == 0
+
+
+@pytest.mark.asyncio
+async def test_sentinel_skipped_when_redis_write_failed_sticky(monkeypatch) -> None:
+    """If the per-task circuit-breaker is open (a prior content spill failed),
+    the sentinel write must short-circuit so the recovery path doesn't loop
+    on the same degraded Redis."""
+    fake_cache = MagicMock()
+    fake_cache.enabled = True
+    fake_cache.client = MagicMock()
+    queued, _new_pipe = _make_pipeline_capture()
+    fake_cache.client.pipeline = _new_pipe
+    monkeypatch.setattr(
+        "src.utils.cache.redis_cache.get_cache_client", lambda: fake_cache
+    )
+    monkeypatch.setattr(
+        "src.config.settings.is_subagent_event_redis_spill_enabled", lambda: True
+    )
+
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    task.redis_write_failed = True
+
+    await registry.append_sentinel_to_stream(task.tool_call_id)
+
+    assert queued["xadd"] == []
+    assert queued["expire"] == []
+
+
+@pytest.mark.asyncio
+async def test_sentinel_no_op_without_thread_id(monkeypatch) -> None:
+    """A registry with no ``thread_id`` (test fixtures, in-process scratchpads)
+    has no Redis stream key to write to — the sentinel must be a no-op."""
+    fake_cache = MagicMock()
+    fake_cache.enabled = True
+    fake_cache.client = MagicMock()
+    queued, _new_pipe = _make_pipeline_capture()
+    fake_cache.client.pipeline = _new_pipe
+    monkeypatch.setattr(
+        "src.utils.cache.redis_cache.get_cache_client", lambda: fake_cache
+    )
+
+    registry = BackgroundTaskRegistry()  # no thread_id
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+
+    await registry.append_sentinel_to_stream(task.tool_call_id)
+
+    assert queued["xadd"] == []
+
+
+@pytest.mark.asyncio
+async def test_sentinel_swallows_pipeline_exception(monkeypatch) -> None:
+    """The sentinel write is best-effort. If Redis throws mid-pipeline, the
+    method must not propagate — the SSE consumer's ``terminal_check``
+    fallback closes the stream once the asyncio task finishes."""
+    fake_cache = MagicMock()
+    fake_cache.enabled = True
+    fake_cache.client = MagicMock()
+    queued, _new_pipe = _make_pipeline_capture(
+        execute_return=RuntimeError("pipeline boom")
+    )
+    fake_cache.client.pipeline = _new_pipe
+    monkeypatch.setattr(
+        "src.utils.cache.redis_cache.get_cache_client", lambda: fake_cache
+    )
+    monkeypatch.setattr(
+        "src.config.settings.is_subagent_event_redis_spill_enabled", lambda: True
+    )
+    monkeypatch.setattr(
+        "src.config.settings.get_max_stored_messages_per_agent", lambda: 1000
+    )
+    monkeypatch.setattr(
+        "src.config.settings.get_redis_ttl_workflow_events", lambda: 86400
+    )
+
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+
+    # Should not raise.
+    await registry.append_sentinel_to_stream(task.tool_call_id)
 
 
 @pytest.mark.asyncio

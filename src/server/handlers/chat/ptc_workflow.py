@@ -77,7 +77,7 @@ from ._common import (
     stream_live_events,
     wait_or_steer,
 )
-from src.config.settings import get_ptc_recursion_limit
+from src.config.settings import get_ptc_recursion_limit, is_use_redis_stream_sse_enabled
 
 from .llm_config import resolve_llm_config
 from .steering import backfill_steering_queries
@@ -896,21 +896,30 @@ async def astream_ptc_workflow(
             f"[PTC_TIMING] thread_id={thread_id} model={model_tag} total={total_ms:.0f}ms ({phases})"
         )
 
-        async for event in stream_live_events(
-            manager=manager,
-            tracker=tracker,
-            thread_id=thread_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            handler=handler,
-            token_callback=token_callback,
-            persistence_service=persistence_service,
-            start_time=start_time,
-            request=request,
-            is_byok=is_byok,
-            log_prefix="PTC_CHAT",
-        ):
-            yield event
+        if is_use_redis_stream_sse_enabled():
+            # Stream-backed first-connect: read from workflow:stream:{thread_id}
+            # via XREAD BLOCK. The workflow runs as a fully detached background
+            # task — disconnect cannot reach it.
+            from .stream_from_log import stream_from_log
+
+            async for event in stream_from_log(thread_id, last_event_id=None):
+                yield event
+        else:
+            async for event in stream_live_events(
+                manager=manager,
+                tracker=tracker,
+                thread_id=thread_id,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                handler=handler,
+                token_callback=token_callback,
+                persistence_service=persistence_service,
+                start_time=start_time,
+                request=request,
+                is_byok=is_byok,
+                log_prefix="PTC_CHAT",
+            ):
+                yield event
 
     except (asyncio.CancelledError, GeneratorExit):
         if slot_owned:

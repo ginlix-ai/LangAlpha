@@ -169,80 +169,14 @@ class SubagentEventCaptureMiddleware(AgentMiddleware):
             try:
                 ai_msg = response.result[0] if response.result else None
                 if ai_msg:
-                    from src.llms.content_utils import format_llm_content
-
-                    formatted = format_llm_content(ai_msg.content)
                     tool_calls = getattr(ai_msg, "tool_calls", None) or []
                     agent_id = self._get_agent_id(tool_call_id)
                     msg_id = getattr(ai_msg, "id", f"msg-{tool_call_id}")
 
-                    # Emit reasoning with start/complete signals so frontend
-                    # can initialize currentReasoningIdRef properly
-                    if formatted.get("reasoning"):
-                        await self.registry.append_captured_event(
-                            tool_call_id,
-                            {
-                                "event": "message_chunk",
-                                "data": {
-                                    "agent": agent_id,
-                                    "id": msg_id,
-                                    "role": "assistant",
-                                    "content": "start",
-                                    "content_type": "reasoning_signal",
-                                },
-                                "ts": time.time(),
-                            },
-                        )
-                        await self.registry.append_captured_event(
-                            tool_call_id,
-                            {
-                                "event": "message_chunk",
-                                "data": {
-                                    "agent": agent_id,
-                                    "id": msg_id,
-                                    "role": "assistant",
-                                    "content": _truncate_content(formatted["reasoning"]),
-                                    "content_type": "reasoning",
-                                    "finish_reason": None,
-                                },
-                                "ts": time.time(),
-                            },
-                        )
-                        await self.registry.append_captured_event(
-                            tool_call_id,
-                            {
-                                "event": "message_chunk",
-                                "data": {
-                                    "agent": agent_id,
-                                    "id": msg_id,
-                                    "role": "assistant",
-                                    "content": "complete",
-                                    "content_type": "reasoning_signal",
-                                },
-                                "ts": time.time(),
-                            },
-                        )
-
-                    # Emit text chunk if present
-                    if formatted.get("text"):
-                        await self.registry.append_captured_event(
-                            tool_call_id,
-                            {
-                                "event": "message_chunk",
-                                "data": {
-                                    "agent": agent_id,
-                                    "id": msg_id,
-                                    "role": "assistant",
-                                    "content": _truncate_content(formatted["text"]),
-                                    "content_type": "text",
-                                    "finish_reason": "tool_calls"
-                                    if tool_calls
-                                    else "stop",
-                                },
-                                "ts": time.time(),
-                            },
-                        )
-
+                    # Text/reasoning tokens are forwarded per-token by
+                    # ``_SubagentTokenForwarder``; capturing them here too
+                    # would duplicate every chunk. Tool calls have no streaming
+                    # counterpart so they stay captured here.
                     if tool_calls:
                         await self.registry.append_captured_event(
                             tool_call_id,

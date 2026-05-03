@@ -22,6 +22,7 @@ from src.server.services.workflow_tracker import WorkflowTracker
 from src.config.settings import (
     get_live_queue_maxsize,
     get_subagent_task_max_wait,
+    is_use_redis_stream_sse_enabled,
 )
 
 from ._common import _SSE_LOG_ENABLED, _sse_logger, logger
@@ -60,6 +61,17 @@ async def reconnect_to_workflow_stream(
                 status_code=410, detail="Workflow completed and results expired"
             )
         raise HTTPException(status_code=404, detail=f"Workflow {thread_id} not found")
+
+    if is_use_redis_stream_sse_enabled():
+        # Stream-backed reconnect: one XREAD BLOCK loop, no list replay,
+        # no live_queue subscription. ``stream_from_log`` maps both ``None``
+        # and ``<= 0`` to cursor ``0`` (replay from the beginning), so we
+        # pass ``last_event_id`` through untouched.
+        from .stream_from_log import stream_from_log
+
+        async for event in stream_from_log(thread_id, last_event_id):
+            yield event
+        return
 
     # Replay buffered events (during tailing, Redis only holds tail-phase
     # events because the buffer is cleared after pre-tail persist)
@@ -141,6 +153,13 @@ async def stream_subagent_task_events(
     Yields:
         SSE-formatted event strings
     """
+    if is_use_redis_stream_sse_enabled():
+        from .stream_from_log import stream_subagent_from_log
+
+        async for event in stream_subagent_from_log(thread_id, task_id, last_event_id):
+            yield event
+        return
+
     from src.server.services.background_task_manager import drain_task_captured_events
     from src.utils.cache.redis_cache import get_cache_client
 

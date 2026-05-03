@@ -608,26 +608,25 @@ class RedisCacheClient:
         max_size: int,
         ttl: int,
         last_event_id: Optional[int] = None,
+        stream_key: Optional[str] = None,
+        stream_event: Optional[str] = None,
     ) -> tuple[bool, int]:
         """Atomic pipeline for the SSE event-buffer hot path.
 
-        Pre-rewrite, `_buffer_event_redis` made ~9 sequential Redis round-trips
-        per SSE event (list_append + list_length + hash_get_all + 3x hash_set,
-        where hash_set was itself 2 commands). Under a workflow burst that
-        saturated the 50-slot connection pool and triggered MaxConnectionsError
-        for hours. This helper collapses all of it into one MULTI/EXEC so the
-        whole thing takes one pool checkout.
+        Collapses ~9 sequential Redis commands (list append, trim, meta hash,
+        optional stream append) into one MULTI/EXEC so the whole spill takes
+        one pool checkout.
 
-        Uses HINCRBY for `seq` (atomic counter), HSETNX for created_at
-        (set-if-missing), and HSET for updated_at / last_event_id. The field
-        name is `seq` rather than `event_count` so HINCRBY cannot collide with
-        leftover JSON-quoted integers ("\\"42\\"") written by the older
-        hash_set-based code path (which would otherwise raise WRONGTYPE until
-        the meta key TTL-expired 24h later).
+        When ``stream_key`` and ``last_event_id`` are both provided, the event
+        is dual-written to a Redis Stream at ``stream_key`` with explicit
+        ID ``f"{last_event_id}-0"``. ``stream_event`` defaults to ``event``
+        but lets callers store a different wire format in the Stream than in
+        the List — used by the subagent producer, which keeps JSON records in
+        the legacy List for in-flight reads but writes pre-rendered SSE wire
+        strings to the Stream so the consumer doesn't need a JSON-render step.
 
         Returns (success, seq). On success `seq` is the new event count (1+);
-        on failure it's 0. Callers use the counter to drive capacity warnings
-        without an extra round-trip.
+        on failure it's 0.
         """
         if not self.enabled or not self.client:
             return False, 0
@@ -635,6 +634,35 @@ class RedisCacheClient:
         try:
             now_iso_json = json.dumps(datetime.now().isoformat())
             async with self.client.pipeline(transaction=True) as pipe:
+                # Dirty-resume guard runs BEFORE the new writes so RPUSH and
+                # HINCRBY land on fresh state. When last_event_id == 1 we're
+                # at the start of a fresh handler instance (counter resets to
+                # 1 per turn). If a prior turn left state behind (process
+                # crash before the post-persist ``_on_pair_persisted``
+                # callback ran ``clear_event_buffer``), three things can be
+                # stale:
+                # - ``stream_key``: XADD with id=1-0 would fail because the
+                #   last id is N-0 from that prior turn — Redis enforces
+                #   strict id monotonicity.
+                # - ``events_key``: a stale RPUSH tail from the prior turn
+                #   would persist alongside the fresh entries, breaking
+                #   ``LLEN == XLEN`` parity until both are DEL'd together.
+                # - ``meta_key`` ``seq``: HINCRBY against a stale counter
+                #   would return N+1 instead of 1, drifting the returned
+                #   ``seq`` away from the SSE wire id.
+                # DEL'ing inside the same MULTI/EXEC keeps the reset atomic.
+                # ``created_at`` on the meta hash is preserved (HDEL only
+                # the ``seq`` field) since it documents thread-first-write
+                # for diagnostics, not per-turn state.
+                guard_cmds = 0
+                if last_event_id == 1:
+                    if stream_key is not None:
+                        pipe.delete(stream_key)
+                        guard_cmds += 1
+                    pipe.delete(events_key)
+                    pipe.hdel(meta_key, "seq")
+                    guard_cmds += 2
+
                 pipe.rpush(events_key, event)
                 pipe.ltrim(events_key, -max_size, -1)
                 pipe.expire(events_key, ttl)
@@ -644,10 +672,32 @@ class RedisCacheClient:
                 if last_event_id is not None:
                     pipe.hset(meta_key, "last_event_id", json.dumps(last_event_id))
                 pipe.expire(meta_key, ttl)
+                # Dual-write to Redis Stream when both key and id are provided.
+                # Explicit ID `<seq>-0` keeps the cursor integer-friendly for
+                # the frontend's parseInt-based last_event_id parsing while
+                # preserving Redis Streams' lexicographic ordering.
+                if stream_key is not None and last_event_id is not None:
+                    raw = stream_event if stream_event is not None else event
+                    payload = raw.encode("utf-8") if isinstance(raw, str) else raw
+                    pipe.xadd(
+                        stream_key,
+                        {b"event": payload},
+                        id=f"{last_event_id}-0",
+                        maxlen=max_size,
+                        approximate=True,
+                    )
+                    pipe.expire(stream_key, ttl)
                 results = await pipe.execute()
             self.stats["sets"] += 1
-            # results[3] is HINCRBY's new value (position 4 in the queued commands)
-            seq = int(results[3]) if len(results) > 3 else 0
+            # HINCRBY's return value sits at index ``guard_cmds + 3``: 3
+            # commands of new-write prefix (RPUSH, LTRIM, EXPIRE) precede it,
+            # plus any dirty-resume guard commands that ran first.
+            hincrby_index = guard_cmds + 3
+            seq = (
+                int(results[hincrby_index])
+                if len(results) > hincrby_index
+                else 0
+            )
             return True, seq
         except Exception as e:
             self._log_error(f"Pipelined event buffer failed for {events_key}", e)

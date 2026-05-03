@@ -49,6 +49,10 @@ async def _register_task(registry: BackgroundTaskRegistry, task_id: str = "xy123
 
 
 def _wire_fakes(monkeypatch, registry, fake_cache):
+    # These tests exercise the legacy in-memory tail + List replay path.
+    # Pin the flag off so a developer-local .env that flips it on (PR2 staged
+    # rollout) doesn't reroute the tests through the Streams consumer.
+    monkeypatch.setenv("USE_REDIS_STREAM_SSE", "false")
     fake_store = MagicMock()
     fake_store.get_registry = AsyncMock(return_value=registry)
     monkeypatch.setattr(

@@ -1,4 +1,4 @@
-"""Subagent callback-shape regression tests.
+"""Subagent callback-shape regression tests + astream driver shape tests.
 
 The subagent's outbound config inherits whatever the parent runtime put on
 ``callbacks``. LangChain hands that slot in as a ``BaseCallbackManager``
@@ -12,6 +12,7 @@ not on an explicit ``LangChainTracer`` per subagent.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -40,12 +41,13 @@ async def test_parent_callbacks_as_callback_manager_does_not_crash(monkeypatch):
 
     seen_configs: list[dict] = []
 
-    async def fake_ainvoke(state, config):
+    async def fake_astream(state, config, stream_mode=None):
         seen_configs.append(config)
-        return {"messages": [MagicMock(text="ok")]}
+        # When stream_mode is a list, langgraph yields (mode, data) tuples.
+        yield ("values", {"messages": [MagicMock(text="ok")]})
 
     fake_subagent = MagicMock()
-    fake_subagent.ainvoke = fake_ainvoke
+    fake_subagent.astream = fake_astream
 
     tool = sa._create_task_tool(
         default_model=MagicMock(),
@@ -123,12 +125,13 @@ async def test_subagent_does_not_inherit_parent_token_tracker(monkeypatch):
 
     seen_configs: list[dict] = []
 
-    async def fake_ainvoke(state, config):
+    async def fake_astream(state, config, stream_mode=None):
         seen_configs.append(config)
-        return {"messages": [MagicMock(text="ok")]}
+        # When stream_mode is a list, langgraph yields (mode, data) tuples.
+        yield ("values", {"messages": [MagicMock(text="ok")]})
 
     fake_subagent = MagicMock()
-    fake_subagent.ainvoke = fake_ainvoke
+    fake_subagent.astream = fake_astream
 
     tool = sa._create_task_tool(
         default_model=MagicMock(),
@@ -176,3 +179,78 @@ async def test_subagent_does_not_inherit_parent_token_tracker(monkeypatch):
     assert parent_handler_other not in cbs
     # Per-subagent tracker IS attached so on_llm_end fires on it
     assert bg_tracker in cbs
+
+
+@pytest.mark.asyncio
+async def test_subagent_uses_astream_with_values_and_messages_modes(
+    monkeypatch,
+):
+    """The Task tool drives the subagent through
+    ``astream(stream_mode=["values", "messages"])``. The LAST ``values``
+    yield is the tool's return; ``messages`` yields are forwarded as per-token
+    captured events on the registry. Earlier ``values`` yields are
+    intermediate snapshots that must NOT propagate."""
+    from ptc_agent.agent.middleware.background_subagent import subagent as sa
+
+    parent_config = {"configurable": {"thread_id": "t1"}}
+    monkeypatch.setattr(
+        "ptc_agent.agent.middleware.background_subagent.subagent.get_config",
+        lambda: parent_config,
+    )
+
+    seen_stream_modes: list[Any] = []
+
+    async def fake_astream(state, config, stream_mode=None):
+        seen_stream_modes.append(stream_mode)
+        # Multi-mode list → langgraph yields (mode, data) tuples.
+        yield ("values", {"messages": [MagicMock(text="step-1")]})
+        yield ("values", {"messages": [MagicMock(text="step-2")]})
+        yield ("values", {"messages": [MagicMock(text="final")], "extra": "carried"})
+
+    fake_subagent = MagicMock()
+    fake_subagent.astream = fake_astream
+
+    tool = sa._create_task_tool(
+        default_model=MagicMock(),
+        default_tools=[],
+        default_middleware=[],
+        default_interrupt_on=None,
+        subagents=[],
+        general_purpose_agent=False,
+        registry=None,
+        checkpointer=None,
+    )
+    coroutine = tool.coroutine
+
+    closure_vars = {
+        cell_name: cell.cell_contents
+        for cell_name, cell in zip(
+            coroutine.__code__.co_freevars,
+            coroutine.__closure__ or (),
+        )
+    }
+    sg = closure_vars.get("subagent_graphs")
+    assert sg is not None
+    sg["general-purpose"] = fake_subagent
+
+    runtime = MagicMock()
+    runtime.state = {"messages": []}
+    runtime.tool_call_id = "tc-final"
+
+    cmd = await coroutine(
+        description="d",
+        prompt="p",
+        subagent_type="general-purpose",
+        action="init",
+        task_id=None,
+        runtime=runtime,
+    )
+
+    # Driver requests both modes — values for the final-state return,
+    # messages for per-token forwarding.
+    assert seen_stream_modes == [["values", "messages"]]
+
+    # Only the LAST values yield propagates as the tool's return.
+    msg = cmd.update["messages"][-1]
+    assert msg.content == "final"
+    assert cmd.update.get("extra") == "carried"

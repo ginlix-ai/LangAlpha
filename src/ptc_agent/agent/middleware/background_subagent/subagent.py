@@ -1,5 +1,6 @@
 """Middleware for providing subagents to an agent via a `Task` tool."""
 
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Annotated, Any, NotRequired, TypedDict, cast
 
@@ -13,7 +14,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
 from langgraph.config import get_config
@@ -26,8 +27,139 @@ from ptc_agent.agent.middleware.background_subagent.middleware import (
 from ptc_agent.agent.middleware.background_subagent.registry import BackgroundTaskRegistry
 from ptc_agent.agent.middleware._utils import append_to_system_message
 from src.llms.llm import narrow_prompt_cache_key
+from src.server.utils.content_normalizer import normalize_text_content
 
 logger = structlog.get_logger(__name__)
+
+
+class _SubagentTokenForwarder:
+    """Forward per-token ``messages``-mode chunks from subagent.astream into
+    captured-event records on the registry.
+
+    Mirrors the main streaming handler's reasoning lifecycle: a ``start``
+    reasoning_signal fires on the first reasoning chunk, ``complete`` fires
+    on transition to text content or message_id change. Without this, the
+    frontend's reasoning UI never opens (it gates on the start signal).
+
+    Tool-call/tool-call-result events still come from
+    ``SubagentEventCaptureMiddleware.awrap_*_call`` — those are post-call
+    discrete signals, not stream-able token deltas.
+    """
+
+    def __init__(
+        self,
+        registry: BackgroundTaskRegistry,
+        tool_call_id: str,
+        agent_id: str,
+    ) -> None:
+        self.registry = registry
+        self.tool_call_id = tool_call_id
+        self.agent_id = agent_id
+        self._reasoning_active = False
+        self._last_msg_id: str | None = None
+
+    def _signal_record(self, msg_id: str, content: str) -> dict[str, Any]:
+        return {
+            "event": "message_chunk",
+            "data": {
+                "agent": self.agent_id,
+                "id": msg_id,
+                "role": "assistant",
+                "content": content,
+                "content_type": "reasoning_signal",
+            },
+            "ts": time.time(),
+        }
+
+    def _chunk_record(
+        self,
+        msg_id: str,
+        text: str,
+        content_type: str,
+        finish_reason: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "event": "message_chunk",
+            "data": {
+                "agent": self.agent_id,
+                "id": msg_id,
+                "role": "assistant",
+                "content": text,
+                "content_type": content_type,
+                "finish_reason": finish_reason,
+            },
+            "ts": time.time(),
+        }
+
+    async def forward(self, message_chunk: BaseMessage) -> None:
+        # Reasoning content can ride on either ``content`` or
+        # ``additional_kwargs.reasoning[_content]`` depending on provider.
+        text, content_type = normalize_text_content(message_chunk.content)
+        reasoning_kw = (
+            message_chunk.additional_kwargs.get("reasoning_content")
+            or message_chunk.additional_kwargs.get("reasoning")
+        )
+        if reasoning_kw and not text:
+            r_text, _ = normalize_text_content(reasoning_kw)
+            if r_text:
+                text = r_text
+                content_type = "reasoning"
+
+        msg_id = message_chunk.id or f"sg-{self.tool_call_id}"
+
+        # New message id with reasoning still active → close out the old one.
+        if (
+            self._last_msg_id is not None
+            and msg_id != self._last_msg_id
+            and self._reasoning_active
+        ):
+            await self.registry.append_captured_event(
+                self.tool_call_id, self._signal_record(self._last_msg_id, "complete")
+            )
+            self._reasoning_active = False
+
+        if text and content_type:
+            # Inline reasoning lifecycle — start on first reasoning chunk,
+            # complete on transition to text.
+            if content_type == "reasoning" and not self._reasoning_active:
+                await self.registry.append_captured_event(
+                    self.tool_call_id, self._signal_record(msg_id, "start")
+                )
+                self._reasoning_active = True
+            elif content_type == "text" and self._reasoning_active:
+                await self.registry.append_captured_event(
+                    self.tool_call_id, self._signal_record(msg_id, "complete")
+                )
+                self._reasoning_active = False
+
+            await self.registry.append_captured_event(
+                self.tool_call_id,
+                self._chunk_record(msg_id, text, content_type),
+            )
+
+        self._last_msg_id = msg_id
+
+    async def finalize(self) -> None:
+        """Close any still-open reasoning lifecycle and signal stream-end.
+
+        The stream-end sentinel is what tells the per-task SSE consumer it can
+        close immediately — without it the consumer falls back to polling
+        ``task.asyncio_task.done()`` between XREAD BLOCK timeouts (~4-8 s) and
+        in some flows waits until the post-turn collector flips
+        ``task.completed``. Best-effort: failures in the sentinel write are
+        absorbed so a degraded Redis can't break subagent termination.
+        """
+        if self._reasoning_active and self._last_msg_id is not None:
+            await self.registry.append_captured_event(
+                self.tool_call_id,
+                self._signal_record(self._last_msg_id, "complete"),
+            )
+            self._reasoning_active = False
+
+        try:
+            await self.registry.append_sentinel_to_stream(self.tool_call_id)
+        except Exception:
+            pass
 
 
 class SubAgent(TypedDict):
@@ -265,6 +397,65 @@ def _create_task_tool(
         checkpointer=checkpointer,
     )
 
+    async def _arun_subagent_streaming(
+        subagent: Runnable,
+        state: dict,
+        config: dict,
+    ) -> dict:
+        """Drive the subagent through ``astream`` with combined ``values`` and
+        ``messages`` modes; return the final state.
+
+        ``values`` mode yields full state snapshots; the last one is the
+        tool's return value. ``messages`` mode yields per-token
+        ``AIMessageChunk`` deltas forwarded to the registry as
+        ``message_chunk`` records for per-task SSE granularity.
+
+        ``stream_mode=["values", "messages"]`` yields ``(mode, data)`` tuples;
+        ``messages`` data is ``(message_chunk, metadata)``.
+        """
+        last_state: dict | None = None
+        forwarder: _SubagentTokenForwarder | None = None
+
+        if registry is not None:
+            tool_call_id = current_background_tool_call_id.get()
+            if tool_call_id:
+                bg_task = registry.get_by_tool_call_id(tool_call_id)
+                if bg_task is not None:
+                    forwarder = _SubagentTokenForwarder(
+                        registry,
+                        tool_call_id,
+                        f"task:{bg_task.task_id}",
+                    )
+
+        try:
+            async for mode, data in subagent.astream(
+                state, config, stream_mode=["values", "messages"]
+            ):
+                if mode == "values":
+                    last_state = data
+                elif mode == "messages" and forwarder is not None:
+                    # ``messages`` data is ``(message_chunk, metadata)``;
+                    # we only need the chunk. Duck-typed (no isinstance) so
+                    # mocks and any future BaseMessage subclasses pass.
+                    chunk = data[0] if isinstance(data, tuple) else data
+                    if chunk is not None and hasattr(chunk, "content"):
+                        try:
+                            await forwarder.forward(chunk)
+                        except Exception as exc:
+                            # Token forwarding must never break the subagent.
+                            logger.debug(
+                                "Subagent token forwarding failed",
+                                error=str(exc),
+                            )
+        finally:
+            if forwarder is not None:
+                try:
+                    await forwarder.finalize()
+                except Exception:
+                    pass
+
+        return last_state if last_state is not None else {}
+
     def _return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
         # Validate that the result contains a 'messages' key
         if "messages" not in result:
@@ -494,7 +685,7 @@ def _create_task_tool(
                 parent_thread_id=parent_configurable.get("thread_id", ""),
                 subagent_type=effective_type,
             )
-            result = await subagent.ainvoke(invoke_state, config)
+            result = await _arun_subagent_streaming(subagent, invoke_state, config)
         else:
             # New task: use parent's thread_id + checkpoint_ns for isolation
             _subagent, subagent_state = _validate_and_prepare_state(
@@ -530,7 +721,7 @@ def _create_task_tool(
                     config = {}
                 config["callbacks"] = callbacks
 
-            result = await subagent.ainvoke(subagent_state, config)
+            result = await _arun_subagent_streaming(subagent, subagent_state, config)
 
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
