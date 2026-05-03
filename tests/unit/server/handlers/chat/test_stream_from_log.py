@@ -568,14 +568,12 @@ async def test_subagent_consumer_exits_on_sentinel_only_stream(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_stream_from_log_bumps_workflow_connection_counter(monkeypatch):
-    """The flag-on workflow consumer must bump
+    """The workflow consumer must bump
     ``BackgroundTaskManager.active_connections`` on attach and decrement on
     detach. Without this, the abandoned-task cleanup at
     ``BackgroundTaskManager._periodic_cleanup`` would force-cancel any
     long-running RUNNING task whose client connected once and then went
-    silent (no further reconnect calls to refresh ``last_access_at``).
-    Mirrors what ``stream_live_events`` does on the legacy path so housekeeping
-    stays consistent under the flag."""
+    silent (no further reconnect calls to refresh ``last_access_at``)."""
     from src.server.handlers.chat import stream_from_log as sfl_mod
     from src.server.services.background_task_manager import (
         BackgroundTaskManager,

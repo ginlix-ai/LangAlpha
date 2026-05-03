@@ -11,8 +11,6 @@ Both streams store pre-rendered SSE wire strings in the steady state.
 The subagent consumer also handles legacy JSON records
 (``{seq, event, data, agent_id}``) written by earlier producer
 versions — those age out after their TTL window.
-
-Gated behind ``USE_REDIS_STREAM_SSE`` per request.
 """
 
 from __future__ import annotations

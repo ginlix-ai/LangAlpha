@@ -74,13 +74,13 @@ from ._common import (
     process_hitl_response,
     serialize_context_metadata,
     setup_steering_tracking,
-    stream_live_events,
     wait_or_steer,
 )
-from src.config.settings import get_ptc_recursion_limit, is_use_redis_stream_sse_enabled
+from src.config.settings import get_ptc_recursion_limit
 
 from .llm_config import resolve_llm_config
-from .steering import backfill_steering_queries
+from .steering import backfill_steering_queries, drain_steering_return_event
+from .stream_from_log import stream_from_log
 
 # Strong references to fire-and-forget tasks so the event loop doesn't GC them.
 _background_tasks: set[asyncio.Task] = set()
@@ -896,30 +896,22 @@ async def astream_ptc_workflow(
             f"[PTC_TIMING] thread_id={thread_id} model={model_tag} total={total_ms:.0f}ms ({phases})"
         )
 
-        if is_use_redis_stream_sse_enabled():
-            # Stream-backed first-connect: read from workflow:stream:{thread_id}
-            # via XREAD BLOCK. The workflow runs as a fully detached background
-            # task — disconnect cannot reach it.
-            from .stream_from_log import stream_from_log
+        # Stream-backed first-connect: read from workflow:stream:{thread_id}
+        # via XREAD BLOCK. The workflow runs as a fully detached background
+        # task — disconnect cannot reach it.
+        async for event in stream_from_log(thread_id, last_event_id=None):
+            yield event
 
-            async for event in stream_from_log(thread_id, last_event_id=None):
-                yield event
-        else:
-            async for event in stream_live_events(
-                manager=manager,
-                tracker=tracker,
-                thread_id=thread_id,
-                workspace_id=workspace_id,
-                user_id=user_id,
-                handler=handler,
-                token_callback=token_callback,
-                persistence_service=persistence_service,
-                start_time=start_time,
-                request=request,
-                is_byok=is_byok,
-                log_prefix="PTC_CHAT",
-            ):
-                yield event
+        # After the workflow ends, return any unconsumed steering messages so
+        # the client can re-render them as locally-queued context for the next
+        # turn instead of losing them silently.
+        steering_event = await drain_steering_return_event(thread_id)
+        if steering_event:
+            logger.info(
+                f"[PTC_CHAT] Returning unconsumed steering message(s) "
+                f"to client: thread_id={thread_id}"
+            )
+            yield steering_event
 
     except (asyncio.CancelledError, GeneratorExit):
         if slot_owned:

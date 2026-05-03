@@ -195,12 +195,6 @@ class BackgroundTask:
     The collector awaits this before clearing the captured-event tail so that
     live SSE consumers are guaranteed to have emitted all events."""
 
-    new_event_signal: asyncio.Event = field(default_factory=asyncio.Event)
-    """Set by append_captured_event and task done_callbacks to wake any
-    per-task SSE consumer that is waiting for new output. The consumer
-    clears before draining and then awaits, so a set() issued during or
-    after drain stays visible for the next wait."""
-
     sse_consumer_count: int = 0
     """Number of active SSE consumers for this task. sse_drain_complete is
     only set when the last consumer finishes, preventing the collector from
@@ -453,7 +447,6 @@ class BackgroundTaskRegistry:
             task.captured_events_tail.append(record)
             task.captured_event_count = seq
             task.captured_event_bytes += _estimate_record_bytes(record)
-            task.new_event_signal.set()
             # Bump last_updated_at only on user-visible text output.
             # reasoning_signal / reasoning / tool_calls / tool_call_result
             # events are excluded — they're pacing noise.
@@ -550,9 +543,8 @@ class BackgroundTaskRegistry:
 
         # Pre-render the SSE wire format for the Stream so the consumer can
         # yield bytes verbatim — no JSON-decode + re-render branch in the read
-        # path. The List keeps storing JSON because the legacy consumer (still
-        # active under USE_REDIS_STREAM_SSE=false) and the post-turn collector
-        # both expect JSON records.
+        # path. The List still stores JSON because the post-turn collector
+        # (``iter_subagent_events_full``) expects records.
         try:
             seq = int(record.get("seq") or 0)
             data = {

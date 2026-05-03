@@ -53,7 +53,6 @@ def _make_info(thread_id: str = "t-1", **metadata) -> TaskInfo:
     )
     info.graph = object()
     info.completion_callback = AsyncMock()
-    info.result_buffer.extend(["a", "b", "c"])
     return info
 
 
@@ -74,7 +73,6 @@ class TestReleaseTerminalRefs:
 
         assert info.graph is None
         assert info.completion_callback is None
-        assert len(info.result_buffer) == 0
         assert "handler" not in info.metadata
         assert "token_callback" not in info.metadata
         assert "sandbox" not in info.metadata
@@ -304,8 +302,6 @@ class _FakeTask:
         self.per_call_records = [{"tokens": 1}]
         self.asyncio_task = MagicMock(spec=asyncio.Task)
         self.handler_task = MagicMock(spec=asyncio.Task)
-        self.new_event_signal = asyncio.Event()
-        self.new_event_signal.set()
         self.sse_drain_complete = asyncio.Event()
         self.sse_drain_complete.set()
         self.completed = True
@@ -330,7 +326,6 @@ class TestAwaitDrainCleanup:
         assert task.per_call_records == []
         assert task.asyncio_task is None
         assert task.handler_task is None
-        assert not task.new_event_signal.is_set()
         # Scalars + result preserved (cross-turn TaskOutput contract)
         assert task.task_id == "abc123"
         assert task.tool_call_id == "tc-abc123"
@@ -378,4 +373,3 @@ class TestAwaitDrainCleanup:
         assert task.per_call_records == []
         assert task.asyncio_task is None
         assert task.handler_task is None
-        assert not task.new_event_signal.is_set()

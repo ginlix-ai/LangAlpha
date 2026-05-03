@@ -28,22 +28,18 @@ from src.server.utils.content_normalizer import (
     is_thinking_status_signal,
 )
 from src.utils.tracking import ExecutionTracker
+from src.config.settings import (
+    get_workflow_timeout,
+    is_sse_event_log_enabled,
+    get_merged_chunk_max_bytes,
+)
 
 logger = logging.getLogger(__name__)
 
 # Dedicated logger for SSE events (can be configured independently)
 sse_logger = logging.getLogger("sse_events")
 
-# Load configuration from config.yaml
-from src.config.settings import (
-    get_workflow_timeout,
-    get_sse_keepalive_interval,
-    is_sse_event_log_enabled,
-    get_merged_chunk_max_bytes,
-)
-
 WORKFLOW_TIMEOUT = get_workflow_timeout()  # seconds
-SSE_KEEPALIVE_INTERVAL = get_sse_keepalive_interval()  # seconds
 SSE_EVENT_LOG_ENABLED = is_sse_event_log_enabled()
 
 MERGED_STREAM_CHUNK_MAX_BYTES_DEFAULT = get_merged_chunk_max_bytes()
@@ -255,86 +251,6 @@ class StreamEventAccumulator:
         return bool(incoming_args)
 
 
-async def multiplex_streams(graph_stream: AsyncGenerator, keepalive_queue: asyncio.Queue):
-    """
-    Multiplex graph events and keepalive events into a single stream.
-
-    This ensures keepalive events are sent even when graph.astream() is blocked
-    during long-running operations (LLM calls, tool execution, etc).
-
-    Args:
-        graph_stream: AsyncGenerator from graph.astream()
-        keepalive_queue: Queue containing keepalive events
-
-    Yields:
-        Tuple of (source, data) where:
-        - source: "graph" or "keepalive"
-        - data: Event data from that source
-    """
-    graph_task = None
-    keepalive_task = None
-
-    try:
-        # Create initial tasks
-        graph_iterator = graph_stream.__aiter__()
-        graph_task = asyncio.ensure_future(graph_iterator.__anext__())
-        keepalive_task = asyncio.ensure_future(keepalive_queue.get())
-
-        while True:
-            # Wait for whichever completes first
-            done, pending = await asyncio.wait(
-                {graph_task, keepalive_task},
-                return_when=asyncio.FIRST_COMPLETED
-            )
-
-            # Process completed tasks
-            for task in done:
-                try:
-                    if task == graph_task:
-                        # Graph event received
-                        graph_data = task.result()
-                        yield ("graph", graph_data)
-                        # Create new graph task for next event
-                        graph_task = asyncio.ensure_future(graph_iterator.__anext__())
-
-                    elif task == keepalive_task:
-                        # Keepalive event received
-                        keepalive_data = task.result()
-                        yield ("keepalive", keepalive_data)
-                        # Create new keepalive task
-                        keepalive_task = asyncio.ensure_future(keepalive_queue.get())
-
-                except StopAsyncIteration:
-                    # Graph stream ended
-                    logger.debug("[MULTIPLEX] Graph stream ended")
-                    # Cancel keepalive task and exit
-                    if keepalive_task and not keepalive_task.done():
-                        keepalive_task.cancel()
-                    return
-
-                except Exception as e:
-                    logger.error(f"[MULTIPLEX] Error processing task: {e}")
-                    raise
-
-    except asyncio.CancelledError:
-        logger.debug("[MULTIPLEX] Multiplexer cancelled (client disconnected)")
-        # Clean up pending tasks
-        if graph_task and not graph_task.done():
-            graph_task.cancel()
-        if keepalive_task and not keepalive_task.done():
-            keepalive_task.cancel()
-        raise
-
-    except Exception as e:
-        logger.error(f"[MULTIPLEX] Fatal error in multiplexer: {e}")
-        # Clean up
-        if graph_task and not graph_task.done():
-            graph_task.cancel()
-        if keepalive_task and not keepalive_task.done():
-            keepalive_task.cancel()
-        raise
-
-
 class WorkflowStreamHandler:
     """
     Handles LangGraph workflow streaming with SSE formatting.
@@ -351,29 +267,19 @@ class WorkflowStreamHandler:
         thread_id: str,
         token_callback: Optional[Any] = None,
         tool_tracker: Optional[Any] = None,
-        keepalive_interval: Optional[float] = None,
         workflow_timeout: Optional[int] = None,
         background_registry: Optional[Any] = None,
         merged_stream_chunk_max_bytes: int = MERGED_STREAM_CHUNK_MAX_BYTES_DEFAULT,
         agent_config: Optional[Any] = None,
     ):
-        """
-        Initialize the workflow stream handler.
+        """Initialize the workflow stream handler.
 
-        Args:
-            thread_id: Thread identifier for this streaming session
-            token_callback: Token tracking callback instance (PerCallTokenTracker)
-            tool_tracker: Tool usage tracker instance (ToolUsageTracker) for infrastructure cost tracking
-            keepalive_interval: Seconds between keepalive events (default from env)
-            workflow_timeout: Maximum workflow execution time in seconds (default from env)
-            background_registry: BackgroundTaskRegistry instance for background task status (optional)
-            merged_stream_chunk_max_bytes: Max bytes per merged stored stream chunk
-            agent_config: Resolved AgentConfig; drives the ``threshold`` on token_usage events.
+        Keepalives live in the SSE consumer (``stream_from_log``), not here —
+        the producer side is just a thin LangGraph pass-through.
         """
         self.thread_id = thread_id
         self.token_callback = token_callback
         self.tool_tracker = tool_tracker
-        self.keepalive_interval = keepalive_interval or SSE_KEEPALIVE_INTERVAL
         self.workflow_timeout = workflow_timeout or WORKFLOW_TIMEOUT
         self.agent_config = agent_config
 
@@ -409,11 +315,6 @@ class WorkflowStreamHandler:
             max_merged_bytes=merged_stream_chunk_max_bytes
         )
 
-        # Keepalive task management
-        self._keepalive_task: Optional[asyncio.Task] = None
-        self._keepalive_stop_event: asyncio.Event = asyncio.Event()
-        self._last_event_time: float = 0.0
-
         # Background task registry (single source of truth for SSE events)
         self._background_registry = background_registry
 
@@ -445,87 +346,19 @@ class WorkflowStreamHandler:
         # instead of message_chunk.
         self._compaction_windows: set[tuple] = set()
 
-    async def _keepalive_loop(self, keepalive_queue: asyncio.Queue):
-        """
-        Background task that sends keepalive events to prevent connection timeouts.
-
-        Args:
-            keepalive_queue: Queue to send keepalive events to
-        """
-        import time
-
-        try:
-            while not self._keepalive_stop_event.is_set():
-                # Wait for keepalive_interval or until stop event
-                try:
-                    await asyncio.wait_for(
-                        self._keepalive_stop_event.wait(),
-                        timeout=self.keepalive_interval
-                    )
-                    # If we get here, stop event was set
-                    break
-                except asyncio.TimeoutError:
-                    # Timeout means we should send keepalive
-                    pass
-
-                # Check if enough time has passed since last event
-                current_time = time.time()
-                time_since_last_event = current_time - self._last_event_time
-
-                # Only send keepalive if we haven't sent any events recently
-                if time_since_last_event >= self.keepalive_interval:
-                    keepalive_event = self._format_keepalive_event()
-                    await keepalive_queue.put(keepalive_event)
-                    logger.debug(f"[KEEPALIVE] Sent for thread_id={self.thread_id}")
-
-
-        except asyncio.CancelledError:
-            logger.debug(f"[KEEPALIVE] Task cancelled for thread_id={self.thread_id}")
-            raise
-        except Exception as e:
-            logger.warning(f"[KEEPALIVE] Error in keepalive loop: {e}")
-
-    def _format_keepalive_event(self) -> str:
-        """
-        Format a keepalive SSE event to prevent connection timeouts.
-
-        Returns:
-            SSE-formatted keepalive event string with sequence ID
-        """
-        # Increment sequence for keepalive too (for proper event ordering)
-        if self.event_counter is not None:
-            self.event_sequence = self.event_counter.next()
-        else:
-            self.event_sequence += 1
-        return f"id: {self.event_sequence}\nevent: keepalive\ndata: {{\"status\": \"alive\"}}\n\n"
-
     async def stream_workflow(
         self,
         graph: Any,
         input_state: Any,
         config: dict,
     ) -> AsyncGenerator[str, None]:
-        """
-        Stream workflow execution events as SSE-formatted strings with timeout handling.
+        """Stream workflow execution events as SSE-formatted strings.
 
-        Args:
-            graph: LangGraph graph instance
-            input_state: Initial state or Command for the workflow
-            config: LangGraph config with thread_id, callbacks, etc.
-
-        Yields:
-            SSE-formatted event strings (event: type\\ndata: json\\n\\n)
-
-        Raises:
-            asyncio.TimeoutError: If workflow exceeds configured timeout
+        Keepalives are emitted by the SSE consumer (``stream_from_log``) on
+        XREAD BLOCK timeout, not by the producer — the workflow no longer
+        needs to interleave them with graph output.
         """
         import time
-
-        # Initialize keepalive queue and start background task
-        keepalive_queue: asyncio.Queue = asyncio.Queue()
-        self._keepalive_stop_event.clear()
-        self._last_event_time = time.time()
-        self._keepalive_task = asyncio.create_task(self._keepalive_loop(keepalive_queue))
 
         # Track start time for timeout
         workflow_start_time = time.time()
@@ -558,21 +391,9 @@ class WorkflowStreamHandler:
                 subgraphs=True,
             )
 
-            # Multiplex graph stream with keepalive queue
-            async for source, data in multiplex_streams(graph_stream, keepalive_queue):
-                # Update last event time
-                self._last_event_time = time.time()
-
-                # Handle keepalive events
-                if source == "keepalive":
-                    # Directly yield keepalive event (already formatted)
-                    yield data
-                    logger.debug(f"[KEEPALIVE] Yielded for thread_id={self.thread_id}")
-
-                    continue
-
+            async for graph_event in graph_stream:
                 # Unpack graph event data
-                agent_from_stream, stream_mode, event_data = data
+                agent_from_stream, stream_mode, event_data = graph_event
 
                 # Check for timeout (if configured)
                 if self.workflow_timeout > 0:
@@ -815,8 +636,6 @@ class WorkflowStreamHandler:
                     agent_name,
                     is_compaction=is_compaction_chunk,
                 ):
-                    # Update last event time for each yielded event
-                    self._last_event_time = time.time()
                     yield event
 
             # After workflow completes, emit credit_usage event
@@ -879,18 +698,6 @@ class WorkflowStreamHandler:
             logger.exception(f"Error in stream generator for thread_id={self.thread_id}: {e}")
             yield self.format_error_event(str(e), exc=e)
             raise  # Re-raise so background_task_manager calls _mark_failed()
-        finally:
-            # Stop keepalive task
-            logger.debug(f"[KEEPALIVE] Stopping keepalive task for thread_id={self.thread_id}")
-            self._keepalive_stop_event.set()
-            if self._keepalive_task and not self._keepalive_task.done():
-                self._keepalive_task.cancel()
-                try:
-                    await self._keepalive_task
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    logger.warning(f"[KEEPALIVE] Error stopping keepalive task: {e}")
 
     def _handle_interrupt(self, event_data: dict) -> Optional[str]:
         """

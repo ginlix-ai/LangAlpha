@@ -134,12 +134,10 @@ async def _consume_background_gen(gen, label: str, thread_id: str) -> None:
             async with manager.task_lock:
                 task_info = manager.tasks.get(thread_id)
                 if task_info and task_info.status == TaskStatus.QUEUED and task_info.task is None:
-                    # Workflow never started — notify any waiting reconnect clients
-                    for q in task_info.live_queues:
-                        try:
-                            q.put_nowait(None)
-                        except asyncio.QueueFull:
-                            pass
+                    # Workflow never started — drop the placeholder. Any
+                    # reconnect consumer attached to workflow:stream:* will
+                    # eventually exit via its terminal-check + handshake when
+                    # the missing TaskInfo flips it to a no-task state.
                     del manager.tasks[thread_id]
                     logger.info(
                         f"[{label}] Cleaned up pre-registered placeholder "

@@ -13,7 +13,6 @@ import json
 import logging
 import time
 from collections.abc import AsyncGenerator
-from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
 import psycopg
@@ -22,7 +21,6 @@ from fastapi import HTTPException
 from src.config.settings import (
     get_langsmith_metadata,
     get_langsmith_tags,
-    get_live_queue_maxsize,
     get_locale_config,
     get_max_workflow_retries,
     is_sse_event_log_enabled,
@@ -30,11 +28,7 @@ from src.config.settings import (
 from src.server.app import setup
 from src.server.database import conversation as qr_db
 from src.server.models.chat import summarize_hitl_response_map
-from src.server.services.background_registry_store import BackgroundRegistryStore
-from src.server.services.background_task_manager import (
-    BackgroundTaskManager,
-    TaskStatus,
-)
+from src.server.services.background_task_manager import BackgroundTaskManager
 from src.server.services.persistence.conversation import (
     ConversationPersistenceService,
 )
@@ -160,88 +154,6 @@ async def _setup_fork_and_persistence(
         await persistence_service.get_or_calculate_turn_index()
 
     return query_type, is_fork, persistence_service
-
-
-async def _handle_sse_disconnect(
-    tracker,
-    manager,
-    thread_id: str,
-    workspace_id: str,
-    user_id: str,
-    live_queue,
-    handler,
-    token_callback,
-    persistence_service,
-    start_time: float,
-    request,
-    is_byok: bool = False,
-):
-    """Fire-and-forget cleanup when the SSE client disconnects.
-
-    Runs as an independent asyncio.Task outside Starlette's anyio cancel scope,
-    so awaits work normally. Handles both explicit cancel (user clicked cancel)
-    and accidental disconnect (tab close, refresh, network drop).
-    """
-    try:
-        is_explicit_cancel = await tracker.is_cancelled(thread_id)
-
-        if is_explicit_cancel:
-            logger.info(
-                f"[CHAT] Workflow explicitly cancelled by user: thread_id={thread_id}"
-            )
-            await tracker.mark_cancelled(thread_id)
-
-            _per_call_records = (
-                token_callback.per_call_records if token_callback else None
-            )
-            _tool_usage = handler.get_tool_usage() if handler else None
-
-            try:
-                _sse_events = handler.get_sse_events() if handler else None
-                await persistence_service.persist_cancelled(
-                    execution_time=time.time() - start_time,
-                    metadata={
-                        "workspace_id": request.workspace_id,
-                        "is_byok": is_byok,
-                    },
-                    per_call_records=_per_call_records,
-                    tool_usage=_tool_usage,
-                    sse_events=_sse_events,
-                )
-            except Exception as persist_error:
-                logger.error(f"[CHAT] Failed to persist cancellation: {persist_error}")
-
-            await manager.cancel_workflow(thread_id)
-
-            registry_store = BackgroundRegistryStore.get_instance()
-            await registry_store.cancel_and_clear(thread_id, force=True)
-        else:
-            logger.info(
-                f"[CHAT] SSE client disconnected, workflow continues in "
-                f"background: thread_id={thread_id}"
-            )
-            await tracker.mark_disconnected(
-                thread_id=thread_id,
-                metadata={
-                    "workspace_id": workspace_id,
-                    "user_id": user_id,
-                    "disconnected_at": datetime.now().isoformat(),
-                },
-            )
-    except Exception as e:
-        logger.error(
-            f"[CHAT] Error during SSE disconnect cleanup for {thread_id}: {e}",
-            exc_info=True,
-        )
-    finally:
-        try:
-            await manager.unsubscribe_from_live_events(thread_id, live_queue)
-        except Exception:
-            pass
-        try:
-            await manager.decrement_connection(thread_id)
-        except Exception:
-            pass
 
 
 async def _is_plan_interrupt_pending(thread_id: str) -> bool:
@@ -732,93 +644,6 @@ async def wait_or_steer(
             "Wait a moment, or use /reconnect to continue streaming, or /cancel to stop it."
         ),
     )
-
-
-async def stream_live_events(
-    manager: BackgroundTaskManager,
-    tracker: WorkflowTracker,
-    thread_id: str,
-    workspace_id: str,
-    user_id: str,
-    handler,
-    token_callback,
-    persistence_service: ConversationPersistenceService,
-    start_time: float,
-    request: ChatRequest,
-    is_byok: bool,
-    log_prefix: str = "CHAT",
-) -> AsyncGenerator[str, None]:
-    """Subscribe to live SSE events from a background workflow and yield them.
-
-    Handles client disconnect by spawning ``_handle_sse_disconnect`` as an
-    independent asyncio task.  After the workflow ends, drains any unconsumed
-    steering messages and emits a ``steering_returned`` event.
-    """
-    # Deferred to avoid circular import: steering imports _common at
-    # module level, so _common must not import steering at module level.
-    from src.server.handlers.chat.steering import drain_steering_return_event
-
-    live_queue: asyncio.Queue = asyncio.Queue(maxsize=get_live_queue_maxsize())
-    await manager.subscribe_to_live_events(thread_id, live_queue)
-    await manager.increment_connection(thread_id)
-
-    _disconnected = False
-    try:
-        while True:
-            try:
-                sse_event = await asyncio.wait_for(live_queue.get(), timeout=1.0)
-                if sse_event is None:
-                    break
-                yield sse_event
-            except asyncio.TimeoutError:
-                status = await manager.get_task_status(thread_id)
-                if status in [
-                    TaskStatus.COMPLETED,
-                    TaskStatus.FAILED,
-                    TaskStatus.CANCELLED,
-                ]:
-                    break
-                continue
-
-        # After workflow ends, return any unconsumed steering messages to the client
-        steering_event = await drain_steering_return_event(thread_id)
-        if steering_event:
-            logger.info(
-                f"[{log_prefix}] Returning unconsumed steering "
-                f"message(s) to client: thread_id={thread_id}"
-            )
-            yield steering_event
-
-    except (asyncio.CancelledError, GeneratorExit):
-        _disconnected = True
-        asyncio.create_task(
-            _handle_sse_disconnect(
-                tracker=tracker,
-                manager=manager,
-                thread_id=thread_id,
-                workspace_id=workspace_id,
-                user_id=user_id,
-                live_queue=live_queue,
-                handler=handler,
-                token_callback=token_callback,
-                persistence_service=persistence_service,
-                start_time=start_time,
-                request=request,
-                is_byok=is_byok,
-            ),
-            name=f"sse-disconnect-cleanup-{thread_id}",
-        )
-        raise
-    finally:
-        if not _disconnected:
-            try:
-                await manager.unsubscribe_from_live_events(thread_id, live_queue)
-            except Exception:
-                pass
-            try:
-                await manager.decrement_connection(thread_id)
-            except Exception:
-                pass
 
 
 async def handle_workflow_error(

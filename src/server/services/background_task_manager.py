@@ -44,7 +44,6 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, AsyncIterator, Optional, Callable, Coroutine
 from enum import Enum
 from dataclasses import dataclass, field
-from collections import deque
 from contextlib import suppress
 
 from src.config.settings import (
@@ -79,49 +78,6 @@ logger = logging.getLogger(__name__)
 
 
 # ========== Shared Helpers (DRY) ==========
-
-
-def drain_task_captured_events(task, cursor: int):
-    """Return new captured-event records from a single task since ``cursor``.
-
-    ``cursor`` is the last-seen ``seq`` value (NOT a list index). This snapshot
-    walks ``task.captured_events_tail`` once and returns every record with
-    ``seq > cursor`` along with the task's high-water mark so the caller can
-    advance the cursor to exactly what was returned.
-
-    Returned items are 3-tuples ``(record, agent_id, seq)`` where ``record``
-    carries the full ``{"seq", "event", "data", "agent_id", ...}`` shape,
-    ``agent_id`` mirrors ``record["agent_id"]`` (resolved from the task), and
-    ``seq`` is the global monotonic identifier — stable across SSE consumers,
-    which is what lets multiple consumers emit the same SSE ``id:`` without
-    collisions.
-
-    NOTE: Records returned here come ONLY from the in-memory tail. If the tail
-    rotated past ``cursor`` (i.e. ``cursor`` < the front-of-tail seq), older
-    events are NOT returned — callers that need full history must use the
-    Redis-fallback collector helper. Live drain paths never hit this case
-    because their cursor only advances. See ``iter_subagent_events_full``.
-
-    Args:
-        task: A BackgroundTask with ``captured_events_tail``
-        cursor: Last-seen ``seq`` value (0 means "from the beginning")
-
-    Returns:
-        (items, new_cursor): ``items`` is a list of ``(record, agent_id, seq)``
-        triples; ``new_cursor`` is the task's high-water seq to assign back to
-        the caller's cursor after iteration.
-    """
-    # Snapshot the deque to a stable list so iteration is GIL-safe and not
-    # affected by a concurrent producer rotating the tail mid-walk.
-    snapshot = list(task.captured_events_tail)
-    high_water = task.captured_event_seq
-    agent_id = f"task:{task.task_id}"
-    items = [
-        (rec, rec.get("agent_id") or agent_id, rec["seq"])
-        for rec in snapshot
-        if rec.get("seq", 0) > cursor
-    ]
-    return items, high_water
 
 
 async def iter_subagent_events_full(
@@ -274,19 +230,10 @@ class TaskInfo:
     soft_interrupt_event: asyncio.Event = field(default_factory=asyncio.Event)
     soft_interrupted: bool = False
 
-    # Result storage
-    # Bounded fallback used only when Redis is unavailable (local dev / tests).
-    # Drops events past the cap to keep memory bounded — for full retention
-    # rely on Redis (capped at max_stored_messages_per_agent, default 150k,
-    # see settings.get_max_stored_messages_per_agent).
-    result_buffer: deque = field(default_factory=lambda: deque(maxlen=1000))
     final_result: Optional[Any] = None
 
     # Connection tracking
     active_connections: int = 0
-
-    # Live event broadcasting for reconnection support
-    live_queues: list = field(default_factory=list)  # List[asyncio.Queue]
 
     # Metadata
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -544,8 +491,8 @@ class BackgroundTaskManager:
 
         Used by background dispatch (X-Dispatch: background) to close the timing
         gap between the HTTP response and the generator reaching start_workflow().
-        Reconnecting clients see a QUEUED TaskInfo (with subscribable live_queues)
-        instead of a 404.
+        Reconnecting clients see a QUEUED TaskInfo and attach to
+        ``workflow:stream:{thread_id}`` (initially empty) instead of a 404.
         """
         async with self.task_lock:
             if thread_id in self.tasks:
@@ -596,8 +543,8 @@ class BackgroundTaskManager:
                 existing = self.tasks[thread_id]
                 if existing.status == TaskStatus.QUEUED and existing.task is None:
                     # Pre-registered dispatch placeholder — upgrade in-place so
-                    # any live_queues that reconnect clients subscribed to keep
-                    # receiving events from the same TaskInfo.
+                    # the same TaskInfo identity stays valid for any
+                    # consumers already attached to workflow:stream:{thread_id}.
                     existing.metadata = metadata or {}
                     existing.completion_callback = completion_callback
                     existing.graph = graph
@@ -800,55 +747,24 @@ class BackgroundTaskManager:
         """
         # First, broadcast to live subscribers (in-memory, unchanged)
         async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
-            if not task_info:
+            if thread_id not in self.tasks:
                 return
 
-            # Broadcast to live queues
-            dead_queues = []
-            for queue in task_info.live_queues:
-                try:
-                    queue.put_nowait(event)
-                except asyncio.QueueFull:
-                    logger.warning(
-                        f"[BackgroundTaskManager] Queue full for subscriber "
-                        f"on {thread_id}, dropping event"
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"[BackgroundTaskManager] Error broadcasting to queue: {e}"
-                    )
-                    dead_queues.append(queue)
-
-            # Remove dead queues
-            for queue in dead_queues:
-                if queue in task_info.live_queues:
-                    task_info.live_queues.remove(queue)
-
-        # Store event to Redis (if configured) or fallback to in-memory.
-        # The Redis path is one atomic pipeline (see cache.pipelined_event_buffer)
-        # — previously this was ~9 sequential awaits per event, which saturated
-        # the pool under workflow bursts. See fix plan 2026-04-18.
-        # get_cache_client() is a module-level singleton in practice, but guard
-        # anyway so a misconfigured client never escapes as an uncaught error;
-        # the in-memory fallback keeps the SSE stream flowing.
         try:
             cache = get_cache_client()
         except Exception as e:
             logger.warning(
                 f"[EventBuffer] get_cache_client() failed for {thread_id}: {e}; "
-                "falling back to in-memory"
+                "dropping event"
             )
-            await self._append_to_in_memory_buffer(thread_id, event)
             return
         use_redis = self.event_storage_backend == "redis" and cache.enabled
 
         if not use_redis:
-            if self.event_storage_backend == "redis":
-                logger.warning(
-                    f"[EventBuffer] Redis unavailable, using in-memory buffer for {thread_id}"
-                )
-            await self._append_to_in_memory_buffer(thread_id, event)
+            logger.warning(
+                f"[EventBuffer] Redis unavailable for {thread_id}; "
+                "consumers attached to workflow:stream:* will see no events"
+            )
             return
 
         # Parse event ID from SSE format ("id: N\n..."). `partition` avoids
@@ -875,19 +791,10 @@ class BackgroundTaskManager:
         )
 
         if not success:
-            # Regression guard: a Redis blip must not drop events. The SSE stream
-            # keeps flowing via the in-memory deque.
-            if self.event_storage_fallback:
-                logger.warning(
-                    f"[EventBuffer] Redis pipeline failed for {thread_id}, "
-                    "falling back to in-memory"
-                )
-                await self._append_to_in_memory_buffer(thread_id, event)
-            else:
-                logger.error(
-                    f"[EventBuffer] Redis pipeline failed for {thread_id}, "
-                    "fallback disabled"
-                )
+            logger.error(
+                f"[EventBuffer] Redis pipeline failed for {thread_id}; "
+                "event dropped from workflow:stream:*"
+            )
             return
 
         logger.debug(f"[EventBuffer] Buffered event to Redis: {thread_id} (id={event_id}, seq={seq})")
@@ -904,19 +811,6 @@ class BackgroundTaskManager:
                 f"{seq}/{self.max_stored_messages} events. "
                 "Oldest events will be dropped (FIFO)."
             )
-
-    async def _append_to_in_memory_buffer(self, thread_id: str, event: str) -> None:
-        """Append an SSE event to the per-task in-memory deque (fallback path).
-
-        The deque has a hardcoded ``maxlen=1000`` (intentionally smaller than
-        the Redis-backed ``max_stored_messages_per_agent`` cap) so it
-        self-trims FIFO without a manual capacity check.
-        """
-        async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
-            if not task_info:
-                return
-            task_info.result_buffer.append(event)
 
     async def _collect_subagent_results_for_turn(
         self,
@@ -1114,10 +1008,6 @@ class BackgroundTaskManager:
             # closures alive long after the task itself is done.
             task.asyncio_task = None
             task.handler_task = None
-            try:
-                task.new_event_signal.clear()
-            except Exception:
-                pass
             if cache is not None:
                 try:
                     await cache.delete(
@@ -1340,7 +1230,6 @@ class BackgroundTaskManager:
         info.completion_callback = None
         if info.inner_task is not None and info.inner_task.done():
             info.inner_task = None
-        info.result_buffer.clear()
         info.metadata.pop("handler", None)
         info.metadata.pop("token_callback", None)
         info.metadata.pop("sandbox", None)
@@ -1360,13 +1249,6 @@ class BackgroundTaskManager:
 
             task_info.status = TaskStatus.COMPLETED
             task_info.completed_at = datetime.now()
-
-            # Send completion sentinel to all live subscribers
-            for queue in task_info.live_queues:
-                try:
-                    queue.put_nowait(None)  # None signals completion
-                except Exception as e:
-                    logger.error(f"Error sending completion signal: {e}")
 
             # Copy refs needed for persistence phase
             graph = task_info.graph
@@ -1574,13 +1456,6 @@ class BackgroundTaskManager:
             task_info.completed_at = datetime.now()
             task_info.error = error
 
-            # Send completion sentinel to all live subscribers
-            for queue in task_info.live_queues:
-                try:
-                    queue.put_nowait(None)  # None signals completion
-                except Exception as e:
-                    logger.error(f"Error sending completion signal: {e}")
-
             # Copy refs needed for persistence phase
             metadata = task_info.metadata
 
@@ -1682,11 +1557,6 @@ class BackgroundTaskManager:
 
             task_info.status = TaskStatus.SOFT_INTERRUPTED
             task_info.completed_at = datetime.now()
-
-            # Notify all live subscribers that the workflow stream ended
-            for queue in task_info.live_queues:
-                with suppress(Exception):
-                    queue.put_nowait(None)
 
             # Copy refs needed for persistence phase
             metadata = task_info.metadata
@@ -2110,12 +1980,6 @@ class BackgroundTaskManager:
             task_info.status = TaskStatus.CANCELLED
             task_info.completed_at = datetime.now()
 
-            for queue in task_info.live_queues:
-                try:
-                    queue.put_nowait(None)
-                except Exception as e:
-                    logger.error(f"Error sending completion signal: {e}")
-
             # Copy refs needed for persistence phase
             metadata = task_info.metadata
 
@@ -2270,199 +2134,32 @@ class BackgroundTaskManager:
                 return True
             return False
 
-    async def get_buffered_events_redis(
-        self,
-        thread_id: str,
-        from_beginning: bool = False,
-        after_event_id: Optional[int] = None
-    ) -> list:
-        """
-        Get buffered events from Redis (or in-memory fallback).
-
-        Args:
-            thread_id: Workflow thread identifier
-            from_beginning: If True, return all buffered events
-            after_event_id: Optional event ID to filter events (return events > this ID)
-
-        Returns:
-            List of SSE-formatted event strings
-        """
-        try:
-            cache = get_cache_client()
-
-            # Check if Redis backend is enabled and Redis is available
-            use_redis = (
-                self.event_storage_backend == "redis"
-                and cache.enabled
-            )
-
-            if not use_redis:
-                # Fallback to in-memory
-                if self.event_storage_backend == "redis":
-                    logger.warning(
-                        f"[EventBuffer] Redis unavailable, using in-memory buffer for {thread_id}"
-                    )
-
-                async with self.task_lock:
-                    task_info = self.tasks.get(thread_id)
-                    if not task_info or not task_info.result_buffer:
-                        return []
-
-                    events = list(task_info.result_buffer)
-
-                    # Filter by event ID if requested
-                    if after_event_id is not None:
-                        filtered_events = []
-                        for event in events:
-                            try:
-                                event_id_str = event.split("\n")[0].replace("id: ", "").strip()
-                                event_id = int(event_id_str)
-                                if event_id > after_event_id:
-                                    filtered_events.append(event)
-                            except (ValueError, IndexError):
-                                # Can't parse ID, include it to be safe
-                                filtered_events.append(event)
-                        return filtered_events
-
-                    return events
-
-            # Redis retrieval path
-            events_key = f"workflow:events:{thread_id}"
-
-            # Get all events from list
-            events = await cache.list_range(events_key, start=0, end=-1)
-
-            if not events:
-                logger.debug(f"[EventBuffer] No buffered events for {thread_id}")
-                return []
-
-            # Filter by event ID if requested
-            if after_event_id is not None:
-                filtered_events = []
-                for event in events:
-                    try:
-                        # Parse event ID from SSE format
-                        event_id_str = event.split("\n")[0].replace("id: ", "").strip()
-                        event_id = int(event_id_str)
-
-                        if event_id > after_event_id:
-                            filtered_events.append(event)
-
-                    except (ValueError, IndexError):
-                        # Can't parse ID, include it to be safe
-                        filtered_events.append(event)
-
-                logger.info(
-                    f"[EventBuffer] Retrieved {len(filtered_events)} events "
-                    f"(after_event_id={after_event_id}) for {thread_id}"
-                )
-                return filtered_events
-
-            logger.info(f"[EventBuffer] Retrieved {len(events)} events for {thread_id}")
-            return events
-
-        except Exception as e:
-            logger.error(
-                f"[EventBuffer] Error retrieving events from Redis for {thread_id}: {e}",
-                exc_info=True
-            )
-
-            # Fallback to in-memory on error
-            if self.event_storage_fallback:
-                async with self.task_lock:
-                    task_info = self.tasks.get(thread_id)
-                    if not task_info or not task_info.result_buffer:
-                        return []
-                    return list(task_info.result_buffer)
-
-            return []
-
     async def clear_event_buffer(self, thread_id: str):
-        """
-        Clear event buffer for a thread (both Redis and in-memory).
+        """Drop the workflow's Redis event keys after persistence.
 
-        This should be called when resuming a workflow from interrupt to prevent
-        old interrupt events from persisting in the buffer.
-
-        Args:
-            thread_id: Workflow thread identifier
+        Called from `_on_pair_persisted` once the response row is saved. The
+        24h TTL on the keys is a safety net; this DEL is the explicit happy
+        path so a long-lived thread doesn't accumulate dozens of stream keys.
         """
         try:
             cache = get_cache_client()
 
-            # Clear Redis buffer if using Redis backend
             if self.event_storage_backend == "redis" and cache.enabled:
                 events_key = f"workflow:events:{thread_id}"
                 meta_key = f"workflow:events:meta:{thread_id}"
                 stream_key = f"workflow:stream:{thread_id}"
 
-                # Delete event list, metadata, and the dual-write Stream key.
                 await cache.delete(events_key)
                 await cache.delete(meta_key)
                 await cache.delete(stream_key)
 
                 logger.debug(f"[EventBuffer] Cleared Redis event buffer for {thread_id}")
 
-            # Also clear in-memory buffer (fallback or dual-mode)
-            async with self.task_lock:
-                task_info = self.tasks.get(thread_id)
-                if task_info and task_info.result_buffer:
-                    task_info.result_buffer.clear()
-                    logger.debug(f"[EventBuffer] Cleared in-memory buffer for {thread_id}")
-
         except Exception as e:
             logger.error(
                 f"[EventBuffer] Error clearing event buffer for {thread_id}: {e}",
                 exc_info=True
             )
-
-    async def subscribe_to_live_events(self, thread_id: str, event_queue: asyncio.Queue) -> bool:
-        """
-        Subscribe to live events from a running workflow.
-
-        Args:
-            thread_id: Workflow thread identifier
-            event_queue: Queue to receive live events
-
-        Returns:
-            True if subscribed successfully, False if workflow not found
-        """
-        async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
-            if not task_info:
-                return False
-
-            if event_queue not in task_info.live_queues:
-                task_info.live_queues.append(event_queue)
-                logger.debug(
-                    f"[BackgroundTaskManager] Subscribed to live events for {thread_id} "
-                    f"(subscribers: {len(task_info.live_queues)})"
-                )
-            return True
-
-    async def unsubscribe_from_live_events(self, thread_id: str, event_queue: asyncio.Queue) -> bool:
-        """
-        Unsubscribe from live events.
-
-        Args:
-            thread_id: Workflow thread identifier
-            event_queue: Queue to unsubscribe
-
-        Returns:
-            True if unsubscribed successfully, False if workflow not found
-        """
-        async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
-            if not task_info:
-                return False
-
-            if event_queue in task_info.live_queues:
-                task_info.live_queues.remove(event_queue)
-                logger.debug(
-                    f"[BackgroundTaskManager] Unsubscribed from live events for {thread_id} "
-                    f"(subscribers: {len(task_info.live_queues)})"
-                )
-            return True
 
     async def cancel_workflow(self, thread_id: str) -> bool:
         """

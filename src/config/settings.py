@@ -381,11 +381,6 @@ def is_event_storage_fallback_enabled() -> bool:
     return get_infrastructure_config().background_execution.event_storage_fallback_to_memory
 
 
-def get_live_queue_maxsize() -> int:
-    """Get max backpressure for live SSE subscriber queues."""
-    return get_infrastructure_config().background_execution.live_queue_maxsize
-
-
 def get_subagent_task_max_wait() -> int:
     """Get max seconds to wait for subagent task to appear in registry."""
     return get_infrastructure_config().background_execution.subagent_task_max_wait
@@ -399,15 +394,6 @@ def get_in_memory_event_tail_max_events() -> int:
 def is_subagent_event_redis_spill_enabled() -> bool:
     """Kill-switch for the per-event Redis spill of subagent captured events."""
     return get_infrastructure_config().background_execution.spill_subagent_events_to_redis
-
-
-def is_use_redis_stream_sse_enabled() -> bool:
-    """Return True when ``USE_REDIS_STREAM_SSE`` env var is set.
-
-    Routes both first-connect and reconnect SSE through the XREAD BLOCK
-    consumer (``workflow:stream:*`` / ``subagent:stream:*``). Default: False.
-    """
-    return os.getenv("USE_REDIS_STREAM_SSE", "false").lower() in ("true", "1", "yes")
 
 
 def get_sse_drain_timeout() -> float:

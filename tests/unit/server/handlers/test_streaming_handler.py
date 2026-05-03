@@ -345,14 +345,6 @@ class TestWorkflowStreamHandlerFormatting:
         assert info["status_code"] == 429
         assert info["provider_module"] == "httpx"
 
-    def test_format_keepalive_event(self):
-        handler = self._make_handler()
-        result = handler._format_keepalive_event()
-        assert "event: keepalive\n" in result
-        assert '"status": "alive"' in result
-        assert result.startswith("id: ")
-        assert result.endswith("\n\n")
-
     def test_format_credit_usage_event(self):
         handler = self._make_handler(thread_id="credit-thread")
         token_usage = {

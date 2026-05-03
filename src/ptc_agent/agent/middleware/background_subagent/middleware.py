@@ -54,15 +54,13 @@ logger = structlog.get_logger(__name__)
 
 
 def _make_task_done_callback(task: BackgroundTask) -> Callable[[asyncio.Task], None]:
-    """Build a done_callback that wakes per-task SSE consumers and bumps
-    ``last_updated_at`` when the asyncio.Task finishes.
+    """Build a done_callback that bumps ``last_updated_at`` when the asyncio.Task finishes.
 
     Covers all completion paths (success, failure, cancellation) without
     having to instrument every ``task.completed = True`` site.
     """
 
     def _on_task_done(_t: asyncio.Task) -> None:
-        task.new_event_signal.set()
         task.last_updated_at = time.time()
 
     return _on_task_done
@@ -290,11 +288,6 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         task.redis_write_failed = False
         task.collector_response_id = None
         task.sse_drain_complete = asyncio.Event()
-        # Wake any consumer still awaiting the prior Event before we drop
-        # the reference — otherwise they'd sit on the stale event until
-        # the 5s safety timeout.
-        task.new_event_signal.set()
-        task.new_event_signal = asyncio.Event()
         task.sse_consumer_count = 0
         # Reset timestamps so the LLM sees honest staleness for the
         # resumed run, not leftover values from the prior asyncio.Task.
