@@ -660,22 +660,17 @@ class BackgroundTaskRegistry:
         if task.redis_write_failed:
             return
 
+        # Defensive guard: settings/cache imports are stable in normal
+        # operation, so a raise here means a broken deployment — bail
+        # quietly rather than crash the producer's astream loop.
         try:
             from src.config.settings import (
                 get_max_stored_messages_per_agent,
                 get_redis_ttl_workflow_events,
                 is_subagent_event_redis_spill_enabled,
             )
-        except Exception:
-            return
-
-        try:
             if not is_subagent_event_redis_spill_enabled():
                 return
-        except Exception:
-            return
-
-        try:
             from src.utils.cache.redis_cache import get_cache_client
 
             cache = get_cache_client()
@@ -698,6 +693,16 @@ class BackgroundTaskRegistry:
         # its XADD before the sentinel's pipeline opens; otherwise the
         # consumer exits on the sentinel and the late content event is lost.
         # _SPILL_TIMEOUT_SECONDS caps queue depth under load.
+        #
+        # ``wait_for`` timeout window: if the timeout fires *after*
+        # ``pipe.execute()`` has already dispatched the commands but before
+        # Redis ACKs, the sentinel XADD has already landed. The lock is then
+        # released and a queued content spill will write its XADD *after* the
+        # sentinel — at which point the consumer has already exited on the
+        # sentinel and that late event is lost. Best-effort by design; the
+        # sub-500-ms window makes it astronomically unlikely under normal
+        # load, and the fallback (``terminal_check`` closes the stream once
+        # the asyncio task finishes) still fires on the next BLOCK timeout.
         try:
             async with task.redis_spill_lock:
                 async with cache.client.pipeline(transaction=False) as pipe:

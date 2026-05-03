@@ -64,13 +64,12 @@ async def reconnect_to_workflow_stream(
 
     if is_use_redis_stream_sse_enabled():
         # Stream-backed reconnect: one XREAD BLOCK loop, no list replay,
-        # no live_queue subscription. Cursor starts at last_event_id (or
-        # `0` for "from the beginning" when reconnect arrives without an id).
+        # no live_queue subscription. ``stream_from_log`` maps both ``None``
+        # and ``<= 0`` to cursor ``0`` (replay from the beginning), so we
+        # pass ``last_event_id`` through untouched.
         from .stream_from_log import stream_from_log
 
-        async for event in stream_from_log(
-            thread_id, last_event_id if last_event_id is not None else 0
-        ):
+        async for event in stream_from_log(thread_id, last_event_id):
             yield event
         return
 

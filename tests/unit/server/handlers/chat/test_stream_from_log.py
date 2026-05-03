@@ -189,6 +189,60 @@ async def test_advances_cursor_through_entries():
 
 
 @pytest.mark.asyncio
+async def test_cursor_advances_past_skipped_last_entry():
+    """Regression: when the *last* entry in an XREAD batch is skipped (missing
+    ``event`` field, non-UTF8 bytes), the cursor must still advance past it.
+
+    Otherwise the next XREAD reads using the prior entry's id and gets the
+    same skipped entry back forever — a tight retry loop that never makes
+    progress."""
+    # Round 1: two entries; the LAST one is skipped (missing ``event`` field).
+    # Round 2: empty (terminal handshake round 1).
+    # Round 3: empty (handshake round 2 → exit).
+    cache = _make_cache(
+        [
+            [
+                (
+                    b"k",
+                    [
+                        (b"5-0", {b"event": b"id: 5\ndata: a\n\n"}),
+                        (b"6-0", {}),  # missing ``event`` — skipped via continue
+                    ],
+                )
+            ],
+            [],
+            [],
+        ]
+    )
+
+    async def terminal() -> bool:
+        return True
+
+    yielded: list[str] = []
+    with patch(
+        "src.server.handlers.chat.stream_from_log.get_cache_client",
+        return_value=cache,
+    ):
+        async for ev in _stream_from_redis_log(
+            stream_key="k",
+            terminal_check=terminal,
+            last_event_id=4,
+        ):
+            if ev != ":keepalive\n\n":
+                yielded.append(ev)
+
+    cursors = [
+        (call.args[0] if call.args else call.kwargs.get("streams"))[b"k"]
+        for call in cache.client.xread.call_args_list
+    ]
+    assert yielded == ["id: 5\ndata: a\n\n"]
+    # Critical assertion: cursor moved to 6-0 even though that entry was
+    # skipped. Without the fix, cursors[1] would be b"5-0" (the last
+    # successfully-yielded entry) and round 2 would re-read 6-0 forever.
+    assert cursors[1] == b"6-0"
+
+
+@pytest.mark.asyncio
 async def test_terminal_handshake_requires_two_empty_rounds():
     """If terminal=True but new events still arrive between rounds, don't exit early."""
     cache = _make_cache(

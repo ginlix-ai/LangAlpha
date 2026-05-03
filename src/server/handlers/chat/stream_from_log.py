@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 from typing import Any, AsyncGenerator, Awaitable, Callable, Optional
 
 from src.config.settings import get_redis_socket_timeout
@@ -33,7 +32,7 @@ from src.server.services.background_task_manager import (
 )
 from src.utils.cache.redis_cache import get_cache_client
 
-logger = logging.getLogger(__name__)
+from ._common import logger
 
 
 _XREAD_BLOCK_MARGIN_MS = 1_000
@@ -143,6 +142,10 @@ async def _stream_from_redis_log(
                 )
             except asyncio.TimeoutError:
                 # XREAD wedged — yield keepalive, recheck terminal, retry.
+                # Counts as one "empty" round for the terminal handshake:
+                # a wedged read followed by one empty BLOCK round still
+                # exits, dwelling ``(block_ms + 2 s) + block_ms`` total —
+                # long enough to drain a trailing tail.
                 yield ":keepalive\n\n"
                 if await terminal_check():
                     if terminal_seen:
@@ -179,6 +182,12 @@ async def _stream_from_redis_log(
             # result format: [(stream_key, [(entry_id, {field: value}), ...])]
             for _stream_name, entries in result:
                 for entry_id, fields in entries:
+                    # Advance the cursor unconditionally before any skip path.
+                    # If the *last* entry in a batch hits a continue (missing
+                    # ``event`` field, non-UTF8 payload), leaving the cursor
+                    # behind that entry would make the next XREAD return it
+                    # again — a skip-loop that never terminates.
+                    cursor = entry_id
                     payload = fields.get(b"event")
                     if payload is None:
                         continue
@@ -194,11 +203,13 @@ async def _stream_from_redis_log(
                             continue
                     else:
                         yield payload
-                    cursor = entry_id
 
-            # Reset terminal-seen flag whenever we emit new events; the
-            # exit handshake requires two consecutive empty rounds with
-            # terminal=True so we don't race past the trailing tail.
+            # Reset terminal-seen on any non-empty XREAD batch: while
+            # entries are still arriving the stream is not yet at end, so
+            # the two-empty-round handshake must restart. (Note: this
+            # resets even when every entry was skipped — the producer
+            # always writes ``b"event"`` so all-skipped batches don't
+            # occur in practice; if that invariant changes, revisit.)
             terminal_seen = False
     finally:
         if attached and on_detach is not None:
@@ -278,7 +289,7 @@ async def _wait_for_subagent_task(thread_id: str, task_id: str) -> Any:
 
 # Subagent payload classifications used by ``_classify_subagent_payload``.
 # Strings rather than enum members because the consumer hot loop branches
-# directly on the return value and string identity comparison stays cheap
+# directly on the return value and string equality stays cheap
 # (these constants intern at module load).
 _PAYLOAD_WIRE = "wire"          # already SSE-formatted; pass-through
 _PAYLOAD_SENTINEL = "sentinel"  # stream-end signal; consumer exits
@@ -302,6 +313,14 @@ def _classify_subagent_payload(raw: str) -> tuple[str, dict | None]:
     Returns ``(kind, parsed_or_None)``; ``parsed_or_None`` is non-None
     only for ``_PAYLOAD_RECORD``.
     """
+    # Fast path: pre-rendered SSE always starts with ``id:`` (the producer
+    # in ``registry._spill_record_to_redis`` emits ``id:`` first) or ``:``
+    # for keepalive comments. If a future producer widens the wire format
+    # so it no longer starts with one of those, this fast path will fall
+    # through to the JSON-decode branch and the entry will be classified
+    # as ``_PAYLOAD_UNKNOWN`` (still passed through raw, but bypassing the
+    # intended fast path). Audit both sites together if the producer
+    # changes.
     if not raw or raw[0] in ("i", ":"):
         return _PAYLOAD_WIRE, None
     try:
@@ -372,9 +391,9 @@ async def stream_subagent_from_log(
     def _dispatch(raw: str) -> str | None:
         """Return the SSE string to yield, or None to signal stream-end."""
         kind, parsed = _classify_subagent_payload(raw)
-        if kind is _PAYLOAD_SENTINEL:
+        if kind == _PAYLOAD_SENTINEL:
             return None
-        if kind is _PAYLOAD_RECORD and parsed is not None:
+        if kind == _PAYLOAD_RECORD and parsed is not None:
             return _record_to_sse(parsed, thread_id, task_id)
         # _PAYLOAD_WIRE / _PAYLOAD_UNKNOWN: pass through raw.
         return raw
@@ -386,42 +405,47 @@ async def stream_subagent_from_log(
         async def _term_no_task() -> bool:
             return True  # Nothing to wait for; stream is already at end.
 
-        async for raw in _stream_from_redis_log(
+        inner = _stream_from_redis_log(
             stream_key=stream_key,
             terminal_check=_term_no_task,
             last_event_id=last_event_id,
-        ):
+        )
+    else:
+        async def on_attach() -> None:
+            task.sse_consumer_count += 1
+
+        async def on_detach() -> None:
+            task.sse_consumer_count -= 1
+            if task.sse_consumer_count <= 0:
+                try:
+                    task.sse_drain_complete.set()
+                except Exception:
+                    pass
+
+        async def terminal_check() -> bool:
+            if task.completed:
+                return True
+            ato = task.asyncio_task
+            return ato is not None and ato.done()
+
+        inner = _stream_from_redis_log(
+            stream_key=stream_key,
+            terminal_check=terminal_check,
+            last_event_id=last_event_id,
+            on_attach=on_attach,
+            on_detach=on_detach,
+        )
+
+    # Manage the inner generator explicitly so its ``finally`` block (which
+    # runs ``on_detach`` and decrements ``sse_consumer_count``) fires the
+    # moment we ``return`` on a sentinel — not whenever FastAPI gets around
+    # to calling ``aclose`` on the outer generator. Tight ``sse_drain_complete``
+    # waits race the GC otherwise.
+    try:
+        async for raw in inner:
             rendered = _dispatch(raw)
             if rendered is None:
                 return
             yield rendered
-        return
-
-    async def on_attach() -> None:
-        task.sse_consumer_count += 1
-
-    async def on_detach() -> None:
-        task.sse_consumer_count -= 1
-        if task.sse_consumer_count <= 0:
-            try:
-                task.sse_drain_complete.set()
-            except Exception:
-                pass
-
-    async def terminal_check() -> bool:
-        if task.completed:
-            return True
-        ato = task.asyncio_task
-        return ato is not None and ato.done()
-
-    async for raw in _stream_from_redis_log(
-        stream_key=stream_key,
-        terminal_check=terminal_check,
-        last_event_id=last_event_id,
-        on_attach=on_attach,
-        on_detach=on_detach,
-    ):
-        rendered = _dispatch(raw)
-        if rendered is None:
-            return
-        yield rendered
+    finally:
+        await inner.aclose()
