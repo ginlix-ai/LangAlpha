@@ -210,11 +210,14 @@ def _get_income_statements(
     ticker = yf.Ticker(symbol)
     df = ticker.quarterly_income_stmt if period == "quarter" else ticker.income_stmt
     result = []
+    # `limit` is applied after the placeholder filter below, not in
+    # _dataframe_to_records, so a limit=N request returns N complete quarters.
     for r in _dataframe_to_records(df):
         mapped = _remap_keys(r, _INCOME_STMT_KEY_MAP)
         rev = mapped.get("revenue")
         # yfinance creates a row for each newly-reported quarter where only EPS
-        # is populated; income line items land later. FMP never returns such rows.
+        # is populated; income line items land later. Treat any non-numeric or
+        # zero revenue as an unusable row — matches FMP, which never returns one.
         if not isinstance(rev, (int, float)) or rev == 0:
             continue
         gp = mapped.get("grossProfit")
