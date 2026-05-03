@@ -209,23 +209,29 @@ def _get_income_statements(
 ) -> list[dict[str, Any]]:
     ticker = yf.Ticker(symbol)
     df = ticker.quarterly_income_stmt if period == "quarter" else ticker.income_stmt
-    records = _dataframe_to_records(df, limit)
     result = []
-    for r in records:
+    # `limit` is applied after the placeholder filter below, not in
+    # _dataframe_to_records, so a limit=N request returns N complete quarters.
+    for r in _dataframe_to_records(df):
         mapped = _remap_keys(r, _INCOME_STMT_KEY_MAP)
-        # Compute margin ratios (FMP provides these; yfinance only has absolute values)
         rev = mapped.get("revenue")
-        if rev and isinstance(rev, (int, float)) and rev != 0:
-            gp = mapped.get("grossProfit")
-            oi = mapped.get("operatingIncome")
-            ni = mapped.get("netIncome")
-            if isinstance(gp, (int, float)):
-                mapped["grossProfitRatio"] = round(gp / rev, 6)
-            if isinstance(oi, (int, float)):
-                mapped["operatingIncomeRatio"] = round(oi / rev, 6)
-            if isinstance(ni, (int, float)):
-                mapped["netIncomeRatio"] = round(ni / rev, 6)
+        # yfinance creates a row for each newly-reported quarter where only EPS
+        # is populated; income line items land later. Treat any non-numeric or
+        # zero revenue as an unusable row — matches FMP, which never returns one.
+        if not isinstance(rev, (int, float)) or rev == 0:
+            continue
+        gp = mapped.get("grossProfit")
+        oi = mapped.get("operatingIncome")
+        ni = mapped.get("netIncome")
+        if isinstance(gp, (int, float)):
+            mapped["grossProfitRatio"] = round(gp / rev, 6)
+        if isinstance(oi, (int, float)):
+            mapped["operatingIncomeRatio"] = round(oi / rev, 6)
+        if isinstance(ni, (int, float)):
+            mapped["netIncomeRatio"] = round(ni / rev, 6)
         result.append(mapped)
+        if len(result) >= limit:
+            break
     return result
 
 
