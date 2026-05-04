@@ -16,7 +16,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { handleHistoryUserMessage } from '../historyEventHandlers';
-import type { MessageRecord } from '../../types';
+import type { MessageRecord } from '../types';
 
 function makeRefs() {
   return {
