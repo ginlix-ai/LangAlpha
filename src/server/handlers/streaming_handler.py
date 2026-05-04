@@ -1,17 +1,9 @@
 """
 Workflow Streaming Handler
 
-Handles LangGraph workflow streaming with SSE (Server-Sent Events) formatting.
-Separates streaming business logic from HTTP endpoint concerns for better
-testability and reusability.
-
-Key responsibilities:
-- Stream graph events (messages/updates/custom)
-- Normalize content (text vs reasoning)
-- Track reasoning lifecycle (start/complete signals)
-- Deduplicate tool calls
-- Format SSE events
-- Handle timeouts gracefully
+LangGraph workflow SSE producer: streams graph events, normalises content,
+tracks reasoning lifecycle, deduplicates tool calls, formats SSE events, and
+handles timeouts. Keepalives are emitted by the SSE consumer (stream_from_log).
 """
 
 import asyncio
@@ -252,15 +244,7 @@ class StreamEventAccumulator:
 
 
 class WorkflowStreamHandler:
-    """
-    Handles LangGraph workflow streaming with SSE formatting.
-
-    Manages streaming state including:
-    - Reasoning lifecycle tracking per agent
-    - Tool call deduplication
-    - Content normalization (text vs reasoning)
-    - SSE event formatting
-    """
+    """LangGraph workflow SSE producer with reasoning lifecycle tracking, tool-call dedup, and content normalisation."""
 
     def __init__(
         self,
@@ -325,7 +309,6 @@ class WorkflowStreamHandler:
         # Snapshot of task IDs from previous workflow (set at stream start)
         self._old_tool_call_ids: set[str] = set()
 
-        # Shared event sequence counter (set by BackgroundTaskManager for concurrent tail)
         self.event_counter: Optional[Any] = None
 
         # Track message IDs that have already emitted content via AIMessageChunk streaming.
@@ -634,6 +617,7 @@ class WorkflowStreamHandler:
                 async for event in self._process_message_chunk(
                     message_chunk,
                     agent_name,
+                    message_metadata,
                     is_compaction=is_compaction_chunk,
                 ):
                     yield event
@@ -700,15 +684,7 @@ class WorkflowStreamHandler:
             raise  # Re-raise so background_task_manager calls _mark_failed()
 
     def _handle_interrupt(self, event_data: dict) -> Optional[str]:
-        """
-        Handle interrupt events from the workflow.
-
-        Args:
-            event_data: Event dictionary containing __interrupt__ key
-
-        Returns:
-            SSE-formatted interrupt event or None
-        """
+        """Format an ``__interrupt__`` event as an SSE string."""
         interrupt_obj = event_data["__interrupt__"][0]
 
         # Log interrupt trigger
@@ -775,6 +751,7 @@ class WorkflowStreamHandler:
         self,
         message_chunk: BaseMessage,
         agent_name: str,
+        message_metadata: dict[str, Any] | None = None,
         *,
         is_compaction: bool = False,
     ) -> AsyncGenerator[str, None]:
@@ -787,16 +764,21 @@ class WorkflowStreamHandler:
         message_id = message_chunk.id or "unknown"
         chunk_event_type = "compaction_chunk" if is_compaction else "message_chunk"
 
-        # Tool-node inner LLM reasoning (e.g. WebFetch's summarization model)
-        # is internal and should not surface as user-facing reasoning — the
-        # tool's output already arrives via tool_call_result. Subagents use
-        # "task:*"/"research:*"/etc. namespaces and are unaffected.
-        is_tool_agent = agent_name == "tools" or agent_name.startswith("tools:")
+        # Tool-node inner LLM output (e.g. WebFetch's summarization model) is
+        # internal — the tool's user-facing result arrives via tool_call_result.
+        # Key on langgraph_node="tools" rather than agent_name: agent_name comes
+        # from the namespace tuple and resolves to task:*/research:* for tools
+        # invoked inside subagent subgraphs, which would mask the tool-node
+        # signal. langgraph_node is set by Pregel itself and is the canonical
+        # tool-node marker — see langchain/agents/factory.py:1369 where
+        # create_agent registers the tool node as graph.add_node("tools", ...).
+        metadata = message_metadata or {}
+        is_tool_node = metadata.get("langgraph_node") == "tools"
 
         # Check for thinking/reasoning status signals in main content
         status_info = is_thinking_status_signal(message_chunk.content)
         if status_info:
-            if not is_tool_agent:
+            if not is_tool_node:
                 if status_info.get("status") == "completed":
                     # Reasoning completed - emit completion signal
                     if agent_name in self.reasoning_active:
@@ -820,7 +802,7 @@ class WorkflowStreamHandler:
         if reasoning_content_from_kwargs:
             reasoning_status = is_thinking_status_signal(reasoning_content_from_kwargs)
             if reasoning_status:
-                if not is_tool_agent:
+                if not is_tool_node:
                     if reasoning_status.get("status") == "completed":
                         # Reasoning completed - emit completion signal if agent was actively streaming
                         if agent_name in self.reasoning_active:
@@ -989,9 +971,15 @@ class WorkflowStreamHandler:
         }
 
         # Add text content if present (can be regular text or reasoning).
-        # Drop reasoning content from tool-node inner LLMs — it's internal and
-        # the tool's user-facing output arrives via tool_call_result.
-        if text_content and content_type and not (is_tool_agent and content_type == "reasoning"):
+        # Drop both text and reasoning from tool-node inner LLM AI chunks
+        # (e.g. web_fetch's extraction model) — the tool's user-facing output
+        # arrives via the ToolMessage that this same node emits next, so
+        # surfacing the inner model's AI chunks would double-render the
+        # result and leak the extraction model's reasoning to the user.
+        # ToolMessages themselves carry the tool's actual return value and
+        # MUST flow through (their content becomes ``tool_call_result``).
+        is_inner_llm_chunk = is_tool_node and isinstance(message_chunk, (AIMessage, AIMessageChunk))
+        if text_content and content_type and not is_inner_llm_chunk:
             # Check if we need to emit reasoning completion signal
             if content_type != "reasoning" and agent_name in self.reasoning_active:
                 # Reasoning completed, emit completion signal before this content
@@ -1235,15 +1223,7 @@ class WorkflowStreamHandler:
                     yield self._format_sse_event(chunk_event_type, event_stream_message)
 
     def _filter_tool_calls(self, tool_calls: list) -> list:
-        """
-        Filter tool calls to remove empty names and duplicates.
-
-        Args:
-            tool_calls: List of tool call dictionaries
-
-        Returns:
-            Filtered list of valid tool calls
-        """
+        """Remove tool calls with empty names or already-seen IDs."""
         filtered_tool_calls = []
         for tool_call in tool_calls:
             tool_id = tool_call.get("id")
@@ -1419,21 +1399,9 @@ class WorkflowStreamHandler:
         token_usage: dict,
         total_credits: float
     ) -> str:
-        """
-        Format credit usage event with aggregated token counts and total credits only.
+        """Format a credit_usage SSE event with aggregated token counts and total credits.
 
-        IMPORTANT: Does NOT include USD costs or model names (hidden from client for privacy).
-        Only exposes:
-        - Aggregated token counts (input/output tokens across all models)
-        - Total credits consumed
-
-        Args:
-            thread_id: Thread identifier
-            token_usage: Token usage dict from calculate_cost_from_per_call_records()
-            total_credits: Total credits (token + infrastructure)
-
-        Returns:
-            SSE-formatted credit_usage event
+        Intentionally omits USD costs and model names (hidden from client for privacy).
         """
         from datetime import datetime
 
@@ -1480,15 +1448,7 @@ class WorkflowStreamHandler:
         return cfg.compaction.token_threshold
 
     def get_tool_usage(self) -> Optional[Dict[str, int]]:
-        """
-        Get captured tool usage from workflow execution (with caching for cross-context access).
-
-        This method can be called multiple times safely. It caches the result on first
-        successful read to ensure availability across async context boundaries.
-
-        Returns:
-            Dict mapping tool names to usage counts, or None if no tools were used
-        """
+        """Return tool-name → count usage map, or None. Result is cached for cross-context access."""
         # Return cached result if already retrieved (for cross-context access)
         if self._tool_usage_result is not None:
             logger.debug(

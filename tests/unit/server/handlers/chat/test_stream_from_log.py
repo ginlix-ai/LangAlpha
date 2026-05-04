@@ -450,9 +450,8 @@ async def test_subagent_consumer_passes_through_pre_rendered_sse(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_subagent_consumer_renders_legacy_json_records(monkeypatch):
-    """Deploy-boundary shim: streams written by the previous JSON-record
-    producer (still readable for up to 24 h after a deploy) must be rendered
-    on the fly. Removable in PR3 once the TTL window passes."""
+    """Legacy JSON-record shim: streams written before the wire-string cutover
+    must be rendered on the fly until their TTL expires."""
     from src.server.handlers.chat import stream_from_log as sfl_mod
 
     payload_bytes = json.dumps(

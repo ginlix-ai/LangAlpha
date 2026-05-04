@@ -91,7 +91,29 @@ class _SubagentTokenForwarder:
             "ts": time.time(),
         }
 
-    async def forward(self, message_chunk: BaseMessage) -> None:
+    async def forward(
+        self,
+        message_chunk: BaseMessage,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        # Drop tool-node inner LLM chunks (e.g. WebFetch's extraction model):
+        # the tool's user-facing output arrives via the tool_call_result event
+        # written separately by ``SubagentEventCaptureMiddleware`` (see
+        # ``event_capture.py``). Forwarding the inner model's AI chunks would
+        # leak the extraction prompt's CoT to the per-task channel.
+        #
+        # No isinstance(AIMessageChunk) discriminant here: this forwarder's
+        # input universe is narrower than ``streaming_handler``'s. The caller
+        # at ``_arun_subagent_streaming`` only invokes ``forward`` for chunks
+        # streamed via ``stream_mode=["messages"]`` from inside the
+        # subagent's own subgraph — which carries inner-LLM AI chunks but
+        # NOT the ToolMessage returns (those land on the separate
+        # event-capture path). So an unconditional drop on
+        # ``langgraph_node == "tools"`` is correct here, where in
+        # ``streaming_handler`` it would clobber ToolMessage content.
+        if metadata is not None and metadata.get("langgraph_node") == "tools":
+            return
+
         # Reasoning content can ride on either ``content`` or
         # ``additional_kwargs.reasoning[_content]`` depending on provider.
         text, content_type = normalize_text_content(message_chunk.content)
@@ -286,21 +308,10 @@ def _get_subagents(
     general_purpose_agent: bool,
     checkpointer: Any | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
-    """Create subagent instances from specifications.
+    """Build compiled subagent instances from specs.
 
-    Args:
-        default_model: Default model for subagents that don't specify one.
-        default_tools: Default tools for subagents that don't specify tools.
-        default_middleware: Middleware to apply to all subagents. If `None`,
-            no default middleware is applied.
-        default_interrupt_on: The tool configs to use for the default general-purpose subagent. These
-            are also the fallback for any subagents that don't specify their own tool configs.
-        subagents: List of agent specifications or pre-compiled agents.
-        general_purpose_agent: Whether to include a general-purpose subagent.
-
-    Returns:
-        Tuple of (agent_dict, description_list) where agent_dict maps agent names
-        to runnable instances and description_list contains formatted descriptions.
+    Returns ``(agent_dict, description_list)`` where ``agent_dict`` maps
+    agent names to runnable instances.
     """
     # Use empty list if None (no default middleware)
     default_subagent_middleware = default_middleware or []
@@ -372,21 +383,7 @@ def _create_task_tool(
     registry: BackgroundTaskRegistry | None = None,
     checkpointer: Any | None = None,
 ) -> BaseTool:
-    """Create a Task tool for invoking subagents.
-
-    Args:
-        default_model: Default model for subagents.
-        default_tools: Default tools for subagents.
-        default_middleware: Middleware to apply to all subagents.
-        default_interrupt_on: The tool configs to use for the default general-purpose subagent. These
-            are also the fallback for any subagents that don't specify their own tool configs.
-        subagents: List of subagent specifications.
-        general_purpose_agent: Whether to include general-purpose agent.
-        task_description: Description for the Task tool.
-
-    Returns:
-        A StructuredTool that can invoke subagents by type.
-    """
+    """Build a StructuredTool that dispatches Task tool calls to compiled subagents."""
     subagent_graphs, _subagent_descriptions = _get_subagents(
         default_model=default_model,
         default_tools=default_tools,
@@ -434,13 +431,24 @@ def _create_task_tool(
                 if mode == "values":
                     last_state = data
                 elif mode == "messages" and forwarder is not None:
-                    # ``messages`` data is ``(message_chunk, metadata)``;
-                    # we only need the chunk. Duck-typed (no isinstance) so
-                    # mocks and any future BaseMessage subclasses pass.
-                    chunk = data[0] if isinstance(data, tuple) else data
+                    # ``messages`` data is ``(message_chunk, metadata)``.
+                    # The metadata carries ``langgraph_node`` which lets the
+                    # forwarder drop tool-internal LLM chunks. Duck-typed (no
+                    # isinstance) so mocks and any future BaseMessage subclasses
+                    # pass.
+                    if isinstance(data, tuple):
+                        # Symmetric guards: production LangGraph emits
+                        # 2-tuples for ``messages`` mode, but defending
+                        # both indices keeps an upstream contract change
+                        # from raising IndexError out of the iterator.
+                        chunk = data[0] if len(data) > 0 else None
+                        chunk_meta = data[1] if len(data) > 1 else None
+                    else:
+                        chunk = data
+                        chunk_meta = None
                     if chunk is not None and hasattr(chunk, "content"):
                         try:
-                            await forwarder.forward(chunk)
+                            await forwarder.forward(chunk, chunk_meta)
                         except Exception as exc:
                             # Token forwarding must never break the subagent.
                             logger.debug(
@@ -483,7 +491,6 @@ def _create_task_tool(
     def _validate_and_prepare_state(
         subagent_type: str, prompt: str, runtime: ToolRuntime
     ) -> tuple[Runnable, dict]:
-        """Prepare state for invocation."""
         subagent = subagent_graphs[subagent_type]
         # Create a new state dict to avoid mutating the original
         subagent_state = {
@@ -493,7 +500,7 @@ def _create_task_tool(
         return subagent, subagent_state
 
     def _get_background_task_context() -> tuple[str | None, str | None]:
-        """Return ``(checkpoint_ns, subagent_type)`` for the BackgroundTask in context, or ``(None, None)`` outside a managed background invocation."""
+        """Return ``(checkpoint_ns, subagent_type)`` for the active BackgroundTask, or ``(None, None)``."""
         if registry is None:
             return None, None
         bg_task_id = current_background_tool_call_id.get()
@@ -815,7 +822,6 @@ class SubAgentMiddleware(AgentMiddleware):
         registry: BackgroundTaskRegistry | None = None,
         checkpointer: Any | None = None,
     ) -> None:
-        """Initialize the `SubAgentMiddleware`."""
         super().__init__()
         self.system_prompt = system_prompt
         task_tool = _create_task_tool(
@@ -836,7 +842,6 @@ class SubAgentMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        """Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
             new_system_message = append_to_system_message(
                 request.system_message, self.system_prompt
@@ -849,7 +854,6 @@ class SubAgentMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        """(async) Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
             new_system_message = append_to_system_message(
                 request.system_message, self.system_prompt

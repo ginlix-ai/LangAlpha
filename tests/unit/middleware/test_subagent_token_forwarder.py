@@ -261,6 +261,66 @@ async def test_empty_chunks_are_skipped():
 
 
 @pytest.mark.asyncio
+async def test_tool_node_inner_llm_chunks_skipped():
+    """Inner-LLM chunks streamed from inside a tool body (e.g. WebFetch's
+    extraction model) must not be forwarded as subagent reasoning. The tool's
+    user-facing output arrives via ``tool_call_result``; surfacing the inner
+    model's CoT here renders the extraction prompt's analysis as the
+    subagent's own reasoning. Gate is keyed on ``langgraph_node="tools"``,
+    matching the gate in ``streaming_handler._process_message_chunk``."""
+    registry = BackgroundTaskRegistry()
+    task = await _register(registry)
+    fw = _SubagentTokenForwarder(registry, task.tool_call_id, "task:abc")
+
+    # Inner extraction-LLM reasoning that previously leaked into the chat.
+    await fw.forward(
+        _chunk("We need to extract top 5-10 market news headlines"),
+        metadata={"langgraph_node": "tools"},
+    )
+    await fw.forward(
+        _chunk("Format as markdown list."),
+        metadata={"langgraph_node": "tools"},
+    )
+    # And the subagent's own model-node chunk that must still flow through.
+    await fw.forward(
+        _chunk("Subagent's own thinking", reasoning_kw="Subagent's own thinking"),
+        metadata={"langgraph_node": "model"},
+    )
+    await fw.finalize()
+
+    text_chunks = [
+        e for e in task.captured_events_tail
+        if e["event"] == "message_chunk"
+        and e["data"].get("content_type") in ("text", "reasoning")
+    ]
+    contents = [e["data"]["content"] for e in text_chunks]
+    # Tool-node chunks dropped; model-node reasoning kept.
+    assert "We need to extract top 5-10 market news headlines" not in contents
+    assert "Format as markdown list." not in contents
+    assert "Subagent's own thinking" in contents
+
+
+@pytest.mark.asyncio
+async def test_no_metadata_does_not_skip():
+    """Backwards compat: without metadata (legacy callers, mocks), forward
+    normally — no false suppression."""
+    registry = BackgroundTaskRegistry()
+    task = await _register(registry)
+    fw = _SubagentTokenForwarder(registry, task.tool_call_id, "task:abc")
+
+    await fw.forward(_chunk("Plain content"))
+    await fw.forward(_chunk("More content"), metadata=None)
+    await fw.finalize()
+
+    text = [
+        e["data"]["content"]
+        for e in task.captured_events_tail
+        if e["data"].get("content_type") == "text"
+    ]
+    assert text == ["Plain content", "More content"]
+
+
+@pytest.mark.asyncio
 async def test_atask_pipeline_forwards_messages_chunks_to_registry(monkeypatch):
     """End-to-end: when the Task tool drives the subagent through astream,
     each ``messages``-mode chunk lands as a captured-event record on the
