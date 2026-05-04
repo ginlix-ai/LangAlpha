@@ -42,9 +42,7 @@ interface HistorySteeringRefs {
 }
 
 /**
- * Helper to check if an event is from a subagent.
- * Backend convention: agent field uses "task:{task_id}" format (e.g., "task:pkyRHQ").
- * This aligns with LangGraph namespace convention (tools:uuid, model:uuid, task:id).
+ * Returns true if the event is from a subagent (agent field starts with "task:").
  */
 export function isSubagentHistoryEvent(event: HistoryEvent | null | undefined): boolean {
   const agent = event?.agent;
@@ -112,7 +110,12 @@ export function handleHistoryUserMessage({
     // and system queries like report-back invocations)
     const isSystemQuery = (event as Record<string, unknown>).query_type === 'system';
     if (messageContent && !isSystemQuery) {
-      const currentUserMessageId = `history-user-${pairIndex}-${Date.now()}`;
+      // Deterministic id keyed only on pairIndex (the server-side turn_index,
+      // unique per turn). Earlier code suffixed `Date.now()` here as
+      // speculative collision defense, but that made the same logical bubble
+      // look new on every replay — combined with a non-deduping setMessages
+      // reducer, a second replay would silently double the visible history.
+      const currentUserMessageId = `history-user-${pairIndex}`;
       const userMessage: MessageRecord = {
         id: currentUserMessageId,
         role: 'user',
@@ -163,8 +166,9 @@ export function handleHistoryUserMessage({
       });
     }
 
-    // Create assistant message placeholder
-    const currentAssistantMessageId = `history-assistant-${pairIndex}-${Date.now()}`;
+    // Create assistant message placeholder. Deterministic id keyed only on
+    // pairIndex — see the matching note at history-user-${pairIndex} above.
+    const currentAssistantMessageId = `history-assistant-${pairIndex}`;
     assistantMessagesByPair.set(pairIndex, currentAssistantMessageId);
 
     const assistantMessage: MessageRecord = {
