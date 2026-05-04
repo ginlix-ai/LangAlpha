@@ -238,7 +238,7 @@ async def astream_ptc_workflow(
             )
 
         # =====================================================================
-        # Phase 1: Database Persistence Setup
+        # Database Persistence Setup
         # =====================================================================
 
         await ensure_thread(
@@ -318,7 +318,7 @@ async def astream_ptc_workflow(
         timezone_str = _resolve_timezone(request.timezone, request.locale)
 
         # =====================================================================
-        # Phase 2: Token and Tool Tracking
+        # Token and Tool Tracking
         # =====================================================================
 
         token_callback, tool_tracker = init_tracking(thread_id)
@@ -718,7 +718,7 @@ async def astream_ptc_workflow(
         )
 
         # =====================================================================
-        # Phase 3: Background Execution with Completion Callback
+        # Background Execution with Completion Callback
         # =====================================================================
 
         manager = BackgroundTaskManager.get_instance()
@@ -741,10 +741,10 @@ async def astream_ptc_workflow(
 
         # Define completion callback for background persistence
         async def on_background_workflow_complete():
-            """Persists workflow data after background execution completes.
+            """Persist workflow data after background execution completes.
 
-            Reads fresh handler/token_callback from task_info metadata because
-            reinvocation may have replaced them with new instances.
+            Reads handler/token_callback from task_info metadata in case
+            reinvocation replaced them with new instances.
             """
             try:
                 # Read fresh refs from task_info (may have been updated by reinvoke)
@@ -929,7 +929,7 @@ async def astream_ptc_workflow(
 
     except Exception as e:
         # =====================================================================
-        # Phase 4: Error Recovery with Retry Logic
+        # Error Recovery with Retry Logic
         # =====================================================================
         async for event in handle_workflow_error(
             e,

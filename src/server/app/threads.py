@@ -1,12 +1,7 @@
 """
-Unified Thread Router — All thread-related endpoints under /api/v1/threads.
+Unified Thread Router — all thread-related endpoints under /api/v1/threads.
 
-Consolidates endpoints from:
-- chat.py (POST /chat/stream → POST /threads/messages, /threads/{id}/messages)
-- workflow.py (workflow control → /threads/{id}/status, cancel, interrupt, summarize)
-- conversation.py (thread CRUD → /threads, /threads/{id})
-
-Route definitions are thin — business logic lives in handlers/.
+Route definitions are thin; business logic lives in handlers/.
 """
 
 import json

@@ -50,8 +50,7 @@ if TYPE_CHECKING:
 # Module-level constants
 # ---------------------------------------------------------------------------
 
-# Hard-coded logger name to preserve existing log routing regardless of where
-# the module physically lives after refactoring.
+# Hard-coded logger name for backward-compat with existing log routing.
 logger = logging.getLogger("src.server.handlers.chat_handler")
 _sse_logger = logging.getLogger("sse_events")
 
@@ -198,19 +197,16 @@ async def _is_plan_interrupt_pending(thread_id: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# NEW extracted DRY helpers
+# Shared helpers
 # ---------------------------------------------------------------------------
 
 
 def classify_error(e: Exception) -> dict:
     """Classify an exception as recoverable or non-recoverable.
 
-    Returns a dict with keys:
-        is_recoverable  (bool)
-        is_non_recoverable  (bool)
-        error_type  (str | None)  — one of "connection_error", "timeout_error",
-                                     "api_error", "transient_error", or None
-                                     for non-recoverable errors.
+    Returns ``{is_recoverable, is_non_recoverable, error_type}`` where
+    ``error_type`` is one of ``"connection_error"``, ``"timeout_error"``,
+    ``"api_error"``, ``"transient_error"``, or ``None`` for non-recoverable.
     """
     # Non-recoverable error types (code bugs, config issues)
     non_recoverable_types = (

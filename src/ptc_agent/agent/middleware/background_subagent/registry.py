@@ -217,11 +217,7 @@ class BackgroundTask:
 
     @property
     def is_pending(self) -> bool:
-        """Check if this task is still pending (not yet completed).
-
-        Returns:
-            True if task is still running or waiting to start
-        """
+        """True if the task is still running or registered but not yet started."""
         if self.completed:
             return False
         if self.asyncio_task is None:
@@ -230,22 +226,14 @@ class BackgroundTask:
 
 
 class BackgroundTaskRegistry:
-    """Thread-safe registry for tracking background subagent tasks.
-
-    This registry manages the lifecycle of background tasks spawned by
-    the BackgroundSubagentMiddleware. It provides methods to register
-    new tasks, poll for completion, and collect results.
-    """
+    """Thread-safe registry for background subagent tasks spawned by BackgroundSubagentMiddleware."""
 
     def __init__(self, thread_id: str = "") -> None:
-        """Initialize the registry.
-
+        """
         Args:
-            thread_id: The parent thread_id this registry serves. Used to
-                build per-task Redis keys
-                (``subagent:events:{thread_id}:{task_id}``) during event
-                spill. Empty string means "no Redis spill" — kept for tests
-                that construct a bare registry without a thread.
+            thread_id: Parent thread this registry serves. Used to build
+                ``subagent:events:{thread_id}:{task_id}`` keys. Empty string
+                disables Redis spill (used in tests).
         """
         self._tasks: dict[str, BackgroundTask] = {}
         self._task_id_to_tool_call_id: dict[str, str] = {}  # task_id -> tool_call_id
@@ -265,18 +253,7 @@ class BackgroundTaskRegistry:
         subagent_type: str,
         asyncio_task: asyncio.Task | None = None,
     ) -> BackgroundTask:
-        """Register a new background task.
-
-        Args:
-            tool_call_id: The LangGraph tool_call_id
-            description: Description of the task
-            prompt: Detailed instructions for the subagent
-            subagent_type: Type of subagent
-            asyncio_task: The asyncio.Task running the subagent (can be set later)
-
-        Returns:
-            The registered BackgroundTask
-        """
+        """Register a new background task and return it."""
         async with self._lock:
             # Generate short alphanumeric task_id
             task_id = secrets.token_urlsafe(4)[:6]
@@ -310,32 +287,17 @@ class BackgroundTaskRegistry:
             return task
 
     async def get_pending_tasks(self) -> list[BackgroundTask]:
-        """Get all tasks that haven't completed yet.
-
-        Returns:
-            List of pending BackgroundTask objects
-        """
+        """Return all tasks that haven't completed yet."""
         async with self._lock:
             return [task for task in self._tasks.values() if task.is_pending]
 
     async def get_all_tasks(self) -> list[BackgroundTask]:
-        """Get all registered tasks.
-
-        Returns:
-            List of all BackgroundTask objects
-        """
+        """Return all registered tasks."""
         async with self._lock:
             return list(self._tasks.values())
 
     async def get_by_task_id(self, task_id: str) -> BackgroundTask | None:
-        """Get a task by its short alphanumeric task_id.
-
-        Args:
-            task_id: The 6-char task identifier (e.g., 'k7Xm2p')
-
-        Returns:
-            The BackgroundTask or None if not found
-        """
+        """Return the task for a given 6-char task_id, or None."""
         async with self._lock:
             tool_call_id = self._task_id_to_tool_call_id.get(task_id)
             if tool_call_id:
@@ -347,29 +309,11 @@ class BackgroundTaskRegistry:
         return await self.get_by_task_id(task_id)
 
     def get_by_tool_call_id(self, tool_call_id: str) -> BackgroundTask | None:
-        """Get a task by its tool_call_id (synchronous).
-
-        This is a synchronous method for use when the lock is not needed
-        (e.g., formatting results after wait_for_all has completed).
-
-        Args:
-            tool_call_id: The LangGraph tool_call_id
-
-        Returns:
-            The BackgroundTask or None if not found
-        """
+        """Return the task for a given tool_call_id (synchronous, no lock)."""
         return self._tasks.get(tool_call_id)
 
     def register_namespace(self, checkpoint_ns: str, tool_call_id: str) -> None:
-        """Register LangGraph namespace UUIDs for a background task.
-
-        Parses checkpoint_ns like "tools:uuid1|model:uuid2" and maps
-        each LangGraph task UUID to our tool_call_id for streaming lookup.
-
-        Args:
-            checkpoint_ns: The checkpoint namespace string from LangGraph config
-            tool_call_id: The background task's tool_call_id
-        """
+        """Map each LangGraph UUID in checkpoint_ns to tool_call_id for streaming lookup."""
         for element in checkpoint_ns.split("|"):
             parts = element.split(":", 1)
             if len(parts) == 2:
@@ -377,14 +321,7 @@ class BackgroundTaskRegistry:
                 self._ns_uuid_to_tool_call_id[ns_uuid] = tool_call_id
 
     def get_task_by_namespace(self, ns_element: str) -> BackgroundTask | None:
-        """Look up task from a namespace element like 'tools:uuid'.
-
-        Args:
-            ns_element: A single namespace element (e.g., "tools:4cd20fdc-...")
-
-        Returns:
-            The BackgroundTask or None if not found
-        """
+        """Return the task for a namespace element like 'tools:uuid', or None."""
         parts = ns_element.split(":", 1)
         if len(parts) == 2:
             ns_uuid = parts[1]
@@ -394,14 +331,7 @@ class BackgroundTaskRegistry:
         return None
 
     def clear_namespaces_for_task(self, tool_call_id: str) -> None:
-        """Remove stale namespace UUID→tool_call_id mappings for a task.
-
-        Called before resuming a completed task so that new namespace UUIDs
-        from the resumed invocation can be registered fresh.
-
-        Args:
-            tool_call_id: The tool_call_id to clear mappings for
-        """
+        """Remove stale namespace UUID mappings so resumed invocations can register fresh ones."""
         stale_keys = [
             ns
             for ns, tid in self._ns_uuid_to_tool_call_id.items()
@@ -462,21 +392,17 @@ class BackgroundTaskRegistry:
     async def _spill_record_to_redis(
         self, task: BackgroundTask, record: dict[str, Any]
     ) -> None:
-        """Best-effort write of a captured record to the per-task Redis list.
+        """Best-effort spill of one captured record to Redis.
 
-        Uses the shared atomic pipeline helper (RPUSH+LTRIM+EXPIRE+HINCRBY+
-        HSETNX+HSET) so the whole spill is one pool checkout. Any failure is
-        logged and recorded on ``task.redis_write_failed`` but never raised —
-        live SSE delivery stays unaffected via the in-memory tail.
-
-        Skipped silently when:
-        - ``task.redis_write_failed`` is set (sticky circuit-break — one
-          prior failure for this task means we stop trying so a degraded
-          Redis can't pace the subagent's hot path; persisted history is
-          honestly truncated by ``iter_subagent_events_full``),
-        - the ``spill_subagent_events_to_redis`` feature flag is off,
-        - the registry has no thread_id (test fixtures),
-        - the cache client is unavailable / disabled.
+        Writes a JSON record to the per-task List (consumed post-turn by
+        ``iter_subagent_events_full``) and a pre-rendered SSE string to the
+        per-task Stream (consumed live by SSE clients) in one atomic
+        pipeline. Failure flips ``task.redis_write_failed`` (sticky
+        circuit-break) and is silently logged — never raised — so live SSE
+        via the in-memory tail is unaffected. Returns silently when the
+        circuit-break is set, the registry has no thread_id (test
+        fixtures), the spill flag is off, or the cache client is
+        unavailable.
         """
         if task.redis_write_failed:
             return
@@ -518,11 +444,7 @@ class BackgroundTaskRegistry:
         if not getattr(cache, "enabled", False):
             return
 
-        # Records are JSON-serialized ``{"seq", "event", "data", "agent_id", "ts"}``
-        # dicts. In-flight subagents at deploy time may have a list of legacy
-        # raw-SSE strings under this key; the JSON reader skips entries that
-        # fail to parse — those events are intentionally abandoned at the
-        # deploy boundary. New runs write fresh records.
+        # Records are JSON-serialized ``{"seq", "event", "data", "agent_id", "ts"}`` dicts.
         events_key = f"subagent:events:{self.thread_id}:{task.task_id}"
         meta_key = f"subagent:events:meta:{self.thread_id}:{task.task_id}"
         stream_key = f"subagent:stream:{self.thread_id}:{task.task_id}"
@@ -636,10 +558,10 @@ class BackgroundTaskRegistry:
         per-task SSE consumer recognises the record and closes immediately,
         instead of polling ``task.asyncio_task.done()`` between BLOCK timeouts.
 
-        Bypasses ``captured_events_tail`` / Redis List / Postgres persistence:
-        this is a transport-level signal, not content. Best-effort — if it
-        fails, ``terminal_check`` still closes the stream once the asyncio
-        task finishes (just slower).
+        Bypasses the event tail and Postgres persistence — this is a
+        transport-level signal, not content. Best-effort: if it fails,
+        ``terminal_check`` still closes the stream once the asyncio task
+        finishes (just slower).
         """
         if not self.thread_id:
             return
@@ -718,14 +640,7 @@ class BackgroundTaskRegistry:
             )
 
     async def update_metrics(self, tool_call_id: str, tool_name: str) -> None:
-        """Update tool call metrics for a task.
-
-        Called by SubagentEventCaptureMiddleware when a subagent makes a tool call.
-
-        Args:
-            tool_call_id: The task's tool_call_id
-            tool_name: Name of the tool being called
-        """
+        """Increment tool-call counters for a task; called by SubagentEventCaptureMiddleware."""
         async with self._lock:
             task = self._tasks.get(tool_call_id)
             if task:
@@ -750,18 +665,12 @@ class BackgroundTaskRegistry:
         message_checker: MessageChecker | None = None,
         poll_interval: float = 2.0,
     ) -> dict[str, Any]:
-        """Wait for a specific task to complete by its task_id.
+        """Wait for a specific task to complete.
 
-        Args:
-            task_id: The 6-char task identifier (e.g., 'k7Xm2p')
-            timeout: Maximum time to wait in seconds
-            message_checker: Optional async callable that returns True when a
-                a user steering message is pending (used to interrupt the wait early).
-            poll_interval: Seconds between message-checker polls (ignored when
-                *message_checker* is None — falls back to a single wait).
-
-        Returns:
-            Dict with task result or error
+        When ``message_checker`` is provided, polls every ``poll_interval``
+        seconds and returns early with ``status="interrupted"`` if a steering
+        message arrives. Returns a result dict (``success``, ``result``, or
+        ``error``/``status`` on timeout/interrupt).
         """
         tool_call_id = self._task_id_to_tool_call_id.get(task_id)
         if not tool_call_id:
@@ -865,16 +774,8 @@ class BackgroundTaskRegistry:
     ) -> dict[str, Any]:
         """Wait for all background tasks to complete.
 
-        Args:
-            timeout: Maximum time to wait in seconds
-            message_checker: Optional async callable that returns True when a
-                a user steering message is pending (used to interrupt the wait early).
-            poll_interval: Seconds between message-checker polls (ignored when
-                *message_checker* is None — falls back to a single wait).
-
-        Returns:
-            Dict mapping tool_call_id to result (success dict or error dict).
-            When interrupted, still-running tasks get ``status="interrupted"``.
+        Returns a dict mapping tool_call_id to result. Still-running tasks
+        on interrupt get ``status="interrupted"``.
         """
         async with self._lock:
             tasks_to_wait = {
@@ -983,14 +884,7 @@ class BackgroundTaskRegistry:
         return results
 
     async def cancel_all(self, *, force: bool = False) -> int:
-        """Cancel all pending background tasks.
-
-        Args:
-            force: Cancel underlying handler tasks as well
-
-        Returns:
-            Number of tasks cancelled
-        """
+        """Cancel all pending background tasks; returns the count cancelled."""
         cancelled = 0
         async with self._lock:
             for task in self._tasks.values():
@@ -1033,11 +927,7 @@ class BackgroundTaskRegistry:
         logger.debug("Cleared background task registry")
 
     def has_pending_tasks(self) -> bool:
-        """Check if there are any pending tasks (sync version).
-
-        Returns:
-            True if there are pending tasks
-        """
+        """Return True if any tasks are still pending (synchronous)."""
         return any(task.is_pending for task in self._tasks.values())
 
     @property

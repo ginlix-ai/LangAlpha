@@ -1,10 +1,9 @@
 """Stream reconnection and per-subagent SSE consumers.
 
-Both endpoints (``/threads/{id}`` reconnect and
-``/threads/{id}/tasks/{task_id}/events``) read from Redis Streams via the
-shared ``stream_from_log`` / ``stream_subagent_from_log`` helpers. There is
-no list-replay or live-queue subscription: each consumer is a single
-XREAD BLOCK loop attached by stream key + cursor.
+Both endpoints (``/threads/{id}/messages/stream`` reconnect and
+``/threads/{id}/tasks/{task_id}``) delegate to ``stream_from_log`` /
+``stream_subagent_from_log`` — each a single XREAD BLOCK loop attached by
+stream key + cursor.
 """
 
 from __future__ import annotations
