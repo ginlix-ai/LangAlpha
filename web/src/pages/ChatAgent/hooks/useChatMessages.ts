@@ -703,7 +703,7 @@ export function useChatMessages(
       // any in-flight streaming bubble survives the filter.
       historyMessagesRef.current.clear();
       newMessagesStartIndexRef.current = 0;
-      setMessages((prev) => prev.filter((m) => !(m as { isHistory?: boolean }).isHistory));
+      setMessages((prev) => prev.filter((m) => !m.isHistory));
 
       const threadIdToUse = threadId;
       console.log('[History] Loading history for thread:', threadIdToUse);

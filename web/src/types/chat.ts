@@ -277,6 +277,7 @@ export interface NotificationMessage {
   /** Optional longer text (e.g. a compaction summary) surfaced via the
    *  notification's expand toggle. */
   detail?: string;
+  isHistory?: boolean;
 }
 
 export type ChatMessage = UserMessage | AssistantMessage | NotificationMessage;

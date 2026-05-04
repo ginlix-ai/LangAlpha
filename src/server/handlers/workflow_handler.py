@@ -404,7 +404,7 @@ async def _require_no_active_workflow(thread_id: str, verb: str) -> None:
     "wait for the current turn to finish" banner instead of silently
     corrupting state.
 
-    Raises HTTPException(409) for ACTIVE / DISCONNECTED / INTERRUPTED. Allows
+    Raises HTTPException(409) for ACTIVE / INTERRUPTED. Allows
     None / COMPLETED / CANCELLED.
     """
     from src.server.services.workflow_tracker import (
@@ -443,7 +443,6 @@ async def _require_no_active_workflow(thread_id: str, verb: str) -> None:
     # enum form and the Redis-round-tripped string form.
     blocking = {
         WorkflowStatus.ACTIVE,
-        WorkflowStatus.DISCONNECTED,
         WorkflowStatus.INTERRUPTED,
     }
     if raw in blocking:

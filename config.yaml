@@ -80,7 +80,6 @@ background_execution:
   subagent_orphan_collector_timeout: 600 # Idle timeout in seconds for orphan collector — resets on any subagent progress (new events, tool calls)
 
   # Streaming & queue settings
-  live_queue_maxsize: 5000              # Max backpressure for live SSE subscriber queues
   subagent_task_max_wait: 30            # Max seconds to wait for subagent task to appear in registry
 
   # Subagent captured-event memory bounds

@@ -178,7 +178,7 @@ class TestMarkFailedReleases:
         assert info.graph is None
         assert info.metadata["user_id"] == "u-1"
         # Wiring: tracker.mark_failed called so /status reports FAILED with
-        # bounded TTL instead of leaving the key as ACTIVE/DISCONNECTED.
+        # bounded TTL instead of leaving the key as ACTIVE.
         mock_tracker.mark_failed.assert_awaited_once_with("t-1", error="boom")
 
 

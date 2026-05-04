@@ -732,9 +732,9 @@ async def handle_workflow_error(
                     )
 
             # Push terminal status to Redis so /status reports FAILED with
-            # bounded TTL instead of leaving the key as ACTIVE/DISCONNECTED.
-            # The setup-error path runs outside BackgroundTaskManager's
-            # _mark_failed, so this is the only chance to update tracker.
+            # bounded TTL instead of leaving the key as ACTIVE. The setup-
+            # error path runs outside BackgroundTaskManager's _mark_failed,
+            # so this is the only chance to update tracker.
             try:
                 await tracker.mark_failed(thread_id, error=error_msg)
             except Exception as tracker_err:

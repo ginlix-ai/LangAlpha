@@ -42,9 +42,6 @@ class BackgroundExecutionConfig(BaseModel):
     )
 
     # Streaming & queue settings
-    live_queue_maxsize: int = Field(
-        default=5000, description="Max backpressure for live SSE subscriber queues"
-    )
     subagent_task_max_wait: int = Field(
         default=30, description="Max seconds to wait for subagent task to appear in registry"
     )

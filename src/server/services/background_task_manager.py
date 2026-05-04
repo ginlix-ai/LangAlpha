@@ -1487,8 +1487,8 @@ class BackgroundTaskManager:
             await release_burst_slot(user_id)
 
         # Push terminal status to Redis so /status reports FAILED with bounded
-        # TTL instead of leaving the key as ACTIVE/DISCONNECTED until natural
-        # expiry. Mirrors mark_completed/mark_cancelled.
+        # TTL instead of leaving the key as ACTIVE until natural expiry.
+        # Mirrors mark_completed/mark_cancelled.
         try:
             tracker = WorkflowTracker.get_instance()
             await tracker.mark_failed(thread_id, error=error)
