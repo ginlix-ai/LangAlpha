@@ -4,9 +4,12 @@ Builds the sandbox Docker image and verifies Scrapling, yfinance, and
 related tools work correctly inside the container environment.
 
 Run with:
-    uv run pytest tests/integration/tools/test_scrapling_docker.py -m integration -v --timeout=300
+    SANDBOX_TEST_PROVIDERS=docker uv run pytest \\
+        tests/integration/sandbox/providers/test_scrapling_docker.py -v
 
-Requires: Docker daemon running.
+Requires: Docker daemon running and ``docker`` selected in
+``SANDBOX_TEST_PROVIDERS`` (or the legacy ``SANDBOX_TEST_PROVIDER``).
+The sandbox-integration workflow's docker tier sets both.
 """
 
 from __future__ import annotations
@@ -15,7 +18,16 @@ import os
 import subprocess
 import pytest
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        "docker" not in os.getenv(
+            "SANDBOX_TEST_PROVIDERS",
+            os.getenv("SANDBOX_TEST_PROVIDER", "memory"),
+        ).lower().split(","),
+        reason="Docker tests require docker in SANDBOX_TEST_PROVIDERS",
+    ),
+]
 
 _GHCR_IMAGE = "ghcr.io/ginlix-ai/langalpha/sandbox:latest"
 _IMAGE = "langalpha-sandbox:test-scrapling"
@@ -45,9 +57,10 @@ def _run_in_container(cmd: str, timeout: int = _TIMEOUT) -> subprocess.Completed
 def docker_image():
     """Resolve the sandbox Docker image once for all tests in this module.
 
-    Prefers the pre-built GHCR image (fast pull) and falls back to a local
-    ``docker build`` when the registry image is unavailable.  Set
-    ``DOCKER_SANDBOX_IMAGE`` to force a specific image tag.
+    Resolution order: ``DOCKER_SANDBOX_IMAGE`` env override → GHCR pull →
+    skip in CI / local build outside CI. ``DOCKER_SANDBOX_IMAGE`` is the
+    intended path for CI (sandbox-integration workflow sets it after a
+    cached pull/build).
     """
     if not _docker_available():
         pytest.skip("Docker not available")
@@ -73,7 +86,17 @@ def docker_image():
         yield _IMAGE
         return
 
-    # Fallback: build locally.
+    # In CI, never fall back to a local build: the Dockerfile takes ~20 min
+    # and easily blows past job timeouts when GHCR pulls flake. Skip instead
+    # so the failure mode is a clear "image unavailable" rather than 11
+    # tests timing out at 30 minutes apiece.
+    if os.environ.get("CI"):
+        pytest.skip(
+            f"GHCR pull of {_GHCR_IMAGE} failed; set DOCKER_SANDBOX_IMAGE "
+            "or run via the sandbox-integration workflow which authenticates to GHCR"
+        )
+
+    # Local dev fallback: build locally.
     result = subprocess.run(
         ["docker", "build", "-f", _DOCKERFILE, "-t", _IMAGE, "."],
         capture_output=True,

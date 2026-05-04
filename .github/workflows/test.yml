@@ -67,7 +67,9 @@ jobs:
           version: "latest"
       - run: uv sync --group dev --extra test
       - run: sudo apt-get install -y ripgrep
-      - run: uv run pytest tests/integration/ -v --tb=short -m integration --junitxml=test-results/backend-integration.xml --sandbox-metrics --sandbox-metrics-file test-results/session_metrics.json
+      # Skip docker-provider sandbox tests; they need GHCR auth + buildx
+      # and are owned by the sandbox-integration workflow's docker tier.
+      - run: uv run pytest tests/integration/ -v --tb=short -m integration --ignore=tests/integration/sandbox/providers --junitxml=test-results/backend-integration.xml --sandbox-metrics --sandbox-metrics-file test-results/session_metrics.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
