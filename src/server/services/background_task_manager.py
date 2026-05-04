@@ -1,39 +1,11 @@
 """
 Background Task Manager
 
-Manages workflow execution as background tasks that continue running
-independently of SSE client connections.
-
-Key Features:
-- Decouples workflow execution from HTTP connections
-- Uses asyncio.shield() to protect tasks from client disconnect cancellation
-- Stores intermediate results during execution for reconnection support
-- Automatic cleanup of abandoned workflows
-- Thread-safe task registry with async locks
-- Supports concurrent workflow executions
-
-Architecture:
-- Background tasks run independently and persist in task registry
-- SSE connections become "viewers" that attach/detach from running tasks
-- Results are buffered in-memory during execution
-- Cleanup task runs periodically to remove stale workflows
-
-Usage:
-    manager = BackgroundTaskManager.get_instance()
-
-    # Start a workflow in background
-    task_info = await manager.start_workflow(
-        thread_id="uuid",
-        workflow_coro=graph.astream(input, config)
-    )
-
-    # Attach SSE connection to consume results
-    async for event in manager.stream_results(thread_id):
-        yield event
-
-    # Later: reconnect to same workflow
-    async for event in manager.stream_results(thread_id, from_beginning=True):
-        yield event
+Manages workflow execution as background asyncio tasks that continue running
+independently of SSE client connections. Workflows write events to a Redis
+Stream; consumers attach by stream key and read via XREAD BLOCK, sharing no
+in-process state with the workflow. Cleanup runs periodically to evict stale
+tasks.
 """
 
 import asyncio
@@ -54,7 +26,6 @@ from src.config.settings import (
     is_intermediate_storage_enabled,
     get_max_stored_messages_per_agent,
     get_event_storage_backend,
-    is_event_storage_fallback_enabled,
     get_redis_ttl_workflow_events,
     get_shutdown_timeout,
     get_checkpoint_flush_timeout,
@@ -83,12 +54,11 @@ logger = logging.getLogger(__name__)
 async def iter_subagent_events_full(
     thread_id: str, task
 ) -> AsyncIterator[dict]:
-    """Yield every captured record for a subagent in seq order, using Redis
-    as the durable store when the in-memory tail no longer covers full history.
+    """Yield every captured record for a subagent in seq order.
 
-    Freezes the high-water mark at iteration entry so events appended after
-    the snapshot don't leak into the current pass — they roll into the next
-    collector iteration just like before the refactor.
+    Uses Redis as the durable store when the in-memory tail no longer covers
+    full history. Freezes the high-water mark at iteration entry so events
+    appended after the snapshot don't leak into the current pass.
 
     Memory note: when the tail has rotated past the run's start, this
     materializes the full Redis spill list (``cache.list_range(key, 0, -1)``)
@@ -176,13 +146,10 @@ async def iter_subagent_events_full(
 
 
 def _record_to_persist_event(record: dict, thread_id: str) -> dict:
-    """Convert a captured-event record into the legacy persistence shape.
+    """Convert a captured-event record to persistence shape ``{event, data}``.
 
-    Collector code paths persist events as ``{"event": str, "data": dict}``
-    (with ``data`` containing ``thread_id`` for downstream consumers and any
-    captured payload fields). This helper enriches a Redis-stored or
-    in-memory record with the running ``thread_id`` while leaving the
-    underlying ``data`` dict untouched at its source.
+    Injects ``thread_id`` into a copy of ``data`` so downstream consumers
+    can identify the originating thread without mutating the stored record.
     """
     data = dict(record.get("data") or {})
     data["thread_id"] = thread_id
@@ -281,7 +248,6 @@ class BackgroundTaskManager:
 
         # Event storage configuration
         self.event_storage_backend = get_event_storage_backend()
-        self.event_storage_fallback = is_event_storage_fallback_enabled()
         self.redis_event_ttl = get_redis_ttl_workflow_events()
 
         # Cleanup task
@@ -738,14 +704,13 @@ class BackgroundTaskManager:
             )
 
     async def _buffer_event_redis(self, thread_id: str, event: str):
-        """
-        Buffer workflow event to Redis (or in-memory fallback) and broadcast to live subscribers.
+        """Append a workflow event to the per-thread Redis Stream + List spill.
 
-        Args:
-            thread_id: Workflow thread identifier
-            event: SSE-formatted event string
+        Returns silently if the TaskInfo is gone (already cleaned up). The
+        actual durability work — XADD, RPUSH, MAXLEN/LTRIM, EXPIRE, HINCRBY,
+        meta HSET — runs in one ``pipelined_event_buffer`` call outside the
+        task_lock so Redis I/O can never block other appends.
         """
-        # First, broadcast to live subscribers (in-memory, unchanged)
         async with self.task_lock:
             if thread_id not in self.tasks:
                 return
@@ -2044,9 +2009,10 @@ class BackgroundTaskManager:
 
         # Push terminal status to Redis from the single canonical site so
         # every cancel path (cancel endpoint, stale-cancel reaper, soft-
-        # interrupt-abort) updates Redis — not just the explicit-cancel
-        # branch in chat/_common.py:_handle_sse_disconnect that already
-        # calls tracker.mark_cancelled directly.
+        # interrupt-abort) updates Redis. ``cancel_workflow`` in
+        # ``workflow_handler.py`` also marks the tracker before signalling
+        # us, so this call is a belt-and-braces in the cases where the
+        # workflow self-cancels without going through that endpoint.
         try:
             tracker = WorkflowTracker.get_instance()
             await tracker.mark_cancelled(thread_id)

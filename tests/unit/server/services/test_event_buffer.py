@@ -1,9 +1,8 @@
-"""Tests for BackgroundTaskManager._buffer_event_redis pipeline rewrite.
+"""Tests for BackgroundTaskManager._buffer_event_redis.
 
 Verifies that every spilled event hits the atomic ``pipelined_event_buffer``
-helper exactly once with the right keys and parsed event id, and that the
-Redis-disabled / pipeline-failure paths quietly drop the event (no
-in-memory fallback exists post-Streams cutover).
+helper exactly once with the right keys and parsed event id, and that
+Redis-disabled / pipeline-failure paths quietly drop the event.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ from src.server.services.background_task_manager import (
 )
 
 
-def _make_btm(backend: str = "redis", fallback: bool = True) -> BackgroundTaskManager:
+def _make_btm(backend: str = "redis") -> BackgroundTaskManager:
     with patch("src.server.services.background_task_manager.get_max_concurrent_workflows", return_value=10), \
          patch("src.server.services.background_task_manager.get_workflow_result_ttl", return_value=3600), \
          patch("src.server.services.background_task_manager.get_abandoned_workflow_timeout", return_value=3600), \
@@ -28,7 +27,6 @@ def _make_btm(backend: str = "redis", fallback: bool = True) -> BackgroundTaskMa
          patch("src.server.services.background_task_manager.is_intermediate_storage_enabled", return_value=False), \
          patch("src.server.services.background_task_manager.get_max_stored_messages_per_agent", return_value=1000), \
          patch("src.server.services.background_task_manager.get_event_storage_backend", return_value=backend), \
-         patch("src.server.services.background_task_manager.is_event_storage_fallback_enabled", return_value=fallback), \
          patch("src.server.services.background_task_manager.get_redis_ttl_workflow_events", return_value=86400):
         btm = BackgroundTaskManager()
     return btm
@@ -104,7 +102,7 @@ class TestBufferEventRedisFailureModes:
     @pytest.mark.asyncio
     async def test_pipeline_failure_does_not_raise(self):
         """Pipeline returns False → log + drop, no exception bubbled up."""
-        btm = _make_btm(fallback=True)
+        btm = _make_btm()
         _register_task(btm)
 
         mock_cache = MagicMock()
@@ -123,7 +121,7 @@ class TestBufferEventRedisFailureModes:
     @pytest.mark.asyncio
     async def test_cache_client_raises_does_not_raise(self):
         """A misconfigured cache singleton must not crash the workflow."""
-        btm = _make_btm(fallback=True)
+        btm = _make_btm()
         _register_task(btm)
 
         with patch(
@@ -135,7 +133,7 @@ class TestBufferEventRedisFailureModes:
     @pytest.mark.asyncio
     async def test_redis_disabled_skips_pipeline(self):
         """When ``cache.enabled`` is False, no pipeline call is issued."""
-        btm = _make_btm(fallback=True)
+        btm = _make_btm()
         _register_task(btm)
 
         mock_cache = MagicMock()
