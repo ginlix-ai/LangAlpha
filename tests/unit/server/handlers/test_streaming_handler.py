@@ -8,7 +8,7 @@ Covers:
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -345,14 +345,6 @@ class TestWorkflowStreamHandlerFormatting:
         assert info["status_code"] == 429
         assert info["provider_module"] == "httpx"
 
-    def test_format_keepalive_event(self):
-        handler = self._make_handler()
-        result = handler._format_keepalive_event()
-        assert "event: keepalive\n" in result
-        assert '"status": "alive"' in result
-        assert result.startswith("id: ")
-        assert result.endswith("\n\n")
-
     def test_format_credit_usage_event(self):
         handler = self._make_handler(thread_id="credit-thread")
         token_usage = {
@@ -593,9 +585,13 @@ class TestEventCounter:
         assert counter.next.call_count == 2
 
 
-class TestToolAgentReasoningSuppression:
-    """Tool-node inner LLM reasoning must not surface as user-facing reasoning;
-    subagents (task:*/research:*) and the main model must still emit it."""
+class TestToolNodeInnerLLMSuppression:
+    """Inner-LLM chunks emitted from inside a tool node (e.g. WebFetch's
+    extraction model) must not surface as user-facing message_chunk content —
+    the tool's user-facing output arrives via tool_call_result. The gate keys
+    on ``message_metadata.langgraph_node == "tools"`` rather than agent_name,
+    so it correctly catches tool-internal LLM calls even when the surrounding
+    namespace resolves to a subagent identity (task:*/research:*)."""
 
     def _handler(self):
         from src.server.handlers.streaming_handler import WorkflowStreamHandler
@@ -613,48 +609,140 @@ class TestToolAgentReasoningSuppression:
     async def _drain(self, agen):
         return [ev async for ev in agen]
 
-    def test_tool_agent_reasoning_content_suppressed(self):
+    def test_tool_node_reasoning_suppressed(self):
         handler = self._handler()
         chunk = self._chunk(
             [{"type": "text", "text": "internal CoT"}],
             kwargs={"reasoning_content": "internal CoT"},
         )
-        events = asyncio.run(self._drain(handler._process_message_chunk(chunk, "tools:abc")))
+        events = asyncio.run(self._drain(
+            handler._process_message_chunk(chunk, "tools", {"langgraph_node": "tools"})
+        ))
         assert not any("reasoning_signal" in e for e in events)
         assert not any('"content_type": "reasoning"' in e for e in events)
-        assert "tools:abc" not in handler.reasoning_active
+        assert "tools" not in handler.reasoning_active
 
-    def test_model_agent_reasoning_still_emitted(self):
+    def test_tool_node_text_also_suppressed(self):
+        """Text content from the inner LLM is the tool's return value — it
+        must not also leak as inline message_chunk content."""
+        handler = self._handler()
+        chunk = self._chunk("Based on the webpage, here is the extracted information...")
+        events = asyncio.run(self._drain(
+            handler._process_message_chunk(chunk, "tools", {"langgraph_node": "tools"})
+        ))
+        assert not any('"content_type": "text"' in e for e in events)
+
+    def test_tool_node_inside_subagent_suppressed(self):
+        """Regression: when web_fetch runs inside a `research` subagent, the
+        agent_name resolves to task:<id> via the namespace tuple, but the
+        underlying chunk still has langgraph_node="tools". Must be suppressed."""
+        handler = self._handler()
+        chunk = self._chunk(
+            [{"type": "text", "text": "subagent's tool extracting"}],
+            kwargs={"reasoning_content": "We need to answer the user's prompt..."},
+        )
+        events = asyncio.run(self._drain(
+            handler._process_message_chunk(
+                chunk,
+                "task:7d0e9f",
+                {"langgraph_node": "tools"},
+            )
+        ))
+        assert not any("reasoning_signal" in e for e in events)
+        assert not any('"content_type": "reasoning"' in e for e in events)
+        assert not any('"content_type": "text"' in e for e in events)
+
+    def test_model_node_reasoning_still_emitted(self):
         handler = self._handler()
         chunk = self._chunk(
             [{"type": "text", "text": "thinking out loud"}],
             kwargs={"reasoning_content": "thinking out loud"},
         )
-        events = asyncio.run(self._drain(handler._process_message_chunk(chunk, "model:xyz")))
+        events = asyncio.run(self._drain(
+            handler._process_message_chunk(chunk, "model:xyz", {"langgraph_node": "model_request"})
+        ))
         assert any("reasoning_signal" in e and '"content": "start"' in e for e in events)
         assert any('"content_type": "reasoning"' in e for e in events)
 
-    def test_subagent_reasoning_still_emitted(self):
+    def test_subagent_primary_reasoning_still_emitted(self):
+        """A subagent's own primary LLM call has langgraph_node != "tools" and
+        must still surface its reasoning normally."""
         handler = self._handler()
         chunk = self._chunk(
             [{"type": "text", "text": "subagent thought"}],
             kwargs={"reasoning_content": "subagent thought"},
         )
-        events = asyncio.run(
-            self._drain(handler._process_message_chunk(chunk, "task:7d0e9f"))
-        )
+        events = asyncio.run(self._drain(
+            handler._process_message_chunk(
+                chunk,
+                "task:7d0e9f",
+                {"langgraph_node": "model_request"},
+            )
+        ))
         assert any("reasoning_signal" in e and '"content": "start"' in e for e in events)
         assert any('"content_type": "reasoning"' in e for e in events)
 
-    def test_bare_tools_agent_name_suppressed(self):
-        """The LangGraph default tool node name "tools" (no colon) is also gated."""
+    def test_tool_message_content_preserved_in_tools_node(self):
+        """ToolMessage carries the tool's user-facing return — its content
+        must NOT be suppressed even though it's emitted from langgraph_node='tools'.
+        The suppression gate keys on AIMessageChunk specifically; ToolMessage
+        flows through to ``tool_call_result`` with its content intact.
+
+        Pre-fix regression: a broader ``not is_tool_node`` gate stripped
+        ``content`` from every tool's ``tool_call_result`` event, breaking the
+        UI for web_search, web_fetch, sec, market_data, execute_code, every
+        MCP tool, etc."""
+        from langchain_core.messages import ToolMessage
+        handler = self._handler()
+        tm = ToolMessage(content="SEARCH RESULTS", tool_call_id="c1")
+        events = asyncio.run(self._drain(
+            handler._process_message_chunk(
+                tm,
+                "tools",
+                {"langgraph_node": "tools"},
+            )
+        ))
+        assert any(
+            "tool_call_result" in e
+            and '"tool_call_id": "c1"' in e
+            and '"content": "SEARCH RESULTS"' in e
+            for e in events
+        ), f"tool_call_result event missing content; events={events!r}"
+
+    def test_tool_message_content_preserved_inside_subagent(self):
+        """ToolMessage inside a subagent's tool node also keeps its content —
+        e.g. when a subagent calls web_search, the ToolMessage that returns
+        the search results must surface to the per-task channel, not be
+        dropped by the tools-node gate."""
+        from langchain_core.messages import ToolMessage
+        handler = self._handler()
+        tm = ToolMessage(content="subagent tool output", tool_call_id="c2")
+        events = asyncio.run(self._drain(
+            handler._process_message_chunk(
+                tm,
+                "task:7d0e9f",
+                {"langgraph_node": "tools"},
+            )
+        ))
+        assert any(
+            "tool_call_result" in e
+            and '"tool_call_id": "c2"' in e
+            and '"content": "subagent tool output"' in e
+            for e in events
+        ), f"tool_call_result event missing content; events={events!r}"
+
+    def test_missing_metadata_defaults_to_emit(self):
+        """If metadata is None or omits langgraph_node, the chunk is treated
+        as user-facing (not a tool-internal call)."""
         handler = self._handler()
         chunk = self._chunk(
             [{"type": "text", "text": "x"}],
             kwargs={"reasoning_content": "x"},
         )
-        events = asyncio.run(self._drain(handler._process_message_chunk(chunk, "tools")))
-        assert not any("reasoning_signal" in e for e in events)
+        events = asyncio.run(self._drain(
+            handler._process_message_chunk(chunk, "model:xyz", None)
+        ))
+        assert any("reasoning_signal" in e and '"content": "start"' in e for e in events)
 
 
 # ---------------------------------------------------------------------------

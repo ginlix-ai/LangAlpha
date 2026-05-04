@@ -1,13 +1,9 @@
 """
-Centralized configuration access module.
+Centralized configuration access.
 
-This module provides a unified interface to access configuration from both
-environment variables (.env) and YAML config files.
-
-Configuration loading strategy:
-1. Credentials come from environment variables (.env)
-2. Infrastructure settings come from config.yaml via InfrastructureConfig
-3. Agent/tool settings come from agent_config.yaml via AgentConfig (ptc_agent.config)
+Credentials come from environment variables (.env). Infrastructure settings
+come from config.yaml via InfrastructureConfig. Agent/tool settings come from
+agent_config.yaml via AgentConfig (ptc_agent.config).
 """
 
 import logging
@@ -38,27 +34,24 @@ logger = logging.getLogger(__name__)
 
 
 def get_debug_mode() -> bool:
-    """Get debug mode flag from config.yaml."""
     return get_infrastructure_config().debug
 
 
 def get_ptc_recursion_limit() -> int:
-    """Get PTC agent recursion limit from config.yaml."""
     return get_infrastructure_config().ptc_recursion_limit
 
 
 def get_flash_recursion_limit() -> int:
-    """Get Flash agent recursion limit from config.yaml."""
     return get_infrastructure_config().flash_recursion_limit
 
 
 def get_workflow_timeout() -> int:
-    """Get workflow timeout in seconds from config.yaml."""
+    """Workflow timeout in seconds."""
     return get_infrastructure_config().workflow_timeout
 
 
 def get_sse_keepalive_interval() -> float:
-    """Get SSE keepalive interval in seconds from config.yaml."""
+    """SSE keepalive interval in seconds."""
     return get_infrastructure_config().sse_keepalive_interval
 
 
@@ -86,17 +79,14 @@ def get_news_data_providers() -> list[dict]:
 
 
 def is_result_log_db_enabled() -> bool:
-    """Check if result logging to database is enabled."""
     return get_infrastructure_config().result_log_db_enabled
 
 
 def is_redis_warm_on_startup_enabled() -> bool:
-    """Check if Redis cache warming on startup is enabled."""
     return get_infrastructure_config().redis_warm_on_startup
 
 
 def is_langsmith_tracing_enabled() -> bool:
-    """Check if LangSmith tracing is enabled."""
     return get_infrastructure_config().langsmith_tracing
 
 
@@ -106,12 +96,10 @@ def is_langsmith_tracing_enabled() -> bool:
 
 
 def is_sse_event_log_enabled() -> bool:
-    """Check if SSE event logging is enabled."""
     return get_infrastructure_config().sse_event_log_enabled
 
 
 def get_sse_event_log_level() -> str:
-    """Get SSE event log level from config.yaml."""
     return get_infrastructure_config().sse_event_log_level
 
 
@@ -121,17 +109,14 @@ def get_sse_event_log_level() -> str:
 
 
 def get_log_level() -> str:
-    """Get root logger level from config.yaml."""
     return get_infrastructure_config().log_level.upper()
 
 
 def get_log_format() -> str:
-    """Get log format string from config.yaml."""
     return get_infrastructure_config().log_format
 
 
 def get_module_log_levels() -> dict:
-    """Get module-specific log levels from config.yaml."""
     levels = get_infrastructure_config().module_log_levels
     return {k: v.upper() for k, v in levels.items()} if levels else {}
 
@@ -142,7 +127,6 @@ def get_module_log_levels() -> dict:
 
 
 def get_allowed_origins() -> List[str]:
-    """Get allowed CORS origins from config.yaml."""
     return get_infrastructure_config().allowed_origins
 
 
@@ -184,7 +168,6 @@ def get_locale_config(locale: str, prompt_language: str) -> Dict[str, str]:
 
 
 def is_redis_cache_enabled() -> bool:
-    """Check if Redis caching is enabled."""
     return get_infrastructure_config().redis.cache_enabled
 
 
@@ -220,7 +203,7 @@ def get_redis_max_connections() -> int:
 
 
 def get_redis_socket_timeout() -> int:
-    """Get Redis socket read/write timeout in seconds."""
+    """Socket read/write timeout in seconds."""
     return get_infrastructure_config().redis.socket_timeout
 
 
@@ -251,57 +234,48 @@ def get_conversation_pool_max() -> int:
 
 
 def get_redis_socket_connect_timeout() -> int:
-    """Get Redis socket connect timeout in seconds."""
     return get_infrastructure_config().redis.socket_connect_timeout
 
 
 def get_redis_ttl_results_list() -> int:
-    """Get Redis TTL for results list (seconds)."""
     return get_infrastructure_config().redis.ttl.results_list
 
 
 def get_redis_ttl_result_detail() -> int:
-    """Get Redis TTL for result detail (seconds)."""
     return get_infrastructure_config().redis.ttl.result_detail
 
 
 def get_redis_ttl_metadata() -> int:
-    """Get Redis TTL for metadata (seconds)."""
     return get_infrastructure_config().redis.ttl.metadata
 
 
 def get_redis_ttl_metadata_summary() -> int:
-    """Get Redis TTL for metadata summary (seconds)."""
     return get_infrastructure_config().redis.ttl.metadata_summary
 
 
 def get_redis_ttl_workflow_status() -> int:
-    """Get Redis TTL for completed/cancelled workflow status keys (seconds)."""
     return get_infrastructure_config().redis.ttl.workflow_status
 
 
 def get_redis_ttl_cancel_flag() -> int:
-    """Get Redis TTL for workflow cancel flag (seconds)."""
     return get_infrastructure_config().redis.ttl.cancel_flag
 
 
 def get_redis_ttl_steering() -> int:
-    """Get Redis TTL for steering message keys (seconds)."""
     return get_infrastructure_config().redis.ttl.steering
 
 
 def get_redis_ttl_memo_metadata_inflight() -> int:
-    """Get Redis TTL for the memo metadata in-flight visibility key (seconds)."""
+    """Cross-worker visibility key TTL for in-flight memo metadata tasks (seconds)."""
     return get_infrastructure_config().redis.ttl.memo_metadata_inflight
 
 
 def get_redis_ttl_memo_metadata_cancel() -> int:
-    """Get Redis TTL for the memo metadata cooperative cancel flag (seconds)."""
+    """Cooperative cross-worker memo metadata cancel flag TTL (seconds)."""
     return get_infrastructure_config().redis.ttl.memo_metadata_cancel
 
 
 def is_cache_invalidate_on_write_enabled() -> bool:
-    """Check if cache invalidation on write is enabled."""
     return get_infrastructure_config().redis.cache_invalidate_on_write
 
 
@@ -332,62 +306,44 @@ def get_ohlcv_ttl(interval: str) -> int:
 
 
 def get_max_concurrent_workflows() -> int:
-    """Get maximum number of concurrent background workflows."""
     return get_infrastructure_config().background_execution.max_concurrent_workflows
 
 
 def get_workflow_result_ttl() -> int:
-    """Get workflow result TTL in seconds."""
     return get_infrastructure_config().background_execution.workflow_result_ttl
 
 
 def get_abandoned_workflow_timeout() -> int:
-    """Get abandoned workflow timeout in seconds."""
+    """Timeout in seconds for workflows with no active connections."""
     return get_infrastructure_config().background_execution.abandoned_workflow_timeout
 
 
 def get_cleanup_interval() -> int:
-    """Get background cleanup interval in seconds."""
     return get_infrastructure_config().background_execution.cleanup_interval
 
 
 def is_intermediate_storage_enabled() -> bool:
-    """Check if intermediate result storage is enabled."""
     return get_infrastructure_config().background_execution.enable_intermediate_storage
 
 
 def get_max_stored_messages_per_agent() -> int:
-    """Get maximum stored messages per agent."""
     return get_infrastructure_config().background_execution.max_stored_messages_per_agent
 
 
 def get_subagent_collector_timeout() -> float:
-    """Get initial subagent collector timeout in seconds."""
     return get_infrastructure_config().background_execution.subagent_collector_timeout
 
 
 def get_subagent_orphan_collector_timeout() -> float:
-    """Get orphan subagent collector idle timeout in seconds."""
+    """Orphan collector idle timeout; resets on any subagent progress."""
     return get_infrastructure_config().background_execution.subagent_orphan_collector_timeout
 
 
 def get_event_storage_backend() -> str:
-    """Get event storage backend (redis or memory)."""
     return get_infrastructure_config().background_execution.event_storage_backend
 
 
-def is_event_storage_fallback_enabled() -> bool:
-    """Check if fallback to memory storage is enabled on Redis failure."""
-    return get_infrastructure_config().background_execution.event_storage_fallback_to_memory
-
-
-def get_live_queue_maxsize() -> int:
-    """Get max backpressure for live SSE subscriber queues."""
-    return get_infrastructure_config().background_execution.live_queue_maxsize
-
-
 def get_subagent_task_max_wait() -> int:
-    """Get max seconds to wait for subagent task to appear in registry."""
     return get_infrastructure_config().background_execution.subagent_task_max_wait
 
 
@@ -401,52 +357,35 @@ def is_subagent_event_redis_spill_enabled() -> bool:
     return get_infrastructure_config().background_execution.spill_subagent_events_to_redis
 
 
-def is_use_redis_stream_sse_enabled() -> bool:
-    """Return True when ``USE_REDIS_STREAM_SSE`` env var is set.
-
-    Routes both first-connect and reconnect SSE through the XREAD BLOCK
-    consumer (``workflow:stream:*`` / ``subagent:stream:*``). Default: False.
-    """
-    return os.getenv("USE_REDIS_STREAM_SSE", "false").lower() in ("true", "1", "yes")
-
-
 def get_sse_drain_timeout() -> float:
-    """Get seconds to wait for per-task SSE drain before clearing events."""
     return get_infrastructure_config().background_execution.sse_drain_timeout
 
 
 def get_shutdown_timeout() -> float:
-    """Get max seconds for graceful shutdown of running workflows."""
     return get_infrastructure_config().background_execution.shutdown_timeout
 
 
 def get_checkpoint_flush_timeout() -> float:
-    """Get timeout (seconds) for checkpoint state reads/writes."""
     return get_infrastructure_config().background_execution.checkpoint_flush_timeout
 
 
 def get_wait_for_persistence_timeout() -> float:
-    """Get max seconds callers block waiting for persistence completion."""
     return get_infrastructure_config().background_execution.wait_for_persistence_timeout
 
 
 def get_soft_interrupt_wait_timeout() -> float:
-    """Get max seconds to wait for soft-interrupted workflow to finish."""
     return get_infrastructure_config().background_execution.soft_interrupt_wait_timeout
 
 
 def get_max_workflow_retries() -> int:
-    """Get max transient-error retry count for workflow execution."""
     return get_infrastructure_config().background_execution.max_workflow_retries
 
 
 def get_merged_chunk_max_bytes() -> int:
-    """Get max bytes for merged SSE event chunks before split."""
     return get_infrastructure_config().background_execution.merged_chunk_max_bytes
 
 
 def get_redis_ttl_workflow_events() -> int:
-    """Get Redis TTL for workflow event buffers (seconds)."""
     return get_infrastructure_config().redis.ttl.workflow_events
 
 
@@ -458,11 +397,7 @@ def get_redis_ttl_workflow_events() -> int:
 def get_nested_config(
     key_path: str, default: Any = None, config_path: Optional[Any] = None
 ) -> Any:
-    """Get a nested configuration value using dot notation.
-
-    This function is kept for backward compatibility with callers that need
-    raw dict-style access. New code should use get_infrastructure_config() directly.
-    """
+    """Dot-notation config lookup; kept for backward-compat callers."""
     cfg = get_infrastructure_config()
     # Walk the pydantic model using getattr for typed access
     keys = key_path.split(".")
@@ -483,10 +418,7 @@ def get_nested_config(
 def get_config(
     key: str, default: Any = None, config_path: Optional[Any] = None
 ) -> Any:
-    """Get a top-level configuration value from config.yaml.
-
-    Kept for backward compatibility. New code should use get_infrastructure_config().
-    """
+    """Top-level config lookup; kept for backward compatibility."""
     return get_nested_config(key, default)
 
 
@@ -499,7 +431,7 @@ def get_langsmith_tags(
     msg_type: str,
     locale: Optional[str] = None,
 ) -> List[str]:
-    """Generate LangSmith tags for workflow tracing."""
+    """Build LangSmith tags list for a workflow run."""
     tags = []
 
     workflow_map = {
@@ -529,7 +461,7 @@ def get_langsmith_metadata(
     is_byok: bool = False,
     platform: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Generate LangSmith metadata for workflow tracing."""
+    """Build LangSmith metadata dict for a workflow run (omits None values)."""
     metadata = {}
 
     if user_id:

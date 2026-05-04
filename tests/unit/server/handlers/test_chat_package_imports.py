@@ -77,7 +77,6 @@ class TestSubmoduleImports:
         assert hasattr(mod, "inject_skills")
         assert hasattr(mod, "build_graph_config")
         assert hasattr(mod, "wait_or_steer")
-        assert hasattr(mod, "stream_live_events")
         assert hasattr(mod, "handle_workflow_error")
         assert hasattr(mod, "serialize_context_metadata")
         assert hasattr(mod, "setup_steering_tracking")

@@ -65,13 +65,17 @@ from ._common import (
     process_hitl_response,
     serialize_context_metadata,
     setup_steering_tracking,
-    stream_live_events,
     wait_or_steer,
 )
 from src.config.settings import get_flash_recursion_limit
 
 from .llm_config import resolve_llm_config
-from .steering import backfill_steering_queries, steer_thread
+from .steering import (
+    backfill_steering_queries,
+    drain_steering_return_event,
+    steer_thread,
+)
+from .stream_from_log import stream_from_log
 
 
 # ---------------------------------------------------------------------------
@@ -471,21 +475,19 @@ async def astream_flash_workflow(
         else:
             slot_owned = False  # Manager owns burst slot release from here
 
-        async for event in stream_live_events(
-            manager=manager,
-            tracker=tracker,
-            thread_id=thread_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            handler=handler,
-            token_callback=token_callback,
-            persistence_service=persistence_service,
-            start_time=start_time,
-            request=request,
-            is_byok=is_byok,
-            log_prefix="FLASH_CHAT",
-        ):
+        async for event in stream_from_log(thread_id, last_event_id=None):
             yield event
+
+        # After the workflow ends, return any unconsumed steering messages so
+        # the client can re-render them as locally-queued context for the next
+        # turn instead of losing them silently.
+        steering_event = await drain_steering_return_event(thread_id)
+        if steering_event:
+            logger.info(
+                f"[FLASH_CHAT] Returning unconsumed steering message(s) "
+                f"to client: thread_id={thread_id}"
+            )
+            yield steering_event
 
     except (asyncio.CancelledError, GeneratorExit):
         if slot_owned:

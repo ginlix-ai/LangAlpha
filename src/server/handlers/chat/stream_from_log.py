@@ -1,18 +1,14 @@
 """Redis-Streams-backed SSE consumer.
 
-Replaces the parallel live-queue / List-replay paths with one XREAD BLOCK
-loop that every consumer (first-connect, reconnect, second tab, subagent
-SSE, late subscriber) traverses identically. The workflow is a fire-and-
-forget producer that writes to ``workflow:stream:{thread_id}`` and
-``subagent:stream:{thread_id}:{task_id}``; consumers attach by stream key
-and read by cursor — they share no in-process state with the workflow.
+One XREAD BLOCK loop serves every consumer type (first-connect, reconnect,
+second tab, subagent SSE, late subscriber). The workflow is a fire-and-forget
+producer writing to ``workflow:stream:{thread_id}`` and
+``subagent:stream:{thread_id}:{task_id}``; consumers attach by stream key and
+read by cursor with no in-process state shared with the workflow.
 
-Both streams store pre-rendered SSE wire strings in the steady state.
-The subagent consumer also handles legacy JSON records
-(``{seq, event, data, agent_id}``) written by earlier producer
-versions — those age out after their TTL window.
-
-Gated behind ``USE_REDIS_STREAM_SSE`` per request.
+Both streams store pre-rendered SSE wire strings. The subagent consumer also
+handles legacy JSON records (``{seq, event, data, agent_id}``) that age out
+after their TTL window.
 """
 
 from __future__ import annotations
@@ -131,7 +127,16 @@ async def _stream_from_redis_log(
             try:
                 # asyncio.wait_for guards against the underlying redis-py
                 # XREAD hanging past BLOCK if the connection is poisoned.
-                # The buffer is small because BLOCK is already < socket_timeout.
+                #
+                # Sized so the outer wait_for fires AFTER redis-py's own
+                # socket_timeout. Recall ``block_ms = socket_timeout -
+                # _XREAD_BLOCK_MARGIN_MS`` (i.e. socket_timeout - 1 s) from
+                # ``_xread_block_ms``. Adding 2.0 s here gives an outer
+                # timeout of ``socket_timeout + 1 s`` — redis-py gets a full
+                # second past socket_timeout to surface its own
+                # ``Timeout reading from redis`` before wait_for races it.
+                # Using ``+ 1.0`` would equal socket_timeout and produce a
+                # racy double-fire.
                 result = await asyncio.wait_for(
                     cache.client.xread(
                         {stream_key_bytes: cursor},
@@ -246,7 +251,15 @@ async def stream_from_log(
 
     async def terminal_check() -> bool:
         status = await manager.get_task_status(thread_id)
-        return status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED)
+        # ``status is None`` means the TaskInfo entry is gone (e.g. the
+        # placeholder cleanup in ``threads.py`` finally-block deleted a
+        # never-started workflow). Treat that as terminal so the consumer
+        # exits via the two-empty-round handshake instead of spinning
+        # XREAD/keepalive forever — the comment at threads.py:137-141
+        # explicitly relies on this behaviour.
+        return status is None or status in (
+            TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED
+        )
 
     async def on_attach() -> None:
         await manager.increment_connection(thread_id)
@@ -342,10 +355,8 @@ def _classify_subagent_payload(raw: str) -> tuple[str, dict | None]:
 def _record_to_sse(record: dict, thread_id: str, task_id: str) -> str:
     """Render a stored subagent record dict as SSE wire format.
 
-    Mirrors the legacy consumer's ``_record_to_sse`` (stream_reconnect.py)
-    so frontend parsers see byte-for-byte the same wire format whether the
-    flag is on or off. The producer stores records without thread_id /
-    task_id (the registry only knows agent_id), so those are injected here.
+    The producer stores records without thread_id/task_id (the registry only
+    knows agent_id), so those are injected here.
     """
     seq = int(record.get("seq") or 0)
     # Inner data spreads first so consumer-injected thread_id/agent always

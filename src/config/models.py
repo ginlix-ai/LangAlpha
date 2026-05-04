@@ -34,9 +34,6 @@ class BackgroundExecutionConfig(BaseModel):
     event_storage_backend: Literal["redis", "memory"] = Field(
         default="redis", description='Backend for event buffering: "redis" or "memory"'
     )
-    event_storage_fallback_to_memory: bool = Field(
-        default=True, description="Fallback to in-memory storage if Redis fails"
-    )
     subagent_collector_timeout: float = Field(
         default=120, description="Initial subagent collector timeout in seconds"
     )
@@ -45,27 +42,23 @@ class BackgroundExecutionConfig(BaseModel):
     )
 
     # Streaming & queue settings
-    live_queue_maxsize: int = Field(
-        default=5000, description="Max backpressure for live SSE subscriber queues"
-    )
     subagent_task_max_wait: int = Field(
         default=30, description="Max seconds to wait for subagent task to appear in registry"
     )
 
-    # Subagent event capture — Redis-first
+    # Subagent event capture
     in_memory_event_tail_max_events: int = Field(
         default=1000,
         description=(
-            "Max number of captured-event records held in the in-memory hot tail "
-            "per subagent task. Older events are spilled to Redis."
+            "Max captured-event records held in the in-memory hot tail per subagent task. "
+            "Older events spill to Redis."
         ),
     )
     spill_subagent_events_to_redis: bool = Field(
         default=True,
         description=(
-            "Kill-switch: when True, every captured subagent event is spilled "
-            "atomically to Redis so the in-memory tail can stay bounded "
-            "without losing events for reconnect / full-history collectors."
+            "Kill-switch: when True, subagent events are also spilled to Redis so "
+            "the in-memory tail stays bounded without losing events for reconnect/persistence."
         ),
     )
 

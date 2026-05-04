@@ -35,7 +35,6 @@ def _make_btm() -> BackgroundTaskManager:
          patch("src.server.services.background_task_manager.is_intermediate_storage_enabled", return_value=False), \
          patch("src.server.services.background_task_manager.get_max_stored_messages_per_agent", return_value=1000), \
          patch("src.server.services.background_task_manager.get_event_storage_backend", return_value="memory"), \
-         patch("src.server.services.background_task_manager.is_event_storage_fallback_enabled", return_value=False), \
          patch("src.server.services.background_task_manager.get_redis_ttl_workflow_events", return_value=86400):
         btm = BackgroundTaskManager()
     return btm

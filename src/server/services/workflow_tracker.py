@@ -5,8 +5,7 @@ Manages workflow execution state in Redis to support background execution
 and reconnection after client disconnect.
 
 Key Features:
-- Track workflow status (active/disconnected/completed/cancelled/failed/soft_interrupted)
-- Detect explicit user cancellation vs accidental disconnect
+- Track workflow status (active/completed/cancelled/failed/soft_interrupted)
 - TTL-based cleanup of completed workflows
 - Graceful degradation if Redis unavailable
 - Retry count tracking for transient error handling (max 3 retries)
@@ -26,7 +25,6 @@ logger = logging.getLogger(__name__)
 class WorkflowStatus(str, Enum):
     """Workflow execution status."""
     ACTIVE = "active"
-    DISCONNECTED = "disconnected"
     COMPLETED = "completed"
     INTERRUPTED = "interrupted"
     CANCELLED = "cancelled"
@@ -53,7 +51,6 @@ TERMINAL_STATUSES: frozenset[WorkflowStatus] = frozenset({
 # decision; must stay disjoint with ``TERMINAL_STATUSES``.
 RECONNECTABLE_STATUSES: frozenset[WorkflowStatus] = frozenset({
     WorkflowStatus.ACTIVE,
-    WorkflowStatus.DISCONNECTED,
 })
 
 
@@ -210,39 +207,6 @@ class WorkflowTracker:
         except Exception as e:
             logger.error(f"[WorkflowTracker] Error marking active: {e}")
             return False
-
-    async def mark_disconnected(
-        self,
-        thread_id: str,
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> bool:
-        """
-        Mark workflow as disconnected (client lost connection but workflow continues).
-
-        Args:
-            thread_id: Thread/workflow identifier
-            metadata: Optional metadata about disconnection
-
-        Returns:
-            True if successfully marked, False otherwise
-        """
-        if not self.enabled:
-            return False
-
-        success = await self._update_status_with_metadata(
-            thread_id=thread_id,
-            new_status=WorkflowStatus.DISCONNECTED,
-            timestamp_field="disconnected_at",
-            metadata=metadata,
-            ttl=None  # No TTL - workflow still running
-        )
-
-        if success:
-            logger.info(
-                f"[WorkflowTracker] Marked workflow as disconnected: {thread_id}"
-            )
-
-        return success
 
     async def mark_completed(
         self,

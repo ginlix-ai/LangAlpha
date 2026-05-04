@@ -74,13 +74,13 @@ from ._common import (
     process_hitl_response,
     serialize_context_metadata,
     setup_steering_tracking,
-    stream_live_events,
     wait_or_steer,
 )
-from src.config.settings import get_ptc_recursion_limit, is_use_redis_stream_sse_enabled
+from src.config.settings import get_ptc_recursion_limit
 
 from .llm_config import resolve_llm_config
-from .steering import backfill_steering_queries
+from .steering import backfill_steering_queries, drain_steering_return_event
+from .stream_from_log import stream_from_log
 
 # Strong references to fire-and-forget tasks so the event loop doesn't GC them.
 _background_tasks: set[asyncio.Task] = set()
@@ -238,7 +238,7 @@ async def astream_ptc_workflow(
             )
 
         # =====================================================================
-        # Phase 1: Database Persistence Setup
+        # Database Persistence Setup
         # =====================================================================
 
         await ensure_thread(
@@ -318,7 +318,7 @@ async def astream_ptc_workflow(
         timezone_str = _resolve_timezone(request.timezone, request.locale)
 
         # =====================================================================
-        # Phase 2: Token and Tool Tracking
+        # Token and Tool Tracking
         # =====================================================================
 
         token_callback, tool_tracker = init_tracking(thread_id)
@@ -718,7 +718,7 @@ async def astream_ptc_workflow(
         )
 
         # =====================================================================
-        # Phase 3: Background Execution with Completion Callback
+        # Background Execution with Completion Callback
         # =====================================================================
 
         manager = BackgroundTaskManager.get_instance()
@@ -741,10 +741,10 @@ async def astream_ptc_workflow(
 
         # Define completion callback for background persistence
         async def on_background_workflow_complete():
-            """Persists workflow data after background execution completes.
+            """Persist workflow data after background execution completes.
 
-            Reads fresh handler/token_callback from task_info metadata because
-            reinvocation may have replaced them with new instances.
+            Reads handler/token_callback from task_info metadata in case
+            reinvocation replaced them with new instances.
             """
             try:
                 # Read fresh refs from task_info (may have been updated by reinvoke)
@@ -896,30 +896,22 @@ async def astream_ptc_workflow(
             f"[PTC_TIMING] thread_id={thread_id} model={model_tag} total={total_ms:.0f}ms ({phases})"
         )
 
-        if is_use_redis_stream_sse_enabled():
-            # Stream-backed first-connect: read from workflow:stream:{thread_id}
-            # via XREAD BLOCK. The workflow runs as a fully detached background
-            # task — disconnect cannot reach it.
-            from .stream_from_log import stream_from_log
+        # Stream-backed first-connect: read from workflow:stream:{thread_id}
+        # via XREAD BLOCK. The workflow runs as a fully detached background
+        # task — disconnect cannot reach it.
+        async for event in stream_from_log(thread_id, last_event_id=None):
+            yield event
 
-            async for event in stream_from_log(thread_id, last_event_id=None):
-                yield event
-        else:
-            async for event in stream_live_events(
-                manager=manager,
-                tracker=tracker,
-                thread_id=thread_id,
-                workspace_id=workspace_id,
-                user_id=user_id,
-                handler=handler,
-                token_callback=token_callback,
-                persistence_service=persistence_service,
-                start_time=start_time,
-                request=request,
-                is_byok=is_byok,
-                log_prefix="PTC_CHAT",
-            ):
-                yield event
+        # After the workflow ends, return any unconsumed steering messages so
+        # the client can re-render them as locally-queued context for the next
+        # turn instead of losing them silently.
+        steering_event = await drain_steering_return_event(thread_id)
+        if steering_event:
+            logger.info(
+                f"[PTC_CHAT] Returning unconsumed steering message(s) "
+                f"to client: thread_id={thread_id}"
+            )
+            yield steering_event
 
     except (asyncio.CancelledError, GeneratorExit):
         if slot_owned:
@@ -937,7 +929,7 @@ async def astream_ptc_workflow(
 
     except Exception as e:
         # =====================================================================
-        # Phase 4: Error Recovery with Retry Logic
+        # Error Recovery with Retry Logic
         # =====================================================================
         async for event in handle_workflow_error(
             e,

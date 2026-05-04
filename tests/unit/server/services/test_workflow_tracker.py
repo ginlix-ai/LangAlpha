@@ -171,7 +171,7 @@ class TestMarkActive:
 
 
 # ---------------------------------------------------------------------------
-# mark_completed / mark_disconnected / mark_interrupted / mark_cancelled
+# mark_completed / mark_interrupted / mark_cancelled
 # ---------------------------------------------------------------------------
 
 class TestMarkTransitions:
@@ -193,16 +193,6 @@ class TestMarkTransitions:
         assert call_kwargs.kwargs.get("ttl") == expected_ttl or (
             len(call_kwargs.args) > 2 and call_kwargs.args[2] == expected_ttl
         )
-
-    @pytest.mark.asyncio
-    async def test_mark_disconnected_no_ttl(self):
-        tracker, mock_cache = _make_tracker(enabled=True)
-        thread_id = str(uuid.uuid4())
-
-        result = await tracker.mark_disconnected(thread_id)
-
-        assert result is True
-        mock_cache.set.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_mark_interrupted_success(self):
@@ -279,7 +269,6 @@ class TestMarkTransitions:
         tid = "t-1"
 
         assert await tracker.mark_completed(tid) is False
-        assert await tracker.mark_disconnected(tid) is False
         assert await tracker.mark_interrupted(tid) is False
         assert await tracker.mark_cancelled(tid) is False
         assert await tracker.mark_failed(tid, error="x") is False
@@ -516,7 +505,6 @@ class TestWorkflowStatusEnum:
 
     def test_enum_values(self):
         assert WorkflowStatus.ACTIVE == "active"
-        assert WorkflowStatus.DISCONNECTED == "disconnected"
         assert WorkflowStatus.COMPLETED == "completed"
         assert WorkflowStatus.INTERRUPTED == "interrupted"
         assert WorkflowStatus.CANCELLED == "cancelled"

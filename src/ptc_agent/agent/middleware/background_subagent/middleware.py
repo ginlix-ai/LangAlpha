@@ -54,30 +54,20 @@ logger = structlog.get_logger(__name__)
 
 
 def _make_task_done_callback(task: BackgroundTask) -> Callable[[asyncio.Task], None]:
-    """Build a done_callback that wakes per-task SSE consumers and bumps
-    ``last_updated_at`` when the asyncio.Task finishes.
+    """Build a done_callback that bumps ``last_updated_at`` when the asyncio.Task finishes.
 
     Covers all completion paths (success, failure, cancellation) without
     having to instrument every ``task.completed = True`` site.
     """
 
     def _on_task_done(_t: asyncio.Task) -> None:
-        task.new_event_signal.set()
         task.last_updated_at = time.time()
 
     return _on_task_done
 
 
 def _truncate_description(description: str, max_sentences: int = 2) -> str:
-    """Truncate description to first N sentences.
-
-    Args:
-        description: Full task description
-        max_sentences: Maximum number of sentences to keep
-
-    Returns:
-        Truncated description ending at the Nth period
-    """
+    """Return the first N sentences of description (period-delimited)."""
     sentences = []
     remaining = description
     for _ in range(max_sentences):
@@ -153,28 +143,12 @@ async def _run_background_task(
 
 
 class BackgroundSubagentMiddleware(AgentMiddleware):
-    """Middleware that enables background subagent execution.
+    """Intercepts Task tool calls and spawns them as background asyncio tasks.
 
-    This middleware intercepts 'Task' tool calls and:
-    1. Spawns the subagent execution in a background asyncio task
-    2. Returns an immediate pseudo-result to the main agent
-    3. Tracks pending tasks in a registry
-    4. Collects results after the agent ends via the waiting room pattern
-
-    The main agent can continue with other work while subagents execute
-    in the background. When the agent finishes its current work, the
-    BackgroundSubagentOrchestrator will collect pending results and
-    re-invoke the agent for synthesis.
-
-    Usage:
-        middleware = BackgroundSubagentMiddleware(timeout=60.0)
-        agent = create_deep_agent(
-            model=...,
-            tools=...,
-            middleware=[middleware],
-        )
-        orchestrator = BackgroundSubagentOrchestrator(agent, middleware)
-        result = await orchestrator.ainvoke(input_state)
+    Returns an immediate pseudo-result to the main agent so it can continue
+    working while subagents execute. The BackgroundSubagentOrchestrator
+    collects pending results after the main agent finishes and re-invokes
+    it for synthesis.
     """
 
     def __init__(
@@ -186,15 +160,10 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         event_capture_middleware: "SubagentEventCaptureMiddleware | None" = None,
         checkpointer: Any | None = None,
     ) -> None:
-        """Initialize the middleware.
-
+        """
         Args:
-            timeout: Maximum time to wait for background tasks (seconds)
-            enabled: Whether background execution is enabled
-            registry: Optional shared registry for background tasks
-            event_capture_middleware: Optional event capture middleware for clearing
-                identity on resume
-            checkpointer: Optional LangGraph checkpointer for hydrating tasks from stored state
+            checkpointer: LangGraph checkpointer used to hydrate tasks from stored
+                state when the in-memory registry loses them (e.g. server restart).
         """
         super().__init__()
         self.registry = registry or BackgroundTaskRegistry()
@@ -214,23 +183,11 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command],
     ) -> ToolMessage | Command:
-        """Synchronous wrap_tool_call - delegates to blocking execution.
-
-        For sync execution, we can't spawn background tasks, so we
-        fall back to normal blocking execution.
-        """
+        """Sync path: no background spawn, falls back to blocking execution."""
         return handler(request)
 
     async def _queue_followup_to_redis(self, task_id: str, description: str) -> bool:
-        """Push a follow-up message to Redis for a running subagent.
-
-        Args:
-            task_id: The background task identifier
-            description: The follow-up message content
-
-        Returns:
-            True if steering message was stored successfully
-        """
+        """Push a follow-up message to Redis for a running subagent. Returns True on success."""
         try:
             from src.utils.cache.redis_cache import get_cache_client
 
@@ -253,10 +210,9 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
     async def _reset_task_for_resume(self, task: BackgroundTask) -> None:
         """Reset a completed task's state so it can be re-run.
 
-        Clears the Redis spool first (events list + meta hash). Without this
-        the new run's records would RPUSH onto the prior run's list and
-        reconnect/persistence would replay both runs interleaved (the seq
-        counter is reset to 0 below, so seqs collide).
+        Clears the Redis event keys first so the resumed run starts fresh.
+        Without this the resumed run's events would interleave with the prior
+        run's (the seq counter resets to 0, causing seq collisions on replay).
         """
         if self.registry.thread_id:
             try:
@@ -290,11 +246,6 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         task.redis_write_failed = False
         task.collector_response_id = None
         task.sse_drain_complete = asyncio.Event()
-        # Wake any consumer still awaiting the prior Event before we drop
-        # the reference — otherwise they'd sit on the stale event until
-        # the 5s safety timeout.
-        task.new_event_signal.set()
-        task.new_event_signal = asyncio.Event()
         task.sse_consumer_count = 0
         # Reset timestamps so the LLM sees honest staleness for the
         # resumed run, not leftover values from the prior asyncio.Task.
@@ -344,18 +295,10 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
     async def _hydrate_from_checkpoint(
         self, task_id: str, parent_thread_id: str
     ) -> BackgroundTask | None:
-        """Try to reconstruct a BackgroundTask from stored checkpoint metadata.
+        """Reconstruct a BackgroundTask from stored checkpoint metadata.
 
-        When the in-memory registry loses a task (e.g., server restart), this method
-        queries the checkpointer for a checkpoint written under the task_id's
-        checkpoint_ns, and rebuilds a minimal BackgroundTask for resume.
-
-        Args:
-            task_id: The 6-char short task ID (used as checkpoint_ns)
-            parent_thread_id: The parent conversation's thread_id
-
-        Returns:
-            A reconstructed BackgroundTask inserted into the registry, or None
+        Called when the in-memory registry loses a task (e.g. server restart).
+        Returns a minimal BackgroundTask inserted into the registry, or None.
         """
 
         if not self.checkpointer or not parent_thread_id:
@@ -676,22 +619,12 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             )
 
     def clear_registry(self) -> None:
-        """Clear the task registry.
-
-        Should be called by the orchestrator after handling all tasks.
-        """
+        """Clear the task registry; called by the orchestrator after all tasks are handled."""
         self.registry.clear()
         logger.debug("Cleared background task registry")
 
     async def cancel_all_tasks(self, *, force: bool = False) -> int:
-        """Cancel all pending background tasks.
-
-        Args:
-            force: Cancel underlying handler tasks as well
-
-        Returns:
-            Number of tasks cancelled
-        """
+        """Cancel all pending background tasks; returns the number cancelled."""
         return await self.registry.cancel_all(force=force)
 
     @property

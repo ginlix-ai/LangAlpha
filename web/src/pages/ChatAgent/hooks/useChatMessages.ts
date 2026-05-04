@@ -1,16 +1,7 @@
 /**
- * Custom hook for managing chat messages and streaming
- * 
- * Handles:
- * - Message state management
- * - Thread ID management (persisted per workspace)
- * - Message sending with SSE streaming
- * - Conversation history loading
- * - Streaming updates and error handling
- * 
- * @param {string} workspaceId - The workspace ID for the chat session
- * @param {string} [initialThreadId] - Optional initial thread ID (from URL params)
- * @returns {Object} Message state and handlers
+ * Manages chat messages and SSE streaming for a workspace.
+ * Handles thread persistence, message sending, history loading,
+ * and streaming updates.
  */
 
 import type React from 'react';
@@ -563,6 +554,17 @@ export function useChatMessages(
   const historyLoadingRef = useRef(false);
   const historyMessagesRef = useRef(new Set<string>()); // Track message IDs from history
   const newMessagesStartIndexRef = useRef(0); // Index where new messages start
+  // Guards against the load-history effect doing a redundant replay when
+  // (workspaceId, threadId, reloadTrigger) re-resolve to a tuple this hook
+  // already loaded — most often during React 18 StrictMode's mount→unmount→
+  // remount in dev, but also any future code path that increments
+  // ``reloadTrigger`` while the previous load already covered the same state.
+  // Without this, ``loadConversationHistory`` would re-run and append a fresh
+  // set of ``history-assistant-{pairIndex}-${Date.now()}`` bubbles atop the
+  // ones it already created, because the bubble keys aren't deterministic so
+  // React can't dedup by id. Cleared on real thread switches (see line ~682)
+  // and on load failure (the catch path below) so retries still work.
+  const historyLoadedKeyRef = useRef<string | null>(null);
 
   // Track all LLM models used in this thread (ordered, deduplicated)
   const [threadModels, setThreadModels] = useState<string[]>([]);
@@ -667,6 +669,7 @@ export function useChatMessages(
         currentToolCallIdRef.current = null;
         steeringAtOrderRef.current = null;
         historyLoadingRef.current = false;
+        historyLoadedKeyRef.current = null;
         historyMessagesRef.current.clear();
         newMessagesStartIndexRef.current = 0;
         recentlySentTrackerRef.current.clear();
@@ -679,9 +682,9 @@ export function useChatMessages(
    * Loads conversation history for the current workspace and thread
    * Uses the threadId from state (which should be a valid thread ID, not '__default__')
    */
-  const loadConversationHistory = async () => {
+  const loadConversationHistory = async (): Promise<boolean> => {
     if (!workspaceId || !threadId || threadId === '__default__' || historyLoadingRef.current) {
-      return;
+      return false;
     }
 
     try {
@@ -689,6 +692,18 @@ export function useChatMessages(
       historyHasUnresolvedInterruptRef.current = false;
       setIsLoadingHistory(true);
       setMessageError(null);
+
+      // Reset history-tracking state so a re-replay (e.g. after a failed
+      // reconnect → setReloadTrigger increment) starts from a clean slate.
+      // Without this, the bubble-creation handlers in historyEventHandlers
+      // would re-insert bubbles atop the prior load's bubbles. With the
+      // newly deterministic bubble ids (`history-{role}-{pairIndex}`), the
+      // duplicate insert would also trip React's same-key warnings.
+      // ``isHistory: true`` only marks bubbles produced by this loader, so
+      // any in-flight streaming bubble survives the filter.
+      historyMessagesRef.current.clear();
+      newMessagesStartIndexRef.current = 0;
+      setMessages((prev) => prev.filter((m) => !m.isHistory));
 
       const threadIdToUse = threadId;
       console.log('[History] Loading history for thread:', threadIdToUse);
@@ -1914,14 +1929,20 @@ export function useChatMessages(
           console.warn('[History] Failed to load feedback:', e);
         }
       }
+      return true;
     } catch (error: unknown) {
       console.error('[History] Error loading conversation history:', error);
-      // Only show error if it's not a 404 (404 is expected for new threads)
-      if (!(error as Error).message || !(error as Error).message.includes('404')) {
-        setMessageError((error as Error).message || 'Failed to load conversation history');
+      // Only show error if it's not a 404 (404 is expected for new threads).
+      // 404 still counts as a successful "no prior history" load — caller can
+      // safely mark the idempotency key.
+      const errMsg = (error as Error).message || '';
+      const isNotFound = errMsg.includes('404');
+      if (errMsg && !isNotFound) {
+        setMessageError(errMsg || 'Failed to load conversation history');
       }
       setIsLoadingHistory(false);
       historyLoadingRef.current = false;
+      return isNotFound;
     }
   };
 
@@ -2177,6 +2198,16 @@ export function useChatMessages(
       return;
     }
 
+    // Idempotency guard: skip if we already loaded for this exact
+    // (workspace, thread, reloadTrigger) tuple. See historyLoadedKeyRef
+    // declaration for the failure mode this prevents (duplicate
+    // history-assistant bubbles after a stream completes).
+    const loadKey = `${workspaceId}::${threadId}::${reloadTrigger}`;
+    if (historyLoadedKeyRef.current === loadKey) {
+      console.log('[History] Skipping load: already loaded for key', loadKey);
+      return;
+    }
+
     let cancelled = false;
 
     const loadAndMaybeReconnect = async () => {
@@ -2199,9 +2230,20 @@ export function useChatMessages(
         setIsShared(status.is_shared);
       }
 
-      await loadConversationHistory();
+      const loadOk = await loadConversationHistory();
 
       if (cancelled) return;
+
+      // Only mark the (workspace, thread, reloadTrigger) tuple as loaded
+      // when the load actually succeeded. On transient errors the key
+      // stays clear so a manual `setReloadTrigger(n => n + 1)` retry will
+      // re-fire the effect; otherwise the user would be stuck on a partial
+      // view until they switch threads. Set AFTER the cancellation check
+      // so an in-flight load that's been cancelled doesn't lock out the
+      // eventual real load that supersedes it.
+      if (loadOk) {
+        historyLoadedKeyRef.current = loadKey;
+      }
 
       if (historyHasUnresolvedInterruptRef.current && status.can_reconnect) {
         // Workflow is active → interrupt was answered, reconnect will deliver resolution

@@ -421,7 +421,7 @@ class TestActiveWorkflowGate:
         return tracker
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("status", ["active", "disconnected", "interrupted"])
+    @pytest.mark.parametrize("status", ["active", "interrupted"])
     async def test_compact_rejected_when_workflow_is_running(
         self, base_config, status
     ):

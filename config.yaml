@@ -64,7 +64,7 @@ background_execution:
   # their tab and reconnect within the day to continue. The trade-off: a stuck
   # workflow with no producer holds a worker slot for up to 6h. This is acceptable
   # because per-workflow heap is bounded (terminal-ref cleanup, asyncio handle drop,
-  # bounded captured-events tail), so a wedged workflow stays bounded in memory
+  # bounded in-memory event tail), so a wedged workflow stays bounded in memory
   # while it waits for the reaper. If you see RSS climbing during long disconnect
   # windows, revisit this knob first.
   abandoned_workflow_timeout: 21600
@@ -74,17 +74,15 @@ background_execution:
 
   # Event storage backend configuration
   event_storage_backend: redis  # Backend for event buffering: "redis" or "memory"
-  event_storage_fallback_to_memory: true  # Fallback to in-memory storage if Redis fails
 
   # Subagent collector timeouts
   subagent_collector_timeout: 120        # Initial collector deadline in seconds (waits for subagents after main turn ends)
   subagent_orphan_collector_timeout: 600 # Idle timeout in seconds for orphan collector — resets on any subagent progress (new events, tool calls)
 
   # Streaming & queue settings
-  live_queue_maxsize: 5000              # Max backpressure for live SSE subscriber queues
   subagent_task_max_wait: 30            # Max seconds to wait for subagent task to appear in registry
 
-  # Subagent captured-event memory bounds (Redis-First refactor)
+  # Subagent captured-event memory bounds
   in_memory_event_tail_max_events: 1000  # Per-subagent hot tail size (older events spill to Redis)
   spill_subagent_events_to_redis: true   # Kill-switch for per-event Redis spill
 

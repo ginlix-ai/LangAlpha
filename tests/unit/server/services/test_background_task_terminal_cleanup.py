@@ -28,7 +28,6 @@ def _make_btm() -> BackgroundTaskManager:
          patch("src.server.services.background_task_manager.is_intermediate_storage_enabled", return_value=False), \
          patch("src.server.services.background_task_manager.get_max_stored_messages_per_agent", return_value=1000), \
          patch("src.server.services.background_task_manager.get_event_storage_backend", return_value="memory"), \
-         patch("src.server.services.background_task_manager.is_event_storage_fallback_enabled", return_value=False), \
          patch("src.server.services.background_task_manager.get_redis_ttl_workflow_events", return_value=86400):
         return BackgroundTaskManager()
 
@@ -53,7 +52,6 @@ def _make_info(thread_id: str = "t-1", **metadata) -> TaskInfo:
     )
     info.graph = object()
     info.completion_callback = AsyncMock()
-    info.result_buffer.extend(["a", "b", "c"])
     return info
 
 
@@ -74,7 +72,6 @@ class TestReleaseTerminalRefs:
 
         assert info.graph is None
         assert info.completion_callback is None
-        assert len(info.result_buffer) == 0
         assert "handler" not in info.metadata
         assert "token_callback" not in info.metadata
         assert "sandbox" not in info.metadata
@@ -181,7 +178,7 @@ class TestMarkFailedReleases:
         assert info.graph is None
         assert info.metadata["user_id"] == "u-1"
         # Wiring: tracker.mark_failed called so /status reports FAILED with
-        # bounded TTL instead of leaving the key as ACTIVE/DISCONNECTED.
+        # bounded TTL instead of leaving the key as ACTIVE.
         mock_tracker.mark_failed.assert_awaited_once_with("t-1", error="boom")
 
 
@@ -304,8 +301,6 @@ class _FakeTask:
         self.per_call_records = [{"tokens": 1}]
         self.asyncio_task = MagicMock(spec=asyncio.Task)
         self.handler_task = MagicMock(spec=asyncio.Task)
-        self.new_event_signal = asyncio.Event()
-        self.new_event_signal.set()
         self.sse_drain_complete = asyncio.Event()
         self.sse_drain_complete.set()
         self.completed = True
@@ -330,7 +325,6 @@ class TestAwaitDrainCleanup:
         assert task.per_call_records == []
         assert task.asyncio_task is None
         assert task.handler_task is None
-        assert not task.new_event_signal.is_set()
         # Scalars + result preserved (cross-turn TaskOutput contract)
         assert task.task_id == "abc123"
         assert task.tool_call_id == "tc-abc123"
@@ -378,4 +372,3 @@ class TestAwaitDrainCleanup:
         assert task.per_call_records == []
         assert task.asyncio_task is None
         assert task.handler_task is None
-        assert not task.new_event_signal.is_set()
