@@ -17,7 +17,9 @@ export type SubagentTokenUsage = {
   total: number;
 };
 
-export const ZERO_USAGE: SubagentTokenUsage = { input: 0, output: 0, total: 0 };
+// Frozen so the shared default can't be mutated by an accidental write at any
+// of the `?? ZERO_USAGE` call sites (TS `as` casts bypass type-level guards).
+export const ZERO_USAGE: SubagentTokenUsage = Object.freeze({ input: 0, output: 0, total: 0 });
 
 // Defensive against missing fields, NaN, and string-typed numbers from older
 // SSE shapes. `total` falls back to `input + output` if backend omitted it.

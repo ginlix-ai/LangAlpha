@@ -6,14 +6,6 @@
  * reconnect can't inflate the count, and the live and history-replay paths
  * don't need separate writers.
  */
-import type { SubagentTokenUsage } from './tokenUsage';
-
-/** Per-subagent telemetry map, keyed by subagent id (the short id, not the
- *  `task:` prefixed agent id). Threaded as a prop through MessageList so
- *  inline subagent cards can render their live counters without each
- *  component reaching back into the cards state itself. */
-export type SubagentTelemetryMap = Record<string, { toolCalls: number; tokenUsage: SubagentTokenUsage }>;
-
 interface MessageLike {
   toolCallProcesses?: Record<string, unknown>;
   [key: string]: unknown;
