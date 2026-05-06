@@ -134,6 +134,7 @@ interface SubagentUpdateData {
   status?: string;
   currentTool?: string;
   messages?: SubagentMessage[];
+  tokenUsage?: SubagentTokenUsage;
   [key: string]: unknown;
 }
 
@@ -1454,6 +1455,11 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     }
     if (history) {
       updateData.messages = (history.messages || []) as SubagentMessage[];
+      // Also seed tokenUsage from history. Without this, clicking a replayed
+      // subagent card creates the live card with tokenUsage=ZERO_USAGE, and
+      // the telemetry resolver's "card path" wins on return (messages.length > 0)
+      // and reports zero tokens — even though history still has the real total.
+      updateData.tokenUsage = (history.tokenUsage as SubagentTokenUsage) ?? ZERO_USAGE;
     }
 
     updateSubagentCard(agentId, updateData);
