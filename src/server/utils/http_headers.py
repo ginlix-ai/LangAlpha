@@ -8,6 +8,7 @@ before they reach the response layer.
 from __future__ import annotations
 
 import re
+from typing import Literal
 from urllib.parse import quote
 
 # Printable ASCII minus quote, backslash, and the separators that break
@@ -20,7 +21,7 @@ _ASCII_FILENAME_RE = re.compile(r"[^\w.\-+@~ ]", re.ASCII)
 def content_disposition(
     filename: str,
     *,
-    disposition: str = "attachment",
+    disposition: Literal["inline", "attachment"] = "attachment",
     fallback: str = "download",
 ) -> str:
     """Build an RFC 6266-compliant Content-Disposition header value.

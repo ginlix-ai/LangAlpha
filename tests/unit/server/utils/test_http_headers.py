@@ -80,3 +80,17 @@ def test_all_unsafe_filename_falls_back():
 def test_space_only_falls_back():
     header = content_disposition("   ", fallback="download")
     assert 'filename="download"' in header
+
+
+def test_backslash_in_filename_does_not_escape_token():
+    # A path-traversal-style upload (`..\evil.exe`) must not survive into the
+    # ASCII filename token where backslash escaping is allowed and could
+    # confuse downstream parsers. The percent-encoded form preserves the byte
+    # for clients that consult filename*.
+    name = "..\\evil.exe"
+    header = content_disposition(name)
+    first_q = header.index('"')
+    second_q = header.index('"', first_q + 1)
+    ascii_token = header[first_q + 1 : second_q]
+    assert "\\" not in ascii_token
+    assert quote(name, safe="") in header
