@@ -33,6 +33,7 @@ from fastapi import APIRouter, Body, File, HTTPException, Query, Request, Upload
 from pydantic import BaseModel, Field
 
 from src.server.utils.api import CurrentUserId, require_workspace_owner
+from src.server.utils.http_headers import content_disposition
 from fastapi.responses import Response
 
 from ptc_agent.core.paths import (
@@ -548,9 +549,8 @@ def _build_download_response(
 ) -> Response:
     """Build a download response with caching headers for image types."""
     etag = hashlib.md5(content).hexdigest()
-    safe_filename = filename.replace('"', '\\"')
     headers: dict[str, str] = {
-        "Content-Disposition": f'inline; filename="{safe_filename}"',
+        "Content-Disposition": content_disposition(filename, disposition="inline"),
         "ETag": f'"{etag}"',
     }
     if mime in _CACHEABLE_IMAGE_TYPES:

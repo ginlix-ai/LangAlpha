@@ -23,10 +23,8 @@ import base64
 import binascii
 import contextlib
 import logging
-import re
 from hashlib import sha256
 from typing import Annotated, Any
-from urllib.parse import quote
 
 from fastapi import (
     APIRouter,
@@ -66,6 +64,7 @@ from src.config.settings import (
     get_redis_ttl_memo_metadata_inflight,
 )
 from src.server.app import setup
+from src.server.utils.http_headers import content_disposition
 from src.server.app._store_helpers import (
     MAX_LIST_LIMIT,
     adelete,
@@ -859,7 +858,7 @@ async def download_user_memo(
     filename = value.get("original_filename") or key
     mime_type = value.get("mime_type") or "application/octet-stream"
     headers = {
-        "Content-Disposition": _content_disposition(filename),
+        "Content-Disposition": content_disposition(filename, fallback="memo"),
     }
 
     binary_ref = value.get("binary_ref")
@@ -987,38 +986,4 @@ async def regenerate_user_memo_metadata(
         key=key,
         original_filename=updated.get("original_filename") or key,
         metadata_status="pending",
-    )
-
-
-# --- helpers ---------------------------------------------------------------
-
-
-# Characters that are safe inside the ASCII ``filename="..."`` token: printable
-# ASCII minus quote, backslash, and the separators that break either Starlette's
-# latin-1 header encoder or downstream parsers. Any other char is replaced with
-# an underscore in the ASCII fallback; the original (unicode) name flows through
-# the ``filename*`` parameter per RFC 6266.
-_ASCII_FILENAME_RE = re.compile(r"[^\w.\-+@~ ]", re.ASCII)
-
-
-def _content_disposition(filename: str) -> str:
-    """Build an RFC 6266-compliant Content-Disposition header.
-
-    Pure-ASCII clients see ``filename="..."``; modern clients prefer the
-    ``filename*=UTF-8''<percent-encoded>`` parameter and recover the original
-    unicode name (e.g. CJK or emoji).
-
-    Without this we'd hit Starlette's latin-1 header encoder and 500 the
-    download endpoint for every memo whose filename contains a non-latin-1
-    character — and we'd accept whatever quote/CR/LF the user injected via
-    upload metadata.
-    """
-    cleaned = filename.replace("\r", "").replace("\n", "").replace('"', "")
-    ascii_fallback = _ASCII_FILENAME_RE.sub("_", cleaned)
-    if not ascii_fallback or ascii_fallback.isspace():
-        ascii_fallback = "memo"
-    encoded = quote(cleaned, safe="")
-    return (
-        f'attachment; filename="{ascii_fallback}"; '
-        f"filename*=UTF-8''{encoded}"
     )

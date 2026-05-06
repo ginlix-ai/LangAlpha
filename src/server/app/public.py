@@ -21,6 +21,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
+from src.server.utils.http_headers import content_disposition
 from src.server.utils.secret_redactor import get_redactor, get_vault_secrets_for_redaction
 
 from src.server.database.conversation import (
@@ -406,7 +407,7 @@ async def download_shared_file(
         return StreamingResponse(
             iter([content]),
             media_type=mime,
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers={"Content-Disposition": content_disposition(filename)},
         )
 
     # Try live sandbox — vault secrets from session cache (instant)
@@ -438,7 +439,7 @@ async def download_shared_file(
                 return StreamingResponse(
                     iter([content]),
                     media_type=mime or "application/octet-stream",
-                    headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                    headers={"Content-Disposition": content_disposition(filename)},
                 )
         except HTTPException:
             raise

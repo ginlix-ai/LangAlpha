@@ -811,9 +811,9 @@ def test_content_disposition_strips_quotes_and_newlines():
     Without this, an upload with ``original_filename = 'x";evil="y'`` could
     forge a second header parameter and confuse some downloaders.
     """
-    from src.server.app.memo import _content_disposition
+    from src.server.utils.http_headers import content_disposition
 
-    cd = _content_disposition('weird"name\nwith.md')
+    cd = content_disposition('weird"name\nwith.md', fallback="memo")
     # No raw quote or newline in the ASCII fallback portion.
     assert '"weird' in cd
     # The filename token is ASCII-safe — no embedded quote/CR/LF.
@@ -833,9 +833,9 @@ def test_content_disposition_unicode_filename_is_latin1_safe():
     fallback parameter would contain CJK and Starlette would 500 the
     download endpoint. Regression for that bug.
     """
-    from src.server.app.memo import _content_disposition
+    from src.server.utils.http_headers import content_disposition
 
-    cd = _content_disposition("备忘录.pdf")
+    cd = content_disposition("备忘录.pdf", fallback="memo")
     # Whole header must be latin-1 encodable (what Starlette will try).
     cd.encode("latin-1")
     # Original CJK survives via filename* per RFC 6266.
