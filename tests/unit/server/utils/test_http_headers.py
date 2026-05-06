@@ -66,13 +66,14 @@ def test_empty_filename_falls_back():
     assert _is_latin1_safe(header)
 
 
-def test_all_unsafe_filename_falls_back():
-    # Pure CJK leaves no ASCII characters → underscores → fallback name.
+def test_pure_cjk_filename_ascii_token_is_underscores():
+    # Each CJK char is replaced by ``_``, giving e.g. ``"__"``. That's neither
+    # empty nor whitespace, so the ``fallback`` argument is NOT used here —
+    # see ``test_space_only_falls_back`` for the fallback-path case. The
+    # original bytes still survive in the percent-encoded ``filename*``.
     name = "测试"
     header = content_disposition(name, fallback="memo")
-    assert 'filename="' in header
-    # The ASCII portion either becomes underscores or the fallback. Either way
-    # it must be latin-1 safe and the unicode bytes must be in filename*.
+    assert 'filename="__"' in header
     assert _is_latin1_safe(header)
     assert quote(name, safe="") in header
 
