@@ -15,6 +15,7 @@ import { buildRateLimitError, isUpstreamHint, type StructuredError } from '@/uti
 import { getStoredThreadId, setStoredThreadId } from './utils/threadStorage';
 import { countToolCalls } from '../utils/subagentMetrics';
 import { type SubagentTokenUsage, ZERO_USAGE, extractTokenUsageDelta, accumulateTokenUsage } from '../utils/tokenUsage';
+import { computeSteeringBoundary, shouldSkipSteeringRollback } from '../utils/steeringRollback';
 export { removeStoredThreadId } from './utils/threadStorage';
 import { createUserMessage, createAssistantMessage, createNotificationMessage, appendMessage, updateMessage, type AttachmentMeta } from './utils/messageHelpers';
 import type { ChatMessage, AssistantMessage } from '@/types/chat';
@@ -2636,9 +2637,7 @@ export function useChatMessages(
         // has a larger id. Use it directly so the rollback filter knows what
         // to keep vs. drop. Fall back to the local counter for tests/legacy
         // flows where SSE events carry no `_eventId`.
-        const boundary = event._eventId != null
-          ? Number(event._eventId)
-          : refs.contentOrderCounterRef.current;
+        const boundary = computeSteeringBoundary(event, refs.contentOrderCounterRef.current);
         steeringAtOrder = boundary;
         if (refs.steeringAtOrderRef) refs.steeringAtOrderRef.current = boundary;
         return;
@@ -2669,11 +2668,7 @@ export function useChatMessages(
             // was a non-numeric fallback) — skip the destructive filter and
             // just finalize. Real segment orders are always positive; any
             // other boundary would drop every segment, wiping the visible turn.
-            if (
-              effectiveSteeringAtOrder === null ||
-              !Number.isFinite(effectiveSteeringAtOrder) ||
-              effectiveSteeringAtOrder <= 0
-            ) {
+            if (shouldSkipSteeringRollback(effectiveSteeringAtOrder)) {
               const tp: typeof aMsg.toolCallProcesses = {};
               for (const [id, val] of Object.entries(aMsg.toolCallProcesses || {})) {
                 tp[id] = val.isInProgress ? { ...val, isInProgress: false, isComplete: true } : val;
@@ -2685,9 +2680,11 @@ export function useChatMessages(
               return { ...aMsg, isStreaming: false, toolCallProcesses: tp, reasoningProcesses: rp };
             }
 
-            // Keep only segments at or before the steering point
+            // Keep only segments at or before the steering point. Guard
+            // already proved boundary is a positive finite number.
+            const boundary = effectiveSteeringAtOrder as number;
             const keptSegments = (aMsg.contentSegments || []).filter(
-              (s) => s.order <= effectiveSteeringAtOrder
+              (s) => s.order <= boundary
             );
 
             // Rebuild plain-text content from kept text segments
@@ -3608,9 +3605,7 @@ export function useChatMessages(
             // handler can roll back leaked content. The event's own `_eventId`
             // is the natural boundary in the Redis stream; fall back to the
             // local counter for tests/legacy flows without `_eventId`.
-            steeringAtOrderRef.current = event._eventId != null
-              ? Number(event._eventId)
-              : contentOrderCounterRef.current;
+            steeringAtOrderRef.current = computeSteeringBoundary(event, contentOrderCounterRef.current);
             // Update the user message to reflect steering status
             setMessages((prev) =>
               updateMessage(prev,userMessage.id as string, (msg) => ({

@@ -19,6 +19,11 @@ import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
 import { classifyAgentPath, computeAgentArtifactRouting, type MemoryTier } from '../utils/agentPaths';
 import { countToolCalls } from '../utils/subagentMetrics';
 import { type SubagentTokenUsage, ZERO_USAGE } from '../utils/tokenUsage';
+import {
+  resolveSubagentTelemetry as resolveSubagentTelemetryPure,
+  type SubagentDataLike,
+  type SubagentHistoryLike,
+} from '../utils/resolveSubagentTelemetry';
 import { getCompletedRowTitle } from './toolDisplayConfig';
 import './FilePanel.css';
 import ChatInput, { type ChatInputHandle } from '../../../components/ui/chat-input';
@@ -883,34 +888,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // directly.
   const resolveSubagentTelemetry = useCallback((subagentId: string) => {
     const card = cards[`subagent-${resolveSubagentIdToAgentId(subagentId)}`];
-    const sd = card?.subagentData as Record<string, unknown> | undefined;
-    const sdMessages = sd?.messages as SubagentMessage[] | undefined;
-    const sdTokenUsage = sd?.tokenUsage as SubagentTokenUsage | undefined;
-
-    // Card path: prefer live state, but only when it has actually been
-    // populated. A click-created card with empty messages should still
-    // pull from history below.
-    if (sd && (sdMessages?.length || (sdTokenUsage?.total ?? 0) > 0)) {
-      return {
-        toolCalls: countToolCalls(sdMessages),
-        tokenUsage: sdTokenUsage ?? ZERO_USAGE,
-      };
-    }
-
-    // History fallback: post-refresh path before the user opens the card.
-    const history = getSubagentHistory?.(subagentId);
-    if (history) {
-      return {
-        toolCalls: history.toolCalls ?? countToolCalls(history.messages as SubagentMessage[] | undefined),
-        tokenUsage: (history.tokenUsage as SubagentTokenUsage | undefined) ?? ZERO_USAGE,
-      };
-    }
-
-    if (!sd) return undefined;
-    return {
-      toolCalls: countToolCalls(sdMessages),
-      tokenUsage: sdTokenUsage ?? ZERO_USAGE,
-    };
+    const sd = card?.subagentData as SubagentDataLike | undefined;
+    const history = getSubagentHistory?.(subagentId) as SubagentHistoryLike | undefined;
+    return resolveSubagentTelemetryPure(sd, history);
   }, [cards, resolveSubagentIdToAgentId, getSubagentHistory]);
 
   // Auto-hide excess agents (beyond 11 subagents)
