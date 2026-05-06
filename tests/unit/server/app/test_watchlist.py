@@ -341,6 +341,58 @@ async def test_add_watchlist_item(client):
 
 
 @pytest.mark.asyncio
+async def test_list_watchlist_items_accepts_non_canonical_instrument_type(client):
+    # Regression companion to the portfolio version: the watchlist read
+    # path previously enforced the same closed enum on instrument_type
+    # and 500'd on agent-written rows with non-canonical values.
+    wl = _watchlist()
+    items = [_item(symbol="VMFXX", instrument_type="cash_management")]
+    with (
+        patch(f"{DB}.db_get_or_create_default_watchlist", new_callable=AsyncMock),
+        patch(f"{DB}.db_get_watchlist", new_callable=AsyncMock, return_value=wl),
+        patch(
+            f"{DB}.db_get_watchlist_items",
+            new_callable=AsyncMock,
+            return_value=items,
+        ),
+    ):
+        resp = await client.get(f"/api/v1/users/me/watchlists/{WL_ID}/items")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["items"][0]["instrument_type"] == "cash_management"
+
+
+@pytest.mark.asyncio
+async def test_add_watchlist_item_accepts_non_canonical_instrument_type(client):
+    item = _item(symbol="VMFXX", instrument_type="cash_management")
+    create = AsyncMock(return_value=item)
+    with (
+        patch(
+            f"{DB}.db_get_or_create_default_watchlist",
+            new_callable=AsyncMock,
+        ),
+        patch(f"{DB}.db_create_watchlist_item", create),
+        patch(
+            f"{DB}.maybe_complete_onboarding",
+            new_callable=AsyncMock,
+        ),
+    ):
+        resp = await client.post(
+            f"/api/v1/users/me/watchlists/{WL_ID}/items",
+            json={
+                "symbol": "VMFXX",
+                "instrument_type": "Cash_Management",  # mixed case → normalized
+            },
+        )
+
+    assert resp.status_code == 201
+    assert resp.json()["instrument_type"] == "cash_management"
+    assert create.call_args.kwargs["instrument_type"] == "cash_management"
+
+
+@pytest.mark.asyncio
 async def test_add_watchlist_item_duplicate_409(client):
     with (
         patch(f"{DB}.db_get_or_create_default_watchlist", new_callable=AsyncMock),

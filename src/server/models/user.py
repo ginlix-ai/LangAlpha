@@ -6,7 +6,6 @@ These models support the user onboarding flow and investment preferences.
 
 from datetime import datetime
 from decimal import Decimal
-from enum import Enum
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -37,20 +36,22 @@ def normalize_symbol(symbol: str) -> str:
 
 
 # =============================================================================
-# Enums
+# Instrument Types
 # =============================================================================
 
 
-class InstrumentType(str, Enum):
-    """Supported instrument types for watchlist and portfolio."""
+KNOWN_INSTRUMENT_TYPES: frozenset[str] = frozenset(
+    {"stock", "etf", "index", "crypto", "future", "commodity", "currency"}
+)
+"""Canonical instrument types. Extra values are accepted (the agent may classify
+holdings outside this set, e.g. 'cash_management') so the column is treated as
+an open vocabulary; this set documents the conventional values."""
 
-    STOCK = "stock"
-    ETF = "etf"
-    INDEX = "index"
-    CRYPTO = "crypto"
-    FUTURE = "future"
-    COMMODITY = "commodity"
-    CURRENCY = "currency"
+
+def normalize_instrument_type(v: Any) -> Any:
+    if isinstance(v, str):
+        return v.strip().lower()
+    return v
 
 
 # =============================================================================
@@ -278,7 +279,15 @@ class WatchlistItemBase(BaseModel):
     """Base watchlist item fields."""
 
     symbol: str = Field(..., max_length=50, description="Instrument symbol")
-    instrument_type: InstrumentType = Field(..., description="Type of instrument")
+    instrument_type: str = Field(
+        ...,
+        min_length=1,
+        max_length=30,
+        description=(
+            "Type of instrument. Common values: stock, etf, index, crypto, future, "
+            "commodity, currency. Other values are accepted."
+        ),
+    )
     exchange: Optional[str] = Field(
         None, max_length=50, description="Exchange (e.g., 'NASDAQ')"
     )
@@ -298,6 +307,11 @@ class WatchlistItemBase(BaseModel):
         if isinstance(v, str):
             return normalize_symbol(v)
         return v  # Let Pydantic handle type validation
+
+    @field_validator("instrument_type", mode="before")
+    @classmethod
+    def normalize_instrument_type_field(cls, v: Any) -> Any:
+        return normalize_instrument_type(v)
 
 
 class WatchlistItemCreate(WatchlistItemBase):
@@ -370,7 +384,15 @@ class PortfolioHoldingBase(BaseModel):
     """Base portfolio holding fields."""
 
     symbol: str = Field(..., max_length=50, description="Instrument symbol")
-    instrument_type: InstrumentType = Field(..., description="Type of instrument")
+    instrument_type: str = Field(
+        ...,
+        min_length=1,
+        max_length=30,
+        description=(
+            "Type of instrument. Common values: stock, etf, index, crypto, future, "
+            "commodity, currency. Other values are accepted."
+        ),
+    )
     exchange: Optional[str] = Field(
         None, max_length=50, description="Exchange (e.g., 'NASDAQ')"
     )
@@ -396,6 +418,11 @@ class PortfolioHoldingBase(BaseModel):
         if isinstance(v, str):
             return normalize_symbol(v)
         return v  # Let Pydantic handle type validation
+
+    @field_validator("instrument_type", mode="before")
+    @classmethod
+    def normalize_instrument_type_field(cls, v: Any) -> Any:
+        return normalize_instrument_type(v)
 
 
 class PortfolioHoldingCreate(PortfolioHoldingBase):
