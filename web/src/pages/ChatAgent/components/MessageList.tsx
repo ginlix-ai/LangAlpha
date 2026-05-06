@@ -34,7 +34,7 @@ import StartQuestionCard from './StartQuestionCard';
 import PTCAgentCard from './PTCAgentCard';
 import SecretaryConfirmCard from './SecretaryConfirmCard';
 import SubagentTaskMessageContent from './SubagentTaskMessageContent';
-import type { SubagentTokenUsage } from '../utils/tokenUsage';
+import type { SubagentTelemetry } from '../utils/resolveSubagentTelemetry';
 import TextMessageContent from './TextMessageContent';
 import InlineWidget from './viewers/InlineWidget';
 import ToolCallMessageContent from './ToolCallMessageContent';
@@ -47,7 +47,6 @@ const EMPTY_OBJ = {} as Record<string, never>;
 
 // --- Shared Types ---
 
-type SubagentTelemetry = { toolCalls: number; tokenUsage: SubagentTokenUsage };
 type ResolveSubagentTelemetry = (subagentId: string) => SubagentTelemetry | undefined;
 
 /** Loosely typed message record from SSE/API */

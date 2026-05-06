@@ -207,6 +207,31 @@ describe('SubagentTaskMessageContent — accessibility', () => {
     expect(captured).toEqual({ toolCallResult: { content: 'output text' } });
   });
 
+  it('mouse click on view-output button does not also fire the card click', () => {
+    // Regression: outer card div has onClick=handleCardClick, inner button
+    // has onClick=handleViewOutput. handleViewOutput already calls
+    // stopPropagation, so the click should fire onDetailOpen exactly once
+    // and never fire onOpen. Pinning this to catch any future change that
+    // drops the stopPropagation.
+    const onOpen = vi.fn();
+    const onDetailOpen = vi.fn();
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-mouse"
+        description="Done"
+        type="research"
+        status="completed"
+        toolCallProcess={{ toolCallResult: { content: 'output text' } }}
+        onOpen={onOpen}
+        onDetailOpen={onDetailOpen}
+      />,
+    );
+    const viewButton = screen.getByRole('button', { name: 'View subagent output' });
+    viewButton.click();
+    expect(onDetailOpen).toHaveBeenCalledTimes(1);
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
   it('keyboard activation of view-output button does not also fire the card click', () => {
     // Regression: outer `<div role="button" onKeyDown=...>` and inner
     // `<button>` are nested. A keydown on the inner button bubbles, so
