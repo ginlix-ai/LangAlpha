@@ -117,8 +117,17 @@ function SubagentTaskMessageContent({
     }
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      handleCardClick();
+    }
+  };
+
   return (
     <div
+      role="button"
+      tabIndex={0}
       style={{
         background: 'var(--color-bg-tool-card)',
         border: '1px solid var(--color-border-muted)',
@@ -129,6 +138,7 @@ function SubagentTaskMessageContent({
         transition: 'border-color 0.15s',
       }}
       onClick={handleCardClick}
+      onKeyDown={handleKeyDown}
       onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => (e.currentTarget.style.borderColor = 'var(--color-border-default)')}
       onMouseLeave={(e: React.MouseEvent<HTMLDivElement>) => (e.currentTarget.style.borderColor = 'var(--color-border-muted)')}
       title={
@@ -188,17 +198,26 @@ function SubagentTaskMessageContent({
           {statusLabel}
         </span>
         {hasResult ? (
-          <ArrowRight
-            style={{
-              width: 14,
-              height: 14,
-              flexShrink: 0,
-              color: 'var(--color-accent-primary)',
-            }}
+          <button
+            type="button"
+            aria-label="View subagent output"
             onClick={handleViewOutput}
-          />
+            style={{
+              background: 'transparent',
+              border: 'none',
+              padding: 0,
+              display: 'inline-flex',
+              alignItems: 'center',
+              cursor: 'pointer',
+              color: 'var(--color-accent-primary)',
+              flexShrink: 0,
+            }}
+          >
+            <ArrowRight style={{ width: 14, height: 14 }} />
+          </button>
         ) : (
           <ChevronRight
+            aria-hidden="true"
             style={{
               width: 14,
               height: 14,

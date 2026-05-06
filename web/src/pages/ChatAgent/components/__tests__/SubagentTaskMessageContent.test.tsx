@@ -102,3 +102,108 @@ describe('SubagentTaskMessageContent — telemetry row', () => {
     expect(tokensSpan).toBeInTheDocument();
   });
 });
+
+describe('SubagentTaskMessageContent — status discriminator', () => {
+  it('renders Running label with spin animation for action=init + status=running', () => {
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-r"
+        description="Long-running task"
+        type="research"
+        status="running"
+        action="init"
+      />,
+    );
+    expect(screen.getByText('Running')).toBeInTheDocument();
+  });
+
+  it('renders Completed label for action=init + status=completed', () => {
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-c"
+        description="Done task"
+        type="research"
+        status="completed"
+        action="init"
+      />,
+    );
+    expect(screen.getByText('Completed')).toBeInTheDocument();
+  });
+
+  it('renders Updated label for action=update', () => {
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-u"
+        description="Steered task"
+        type="research"
+        status="running"
+        action="update"
+      />,
+    );
+    expect(screen.getByText('Updated')).toBeInTheDocument();
+  });
+
+  it('renders Resumed label for action=resume', () => {
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-rs"
+        description="Resumed task"
+        type="research"
+        status="running"
+        action="resume"
+      />,
+    );
+    expect(screen.getByText('Resumed')).toBeInTheDocument();
+  });
+
+  it('falls through to raw status text for unknown discriminator', () => {
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-x"
+        description="Edge case"
+        type="research"
+        status="something-else"
+        action="init"
+      />,
+    );
+    // Neither Completed/Running/Updated/Resumed matches, so the raw status
+    // string survives as the fallback label.
+    expect(screen.getByText('something-else')).toBeInTheDocument();
+  });
+});
+
+describe('SubagentTaskMessageContent — accessibility', () => {
+  it('exposes the card as a keyboard-focusable button', () => {
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-a11y"
+        description="Click me"
+        type="research"
+        status="completed"
+      />,
+    );
+    // Without a hasResult body, the card root is the only role=button.
+    // Without aria-label/title-as-accessible-name we just look up by role.
+    const card = screen.getByRole('button');
+    expect(card).toHaveAttribute('tabIndex', '0');
+    expect(card).toHaveAttribute('title');
+  });
+
+  it('opens the secondary view-output action via an accessible button', () => {
+    let captured: unknown = null;
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-output"
+        description="Done"
+        type="research"
+        status="completed"
+        toolCallProcess={{ toolCallResult: { content: 'output text' } }}
+        onDetailOpen={(p) => { captured = p; }}
+      />,
+    );
+    const viewButton = screen.getByRole('button', { name: 'View subagent output' });
+    expect(viewButton).toBeInTheDocument();
+    viewButton.click();
+    expect(captured).toEqual({ toolCallResult: { content: 'output text' } });
+  });
+});
