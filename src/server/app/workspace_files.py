@@ -29,6 +29,7 @@ import mimetypes
 import shlex
 from typing import Any
 
+from charset_normalizer import from_bytes
 from fastapi import APIRouter, Body, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
@@ -123,6 +124,41 @@ def _is_binary(path: str) -> bool:
     """Check if file extension suggests binary content."""
     suffix = path.rsplit(".", 1)[-1].lower() if "." in path else ""
     return f".{suffix}" in _BINARY_EXTENSIONS
+
+
+# charset-normalizer's `chaos` score: 0.0 = perfectly coherent text, ~0.1 is
+# the practical "good match" cutoff. PNG/JPEG header bytes score ~0.14+; real
+# CJK / Cyrillic / Japanese / Korean content scores well under 0.05. Above
+# this we'd rather 415 than render Urdu-codepage gibberish to the user.
+_CHARSET_DETECT_CHAOS_MAX = 0.1
+
+# Detection on very short non-UTF-8 inputs is unreliable (the library will
+# happily match a 3-byte sequence to ``cp1006`` with chaos=0.000). Real text
+# files clear this floor easily; adversarial micro-payloads do not.
+_CHARSET_DETECT_MIN_BYTES = 8
+
+
+def _decode_file_text(raw_bytes: bytes) -> str | None:
+    """Decode file bytes to text, with UTF-8 fast-path + charset detection.
+
+    Agent-generated reports in non-UTF-8 locales (mainland Chinese GBK,
+    Traditional Chinese Big5, Japanese Shift-JIS, etc.) routinely land on
+    disk in the system's default codec, so UTF-8-only would 415 those files
+    even though they're plain text. Falls back to charset-normalizer's
+    confidence-scored detection across ~70 encodings, gated on a chaos
+    threshold and a minimum-bytes floor so binary content with a text-like
+    extension still surfaces as None (caller 415s).
+    """
+    try:
+        return raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    if len(raw_bytes) < _CHARSET_DETECT_MIN_BYTES:
+        return None
+    match = from_bytes(raw_bytes).best()
+    if match is None or match.chaos > _CHARSET_DETECT_CHAOS_MAX:
+        return None
+    return str(match)
 
 
 def _is_flash_workspace(workspace: dict[str, Any]) -> bool:
@@ -443,14 +479,13 @@ async def read_workspace_file(
             detail="Cannot read binary file as text. Use GET /files/download instead.",
         )
 
-    # Try to decode as UTF-8
-    try:
-        text_content = raw_bytes.decode("utf-8")
-    except UnicodeDecodeError:
+    decoded = _decode_file_text(raw_bytes)
+    if decoded is None:
         raise HTTPException(
             status_code=415,
             detail="File appears to be binary and cannot be read as text. Use GET /files/download instead.",
         )
+    text_content = decoded
 
     vault_secrets = await get_vault_secrets_for_redaction(workspace_id)
     text_content = get_redactor().redact(text_content, vault_secrets=vault_secrets)
