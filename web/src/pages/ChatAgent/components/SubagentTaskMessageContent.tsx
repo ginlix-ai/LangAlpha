@@ -118,6 +118,10 @@ function SubagentTaskMessageContent({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
+    // Ignore keystrokes that originated on a descendant control (e.g. the
+    // "View subagent output" button) — the descendant handles its own
+    // activation, and the keydown shouldn't double-fire as a card click.
+    if (e.target !== e.currentTarget) return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       handleCardClick();

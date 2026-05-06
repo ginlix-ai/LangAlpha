@@ -8,8 +8,8 @@
  *  - title attribute on the tokens segment exposes the input/output split
  */
 import React from 'react';
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import SubagentTaskMessageContent from '../SubagentTaskMessageContent';
 
@@ -205,5 +205,48 @@ describe('SubagentTaskMessageContent — accessibility', () => {
     expect(viewButton).toBeInTheDocument();
     viewButton.click();
     expect(captured).toEqual({ toolCallResult: { content: 'output text' } });
+  });
+
+  it('keyboard activation of view-output button does not also fire the card click', () => {
+    // Regression: outer `<div role="button" onKeyDown=...>` and inner
+    // `<button>` are nested. A keydown on the inner button bubbles, so
+    // without a target/currentTarget guard the outer keydown handler used
+    // to fire `onOpen` in addition to the inner button's `onDetailOpen`,
+    // opening two panels on a single Enter press.
+    const onOpen = vi.fn();
+    const onDetailOpen = vi.fn();
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-kbd"
+        description="Done"
+        type="research"
+        status="completed"
+        toolCallProcess={{ toolCallResult: { content: 'output text' } }}
+        onOpen={onOpen}
+        onDetailOpen={onDetailOpen}
+      />,
+    );
+    const viewButton = screen.getByRole('button', { name: 'View subagent output' });
+    // Simulate keyboard activation: keydown on the inner button bubbles to
+    // the outer card, but the guard should prevent handleCardClick from running.
+    fireEvent.keyDown(viewButton, { key: 'Enter' });
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it('keyboard activation on the card itself still fires onOpen', () => {
+    const onOpen = vi.fn();
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-kbd-card"
+        description="Done"
+        type="research"
+        status="completed"
+        onOpen={onOpen}
+      />,
+    );
+    // Without a hasResult body there's only one role=button — the card root.
+    const card = screen.getByRole('button');
+    fireEvent.keyDown(card, { key: 'Enter' });
+    expect(onOpen).toHaveBeenCalledTimes(1);
   });
 });
