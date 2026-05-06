@@ -22,6 +22,7 @@ from src.server.database import user as user_db
 from src.server.database import watchlist as watchlist_db
 from src.server.database import portfolio as portfolio_db
 from src.server.database.user import invalidate_user_prefs_cache
+from src.server.models.user import normalize_instrument_type
 from src.server.services.onboarding import maybe_complete_onboarding
 
 logger = logging.getLogger(__name__)
@@ -307,7 +308,7 @@ async def _upsert_watchlist_item(config: RunnableConfig, data: dict[str, Any], r
             user_id=user_id,
             watchlist_id=watchlist_id,
             symbol=symbol.upper(),
-            instrument_type=data.get("instrument_type", "stock"),
+            instrument_type=normalize_instrument_type(data.get("instrument_type", "stock")),
             exchange=data.get("exchange"),
             name=data.get("name"),
             notes=data.get("notes"),
@@ -343,7 +344,7 @@ async def _upsert_portfolio_holding(config: RunnableConfig, data: dict[str, Any]
     holding, merge_details = await portfolio_db.upsert_portfolio_holding(
         user_id=user_id,
         symbol=symbol.upper(),
-        instrument_type=data.get("instrument_type", "stock"),
+        instrument_type=normalize_instrument_type(data.get("instrument_type", "stock")),
         quantity=Decimal(str(quantity)),
         average_cost=Decimal(str(average_cost)) if average_cost else None,
         currency=data.get("currency", "USD"),

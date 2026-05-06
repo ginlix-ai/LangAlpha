@@ -324,7 +324,7 @@ async def add_watchlist_item(
             user_id=user_id,
             watchlist_id=resolved_id,
             symbol=request.symbol,
-            instrument_type=request.instrument_type.value,
+            instrument_type=request.instrument_type,
             exchange=request.exchange,
             name=request.name,
             notes=request.notes,

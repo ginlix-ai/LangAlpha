@@ -80,7 +80,7 @@ async def add_portfolio_holding(
     holding, merge_details = await db_upsert_portfolio_holding(
         user_id=user_id,
         symbol=request.symbol,
-        instrument_type=request.instrument_type.value,
+        instrument_type=request.instrument_type,
         quantity=request.quantity,
         exchange=request.exchange,
         name=request.name,

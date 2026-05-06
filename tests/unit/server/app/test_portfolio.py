@@ -100,6 +100,50 @@ async def test_list_portfolio_empty(client):
     assert resp.json()["total"] == 0
 
 
+@pytest.mark.asyncio
+async def test_list_portfolio_accepts_non_canonical_instrument_type(client):
+    # Regression: a holding with an instrument_type outside the conventional
+    # set (e.g. 'cash_management' written by the agent) used to 500 the
+    # entire endpoint via Pydantic enum validation on the response model.
+    h = _holding(symbol="VMFXX", instrument_type="cash_management")
+    with patch(
+        f"{DB}.db_get_user_portfolio",
+        new_callable=AsyncMock,
+        return_value=[h],
+    ):
+        resp = await client.get("/api/v1/users/me/portfolio")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["holdings"][0]["instrument_type"] == "cash_management"
+
+
+@pytest.mark.asyncio
+async def test_add_portfolio_holding_accepts_non_canonical_instrument_type(client):
+    h = _holding(symbol="VMFXX", instrument_type="cash_management")
+    upsert = AsyncMock(return_value=(h, None))
+    with (
+        patch(f"{DB}.db_upsert_portfolio_holding", upsert),
+        patch(
+            f"{DB}.maybe_complete_onboarding",
+            new_callable=AsyncMock,
+        ),
+    ):
+        resp = await client.post(
+            "/api/v1/users/me/portfolio",
+            json={
+                "symbol": "VMFXX",
+                "instrument_type": "Cash_Management",  # mixed case → normalized
+                "quantity": 1000,
+            },
+        )
+
+    assert resp.status_code == 201
+    assert resp.json()["instrument_type"] == "cash_management"
+    assert upsert.call_args.kwargs["instrument_type"] == "cash_management"
+
+
 # ---------------------------------------------------------------------------
 # POST /api/v1/users/me/portfolio
 # ---------------------------------------------------------------------------

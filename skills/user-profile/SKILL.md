@@ -212,7 +212,7 @@ Add or update an item in a watchlist.
 |-------|------|----------|-------------|
 | `symbol` | str | Yes | Stock symbol (used as key) |
 | `watchlist_id` | str | No | Target watchlist (uses default if omitted) |
-| `instrument_type` | str | No | "stock", "etf", "index", "crypto" (default: "stock") |
+| `instrument_type` | str | No | Free-form. Common: "stock", "etf", "index", "crypto", "future", "commodity", "currency". Other values accepted (default: "stock") |
 | `exchange` | str | No | e.g., "NASDAQ" |
 | `name` | str | No | Company name |
 | `notes` | str | No | Why you're watching |
@@ -253,7 +253,7 @@ Add or update a portfolio holding.
 | `quantity` | float | Yes | Number of shares |
 | `average_cost` | float | No | Cost per share |
 | `account_name` | str | No | e.g., "Robinhood", "Fidelity IRA" (part of key) |
-| `instrument_type` | str | No | Default: "stock" |
+| `instrument_type` | str | No | Free-form. Common: "stock", "etf", "index", "crypto", "future", "commodity", "currency". Other values accepted (default: "stock") |
 | `currency` | str | No | Default: "USD" |
 | `notes` | str | No | Additional notes |
 
