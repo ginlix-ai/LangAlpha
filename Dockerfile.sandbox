@@ -38,9 +38,7 @@ RUN apt-get update \
     && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
     && rm /tmp/node.tar.xz \
     # -- NPM global packages --
-    && npm install -g playwright docx pptxgenjs \
-    && PLAYWRIGHT_BROWSERS_PATH=/usr/local/ms-playwright \
-       npx playwright install --with-deps chromium \
+    && npm install -g docx pptxgenjs \
     # -- GitHub CLI (multi-arch: amd64 / arm64) --
     && GH_ARCH=$(dpkg --print-architecture) \
     && curl -fsSL "https://github.com/cli/cli/releases/download/v2.87.3/gh_2.87.3_linux_${GH_ARCH}.tar.gz" \
@@ -69,7 +67,7 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Playwright browsers were installed to /usr/local/ms-playwright (as root).
+# Playwright browsers are installed to /usr/local/ms-playwright (as root).
 # Set the env var so the Python playwright package finds them at runtime
 # regardless of which user runs the sandbox.
 ENV PLAYWRIGHT_BROWSERS_PATH=/usr/local/ms-playwright
@@ -95,10 +93,13 @@ RUN echo 'curl_cffi>=0.14' > /tmp/overrides.txt \
     && rm /tmp/overrides.txt
 
 # ---------- Scrapling browser setup ----------
-# scrapling install needs root for `playwright install-deps` (apt packages).
-# Browsers are downloaded to /root/.cache/. After creating the workspace user,
-# we copy the caches so the non-root user can access them.
-RUN scrapling install
+# scrapling install runs `python -m playwright install --with-deps chromium` to
+# download the Python-playwright-pinned Chromium and apt-install its system deps.
+# This is the single source of truth for Chromium in the sandbox; the previous
+# npm-side `npx playwright install` was redundant and could create a version
+# mismatch (npm-pinned Chromium != Python-pinned Chromium) that surfaced as
+# 'Executable doesn't exist at /usr/local/ms-playwright/chromium-NNNN/...'.
+RUN PLAYWRIGHT_BROWSERS_PATH=/usr/local/ms-playwright scrapling install
 
 # ---------- Matplotlib CJK font config ----------
 RUN python3 -c "import matplotlib as mpl; import os; mpl_dir = mpl.get_configdir(); os.makedirs(mpl_dir, exist_ok=True); open(os.path.join(mpl_dir, 'matplotlibrc'), 'w').write('font.sans-serif: Noto Sans CJK SC, DejaVu Sans\n'); import matplotlib.font_manager; matplotlib.font_manager._load_fontmanager(try_read_cache=False)"
@@ -109,7 +110,8 @@ RUN python3 -c "import matplotlib as mpl; import os; mpl_dir = mpl.get_configdir
 # agent_config.yaml (default: /home/workspace).
 RUN useradd -m -s /bin/bash -d /home/workspace workspace
 
-# Copy browser caches from root to workspace user so scrapling can find them
+# Copy optional cache-based browser artifacts from root to workspace user.
+# Playwright Chromium itself lives in /usr/local/ms-playwright via PLAYWRIGHT_BROWSERS_PATH.
 RUN mkdir -p /home/workspace/.cache \
     && cp -r /root/.cache/camoufox /home/workspace/.cache/camoufox 2>/dev/null || true \
     && cp -r /root/.cache/ms-playwright /home/workspace/.cache/ms-playwright 2>/dev/null || true \
