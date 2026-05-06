@@ -32,6 +32,14 @@ from src.server.utils.content_normalizer import normalize_text_content
 logger = structlog.get_logger(__name__)
 
 
+# Custom-mode SSE events we actually want forwarded from a subagent's
+# astream. Anything else (file_operations, todo_operations, show_widget,
+# etc. payloads) is dropped to keep the per-task buffer focused on
+# telemetry and to close protocol-injection vectors against the frontend's
+# subagent SSE handler.
+_ALLOWED_CUSTOM_EVENT_TYPES = frozenset({"context_window"})
+
+
 class _SubagentTokenForwarder:
     """Forward per-token ``messages``-mode chunks from subagent.astream into
     captured-event records on the registry.
@@ -170,10 +178,20 @@ class _SubagentTokenForwarder:
         the subagent's ``stream_mode``, those would die at the astream
         boundary. We tag with the stable ``task:{task_id}`` agent_id so the
         per-task SSE consumer and frontend can route the event.
+
+        Other middleware (file_operations, todo_operations, show_widget) also
+        emits via the same writer with potentially large payloads. We
+        whitelist the event types we actually want to forward to avoid
+        bloating the per-task buffer / Redis stream and to close a protocol
+        injection path — without the whitelist, a custom payload with
+        ``type: "message_chunk"`` would spoof a real subagent SSE event on
+        the frontend.
         """
         if not isinstance(data, dict):
             return
-        event_type = data.get("type") or "custom"
+        event_type = data.get("type")
+        if event_type not in _ALLOWED_CUSTOM_EVENT_TYPES:
+            return
         payload = {k: v for k, v in data.items() if k != "type"}
         payload["agent"] = self.agent_id
         await self.registry.append_captured_event(

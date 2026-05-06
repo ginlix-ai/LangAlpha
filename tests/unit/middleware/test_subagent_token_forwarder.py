@@ -453,6 +453,29 @@ async def test_forward_custom_ignores_non_dict() -> None:
 
 
 @pytest.mark.asyncio
+async def test_forward_custom_drops_non_whitelisted_event_types() -> None:
+    """Custom payloads with unrecognized ``type`` values are dropped to avoid
+    bloating the per-task buffer with file-op / widget payloads and to close
+    a frontend protocol-injection vector — a custom emitter could otherwise
+    send ``type: "message_chunk"`` and spoof a real subagent SSE event."""
+    registry = BackgroundTaskRegistry()
+    task = await _register(registry, task_id_override="wl")
+    fwd = _SubagentTokenForwarder(registry, task.tool_call_id, "task:wl")
+
+    # Frontend protocol events — must not pass through.
+    await fwd.forward_custom({"type": "message_chunk", "content": "boo"})
+    await fwd.forward_custom({"type": "tool_call_result", "result": "x"})
+    await fwd.forward_custom({"type": "tool_calls", "tool_calls": []})
+    # File-op / widget-style payloads — must not pass through.
+    await fwd.forward_custom({"type": "file_op", "old_string": "a" * 10000})
+    await fwd.forward_custom({"type": "widget", "html": "<div/>"})
+    # Missing ``type`` entirely — must not pass through (no implicit "custom").
+    await fwd.forward_custom({"foo": "bar"})
+
+    assert list(task.captured_events_tail) == []
+
+
+@pytest.mark.asyncio
 async def test_atask_pipeline_forwards_custom_events_to_registry(monkeypatch):
     """End-to-end: when the subagent emits a ``custom``-mode payload, the
     Task-tool driver routes it through ``forward_custom`` so the per-task
