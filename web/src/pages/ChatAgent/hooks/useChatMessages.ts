@@ -2631,10 +2631,16 @@ export function useChatMessages(
       // Handle steering_accepted events for the MAIN agent (user sent a message while agent streams).
       // Subagent steering_accepted events are handled below in the isSubagent block.
       if (eventType === 'steering_accepted' && !isSubagent) {
-        // Record the content order counter so we can roll back leaked content
-        // when steering_delivered arrives (see handler below).
-        steeringAtOrder = refs.contentOrderCounterRef.current;
-        if (refs.steeringAtOrderRef) refs.steeringAtOrderRef.current = refs.contentOrderCounterRef.current;
+        // The steering_accepted event's own `_eventId` is the boundary: every
+        // earlier event in the Redis stream has a smaller id, every later one
+        // has a larger id. Use it directly so the rollback filter knows what
+        // to keep vs. drop. Fall back to the local counter for tests/legacy
+        // flows where SSE events carry no `_eventId`.
+        const boundary = event._eventId != null
+          ? Number(event._eventId)
+          : refs.contentOrderCounterRef.current;
+        steeringAtOrder = boundary;
+        if (refs.steeringAtOrderRef) refs.steeringAtOrderRef.current = boundary;
         return;
       }
 
@@ -2658,8 +2664,16 @@ export function useChatMessages(
             // ref is set by handleSendSteering on the secondary stream).
             const effectiveSteeringAtOrder = steeringAtOrder ?? refs.steeringAtOrderRef?.current ?? null;
 
-            // If no snapshot, just finalize (mark all in-progress processes as complete)
-            if (effectiveSteeringAtOrder === null) {
+            // If no snapshot — or snapshot is non-positive / NaN (steering
+            // arrived before any ordered content was emitted, or `_eventId`
+            // was a non-numeric fallback) — skip the destructive filter and
+            // just finalize. Real segment orders are always positive; any
+            // other boundary would drop every segment, wiping the visible turn.
+            if (
+              effectiveSteeringAtOrder === null ||
+              !Number.isFinite(effectiveSteeringAtOrder) ||
+              effectiveSteeringAtOrder <= 0
+            ) {
               const tp: typeof aMsg.toolCallProcesses = {};
               for (const [id, val] of Object.entries(aMsg.toolCallProcesses || {})) {
                 tp[id] = val.isInProgress ? { ...val, isInProgress: false, isComplete: true } : val;
@@ -3590,9 +3604,13 @@ export function useChatMessages(
         (event) => {
           const eventType = event.event || 'message_chunk';
           if (eventType === 'steering_accepted') {
-            // Snapshot the content order counter so the primary stream's
-            // steering_delivered handler can roll back leaked content.
-            steeringAtOrderRef.current = contentOrderCounterRef.current;
+            // Snapshot the boundary so the primary stream's steering_delivered
+            // handler can roll back leaked content. The event's own `_eventId`
+            // is the natural boundary in the Redis stream; fall back to the
+            // local counter for tests/legacy flows without `_eventId`.
+            steeringAtOrderRef.current = event._eventId != null
+              ? Number(event._eventId)
+              : contentOrderCounterRef.current;
             // Update the user message to reflect steering status
             setMessages((prev) =>
               updateMessage(prev,userMessage.id as string, (msg) => ({
