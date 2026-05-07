@@ -32,6 +32,14 @@ from src.server.utils.content_normalizer import normalize_text_content
 logger = structlog.get_logger(__name__)
 
 
+# Custom-mode SSE events we actually want forwarded from a subagent's
+# astream. Anything else (file_operations, todo_operations, show_widget,
+# etc. payloads) is dropped to keep the per-task buffer focused on
+# telemetry and to close protocol-injection vectors against the frontend's
+# subagent SSE handler.
+_ALLOWED_CUSTOM_EVENT_TYPES = frozenset({"context_window"})
+
+
 class _SubagentTokenForwarder:
     """Forward per-token ``messages``-mode chunks from subagent.astream into
     captured-event records on the registry.
@@ -161,6 +169,36 @@ class _SubagentTokenForwarder:
 
         self._last_msg_id = msg_id
 
+    async def forward_custom(self, data: Any) -> None:
+        """Forward a ``custom``-mode event from inside the subagent's astream
+        into the per-task captured-event buffer.
+
+        Compaction middleware emits ``context_window`` events (token_usage,
+        summarize, offload) via ``get_stream_writer``. Without ``custom`` in
+        the subagent's ``stream_mode``, those would die at the astream
+        boundary. We tag with the stable ``task:{task_id}`` agent_id so the
+        per-task SSE consumer and frontend can route the event.
+
+        Other middleware (file_operations, todo_operations, show_widget) also
+        emits via the same writer with potentially large payloads. We
+        whitelist the event types we actually want to forward to avoid
+        bloating the per-task buffer / Redis stream and to close a protocol
+        injection path — without the whitelist, a custom payload with
+        ``type: "message_chunk"`` would spoof a real subagent SSE event on
+        the frontend.
+        """
+        if not isinstance(data, dict):
+            return
+        event_type = data.get("type")
+        if event_type not in _ALLOWED_CUSTOM_EVENT_TYPES:
+            return
+        payload = {k: v for k, v in data.items() if k != "type"}
+        payload["agent"] = self.agent_id
+        await self.registry.append_captured_event(
+            self.tool_call_id,
+            {"event": event_type, "data": payload, "ts": time.time()},
+        )
+
     async def finalize(self) -> None:
         """Close any still-open reasoning lifecycle and signal stream-end.
 
@@ -181,7 +219,15 @@ class _SubagentTokenForwarder:
         try:
             await self.registry.append_sentinel_to_stream(self.tool_call_id)
         except Exception:
-            pass
+            # Best-effort: degraded Redis falls back to the polling path
+            # (XREAD BLOCK timeout + asyncio_task.done()). Log so an oncall
+            # has a breadcrumb when "subagents close slowly" — without it
+            # the failure is invisible.
+            logger.warning(
+                "subagent_sentinel_write_failed",
+                tool_call_id=self.tool_call_id,
+                exc_info=True,
+            )
 
 
 class SubAgent(TypedDict):
@@ -399,16 +445,16 @@ def _create_task_tool(
         state: dict,
         config: dict,
     ) -> dict:
-        """Drive the subagent through ``astream`` with combined ``values`` and
-        ``messages`` modes; return the final state.
+        """Drive the subagent through ``astream`` with combined ``values``,
+        ``messages``, and ``custom`` modes; return the final state.
 
         ``values`` mode yields full state snapshots; the last one is the
         tool's return value. ``messages`` mode yields per-token
         ``AIMessageChunk`` deltas forwarded to the registry as
-        ``message_chunk`` records for per-task SSE granularity.
-
-        ``stream_mode=["values", "messages"]`` yields ``(mode, data)`` tuples;
-        ``messages`` data is ``(message_chunk, metadata)``.
+        ``message_chunk`` records for per-task SSE granularity. ``custom``
+        mode surfaces ``get_stream_writer()`` events emitted from inside the
+        subagent (e.g. compaction's ``context_window`` token_usage / summarize
+        / offload signals) which would otherwise die at the astream boundary.
         """
         last_state: dict | None = None
         forwarder: _SubagentTokenForwarder | None = None
@@ -426,7 +472,7 @@ def _create_task_tool(
 
         try:
             async for mode, data in subagent.astream(
-                state, config, stream_mode=["values", "messages"]
+                state, config, stream_mode=["values", "messages", "custom"]
             ):
                 if mode == "values":
                     last_state = data
@@ -455,6 +501,14 @@ def _create_task_tool(
                                 "Subagent token forwarding failed",
                                 error=str(exc),
                             )
+                elif mode == "custom" and forwarder is not None:
+                    try:
+                        await forwarder.forward_custom(data)
+                    except Exception as exc:
+                        logger.debug(
+                            "Subagent custom-event forwarding failed",
+                            error=str(exc),
+                        )
         finally:
             if forwarder is not None:
                 try:

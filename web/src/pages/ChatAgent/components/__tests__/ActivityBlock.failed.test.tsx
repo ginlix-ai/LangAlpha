@@ -1,13 +1,18 @@
 /**
- * Coverage for the failed-tool-call surfacing logic added in Fix #3, the
- * memo-write classification surfacing in Fix #4, and the priority-fragment
- * cap in Fix #14.
+ * Coverage for the per-row failed-tool-call rendering, the memo-write
+ * classification surfacing in the folded summary, and the priority-fragment
+ * cap that protects high-signal slots (memoWrite, memoryUpdated) from being
+ * truncated when many tool categories are present.
+ *
+ * Failed tool calls are rendered per-row only — the folded summary intentionally
+ * does NOT include a "{N} failed" fragment. The negative assertions below
+ * lock that contract in.
  *
  * Strategy: render `ActivityBlock` directly with a small set of synthesized
  * `_liveState: 'completed'` items, and assert against the rendered DOM. The
  * t() identity mock returns the i18n key as-is so the assertions can pin
- * the exact branch (e.g. `categoryCount.failed`, `categoryCount.memoWrite`)
- * without depending on the bundled English copy.
+ * the exact branch (e.g. `categoryCount.memoWrite`) without depending on the
+ * bundled English copy.
  */
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
@@ -81,7 +86,7 @@ function completedTool(toolName: string, opts: Partial<ActivityItem> = {}): Acti
 }
 
 // ---------------------------------------------------------------------------
-// Fix #3 — failed-call surfacing
+// Failed tool calls — per-row rendering, no summary fragment
 // ---------------------------------------------------------------------------
 
 // `summaryLabel` is title-cased before render (charAt(0).toUpperCase()), so
@@ -89,8 +94,8 @@ function completedTool(toolName: string, opts: Partial<ActivityItem> = {}): Acti
 // case-insensitive regex when looking up the toggle by name.
 const SUMMARY_BUTTON_RE = /toolArtifact/i;
 
-describe('ActivityBlock — failed tool calls (Fix #3)', () => {
-  it('appends a "failed" fragment to the folded accordion summary when an item is failed', () => {
+describe('ActivityBlock — failed tool calls', () => {
+  it('does NOT add a failed fragment to the folded accordion summary when an item is failed', () => {
     const items: ActivityItem[] = [
       completedTool('Read', {
         id: 'r-1',
@@ -101,9 +106,10 @@ describe('ActivityBlock — failed tool calls (Fix #3)', () => {
 
     render(<ActivityBlock items={items} isStreaming={false} />);
 
-    // Folded summary contains the failed fragment.
+    // Folded summary intentionally omits the failed count — failure
+    // visibility lives on the per-row badge instead.
     const summary = screen.getByRole('button', { name: SUMMARY_BUTTON_RE });
-    expect(summary).toHaveTextContent(/toolArtifact\.categoryCount\.failed/i);
+    expect(summary).not.toHaveTextContent(/toolArtifact\.categoryCount\.failed/i);
   });
 
   it('renders the failed badge on the timeline icon when the accordion is expanded', () => {
@@ -152,7 +158,7 @@ describe('ActivityBlock — failed tool calls (Fix #3)', () => {
     expect(failedRow!.querySelector('.nrow-badge')).not.toBeNull();
   });
 
-  it('counts successful and failed reads distinctly in the folded summary', () => {
+  it('counts all reads in the fileRead bucket regardless of failure state', () => {
     const items: ActivityItem[] = [
       completedTool('Read', { id: 'r-1', toolCall: { args: { file_path: 'a.md' } } }),
       completedTool('Read', { id: 'r-2', toolCall: { args: { file_path: 'b.md' } } }),
@@ -165,10 +171,10 @@ describe('ActivityBlock — failed tool calls (Fix #3)', () => {
 
     render(<ActivityBlock items={items} isStreaming={false} />);
     const summary = screen.getByRole('button', { name: SUMMARY_BUTTON_RE });
-    // Three reads in the fileRead bucket (orthogonal to failure axis).
+    // Three reads in the fileRead bucket (failures don't split the count).
     expect(summary).toHaveTextContent(/toolArtifact\.categoryCount.fileRead/i);
-    // ...and one failed fragment alongside it.
-    expect(summary).toHaveTextContent(/toolArtifact\.categoryCount.failed/i);
+    // No standalone failed fragment.
+    expect(summary).not.toHaveTextContent(/toolArtifact\.categoryCount.failed/i);
   });
 
   it('does not render any failed badge when no item is failed', () => {
@@ -187,10 +193,10 @@ describe('ActivityBlock — failed tool calls (Fix #3)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Fix #4 — memo write/edit classification in the summary
+// Memo write/edit classification in the summary
 // ---------------------------------------------------------------------------
 
-describe('ActivityBlock — memo write/edit fragment (Fix #4)', () => {
+describe('ActivityBlock — memo write/edit fragment', () => {
   it('emits a memoWrite fragment when the agent writes a memo', () => {
     const items: ActivityItem[] = [
       completedTool('Write', {
@@ -222,10 +228,10 @@ describe('ActivityBlock — memo write/edit fragment (Fix #4)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Fix #14 — priority fragments survive the FOLDED_MAX cap
+// Priority fragments survive the FOLDED_MAX cap
 // ---------------------------------------------------------------------------
 
-describe('ActivityBlock — priority fragments survive the cap (Fix #14)', () => {
+describe('ActivityBlock — priority fragments survive the cap', () => {
   it('keeps memoryWrite visible even with 4+ categories present', () => {
     const items: ActivityItem[] = [
       // A memory write — the high-signal fragment we don't want to hide.
@@ -247,33 +253,13 @@ describe('ActivityBlock — priority fragments survive the cap (Fix #14)', () =>
     // The "and more" suffix indicates the cap fired.
     expect(summary).toHaveTextContent(/toolArtifact\.andMore/i);
   });
-
-  it('keeps a failed fragment visible even with 4+ categories present', () => {
-    const items: ActivityItem[] = [
-      completedTool('Read', {
-        id: 'r-fail',
-        isFailed: true,
-        toolCall: { args: { file_path: 'work/scratch.md' } },
-      }),
-      completedTool('ExecuteCode', { id: 'c-1' }),
-      completedTool('WebSearch', { id: 'wb-1' }),
-      completedTool('Glob', { id: 'g-1' }),
-      // A second non-priority bucket to overflow past the cap.
-      completedTool('Read', { id: 'r-2', toolCall: { args: { file_path: 'work/other.md' } } }),
-    ];
-
-    render(<ActivityBlock items={items} isStreaming={false} />);
-    const summary = screen.getByRole('button', { name: SUMMARY_BUTTON_RE });
-    expect(summary).toHaveTextContent(/toolArtifact\.categoryCount.failed/i);
-    expect(summary).toHaveTextContent(/toolArtifact\.andMore/i);
-  });
 });
 
 // ---------------------------------------------------------------------------
-// Fix #16 — accordion accessibility
+// Accordion accessibility
 // ---------------------------------------------------------------------------
 
-describe('ActivityBlock — accordion a11y (Fix #16)', () => {
+describe('ActivityBlock — accordion a11y', () => {
   it('toggles aria-expanded on the summary button', () => {
     const items: ActivityItem[] = [
       completedTool('Read', { id: 'r-1', toolCall: { args: { file_path: 'work/scratch.md' } } }),

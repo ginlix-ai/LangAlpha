@@ -17,12 +17,20 @@ import { clampPanelWidth as clampPanelWidthUtil } from '@/lib/panelUtils';
 import { useCardState } from '../hooks/useCardState';
 import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
 import { classifyAgentPath, computeAgentArtifactRouting, type MemoryTier } from '../utils/agentPaths';
+import { countToolCalls } from '../utils/subagentMetrics';
+import { type SubagentTokenUsage, ZERO_USAGE } from '../utils/tokenUsage';
+import {
+  resolveSubagentTelemetry as resolveSubagentTelemetryPure,
+  type SubagentDataLike,
+  type SubagentHistoryLike,
+} from '../utils/resolveSubagentTelemetry';
 import { getCompletedRowTitle } from './toolDisplayConfig';
 import './FilePanel.css';
 import ChatInput, { type ChatInputHandle } from '../../../components/ui/chat-input';
 import { attachmentsToContexts, widgetSnapshotsToContexts, type Attachment } from '../utils/fileUpload';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 import MessageList, { normalizeSubagentText } from './MessageList';
+import { SubagentTelemetryContext } from './SubagentTelemetryContext';
 import Markdown from './Markdown';
 import NavigationPanel from './NavigationPanel';
 import ChatMinimap from './ChatMinimap';
@@ -112,6 +120,7 @@ interface AgentInfo {
   type: string;
   status: string;
   toolCalls: number;
+  tokenUsage: SubagentTokenUsage;
   currentTool: string;
   messages: SubagentMessage[];
   isActive: boolean;
@@ -129,9 +138,9 @@ interface SubagentUpdateData {
   isHistory: boolean;
   isActive: boolean;
   status?: string;
-  toolCalls?: number;
   currentTool?: string;
   messages?: SubagentMessage[];
+  tokenUsage?: SubagentTokenUsage;
   [key: string]: unknown;
 }
 
@@ -204,13 +213,14 @@ const _sharedNav = { visible: false, locked: false };
 // Static main agent object — never changes, so defined once at module level
 const MAIN_AGENT: AgentInfo = {
   id: 'main',
-  name: 'Boss',
+  name: 'Lead Agent',
   displayName: 'LangAlpha',
   taskId: '',
   description: '',
   type: 'main',
   status: 'active',
   toolCalls: 0,
+  tokenUsage: ZERO_USAGE,
   currentTool: '',
   messages: [],
   isActive: true,
@@ -853,7 +863,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
           prompt: (sd?.prompt as string) || '',
           type: (sd?.type as string) || 'general-purpose',
           status: (sd?.status as string) || 'active',
-          toolCalls: (sd?.toolCalls as number) || 0,
+          toolCalls: countToolCalls(sd?.messages as SubagentMessage[] | undefined),
+          tokenUsage: (sd?.tokenUsage as SubagentTokenUsage | undefined) ?? ZERO_USAGE,
           currentTool: (sd?.currentTool as string) || '',
           messages: (sd?.messages as SubagentMessage[]) || [],
           isActive: sd?.isActive !== false,
@@ -867,6 +878,21 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       excessSubagents: visible.slice(maxSubagents),
     };
   }, [cards, hiddenAgentIds, t]);
+
+  // Per-subagent telemetry resolver consumed by MessageList. Maps a message
+  // segment's `subagentId` (a toolCallId) through `resolveSubagentIdToAgentId`
+  // and reads tool count + token usage off the matching card. Falls back to
+  // the history entry on a fresh load — cards are created lazily on click,
+  // so without this fallback the inline row would stay hidden after refresh
+  // until the user clicks into the subagent. Keeping the resolution in this
+  // closure means MessageList never touches the cards or the toolCallId map
+  // directly.
+  const resolveSubagentTelemetry = useCallback((subagentId: string) => {
+    const card = cards[`subagent-${resolveSubagentIdToAgentId(subagentId)}`];
+    const sd = card?.subagentData as SubagentDataLike | undefined;
+    const history = getSubagentHistory?.(subagentId) as SubagentHistoryLike | undefined;
+    return resolveSubagentTelemetryPure(sd, history);
+  }, [cards, resolveSubagentIdToAgentId, getSubagentHistory]);
 
   // Auto-hide excess agents (beyond 11 subagents)
   const excessIds = useMemo(() => excessSubagents.map(a => a.id).join(','), [excessSubagents]);
@@ -1402,15 +1428,19 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       isActive: !history,
     };
     if (isLive) {
-      // Card is actively streaming — preserve its current status, toolCalls, and currentTool.
+      // Card is actively streaming — preserve its current status and currentTool.
       // Overwriting these causes a brief "completed" flash in the SubagentStatusBar.
     } else {
       updateData.status = finalStatus;
-      updateData.toolCalls = 0;
       updateData.currentTool = '';
     }
     if (history) {
       updateData.messages = (history.messages || []) as SubagentMessage[];
+      // Also seed tokenUsage from history. Without this, clicking a replayed
+      // subagent card creates the live card with tokenUsage=ZERO_USAGE, and
+      // the telemetry resolver's "card path" wins on return (messages.length > 0)
+      // and reports zero tokens — even though history still has the real total.
+      updateData.tokenUsage = (history.tokenUsage as SubagentTokenUsage) ?? ZERO_USAGE;
     }
 
     updateSubagentCard(agentId, updateData);
@@ -1995,6 +2025,11 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
             }}
           >
             {/* Messages Area - Fixed height, scrollable */}
+            {/* Subscribe inline subagent cards directly to live telemetry. The
+                resolver identity changes on every SSE token (cards is a dep),
+                but only context consumers re-render — MessageBubble /
+                MessageContentSegments stay React.memo'd. */}
+            <SubagentTelemetryContext.Provider value={resolveSubagentTelemetry}>
             <div
               ref={msgAreaRef}
               className="flex-1 overflow-hidden"
@@ -2128,6 +2163,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                 />
               )}
             </div>
+            </SubagentTelemetryContext.Provider>
 
             {/* Input Area */}
             <div className={`flex-shrink-0 ${isMobile ? 'p-3' : 'p-4'} flex justify-center`}>

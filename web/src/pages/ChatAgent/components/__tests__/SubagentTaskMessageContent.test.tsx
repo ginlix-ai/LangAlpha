@@ -1,0 +1,320 @@
+/**
+ * Coverage for the inline-card telemetry row added below the existing
+ * type-badge / status row:
+ *  - hidden when both toolCalls === 0 and tokenUsage.total === 0
+ *  - shows tools count when only toolCalls > 0
+ *  - shows compact-formatted tokens when only tokenUsage.total > 0
+ *  - both segments rendered (separator dot) when both > 0
+ *  - title attribute on the tokens segment exposes the input/output split
+ */
+import React from 'react';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
+import '@testing-library/jest-dom';
+import SubagentTaskMessageContent from '../SubagentTaskMessageContent';
+import { SubagentTelemetryContext } from '../SubagentTelemetryContext';
+
+const baseProps = {
+  subagentId: 'tc-abc',
+  description: 'Research AAPL Q3',
+  type: 'research',
+  status: 'completed' as const,
+};
+
+describe('SubagentTaskMessageContent — telemetry row', () => {
+  it('hides the row when both metrics are zero', () => {
+    render(
+      <SubagentTaskMessageContent
+        {...baseProps}
+        toolCalls={0}
+        tokenUsage={{ input: 0, output: 0, total: 0 }}
+      />,
+    );
+    expect(screen.queryByTestId('subagent-telemetry')).toBeNull();
+  });
+
+  it('hides the row when telemetry props are omitted entirely', () => {
+    render(<SubagentTaskMessageContent {...baseProps} />);
+    expect(screen.queryByTestId('subagent-telemetry')).toBeNull();
+  });
+
+  it('shows only the tool count when tokens are zero', () => {
+    render(
+      <SubagentTaskMessageContent
+        {...baseProps}
+        toolCalls={4}
+        tokenUsage={{ input: 0, output: 0, total: 0 }}
+      />,
+    );
+    const row = screen.getByTestId('subagent-telemetry');
+    expect(row).toHaveTextContent('4 tools');
+    expect(row).not.toHaveTextContent(/tokens/i);
+  });
+
+  it('uses the singular "tool" label when count is exactly 1', () => {
+    render(
+      <SubagentTaskMessageContent
+        {...baseProps}
+        toolCalls={1}
+        tokenUsage={{ input: 0, output: 0, total: 0 }}
+      />,
+    );
+    expect(screen.getByTestId('subagent-telemetry')).toHaveTextContent(/^1 tool$/);
+  });
+
+  it('shows only compact tokens when tool count is zero', () => {
+    render(
+      <SubagentTaskMessageContent
+        {...baseProps}
+        toolCalls={0}
+        tokenUsage={{ input: 4000, output: 1142, total: 5142 }}
+      />,
+    );
+    const row = screen.getByTestId('subagent-telemetry');
+    // compactNumber locale-formats 5142 → "5.1K" — case-insensitive match
+    // because Intl emits uppercase suffixes; the code does not lowercase.
+    expect(row.textContent).toMatch(/5\.1K\s+tokens/i);
+    expect(row).not.toHaveTextContent(/tools/);
+  });
+
+  it('renders both segments with a separator dot when both are non-zero', () => {
+    render(
+      <SubagentTaskMessageContent
+        {...baseProps}
+        toolCalls={7}
+        tokenUsage={{ input: 4000, output: 1142, total: 5142 }}
+      />,
+    );
+    const row = screen.getByTestId('subagent-telemetry');
+    expect(row).toHaveTextContent('7 tools');
+    expect(row.textContent).toMatch(/5\.1K\s+tokens/i);
+    expect(row).toHaveTextContent('·');
+  });
+
+  it('exposes the input/output split via the title attribute on the tokens segment', () => {
+    render(
+      <SubagentTaskMessageContent
+        {...baseProps}
+        toolCalls={3}
+        tokenUsage={{ input: 4000, output: 1142, total: 5142 }}
+      />,
+    );
+    const tokensSpan = screen.getByTitle('4000 in · 1142 out');
+    expect(tokensSpan).toBeInTheDocument();
+  });
+});
+
+describe('SubagentTaskMessageContent — status discriminator', () => {
+  it('renders Running label with spin animation for action=init + status=running', () => {
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-r"
+        description="Long-running task"
+        type="research"
+        status="running"
+        action="init"
+      />,
+    );
+    expect(screen.getByText('Running')).toBeInTheDocument();
+  });
+
+  it('renders Completed label for action=init + status=completed', () => {
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-c"
+        description="Done task"
+        type="research"
+        status="completed"
+        action="init"
+      />,
+    );
+    expect(screen.getByText('Completed')).toBeInTheDocument();
+  });
+
+  it('renders Updated label for action=update', () => {
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-u"
+        description="Steered task"
+        type="research"
+        status="running"
+        action="update"
+      />,
+    );
+    expect(screen.getByText('Updated')).toBeInTheDocument();
+  });
+
+  it('renders Resumed label for action=resume', () => {
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-rs"
+        description="Resumed task"
+        type="research"
+        status="running"
+        action="resume"
+      />,
+    );
+    expect(screen.getByText('Resumed')).toBeInTheDocument();
+  });
+
+  it('falls through to raw status text for unknown discriminator', () => {
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-x"
+        description="Edge case"
+        type="research"
+        status="something-else"
+        action="init"
+      />,
+    );
+    // Neither Completed/Running/Updated/Resumed matches, so the raw status
+    // string survives as the fallback label.
+    expect(screen.getByText('something-else')).toBeInTheDocument();
+  });
+});
+
+describe('SubagentTaskMessageContent — telemetry context fallback', () => {
+  it('reads telemetry from context when toolCalls / tokenUsage props are absent', () => {
+    // The leaf subscribes to SubagentTelemetryContext so live token-tick
+    // re-renders bypass the memoized MessageBubble / MessageContentSegments
+    // tree. This is the perf path; props are still the override for tests
+    // and any explicit caller.
+    const resolver = vi.fn(() => ({
+      toolCalls: 5,
+      tokenUsage: { input: 1000, output: 234, total: 1234 },
+    }));
+    render(
+      <SubagentTelemetryContext.Provider value={resolver}>
+        <SubagentTaskMessageContent {...baseProps} />
+      </SubagentTelemetryContext.Provider>,
+    );
+    expect(resolver).toHaveBeenCalledWith('tc-abc');
+    const row = screen.getByTestId('subagent-telemetry');
+    expect(row).toHaveTextContent('5 tools');
+    expect(row.textContent).toMatch(/1\.2K\s+tokens/i);
+  });
+
+  it('explicit props still override the context value', () => {
+    const resolver = vi.fn(() => ({
+      toolCalls: 99,
+      tokenUsage: { input: 1, output: 1, total: 99999 },
+    }));
+    render(
+      <SubagentTelemetryContext.Provider value={resolver}>
+        <SubagentTaskMessageContent
+          {...baseProps}
+          toolCalls={2}
+          tokenUsage={{ input: 0, output: 0, total: 0 }}
+        />
+      </SubagentTelemetryContext.Provider>,
+    );
+    // Props win: 2 tools, no tokens row.
+    const row = screen.getByTestId('subagent-telemetry');
+    expect(row).toHaveTextContent('2 tools');
+    expect(row).not.toHaveTextContent(/tokens/i);
+  });
+});
+
+describe('SubagentTaskMessageContent — accessibility', () => {
+  it('exposes the card as a keyboard-focusable button', () => {
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-a11y"
+        description="Click me"
+        type="research"
+        status="completed"
+      />,
+    );
+    // Without a hasResult body, the card root is the only role=button.
+    // Without aria-label/title-as-accessible-name we just look up by role.
+    const card = screen.getByRole('button');
+    expect(card).toHaveAttribute('tabIndex', '0');
+    expect(card).toHaveAttribute('title');
+  });
+
+  it('opens the secondary view-output action via an accessible button', () => {
+    let captured: unknown = null;
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-output"
+        description="Done"
+        type="research"
+        status="completed"
+        toolCallProcess={{ toolCallResult: { content: 'output text' } }}
+        onDetailOpen={(p) => { captured = p; }}
+      />,
+    );
+    const viewButton = screen.getByRole('button', { name: 'View subagent output' });
+    expect(viewButton).toBeInTheDocument();
+    viewButton.click();
+    expect(captured).toEqual({ toolCallResult: { content: 'output text' } });
+  });
+
+  it('mouse click on view-output button does not also fire the card click', () => {
+    // Regression: outer card div has onClick=handleCardClick, inner button
+    // has onClick=handleViewOutput. handleViewOutput already calls
+    // stopPropagation, so the click should fire onDetailOpen exactly once
+    // and never fire onOpen. Pinning this to catch any future change that
+    // drops the stopPropagation.
+    const onOpen = vi.fn();
+    const onDetailOpen = vi.fn();
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-mouse"
+        description="Done"
+        type="research"
+        status="completed"
+        toolCallProcess={{ toolCallResult: { content: 'output text' } }}
+        onOpen={onOpen}
+        onDetailOpen={onDetailOpen}
+      />,
+    );
+    const viewButton = screen.getByRole('button', { name: 'View subagent output' });
+    viewButton.click();
+    expect(onDetailOpen).toHaveBeenCalledTimes(1);
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it('keyboard activation of view-output button does not also fire the card click', () => {
+    // Regression: outer `<div role="button" onKeyDown=...>` and inner
+    // `<button>` are nested. A keydown on the inner button bubbles, so
+    // without a target/currentTarget guard the outer keydown handler used
+    // to fire `onOpen` in addition to the inner button's `onDetailOpen`,
+    // opening two panels on a single Enter press.
+    const onOpen = vi.fn();
+    const onDetailOpen = vi.fn();
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-kbd"
+        description="Done"
+        type="research"
+        status="completed"
+        toolCallProcess={{ toolCallResult: { content: 'output text' } }}
+        onOpen={onOpen}
+        onDetailOpen={onDetailOpen}
+      />,
+    );
+    const viewButton = screen.getByRole('button', { name: 'View subagent output' });
+    // Simulate keyboard activation: keydown on the inner button bubbles to
+    // the outer card, but the guard should prevent handleCardClick from running.
+    fireEvent.keyDown(viewButton, { key: 'Enter' });
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it('keyboard activation on the card itself still fires onOpen', () => {
+    const onOpen = vi.fn();
+    render(
+      <SubagentTaskMessageContent
+        subagentId="tc-kbd-card"
+        description="Done"
+        type="research"
+        status="completed"
+        onOpen={onOpen}
+      />,
+    );
+    // Without a hasResult body there's only one role=button — the card root.
+    const card = screen.getByRole('button');
+    fireEvent.keyDown(card, { key: 'Enter' });
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+});

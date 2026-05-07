@@ -1716,7 +1716,6 @@
       "memoryUpdated": "更新记忆",
       "memo": "读取 {{count}} 份备忘",
       "memoWrite": "写入 {{count}} 份备忘",
-      "failed": "{{count}} 个失败",
       "code": "执行 {{count}} 段代码",
       "web": "发起 {{count}} 次网络请求",
       "search": "执行 {{count}} 次搜索",

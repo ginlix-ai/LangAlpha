@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import {
   ChevronRight, ChevronDown, Folder, Zap, Pin, MessageSquareText,
-  Crown, Bot, Check, Circle, Loader2, X, ChevronsDown,
+  Check, Circle, Loader2, X, ChevronsDown,
 } from 'lucide-react';
 import { ScrollArea } from '../../../components/ui/scroll-area';
 import { useIsMobile } from '@/hooks/useIsMobile';
@@ -37,6 +37,7 @@ interface AgentMessage {
 interface AgentEntry {
   id: string;
   name: string;
+  description?: string;
   isMainAgent?: boolean;
   status?: string;
   messages?: AgentMessage[];
@@ -278,26 +279,35 @@ function NavigationPanel({
                                 const isActive = status === 'active';
                                 const isCompleted = status === 'completed';
 
+                                const trimmedDescription = typeof agent.description === 'string' ? agent.description.trim() : '';
+                                const rowLabel = !isMainAgent && trimmedDescription
+                                  ? trimmedDescription
+                                  : agent.name;
+
                                 return (
                                   <div
                                     key={agent.id}
-                                    className={`nav-panel-agent-row group ${isActive && !isMainAgent ? 'nav-panel-agent-pulse' : ''}`}
+                                    data-testid="agent-row"
+                                    data-agent-role={isMainAgent ? 'main' : 'sub'}
+                                    className={`nav-panel-agent-row group ${isActive && !isMainAgent ? 'nav-panel-agent-pulse' : ''}${isSelected ? ' is-selected' : ''}`}
                                     style={{
                                       backgroundColor: isSelected ? 'var(--color-border-muted)' : undefined,
                                     }}
                                     onClick={() => onSelectAgent(agent.id)}
                                   >
-                                    {/* Agent icon */}
-                                    {isMainAgent
-                                      ? <Crown className="h-3.5 w-3.5 flex-shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
-                                      : <Bot className="h-3.5 w-3.5 flex-shrink-0" style={{ color: 'var(--color-text-tertiary)' }} />
-                                    }
-                                    {/* Agent name */}
+                                    {/* Hierarchy indicator: subagents render `└─` to descend visually under the main agent's text column */}
+                                    {!isMainAgent && (
+                                      <span aria-hidden="true" className="nav-panel-agent-glyph text-xs">
+                                        └─
+                                      </span>
+                                    )}
+                                    {/* Agent label: subagent description when available, else fallback name */}
                                     <span
                                       className="text-xs truncate"
                                       style={{ color: isSelected ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)' }}
+                                      title={rowLabel}
                                     >
-                                      {agent.name}
+                                      {rowLabel}
                                     </span>
                                     {/* Status badge */}
                                     {!isMainAgent && (

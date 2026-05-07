@@ -1463,9 +1463,10 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
           }
 
           if (block.type === 'subagent_task') {
-            const task = subagentTasks[(block as SubagentTaskRenderBlock).segment.subagentId!];
+            const subId = (block as SubagentTaskRenderBlock).segment.subagentId!;
+            const task = subagentTasks[subId];
             if (!task) return null;
-            const rawToolCallProcess = toolCallProcesses[(block as SubagentTaskRenderBlock).segment.subagentId!] || undefined;
+            const rawToolCallProcess = toolCallProcesses[subId] || undefined;
             const toolCallProcess = rawToolCallProcess ? {
               ...rawToolCallProcess,
               _subagentResult: (task.result as string) || null,
@@ -1474,7 +1475,7 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
             return (
               <SubagentTaskMessageContent
                 key={block.key}
-                subagentId={(block as SubagentTaskRenderBlock).segment.subagentId!}
+                subagentId={subId}
                 description={task.description as string}
                 type={task.type as string}
                 status={task.status as string}
@@ -1636,12 +1637,13 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
             />
           );
         } else if (segment.type === 'subagent_task') {
-          const task = subagentTasks[segment.subagentId!];
+          const subId = segment.subagentId!;
+          const task = subagentTasks[subId];
           if (task) {
             return (
               <SubagentTaskMessageContent
-                key={`subagent-task-${segment.subagentId}`}
-                subagentId={segment.subagentId!}
+                key={`subagent-task-${subId}`}
+                subagentId={subId}
                 description={task.description as string}
                 type={task.type as string}
                 status={task.status as string}

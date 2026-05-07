@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { type SubagentTokenUsage, ZERO_USAGE } from '../utils/tokenUsage';
 
 // --- Card-level types ---
 
@@ -30,7 +31,7 @@ interface SubagentData {
   description?: string;
   prompt?: string;
   type?: string;
-  toolCalls?: number;
+  tokenUsage?: SubagentTokenUsage;
   currentTool?: string;
   status?: string;
   messages?: SubagentMessage[];
@@ -111,10 +112,15 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
         }
 
         // If card is inactive and not being reactivated, skip pure status updates.
-        // However, allow content updates (messages) through — trailing message_chunk
-        // and tool_call_result events can arrive after the completion signal due to
-        // the tail loop's polling interval.
-        const hasContentUpdate = subagentDataUpdate.messages !== undefined;
+        // However, allow content updates (messages, tokenUsage) through — trailing
+        // message_chunk / tool_call_result events arrive after the per-task stream
+        // closes due to the tail loop's polling interval, and token_usage events
+        // for the subagent's last LLM call are emitted on the MAIN stream which
+        // typically finishes draining slightly after the per-task stream marks the
+        // card inactive — dropping them here would zero out the displayed total.
+        const hasContentUpdate =
+          subagentDataUpdate.messages !== undefined ||
+          subagentDataUpdate.tokenUsage !== undefined;
         if (isCurrentlyInactive && !isBeingReactivated && !hasContentUpdate) {
           if (import.meta.env.DEV) {
             console.log('[updateSubagentCard] Skipping update to inactive card:', {
@@ -237,7 +243,7 @@ export function useCardState(initialCards: CardsMap = {}): UseCardStateResult {
               description: '',
               prompt: '',
               type: 'general-purpose',
-              toolCalls: 0,
+              tokenUsage: ZERO_USAGE,
               currentTool: '',
               status: 'active',
               messages: [],

@@ -182,14 +182,16 @@ async def test_subagent_does_not_inherit_parent_token_tracker(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_subagent_uses_astream_with_values_and_messages_modes(
+async def test_subagent_uses_astream_with_values_messages_and_custom_modes(
     monkeypatch,
 ):
     """The Task tool drives the subagent through
-    ``astream(stream_mode=["values", "messages"])``. The LAST ``values``
-    yield is the tool's return; ``messages`` yields are forwarded as per-token
-    captured events on the registry. Earlier ``values`` yields are
-    intermediate snapshots that must NOT propagate."""
+    ``astream(stream_mode=["values", "messages", "custom"])``. The LAST
+    ``values`` yield is the tool's return; ``messages`` yields are forwarded
+    as per-token captured events on the registry; ``custom`` yields surface
+    compaction's ``get_stream_writer`` events (token_usage / summarize /
+    offload) so they reach the per-task SSE consumer. Earlier ``values``
+    yields are intermediate snapshots that must NOT propagate."""
     from ptc_agent.agent.middleware.background_subagent import subagent as sa
 
     parent_config = {"configurable": {"thread_id": "t1"}}
@@ -246,9 +248,9 @@ async def test_subagent_uses_astream_with_values_and_messages_modes(
         runtime=runtime,
     )
 
-    # Driver requests both modes — values for the final-state return,
-    # messages for per-token forwarding.
-    assert seen_stream_modes == [["values", "messages"]]
+    # Driver requests three modes — values for the final-state return,
+    # messages for per-token forwarding, custom for get_stream_writer events.
+    assert seen_stream_modes == [["values", "messages", "custom"]]
 
     # Only the LAST values yield propagates as the tool's return.
     msg = cmd.update["messages"][-1]

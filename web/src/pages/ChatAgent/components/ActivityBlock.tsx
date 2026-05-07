@@ -159,17 +159,15 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
   // emit `<count> <label>` fragments. Computed BEFORE any early-return so
   // hook order stays stable.
   //
-  // Fingerprint includes the file_path arg AND `isFailed` per item so the
-  // breakdown re-walks when an item's args arrive late (a common SSE pattern:
-  // row created with empty args, file_path patched in a later chunk) or when
-  // a failure flag flips after the initial completed render. The earlier
-  // `[length, lastId]` key silently froze the category counts in both cases.
+  // Fingerprint includes the file_path arg per item so the breakdown
+  // re-walks when an item's args arrive late (a common SSE pattern: row
+  // created with empty args, file_path patched in a later chunk). The
+  // earlier `[length, lastId]` key silently froze the category counts.
   const summaryFingerprint = completedItems
     .map((i) => {
       const args = i.toolCall?.args as Record<string, unknown> | undefined;
       const fp = (args?.file_path || args?.filePath || '') as string;
-      const failed = i.isFailed ? '1' : '0';
-      return `${i.id || i.toolCallId || ''}:${i.type}:${i.toolName || ''}:${fp}:${failed}`;
+      return `${i.id || i.toolCallId || ''}:${i.type}:${i.toolName || ''}:${fp}`;
     })
     .join('|');
   // Slot = what we emit in the header. `memory` collapses read+write into one
@@ -177,21 +175,15 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
   // surface). `fileRead`/`fileEdit` and `memo`/`memoWrite` stay separate —
   // distinct file/memo paths shouldn't collide under one label, and any
   // memo modification is surfaced distinctly so a future regression letting
-  // the agent mutate a memo is visible. `failed` is orthogonal to the
-  // category axis but is its own fragment so the user sees that the
-  // accordion contains failures even before expanding (otherwise a failed
-  // read counts identically to a successful one once `_liveState` flips to
-  // 'completed').
-  type SummarySlot = 'skill' | 'memory' | 'memo' | 'memoWrite' | 'code' | 'web' | 'search' | 'fileRead' | 'fileEdit' | 'reasoning' | 'generic' | 'failed';
+  // the agent mutate a memo is visible.
+  type SummarySlot = 'skill' | 'memory' | 'memo' | 'memoWrite' | 'code' | 'web' | 'search' | 'fileRead' | 'fileEdit' | 'reasoning' | 'generic';
   const summaryFragments = useMemo<{ slot: SummarySlot; count: number; modified?: boolean }[]>(() => {
     const counts = new Map<ToolCategory | 'reasoning', number>();
-    let failedCount = 0;
     for (const item of completedItems) {
       const key: ToolCategory | 'reasoning' = item.type === 'reasoning'
         ? 'reasoning'
         : categorizeTool(item.toolName || '', item.toolCall);
       counts.set(key, (counts.get(key) ?? 0) + 1);
-      if (item.isFailed) failedCount += 1;
     }
     const memReads = counts.get('memoryRead') ?? 0;
     const memWrites = counts.get('memoryWrite') ?? 0;
@@ -205,7 +197,6 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
         out.push({ slot, count: counts.get(slot as ToolCategory | 'reasoning')! });
       }
     }
-    if (failedCount > 0) out.push({ slot: 'failed', count: failedCount });
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [summaryFingerprint]);
@@ -222,14 +213,14 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
     // When folded, cap the breakdown at 3 fragments + "…" so the header stays
     // scannable on turns with many tool categories. Expanding the accordion
     // reveals the full breakdown alongside the per-step rows.
-    // High-signal fragments (memory writes, memo writes, failures) get
-    // priority: they're information the user specifically needs to see and
-    // shouldn't drop into the "and more …" tail when 4+ categories are
-    // present. We hoist them to the front of the visible slice while
-    // preserving the relative order of everything else.
+    // High-signal fragments (memory writes, memo writes) get priority:
+    // they're information the user specifically needs to see and shouldn't
+    // drop into the "and more …" tail when 4+ categories are present.
+    // We hoist them to the front of the visible slice while preserving the
+    // relative order of everything else.
     const FOLDED_MAX = 3;
     const isPriority = (f: { slot: SummarySlot; modified?: boolean }) =>
-      f.slot === 'failed' || f.slot === 'memoWrite' || (f.slot === 'memory' && f.modified === true);
+      f.slot === 'memoWrite' || (f.slot === 'memory' && f.modified === true);
     const priority = summaryFragments.filter(isPriority);
     const rest = summaryFragments.filter((f) => !isPriority(f));
     const ordered = [...priority, ...rest];
@@ -250,7 +241,6 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
         if (f.slot === 'code') return t('toolArtifact.categoryCount.code', { count: f.count });
         if (f.slot === 'web') return t('toolArtifact.categoryCount.web', { count: f.count });
         if (f.slot === 'search') return t('toolArtifact.categoryCount.search', { count: f.count });
-        if (f.slot === 'failed') return t('toolArtifact.categoryCount.failed', { count: f.count });
         return t('toolArtifact.categoryCount.generic', { count: f.count });
       });
     summaryLabel = labels.join(' \u00b7 ');

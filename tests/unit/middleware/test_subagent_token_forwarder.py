@@ -396,3 +396,166 @@ async def test_atask_pipeline_forwards_messages_chunks_to_registry(monkeypatch):
     ]
     assert [e["data"]["content"] for e in text_chunks] == ["Hel", "lo", ", world"]
     assert {e["data"]["agent"] for e in text_chunks} == {"task:taskpipe"}
+
+
+# ---------------------------------------------------------------------------
+# custom-mode forwarding — surfaces compaction's get_stream_writer events
+# (context_window token_usage / summarize / offload) that ride a separate
+# stream channel from messages-mode chunks.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_forward_custom_appends_context_window_event() -> None:
+    """A ``custom``-mode dict with ``type=context_window`` lands as a captured
+    record with the stable ``task:{task_id}`` agent_id."""
+    registry = BackgroundTaskRegistry()
+    task = await _register(registry, task_id_override="abc123")
+    fwd = _SubagentTokenForwarder(registry, task.tool_call_id, "task:abc123")
+
+    await fwd.forward_custom(
+        {
+            "type": "context_window",
+            "action": "token_usage",
+            "signal": "complete",
+            "input_tokens": 100,
+            "output_tokens": 40,
+            "total_tokens": 140,
+        }
+    )
+
+    records = list(task.captured_events_tail)
+    assert len(records) == 1
+    rec = records[0]
+    assert rec["event"] == "context_window"
+    data = rec["data"]
+    assert data["agent"] == "task:abc123"
+    assert data["action"] == "token_usage"
+    assert data["input_tokens"] == 100
+    assert data["output_tokens"] == 40
+    assert data["total_tokens"] == 140
+    # ``type`` is consumed as the event name and stripped from data.
+    assert "type" not in data
+
+
+@pytest.mark.asyncio
+async def test_forward_custom_ignores_non_dict() -> None:
+    """Non-dict custom payloads (e.g. legacy strings) are dropped silently."""
+    registry = BackgroundTaskRegistry()
+    task = await _register(registry, task_id_override="abc")
+    fwd = _SubagentTokenForwarder(registry, task.tool_call_id, "task:abc")
+
+    await fwd.forward_custom("not-a-dict")
+    await fwd.forward_custom(None)
+    await fwd.forward_custom(42)
+
+    assert list(task.captured_events_tail) == []
+
+
+@pytest.mark.asyncio
+async def test_forward_custom_drops_non_whitelisted_event_types() -> None:
+    """Custom payloads with unrecognized ``type`` values are dropped to avoid
+    bloating the per-task buffer with file-op / widget payloads and to close
+    a frontend protocol-injection vector — a custom emitter could otherwise
+    send ``type: "message_chunk"`` and spoof a real subagent SSE event."""
+    registry = BackgroundTaskRegistry()
+    task = await _register(registry, task_id_override="wl")
+    fwd = _SubagentTokenForwarder(registry, task.tool_call_id, "task:wl")
+
+    # Frontend protocol events — must not pass through.
+    await fwd.forward_custom({"type": "message_chunk", "content": "boo"})
+    await fwd.forward_custom({"type": "tool_call_result", "result": "x"})
+    await fwd.forward_custom({"type": "tool_calls", "tool_calls": []})
+    # File-op / widget-style payloads — must not pass through.
+    await fwd.forward_custom({"type": "file_op", "old_string": "a" * 10000})
+    await fwd.forward_custom({"type": "widget", "html": "<div/>"})
+    # Missing ``type`` entirely — must not pass through (no implicit "custom").
+    await fwd.forward_custom({"foo": "bar"})
+
+    assert list(task.captured_events_tail) == []
+
+
+@pytest.mark.asyncio
+async def test_atask_pipeline_forwards_custom_events_to_registry(monkeypatch):
+    """End-to-end: when the subagent emits a ``custom``-mode payload, the
+    Task-tool driver routes it through ``forward_custom`` so the per-task
+    buffer carries it for SSE replay."""
+    from ptc_agent.agent.middleware.background_subagent import subagent as sa
+    from ptc_agent.agent.middleware.background_subagent.middleware import (
+        current_background_tool_call_id,
+    )
+
+    parent_config = {"configurable": {"thread_id": "t1"}}
+    monkeypatch.setattr(
+        "ptc_agent.agent.middleware.background_subagent.subagent.get_config",
+        lambda: parent_config,
+    )
+
+    registry = BackgroundTaskRegistry()
+    task = await _register(registry, task_id_override="custompipe")
+
+    async def fake_astream(state, config, stream_mode=None):
+        # The driver must subscribe to ``custom`` for this to surface.
+        assert "custom" in (stream_mode or [])
+        yield (
+            "custom",
+            {
+                "type": "context_window",
+                "action": "token_usage",
+                "signal": "complete",
+                "input_tokens": 50,
+                "output_tokens": 10,
+                "total_tokens": 60,
+            },
+        )
+        yield ("values", {"messages": [MagicMock(text="final")]})
+
+    fake_subagent = MagicMock()
+    fake_subagent.astream = fake_astream
+
+    tool = sa._create_task_tool(
+        default_model=MagicMock(),
+        default_tools=[],
+        default_middleware=[],
+        default_interrupt_on=None,
+        subagents=[],
+        general_purpose_agent=False,
+        registry=registry,
+        checkpointer=None,
+    )
+    coroutine = tool.coroutine
+    closure_vars = {
+        cell_name: cell.cell_contents
+        for cell_name, cell in zip(
+            coroutine.__code__.co_freevars,
+            coroutine.__closure__ or (),
+        )
+    }
+    sg = closure_vars["subagent_graphs"]
+    sg["general-purpose"] = fake_subagent
+
+    runtime = MagicMock()
+    runtime.state = {"messages": []}
+    runtime.tool_call_id = "tc-pipe"
+
+    token = current_background_tool_call_id.set(task.tool_call_id)
+    try:
+        await coroutine(
+            description="d",
+            prompt="p",
+            subagent_type="general-purpose",
+            action="init",
+            task_id=None,
+            runtime=runtime,
+        )
+    finally:
+        current_background_tool_call_id.reset(token)
+
+    cw_events = [
+        e for e in task.captured_events_tail if e["event"] == "context_window"
+    ]
+    assert len(cw_events) == 1
+    data = cw_events[0]["data"]
+    assert data["agent"] == "task:custompipe"
+    assert data["action"] == "token_usage"
+    assert data["total_tokens"] == 60

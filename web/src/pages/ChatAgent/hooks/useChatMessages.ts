@@ -13,6 +13,9 @@ import { useUser } from '@/hooks/useUser';
 import { sendChatMessageStream, replayThreadHistory, getWorkflowStatus, reconnectToWorkflowStream, sendHitlResponse, streamSubagentTaskEvents, fetchThreadTurns, submitFeedback, removeFeedback, getThreadFeedback, watchThread } from '../utils/api';
 import { buildRateLimitError, isUpstreamHint, type StructuredError } from '@/utils/rateLimitError';
 import { getStoredThreadId, setStoredThreadId } from './utils/threadStorage';
+import { countToolCalls } from '../utils/subagentMetrics';
+import { type SubagentTokenUsage, ZERO_USAGE, extractTokenUsageDelta, accumulateTokenUsage } from '../utils/tokenUsage';
+import { computeSteeringBoundary, shouldSkipSteeringRollback } from '../utils/steeringRollback';
 export { removeStoredThreadId } from './utils/threadStorage';
 import { createUserMessage, createAssistantMessage, createNotificationMessage, appendMessage, updateMessage, type AttachmentMeta } from './utils/messageHelpers';
 import type { ChatMessage, AssistantMessage } from '@/types/chat';
@@ -201,6 +204,7 @@ interface SubagentHistoryEntry {
   messages: Record<string, unknown>[];
   status: string;
   toolCalls: number;
+  tokenUsage: SubagentTokenUsage;
   currentTool: string;
 }
 
@@ -628,6 +632,14 @@ export function useChatMessages(
   // Persistent subagent state refs — survives across turns so resumed subagents
   // retain messages from previous runs. Keyed by taskId (e.g., "task:k7Xm2p").
   const subagentStateRefsRef = useRef<Record<string, TaskRefs>>({});
+
+  // Per-task running total of token usage. Backend emits per-call deltas via
+  // `context_window/token_usage` events; we sum here. The ref is the source
+  // of truth for accumulation; SubagentData.tokenUsage is overwritten with
+  // the running total on each update so the projection in ChatView reads it
+  // without needing direct ref access. Reconnect during an active subagent
+  // can double-count (event replay) — acceptable for a UI display surface.
+  const subagentTokenUsageRef = useRef<Record<string, SubagentTokenUsage>>({});
 
   // During history load: queue task tool call IDs until the matching artifact 'spawned' event drains them
   const historyPendingTaskToolCallIdsRef = useRef<string[]>([]);
@@ -1624,6 +1636,10 @@ export function useChatMessages(
           for (const [taskId, subagentHistory] of subagentHistoryByTaskId.entries()) {
             // Create temporary refs structure for processing
             let currentRunIndex = 0;
+            // Per-task token-usage accumulator: backend emits per-call deltas
+            // and we sum them into a running total before storing on the
+            // SubagentHistoryEntry below.
+            let tempTokenUsage: SubagentTokenUsage = ZERO_USAGE;
             const tempSubagentStateRefs: Record<string, TaskRefs> = {
               [taskId]: {
                 contentOrderCounterRef: { current: 0 },
@@ -1785,7 +1801,7 @@ export function useChatMessages(
                 // Embed notification as content segment in the assistant message
                 const action = event.action;
                 if (action === 'token_usage') {
-                  // Skip — no per-subagent token display
+                  tempTokenUsage = accumulateTokenUsage(tempTokenUsage, extractTokenUsageDelta(event));
                 } else {
                   let text;
                   let detail: string | undefined;
@@ -1865,7 +1881,8 @@ export function useChatMessages(
               type: taskMetadata?.type || 'general-purpose',
               messages: finalMessages,
               status: 'completed', // History events are always completed
-              toolCalls: 0,
+              toolCalls: countToolCalls(finalMessages),
+              tokenUsage: tempTokenUsage,
               currentTool: '',
             };
 
@@ -2037,6 +2054,10 @@ export function useChatMessages(
           const agentId = `task:${taskId}`;
           const historyData = subagentHistoryRef.current[agentId];
           if (historyData) {
+            // Seed the live token-usage ref from history so subsequent live
+            // deltas accumulate on top of the historical total instead of
+            // starting from zero.
+            subagentTokenUsageRef.current[agentId] = historyData.tokenUsage ?? ZERO_USAGE;
             updateSubagentCard(agentId, {
               agentId,
               displayId: `Task-${taskId}`,
@@ -2044,6 +2065,7 @@ export function useChatMessages(
               description: historyData.description || '',
               prompt: historyData.prompt || historyData.description || '',
               type: historyData.type || 'general-purpose',
+              tokenUsage: historyData.tokenUsage ?? ZERO_USAGE,
               status: 'active',
               isActive: true,
               isReconnect: true,
@@ -2341,6 +2363,7 @@ export function useChatMessages(
           const agentId = `task:${taskId}`;
           const historyData = subagentHistoryRef.current?.[agentId];
           if (updateSubagentCard && historyData) {
+            subagentTokenUsageRef.current[agentId] = historyData.tokenUsage ?? ZERO_USAGE;
             updateSubagentCard(agentId, {
               agentId,
               displayId: `Task-${taskId}`,
@@ -2348,6 +2371,7 @@ export function useChatMessages(
               description: historyData.description || '',
               prompt: historyData.prompt || historyData.description || '',
               type: historyData.type || 'general-purpose',
+              tokenUsage: historyData.tokenUsage ?? ZERO_USAGE,
               status: 'active',
               isActive: true,
               isReconnect: true,
@@ -2608,10 +2632,14 @@ export function useChatMessages(
       // Handle steering_accepted events for the MAIN agent (user sent a message while agent streams).
       // Subagent steering_accepted events are handled below in the isSubagent block.
       if (eventType === 'steering_accepted' && !isSubagent) {
-        // Record the content order counter so we can roll back leaked content
-        // when steering_delivered arrives (see handler below).
-        steeringAtOrder = refs.contentOrderCounterRef.current;
-        if (refs.steeringAtOrderRef) refs.steeringAtOrderRef.current = refs.contentOrderCounterRef.current;
+        // The steering_accepted event's own `_eventId` is the boundary: every
+        // earlier event in the Redis stream has a smaller id, every later one
+        // has a larger id. Use it directly so the rollback filter knows what
+        // to keep vs. drop. Fall back to the local counter for tests/legacy
+        // flows where SSE events carry no `_eventId`.
+        const boundary = computeSteeringBoundary(event, refs.contentOrderCounterRef.current);
+        steeringAtOrder = boundary;
+        if (refs.steeringAtOrderRef) refs.steeringAtOrderRef.current = boundary;
         return;
       }
 
@@ -2635,8 +2663,12 @@ export function useChatMessages(
             // ref is set by handleSendSteering on the secondary stream).
             const effectiveSteeringAtOrder = steeringAtOrder ?? refs.steeringAtOrderRef?.current ?? null;
 
-            // If no snapshot, just finalize (mark all in-progress processes as complete)
-            if (effectiveSteeringAtOrder === null) {
+            // If no snapshot — or snapshot is non-positive / NaN (steering
+            // arrived before any ordered content was emitted, or `_eventId`
+            // was a non-numeric fallback) — skip the destructive filter and
+            // just finalize. Real segment orders are always positive; any
+            // other boundary would drop every segment, wiping the visible turn.
+            if (shouldSkipSteeringRollback(effectiveSteeringAtOrder)) {
               const tp: typeof aMsg.toolCallProcesses = {};
               for (const [id, val] of Object.entries(aMsg.toolCallProcesses || {})) {
                 tp[id] = val.isInProgress ? { ...val, isInProgress: false, isComplete: true } : val;
@@ -2648,9 +2680,11 @@ export function useChatMessages(
               return { ...aMsg, isStreaming: false, toolCallProcesses: tp, reasoningProcesses: rp };
             }
 
-            // Keep only segments at or before the steering point
+            // Keep only segments at or before the steering point. Guard
+            // already proved boundary is a positive finite number.
+            const boundary = effectiveSteeringAtOrder as number;
             const keptSegments = (aMsg.contentSegments || []).filter(
-              (s) => s.order <= effectiveSteeringAtOrder
+              (s) => s.order <= boundary
             );
 
             // Rebuild plain-text content from kept text segments
@@ -2769,7 +2803,21 @@ export function useChatMessages(
           // segment inside the current assistant message (same as main chat) so
           // it appears at the correct chronological position.
           const taskId = getTaskIdFromEvent(event);
-          if (taskId && event.action !== 'token_usage') {
+          if (taskId && event.action === 'token_usage') {
+            // Sum per-call delta into the per-task running total, then push
+            // the new total onto SubagentData so the AgentInfo projection
+            // (and the inline subagent card) re-renders with it.
+            const prev = subagentTokenUsageRef.current[taskId] ?? ZERO_USAGE;
+            const next = accumulateTokenUsage(prev, extractTokenUsageDelta(event));
+            subagentTokenUsageRef.current[taskId] = next;
+            if (updateSubagentCard) {
+              updateSubagentCard(taskId, { tokenUsage: next });
+            }
+            return;
+          }
+          // token_usage is handled and returned above; this branch is now
+          // for summarize / offload / future actions only.
+          if (taskId) {
             const action = event.action;
             let text;
             let detail: string | undefined;
@@ -3555,9 +3603,11 @@ export function useChatMessages(
         (event) => {
           const eventType = event.event || 'message_chunk';
           if (eventType === 'steering_accepted') {
-            // Snapshot the content order counter so the primary stream's
-            // steering_delivered handler can roll back leaked content.
-            steeringAtOrderRef.current = contentOrderCounterRef.current;
+            // Snapshot the boundary so the primary stream's steering_delivered
+            // handler can roll back leaked content. The event's own `_eventId`
+            // is the natural boundary in the Redis stream; fall back to the
+            // local counter for tests/legacy flows without `_eventId`.
+            steeringAtOrderRef.current = computeSteeringBoundary(event, contentOrderCounterRef.current);
             // Update the user message to reflect steering status
             setMessages((prev) =>
               updateMessage(prev,userMessage.id as string, (msg) => ({

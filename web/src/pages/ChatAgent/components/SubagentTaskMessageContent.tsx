@@ -1,8 +1,10 @@
 import React from 'react';
-import { Check, Loader2, ArrowRight, RotateCw, RefreshCw } from 'lucide-react';
-import iconRobo from '../../../assets/img/icon-robo.png';
-import iconRoboSing from '../../../assets/img/icon-robo-sing.png';
-import './NavigationPanel.css';
+import { Check, Loader2, ArrowRight, ChevronRight, RotateCw, RefreshCw } from 'lucide-react';
+import { compactNumber } from '@/lib/format';
+import { type SubagentTokenUsage } from '../utils/tokenUsage';
+import { useSubagentTelemetry } from './SubagentTelemetryContext';
+
+const MONO_STACK = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 
 /**
  * Extract a short one-line summary from a full task description.
@@ -10,15 +12,11 @@ import './NavigationPanel.css';
  */
 function summarize(text: string | undefined, maxLen = 100): string {
   if (!text || typeof text !== 'string') return '';
-  // Take first line only
   const firstLine = text.split(/\n/)[0].trim();
-  // Remove trailing colon (often "Research X comprehensively. Cover:")
   const cleaned = firstLine.replace(/:$/, '');
   if (cleaned.length <= maxLen) return cleaned;
-  return cleaned.slice(0, maxLen).replace(/\s+\S*$/, '') + '\u2026';
+  return cleaned.slice(0, maxLen).replace(/\s+\S*$/, '') + '…';
 }
-
-const CARD_BORDER = 'var(--color-border-muted)';
 
 interface ToolCallProcess {
   toolCallResult?: {
@@ -45,14 +43,16 @@ interface SubagentTaskMessageContentProps {
   onOpen?: (info: SubagentInfo) => void;
   onDetailOpen?: (process: ToolCallProcess) => void;
   toolCallProcess?: ToolCallProcess;
+  /** Live tool-call count for this subagent — derived from card state at the call site. */
+  toolCalls?: number;
+  /** Live cumulative token usage for this subagent — derived from card state at the call site. */
+  tokenUsage?: SubagentTokenUsage;
 }
 
 /**
- * SubagentTaskMessageContent Component
- *
- * Renders a compact, clickable card in the main chat view to indicate that
- * a background subagent task was launched or resumed (via the `task` tool).
- * Uses the same visual style as inline artifact cards (company overview, etc.).
+ * Inline subagent card. Trading-terminal-style row: agent type on the left of
+ * the rule, semantic status on the right, description and live telemetry
+ * (tools / tokens) in the body. Adapts to light/dark via design tokens.
  */
 function SubagentTaskMessageContent({
   subagentId,
@@ -64,7 +64,17 @@ function SubagentTaskMessageContent({
   onOpen,
   onDetailOpen,
   toolCallProcess,
+  toolCalls: toolCallsProp,
+  tokenUsage: tokenUsageProp,
 }: SubagentTaskMessageContentProps): React.ReactElement | null {
+  // Subscribe to live telemetry at the leaf so token-tick re-renders bypass
+  // the memoized MessageBubble / MessageContentSegments above us. Direct
+  // props (used by tests and any explicit caller) take precedence over the
+  // context lookup so call sites can still override or stub.
+  const ctxTelemetry = useSubagentTelemetry(subagentId);
+  const toolCalls = toolCallsProp ?? ctxTelemetry?.toolCalls ?? 0;
+  const tokenUsage = tokenUsageProp ?? ctxTelemetry?.tokenUsage;
+
   if (!subagentId && !description) {
     return null;
   }
@@ -74,78 +84,210 @@ function SubagentTaskMessageContent({
   const hasResult = isCompleted && toolCallProcess?.toolCallResult?.content;
   const summary = summarize(description);
 
+  // Status discriminator — drives icon, label, and accent color.
+  // Updated/Resumed share the warning-amber treatment with Running because
+  // those are all "in-flight or recent change" states; Completed is success.
+  const statusKind: 'completed' | 'running' | 'updated' | 'resumed' | 'unknown' =
+    action === 'update' ? 'updated'
+    : action === 'resume' ? 'resumed'
+    : action === 'init' && isRunning ? 'running'
+    : action === 'init' && isCompleted ? 'completed'
+    : 'unknown';
+
+  const statusColor =
+    statusKind === 'completed' ? 'var(--color-success)'
+    : statusKind === 'unknown' ? 'var(--color-text-tertiary)'
+    : 'var(--color-warning)';
+
+  const statusLabel =
+    statusKind === 'completed' ? 'Completed'
+    : statusKind === 'running' ? 'Running'
+    : statusKind === 'updated' ? 'Updated'
+    : statusKind === 'resumed' ? 'Resumed'
+    : status;
+
+  const StatusIcon =
+    statusKind === 'completed' ? Check
+    : statusKind === 'running' ? Loader2
+    : statusKind === 'updated' ? RefreshCw
+    : statusKind === 'resumed' ? RotateCw
+    : null;
+
   const handleCardClick = (): void => {
     if (onOpen) {
-      // For resume cards, open the original subagent's tab if possible
       onOpen({ subagentId: resumeTargetId || subagentId || '', description: description || '', type, status });
     }
   };
 
-  const handleViewOutput = (e: React.MouseEvent): void => {
+  const handleViewOutput = (e: React.MouseEvent<HTMLButtonElement>): void => {
     e.stopPropagation();
     if (onDetailOpen && toolCallProcess) {
       onDetailOpen(toolCallProcess);
     }
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
+    // Ignore keystrokes that originated on a descendant control (e.g. the
+    // "View subagent output" button) — the descendant handles its own
+    // activation, and the keydown shouldn't double-fire as a card click.
+    if (e.target !== e.currentTarget) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      handleCardClick();
+    }
+  };
+
   return (
     <div
+      role="button"
+      tabIndex={0}
       style={{
         background: 'var(--color-bg-tool-card)',
-        border: `1px solid ${CARD_BORDER}`,
-        borderRadius: 8,
-        padding: '12px 14px',
+        border: '1px solid var(--color-border-muted)',
+        borderRadius: 12,
+        overflow: 'hidden',
         cursor: 'pointer',
+        fontFamily: MONO_STACK,
         transition: 'border-color 0.15s',
       }}
       onClick={handleCardClick}
-      onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => (e.currentTarget.style.borderColor = 'var(--color-border-muted)')}
-      onMouseLeave={(e: React.MouseEvent<HTMLDivElement>) => (e.currentTarget.style.borderColor = CARD_BORDER)}
-      title={action === 'update' ? 'Click to view updated subagent' : action === 'resume' ? 'Click to view resumed subagent' : isRunning ? 'Click to view running subagent' : 'Click to view subagent details'}
+      onKeyDown={handleKeyDown}
+      onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => (e.currentTarget.style.borderColor = 'var(--color-border-default)')}
+      onMouseLeave={(e: React.MouseEvent<HTMLDivElement>) => (e.currentTarget.style.borderColor = 'var(--color-border-muted)')}
+      title={
+        action === 'update' ? 'Click to view updated subagent'
+        : action === 'resume' ? 'Click to view resumed subagent'
+        : isRunning ? 'Click to view running subagent'
+        : 'Click to view subagent details'
+      }
     >
-      {/* Top row: icon + summary text */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-        <div style={{ position: 'relative', flexShrink: 0 }}>
-          <img
-            src={isCompleted ? iconRobo : iconRoboSing}
-            alt="Subagent"
-            className={isRunning ? 'nav-panel-agent-pulse' : ''}
-            style={{ width: 20, height: 20 }}
-          />
-          {isRunning && (
-            <Loader2
+      {/* Rule: agent type · status · affordance */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          padding: '10px 12px 8px 14px',
+          borderBottom: '1px solid var(--color-border-subtle)',
+          fontSize: 12,
+        }}
+      >
+        <span
+          style={{
+            color: 'var(--color-text-secondary)',
+            fontWeight: 500,
+            textTransform: 'lowercase',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            minWidth: 0,
+            flex: '0 1 auto',
+          }}
+        >
+          {type}
+        </span>
+        <span style={{ flex: 1 }} />
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 5,
+            color: statusColor,
+            fontSize: 11,
+            letterSpacing: '0.04em',
+            fontWeight: 500,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {StatusIcon && (
+            <StatusIcon
               style={{
-                width: 10, height: 10,
-                position: 'absolute', bottom: -2, right: -2,
-                color: 'var(--color-accent-primary)',
-                animation: 'spin 1s linear infinite',
+                width: 11,
+                height: 11,
+                animation: statusKind === 'running' ? 'spin 1s linear infinite' : undefined,
               }}
             />
           )}
-        </div>
-        <span style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: 14, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {summary || 'Subagent Task'}
+          {statusLabel}
         </span>
-        {!!hasResult && (
-          <ArrowRight
-            style={{ width: 14, height: 14, flexShrink: 0, color: 'var(--color-accent-primary)' }}
+        {hasResult ? (
+          <button
+            type="button"
+            aria-label="View subagent output"
             onClick={handleViewOutput}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              padding: 0,
+              display: 'inline-flex',
+              alignItems: 'center',
+              cursor: 'pointer',
+              color: 'var(--color-accent-primary)',
+              flexShrink: 0,
+            }}
+          >
+            <ArrowRight style={{ width: 14, height: 14 }} />
+          </button>
+        ) : (
+          <ChevronRight
+            aria-hidden="true"
+            style={{
+              width: 14,
+              height: 14,
+              flexShrink: 0,
+              color: 'var(--color-text-quaternary)',
+            }}
           />
         )}
       </div>
 
-      {/* Bottom row: type badge + status */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>
-          {type}
-        </span>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: (action === 'update' || action === 'resume') ? 'var(--color-warning)' : isRunning ? 'var(--color-accent-primary)' : isCompleted ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)' }}>
-          {action === 'update' && <RefreshCw style={{ width: 12, height: 12 }} />}
-          {action === 'resume' && <RotateCw style={{ width: 12, height: 12 }} />}
-          {action === 'init' && isRunning && <Loader2 style={{ width: 12, height: 12, animation: 'spin 1s linear infinite' }} />}
-          {action === 'init' && isCompleted && <Check style={{ width: 12, height: 12 }} />}
-          {action === 'update' ? 'Updated' : action === 'resume' ? 'Resumed' : isRunning ? 'Running' : isCompleted ? 'Completed' : status}
-        </span>
+      {/* Body: description + telemetry */}
+      <div style={{ padding: '12px 14px 14px' }}>
+        <div
+          style={{
+            fontFamily:
+              "'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+            fontSize: 14,
+            fontWeight: 500,
+            color: 'var(--color-text-primary)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            marginBottom: (toolCalls > 0 || (tokenUsage?.total ?? 0) > 0) ? 8 : 0,
+          }}
+        >
+          {summary || 'Subagent Task'}
+        </div>
+
+        {(toolCalls > 0 || (tokenUsage?.total ?? 0) > 0) && (
+          <div
+            data-testid="subagent-telemetry"
+            style={{
+              display: 'flex',
+              gap: 8,
+              fontSize: 11,
+              color: 'var(--color-text-tertiary)',
+              fontFamily: MONO_STACK,
+              letterSpacing: '0.02em',
+            }}
+          >
+            {toolCalls > 0 && (
+              <span>
+                <strong style={{ color: 'var(--color-text-secondary)', fontWeight: 600 }}>{toolCalls}</strong>
+                {' '}
+                {toolCalls === 1 ? 'tool' : 'tools'}
+              </span>
+            )}
+            {(tokenUsage?.total ?? 0) > 0 && (
+              <span title={`${tokenUsage!.input} in · ${tokenUsage!.output} out`}>
+                {toolCalls > 0 ? '· ' : ''}
+                <strong style={{ color: 'var(--color-text-secondary)', fontWeight: 600 }}>{compactNumber(tokenUsage!.total)}</strong>
+                {' '}
+                tokens
+              </span>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
