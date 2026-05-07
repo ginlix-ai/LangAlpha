@@ -119,7 +119,7 @@ function SubagentTaskMessageContent({
     }
   };
 
-  const handleViewOutput = (e: React.MouseEvent): void => {
+  const handleViewOutput = (e: React.MouseEvent<HTMLButtonElement>): void => {
     e.stopPropagation();
     if (onDetailOpen && toolCallProcess) {
       onDetailOpen(toolCallProcess);

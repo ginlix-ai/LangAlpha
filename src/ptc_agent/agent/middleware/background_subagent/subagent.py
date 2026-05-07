@@ -219,7 +219,15 @@ class _SubagentTokenForwarder:
         try:
             await self.registry.append_sentinel_to_stream(self.tool_call_id)
         except Exception:
-            pass
+            # Best-effort: degraded Redis falls back to the polling path
+            # (XREAD BLOCK timeout + asyncio_task.done()). Log so an oncall
+            # has a breadcrumb when "subagents close slowly" — without it
+            # the failure is invisible.
+            logger.warning(
+                "subagent_sentinel_write_failed",
+                tool_call_id=self.tool_call_id,
+                exc_info=True,
+            )
 
 
 class SubAgent(TypedDict):
