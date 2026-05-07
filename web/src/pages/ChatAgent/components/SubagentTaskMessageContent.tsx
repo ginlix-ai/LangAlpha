@@ -2,6 +2,7 @@ import React from 'react';
 import { Check, Loader2, ArrowRight, ChevronRight, RotateCw, RefreshCw } from 'lucide-react';
 import { compactNumber } from '@/lib/format';
 import { type SubagentTokenUsage } from '../utils/tokenUsage';
+import { useSubagentTelemetry } from './SubagentTelemetryContext';
 
 const MONO_STACK = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 
@@ -63,9 +64,17 @@ function SubagentTaskMessageContent({
   onOpen,
   onDetailOpen,
   toolCallProcess,
-  toolCalls = 0,
-  tokenUsage,
+  toolCalls: toolCallsProp,
+  tokenUsage: tokenUsageProp,
 }: SubagentTaskMessageContentProps): React.ReactElement | null {
+  // Subscribe to live telemetry at the leaf so token-tick re-renders bypass
+  // the memoized MessageBubble / MessageContentSegments above us. Direct
+  // props (used by tests and any explicit caller) take precedence over the
+  // context lookup so call sites can still override or stub.
+  const ctxTelemetry = useSubagentTelemetry(subagentId);
+  const toolCalls = toolCallsProp ?? ctxTelemetry?.toolCalls ?? 0;
+  const tokenUsage = tokenUsageProp ?? ctxTelemetry?.tokenUsage;
+
   if (!subagentId && !description) {
     return null;
   }

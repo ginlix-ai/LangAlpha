@@ -30,6 +30,7 @@ import ChatInput, { type ChatInputHandle } from '../../../components/ui/chat-inp
 import { attachmentsToContexts, widgetSnapshotsToContexts, type Attachment } from '../utils/fileUpload';
 import type { WidgetContextSnapshot } from '@/pages/Dashboard/widgets/framework/contextSnapshot';
 import MessageList, { normalizeSubagentText } from './MessageList';
+import { SubagentTelemetryContext } from './SubagentTelemetryContext';
 import Markdown from './Markdown';
 import NavigationPanel from './NavigationPanel';
 import ChatMinimap from './ChatMinimap';
@@ -2024,6 +2025,11 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
             }}
           >
             {/* Messages Area - Fixed height, scrollable */}
+            {/* Subscribe inline subagent cards directly to live telemetry. The
+                resolver identity changes on every SSE token (cards is a dep),
+                but only context consumers re-render — MessageBubble /
+                MessageContentSegments stay React.memo'd. */}
+            <SubagentTelemetryContext.Provider value={resolveSubagentTelemetry}>
             <div
               ref={msgAreaRef}
               className="flex-1 overflow-hidden"
@@ -2087,7 +2093,6 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                           handleSendMessage(`/self-improve ${instruction}`);
                         }}
                         onWidgetSendPrompt={handleSendMessage}
-                        resolveSubagentTelemetry={resolveSubagentTelemetry}
                       />
                     </div>
                   </div>
@@ -2136,7 +2141,6 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                             hideAvatar={true}
                             onOpenFile={handleOpenFileFromChat}
                             onToolCallDetailClick={handleToolCallDetailClick}
-                            resolveSubagentTelemetry={resolveSubagentTelemetry}
                           />
                         </div>
                       )}
@@ -2159,6 +2163,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                 />
               )}
             </div>
+            </SubagentTelemetryContext.Provider>
 
             {/* Input Area */}
             <div className={`flex-shrink-0 ${isMobile ? 'p-3' : 'p-4'} flex justify-center`}>

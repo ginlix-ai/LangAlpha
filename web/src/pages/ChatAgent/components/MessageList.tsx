@@ -34,7 +34,6 @@ import StartQuestionCard from './StartQuestionCard';
 import PTCAgentCard from './PTCAgentCard';
 import SecretaryConfirmCard from './SecretaryConfirmCard';
 import SubagentTaskMessageContent from './SubagentTaskMessageContent';
-import type { SubagentTelemetry } from '../utils/resolveSubagentTelemetry';
 import TextMessageContent from './TextMessageContent';
 import InlineWidget from './viewers/InlineWidget';
 import ToolCallMessageContent from './ToolCallMessageContent';
@@ -46,8 +45,6 @@ import { TextShimmer } from '@/components/ui/text-shimmer';
 const EMPTY_OBJ = {} as Record<string, never>;
 
 // --- Shared Types ---
-
-type ResolveSubagentTelemetry = (subagentId: string) => SubagentTelemetry | undefined;
 
 /** Loosely typed message record from SSE/API */
 type MessageRecord = Record<string, unknown>;
@@ -354,13 +351,9 @@ interface MessageListProps {
   onReportWithAgent?: (instruction: string) => void;
   onWidgetSendPrompt?: (text: string) => void;
   flashContext?: { threadId: string; workspaceId: string } | null;
-  /** Resolves a `segment.subagentId` (toolCallId) to the live telemetry of
-   *  the underlying subagent — handles toolCallId → agentId resolution
-   *  and the cards lookup in one closure. */
-  resolveSubagentTelemetry?: ResolveSubagentTelemetry;
 }
 
-function MessageList({ messages, isLoading, isLoadingHistory, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onApprovePTCAgent, onRejectPTCAgent, onApproveSecretaryAction, onRejectSecretaryAction, onEditMessage, onRegenerate, onRetry, onThumbUp, onThumbDown, getFeedbackForMessage, onReportWithAgent, onWidgetSendPrompt, flashContext, resolveSubagentTelemetry }: MessageListProps): React.ReactElement | null {
+function MessageList({ messages, isLoading, isLoadingHistory, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onApprovePTCAgent, onRejectPTCAgent, onApproveSecretaryAction, onRejectSecretaryAction, onEditMessage, onRegenerate, onRetry, onThumbUp, onThumbDown, getFeedbackForMessage, onReportWithAgent, onWidgetSendPrompt, flashContext }: MessageListProps): React.ReactElement | null {
   const isMobile = useIsMobile();
 
   // Empty state - show when no messages exist (hidden in subagent view)
@@ -450,7 +443,6 @@ function MessageList({ messages, isLoading, isLoadingHistory, hideAvatar, compac
             onReportWithAgent={onReportWithAgent}
             onWidgetSendPrompt={onWidgetSendPrompt}
             flashContext={flashContext}
-            resolveSubagentTelemetry={resolveSubagentTelemetry}
           />
         )
       )}
@@ -495,14 +487,13 @@ interface MessageBubbleProps {
   onWidgetSendPrompt?: (text: string) => void;
   isMobile?: boolean;
   flashContext?: { threadId: string; workspaceId: string } | null;
-  resolveSubagentTelemetry?: ResolveSubagentTelemetry;
 }
 
 /**
  * Wrapped with React.memo — safe because updateMessage() in messageHelpers.ts
  * returns the same object reference for unchanged messages.
  */
-const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onApprovePTCAgent, onRejectPTCAgent, onApproveSecretaryAction, onRejectSecretaryAction, onEditMessage, onRegenerate, onRetry, onThumbUp, onThumbDown, getFeedbackForMessage, onReportWithAgent, onWidgetSendPrompt, isMobile, flashContext, resolveSubagentTelemetry }: MessageBubbleProps): React.ReactElement {
+const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onApprovePTCAgent, onRejectPTCAgent, onApproveSecretaryAction, onRejectSecretaryAction, onEditMessage, onRegenerate, onRetry, onThumbUp, onThumbDown, getFeedbackForMessage, onReportWithAgent, onWidgetSendPrompt, isMobile, flashContext }: MessageBubbleProps): React.ReactElement {
   const { user } = useUser();
   const { theme } = useTheme();
   const logo = theme === 'light' ? logoDark : logoLight;
@@ -730,7 +721,6 @@ const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvat
               toolCallProcesses={(message.toolCallProcesses as Record<string, ToolCallProcessRecord>) || EMPTY_OBJ}
               todoListProcesses={(message.todoListProcesses as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
               subagentTasks={(message.subagentTasks as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
-              resolveSubagentTelemetry={resolveSubagentTelemetry}
               planApprovals={(message.planApprovals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
               userQuestions={(message.userQuestions as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
               workspaceProposals={(message.workspaceProposals as Record<string, Record<string, unknown>>) || EMPTY_OBJ}
@@ -936,7 +926,6 @@ interface MessageContentSegmentsProps {
   toolCallProcesses: Record<string, ToolCallProcessRecord>;
   todoListProcesses: Record<string, Record<string, unknown>>;
   subagentTasks: Record<string, Record<string, unknown>>;
-  resolveSubagentTelemetry?: ResolveSubagentTelemetry;
   planApprovals?: Record<string, Record<string, unknown>>;
   userQuestions?: Record<string, Record<string, unknown>>;
   workspaceProposals?: Record<string, Record<string, unknown>>;
@@ -1091,7 +1080,7 @@ function TextBlock({ block, isFirst, isStreaming, hasError, structuredError, isS
   return isFirst && textContent ? <div className="-mt-1">{textEl}</div> : textEl;
 }
 
-const MessageContentSegments = memo(function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesses, todoListProcesses, subagentTasks, resolveSubagentTelemetry, planApprovals = EMPTY_OBJ, userQuestions = EMPTY_OBJ, workspaceProposals = EMPTY_OBJ, questionProposals = EMPTY_OBJ, pendingToolCallChunks = EMPTY_OBJ, isStreaming, hasError, structuredError, isAssistant = false, compactToolCalls = false, isSubagentView = false, readOnly = false, allowFiles = false, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onApprovePTCAgent, onRejectPTCAgent, onApproveSecretaryAction, onRejectSecretaryAction, ptcAgentProposals = EMPTY_OBJ, secretaryActionProposals = EMPTY_OBJ, onWidgetSendPrompt, htmlWidgetProcesses = EMPTY_OBJ, textOnly = false, flashContext }: MessageContentSegmentsProps): React.ReactElement {
+const MessageContentSegments = memo(function MessageContentSegments({ segments, reasoningProcesses, toolCallProcesses, todoListProcesses, subagentTasks, planApprovals = EMPTY_OBJ, userQuestions = EMPTY_OBJ, workspaceProposals = EMPTY_OBJ, questionProposals = EMPTY_OBJ, pendingToolCallChunks = EMPTY_OBJ, isStreaming, hasError, structuredError, isAssistant = false, compactToolCalls = false, isSubagentView = false, readOnly = false, allowFiles = false, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onApprovePTCAgent, onRejectPTCAgent, onApproveSecretaryAction, onRejectSecretaryAction, ptcAgentProposals = EMPTY_OBJ, secretaryActionProposals = EMPTY_OBJ, onWidgetSendPrompt, htmlWidgetProcesses = EMPTY_OBJ, textOnly = false, flashContext }: MessageContentSegmentsProps): React.ReactElement {
   // Force re-render timer for recently-completed tool calls that need minimum exposure
   const [tick, setTick] = useState(0);
   const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1483,7 +1472,6 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
               _subagentResult: (task.result as string) || null,
               _subagentStatus: (task.status as string) || null,
             } : undefined;
-            const telemetry = resolveSubagentTelemetry?.(subId);
             return (
               <SubagentTaskMessageContent
                 key={block.key}
@@ -1496,8 +1484,6 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
                 onOpen={readOnly ? undefined : onOpenSubagentTask}
                 onDetailOpen={readOnly ? undefined : (onToolCallDetailClick as any)} // TODO: type properly
                 toolCallProcess={toolCallProcess as any} // TODO: type properly — ToolCallProcess not exported
-                toolCalls={telemetry?.toolCalls}
-                tokenUsage={telemetry?.tokenUsage}
               />
             );
           }
@@ -1654,7 +1640,6 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
           const subId = segment.subagentId!;
           const task = subagentTasks[subId];
           if (task) {
-            const telemetry = resolveSubagentTelemetry?.(subId);
             return (
               <SubagentTaskMessageContent
                 key={`subagent-task-${subId}`}
@@ -1665,8 +1650,6 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
                 action={task.action as 'init' | 'update' | 'resume' | undefined}
                 resumeTargetId={task.resumeTargetId as string}
                 onOpen={onOpenSubagentTask}
-                toolCalls={telemetry?.toolCalls}
-                tokenUsage={telemetry?.tokenUsage}
               />
             );
           }

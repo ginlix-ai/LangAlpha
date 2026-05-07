@@ -12,6 +12,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import SubagentTaskMessageContent from '../SubagentTaskMessageContent';
+import { SubagentTelemetryContext } from '../SubagentTelemetryContext';
 
 const baseProps = {
   subagentId: 'tc-abc',
@@ -169,6 +170,48 @@ describe('SubagentTaskMessageContent — status discriminator', () => {
     // Neither Completed/Running/Updated/Resumed matches, so the raw status
     // string survives as the fallback label.
     expect(screen.getByText('something-else')).toBeInTheDocument();
+  });
+});
+
+describe('SubagentTaskMessageContent — telemetry context fallback', () => {
+  it('reads telemetry from context when toolCalls / tokenUsage props are absent', () => {
+    // The leaf subscribes to SubagentTelemetryContext so live token-tick
+    // re-renders bypass the memoized MessageBubble / MessageContentSegments
+    // tree. This is the perf path; props are still the override for tests
+    // and any explicit caller.
+    const resolver = vi.fn(() => ({
+      toolCalls: 5,
+      tokenUsage: { input: 1000, output: 234, total: 1234 },
+    }));
+    render(
+      <SubagentTelemetryContext.Provider value={resolver}>
+        <SubagentTaskMessageContent {...baseProps} />
+      </SubagentTelemetryContext.Provider>,
+    );
+    expect(resolver).toHaveBeenCalledWith('tc-abc');
+    const row = screen.getByTestId('subagent-telemetry');
+    expect(row).toHaveTextContent('5 tools');
+    expect(row.textContent).toMatch(/1\.2K\s+tokens/i);
+  });
+
+  it('explicit props still override the context value', () => {
+    const resolver = vi.fn(() => ({
+      toolCalls: 99,
+      tokenUsage: { input: 1, output: 1, total: 99999 },
+    }));
+    render(
+      <SubagentTelemetryContext.Provider value={resolver}>
+        <SubagentTaskMessageContent
+          {...baseProps}
+          toolCalls={2}
+          tokenUsage={{ input: 0, output: 0, total: 0 }}
+        />
+      </SubagentTelemetryContext.Provider>,
+    );
+    // Props win: 2 tools, no tokens row.
+    const row = screen.getByTestId('subagent-telemetry');
+    expect(row).toHaveTextContent('2 tools');
+    expect(row).not.toHaveTextContent(/tokens/i);
   });
 });
 
