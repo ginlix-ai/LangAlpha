@@ -2815,7 +2815,9 @@ export function useChatMessages(
             }
             return;
           }
-          if (taskId && event.action !== 'token_usage') {
+          // token_usage is handled and returned above; this branch is now
+          // for summarize / offload / future actions only.
+          if (taskId) {
             const action = event.action;
             let text;
             let detail: string | undefined;
