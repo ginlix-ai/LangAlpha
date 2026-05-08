@@ -42,6 +42,10 @@ _STATE_MAP: dict[str, RuntimeState] = {
     "error": RuntimeState.ERROR,
 }
 
+# Override the SDK's 30-min default so a hung toolbox connection surfaces
+# as a transient error within the _runtime_call retry envelope.
+_FS_TIMEOUT_S = 60
+
 
 class DaytonaRuntime(SandboxRuntime):
     """Runtime that delegates to a Daytona SDK sandbox object."""
@@ -192,16 +196,16 @@ class DaytonaRuntime(SandboxRuntime):
     # -- File I/O --
 
     async def upload_file(self, content: bytes, dest_path: str) -> None:
-        await self._sandbox.fs.upload_file(content, dest_path)
+        await self._sandbox.fs.upload_file(content, dest_path, timeout=_FS_TIMEOUT_S)
 
     async def upload_files(self, files: list[tuple[bytes | str, str]]) -> None:
         batch = [
             FileUpload(source=src, destination=dst) for src, dst in files
         ]
-        await self._sandbox.fs.upload_files(batch)
+        await self._sandbox.fs.upload_files(batch, timeout=_FS_TIMEOUT_S)
 
     async def download_file(self, path: str) -> bytes:
-        return await self._sandbox.fs.download_file(path)
+        return await self._sandbox.fs.download_file(path, timeout=_FS_TIMEOUT_S)
 
     async def list_files(self, directory: str) -> list[dict[str, Any]]:
         result = await self._sandbox.fs.list_files(directory)

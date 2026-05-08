@@ -79,18 +79,36 @@ class TestDaytonaRuntime:
 
     @pytest.mark.asyncio
     async def test_upload_file_delegates(self, runtime, mock_sdk_sandbox):
+        from ptc_agent.core.sandbox.providers.daytona import _FS_TIMEOUT_S
+
         await runtime.upload_file(b"data", "/path/file.txt")
         mock_sdk_sandbox.fs.upload_file.assert_called_once()
+        assert (
+            mock_sdk_sandbox.fs.upload_file.call_args.kwargs["timeout"]
+            == _FS_TIMEOUT_S
+        )
 
     @pytest.mark.asyncio
     async def test_upload_files_delegates(self, runtime, mock_sdk_sandbox):
+        from ptc_agent.core.sandbox.providers.daytona import _FS_TIMEOUT_S
+
         await runtime.upload_files([(b"a", "/a.txt"), (b"b", "/b.txt")])
         mock_sdk_sandbox.fs.upload_files.assert_called_once()
+        assert (
+            mock_sdk_sandbox.fs.upload_files.call_args.kwargs["timeout"]
+            == _FS_TIMEOUT_S
+        )
 
     @pytest.mark.asyncio
     async def test_download_file_delegates(self, runtime, mock_sdk_sandbox):
+        from ptc_agent.core.sandbox.providers.daytona import _FS_TIMEOUT_S
+
         data = await runtime.download_file("/path/file.txt")
         mock_sdk_sandbox.fs.download_file.assert_called_once()
+        assert (
+            mock_sdk_sandbox.fs.download_file.call_args.kwargs["timeout"]
+            == _FS_TIMEOUT_S
+        )
         assert data == b"content"
 
     @pytest.mark.asyncio
