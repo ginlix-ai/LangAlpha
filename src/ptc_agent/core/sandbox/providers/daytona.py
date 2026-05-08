@@ -205,7 +205,8 @@ class DaytonaRuntime(SandboxRuntime):
         await self._sandbox.fs.upload_files(batch, timeout=_FS_TIMEOUT_S)
 
     async def download_file(self, path: str) -> bytes:
-        return await self._sandbox.fs.download_file(path, timeout=_FS_TIMEOUT_S)
+        # SDK's download_file uses *args dispatch; pass timeout positionally.
+        return await self._sandbox.fs.download_file(path, _FS_TIMEOUT_S)
 
     async def list_files(self, directory: str) -> list[dict[str, Any]]:
         result = await self._sandbox.fs.list_files(directory)

@@ -104,10 +104,8 @@ class TestDaytonaRuntime:
         from ptc_agent.core.sandbox.providers.daytona import _FS_TIMEOUT_S
 
         data = await runtime.download_file("/path/file.txt")
-        mock_sdk_sandbox.fs.download_file.assert_called_once()
-        assert (
-            mock_sdk_sandbox.fs.download_file.call_args.kwargs["timeout"]
-            == _FS_TIMEOUT_S
+        mock_sdk_sandbox.fs.download_file.assert_called_once_with(
+            "/path/file.txt", _FS_TIMEOUT_S
         )
         assert data == b"content"
 
