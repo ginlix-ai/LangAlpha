@@ -197,6 +197,60 @@ class TestTierDispatch:
         assert result.status == 451
 
     @pytest.mark.asyncio
+    async def test_tier1_dns_failure_skips_browsers(self):
+        """DNS resolution failure at Tier 1 → return infra_error. No browser spawn."""
+        crawler = ScraplingCrawler()
+
+        with (
+            patch.object(crawler, "_tier1_fetch", new_callable=AsyncMock,
+                         side_effect=RuntimeError("Could not resolve host: nonexistent.invalid")),
+            patch.object(crawler, "_tier2_fetch", new_callable=AsyncMock) as t2,
+            patch.object(crawler, "_tier3_fetch", new_callable=AsyncMock) as t3,
+        ):
+            result = await crawler.crawl_with_metadata("https://nonexistent.invalid/page")
+
+        t2.assert_not_awaited()
+        t3.assert_not_awaited()
+        assert result.failure_kind == "infra_error"
+
+    @pytest.mark.asyncio
+    async def test_tier1_connection_refused_skips_browsers(self):
+        """Connection-refused at Tier 1 → return infra_error. No browser spawn."""
+        crawler = ScraplingCrawler()
+
+        with (
+            patch.object(crawler, "_tier1_fetch", new_callable=AsyncMock,
+                         side_effect=RuntimeError("Failed to connect: Connection refused")),
+            patch.object(crawler, "_tier2_fetch", new_callable=AsyncMock) as t2,
+            patch.object(crawler, "_tier3_fetch", new_callable=AsyncMock) as t3,
+        ):
+            result = await crawler.crawl_with_metadata("https://refused.example/page")
+
+        t2.assert_not_awaited()
+        t3.assert_not_awaited()
+        assert result.failure_kind == "infra_error"
+
+    @pytest.mark.asyncio
+    async def test_tier1_generic_error_still_escalates(self):
+        """Non-DNS Tier 1 errors still escalate (regression guard for N3)."""
+        crawler = ScraplingCrawler()
+        page_t2 = _make_page_mock("Tier2 Title")
+
+        with (
+            patch.object(crawler, "_tier1_fetch", new_callable=AsyncMock,
+                         side_effect=RuntimeError("SSL handshake timeout")),
+            patch.object(crawler, "_tier2_fetch", new_callable=AsyncMock,
+                         return_value=(page_t2, _GOOD_HTML, 200)) as t2,
+            patch.object(crawler, "_tier3_fetch", new_callable=AsyncMock) as t3,
+        ):
+            result = await crawler.crawl_with_metadata("https://example.com")
+
+        t2.assert_awaited_once()
+        t3.assert_not_awaited()
+        assert result.failure_kind is None
+        assert result.status == 200
+
+    @pytest.mark.asyncio
     async def test_tier1_403_still_escalates(self):
         """403 is ambiguous — still try Tier 2 (some CF configs accept browsers)."""
         crawler = ScraplingCrawler()

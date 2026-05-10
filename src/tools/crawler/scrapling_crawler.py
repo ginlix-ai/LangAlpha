@@ -188,6 +188,21 @@ class ScraplingCrawler:
             # curl_cffi not installed — skip Tier 1 (scrapling without [fetchers])
             logger.debug(f"Tier 1 unavailable (curl_cffi not installed), using Tier 2 for {url}")
         except Exception as e:
+            # Hard reachability failures (DNS, conn refused) at Tier 1 mean the
+            # host is down. Spawning Chromium and Camoufox to confirm the same
+            # would just burn ~800MB and ~10s. Short-circuit to infra_error so
+            # the wrapper routes the failure correctly without browser cost.
+            err = str(e).lower()
+            if (
+                "could not resolve" in err
+                or "couldn't resolve" in err
+                or "name resolution" in err
+                or "connection refused" in err
+            ):
+                logger.debug(f"Tier 1 unreachable for {url}: {e}, skipping browsers")
+                return CrawlOutput(
+                    title="", html="", markdown="", failure_kind="infra_error",
+                )
             logger.debug(f"Tier 1 failed for {url}: {e}, escalating to Tier 2")
 
         # --- Tier 2: Dynamic browser fetch ---

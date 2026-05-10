@@ -5,7 +5,7 @@ Three-layer health model:
   - Blocked-host cache: hosts that returned 401/403/451. TTL 15 min, LRU 256.
     Hit → fast-fail with [blocked]. Never trips any breaker.
   - Per-host circuit breaker: transient host-level failures (timeout, 5xx,
-    rate-limited, empty). LRU 256. Trips after N consecutive failures.
+    rate-limited, stealth_failed). LRU 256. Trips after N consecutive failures.
   - Global infra breaker: cross-cutting crawler-side failures (browser crash,
     DNS, conn refused). Trips → all hosts fail-fast until recovery.
 
@@ -521,7 +521,7 @@ class SafeCrawlerWrapper:
                 error_type="infra_error",
             )
 
-        if kind in ("rate_limited", "stealth_failed", "empty"):
+        if kind in ("rate_limited", "stealth_failed"):
             # Host-scoped failure → host breaker only.
             if host_breaker is not None:
                 await host_breaker.record_failure(self._trigger_browser_reset)
@@ -529,11 +529,7 @@ class SafeCrawlerWrapper:
                 success=False,
                 markdown=output.markdown or "",
                 title=output.title or "",
-                error=(
-                    f"Site returned {kind}"
-                    if kind != "empty"
-                    else "Page returned empty content"
-                ),
+                error=f"Site returned {kind}",
                 error_type=kind,
             )
 
@@ -551,9 +547,14 @@ class SafeCrawlerWrapper:
                 error_type="empty_content",
             )
 
-        # Success — reset any pending block-attempt counter for this host.
+        # Success — reset host breaker, infra breaker, and any pending
+        # block-attempt counter for this host. Without record_success on the
+        # infra breaker, a HALF_OPEN breaker can never transition back to
+        # CLOSED, and recovery_timeout ratchets upward on every transient blip
+        # until it caps at 15 minutes.
         if host_breaker is not None:
             await host_breaker.record_success()
+        await self._infra_breaker.record_success()
         if netloc and netloc in self._block_attempts:
             async with self._lock:
                 self._clear_block_attempts_locked(netloc)

@@ -507,6 +507,44 @@ class TestThreeLayerHealth:
         assert wrapper._infra_breaker.state == CircuitState.CLOSED
 
     @pytest.mark.asyncio
+    async def test_infra_breaker_closes_after_recovery_success(self):
+        """HALF_OPEN infra breaker must close on success — otherwise recovery_timeout
+        ratchets upward forever on every transient blip until the 15-min cap.
+        """
+        wrapper = _make_wrapper(
+            circuit_failure_threshold=1,
+            circuit_recovery_timeout=0.05,
+            circuit_success_threshold=1,
+        )
+        mock_crawler = _inject_mock_crawler(wrapper)
+
+        # Trip infra breaker via an infra_error failure.
+        mock_crawler.crawl_with_metadata = AsyncMock(
+            return_value=CrawlOutput(title="", html="", markdown="",
+                                     status=None, failure_kind="infra_error")
+        )
+        await wrapper.crawl("https://example.com")
+        infra = wrapper._infra_breaker
+        assert infra.state == CircuitState.OPEN
+        base_timeout = infra.recovery_timeout
+
+        # Advance past recovery → HALF_OPEN on next check.
+        infra.last_failure_time = time.time() - 1.0
+
+        # Successful crawl from a different host must close infra and reset
+        # the escalating recovery_timeout.
+        mock_crawler.crawl_with_metadata = AsyncMock(
+            return_value=CrawlOutput(title="OK", html="", markdown="recovered ok ok ok",
+                                     status=200)
+        )
+        result = await wrapper.crawl("https://other.example/page")
+        assert result.success is True
+        assert infra.state == CircuitState.CLOSED
+        assert infra.failure_count == 0
+        assert infra.recovery_timeout == base_timeout
+        assert infra._consecutive_opens == 0
+
+    @pytest.mark.asyncio
     async def test_concurrent_host_breaker_creation_no_race(self):
         """50 concurrent calls to same novel host create exactly one breaker."""
         wrapper = _make_wrapper()
