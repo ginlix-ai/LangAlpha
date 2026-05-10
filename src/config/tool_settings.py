@@ -49,9 +49,28 @@ def _get_tool_config(key_path: str, default: Any = None) -> Any:
 # Crawler Configuration
 # =============================================================================
 
-def get_crawler_max_concurrent(default: int = 10) -> int:
-    """Get maximum concurrent crawler operations."""
-    return int(_get_tool_config('crawler.max_concurrent_crawls', default))
+def get_crawler_http_concurrency(default: int = 20) -> int:
+    """Concurrent Tier-1 (curl_cffi) calls. Cheap; cap is high."""
+    # Honor legacy max_concurrent_crawls if set, so existing deployments don't break.
+    legacy = _get_tool_config('crawler.max_concurrent_crawls')
+    if legacy is not None:
+        return int(legacy)
+    return int(_get_tool_config('crawler.http_concurrency', default))
+
+
+def get_crawler_browser_concurrency(default: int = 6) -> int:
+    """Concurrent Tier-2/3 (Chromium/Camoufox) calls. RAM-bounded."""
+    explicit = _get_tool_config('crawler.browser_concurrency')
+    if explicit is not None:
+        return int(explicit)
+    # Fall back to legacy `max_concurrent_crawls` so a low-RAM deployment that
+    # set it as a global cap (e.g. 2) doesn't silently spawn up to `default`
+    # browsers post-upgrade. Capped at `default` so HTTP-tuned legacy values
+    # (e.g. 50) don't translate to 50 Camoufox processes.
+    legacy = _get_tool_config('crawler.max_concurrent_crawls')
+    if legacy is not None:
+        return min(int(legacy), default)
+    return default
 
 
 def get_crawler_page_timeout(default: int = 60000) -> int:
@@ -75,13 +94,8 @@ def get_crawler_circuit_success_threshold(default: int = 2) -> int:
 
 
 def get_crawler_queue_max_size(default: int = 100) -> int:
-    """Get maximum crawler queue size."""
+    """Get maximum crawler queue size (admission-control counter)."""
     return int(_get_tool_config('crawler.queue.max_size', default))
-
-
-def get_crawler_queue_slot_timeout(default: int = 10) -> int:
-    """Get crawler queue slot timeout in seconds."""
-    return int(_get_tool_config('crawler.queue.slot_timeout', default))
 
 
 def get_crawler_backend(default: str = "scrapling") -> str:

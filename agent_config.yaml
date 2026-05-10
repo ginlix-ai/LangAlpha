@@ -295,20 +295,24 @@ search_api: tavily
 # Backend: "scrapling" uses tiered HTTP→browser→stealth fetching.
 crawler:
   backend: "router" # Options: "scrapling", "router" (adds PDF/YouTube/X extraction)
-  max_concurrent_crawls: 20 # Max parallel browser contexts (adjust based on RAM: ~150MB each)
-  page_timeout: 60000 # Page load timeout in ms
-  delay_before_return: 3 # Seconds to wait for JS rendering after DOM ready
+  # Stage-level concurrency caps (replace the old max_concurrent_crawls).
+  # Tier 1 (curl_cffi) is cheap, Tier 2/3 (browsers) bound RAM at ~400MB each.
+  http_concurrency: 20    # Max concurrent Tier-1 HTTP fetches
+  browser_concurrency: 6  # Max concurrent Tier-2/3 browser fetches (~2.4GB RAM ceiling)
+  page_timeout: 60000 # Page load timeout in ms (overall, all tiers)
 
-  # Circuit breaker settings - prevents cascade failures when browser has issues
+  # Circuit breaker settings — applied to both per-host and global infra breakers.
+  # Per-host: a failing Reuters cannot poison Wikipedia.
+  # Global infra: trips on cross-cutting failures (browser crash, DNS).
   circuit_breaker:
-    failure_threshold: 5 # Number of failures before opening circuit
-    recovery_timeout: 60 # Seconds before attempting recovery (half-open state)
-    success_threshold: 2 # Successes needed to close circuit after recovery
+    failure_threshold: 5
+    recovery_timeout: 60
+    success_threshold: 2
 
-  # Queue limits - prevents resource exhaustion
+  # Queue limit — admission-control counter. Returns queue_full immediately when
+  # in-flight exceeds max_size; no separate slot wait.
   queue:
-    max_size: 100 # Maximum queued crawl requests
-    slot_timeout: 10 # Seconds to wait for crawl slot before giving up
+    max_size: 100
 
 # Web Fetch Configuration
 # Settings for web_fetch tool's sitemap-aware content extraction

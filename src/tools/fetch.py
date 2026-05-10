@@ -246,22 +246,24 @@ async def web_fetch(
 
             # Check crawl result
             if not crawl_result.success:
+                kind = crawl_result.error_type or "error"
                 # If sitemap available, suggest alternatives
                 if sitemap_summary:
                     return (
-                        f"Failed to fetch {url}: {crawl_result.error}\n\n"
+                        f"[{kind}] Failed to fetch {url}: {crawl_result.error}\n\n"
                         f"However, here are other pages available on this site:\n\n"
                         f"{sitemap_summary}\n\n"
                         f"Try fetching one of these alternative URLs instead."
                     )
                 else:
-                    return f"Failed to fetch {url}: {crawl_result.error}"
+                    return f"[{kind}] Failed to fetch {url}: {crawl_result.error}"
 
             markdown = crawl_result.markdown
         else:
             crawl_result = await safe_crawler.crawl(url)
             if not crawl_result.success:
-                return f"Failed to fetch {url}: {crawl_result.error}"
+                kind = crawl_result.error_type or "error"
+                return f"[{kind}] Failed to fetch {url}: {crawl_result.error}"
             markdown = crawl_result.markdown
             sitemap_summary = ""
 

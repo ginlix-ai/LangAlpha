@@ -39,9 +39,10 @@ async def _crawl_impl(
         safe_crawler = get_safe_crawler_sync()
         result = await safe_crawler.crawl(url)
         if not result.success:
-            return f"Failed to crawl {url}: {result.error}"
+            kind = result.error_type or "error"
+            return f"[{kind}] Failed to crawl {url}: {result.error}"
         if not result.markdown or len(result.markdown.strip()) < 50:
-            return f"Failed to crawl {url}: page returned empty or blocked content (possibly anti-bot protected or paywalled)"
+            return f"[empty] Failed to crawl {url}: page returned empty or blocked content (possibly anti-bot protected or paywalled)"
         return {"url": url, "crawled_content": result.markdown}
     except BaseException as e:
         error_msg = f"Failed to crawl. Error: {repr(e)}"

@@ -1,7 +1,16 @@
 """Abstract crawler backend protocol."""
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Optional, Protocol
+
+
+FailureKind = Literal[
+    "blocked",          # 401/403/451 — host permanently rejects us
+    "stealth_failed",   # Tier 3 reached but came back with no usable content
+    "empty",            # 200 OK but body was empty/garbage
+    "rate_limited",     # 429
+    "infra_error",      # browser crash, DNS, conn refused — our crawler is broken
+]
 
 
 @dataclass
@@ -11,6 +20,8 @@ class CrawlOutput:
     title: str
     html: str
     markdown: str
+    status: Optional[int] = None
+    failure_kind: Optional[FailureKind] = None
 
 
 class CrawlerBackend(Protocol):

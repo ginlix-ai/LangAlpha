@@ -17,8 +17,15 @@ class ContentRouter:
     Satisfies the CrawlerBackend protocol.
     """
 
-    def __init__(self) -> None:
-        self._fallback = ScraplingCrawler()
+    def __init__(
+        self,
+        http_concurrency: int = 20,
+        browser_concurrency: int = 6,
+    ) -> None:
+        self._fallback = ScraplingCrawler(
+            http_concurrency=http_concurrency,
+            browser_concurrency=browser_concurrency,
+        )
 
     async def crawl_with_metadata(self, url: str) -> CrawlOutput:
         # SSRF protection: block private IPs, localhost, non-http(s) schemes
