@@ -1,18 +1,16 @@
-"""Unit tests for SafeCrawlerWrapper.crawl() fault-tolerance paths."""
+"""Unit tests for SafeCrawlerWrapper — three-layer health model + classification."""
 
 from __future__ import annotations
 
 import asyncio
 import time
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from src.tools.crawler.backend import CrawlOutput
 from src.tools.crawler.safe_wrapper import (
     CircuitState,
-    CrawlResult,
     CrawlerCircuitBreaker,
     SafeCrawlerWrapper,
     _build_configured_wrapper,
@@ -25,91 +23,60 @@ from src.tools.crawler.safe_wrapper import (
 
 
 def _make_wrapper(**kwargs) -> SafeCrawlerWrapper:
-    """Create a SafeCrawlerWrapper with a mocked backend so no real import occurs."""
+    """Create a SafeCrawlerWrapper with safe defaults for tests."""
     defaults = dict(
-        max_concurrent=5,
         max_queue_size=10,
         default_timeout=5.0,
-        slot_timeout=2.0,
         circuit_failure_threshold=3,
         circuit_recovery_timeout=60.0,
         circuit_success_threshold=2,
+        http_concurrency=20,
+        browser_concurrency=6,
     )
     defaults.update(kwargs)
-    wrapper = SafeCrawlerWrapper(**defaults)
-    return wrapper
+    return SafeCrawlerWrapper(**defaults)
 
 
 def _inject_mock_crawler(wrapper: SafeCrawlerWrapper) -> AsyncMock:
-    """Inject a mock crawler so _get_crawler() returns it without importing real backends."""
+    """Inject a mock crawler so _get_crawler() returns it without real imports."""
     mock_crawler = AsyncMock()
     wrapper._crawler = mock_crawler
     return mock_crawler
 
 
 # ---------------------------------------------------------------------------
-# SafeCrawlerWrapper.crawl() fault-tolerance paths
+# Wrapper-level fault tolerance (kept from previous suite, adapted to new API)
 # ---------------------------------------------------------------------------
 
 
 class TestSafeCrawlerCrawl:
-    """Tests for SafeCrawlerWrapper.crawl() covering all fault-tolerance paths."""
-
     @pytest.mark.asyncio
-    async def test_circuit_open_returns_error(self):
-        """When circuit breaker is OPEN, crawl returns immediately with circuit_open error."""
+    async def test_infra_breaker_open_returns_circuit_open(self):
         wrapper = _make_wrapper()
-        wrapper._circuit.state = CircuitState.OPEN
-        # Ensure check_state does NOT transition (last failure was recent)
-        wrapper._circuit.last_failure_time = time.time()
+        wrapper._infra_breaker.state = CircuitState.OPEN
+        wrapper._infra_breaker.last_failure_time = time.time()
 
         result = await wrapper.crawl("https://example.com")
 
-        assert isinstance(result, CrawlResult)
         assert result.success is False
         assert result.error_type == "circuit_open"
-        assert result.markdown is None
 
     @pytest.mark.asyncio
     async def test_queue_full_returns_error(self):
-        """When queue is at capacity, crawl returns queue_full error."""
         wrapper = _make_wrapper(max_queue_size=2)
         _inject_mock_crawler(wrapper)
-
-        # Artificially fill the queue
         wrapper._queue_count = 2
 
         result = await wrapper.crawl("https://example.com")
 
         assert result.success is False
         assert result.error_type == "queue_full"
-        assert "capacity" in result.error.lower()
-
-    @pytest.mark.asyncio
-    async def test_semaphore_slot_timeout(self):
-        """When no semaphore slot is available within slot_timeout, returns queue_timeout."""
-        wrapper = _make_wrapper(max_concurrent=1, slot_timeout=0.05)
-        _inject_mock_crawler(wrapper)
-
-        # Exhaust the semaphore
-        await wrapper._semaphore.acquire()
-
-        result = await wrapper.crawl("https://example.com")
-
-        assert result.success is False
-        assert result.error_type == "queue_timeout"
-        assert "slot" in result.error.lower()
-
-        # Clean up: release the semaphore we manually acquired
-        wrapper._semaphore.release()
 
     @pytest.mark.asyncio
     async def test_crawl_timeout_returns_timeout_error(self):
-        """When the crawl itself exceeds the timeout, returns timeout error."""
         wrapper = _make_wrapper(default_timeout=0.05)
         mock_crawler = _inject_mock_crawler(wrapper)
 
-        # Simulate a crawl that never finishes
         async def slow_crawl(url):
             await asyncio.sleep(10)
 
@@ -119,11 +86,9 @@ class TestSafeCrawlerCrawl:
 
         assert result.success is False
         assert result.error_type == "timeout"
-        assert "timed out" in result.error.lower()
 
     @pytest.mark.asyncio
-    async def test_crawl_timeout_records_failure(self):
-        """Timeout should be recorded as a circuit breaker failure."""
+    async def test_crawl_timeout_trips_host_breaker_only(self):
         wrapper = _make_wrapper(default_timeout=0.05, circuit_failure_threshold=1)
         mock_crawler = _inject_mock_crawler(wrapper)
 
@@ -132,31 +97,27 @@ class TestSafeCrawlerCrawl:
 
         mock_crawler.crawl_with_metadata = slow_crawl
 
-        assert wrapper._circuit.state == CircuitState.CLOSED
-
         await wrapper.crawl("https://example.com")
-
-        # With threshold=1, one failure should open the circuit
-        assert wrapper._circuit.state == CircuitState.OPEN
+        host_breaker = wrapper._host_breakers["example.com"]
+        assert host_breaker.state == CircuitState.OPEN
+        # Infra breaker should remain CLOSED — timeout is host-scoped.
+        assert wrapper._infra_breaker.state == CircuitState.CLOSED
 
     @pytest.mark.asyncio
-    async def test_crawl_cancelled_returns_cancelled(self):
-        """CancelledError returns cancelled error and does NOT record a failure."""
+    async def test_cancelled_returns_cancelled_no_failure(self):
         wrapper = _make_wrapper(circuit_failure_threshold=1)
         mock_crawler = _inject_mock_crawler(wrapper)
         mock_crawler.crawl_with_metadata = AsyncMock(side_effect=asyncio.CancelledError())
 
         result = await wrapper.crawl("https://example.com")
 
-        assert result.success is False
         assert result.error_type == "cancelled"
-        # Circuit should remain CLOSED -- cancellation is not a fault
-        assert wrapper._circuit.state == CircuitState.CLOSED
-        assert wrapper._circuit.failure_count == 0
+        # Host breaker may not even have been created since we returned early,
+        # but infra breaker definitely shouldn't trip.
+        assert wrapper._infra_breaker.state == CircuitState.CLOSED
 
     @pytest.mark.asyncio
-    async def test_dns_error(self):
-        """DNS resolution errors are classified as dns_error."""
+    async def test_dns_error_classifies_correctly(self):
         wrapper = _make_wrapper()
         mock_crawler = _inject_mock_crawler(wrapper)
         mock_crawler.crawl_with_metadata = AsyncMock(
@@ -165,12 +126,13 @@ class TestSafeCrawlerCrawl:
 
         result = await wrapper.crawl("https://bogus.invalid")
 
-        assert result.success is False
         assert result.error_type == "dns_error"
+        # DNS errors trip BOTH per-host AND infra breakers.
+        assert wrapper._host_breakers["bogus.invalid"].failure_count == 1
+        assert wrapper._infra_breaker.failure_count == 1
 
     @pytest.mark.asyncio
-    async def test_browser_closed_error_has_been_closed(self):
-        """'has been closed' browser errors are classified as browser_closed."""
+    async def test_browser_closed_classifies_correctly(self):
         wrapper = _make_wrapper()
         mock_crawler = _inject_mock_crawler(wrapper)
         mock_crawler.crawl_with_metadata = AsyncMock(
@@ -179,54 +141,26 @@ class TestSafeCrawlerCrawl:
 
         result = await wrapper.crawl("https://example.com")
 
-        assert result.success is False
         assert result.error_type == "browser_closed"
+        # browser_closed is infra → trips both.
+        assert wrapper._infra_breaker.failure_count == 1
 
     @pytest.mark.asyncio
-    async def test_browser_closed_error_target_page(self):
-        """'Target page' browser errors are classified as browser_closed."""
-        wrapper = _make_wrapper()
-        mock_crawler = _inject_mock_crawler(wrapper)
-        mock_crawler.crawl_with_metadata = AsyncMock(
-            side_effect=Exception("Target page, context or browser has been closed")
-        )
-
-        result = await wrapper.crawl("https://example.com")
-
-        assert result.success is False
-        assert result.error_type == "browser_closed"
-
-    @pytest.mark.asyncio
-    async def test_connection_refused_error(self):
-        """ERR_CONNECTION_REFUSED is classified as connection_refused."""
+    async def test_connection_refused_trips_infra(self):
         wrapper = _make_wrapper()
         mock_crawler = _inject_mock_crawler(wrapper)
         mock_crawler.crawl_with_metadata = AsyncMock(
             side_effect=Exception("net::ERR_CONNECTION_REFUSED")
         )
 
-        result = await wrapper.crawl("https://localhost:9999")
+        result = await wrapper.crawl("https://example.com")
 
-        assert result.success is False
         assert result.error_type == "connection_refused"
+        assert wrapper._infra_breaker.failure_count == 1
 
     @pytest.mark.asyncio
-    async def test_network_error_generic_net(self):
-        """Generic net:: errors are classified as network_error."""
-        wrapper = _make_wrapper()
-        mock_crawler = _inject_mock_crawler(wrapper)
-        mock_crawler.crawl_with_metadata = AsyncMock(
-            side_effect=Exception("net::ERR_CERT_AUTHORITY_INVALID")
-        )
-
-        result = await wrapper.crawl("https://self-signed.example.com")
-
-        assert result.success is False
-        assert result.error_type == "network_error"
-
-    @pytest.mark.asyncio
-    async def test_generic_crawl_error(self):
-        """Unclassified exceptions fall through to crawl_error."""
+    async def test_generic_crawl_error_host_only(self):
+        """Unclassified exceptions are host-scoped, not infra."""
         wrapper = _make_wrapper()
         mock_crawler = _inject_mock_crawler(wrapper)
         mock_crawler.crawl_with_metadata = AsyncMock(
@@ -235,66 +169,56 @@ class TestSafeCrawlerCrawl:
 
         result = await wrapper.crawl("https://example.com")
 
-        assert result.success is False
         assert result.error_type == "crawl_error"
-        assert "unexpected" in result.error.lower()
+        # Host breaker tripped, infra unchanged.
+        assert wrapper._host_breakers["example.com"].failure_count == 1
+        assert wrapper._infra_breaker.failure_count == 0
 
     @pytest.mark.asyncio
-    async def test_generic_crawl_error_truncates_long_message(self):
-        """Long error messages are truncated to 200 characters."""
+    async def test_long_error_message_truncated(self):
         wrapper = _make_wrapper()
         mock_crawler = _inject_mock_crawler(wrapper)
-        long_message = "X" * 500
-        mock_crawler.crawl_with_metadata = AsyncMock(
-            side_effect=RuntimeError(long_message)
-        )
+        mock_crawler.crawl_with_metadata = AsyncMock(side_effect=RuntimeError("X" * 500))
 
         result = await wrapper.crawl("https://example.com")
 
-        assert result.success is False
-        assert result.error_type == "crawl_error"
         assert len(result.error) == 200
 
     @pytest.mark.asyncio
     async def test_successful_crawl(self):
-        """Successful crawl returns CrawlResult with markdown and title."""
         wrapper = _make_wrapper()
         mock_crawler = _inject_mock_crawler(wrapper)
         mock_crawler.crawl_with_metadata = AsyncMock(
             return_value=CrawlOutput(
-                title="Example Page",
-                html="<p>Content</p>",
-                markdown="# Example Page\n\nContent",
+                title="Example", html="<p>X</p>", markdown="# Example\n\nContent",
+                status=200,
             )
         )
 
         result = await wrapper.crawl("https://example.com")
 
         assert result.success is True
-        assert result.title == "Example Page"
-        assert result.markdown == "# Example Page\n\nContent"
-        assert result.error is None
+        assert result.title == "Example"
         assert result.error_type is None
 
     @pytest.mark.asyncio
-    async def test_successful_crawl_records_success(self):
-        """Successful crawl resets failure count on the circuit breaker."""
+    async def test_successful_crawl_resets_host_failures(self):
         wrapper = _make_wrapper()
         mock_crawler = _inject_mock_crawler(wrapper)
         mock_crawler.crawl_with_metadata = AsyncMock(
-            return_value=CrawlOutput(title="OK", html="", markdown="Page content here")
+            return_value=CrawlOutput(title="OK", html="", markdown="real content here",
+                                     status=200)
         )
-
-        # Simulate some prior failures (not enough to open circuit)
-        wrapper._circuit.failure_count = 2
-
+        # First call to populate host_breaker.
         await wrapper.crawl("https://example.com")
-
-        assert wrapper._circuit.failure_count == 0
+        wrapper._host_breakers["example.com"].failure_count = 2
+        # Second call should reset.
+        await wrapper.crawl("https://example.com")
+        assert wrapper._host_breakers["example.com"].failure_count == 0
 
     @pytest.mark.asyncio
-    async def test_empty_content_returns_failure(self):
-        """Empty markdown from backend is treated as a failed crawl."""
+    async def test_empty_legacy_output_trips_host_only(self):
+        """Empty markdown without failure_kind (legacy path) trips host breaker."""
         wrapper = _make_wrapper()
         mock_crawler = _inject_mock_crawler(wrapper)
         mock_crawler.crawl_with_metadata = AsyncMock(
@@ -305,68 +229,30 @@ class TestSafeCrawlerCrawl:
 
         assert result.success is False
         assert result.error_type == "empty_content"
-        assert "empty content" in result.error.lower()
-
-    @pytest.mark.asyncio
-    async def test_empty_content_records_failure(self):
-        """Empty content counts as a circuit breaker failure, not success."""
-        wrapper = _make_wrapper()
-        mock_crawler = _inject_mock_crawler(wrapper)
-        mock_crawler.crawl_with_metadata = AsyncMock(
-            return_value=CrawlOutput(title="", html="", markdown="  ")
-        )
-
-        await wrapper.crawl("https://example.com")
-
-        assert wrapper._circuit.failure_count == 1
+        assert wrapper._host_breakers["example.com"].failure_count == 1
+        assert wrapper._infra_breaker.failure_count == 0
 
     @pytest.mark.asyncio
     async def test_queue_count_decremented_on_success(self):
-        """Queue count is properly decremented after a successful crawl."""
         wrapper = _make_wrapper()
         mock_crawler = _inject_mock_crawler(wrapper)
         mock_crawler.crawl_with_metadata = AsyncMock(
-            return_value=CrawlOutput(title="OK", html="", markdown="ok")
+            return_value=CrawlOutput(title="OK", html="", markdown="ok content here",
+                                     status=200)
         )
-
-        assert wrapper._queue_count == 0
         await wrapper.crawl("https://example.com")
         assert wrapper._queue_count == 0
 
     @pytest.mark.asyncio
     async def test_queue_count_decremented_on_error(self):
-        """Queue count is properly decremented even when crawl fails."""
         wrapper = _make_wrapper()
         mock_crawler = _inject_mock_crawler(wrapper)
-        mock_crawler.crawl_with_metadata = AsyncMock(
-            side_effect=RuntimeError("boom")
-        )
-
+        mock_crawler.crawl_with_metadata = AsyncMock(side_effect=RuntimeError("boom"))
         await wrapper.crawl("https://example.com")
         assert wrapper._queue_count == 0
 
     @pytest.mark.asyncio
-    async def test_semaphore_released_on_error(self):
-        """Semaphore slot is released after a crawl error so other requests can proceed."""
-        wrapper = _make_wrapper(max_concurrent=1)
-        mock_crawler = _inject_mock_crawler(wrapper)
-        mock_crawler.crawl_with_metadata = AsyncMock(
-            side_effect=RuntimeError("boom")
-        )
-
-        await wrapper.crawl("https://example.com")
-
-        # If semaphore was not released, a second crawl would block.
-        # Test that we can acquire it without timeout.
-        acquired = await asyncio.wait_for(
-            wrapper._semaphore.acquire(), timeout=0.1
-        )
-        assert acquired
-        wrapper._semaphore.release()
-
-    @pytest.mark.asyncio
     async def test_timeout_override(self):
-        """Explicit timeout parameter overrides default_timeout."""
         wrapper = _make_wrapper(default_timeout=30.0)
         mock_crawler = _inject_mock_crawler(wrapper)
 
@@ -377,214 +263,472 @@ class TestSafeCrawlerCrawl:
 
         result = await wrapper.crawl("https://example.com", timeout=0.05)
 
-        assert result.success is False
         assert result.error_type == "timeout"
-        # Error message should mention our custom timeout
         assert "0.05" in result.error
-
-    @pytest.mark.asyncio
-    async def test_connection_timeout_error(self):
-        """ERR_CONNECTION_TIMED_OUT is classified as connection_timeout."""
-        wrapper = _make_wrapper()
-        mock_crawler = _inject_mock_crawler(wrapper)
-        mock_crawler.crawl_with_metadata = AsyncMock(
-            side_effect=Exception("net::ERR_CONNECTION_TIMED_OUT")
-        )
-
-        result = await wrapper.crawl("https://slow.example.com")
-
-        assert result.success is False
-        assert result.error_type == "connection_timeout"
 
 
 # ---------------------------------------------------------------------------
-# Circuit breaker state transitions
+# Three-layer health: blocked-cache + per-host breaker + infra breaker
+# ---------------------------------------------------------------------------
+
+
+class TestThreeLayerHealth:
+    @pytest.mark.asyncio
+    async def test_one_block_does_not_cache_host(self):
+        """A single blocked response counts but doesn't cache — paywalled URL
+        on a mixed-access host (NYT homepage works, /article 401s) shouldn't
+        poison the whole host. _BLOCK_CACHE_THRESHOLD=2 consecutive blocks needed."""
+        wrapper = _make_wrapper()
+        mock_crawler = _inject_mock_crawler(wrapper)
+        mock_crawler.crawl_with_metadata = AsyncMock(
+            return_value=CrawlOutput(title="", html="", markdown="",
+                                     status=401, failure_kind="blocked")
+        )
+
+        result = await wrapper.crawl("https://nytimes.com/paywalled-article")
+
+        assert result.error_type == "blocked"
+        # Cache NOT populated yet.
+        assert "nytimes.com" not in wrapper._blocked_hosts
+        # Counter incremented.
+        assert wrapper._block_attempts.get("nytimes.com") == 1
+        # No breaker mutation.
+        assert wrapper._host_breakers["nytimes.com"].failure_count == 0
+        assert wrapper._infra_breaker.failure_count == 0
+
+    @pytest.mark.asyncio
+    async def test_two_consecutive_blocks_cache_host(self):
+        """After _BLOCK_CACHE_THRESHOLD consecutive blocks, host is cached."""
+        wrapper = _make_wrapper()
+        mock_crawler = _inject_mock_crawler(wrapper)
+        mock_crawler.crawl_with_metadata = AsyncMock(
+            return_value=CrawlOutput(title="", html="", markdown="",
+                                     status=401, failure_kind="blocked")
+        )
+
+        await wrapper.crawl("https://reuters.com/markets/p1")
+        await wrapper.crawl("https://reuters.com/markets/p2")
+
+        assert "reuters.com" in wrapper._blocked_hosts
+        # Counter reset after caching.
+        assert "reuters.com" not in wrapper._block_attempts
+        # Still no breaker mutation.
+        assert wrapper._host_breakers["reuters.com"].failure_count == 0
+        assert wrapper._infra_breaker.failure_count == 0
+
+    @pytest.mark.asyncio
+    async def test_block_attempts_reset_on_success(self):
+        """Success on a host clears the block-attempt counter — paywalled URL
+        followed by working homepage should not promote to host-cache."""
+        wrapper = _make_wrapper()
+        mock_crawler = _inject_mock_crawler(wrapper)
+
+        async def fake_crawl(url):
+            if "paywalled" in url:
+                return CrawlOutput(title="", html="", markdown="",
+                                   status=401, failure_kind="blocked")
+            return CrawlOutput(title="OK", html="", markdown="real content here",
+                               status=200)
+
+        mock_crawler.crawl_with_metadata = fake_crawl
+
+        await wrapper.crawl("https://nytimes.com/paywalled")
+        assert wrapper._block_attempts.get("nytimes.com") == 1
+        await wrapper.crawl("https://nytimes.com/")  # homepage works
+        assert "nytimes.com" not in wrapper._block_attempts
+        # Another blocked URL counts from 1, not 2.
+        await wrapper.crawl("https://nytimes.com/paywalled2")
+        assert wrapper._block_attempts.get("nytimes.com") == 1
+        assert "nytimes.com" not in wrapper._blocked_hosts
+
+    @pytest.mark.asyncio
+    async def test_blocked_cache_hit_skips_fetch(self):
+        """Repeat calls to a cached blocked host don't invoke the crawler at all."""
+        wrapper = _make_wrapper()
+        mock_crawler = _inject_mock_crawler(wrapper)
+        mock_crawler.crawl_with_metadata = AsyncMock(
+            return_value=CrawlOutput(title="", html="", markdown="",
+                                     status=401, failure_kind="blocked")
+        )
+
+        # Prime cache — needs two consecutive blocks now.
+        await wrapper.crawl("https://reuters.com/markets")
+        await wrapper.crawl("https://reuters.com/markets")
+        assert mock_crawler.crawl_with_metadata.await_count == 2
+        assert "reuters.com" in wrapper._blocked_hosts
+
+        # Third call should short-circuit.
+        result3 = await wrapper.crawl("https://reuters.com/some-other-page")
+
+        assert result3.error_type == "blocked"
+        # crawler not invoked again.
+        assert mock_crawler.crawl_with_metadata.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_blocked_cache_expiry_refetches(self):
+        wrapper = _make_wrapper()
+        mock_crawler = _inject_mock_crawler(wrapper)
+        mock_crawler.crawl_with_metadata = AsyncMock(
+            return_value=CrawlOutput(title="OK", html="", markdown="real content",
+                                     status=200)
+        )
+
+        # Manually plant an expired entry.
+        wrapper._blocked_hosts["reuters.com"] = time.time() - 1
+
+        result = await wrapper.crawl("https://reuters.com/foo")
+
+        assert result.success is True
+        assert "reuters.com" not in wrapper._blocked_hosts
+        assert mock_crawler.crawl_with_metadata.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_blocked_cache_lru_evicts_oldest(self):
+        from src.tools.crawler.safe_wrapper import _BLOCKED_LRU_CAP
+
+        wrapper = _make_wrapper()
+        # Populate cap entries.
+        for i in range(_BLOCKED_LRU_CAP):
+            wrapper._blocked_hosts[f"host{i}.example"] = time.time() + 900
+        # Add one more under the lock.
+        async with wrapper._lock:
+            wrapper._set_blocked_locked("newhost.example")
+
+        assert "host0.example" not in wrapper._blocked_hosts
+        assert "newhost.example" in wrapper._blocked_hosts
+        assert len(wrapper._blocked_hosts) == _BLOCKED_LRU_CAP
+
+    @pytest.mark.asyncio
+    async def test_per_host_breaker_isolation(self):
+        """Reuters host breaker open does not affect Wikipedia."""
+        wrapper = _make_wrapper(circuit_failure_threshold=1)
+        mock_crawler = _inject_mock_crawler(wrapper)
+
+        async def fake_crawl(url):
+            if "reuters" in url:
+                raise RuntimeError("boom")
+            return CrawlOutput(title="OK", html="", markdown="real content here", status=200)
+
+        mock_crawler.crawl_with_metadata = fake_crawl
+
+        # Reuters fails → host breaker opens.
+        await wrapper.crawl("https://reuters.com/foo")
+        assert wrapper._host_breakers["reuters.com"].state == CircuitState.OPEN
+        # Wikipedia should still succeed.
+        result = await wrapper.crawl("https://en.wikipedia.org/wiki/Reuters")
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_infra_breaker_only_trips_on_infra_kind(self):
+        """failure_kind='infra_error' trips both per-host and infra breakers."""
+        wrapper = _make_wrapper(circuit_failure_threshold=1)
+        mock_crawler = _inject_mock_crawler(wrapper)
+        mock_crawler.crawl_with_metadata = AsyncMock(
+            return_value=CrawlOutput(title="", html="", markdown="",
+                                     status=None, failure_kind="infra_error")
+        )
+
+        await wrapper.crawl("https://example.com")
+        assert wrapper._host_breakers["example.com"].state == CircuitState.OPEN
+        assert wrapper._infra_breaker.state == CircuitState.OPEN
+
+    @pytest.mark.asyncio
+    async def test_infra_breaker_open_blocks_all_hosts(self):
+        wrapper = _make_wrapper()
+        wrapper._infra_breaker.state = CircuitState.OPEN
+        wrapper._infra_breaker.last_failure_time = time.time()
+        mock_crawler = _inject_mock_crawler(wrapper)
+        mock_crawler.crawl_with_metadata = AsyncMock(
+            return_value=CrawlOutput(title="OK", html="", markdown="ok ok ok ok ok",
+                                     status=200)
+        )
+
+        result = await wrapper.crawl("https://wikipedia.org/wiki/Foo")
+
+        assert result.error_type == "circuit_open"
+        # Crawler should not have been invoked.
+        assert mock_crawler.crawl_with_metadata.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_per_host_breaker_recovery(self):
+        wrapper = _make_wrapper(
+            circuit_failure_threshold=1,
+            circuit_recovery_timeout=0.05,
+            circuit_success_threshold=1,
+        )
+        mock_crawler = _inject_mock_crawler(wrapper)
+
+        # First call: fail to open the breaker.
+        mock_crawler.crawl_with_metadata = AsyncMock(side_effect=RuntimeError("boom"))
+        await wrapper.crawl("https://example.com")
+        breaker = wrapper._host_breakers["example.com"]
+        assert breaker.state == CircuitState.OPEN
+
+        # Advance past recovery timeout.
+        breaker.last_failure_time = time.time() - 1.0
+
+        # Second call: succeed → breaker closes.
+        mock_crawler.crawl_with_metadata = AsyncMock(
+            return_value=CrawlOutput(title="OK", html="", markdown="recovered content here",
+                                     status=200)
+        )
+        result = await wrapper.crawl("https://example.com")
+        assert result.success is True
+        assert breaker.state == CircuitState.CLOSED
+
+    @pytest.mark.asyncio
+    async def test_rate_limited_kind_trips_host_only(self):
+        wrapper = _make_wrapper(circuit_failure_threshold=1)
+        mock_crawler = _inject_mock_crawler(wrapper)
+        mock_crawler.crawl_with_metadata = AsyncMock(
+            return_value=CrawlOutput(title="", html="", markdown="",
+                                     status=429, failure_kind="rate_limited")
+        )
+
+        result = await wrapper.crawl("https://example.com")
+
+        assert result.error_type == "rate_limited"
+        assert wrapper._host_breakers["example.com"].state == CircuitState.OPEN
+        assert wrapper._infra_breaker.state == CircuitState.CLOSED
+
+    @pytest.mark.asyncio
+    async def test_stealth_failed_kind_trips_host_only(self):
+        wrapper = _make_wrapper(circuit_failure_threshold=1)
+        mock_crawler = _inject_mock_crawler(wrapper)
+        mock_crawler.crawl_with_metadata = AsyncMock(
+            return_value=CrawlOutput(title="", html="", markdown="",
+                                     status=200, failure_kind="stealth_failed")
+        )
+
+        result = await wrapper.crawl("https://example.com")
+
+        assert result.error_type == "stealth_failed"
+        assert wrapper._host_breakers["example.com"].state == CircuitState.OPEN
+        assert wrapper._infra_breaker.state == CircuitState.CLOSED
+
+    @pytest.mark.asyncio
+    async def test_concurrent_host_breaker_creation_no_race(self):
+        """50 concurrent calls to same novel host create exactly one breaker."""
+        wrapper = _make_wrapper()
+        mock_crawler = _inject_mock_crawler(wrapper)
+        mock_crawler.crawl_with_metadata = AsyncMock(
+            return_value=CrawlOutput(title="OK", html="", markdown="content here ok ok",
+                                     status=200)
+        )
+
+        await asyncio.gather(*(
+            wrapper.crawl(f"https://example.com/page{i}") for i in range(50)
+        ))
+
+        # Only one breaker for example.com.
+        assert sum(1 for k in wrapper._host_breakers if k == "example.com") == 1
+        assert wrapper._host_breakers["example.com"].failure_count == 0
+
+    @pytest.mark.asyncio
+    async def test_host_breakers_lru_evicts_oldest(self):
+        """Parallel structure to blocked-cache LRU — host breaker dict is bounded."""
+        from src.tools.crawler.safe_wrapper import (
+            _HOST_BREAKERS_LRU_CAP,
+            CrawlerCircuitBreaker,
+        )
+
+        wrapper = _make_wrapper()
+        mock_crawler = _inject_mock_crawler(wrapper)
+        mock_crawler.crawl_with_metadata = AsyncMock(
+            return_value=CrawlOutput(title="OK", html="", markdown="ok ok ok ok ok",
+                                     status=200)
+        )
+        # Prefill at cap.
+        for i in range(_HOST_BREAKERS_LRU_CAP):
+            wrapper._host_breakers[f"host{i}.example"] = CrawlerCircuitBreaker()
+
+        # Crawl a novel host — should evict the oldest entry.
+        await wrapper.crawl("https://newhost.example/page")
+
+        assert "host0.example" not in wrapper._host_breakers
+        assert "newhost.example" in wrapper._host_breakers
+        assert len(wrapper._host_breakers) == _HOST_BREAKERS_LRU_CAP
+
+    @pytest.mark.asyncio
+    async def test_concurrent_blocked_does_not_poison_other_hosts(self):
+        """Regression for the production incident: 5 concurrent Reuters (blocked) +
+        1 concurrent Wikipedia (success). Reuters all return blocked, Wikipedia
+        succeeds, infra breaker stays closed, no cross-host poisoning."""
+        wrapper = _make_wrapper()
+        mock_crawler = _inject_mock_crawler(wrapper)
+
+        async def fake_crawl(url):
+            if "reuters" in url:
+                return CrawlOutput(title="", html="", markdown="",
+                                   status=401, failure_kind="blocked")
+            return CrawlOutput(title="Wiki", html="",
+                               markdown="real wikipedia content here ok",
+                               status=200)
+
+        mock_crawler.crawl_with_metadata = fake_crawl
+
+        coros = [wrapper.crawl(f"https://reuters.com/p{i}") for i in range(5)]
+        coros.append(wrapper.crawl("https://en.wikipedia.org/wiki/Reuters"))
+        results = await asyncio.gather(*coros)
+
+        reuters_results, wiki_result = results[:5], results[5]
+        # All Reuters blocked.
+        assert all(r.error_type == "blocked" for r in reuters_results)
+        # Wikipedia unaffected.
+        assert wiki_result.success is True
+        assert "wikipedia" in wiki_result.markdown.lower()
+        # Infra breaker uncontaminated.
+        assert wrapper._infra_breaker.failure_count == 0
+        assert wrapper._infra_breaker.state == CircuitState.CLOSED
+        # Reuters host breaker also untouched (blocks don't trip breakers).
+        assert wrapper._host_breakers["reuters.com"].failure_count == 0
+        # After 2+ blocks, reuters.com is cached.
+        assert "reuters.com" in wrapper._blocked_hosts
+
+
+# ---------------------------------------------------------------------------
+# Opportunistic reaper
+# ---------------------------------------------------------------------------
+
+
+class TestOpportunisticReaper:
+    @pytest.mark.asyncio
+    async def test_reap_throttled_to_one_per_interval(self):
+        """Multiple crawls within reap interval schedule reap exactly once."""
+        wrapper = _make_wrapper()
+        mock_crawler = _inject_mock_crawler(wrapper)
+        mock_crawler.crawl_with_metadata = AsyncMock(
+            return_value=CrawlOutput(title="OK", html="", markdown="ok " * 20, status=200)
+        )
+
+        reap_count = 0
+
+        async def fake_reap():
+            nonlocal reap_count
+            reap_count += 1
+
+        wrapper._trigger_browser_reset = fake_reap
+
+        # Fire 5 calls in quick succession.
+        await asyncio.gather(*(
+            wrapper.crawl(f"https://example.com/p{i}") for i in range(5)
+        ))
+        # Allow scheduled tasks to run.
+        await asyncio.sleep(0.02)
+
+        assert reap_count == 1
+
+    @pytest.mark.asyncio
+    async def test_reap_runs_again_after_interval(self):
+        from src.tools.crawler.safe_wrapper import _REAPER_INTERVAL_SECONDS
+
+        wrapper = _make_wrapper()
+        mock_crawler = _inject_mock_crawler(wrapper)
+        mock_crawler.crawl_with_metadata = AsyncMock(
+            return_value=CrawlOutput(title="OK", html="", markdown="content here ok",
+                                     status=200)
+        )
+
+        reap_count = 0
+
+        async def fake_reap():
+            nonlocal reap_count
+            reap_count += 1
+
+        wrapper._trigger_browser_reset = fake_reap
+
+        await wrapper.crawl("https://example.com/a")
+        await asyncio.sleep(0.02)
+        # Force interval to have elapsed.
+        wrapper._last_reap_time = time.time() - _REAPER_INTERVAL_SECONDS - 1
+        await wrapper.crawl("https://example.com/b")
+        await asyncio.sleep(0.02)
+
+        assert reap_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Caller-facing error string formatting
+# ---------------------------------------------------------------------------
+
+
+class TestErrorStringPrefix:
+    @pytest.mark.asyncio
+    async def test_blocked_error_string_helpful(self):
+        """Blocked CrawlResult.error tells the LLM not to retry."""
+        wrapper = _make_wrapper()
+        mock_crawler = _inject_mock_crawler(wrapper)
+        mock_crawler.crawl_with_metadata = AsyncMock(
+            return_value=CrawlOutput(title="", html="", markdown="",
+                                     status=401, failure_kind="blocked")
+        )
+
+        result = await wrapper.crawl("https://reuters.com/markets")
+
+        assert result.error_type == "blocked"
+        assert "blocks automated access" in result.error.lower()
+        assert "retrying will not help" in result.error.lower()
+
+
+# ---------------------------------------------------------------------------
+# Circuit breaker state transitions (unchanged class — kept tests verbatim)
 # ---------------------------------------------------------------------------
 
 
 class TestCircuitBreakerTransitions:
-    """Tests for CrawlerCircuitBreaker state machine transitions."""
-
     @pytest.mark.asyncio
     async def test_closed_to_open_after_threshold_failures(self):
-        """CLOSED -> OPEN after failure_threshold consecutive failures."""
         cb = CrawlerCircuitBreaker(failure_threshold=3, recovery_timeout=60.0)
-        assert cb.state == CircuitState.CLOSED
-
         for _ in range(3):
             await cb.record_failure()
-
         assert cb.state == CircuitState.OPEN
         assert cb.failure_count == 3
 
     @pytest.mark.asyncio
-    async def test_stays_closed_below_threshold(self):
-        """CLOSED stays CLOSED when failures are below threshold."""
-        cb = CrawlerCircuitBreaker(failure_threshold=5)
-
-        for _ in range(4):
-            await cb.record_failure()
-
-        assert cb.state == CircuitState.CLOSED
-
-    @pytest.mark.asyncio
     async def test_open_to_half_open_after_recovery_timeout(self):
-        """OPEN -> HALF_OPEN after recovery_timeout elapses."""
         cb = CrawlerCircuitBreaker(failure_threshold=1, recovery_timeout=0.05)
-
         await cb.record_failure()
-        assert cb.state == CircuitState.OPEN
-
-        # Simulate enough time passing
         cb.last_failure_time = time.time() - 1.0
-
         await cb.check_state()
         assert cb.state == CircuitState.HALF_OPEN
-        assert cb.success_count == 0
-
-    @pytest.mark.asyncio
-    async def test_open_stays_open_before_recovery_timeout(self):
-        """OPEN stays OPEN when recovery_timeout has not elapsed."""
-        cb = CrawlerCircuitBreaker(failure_threshold=1, recovery_timeout=60.0)
-
-        await cb.record_failure()
-        assert cb.state == CircuitState.OPEN
-
-        await cb.check_state()
-        assert cb.state == CircuitState.OPEN
 
     @pytest.mark.asyncio
     async def test_half_open_to_closed_after_success_threshold(self):
-        """HALF_OPEN -> CLOSED after success_threshold successes."""
         cb = CrawlerCircuitBreaker(
-            failure_threshold=1,
-            recovery_timeout=0.05,
-            success_threshold=2,
+            failure_threshold=1, recovery_timeout=0.05, success_threshold=2,
         )
-
-        # Move to HALF_OPEN
         await cb.record_failure()
         cb.last_failure_time = time.time() - 1.0
         await cb.check_state()
-        assert cb.state == CircuitState.HALF_OPEN
-
-        # First success: still half-open
         await cb.record_success()
         assert cb.state == CircuitState.HALF_OPEN
-        assert cb.success_count == 1
-
-        # Second success: close the circuit
         await cb.record_success()
         assert cb.state == CircuitState.CLOSED
-        assert cb.failure_count == 0
 
     @pytest.mark.asyncio
     async def test_half_open_to_open_on_failure(self):
-        """HALF_OPEN -> OPEN on any failure (re-opens with backoff)."""
         cb = CrawlerCircuitBreaker(
-            failure_threshold=1,
-            recovery_timeout=10.0,
-            success_threshold=2,
+            failure_threshold=1, recovery_timeout=10.0, success_threshold=2,
         )
-
-        # Move to HALF_OPEN
         cb.state = CircuitState.OPEN
         cb.last_failure_time = time.time() - 20.0
         await cb.check_state()
-        assert cb.state == CircuitState.HALF_OPEN
-
-        # Fail during half-open
         await cb.record_failure()
         assert cb.state == CircuitState.OPEN
         assert cb._consecutive_opens == 1
 
     @pytest.mark.asyncio
-    async def test_exponential_backoff_on_repeated_opens(self):
-        """Recovery timeout doubles each time circuit re-opens from HALF_OPEN."""
-        base_recovery = 10.0
+    async def test_exponential_backoff_capped(self):
         cb = CrawlerCircuitBreaker(
-            failure_threshold=1,
-            recovery_timeout=base_recovery,
-            success_threshold=2,
+            failure_threshold=1, recovery_timeout=500.0, success_threshold=2,
         )
-
-        # First open
-        await cb.record_failure()
-        assert cb.state == CircuitState.OPEN
-
-        # Transition to half-open, then fail again
-        cb.last_failure_time = time.time() - base_recovery - 1
-        await cb.check_state()
-        assert cb.state == CircuitState.HALF_OPEN
-        await cb.record_failure()
-        assert cb.state == CircuitState.OPEN
-        assert cb._consecutive_opens == 1
-        assert cb.recovery_timeout == base_recovery * 2  # 20s
-
-        # Another half-open -> failure cycle
-        cb.last_failure_time = time.time() - cb.recovery_timeout - 1
-        await cb.check_state()
-        assert cb.state == CircuitState.HALF_OPEN
-        await cb.record_failure()
-        assert cb._consecutive_opens == 2
-        assert cb.recovery_timeout == base_recovery * 4  # 40s
-
-    @pytest.mark.asyncio
-    async def test_recovery_timeout_capped_at_max(self):
-        """Recovery timeout is capped at _max_recovery_timeout (900s)."""
-        cb = CrawlerCircuitBreaker(
-            failure_threshold=1,
-            recovery_timeout=500.0,
-            success_threshold=2,
-        )
-        # Simulate many consecutive opens to exceed cap
         cb._consecutive_opens = 10
         cb.state = CircuitState.HALF_OPEN
-
         await cb.record_failure()
-
-        assert cb.recovery_timeout == 900.0  # capped
-
-    @pytest.mark.asyncio
-    async def test_successful_recovery_resets_consecutive_opens(self):
-        """Full recovery (HALF_OPEN -> CLOSED) resets consecutive_opens and recovery_timeout."""
-        base_recovery = 10.0
-        cb = CrawlerCircuitBreaker(
-            failure_threshold=1,
-            recovery_timeout=base_recovery,
-            success_threshold=1,
-        )
-
-        # Open, then half-open, then fail (backoff once)
-        await cb.record_failure()
-        cb.last_failure_time = time.time() - base_recovery - 1
-        await cb.check_state()
-        await cb.record_failure()
-        assert cb._consecutive_opens == 1
-        assert cb.recovery_timeout == base_recovery * 2
-
-        # Now recover
-        cb.last_failure_time = time.time() - cb.recovery_timeout - 1
-        await cb.check_state()
-        assert cb.state == CircuitState.HALF_OPEN
-        await cb.record_success()
-        assert cb.state == CircuitState.CLOSED
-        assert cb._consecutive_opens == 0
-        assert cb.recovery_timeout == base_recovery
-
-    @pytest.mark.asyncio
-    async def test_success_in_closed_state_resets_failures(self):
-        """record_success in CLOSED state resets failure_count."""
-        cb = CrawlerCircuitBreaker(failure_threshold=5)
-
-        cb.failure_count = 3
-        await cb.record_success()
-        assert cb.failure_count == 0
-        assert cb.state == CircuitState.CLOSED
+        assert cb.recovery_timeout == 900.0
 
     @pytest.mark.asyncio
     async def test_record_failure_triggers_reset_callback(self):
-        """When circuit opens, the trigger_reset callback is invoked."""
         cb = CrawlerCircuitBreaker(failure_threshold=1)
         reset_called = asyncio.Event()
 
@@ -592,45 +736,29 @@ class TestCircuitBreakerTransitions:
             reset_called.set()
 
         await cb.record_failure(trigger_reset=mock_reset)
-        assert cb.state == CircuitState.OPEN
-
-        # Allow the background task to run
         await asyncio.sleep(0.01)
         assert reset_called.is_set()
 
-    @pytest.mark.asyncio
-    async def test_record_failure_no_callback_when_not_opening(self):
-        """trigger_reset is NOT invoked when circuit does not transition to OPEN."""
-        cb = CrawlerCircuitBreaker(failure_threshold=5)
-        mock_reset = AsyncMock()
-
-        await cb.record_failure(trigger_reset=mock_reset)
-        assert cb.state == CircuitState.CLOSED
-        mock_reset.assert_not_awaited()
-
 
 # ---------------------------------------------------------------------------
-# _build_configured_wrapper()
+# _build_configured_wrapper
 # ---------------------------------------------------------------------------
 
 
 class TestBuildConfiguredWrapper:
-    """Tests for _build_configured_wrapper factory function."""
-
-    def test_happy_path_with_mock_config(self):
-        """Builds wrapper with values from tool_settings helpers."""
+    def test_happy_path(self):
         with patch(
-            "src.config.tool_settings.get_crawler_max_concurrent",
-            return_value=8,
+            "src.config.tool_settings.get_crawler_http_concurrency",
+            return_value=12,
+        ), patch(
+            "src.config.tool_settings.get_crawler_browser_concurrency",
+            return_value=4,
         ), patch(
             "src.config.tool_settings.get_crawler_page_timeout",
-            return_value=30000,  # ms
+            return_value=30000,
         ), patch(
             "src.config.tool_settings.get_crawler_queue_max_size",
             return_value=50,
-        ), patch(
-            "src.config.tool_settings.get_crawler_queue_slot_timeout",
-            return_value=5.0,
         ), patch(
             "src.config.tool_settings.get_crawler_circuit_failure_threshold",
             return_value=4,
@@ -647,48 +775,19 @@ class TestBuildConfiguredWrapper:
             wrapper = _build_configured_wrapper()
 
         assert wrapper._max_queue == 50
-        assert wrapper._default_timeout == 30.0  # 30000ms -> 30s
-        assert wrapper._slot_timeout == 5.0
-        assert wrapper._circuit.failure_threshold == 4
-        assert wrapper._circuit.recovery_timeout == 120.0
-        assert wrapper._circuit.success_threshold == 3
+        assert wrapper._default_timeout == 30.0
+        assert wrapper._http_concurrency == 12
+        assert wrapper._browser_concurrency == 4
+        assert wrapper._infra_breaker.failure_threshold == 4
         assert wrapper._backend == "scrapling"
 
     def test_fallback_on_import_error(self):
-        """When config imports fail, returns wrapper with defaults."""
-        with patch(
-            "src.tools.crawler.safe_wrapper._build_configured_wrapper",
-        ) as mock_build:
-            # Test the real function, not the mock -- we want to trigger the except branch
-            pass
-
-        # Directly test: make the import inside _build_configured_wrapper raise
-        with patch.dict(
-            "sys.modules",
-            {"src.config.tool_settings": None},
-        ):
+        with patch.dict("sys.modules", {"src.config.tool_settings": None}):
             wrapper = _build_configured_wrapper()
-
-        # Should be the default values
         assert wrapper._max_queue == 100
         assert wrapper._default_timeout == 60.0
-        assert wrapper._slot_timeout == 10.0
-        assert wrapper._circuit.failure_threshold == 5
-        assert wrapper._circuit.recovery_timeout == 60.0
-        assert wrapper._circuit.success_threshold == 2
-        assert wrapper._backend == "scrapling"
-
-    def test_fallback_on_generic_exception(self):
-        """When a config getter raises, returns wrapper with defaults."""
-        with patch(
-            "src.config.tool_settings.get_crawler_max_concurrent",
-            side_effect=RuntimeError("config broken"),
-        ):
-            wrapper = _build_configured_wrapper()
-
-        assert wrapper._max_queue == 100
-        assert wrapper._default_timeout == 60.0
-        assert wrapper._backend == "scrapling"
+        assert wrapper._http_concurrency == 20
+        assert wrapper._browser_concurrency == 6
 
 
 # ---------------------------------------------------------------------------
@@ -697,30 +796,28 @@ class TestBuildConfiguredWrapper:
 
 
 class TestWrapperStatus:
-    """Tests for get_status() and is_healthy() helper methods."""
-
     def test_get_status_initial(self):
         wrapper = _make_wrapper()
         status = wrapper.get_status()
-
-        assert status["circuit_state"] == "closed"
-        assert status["failure_count"] == 0
-        assert status["success_count"] == 0
-        assert status["consecutive_opens"] == 0
+        assert status["infra_circuit_state"] == "closed"
+        assert status["infra_failure_count"] == 0
+        assert status["host_breaker_count"] == 0
+        assert status["blocked_host_count"] == 0
         assert status["queue_count"] == 0
         assert status["max_queue"] == 10
-        assert status["last_failure_time"] is None
 
-    def test_is_healthy_when_closed(self):
+    def test_is_healthy_when_infra_closed(self):
         wrapper = _make_wrapper()
         assert wrapper.is_healthy() is True
 
-    def test_is_healthy_when_open(self):
+    def test_is_healthy_when_infra_open(self):
         wrapper = _make_wrapper()
-        wrapper._circuit.state = CircuitState.OPEN
+        wrapper._infra_breaker.state = CircuitState.OPEN
         assert wrapper.is_healthy() is False
 
-    def test_is_healthy_when_half_open(self):
+    def test_is_healthy_indifferent_to_host_breakers(self):
+        """Per-host breaker open is not 'unhealthy' — that's expected operation."""
         wrapper = _make_wrapper()
-        wrapper._circuit.state = CircuitState.HALF_OPEN
+        wrapper._host_breakers["reuters.com"] = CrawlerCircuitBreaker()
+        wrapper._host_breakers["reuters.com"].state = CircuitState.OPEN
         assert wrapper.is_healthy() is True

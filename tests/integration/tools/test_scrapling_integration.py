@@ -99,8 +99,12 @@ class TestSafeCrawlerWrapperLive:
 
         assert not result.success
         assert result.error
+        # When all three tiers fail with network errors, ScraplingCrawler rolls
+        # the exception path into failure_kind="infra_error" → error_type="infra_error".
+        # If the single-tier exception path fires, it classifies via string match.
         assert result.error_type in (
-            "dns_error", "network_error", "connection_timeout", "crawl_error", "timeout", "empty_content",
+            "infra_error", "dns_error", "network_error", "connection_timeout",
+            "crawl_error", "timeout", "empty_content",
         )
 
     async def test_circuit_breaker_starts_healthy(self):
@@ -110,15 +114,17 @@ class TestSafeCrawlerWrapperLive:
         assert wrapper.is_healthy()
 
         status = wrapper.get_status()
-        assert status["circuit_state"] == "closed"
-        assert status["failure_count"] == 0
+        assert status["infra_circuit_state"] == "closed"
+        assert status["infra_failure_count"] == 0
+        assert status["host_breaker_count"] == 0
+        assert status["blocked_host_count"] == 0
 
     async def test_concurrent_crawls(self):
         """Test multiple concurrent crawls don't interfere."""
         import asyncio
         from src.tools.crawler.safe_wrapper import SafeCrawlerWrapper
 
-        wrapper = SafeCrawlerWrapper(backend="scrapling", max_concurrent=5)
+        wrapper = SafeCrawlerWrapper(backend="scrapling", http_concurrency=5)
         urls = [_TEST_URL, _TEST_URL_HTTPBIN]
 
         results = await asyncio.gather(*[wrapper.crawl(url) for url in urls])

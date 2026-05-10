@@ -61,9 +61,13 @@ def patched_proc(fake_proc, monkeypatch):
 
 def _make_wrapper() -> SafeCrawlerWrapper:
     return SafeCrawlerWrapper(
-        max_concurrent=5, max_queue_size=10, default_timeout=5.0,
-        slot_timeout=2.0, circuit_failure_threshold=3,
-        circuit_recovery_timeout=60.0, circuit_success_threshold=2,
+        max_queue_size=10,
+        default_timeout=5.0,
+        circuit_failure_threshold=3,
+        circuit_recovery_timeout=60.0,
+        circuit_success_threshold=2,
+        http_concurrency=20,
+        browser_concurrency=6,
     )
 
 
