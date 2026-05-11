@@ -13,6 +13,8 @@ import logging
 import re
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set, cast
 
+import json_repair
+
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
 
 from src.server.utils.content_normalizer import (
@@ -35,6 +37,31 @@ WORKFLOW_TIMEOUT = get_workflow_timeout()  # seconds
 SSE_EVENT_LOG_ENABLED = is_sse_event_log_enabled()
 
 MERGED_STREAM_CHUNK_MAX_BYTES_DEFAULT = get_merged_chunk_max_bytes()
+
+
+def _parse_tool_args(raw: str) -> Optional[Dict[str, Any]]:
+    """Parse accumulated tool-call argument JSON, falling back to json_repair.
+
+    Frontier models occasionally emit nearly-valid JSON in tool-call args —
+    typically an unescaped quote or control char inside a long string value.
+    Strict ``json.loads`` rejects it and (without this fallback) the call is
+    silently dropped, triggering an empty-tool-call retry storm.
+
+    Returns the parsed dict, or ``None`` if both strict and tolerant parsing
+    fail. Tool-call args must be a JSON object per the LangChain contract;
+    non-dict results are rejected so downstream tool dispatch sees the same
+    shape it always has.
+    """
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        pass
+    try:
+        repaired = json_repair.loads(raw)
+    except Exception:
+        return None
+    return repaired if isinstance(repaired, dict) else None
 
 
 # ---------------------------------------------------------------------------
@@ -1090,16 +1117,39 @@ class WorkflowStreamHandler:
                         )
                         continue
 
-                    try:
-                        # Parse accumulated JSON
-                        parsed_args = json.loads(state["args_accumulated"])
+                    raw_args = state["args_accumulated"]
+                    parsed_args = _parse_tool_args(raw_args)
 
-                        # Build complete tool_calls event (unified format for all providers)
-                        # Use provider-specific id field: "call_id" for Response API, "id" for Anthropic
+                    if parsed_args is None:
+                        # Both strict and tolerant parsers failed. Emit a window
+                        # around the strict-parse failure point to aid diagnosis.
+                        try:
+                            json.loads(raw_args)
+                            err_repr = "unknown"
+                            err_window = raw_args[:200]
+                        except json.JSONDecodeError as je:
+                            err_repr = str(je)
+                            start = max(0, je.pos - 80)
+                            end = min(len(raw_args), je.pos + 80)
+                            err_window = raw_args[start:end]
+                        logger.error(
+                            f"[TOOL_CALL_PARSE_ERROR] agent={agent_name} provider={provider_type} "
+                            f"name={state.get('name')} args_length={len(raw_args)} "
+                            f"error={err_repr} window={err_window!r}"
+                        )
+                        # Clear state so the broken call doesn't leak across turns.
+                        if provider_type == "response_api":
+                            self.function_call_state.pop(state_key, None)
+                        else:  # anthropic
+                            self.anthropic_tool_call_state.pop(state_key, None)
+                        continue
+
+                    try:
+                        # id field differs by provider: "call_id" for Response API, "id" for Anthropic.
                         tool_call_id = state.get("call_id") or state.get("id")
                         tool_calls = [{
                             "name": state["name"],
-                            "args": parsed_args,  # Parsed object, not JSON string
+                            "args": parsed_args,
                             "id": tool_call_id,
                             "type": "tool_call"
                         }]
@@ -1115,7 +1165,7 @@ class WorkflowStreamHandler:
 
                         logger.debug(
                             f"[TOOL_CALLS_COMPLETE] agent={agent_name} provider={provider_type} "
-                            f"name={state['name']} args_length={len(state['args_accumulated'])} "
+                            f"name={state['name']} args_length={len(raw_args)} "
                             f"id={tool_call_id}"
                         )
 
@@ -1127,11 +1177,6 @@ class WorkflowStreamHandler:
                         else:  # anthropic
                             self.anthropic_tool_call_state.pop(state_key, None)
 
-                    except json.JSONDecodeError as e:
-                        logger.error(
-                            f"[TOOL_CALL_PARSE_ERROR] agent={agent_name} provider={provider_type} "
-                            f"args={state['args_accumulated'][:200]} error={e}"
-                        )
                     except Exception as e:
                         logger.error(
                             f"[TOOL_CALL_ERROR] agent={agent_name} provider={provider_type} error={e}"
