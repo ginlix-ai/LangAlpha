@@ -11,7 +11,7 @@ import copy
 import json
 import logging
 import re
-from typing import Any, AsyncGenerator, Dict, List, Optional, Set, cast
+from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple, cast
 
 import json_repair
 
@@ -39,7 +39,9 @@ SSE_EVENT_LOG_ENABLED = is_sse_event_log_enabled()
 MERGED_STREAM_CHUNK_MAX_BYTES_DEFAULT = get_merged_chunk_max_bytes()
 
 
-def _parse_tool_args(raw: str) -> Optional[Dict[str, Any]]:
+def _parse_tool_args(
+    raw: str,
+) -> Tuple[Optional[Dict[str, Any]], str, str]:
     """Parse accumulated tool-call argument JSON, falling back to json_repair.
 
     Frontier models occasionally emit nearly-valid JSON in tool-call args —
@@ -47,21 +49,34 @@ def _parse_tool_args(raw: str) -> Optional[Dict[str, Any]]:
     Strict ``json.loads`` rejects it and (without this fallback) the call is
     silently dropped, triggering an empty-tool-call retry storm.
 
-    Returns the parsed dict, or ``None`` if both strict and tolerant parsing
-    fail. Tool-call args must be a JSON object per the LangChain contract;
-    non-dict results are rejected so downstream tool dispatch sees the same
-    shape it always has.
+    Returns ``(parsed_or_None, err_repr, err_window)``. On success the latter
+    two are empty strings. On failure they carry diagnostic context for the
+    caller's error log — the caller doesn't need to re-parse ``raw`` to build
+    a window around the failure point. Tool-call args must be a JSON object
+    per the LangChain contract; non-dict results are rejected so downstream
+    tool dispatch sees the same shape it always has.
     """
     try:
         parsed = json.loads(raw)
-        return parsed if isinstance(parsed, dict) else None
-    except json.JSONDecodeError:
-        pass
+        if isinstance(parsed, dict):
+            return parsed, "", ""
+        return (
+            None,
+            f"non-dict top-level JSON: {type(parsed).__name__}",
+            raw[:200],
+        )
+    except json.JSONDecodeError as je:
+        err_repr = str(je)
+        start = max(0, je.pos - 80)
+        end = min(len(raw), je.pos + 80)
+        err_window = raw[start:end]
     try:
         repaired = json_repair.loads(raw)
     except Exception:
-        return None
-    return repaired if isinstance(repaired, dict) else None
+        return None, err_repr, err_window
+    if isinstance(repaired, dict):
+        return repaired, "", ""
+    return None, err_repr, err_window
 
 
 # ---------------------------------------------------------------------------
@@ -1118,20 +1133,9 @@ class WorkflowStreamHandler:
                         continue
 
                     raw_args = state["args_accumulated"]
-                    parsed_args = _parse_tool_args(raw_args)
+                    parsed_args, err_repr, err_window = _parse_tool_args(raw_args)
 
                     if parsed_args is None:
-                        # Both strict and tolerant parsers failed. Emit a window
-                        # around the strict-parse failure point to aid diagnosis.
-                        try:
-                            json.loads(raw_args)
-                            err_repr = "unknown"
-                            err_window = raw_args[:200]
-                        except json.JSONDecodeError as je:
-                            err_repr = str(je)
-                            start = max(0, je.pos - 80)
-                            end = min(len(raw_args), je.pos + 80)
-                            err_window = raw_args[start:end]
                         logger.error(
                             f"[TOOL_CALL_PARSE_ERROR] agent={agent_name} provider={provider_type} "
                             f"name={state.get('name')} args_length={len(raw_args)} "
