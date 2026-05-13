@@ -65,12 +65,22 @@ export function isFilePath(href: string | undefined): boolean {
 /**
  * Normalize a file path for API calls: strip __wsref__ prefix, return relative path.
  *
+ * Also percent-decodes the path so an LLM-emitted markdown link like
+ * `[name](results/%E9%95%BF...md)` reaches the API as raw Unicode and gets
+ * encoded exactly once by the HTTP layer. Without this, Axios re-encodes the
+ * leading `%` to `%25` and the backend's single `unquote` decodes to a
+ * literal `%XX` path that doesn't exist on disk.
+ *
  * Expects pre-normalized input (no file:// or /home/workspace/ prefixes).
  */
 export function normalizeFilePath(path: string): string {
   const ws = parseWsPath(path);
-  if (ws) return ws.path;
-  return path;
+  const raw = ws ? ws.path : path;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
 }
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp']);
