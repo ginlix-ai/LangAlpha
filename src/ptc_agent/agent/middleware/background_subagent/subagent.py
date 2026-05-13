@@ -99,6 +99,17 @@ class _SubagentTokenForwarder:
             "ts": time.time(),
         }
 
+    def _error_record(self, message: str, error_type: str) -> dict[str, Any]:
+        return {
+            "event": "error",
+            "data": {
+                "agent": self.agent_id,
+                "message": message,
+                "error_type": error_type,
+            },
+            "ts": time.time(),
+        }
+
     async def forward(
         self,
         message_chunk: BaseMessage,
@@ -198,6 +209,30 @@ class _SubagentTokenForwarder:
             self.tool_call_id,
             {"event": event_type, "data": payload, "ts": time.time()},
         )
+
+    async def forward_error(self, exc: BaseException) -> None:
+        """Spill an ``error`` SSE record so per-task SSE consumers can
+        distinguish a crashed subagent from a clean completion.
+
+        Without this, both success and failure terminate the per-task stream
+        with only the ``subagent_stream_end`` sentinel — leaving downstream
+        trackers (ginlix-integration's Slack/Discord/Feishu task tracker, the
+        web frontend, ptc-cli) unable to surface failure to the user.
+
+        Best-effort: failures here are absorbed so they cannot mask the
+        original exception, which is always re-raised by the caller.
+        """
+        try:
+            await self.registry.append_captured_event(
+                self.tool_call_id,
+                self._error_record(str(exc) or repr(exc), type(exc).__name__),
+            )
+        except Exception:
+            logger.warning(
+                "subagent_error_event_write_failed",
+                tool_call_id=self.tool_call_id,
+                exc_info=True,
+            )
 
     async def finalize(self) -> None:
         """Close any still-open reasoning lifecycle and signal stream-end.
@@ -509,6 +544,15 @@ def _create_task_tool(
                             "Subagent custom-event forwarding failed",
                             error=str(exc),
                         )
+        except Exception as exc:
+            # Spill an ``error`` SSE record so per-task consumers can tell a
+            # crashed subagent apart from a clean completion. ``asyncio.CancelledError``
+            # (BaseException) skips this path on purpose — cancellation is an
+            # orderly stop, not a content-level error; the registry's ``cancelled``
+            # flag already distinguishes it.
+            if forwarder is not None:
+                await forwarder.forward_error(exc)
+            raise
         finally:
             if forwarder is not None:
                 try:
