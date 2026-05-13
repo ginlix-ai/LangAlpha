@@ -7,17 +7,15 @@ describe('normalizeFilePath', () => {
   });
 
   it('returns raw Unicode paths unchanged', () => {
-    expect(normalizeFilePath('results/长飞光纤_短线分析_20260511.md')).toBe(
-      'results/长飞光纤_短线分析_20260511.md',
-    );
+    expect(normalizeFilePath('results/示例_分析.md')).toBe('results/示例_分析.md');
   });
 
   it('decodes percent-encoded CJK paths emitted by the LLM in markdown links', () => {
-    // LLM occasionally emits [name](results/%E9%95%BF...md) — the URL position
+    // LLM occasionally emits [name](results/%XX%XX...md) — the URL position
     // in HTML/markdown is conventionally percent-encoded for non-ASCII chars.
-    const encoded =
-      'results/%E9%95%BF%E9%A3%9E%E5%85%89%E7%BA%A4_%E7%9F%AD%E7%BA%BF%E5%88%86%E6%9E%90_20260511.md';
-    expect(normalizeFilePath(encoded)).toBe('results/长飞光纤_短线分析_20260511.md');
+    // 示例_分析.md → %E7%A4%BA%E4%BE%8B_%E5%88%86%E6%9E%90.md
+    const encoded = 'results/%E7%A4%BA%E4%BE%8B_%E5%88%86%E6%9E%90.md';
+    expect(normalizeFilePath(encoded)).toBe('results/示例_分析.md');
   });
 
   it('strips the __wsref__ prefix', () => {
@@ -25,8 +23,9 @@ describe('normalizeFilePath', () => {
   });
 
   it('strips __wsref__ and decodes the inner path in one pass', () => {
-    const encoded = '__wsref__/abc-123/results/%E6%8A%A5%E5%91%8A.md';
-    expect(normalizeFilePath(encoded)).toBe('results/报告.md');
+    // 文件.md → %E6%96%87%E4%BB%B6.md
+    const encoded = '__wsref__/abc-123/results/%E6%96%87%E4%BB%B6.md';
+    expect(normalizeFilePath(encoded)).toBe('results/文件.md');
   });
 
   it('falls through unchanged on malformed percent sequences', () => {
