@@ -34,9 +34,7 @@ function WorkspaceImage({ src, alt, ...props }: WorkspaceImageProps) {
   // Decode LLM-emitted percent-encoded paths (e.g. ![](.../%E5%9B%BE%E8%A1%A8.png))
   // so Axios doesn't re-encode the leading `%` to `%25`. Idempotent on raw paths.
   let normalizedPath = rawPath;
-  if (rawPath) {
-    try { normalizedPath = decodeURIComponent(rawPath); } catch { /* malformed %XX — pass through */ }
-  }
+  try { normalizedPath = decodeURIComponent(rawPath); } catch { /* malformed %XX — pass through */ }
   const cacheKey = canFetch ? `${workspaceId || 'shared'}:${normalizedPath}` : '';
 
   const [state, setState] = useState<LoadState>(() =>
