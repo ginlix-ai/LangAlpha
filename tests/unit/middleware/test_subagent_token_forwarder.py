@@ -190,6 +190,127 @@ async def test_finalize_sentinel_failure_does_not_propagate():
 
 
 @pytest.mark.asyncio
+async def test_forward_error_appends_error_record():
+    """forward_error spills an SSE error record with the canonical agent_id,
+    the exception message, and the exception type name. This is what lets
+    per-task SSE consumers distinguish a crashed subagent from a clean close.
+    """
+    registry = BackgroundTaskRegistry()
+    task = await _register(registry)
+    fw = _SubagentTokenForwarder(registry, task.tool_call_id, "task:abc")
+
+    await fw.forward_error(RuntimeError("upstream blew up"))
+
+    error_records = [e for e in task.captured_events_tail if e["event"] == "error"]
+    assert len(error_records) == 1
+    assert error_records[0]["data"] == {
+        "agent": "task:abc",
+        "message": "upstream blew up",
+        "error_type": "RuntimeError",
+    }
+
+
+@pytest.mark.asyncio
+async def test_forward_error_absorbs_registry_failure():
+    """If append_captured_event raises (degraded Redis), forward_error must
+    not propagate — it is always called inside an existing exception flow
+    and must not mask the original error.
+    """
+    registry = BackgroundTaskRegistry()
+    task = await _register(registry)
+    fw = _SubagentTokenForwarder(registry, task.tool_call_id, "task:abc")
+
+    async def boom(_tool_call_id, _record):
+        raise RuntimeError("registry on fire")
+
+    registry.append_captured_event = boom  # type: ignore[method-assign]
+
+    # Should not raise.
+    await fw.forward_error(ValueError("original error"))
+
+
+@pytest.mark.asyncio
+async def test_arun_subagent_streaming_emits_error_event_on_exception(monkeypatch):
+    """End-to-end: when the subagent.astream raises, the per-task SSE stream
+    sees an `error` event carrying the exception message + type before the
+    subagent_stream_end sentinel, and the original exception propagates out
+    of _arun_subagent_streaming so the registry's outer wrapper can record it
+    on task.error.
+    """
+    from ptc_agent.agent.middleware.background_subagent import subagent as sa
+    from ptc_agent.agent.middleware.background_subagent.middleware import (
+        current_background_tool_call_id,
+    )
+
+    parent_config = {"configurable": {"thread_id": "t1"}}
+    monkeypatch.setattr(
+        "ptc_agent.agent.middleware.background_subagent.subagent.get_config",
+        lambda: parent_config,
+    )
+
+    registry = BackgroundTaskRegistry()
+    task = await _register(registry, task_id_override="taskerr")
+
+    async def fake_astream(state, config, stream_mode=None):
+        yield ("messages", (_chunk("partial"), {}))
+        raise RuntimeError("model crashed mid-stream")
+
+    fake_subagent = MagicMock()
+    fake_subagent.astream = fake_astream
+
+    tool = sa._create_task_tool(
+        default_model=MagicMock(),
+        default_tools=[],
+        default_middleware=[],
+        default_interrupt_on=None,
+        subagents=[],
+        general_purpose_agent=False,
+        registry=registry,
+        checkpointer=None,
+    )
+    coroutine = tool.coroutine
+    closure_vars = {
+        cell_name: cell.cell_contents
+        for cell_name, cell in zip(
+            coroutine.__code__.co_freevars,
+            coroutine.__closure__ or (),
+        )
+    }
+    sg = closure_vars["subagent_graphs"]
+    sg["general-purpose"] = fake_subagent
+
+    runtime = MagicMock()
+    runtime.state = {"messages": []}
+    runtime.tool_call_id = "tc-err"
+
+    # The Task tool's "init" path awaits _arun_subagent_streaming directly
+    # rather than scheduling it as a background asyncio task, so the
+    # RuntimeError propagates out of the coroutine. The contract under test
+    # is that forward_error was called BEFORE the re-raise: the captured
+    # events on the registered task should already contain the error record.
+    token = current_background_tool_call_id.set(task.tool_call_id)
+    try:
+        with pytest.raises(RuntimeError, match="model crashed mid-stream"):
+            await coroutine(
+                description="d",
+                prompt="p",
+                subagent_type="general-purpose",
+                action="init",
+                task_id=None,
+                runtime=runtime,
+            )
+    finally:
+        current_background_tool_call_id.reset(token)
+
+    events = list(task.captured_events_tail)
+    error_records = [e for e in events if e["event"] == "error"]
+    assert len(error_records) == 1, f"expected 1 error event, got events={events}"
+    assert error_records[0]["data"]["message"] == "model crashed mid-stream"
+    assert error_records[0]["data"]["error_type"] == "RuntimeError"
+    assert error_records[0]["data"]["agent"] == "task:taskerr"
+
+
+@pytest.mark.asyncio
 async def test_message_id_change_closes_prior_reasoning():
     """A new message_id with reasoning still active means the prior LLM call
     finished mid-reasoning. Close the old lifecycle before starting fresh."""
