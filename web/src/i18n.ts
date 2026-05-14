@@ -35,13 +35,8 @@ i18n.use(initReactI18next).init({
   interpolation: { escapeValue: false },
 });
 
-// Cross-tab locale sync. Settings.tsx writes localStorage('locale') and calls
-// changeLanguage in the active tab; without a listener, other open tabs would
-// stay in the prior locale until reload. The dashboard prefs sync (PR-1) goes
-// to lengths to keep everything else cross-tab consistent — locale should too.
-//
-// `storage` events only fire in OTHER tabs, never in the writing tab, so this
-// won't recurse. Guarded for SSR / non-browser test environments.
+// Cross-tab locale sync: `storage` events fire only in OTHER tabs (not the
+// writer), so this won't recurse.
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
     if (e.key !== 'locale' || !e.newValue) return;
