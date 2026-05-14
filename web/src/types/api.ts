@@ -12,6 +12,7 @@ export interface User {
   has_api_key?: boolean;
   has_oauth_token?: boolean;
   access_tier?: number;
+  plan_display_name?: string | null;
   created_at?: string;
   updated_at?: string;
   [key: string]: unknown;

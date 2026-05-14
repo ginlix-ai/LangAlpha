@@ -80,6 +80,77 @@
   align-items: center;
 }
 
+.sidebar-account-trigger {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: var(--color-accent-soft);
+  color: var(--color-accent-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  overflow: visible;
+  padding: 0;
+  transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.sidebar-account-plan-flair {
+  position: absolute;
+  bottom: -4px;
+  right: -6px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: var(--color-accent-primary);
+  color: var(--color-text-on-accent, #ffffff);
+  border: 2px solid hsl(var(--sidebar-bg));
+  max-width: 56px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.sidebar-account-trigger:hover {
+  border-color: var(--color-accent-overlay);
+}
+
+.sidebar-account-trigger:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-accent-overlay);
+}
+
+.sidebar-account-trigger[data-active='true'] {
+  border-color: var(--color-accent-primary);
+}
+
+.sidebar-account-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 999px;
+}
+
+.sidebar-account-initials {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--color-accent-light);
+}
+
+.sidebar-account-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--color-accent-primary);
+}
+
 @media (max-width: 767px) {
   .sidebar { display: none; }
 }

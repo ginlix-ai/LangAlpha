@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Account menu — variant preview</title>
+    <style>
+      /* Mirror the app's tokens so the preview matches production */
+      :root[data-theme='dark'] {
+        --color-bg-base: #000000;
+        --color-bg-elevated: #0F0F0F;
+        --color-border-muted: rgba(255, 255, 255, 0.08);
+        --color-border-default: #1A1A1A;
+        --color-border-elevated: #1A1A1A;
+        --color-text-primary: #FFFFFF;
+        --color-text-secondary: #999999;
+        --color-text-tertiary: #6A6A6A;
+        --color-accent-primary: #4161A4;
+        --color-accent-light: #7F9BCA;
+        --color-accent-soft: rgba(65, 97, 164, 0.20);
+        --color-accent-overlay: rgba(75, 107, 174, 0.5);
+        --sidebar-bg: 0 0% 0%;
+        --sidebar-active: 221 43% 45% / 0.15;
+        --sidebar-icon: 0 0% 100% / 0.60;
+        --sidebar-icon-active: 221 43% 45%;
+        --destructive: #EF4444;
+        --destructive-soft: rgba(239, 68, 68, 0.10);
+      }
+      :root[data-theme='light'] {
+        --color-bg-base: #FFFCF9;
+        --color-bg-elevated: #FFFCF9;
+        --color-border-muted: rgba(0, 0, 0, 0.08);
+        --color-border-default: #DDD7D0;
+        --color-border-elevated: #D0C9C1;
+        --color-text-primary: #2D2B28;
+        --color-text-secondary: #7A756F;
+        --color-text-tertiary: #A09A93;
+        --color-accent-primary: #37528B;
+        --color-accent-light: #6080B5;
+        --color-accent-soft: rgba(55, 82, 139, 0.10);
+        --color-accent-overlay: rgba(55, 82, 139, 0.25);
+        --sidebar-bg: 33 50% 99%;
+        --sidebar-active: 221 43% 38% / 0.08;
+        --sidebar-icon: 30 5% 16% / 0.45;
+        --sidebar-icon-active: 221 43% 38%;
+        --destructive: #DC2626;
+        --destructive-soft: rgba(220, 38, 38, 0.10);
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: var(--color-bg-base);
+        color: var(--color-text-primary);
+        min-height: 100vh;
+      }
+      .page {
+        padding: 32px 24px 64px;
+        max-width: 1280px;
+        margin: 0 auto;
+      }
+      header.toolbar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 32px;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        font-size: 13px;
+        border: 1px solid var(--color-border-default);
+        background: var(--color-bg-elevated);
+        color: var(--color-text-primary);
+        cursor: pointer;
+        user-select: none;
+      }
+      .pill[aria-pressed='true'] {
+        background: var(--color-accent-soft);
+        border-color: var(--color-accent-overlay);
+        color: var(--color-accent-light);
+      }
+      h1 {
+        font-size: 20px;
+        font-weight: 600;
+        margin: 0;
+        letter-spacing: -0.01em;
+      }
+      .subtitle {
+        font-size: 13px;
+        color: var(--color-text-secondary);
+        margin-top: 4px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 24px;
+        align-items: start;
+      }
+      @media (max-width: 1100px) {
+        .grid { grid-template-columns: 1fr; }
+      }
+      .variant {
+        border: 1px solid var(--color-border-default);
+        border-radius: 16px;
+        background: var(--color-bg-elevated);
+        padding: 24px;
+        position: relative;
+        overflow: visible;
+      }
+      .variant header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 4px;
+      }
+      .badge {
+        font-size: 11px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: var(--color-accent-soft);
+        color: var(--color-accent-light);
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+      }
+      .variant h2 {
+        font-size: 15px;
+        font-weight: 600;
+        margin: 0;
+      }
+      .variant .desc {
+        font-size: 12.5px;
+        color: var(--color-text-secondary);
+        line-height: 1.5;
+        margin: 6px 0 20px;
+      }
+      /* Mock sidebar + popover stage */
+      .stage {
+        display: flex;
+        gap: 0;
+        align-items: flex-end;
+        height: 360px;
+        background: hsl(var(--sidebar-bg));
+        border: 1px solid var(--color-border-muted);
+        border-radius: 12px;
+        padding: 0;
+        overflow: hidden;
+        position: relative;
+      }
+      .stage-sidebar {
+        width: 72px;
+        height: 100%;
+        background: hsl(var(--sidebar-bg));
+        border-right: 1px solid var(--color-border-muted);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 16px 0;
+        flex-shrink: 0;
+      }
+      .stage-logo {
+        width: 36px; height: 36px;
+        border-radius: 10px;
+        background: var(--color-accent-soft);
+        margin-bottom: 24px;
+      }
+      .stage-icon {
+        width: 44px; height: 44px;
+        border-radius: 12px;
+        display: flex; align-items: center; justify-content: center;
+        color: hsl(var(--sidebar-icon));
+        margin-bottom: 6px;
+      }
+      .stage-icon.active { background: hsl(var(--sidebar-active)); color: hsl(var(--sidebar-icon-active)); }
+      .stage-bottom {
+        margin-top: auto;
+        display: flex; flex-direction: column; align-items: center;
+      }
+      .stage-trigger {
+        width: 44px; height: 44px;
+        border-radius: 999px;
+        background: var(--color-accent-soft);
+        display: flex; align-items: center; justify-content: center;
+        color: var(--color-accent-light);
+        font-weight: 600;
+        font-size: 13px;
+        border: 2px solid var(--color-accent-overlay);
+        position: relative;
+      }
+      .stage-trigger .badge-tier {
+        position: absolute;
+        bottom: -2px; right: -8px;
+        font-size: 9px;
+        font-weight: 700;
+        background: var(--color-accent-primary);
+        color: #fff;
+        padding: 1px 5px;
+        border-radius: 999px;
+        line-height: 1.4;
+        border: 2px solid hsl(var(--sidebar-bg));
+        letter-spacing: 0.04em;
+      }
+      .stage-popover {
+        position: absolute;
+        left: 84px; bottom: 16px;
+        width: 280px;
+        background: var(--color-bg-elevated);
+        border: 1px solid var(--color-border-elevated);
+        border-radius: 10px;
+        box-shadow: 0 12px 32px rgba(0,0,0,0.35), 0 2px 6px rgba(0,0,0,0.2);
+        padding: 4px;
+        z-index: 2;
+      }
+      .pop-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px 12px;
+      }
+      .pop-avatar {
+        width: 36px; height: 36px;
+        border-radius: 999px;
+        background: var(--color-accent-soft);
+        color: var(--color-accent-light);
+        display: flex; align-items: center; justify-content: center;
+        font-weight: 600;
+        font-size: 14px;
+        flex-shrink: 0;
+      }
+      .pop-name { font-size: 14px; font-weight: 600; color: var(--color-text-primary); }
+      .pop-email { font-size: 12px; color: var(--color-text-secondary); margin-top: 1px; }
+      .pop-sep { height: 1px; background: var(--color-border-muted); margin: 4px 8px; }
+      .pop-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border-radius: 6px;
+        font-size: 13.5px;
+        color: var(--color-text-primary);
+        cursor: pointer;
+        transition: background-color 0.12s ease;
+      }
+      .pop-item:hover { background: var(--color-accent-soft); }
+      .pop-item .icon { width: 16px; height: 16px; color: var(--color-text-secondary); }
+      .pop-item .label { flex: 1; }
+      .pop-item .meta {
+        font-size: 11px;
+        color: var(--color-text-tertiary);
+      }
+      .pop-item .ext { color: var(--color-text-tertiary); font-size: 14px; }
+      .pop-item.destructive { color: var(--destructive); }
+      .pop-item.destructive .icon { color: var(--destructive); }
+      .pop-item.destructive:hover { background: var(--destructive-soft); }
+
+      /* Variant A — accent highlight on Usage & Plan */
+      .variant-a .pop-item.usage {
+        background: var(--color-accent-soft);
+        border: 1px solid var(--color-accent-overlay);
+      }
+      .variant-a .pop-item.usage .icon,
+      .variant-a .pop-item.usage .ext { color: var(--color-accent-light); }
+      .variant-a .pop-item.usage .label { color: var(--color-text-primary); font-weight: 500; }
+      .variant-a .pop-item.usage:hover { background: var(--color-accent-soft); filter: brightness(1.1); }
+
+      /* Variant C — inline plan badge on trigger */
+      .variant-c .pop-item.usage .meta {
+        background: var(--color-accent-soft);
+        color: var(--color-accent-light);
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-weight: 600;
+      }
+
+      footer.note {
+        margin-top: 40px;
+        font-size: 12.5px;
+        color: var(--color-text-secondary);
+        line-height: 1.6;
+        max-width: 720px;
+      }
+      footer.note code {
+        background: var(--color-bg-elevated);
+        border: 1px solid var(--color-border-muted);
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header class="toolbar">
+        <div>
+          <h1>Account menu — variant preview</h1>
+          <div class="subtitle">Sidebar-bottom avatar trigger with consolidated dropdown. Pick a variant; the recommended one is A.</div>
+        </div>
+        <div style="margin-left: auto; display: flex; gap: 8px;">
+          <button id="theme-light" class="pill" type="button">Light</button>
+          <button id="theme-dark" class="pill" aria-pressed="true" type="button">Dark</button>
+        </div>
+      </header>
+
+      <div class="grid">
+        <!-- Variant A — Recommended -->
+        <article class="variant variant-a">
+          <header>
+            <h2>Variant A — Accent highlight</h2>
+            <span class="badge">Recommended</span>
+          </header>
+          <p class="desc">Usage &amp; Plan first, painted with the accent-soft background and accent border. Highest visual lift for the discoverability fix without redesigning the menu.</p>
+          <div class="stage">
+            <div class="stage-sidebar">
+              <div class="stage-logo"></div>
+              <div class="stage-icon active">▦</div>
+              <div class="stage-icon">💬</div>
+              <div class="stage-icon">📈</div>
+              <div class="stage-icon">⏱</div>
+              <div class="stage-bottom">
+                <div class="stage-trigger">ZC</div>
+              </div>
+            </div>
+            <div class="stage-popover">
+              <div class="pop-header">
+                <div class="pop-avatar">ZC</div>
+                <div>
+                  <div class="pop-name">Zexi Chen</div>
+                  <div class="pop-email">tsehsi.chan@gmail.com</div>
+                </div>
+              </div>
+              <div class="pop-sep"></div>
+              <div class="pop-item usage">
+                <span class="icon">💳</span>
+                <span class="label">Usage &amp; Plan</span>
+                <span class="ext">›</span>
+              </div>
+              <div class="pop-item">
+                <span class="icon">⚙</span>
+                <span class="label">Settings</span>
+              </div>
+              <div class="pop-sep"></div>
+              <div class="pop-item destructive">
+                <span class="icon">⎋</span>
+                <span class="label">Log out</span>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <!-- Variant B — Plain -->
+        <article class="variant variant-b">
+          <header>
+            <h2>Variant B — Plain order</h2>
+          </header>
+          <p class="desc">Usage &amp; Plan first, no special treatment. Cleanest visually; relies purely on position to drive discoverability.</p>
+          <div class="stage">
+            <div class="stage-sidebar">
+              <div class="stage-logo"></div>
+              <div class="stage-icon active">▦</div>
+              <div class="stage-icon">💬</div>
+              <div class="stage-icon">📈</div>
+              <div class="stage-icon">⏱</div>
+              <div class="stage-bottom">
+                <div class="stage-trigger">ZC</div>
+              </div>
+            </div>
+            <div class="stage-popover">
+              <div class="pop-header">
+                <div class="pop-avatar">ZC</div>
+                <div>
+                  <div class="pop-name">Zexi Chen</div>
+                  <div class="pop-email">tsehsi.chan@gmail.com</div>
+                </div>
+              </div>
+              <div class="pop-sep"></div>
+              <div class="pop-item">
+                <span class="icon">💳</span>
+                <span class="label">Usage &amp; Plan</span>
+                <span class="ext">›</span>
+              </div>
+              <div class="pop-item">
+                <span class="icon">⚙</span>
+                <span class="label">Settings</span>
+              </div>
+              <div class="pop-sep"></div>
+              <div class="pop-item destructive">
+                <span class="icon">⎋</span>
+                <span class="label">Log out</span>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <!-- Variant C — Plan badge on trigger -->
+        <article class="variant variant-c">
+          <header>
+            <h2>Variant C — Plan badge on trigger</h2>
+          </header>
+          <p class="desc">Trailing plan tier (Pro / Free) shown both on the sidebar avatar and inline next to Usage &amp; Plan. Best information density — but needs a backend endpoint for current plan tier.</p>
+          <div class="stage">
+            <div class="stage-sidebar">
+              <div class="stage-logo"></div>
+              <div class="stage-icon active">▦</div>
+              <div class="stage-icon">💬</div>
+              <div class="stage-icon">📈</div>
+              <div class="stage-icon">⏱</div>
+              <div class="stage-bottom">
+                <div class="stage-trigger">
+                  ZC
+                  <span class="badge-tier">Pro</span>
+                </div>
+              </div>
+            </div>
+            <div class="stage-popover">
+              <div class="pop-header">
+                <div class="pop-avatar">ZC</div>
+                <div>
+                  <div class="pop-name">Zexi Chen</div>
+                  <div class="pop-email">tsehsi.chan@gmail.com</div>
+                </div>
+              </div>
+              <div class="pop-sep"></div>
+              <div class="pop-item usage">
+                <span class="icon">💳</span>
+                <span class="label">Usage &amp; Plan</span>
+                <span class="meta">Pro</span>
+                <span class="ext">›</span>
+              </div>
+              <div class="pop-item">
+                <span class="icon">⚙</span>
+                <span class="label">Settings</span>
+              </div>
+              <div class="pop-sep"></div>
+              <div class="pop-item destructive">
+                <span class="icon">⎋</span>
+                <span class="label">Log out</span>
+              </div>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <footer class="note">
+        Real implementation uses Radix <code>DropdownMenu</code> with <code>side="right"</code> + <code>align="end"</code>, anchored to the sidebar-bottom avatar button. Colors above come straight from <code>web/src/styles/tokens.css</code>. The dashboard top-right loses its avatar entirely; the search / Classic·Custom / edit / help controls stay put.
+      </footer>
+    </div>
+    <script>
+      const root = document.documentElement;
+      root.setAttribute('data-theme', 'dark');
+      const lightBtn = document.getElementById('theme-light');
+      const darkBtn = document.getElementById('theme-dark');
+      function setTheme(t) {
+        root.setAttribute('data-theme', t);
+        lightBtn.setAttribute('aria-pressed', String(t === 'light'));
+        darkBtn.setAttribute('aria-pressed', String(t === 'dark'));
+      }
+      lightBtn.addEventListener('click', () => setTheme('light'));
+      darkBtn.addEventListener('click', () => setTheme('dark'));
+    </script>
+  </body>
+</html>

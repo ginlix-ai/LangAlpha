@@ -1,10 +1,11 @@
-import { ChartCandlestick, LayoutDashboard, MessageSquareText, Timer, Settings } from 'lucide-react';
+import { ChartCandlestick, LayoutDashboard, MessageSquareText, Timer } from 'lucide-react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import logoLight from '../../assets/img/logo.svg';
 import logoDark from '../../assets/img/logo-dark.svg';
 import { useTheme } from '../../contexts/ThemeContext';
+import AccountMenu from './AccountMenu';
 import './Sidebar.css';
 
 function Sidebar() {
@@ -72,16 +73,9 @@ function Sidebar() {
         })}
       </nav>
 
-      {/* Settings — pinned to bottom */}
+      {/* Account menu — pinned to bottom */}
       <div className="sidebar-bottom">
-        <button
-          className={`sidebar-nav-item ${location.pathname === '/settings' ? 'active' : ''}`}
-          onClick={() => navigate('/settings')}
-          aria-label={t('sidebar.settings', 'Settings')}
-          title={t('sidebar.settings', 'Settings')}
-        >
-          <Settings className="sidebar-nav-icon" />
-        </button>
+        <AccountMenu />
       </div>
     </aside>
   );

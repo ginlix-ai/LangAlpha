@@ -1,5 +1,4 @@
 import { Search, HelpCircle, Mail, LayoutGrid, Pencil } from 'lucide-react';
-import AvatarDropdown from './AvatarDropdown';
 import React, { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { searchStocks } from '@/lib/marketUtils';
@@ -353,11 +352,6 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onStockSearch, onScro
             )}
           </div>
 
-          {/* Divider */}
-          <div className="h-8 w-[1px] mx-2 hidden sm:block" style={{ backgroundColor: 'var(--color-border-muted)' }} />
-
-          {/* User avatar + dropdown */}
-          <AvatarDropdown />
         </div>
       </div>
     </>

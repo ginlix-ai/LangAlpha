@@ -41,7 +41,11 @@
     "chatAgent": "Chat Agent",
     "marketView": "Market View",
     "automations": "Automations",
-    "settings": "Settings"
+    "settings": "Settings",
+    "account": "Usage & Plan"
+  },
+  "account": {
+    "menuLabel": "Account menu"
   },
   "settings": {
     "title": "User Settings",
