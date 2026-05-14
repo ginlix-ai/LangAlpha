@@ -85,7 +85,9 @@ function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
             name: meta.name || meta.full_name || null,
             avatar_url: meta.avatar_url || null,
             timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || null,
-            locale: navigator.language || null,
+            // `locale` deliberately omitted — only the Settings dropdown
+            // writes it. The frontend detector reads browser locale on cold
+            // load. See `useSyncUserLocale`.
           }),
         });
         if (res.ok) {
