@@ -1,8 +1,4 @@
-"""
-Pydantic models for User, UserPreferences, Watchlist, and Portfolio.
-
-These models support the user onboarding flow and investment preferences.
-"""
+"""Pydantic models for User, UserPreferences, Watchlist, and Portfolio."""
 
 from datetime import datetime
 from decimal import Decimal
@@ -18,20 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 def normalize_symbol(symbol: str) -> str:
-    """
-    Normalize instrument symbol to standard format.
-
-    Rules:
-    - US/International stocks, ETFs, indexes: UPPERCASE (AAPL, GOOGL, BARC.L)
-    - Crypto pairs: UPPERCASE (BTC, ETH, BTC-USD)
-    - Forex: UPPERCASE (EURUSD)
-
-    Args:
-        symbol: Raw symbol input
-
-    Returns:
-        Normalized symbol (uppercase, stripped)
-    """
+    """Strip whitespace and uppercase the instrument symbol."""
     return symbol.strip().upper()
 
 
@@ -171,6 +154,10 @@ class UserResponse(UserBase):
     access_tier: int = Field(
         default=-1, description="Platform access tier. -1 = no access, 0+ = tier level."
     )
+    plan_display_name: Optional[str] = Field(
+        default=None,
+        description="Display name of the user's active plan (e.g. 'Pro'). None when no subscription.",
+    )
     auth_provider: Optional[str] = Field(
         None, description="Authentication provider (e.g. google, github, email)"
     )
@@ -303,10 +290,9 @@ class WatchlistItemBase(BaseModel):
     @field_validator("symbol", mode="before")
     @classmethod
     def normalize_symbol_field(cls, v: Any) -> str:
-        """Normalize symbol to uppercase."""
         if isinstance(v, str):
             return normalize_symbol(v)
-        return v  # Let Pydantic handle type validation
+        return v  # let Pydantic handle type validation
 
     @field_validator("instrument_type", mode="before")
     @classmethod
@@ -414,10 +400,9 @@ class PortfolioHoldingBase(BaseModel):
     @field_validator("symbol", mode="before")
     @classmethod
     def normalize_symbol_field(cls, v: Any) -> str:
-        """Normalize symbol to uppercase."""
         if isinstance(v, str):
             return normalize_symbol(v)
-        return v  # Let Pydantic handle type validation
+        return v  # let Pydantic handle type validation
 
     @field_validator("instrument_type", mode="before")
     @classmethod

@@ -1,16 +1,4 @@
-"""
-User Management API Router.
-
-Provides REST endpoints for user profile and preferences management.
-
-Endpoints:
-- POST /api/v1/auth/sync - Sync Supabase user to backend (create/migrate)
-- POST /api/v1/users - Create new user
-- GET /api/v1/users/me - Get current user (by Bearer token)
-- PUT /api/v1/users/me - Update current user profile
-- GET /api/v1/users/me/preferences - Get user preferences
-- PUT /api/v1/users/me/preferences - Update user preferences
-"""
+"""User Management API Router — user profile and preferences endpoints."""
 
 import logging
 import re
@@ -76,14 +64,9 @@ async def sync_user(
     """
     Sync Supabase user to backend after OAuth/email login.
 
-    Called by frontend immediately after Supabase auth succeeds.
-    Uses ``get_current_auth_info`` to extract both ``user_id`` and
-    ``auth_provider`` from the JWT so the provider can be persisted.
-
-    Logic:
-      1. user_id already exists -> lazy-backfill auth_provider if NULL, return profile
-      2. email matches a legacy user -> migrate PK to UUID, return profile
-      3. No match -> create new user with auth_provider, return profile
+    Three cases: existing UUID match (backfill auth_provider/timezone), legacy
+    email match (migrate PK to UUID), or new user (create with auth_provider).
+    ``locale`` is never backfilled here — NULL means "no explicit preference".
     """
     user_id = auth_info.user_id
     auth_provider = auth_info.auth_provider
@@ -93,13 +76,13 @@ async def sync_user(
     if existing:
         updates = {}
 
-        # Lazy-backfill NULL fields
+        # Lazy-backfill NULL fields. Deliberately skip `locale` — that column
+        # encodes the user's explicit Settings preference. A NULL row means
+        # "no preference; use browser locale via the frontend detector".
         if auth_provider and not existing.get("auth_provider"):
             updates["auth_provider"] = auth_provider
         if body.timezone and not existing.get("timezone"):
             updates["timezone"] = body.timezone
-        if body.locale and not existing.get("locale"):
-            updates["locale"] = body.locale
 
         # Throttle last_login_at writes — only update if stale (>1 hour)
         last_login = existing.get("last_login_at")
@@ -135,7 +118,9 @@ async def sync_user(
                     pref_resp = UserPreferencesResponse.model_validate(result["preferences"])
                 return UserWithPreferencesResponse(user=user_resp, preferences=pref_resp)
 
-    # 3. Brand-new user
+    # 3. Brand-new user. `locale` is left NULL — only set when the user
+    # explicitly picks a language in Settings. The frontend detector handles
+    # browser-locale and English-fallback at render time.
     user = await create_user_from_auth(
         user_id=user_id,
         email=body.email,
@@ -143,7 +128,7 @@ async def sync_user(
         avatar_url=body.avatar_url,
         auth_provider=auth_provider,
         timezone=body.timezone,
-        locale=body.locale,
+        locale=None,
     )
     user_resp = UserResponse.model_validate(user)
     return UserWithPreferencesResponse(user=user_resp, preferences=None)
@@ -158,21 +143,7 @@ async def create_user(
     request: UserBase,
     user_id: CurrentUserId,
 ):
-    """
-    Create a new user.
-
-    Called on first authentication to register the user in the system.
-
-    Args:
-        request: User creation data (email, name, etc.)
-        user_id: User ID from authentication header
-
-    Returns:
-        Created user details
-
-    Raises:
-        409: User already exists
-    """
+    """Create a new user. Raises 409 if user_id already exists."""
     user = await db_create_user(
         user_id=user_id,
         email=request.email,
@@ -192,20 +163,10 @@ async def get_current_user(
     user_id: CurrentUserId,
     refresh_tier: bool = Query(False, description="Bust cached platform tier (use after invitation redemption)"),
 ):
-    """
-    Get current user profile and preferences.
+    """Get current user profile and preferences.
 
-    Returns the user profile along with their preferences in a single response.
-
-    Args:
-        user_id: User ID from authentication header
-        refresh_tier: When true, deletes cached platform tier before fetching
-
-    Returns:
-        User profile and preferences
-
-    Raises:
-        404: User not found
+    Set ``refresh_tier=true`` to bust the cached platform tier (e.g. after
+    invitation redemption). Access tier and plan display name are cached 5 min.
     """
     result = await get_user_with_preferences(user_id)
 
@@ -214,13 +175,20 @@ async def get_current_user(
 
     user_response = UserResponse.model_validate(result["user"])
 
-    # Populate platform access tier (cached, SaaS mode only)
-    from src.server.dependencies.usage_limits import _fetch_platform_tier, platform_tier_cache_key
+    # Populate platform membership: access tier + plan display name.
+    # Both fields share a single Redis cache entry (5 min TTL) so this never
+    # costs more than one ginlix-auth round-trip per user per 5 minutes.
+    from src.server.dependencies.usage_limits import (
+        _fetch_platform_membership,
+        platform_membership_cache_key,
+    )
     if refresh_tier:
         from src.utils.cache.redis_cache import get_cache_client
         cache = get_cache_client()
-        await cache.delete(platform_tier_cache_key(user_id))
-    user_response.access_tier = await _fetch_platform_tier(user_id)
+        await cache.delete(platform_membership_cache_key(user_id))
+    membership = await _fetch_platform_membership(user_id)
+    user_response.access_tier = int(membership.get("access_tier", -1))
+    user_response.plan_display_name = membership.get("plan_display_name")
 
     preferences_response = None
     if result["preferences"]:
@@ -238,27 +206,11 @@ async def update_current_user(
     request: UserUpdate,
     user_id: CurrentUserId,
 ):
-    """
-    Update current user profile.
-
-    Updates user profile fields (not preferences). Only provided fields are updated.
-
-    Args:
-        request: Fields to update
-        user_id: User ID from authentication header
-
-    Returns:
-        Updated user profile and preferences
-
-    Raises:
-        404: User not found
-    """
-    # Check user exists
+    """Update current user profile fields (not preferences). Partial update."""
     existing = await db_get_user(user_id)
     if not existing:
         raise_not_found("User")
 
-    # Update user
     user = await db_update_user(
         user_id=user_id,
         email=request.email,
@@ -276,7 +228,6 @@ async def update_current_user(
     if not user:
         raise_not_found("User")
 
-    # Get preferences for combined response
     preferences = await db_get_user_preferences(user_id)
 
     user_response = UserResponse.model_validate(user)
@@ -294,19 +245,7 @@ async def update_current_user(
 @router.get("/users/me/preferences", response_model=UserPreferencesResponse)
 @handle_api_exceptions("get preferences", logger)
 async def get_preferences(user_id: CurrentUserId):
-    """
-    Get user preferences only.
-
-    Args:
-        user_id: User ID from authentication header
-
-    Returns:
-        User preferences
-
-    Raises:
-        404: User or preferences not found
-    """
-    # Verify user exists
+    """Get user preferences. Raises 404 if user or preferences are not found."""
     user = await db_get_user(user_id)
     if not user:
         raise_not_found("User")
@@ -319,10 +258,7 @@ async def get_preferences(user_id: CurrentUserId):
 
 
 def _validate_custom_models(custom_models: list, custom_providers: list | None = None) -> None:
-    """Validate custom_models list before persisting.
-
-    Raises HTTPException 400 on invalid data.
-    """
+    """Validate custom_models list before persisting. Raises HTTPException 400 on invalid data."""
     from src.llms.llm import LLM, CUSTOM_MODEL_NAME_RE
 
     if not isinstance(custom_models, list):
@@ -340,7 +276,6 @@ def _validate_custom_models(custom_models: list, custom_providers: list | None =
     # "route built-in model X through my variant's key" without inventing a
     # prefix format for preferences.
 
-    # Build valid provider set: all known flat providers + custom providers
     valid_providers = {
         k for k, v in mc.flat_providers.items()
         if not v.get("platform")
@@ -358,7 +293,6 @@ def _validate_custom_models(custom_models: list, custom_providers: list | None =
         model_id = cm.get("model_id")
         provider = cm.get("provider")
 
-        # Required fields
         if not name:
             raise HTTPException(status_code=400, detail=f"custom_models[{idx}]: name is required")
         if not model_id:
@@ -366,14 +300,12 @@ def _validate_custom_models(custom_models: list, custom_providers: list | None =
         if not provider:
             raise HTTPException(status_code=400, detail=f"custom_models[{idx}]: provider is required")
 
-        # Name format
         if not name_re.match(name):
             raise HTTPException(
                 status_code=400,
                 detail=f"custom_models[{idx}]: name '{name}' is invalid (alphanumeric start, max 63 chars, only .-_:/ allowed)",
             )
 
-        # No duplicate names
         if name in seen_names:
             raise HTTPException(
                 status_code=400,
@@ -381,21 +313,18 @@ def _validate_custom_models(custom_models: list, custom_providers: list | None =
             )
         seen_names.add(name)
 
-        # Provider format: must be non-empty string
         if not isinstance(provider, str) or not provider.strip():
             raise HTTPException(
                 status_code=400,
                 detail=f"custom_models[{idx}]: provider must be a non-empty string",
             )
 
-        # Provider must reference a known BYOK-eligible or custom provider
         if provider not in valid_providers:
             raise HTTPException(
                 status_code=400,
                 detail=f"custom_models[{idx}]: provider '{provider}' is not a known BYOK-eligible or custom provider",
             )
 
-        # Validate JSON fields are dicts if present
         for field in ("parameters", "extra_body"):
             val = cm.get(field)
             if val is not None and not isinstance(val, dict):
@@ -404,7 +333,6 @@ def _validate_custom_models(custom_models: list, custom_providers: list | None =
                     detail=f"custom_models[{idx}]: {field} must be a JSON object",
                 )
 
-        # Validate input_modalities if present
         modalities = cm.get("input_modalities")
         if modalities is not None:
             if not isinstance(modalities, list) or len(modalities) == 0:
@@ -468,23 +396,7 @@ async def update_preferences(
     request: UserPreferencesUpdate,
     user_id: CurrentUserId,
 ):
-    """
-    Update user preferences.
-
-    Partial update supported - only provided fields are updated.
-    JSONB fields are merged with existing values.
-
-    Args:
-        request: Preferences to update
-        user_id: User ID from authentication header
-
-    Returns:
-        Updated preferences
-
-    Raises:
-        404: User not found
-    """
-    # Verify user exists
+    """Update user preferences (partial, JSONB merge). Raises 404 if user not found."""
     user = await db_get_user(user_id)
     if not user:
         raise_not_found("User")
@@ -538,19 +450,7 @@ async def update_preferences(
 @router.delete("/users/me/preferences", status_code=200)
 @handle_api_exceptions("delete preferences", logger)
 async def delete_preferences(user_id: CurrentUserId):
-    """
-    Delete all user preferences (reset to blank).
-
-    Used by the "Reset & Re-onboard" flow to clear all preference data
-    and reset onboarding_completed to false.
-
-    Args:
-        user_id: User ID from authentication header
-
-    Returns:
-        Confirmation message
-    """
-    # Verify user exists
+    """Delete all user preferences and reset onboarding_completed to false."""
     user = await db_get_user(user_id)
     if not user:
         raise_not_found("User")
@@ -571,23 +471,7 @@ async def upload_avatar(
     user_id: CurrentUserId,
     file: UploadFile = File(...),
 ):
-    """
-    Upload user avatar image.
-
-    Accepts image file, uploads to R2 storage, and updates user's avatar_url.
-
-    Args:
-        user_id: User ID from authentication header
-        file: Image file to upload
-
-    Returns:
-        {"avatar_url": "https://..."}
-
-    Raises:
-        400: Invalid file type or upload failed
-        404: User not found
-    """
-    # Verify user exists
+    """Upload user avatar to R2 storage and update avatar_url. Returns ``{"avatar_url": "..."}``."""
     user = await db_get_user(user_id)
     if not user:
         raise_not_found("User")
@@ -598,23 +482,18 @@ async def upload_avatar(
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail=f"Invalid file type: {file.content_type}")
 
-    # Read file content
     content = await file.read()
 
     # Generate R2 key: avatars/{user_id}.{ext}
     ext = file.filename.split(".")[-1] if file.filename and "." in file.filename else "png"
     key = f"avatars/{user_id}.{ext}"
 
-    # Upload to R2
     success = upload_bytes(key, content, content_type=file.content_type)
     if not success:
         from fastapi import HTTPException
         raise HTTPException(status_code=500, detail="Failed to upload avatar")
 
-    # Get public URL
     avatar_url = get_public_url(key)
-
-    # Update user's avatar_url
     await db_update_user(user_id=user_id, avatar_url=avatar_url)
 
     logger.info(f"Uploaded avatar for user {user_id}: {avatar_url}")
