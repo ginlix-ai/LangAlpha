@@ -53,8 +53,7 @@ async def close_http_client() -> None:
 
 @dataclass
 class ChatAuthResult:
-    """Result from enforce_chat_limit. Downstream gates read these flags
-    instead of re-querying the DB."""
+    """Auth + tier data collected by enforce_chat_limit for downstream gates."""
     user_id: str
     is_byok: bool = False
     has_oauth: bool = False
@@ -121,14 +120,10 @@ async def enforce_chat_limit(
     user_id: str = Depends(get_current_user_id),
 ) -> ChatAuthResult:
     """
-    FastAPI dependency: burst guard + auth status collection.
+    FastAPI dependency: burst guard + BYOK/OAuth/tier collection.
 
-    Populates ChatAuthResult with is_byok / has_oauth / access_tier so
-    downstream gates (403 in threads.py, credit check) can decide without
-    re-querying the DB.
-
-    OSS mode (HOST_MODE="oss"): still check BYOK so custom models
-    (Ollama, LM Studio, etc.) work. Skip burst guard + platform tier.
+    In OSS mode (HOST_MODE="oss"), BYOK is still checked so custom models work;
+    burst guard and platform tier checks are skipped.
     """
     from src.server.database.api_keys import is_byok_active
 
@@ -161,7 +156,7 @@ async def enforce_chat_limit(
     # Platform access tier — only when quota service is available and user
     # has no own-key path (BYOK or OAuth already grants access).
     tier = -1
-    if AUTH_SERVICE_URL and not is_byok and not has_oauth:
+    if HOST_MODE != "oss" and AUTH_SERVICE_URL and not is_byok and not has_oauth:
         tier = await _fetch_platform_tier(user_id)
 
     return ChatAuthResult(
@@ -178,16 +173,13 @@ _BYOK_BALANCE_CACHE_TTL = 60  # seconds — negative balance changes slowly
 async def enforce_credit_limit(user_id: str, *, byok: bool = False) -> None:
     """
     Check credit quota via ginlix-auth. Raises HTTPException(429) if exceeded.
+    No-op in OSS mode.
 
-    When ``byok=False`` (platform-served): blocks when daily credit limit is
-    reached (``allowed=False``).  Not cached — credits deplete per-message and
-    users need real-time feedback.
-
-    When ``byok=True`` (user's own key): blocks only when credits are negative.
-    Cached in Redis (60 s) to avoid an HTTP round-trip on every message.
-    Negative balance changes slowly (only on platform fallback completion).
+    BYOK path: blocks only on negative balance; cached 60 s (balance changes
+    slowly — only on platform fallback completion).
+    Platform path: uncached real-time daily-credit check.
     """
-    if not AUTH_SERVICE_URL:
+    if HOST_MODE == "oss" or not AUTH_SERVICE_URL:
         return
 
     # BYOK fast path: cached negative-balance check (Redis, 60 s TTL).
@@ -231,18 +223,12 @@ async def enforce_credit_limit(user_id: str, *, byok: bool = False) -> None:
 
 
 async def _enforce_byok_negative_balance(user_id: str) -> None:
-    """Check BYOK user for negative credit balance (cached, 60 s TTL).
-
-    Only blocks when ``remaining_credits < 0`` (outstanding debt from past
-    platform usage).  The result is cached in Redis to avoid an HTTP
-    round-trip to the platform service on every BYOK message.
-    """
+    """Raise 429 when remaining_credits < 0 (outstanding debt from past platform usage). Cached 60 s."""
     from src.utils.cache.redis_cache import get_cache_client
 
     cache = get_cache_client()
     cache_key = f"byok_balance:{user_id}"
 
-    # Fast path: check cache
     if cache.enabled and cache.client:
         try:
             cached = await cache.get(cache_key)
@@ -263,7 +249,6 @@ async def _enforce_byok_negative_balance(user_id: str) -> None:
         except Exception as e:
             logger.warning("BYOK balance cache read error, falling through: %s", e)
 
-    # Cache miss or no Redis — fetch from platform
     result = await _call_validate_for_user(user_id, check_quota="chat", byok=True)
 
     if result is None:
@@ -274,7 +259,6 @@ async def _enforce_byok_negative_balance(user_id: str) -> None:
 
     is_negative = remaining is not None and remaining < 0
 
-    # Cache the result
     if cache.enabled and cache.client:
         try:
             await cache.set(
@@ -309,15 +293,14 @@ async def _call_validate_for_user(
     check_quota: Optional[str] = None,
     byok: bool = False,
 ) -> Optional[dict]:
-    """Call ginlix-auth validate using internal service token or user_id header."""
-    if not AUTH_SERVICE_URL:
+    """POST to ginlix-auth /api/auth/validate. Returns None in OSS mode or on failure."""
+    if HOST_MODE == "oss" or not AUTH_SERVICE_URL:
         return None
 
     client = await _get_http_client()
     headers = {"X-User-Id": user_id}
 
-    # Use internal service token if available (shared secret, not a JWT)
-    internal_token = os.getenv("INTERNAL_SERVICE_TOKEN", "")
+    internal_token = os.getenv("INTERNAL_SERVICE_TOKEN", "")  # shared secret, not a JWT
     if internal_token:
         headers["X-Service-Token"] = internal_token
 
@@ -347,15 +330,8 @@ async def _call_validate_for_user(
 async def enforce_workspace_limit(
     user_id: str = Depends(get_current_user_id),
 ) -> str:
-    """
-    FastAPI dependency: enforce active workspace limit.
-
-    Open-source mode: no limits.
-    Commercial mode: calls ginlix-auth for workspace quota check.
-
-    Returns user_id on success, raises HTTPException(429) if at limit.
-    """
-    if not AUTH_SERVICE_URL:
+    """FastAPI dependency: enforce active workspace limit via ginlix-auth. No-op in OSS mode."""
+    if HOST_MODE == "oss" or not AUTH_SERVICE_URL:
         return user_id
 
     result = await _call_validate_for_user(user_id, check_quota="workspace")
@@ -387,56 +363,66 @@ async def enforce_workspace_limit(
 
 
 # ---------------------------------------------------------------------------
-# Platform access tier
+# Platform membership (access tier + plan display name)
 # ---------------------------------------------------------------------------
 
-_PLATFORM_TIER_CACHE_TTL = 300  # 5 minutes
+_PLATFORM_MEMBERSHIP_CACHE_TTL = 300  # 5 minutes
 
 
-def platform_tier_cache_key(user_id: str) -> str:
-    return f"platform_tier:{user_id}"
+def platform_membership_cache_key(user_id: str) -> str:
+    return f"platform_membership:{user_id}"
 
 
-async def _fetch_platform_tier(user_id: str) -> int:
-    """Fetch the user's platform access tier.
+async def _fetch_platform_membership(user_id: str) -> dict:
+    """Fetch the user's platform membership (access tier + plan display name).
 
-    Returns the numeric tier (0+) on success, or -1 when the user has no
-    platform access, the service is unavailable, or AUTH_SERVICE_URL is unset.
-    Results are cached in Redis for 5 minutes.
+    Returns ``{"access_tier": int, "plan_display_name": Optional[str]}``.
+    ``access_tier`` is -1 when the user has no platform access;
+    ``plan_display_name`` is ``None`` when the user has no active subscription.
+    Cached in Redis for 5 minutes. No-op in OSS mode.
     """
-    if not AUTH_SERVICE_URL:
-        return -1
+    if HOST_MODE == "oss" or not AUTH_SERVICE_URL:
+        return {"access_tier": -1, "plan_display_name": None}
 
     from src.utils.cache.redis_cache import get_cache_client
 
     cache = get_cache_client()
-    cache_key = platform_tier_cache_key(user_id)
+    cache_key = platform_membership_cache_key(user_id)
     cached = await cache.get(cache_key)
-    if cached is not None:
-        return int(cached)
+    if isinstance(cached, dict) and "access_tier" in cached:
+        return cached
 
     result = await _call_validate_for_user(user_id)
     if result is not None:
-        tier = result.get("access_tier", -1)
-        await cache.set(cache_key, tier, ttl=_PLATFORM_TIER_CACHE_TTL)
-        return tier
+        membership = {
+            "access_tier": int(result.get("access_tier", -1)),
+            "plan_display_name": result.get("plan_display_name"),
+        }
+        await cache.set(cache_key, membership, ttl=_PLATFORM_MEMBERSHIP_CACHE_TTL)
+        return membership
 
     # Brief negative cache prevents thundering herd against a down service.
-    await cache.set(cache_key, -1, ttl=15)
-    return -1
+    fallback = {"access_tier": -1, "plan_display_name": None}
+    await cache.set(cache_key, fallback, ttl=15)
+    return fallback
+
+
+async def _fetch_platform_tier(user_id: str) -> int:
+    """Fetch only the user's platform access tier. Shares cache with membership."""
+    membership = await _fetch_platform_membership(user_id)
+    return int(membership.get("access_tier", -1))
 
 
 # ---------------------------------------------------------------------------
-# Scope-based feature gating (Phase 2)
+# Scope-based feature gating
 # ---------------------------------------------------------------------------
 
-# Cache for user scopes: {user_id: (scopes_list, expiry_timestamp)}
-_scope_cache: dict[str, tuple[list[str], float]] = {}
+_scope_cache: dict[str, tuple[list[str], float]] = {}  # {user_id: (scopes, expiry_ts)}
 _SCOPE_CACHE_TTL = 300  # 5 minutes
 
 
 async def _get_user_scopes(user_id: str) -> list[str]:
-    """Get user's scopes from ginlix-auth (cached)."""
+    """Return user's scopes from ginlix-auth; in-process cache with 5 min TTL."""
     import time
 
     now = time.time()
@@ -455,10 +441,10 @@ async def _get_user_scopes(user_id: str) -> list[str]:
 
 
 def require_scope(scope: str):
-    """FastAPI dependency factory — checks user has scope. No-op when AUTH_SERVICE_URL unset."""
+    """FastAPI dependency factory — checks user has scope. No-op in OSS mode."""
     async def check(user_id: str = Depends(get_current_user_id)):
-        if not AUTH_SERVICE_URL:
-            return user_id  # Open-source: everything allowed
+        if HOST_MODE == "oss" or not AUTH_SERVICE_URL:
+            return user_id  # OSS mode: everything allowed
         scopes = await _get_user_scopes(user_id)
         if scopes and scope not in scopes:
             raise HTTPException(403, detail=f"Requires scope: {scope}")

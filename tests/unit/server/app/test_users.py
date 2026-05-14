@@ -400,15 +400,16 @@ async def test_get_user_access_tier_has_access(client):
             return_value=result,
         ),
         patch(
-            "src.server.dependencies.usage_limits._fetch_platform_tier",
+            "src.server.dependencies.usage_limits._fetch_platform_membership",
             new_callable=AsyncMock,
-            return_value=0,
+            return_value={"access_tier": 0, "plan_display_name": "Pro"},
         ),
     ):
         resp = await client.get("/api/v1/users/me")
 
     assert resp.status_code == 200
     assert resp.json()["user"]["access_tier"] == 0
+    assert resp.json()["user"]["plan_display_name"] == "Pro"
 
 
 @pytest.mark.asyncio
@@ -422,15 +423,16 @@ async def test_get_user_access_tier_no_access(client):
             return_value=result,
         ),
         patch(
-            "src.server.dependencies.usage_limits._fetch_platform_tier",
+            "src.server.dependencies.usage_limits._fetch_platform_membership",
             new_callable=AsyncMock,
-            return_value=-1,
+            return_value={"access_tier": -1, "plan_display_name": None},
         ),
     ):
         resp = await client.get("/api/v1/users/me")
 
     assert resp.status_code == 200
     assert resp.json()["user"]["access_tier"] == -1
+    assert resp.json()["user"]["plan_display_name"] is None
 
 
 @pytest.mark.asyncio
@@ -444,19 +446,20 @@ async def test_get_user_access_tier_platform_unreachable(client):
             return_value=result,
         ),
         patch(
-            "src.server.dependencies.usage_limits._fetch_platform_tier",
+            "src.server.dependencies.usage_limits._fetch_platform_membership",
             new_callable=AsyncMock,
-            return_value=-1,
+            return_value={"access_tier": -1, "plan_display_name": None},
         ),
     ):
         resp = await client.get("/api/v1/users/me")
 
     assert resp.status_code == 200
     assert resp.json()["user"]["access_tier"] == -1
+    assert resp.json()["user"]["plan_display_name"] is None
 
 
 # ---------------------------------------------------------------------------
-# _fetch_platform_tier — direct unit tests
+# _fetch_platform_membership / _fetch_platform_tier — direct unit tests
 # ---------------------------------------------------------------------------
 
 
@@ -474,12 +477,32 @@ LIMITS = "src.server.dependencies.usage_limits"
 @pytest.mark.asyncio
 async def test_fetch_platform_tier_no_service_url():
     """Returns -1 immediately when AUTH_SERVICE_URL is unset."""
-    with patch(f"{LIMITS}.AUTH_SERVICE_URL", ""):
+    with (
+        patch(f"{LIMITS}.HOST_MODE", "platform"),
+        patch(f"{LIMITS}.AUTH_SERVICE_URL", ""),
+    ):
         from src.server.dependencies.usage_limits import _fetch_platform_tier
 
         result = await _fetch_platform_tier("user-123")
 
     assert result == -1
+
+
+@pytest.mark.asyncio
+async def test_fetch_platform_membership_oss_mode_short_circuits():
+    """HOST_MODE=oss skips the platform call even if AUTH_SERVICE_URL is set."""
+    mock_client = AsyncMock()
+    with (
+        patch(f"{LIMITS}.HOST_MODE", "oss"),
+        patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch(f"{LIMITS}._get_http_client", return_value=mock_client),
+    ):
+        from src.server.dependencies.usage_limits import _fetch_platform_membership
+
+        result = await _fetch_platform_membership("user-123")
+
+    assert result == {"access_tier": -1, "plan_display_name": None}
+    mock_client.post.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -493,6 +516,7 @@ async def test_fetch_platform_tier_returns_tier():
     cache = _mock_cache(cached_value=None)  # cache miss
 
     with (
+        patch(f"{LIMITS}.HOST_MODE", "platform"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
         patch(
             f"{LIMITS}._get_http_client",
@@ -514,10 +538,11 @@ async def test_fetch_platform_tier_returns_tier():
 @pytest.mark.asyncio
 async def test_fetch_platform_tier_cache_hit():
     """Returns cached value without calling platform."""
-    cache = _mock_cache(cached_value=1)
+    cache = _mock_cache(cached_value={"access_tier": 1, "plan_display_name": "Pro"})
     mock_client = AsyncMock()
 
     with (
+        patch(f"{LIMITS}.HOST_MODE", "platform"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
         patch(
             f"{LIMITS}._get_http_client",
@@ -534,6 +559,35 @@ async def test_fetch_platform_tier_cache_hit():
 
 
 @pytest.mark.asyncio
+async def test_fetch_platform_membership_caches_tier_and_plan_display_name_together():
+    """Both fields share one cache entry — only one HTTP round-trip per 5 min."""
+    mock_response = httpx.Response(
+        200, json={"valid": True, "access_tier": 2, "plan_display_name": "Premium"}
+    )
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=mock_response)
+    cache = _mock_cache(cached_value=None)
+
+    with (
+        patch(f"{LIMITS}.HOST_MODE", "platform"),
+        patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
+        patch(f"{LIMITS}._get_http_client", return_value=mock_client),
+        patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
+        patch("os.getenv", return_value="token"),
+    ):
+        from src.server.dependencies.usage_limits import _fetch_platform_membership
+
+        result = await _fetch_platform_membership("user-123")
+
+    assert result == {"access_tier": 2, "plan_display_name": "Premium"}
+    cache.set.assert_called_once()
+    # The cached value carries both fields so a follow-up tier-only read is free.
+    cached_value = cache.set.call_args[0][1]
+    assert cached_value["access_tier"] == 2
+    assert cached_value["plan_display_name"] == "Premium"
+
+
+@pytest.mark.asyncio
 async def test_fetch_platform_tier_platform_error():
     """Returns -1 on non-200 response (fail-open)."""
     mock_response = httpx.Response(500, text="Internal Server Error")
@@ -542,6 +596,7 @@ async def test_fetch_platform_tier_platform_error():
     cache = _mock_cache(cached_value=None)
 
     with (
+        patch(f"{LIMITS}.HOST_MODE", "platform"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
         patch(
             f"{LIMITS}._get_http_client",
@@ -565,6 +620,7 @@ async def test_fetch_platform_tier_network_error():
     cache = _mock_cache(cached_value=None)
 
     with (
+        patch(f"{LIMITS}.HOST_MODE", "platform"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
         patch(
             f"{LIMITS}._get_http_client",
@@ -589,6 +645,7 @@ async def test_fetch_platform_tier_missing_field():
     cache = _mock_cache(cached_value=None)
 
     with (
+        patch(f"{LIMITS}.HOST_MODE", "platform"),
         patch(f"{LIMITS}.AUTH_SERVICE_URL", "http://localhost:8003"),
         patch(
             f"{LIMITS}._get_http_client",

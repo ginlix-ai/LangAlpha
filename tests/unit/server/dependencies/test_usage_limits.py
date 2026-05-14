@@ -185,6 +185,7 @@ async def test_call_validate_for_user_uses_x_service_token_header():
     mock_client.post = AsyncMock(return_value=mock_response)
 
     with (
+        patch(f"{MODULE}.HOST_MODE", "platform"),
         patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
         patch(f"{MODULE}._get_http_client", return_value=mock_client),
         patch("os.getenv", return_value="my-secret-token"),
@@ -214,6 +215,7 @@ async def test_call_validate_for_user_no_token_omits_service_header():
     mock_client.post = AsyncMock(return_value=mock_response)
 
     with (
+        patch(f"{MODULE}.HOST_MODE", "platform"),
         patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
         patch(f"{MODULE}._get_http_client", return_value=mock_client),
         patch("os.getenv", return_value=""),
@@ -249,6 +251,7 @@ async def test_call_validate_for_user_sends_check_quota_in_body():
     mock_client.post = AsyncMock(return_value=mock_response)
 
     with (
+        patch(f"{MODULE}.HOST_MODE", "platform"),
         patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
         patch(f"{MODULE}._get_http_client", return_value=mock_client),
         patch("os.getenv", return_value="token"),
@@ -271,6 +274,7 @@ async def test_call_validate_for_user_fails_open_on_exception():
     mock_client.post = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
     with (
+        patch(f"{MODULE}.HOST_MODE", "platform"),
         patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
         patch(f"{MODULE}._get_http_client", return_value=mock_client),
         patch("os.getenv", return_value="token"),
@@ -309,6 +313,7 @@ class TestEnforceCreditLimitByok:
         }
 
         with (
+            patch(f"{MODULE}.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=quota_response),
             patch("src.utils.cache.redis_cache.get_cache_client", return_value=_mock_cache_miss()),
@@ -334,6 +339,7 @@ class TestEnforceCreditLimitByok:
         }
 
         with (
+            patch(f"{MODULE}.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=quota_response),
             patch("src.utils.cache.redis_cache.get_cache_client", return_value=_mock_cache_miss()),
@@ -355,6 +361,7 @@ class TestEnforceCreditLimitByok:
         }
 
         with (
+            patch(f"{MODULE}.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=quota_response),
             patch("src.utils.cache.redis_cache.get_cache_client", return_value=_mock_cache_miss()),
@@ -375,6 +382,7 @@ class TestEnforceCreditLimitByok:
         }
 
         with (
+            patch(f"{MODULE}.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=quota_response),
             patch("src.utils.cache.redis_cache.get_cache_client", return_value=_mock_cache_miss()),
@@ -391,6 +399,7 @@ class TestEnforceCreditLimitByok:
         mock_validate = AsyncMock()
 
         with (
+            patch(f"{MODULE}.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(f"{MODULE}._call_validate_for_user", mock_validate),
             patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
@@ -411,6 +420,7 @@ class TestEnforceCreditLimitByok:
         mock_validate = AsyncMock()
 
         with (
+            patch(f"{MODULE}.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(f"{MODULE}._call_validate_for_user", mock_validate),
             patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
@@ -435,6 +445,7 @@ class TestEnforceCreditLimitByok:
         }
 
         with (
+            patch(f"{MODULE}.HOST_MODE", "platform"),
             patch(f"{MODULE}.AUTH_SERVICE_URL", "http://localhost:8003"),
             patch(f"{MODULE}._call_validate_for_user", new_callable=AsyncMock, return_value=quota_response),
         ):
