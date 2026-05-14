@@ -41,7 +41,11 @@
     "chatAgent": "智能对话",
     "marketView": "行情中心",
     "automations": "自动化",
-    "settings": "设置"
+    "settings": "设置",
+    "account": "用量与套餐"
+  },
+  "account": {
+    "menuLabel": "账号菜单"
   },
   "settings": {
     "title": "用户设置",
