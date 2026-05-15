@@ -133,6 +133,55 @@ class TestClassifyError:
 
 
 # ---------------------------------------------------------------------------
+# _classify_non_recoverable_error_type
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyNonRecoverableErrorType:
+    """Maps workspace-lifecycle errors to structured ``error_type`` labels
+    so channel gateways can render user-actionable messages instead of
+    raw traceback strings."""
+
+    def _classify(self, e):
+        from src.server.handlers.chat._common import (
+            _classify_non_recoverable_error_type,
+        )
+        return _classify_non_recoverable_error_type(e)
+
+    def test_workspace_not_found_value_error(self):
+        result = self._classify(ValueError("Workspace abc123 not found"))
+        assert result == "workspace_not_found"
+
+    def test_workspace_deleted_runtime_error(self):
+        result = self._classify(
+            RuntimeError("Workspace abc123 has been deleted"),
+        )
+        assert result == "workspace_deleted"
+
+    def test_workspace_error_state_runtime_error(self):
+        result = self._classify(
+            RuntimeError(
+                "Workspace abc123 is in error state. Please delete and recreate."
+            ),
+        )
+        assert result == "workspace_error_state"
+
+    def test_workspace_generic_runtime_error_falls_to_unavailable(self):
+        """Unknown workspace error wording still gets the workspace bucket
+        so consumers can show a workspace-shaped notice."""
+        result = self._classify(RuntimeError("Workspace abc123 went sideways"))
+        assert result == "workspace_unavailable"
+
+    def test_non_workspace_error_defaults_to_workflow_error(self):
+        result = self._classify(RuntimeError("LLM provider quota exceeded"))
+        assert result == "workflow_error"
+
+    def test_unrelated_value_error_defaults_to_workflow_error(self):
+        result = self._classify(ValueError("invalid agent_mode"))
+        assert result == "workflow_error"
+
+
+# ---------------------------------------------------------------------------
 # process_hitl_response
 # ---------------------------------------------------------------------------
 

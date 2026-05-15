@@ -201,6 +201,27 @@ async def _is_plan_interrupt_pending(thread_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _classify_non_recoverable_error_type(e: Exception) -> str:
+    """Map a non-recoverable exception to a structured ``error_type`` label.
+
+    Channel gateways switch on this label to surface user-actionable
+    messages (e.g. "this thread's workspace is gone — start fresh") instead
+    of opaque tracebacks. Defaults to ``"workflow_error"`` for unrecognized
+    cases so existing consumers keep working.
+    """
+    if isinstance(e, (ValueError, RuntimeError)):
+        msg = str(e)
+        if "Workspace" in msg:
+            if "not found" in msg:
+                return "workspace_not_found"
+            if "has been deleted" in msg:
+                return "workspace_deleted"
+            if "error state" in msg:
+                return "workspace_error_state"
+            return "workspace_unavailable"
+    return "workflow_error"
+
+
 def classify_error(e: Exception) -> dict:
     """Classify an exception as recoverable or non-recoverable.
 
@@ -803,22 +824,16 @@ async def handle_workflow_error(
                 f"{thread_id}: {tracker_err}"
             )
 
+        error_type_label = _classify_non_recoverable_error_type(e)
+        error_payload = {
+            "thread_id": thread_id,
+            "error": str(e),
+            "type": "workflow_error",
+            "error_type": error_type_label,
+            "error_class": type(e).__name__,
+        }
         if handler:
-            error_event = handler._format_sse_event(
-                "error",
-                {
-                    "thread_id": thread_id,
-                    "error": str(e),
-                    "type": "workflow_error",
-                },
-            )
+            error_event = handler._format_sse_event("error", error_payload)
             yield error_event
         else:
-            error_event = json.dumps(
-                {
-                    "thread_id": thread_id,
-                    "error": str(e),
-                    "type": "workflow_error",
-                }
-            )
-            yield f"event: error\ndata: {error_event}\n\n"
+            yield f"event: error\ndata: {json.dumps(error_payload)}\n\n"
