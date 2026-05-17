@@ -28,6 +28,14 @@ from src.server.services.cache.intraday_cache_service import IntradayCacheKeyBui
 from src.server.services.shared_ws_manager import SharedWSConnectionManager
 from src.utils.cache.redis_cache import get_cache_client
 from src.utils.market_hours import current_trading_date
+from src.observability import (
+    safe_add,
+    safe_record,
+    ws_connection_duration_seconds,
+    ws_connections_active,
+    ws_disconnects,
+    ws_messages_sent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +294,11 @@ async def ws_market_data_proxy(
     await websocket.accept()
     logger.info("WS proxy opened: user=%s market=%s interval=%s tier=%s", user_id, market, interval, tier)
 
+    _ws_labels = {"market": market, "interval": interval, "tier": tier}
+    _ws_t0 = _time.monotonic()
+    _disconnect_reason = "client_close"
+    safe_add(ws_connections_active, 1, _ws_labels)
+
     shared_ws = SharedWSConnectionManager.get_instance(market=market, interval=interval, tier=tier)
     consumer_id = f"ws_proxy_{uuid4().hex[:12]}"
     cache_interval = _WS_INTERVAL_TO_CACHE.get(interval)
@@ -305,6 +318,7 @@ async def ws_market_data_proxy(
                     raw_msg[:300] if isinstance(raw_msg, str) else str(raw_msg)[:300],
                 )
             await websocket.send_text(raw_msg)
+            safe_add(ws_messages_sent, 1, _ws_labels)
 
             # Buffer tick for throttled cache write
             if cache_interval and bar:
@@ -332,11 +346,16 @@ async def ws_market_data_proxy(
                 t.cancel()
 
             if disconnect_task in done:
+                _disconnect_reason = "server_error"
                 break
 
             try:
                 msg = receive_task.result()
-            except (WebSocketDisconnect, Exception):
+            except WebSocketDisconnect:
+                _disconnect_reason = "client_close"
+                break
+            except Exception:
+                _disconnect_reason = "server_error"
                 break
 
             # Parse client subscribe/unsubscribe and route through handle
@@ -367,3 +386,7 @@ async def ws_market_data_proxy(
         except Exception:
             pass
         logger.info("WS proxy closed: user=%s market=%s", user_id, market)
+
+        safe_add(ws_connections_active, -1, _ws_labels)
+        safe_record(ws_connection_duration_seconds, _time.monotonic() - _ws_t0, _ws_labels)
+        safe_add(ws_disconnects, 1, {**_ws_labels, "reason": _disconnect_reason})

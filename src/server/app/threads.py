@@ -53,10 +53,18 @@ from src.server.database.conversation import (
 from psycopg_pool import PoolTimeout
 from src.server.dependencies.usage_limits import ChatRateLimited
 
+from src.observability import (
+    observe_background_chat_turn,
+    observe_chat_stream,
+    observe_replay_stream,
+    sse_reconnects,
+)
+
 # Import setup module to access initialized globals
 from src.server.app import setup
 
 logger = logging.getLogger(__name__)
+
 
 # Strong references to background dispatch tasks to prevent GC.
 # Tasks remove themselves via done callback.
@@ -74,12 +82,19 @@ def _track_task(task: asyncio.Task) -> None:
     task.add_done_callback(_background_tasks.discard)
 
 
-async def _consume_background_gen(gen, label: str, thread_id: str) -> None:
-    """Drain an async generator in the background, cleaning up Redis on failure."""
+async def _consume_background_gen(gen, label: str, thread_id: str) -> bool:
+    """Drain an async generator in the background, cleaning up Redis on failure.
+
+    Returns True on success, False if the generator raised. Failures are logged
+    and Redis state cleaned up here; the exception is intentionally swallowed
+    so the caller can decide how to surface it (e.g. metric labeling).
+    """
+    _ok = True
     try:
         async for _ in gen:
             pass
     except Exception:
+        _ok = False
         logger.error(
             f"[{label}] Background workflow failed: thread_id={thread_id}",
             exc_info=True,
@@ -148,6 +163,7 @@ async def _consume_background_gen(gen, label: str, thread_id: str) -> None:
                     await tracker.mark_completed(thread_id)
         except Exception:
             pass
+    return _ok
 
 
 # Single router for all thread operations
@@ -502,6 +518,10 @@ async def _handle_send_message(
         await release_burst_slot(user_id)
         raise
 
+    # Resolve model name for observability labels (bounded by models.json keys).
+    _llm = getattr(config, "llm", None)
+    _model = (getattr(_llm, "flash", None) if agent_mode == "flash" else getattr(_llm, "name", None)) or ""
+
     # Route to appropriate streaming function based on agent mode
     if agent_mode == "flash":
         flash_gen = astream_flash_workflow(
@@ -516,7 +536,14 @@ async def _handle_send_message(
         # Background dispatch for flash (used by PTC completion report-back).
         if is_internal and raw_request and raw_request.headers.get("X-Dispatch") == "background":
             _track_task(asyncio.create_task(
-                _consume_background_gen(flash_gen, "FLASH_DISPATCH", thread_id),
+                observe_background_chat_turn(
+                    _consume_background_gen(flash_gen, "FLASH_DISPATCH", thread_id),
+                    mode="flash",
+                    model=_model,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    thread_id=thread_id,
+                ),
                 name=f"flash-dispatch-{thread_id}",
             ))
             logger.info(
@@ -529,7 +556,14 @@ async def _handle_send_message(
             })
 
         return StreamingResponse(
-            flash_gen,
+            observe_chat_stream(
+                flash_gen,
+                mode="flash",
+                model=_model,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                thread_id=thread_id,
+            ),
             media_type="text/event-stream",
             headers=SSE_HEADERS,
         )
@@ -569,7 +603,14 @@ async def _handle_send_message(
         await manager.pre_register(thread_id)
 
         _track_task(asyncio.create_task(
-            _consume_background_gen(ptc_gen, "PTC_DISPATCH", thread_id),
+            observe_background_chat_turn(
+                _consume_background_gen(ptc_gen, "PTC_DISPATCH", thread_id),
+                mode="ptc",
+                model=_model,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                thread_id=thread_id,
+            ),
             name=f"ptc-dispatch-{thread_id}",
         ))
         logger.info(
@@ -583,7 +624,14 @@ async def _handle_send_message(
         })
 
     return StreamingResponse(
-        ptc_gen,
+        observe_chat_stream(
+            ptc_gen,
+            mode="ptc",
+            model=_model,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            thread_id=thread_id,
+        ),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
@@ -605,6 +653,8 @@ async def reconnect_to_stream(
     """
     await require_thread_owner(thread_id, x_user_id)
     from src.server.handlers.chat import reconnect_to_workflow_stream
+
+    sse_reconnects.add(1)
 
     if last_event_id is None and last_event_id_header is not None:
         try:
@@ -775,7 +825,7 @@ async def replay_thread_messages(thread_id: str, x_user_id: CurrentUserId):
             yield f"id: {seq}\nevent: replay_done\ndata: {json.dumps({'thread_id': thread_id}, default=str)}\n\n"
 
         return StreamingResponse(
-            event_generator(),
+            observe_replay_stream(event_generator(), source="private"),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache"},
         )

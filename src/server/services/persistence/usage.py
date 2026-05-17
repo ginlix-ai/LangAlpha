@@ -147,6 +147,10 @@ class UsagePersistenceService:
             # Determine if any platform calls occurred (for is_byok flag)
             self._has_platform_calls = platform_cost_usd > 0
 
+            # OTel counters (langalpha.llm.tokens, langalpha.credits) are
+            # sourced from conversation_usages via ObservableCounter — see
+            # src/observability/db_callbacks.py. No in-process emit here.
+
             logger.debug(
                 f"[UsagePersistence] Tracked LLM usage: "
                 f"total_cost=${total_cost_usd:.4f}, "

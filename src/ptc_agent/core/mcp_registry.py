@@ -12,6 +12,7 @@ from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 
 from ptc_agent.config.core import CoreConfig, MCPServerConfig
+from src.observability.tracing import tracer as _otel_tracer
 
 logger = structlog.get_logger(__name__)
 
@@ -354,6 +355,10 @@ class MCPServerConnector:
         if not self.session:
             raise RuntimeError("Not connected to server")
 
+        span = _otel_tracer.start_span(
+            "mcp.discover", attributes={"server": self.config.name}
+        )
+
         try:
             tools_response = await self.session.list_tools()
 
@@ -373,13 +378,18 @@ class MCPServerConnector:
                 tools=[t.name for t in self.tools],
             )
 
+            span.set_attribute("tool_count", len(self.tools))
+
         except Exception as e:
             logger.error(
                 "Failed to discover tools",
                 server=self.config.name,
                 error=str(e),
             )
+            span.record_exception(e)
             raise
+        finally:
+            span.end()
 
     async def _discover_tools_http(self) -> None:
         """Discover available tools via HTTP transport."""

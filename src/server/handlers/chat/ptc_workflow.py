@@ -33,6 +33,10 @@ from src.server.services.persistence.conversation import (
 )
 from src.server.services.workflow_tracker import WorkflowTracker
 from src.server.services.workspace_manager import WorkspaceManager
+from src.observability import (
+    chat_turn_phase_duration_ms,
+    safe_record,
+)
 from src.server.utils.directive_context import (
     build_directive_reminder,
     parse_directive_contexts,
@@ -895,6 +899,19 @@ async def astream_ptc_workflow(
         logger.info(
             f"[PTC_TIMING] thread_id={thread_id} model={model_tag} total={total_ms:.0f}ms ({phases})"
         )
+
+        # Attach phase timings as attributes on the active chat.turn span so
+        # traces show the same breakdown the log line does, and emit one
+        # histogram sample per phase so dashboards can render the breakdown.
+        from opentelemetry import trace as _otel_trace
+
+        _span = _otel_trace.get_current_span()
+        if _span is not None and _span.is_recording():
+            for _k, _v in _phase_times.items():
+                _span.set_attribute(f"chat.turn.phase.{_k}_ms", _v)
+            _span.set_attribute("chat.turn.total_ms", total_ms)
+        for _k, _v in _phase_times.items():
+            safe_record(chat_turn_phase_duration_ms, _v, {"phase": _k, "mode": "ptc"})
 
         # Stream-backed first-connect: read from workflow:stream:{thread_id}
         # via XREAD BLOCK. The workflow runs as a fully detached background

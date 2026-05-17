@@ -26,6 +26,11 @@ from ptc_agent.agent.middleware.background_subagent.tools import (
 )
 from src.utils.tracking.per_call_token_tracker import PerCallTokenTracker
 
+from src.observability.tracing import (
+    create_task_with_context,
+    emit_subagent_launch,
+)
+
 if TYPE_CHECKING:
     from ptc_agent.agent.middleware.background_subagent.event_capture import (
         SubagentEventCaptureMiddleware,
@@ -516,9 +521,18 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             # Create a dedicated token tracker for the resumed subagent
             subagent_token_tracker = PerCallTokenTracker()
 
-            # Spawn resumed task in background
-            asyncio_task = asyncio.create_task(
-                _run_background_task(task, handler, request, subagent_token_tracker, "Resumed background subagent"),
+            # Spawn resumed task in background. create_task_with_context
+            # propagates the current OTel context (via contextvars snapshot)
+            # so spans emitted inside the subagent inherit the launching
+            # chat.turn trace.
+            emit_subagent_launch(
+                task.subagent_type, action="resume", description_len=len(description),
+            )
+            asyncio_task = create_task_with_context(
+                _run_background_task(
+                    task, handler, request, subagent_token_tracker,
+                    "Resumed background subagent",
+                ),
                 name=f"background_subagent_resume_{task.display_id}",
             )
             task.asyncio_task = asyncio_task
@@ -579,9 +593,17 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             # Create a dedicated token tracker for this subagent
             subagent_token_tracker = PerCallTokenTracker()
 
-            # Spawn background task
-            asyncio_task = asyncio.create_task(
-                _run_background_task(task, handler, request, subagent_token_tracker, "Background subagent"),
+            # Spawn background task. create_task_with_context propagates the
+            # current OTel context (via contextvars snapshot) so spans emitted
+            # inside the subagent inherit the launching chat.turn trace.
+            emit_subagent_launch(
+                subagent_type, action="init", description_len=len(description),
+            )
+            asyncio_task = create_task_with_context(
+                _run_background_task(
+                    task, handler, request, subagent_token_tracker,
+                    "Background subagent",
+                ),
                 name=f"background_subagent_{task.display_id}",
             )
 

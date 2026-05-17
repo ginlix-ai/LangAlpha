@@ -41,8 +41,22 @@ from src.config.logging_config import configure_logging
 from src.config.settings import (
     get_allowed_origins,
 )
+from src.observability import init_otel, init_otel_runtime, shutdown_otel_runtime
 from src.server.services.background_task_manager import BackgroundTaskManager
 from src.server.services.background_registry_store import BackgroundRegistryStore
+
+# Phase 1: install fork-safe class-level instrumentor patches BEFORE FastAPI(...)
+# is constructed. FastAPIInstrumentor patches the FastAPI class — must run
+# before any instance exists. No providers, no daemon threads here.
+#
+# Phase 2 (init_otel_runtime) runs in the lifespan startup below, AFTER any
+# fork performed by uvicorn --workers N. Daemon threads inside BatchSpanProcessor
+# / PeriodicExportingMetricReader do not survive fork(), so they must be
+# created per-worker.
+#
+# No-op when OTEL_EXPORTER_OTLP_ENDPOINT is unset; wrapped in try/except
+# internally so a broken instrumentor cannot prevent server startup.
+_otel_enabled = init_otel()
 
 logger = logging.getLogger(__name__)
 INTERNAL_SERVER_ERROR_DETAIL = "Internal Server Error"
@@ -101,6 +115,11 @@ async def lifespan(app: FastAPI):
 
     # Configure logging based on environment settings (first thing on startup)
     configure_logging()
+
+    # Phase 2 of the OTel bootstrap (see module-top init_otel comment). Runs
+    # per-worker so BatchSpanProcessor / PeriodicExportingMetricReader daemon
+    # threads are owned by the worker process, not a dead pre-fork parent.
+    init_otel_runtime()
 
     # Container hardening diagnostics: confirm tini is PID 1 and log cgroup PID limit.
     # If PID 1 is python (not tini), `init: true` in compose silently failed and
@@ -480,6 +499,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Error closing usage limits HTTP client: {e}")
 
+    # 10. Flush + shut down OTel providers last, so spans/metrics emitted by
+    # the earlier shutdown steps reach the collector before the daemon threads
+    # exit. No-op when OTel is disabled.
+    try:
+        shutdown_otel_runtime()
+    except Exception as e:
+        logger.warning(f"Error shutting down OTel runtime: {e}")
+
     logger.info("Application shutdown complete")
 
 
@@ -490,6 +517,18 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Per-app FastAPI instrumentation. The global ``FastAPIInstrumentor().instrument()``
+# called in ``init_otel()`` only patches the class — instances constructed inside a
+# uvicorn ``--reload`` worker can race against that patching depending on import
+# order. Explicit per-app instrumentation here closes the gap with a known-good app.
+if _otel_enabled:
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+        FastAPIInstrumentor.instrument_app(app)
+    except Exception as _otel_exc:  # noqa: BLE001
+        logger.warning("FastAPIInstrumentor.instrument_app failed: %s", _otel_exc)
 
 
 class RequestIDMiddleware:

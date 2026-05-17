@@ -16,6 +16,8 @@ from src.server.models.automation import PriceTriggerConfig, RetriggerMode
 from src.server.database.workspace import get_or_create_flash_workspace
 from src.server.models.chat import ChatMessage, ChatRequest
 from src.server.services.webhook_client import WebhookClient
+from src.observability import automation_executions, safe_add
+from src.observability.tracing import hash_id as _obs_hash_id, tracer as _otel_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,16 @@ class AutomationExecutor:
             f"[AUTOMATION_EXEC] Starting execution: "
             f"automation_id={automation_id} execution_id={execution_id} "
             f"mode={agent_mode}"
+        )
+
+        _trigger = automation.get("trigger_type") or "unknown"
+        _exec_span = _otel_tracer.start_span(
+            "automation.execution",
+            attributes={
+                "automation_id": _obs_hash_id(automation_id),
+                "trigger": _trigger,
+                "mode": agent_mode or "unknown",
+            },
         )
 
         # Mark as running
@@ -207,6 +219,9 @@ class AutomationExecutor:
                     # (user may have paused/disabled during execution)
                     await auto_db.restore_executing_to_active(automation_id)
 
+            safe_add(automation_executions, 1, {"status": "success", "trigger": _trigger})
+            _exec_span.set_attribute("status", "success")
+
         except Exception as e:
             error_msg = f"{type(e).__name__}: {str(e)[:500]}"
             logger.error(
@@ -239,3 +254,9 @@ class AutomationExecutor:
                 await auto_db.update_execution_status(
                     execution_id, "failed", delivery_result=delivery_result,
                 )
+
+            safe_add(automation_executions, 1, {"status": "failure", "trigger": _trigger})
+            _exec_span.record_exception(e)
+            _exec_span.set_attribute("status", "failure")
+        finally:
+            _exec_span.end()

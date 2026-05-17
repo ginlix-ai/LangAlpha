@@ -27,6 +27,8 @@ from src.config.settings import (
     is_sse_event_log_enabled,
     get_merged_chunk_max_bytes,
 )
+from opentelemetry.trace import Status, StatusCode
+from src.observability.tracing import tracer as _otel_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -397,6 +399,10 @@ class WorkflowStreamHandler:
             _tool_usage_context.set(self.tool_tracker)
             logger.debug(f"[WorkflowStreamHandler] Tool usage tracking ContextVar set for thread_id={self.thread_id}")
 
+        _stream_span = _otel_tracer.start_span(
+            "chat.turn.stream",
+            attributes={"thread_id_hash": (self.thread_id or "")[:16]},
+        )
         try:
             # Snapshot old task IDs and emit initial batch of captured events.
             # Events are streamed with accumulate=False so they are NOT persisted
@@ -718,12 +724,19 @@ class WorkflowStreamHandler:
 
         except asyncio.CancelledError:
             logger.info(f"SSE streaming ended for thread_id={self.thread_id} (client connection lost)")
+            _stream_span.set_attribute("outcome", "cancelled")
             # Don't yield error event - this is expected behavior
             raise
         except Exception as e:
             logger.exception(f"Error in stream generator for thread_id={self.thread_id}: {e}")
+            _stream_span.record_exception(e)
+            _stream_span.set_status(Status(StatusCode.ERROR))
             yield self.format_error_event(str(e), exc=e)
             raise  # Re-raise so background_task_manager calls _mark_failed()
+        finally:
+            if timeout_warning_sent:
+                _stream_span.set_attribute("timeout_warning", True)
+            _stream_span.end()
 
     def _handle_interrupt(self, event_data: dict) -> Optional[str]:
         """Format an ``__interrupt__`` event as an SSE string."""

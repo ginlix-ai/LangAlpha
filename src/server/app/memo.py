@@ -80,6 +80,8 @@ from src.server.services import memo_binary_storage
 from src.server.database.workspace import get_workspace as db_get_workspace
 from src.server.utils.api import CurrentUserId, require_workspace_owner
 from src.utils.cache.redis_cache import get_cache_client
+from src.observability import memo_uploaded, safe_add
+from src.observability.metrics import normalize_content_type
 
 logger = logging.getLogger(__name__)
 
@@ -512,6 +514,16 @@ async def upload_user_memo(
                 f"Accepted: {', '.join(sorted(ACCEPTED_MIME_TYPES))}."
             ),
         )
+
+    # Counter fires on each accepted upload attempt; the FastAPI auto-instrumentor
+    # already produces a server span with route + status for this endpoint.
+    _memo_ct_label = normalize_content_type(mime_type)
+    safe_add(memo_uploaded, 1, {"content_type": _memo_ct_label})
+    from opentelemetry import trace as _otel_trace
+
+    _active_span = _otel_trace.get_current_span()
+    if _active_span is not None and _active_span.is_recording():
+        _active_span.set_attribute("memo.content_type", _memo_ct_label)
 
     if source_kind not in (None, "upload", "sandbox"):
         raise HTTPException(

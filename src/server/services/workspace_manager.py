@@ -24,6 +24,17 @@ from ptc_agent.config import AgentConfig
 from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
 from ptc_agent.core.session import Session, SessionManager
 
+from src.observability import (
+    safe_record,
+    session_acquire_phase_duration_ms,
+    session_acquire_total_ms,
+    session_path_counter,
+    workspace_cold_start_duration_ms,
+    workspace_created,
+)
+from src.observability.tracing import hash_id as _obs_hash_id
+from src.observability.tracing import safe_aspan
+
 from src.server.services.background_task_manager import BackgroundTaskManager
 
 from src.server.database.workspace import (
@@ -164,6 +175,17 @@ class WorkspaceManager:
             yield
         finally:
             lock.release()
+
+    @asynccontextmanager
+    async def _observed_lock(self, workspace_id: str, span_name: str, **extra_attrs):
+        """``safe_aspan(span_name) + _acquire_workspace_lock`` chain in one helper.
+
+        ``workspace_id`` is hashed for the span attribute. Extra attributes are
+        passed through to the span as-is."""
+        attrs = {"workspace_id": _obs_hash_id(workspace_id), **extra_attrs}
+        async with safe_aspan(span_name, attrs):
+            async with self._acquire_workspace_lock(workspace_id):
+                yield
 
     def _sync_cooldown_ok(self, workspace_id: str) -> bool:
         """Return True if sync was done recently enough to skip."""
@@ -734,7 +756,11 @@ class WorkspaceManager:
 
         logger.info(f"Creating workspace {workspace_id} for user {user_id}")
 
-        async with self._acquire_workspace_lock(workspace_id):
+        workspace_created.add(1)
+
+        async with self._observed_lock(
+            workspace_id, "workspace.create", user_id=_obs_hash_id(user_id)
+        ):
             try:
                 # 2. Mint scoped tokens for sandbox ginlix-data access
                 sandbox_tokens = await self._mint_sandbox_tokens(user_id, workspace_id)
@@ -841,13 +867,17 @@ class WorkspaceManager:
             _session_phases[name] = (now - _t0) * 1000
             _t0 = now
 
+        _was_cached = workspace_id in self._sessions
+
         # ── Phase 1: Read/mutate session cache under per-workspace lock ──
         session: Session | None = None
         needs_sync = False
         needs_deferred_sync = False
         workspace_user_id = user_id
 
-        async with self._acquire_workspace_lock(workspace_id):
+        async with self._observed_lock(
+            workspace_id, "workspace.session.acquire", cached_on_entry=_was_cached
+        ):
             # ── Fast path: check session cache before any DB call ──
             if workspace_id in self._sessions:
                 session = self._sessions[workspace_id]
@@ -882,6 +912,7 @@ class WorkspaceManager:
                             f"Sandbox still initializing for {workspace_id}, "
                             f"skipping sync"
                         )
+                        session_path_counter.add(1, {"path": "warm_initializing"})
                         return session
                 else:
                     # Sandbox ready — check if sync is needed
@@ -891,6 +922,7 @@ class WorkspaceManager:
                     )
                     if not needs_sync:
                         # Cooldown active, skip expensive Daytona calls
+                        session_path_counter.add(1, {"path": "warm_cooldown"})
                         return session
 
             # ── Slow path: need DB to determine what to do ──
@@ -954,6 +986,7 @@ class WorkspaceManager:
                             return await self._recover_sandbox(
                                 workspace_id, workspace_user_id, core_config
                             )
+                        _mark("session_initialize")
 
                         await self._sync_sandbox_assets(
                             workspace_id,
@@ -961,6 +994,7 @@ class WorkspaceManager:
                             session.sandbox,
                             reusing_sandbox=sandbox_id is not None,
                         )
+                        _mark("cold_asset_sync")
 
                         # Check if sandbox needs config migration
                         migrated = await self._maybe_migrate_sandbox(
@@ -1224,6 +1258,21 @@ class WorkspaceManager:
             logger.info(
                 f"[SESSION_TIMING] workspace_id={workspace_id} total={total:.0f}ms ({phases})"
             )
+            # Classify path: cold_resume = lazy-restart path (needs_deferred_sync),
+            # warm_sync = cached session that needed a sync refresh, cold_create =
+            # first session for this workspace (not previously cached).
+            if needs_deferred_sync:
+                session_path = "cold_resume"
+            elif _was_cached:
+                session_path = "warm_sync"
+            else:
+                session_path = "cold_create"
+            session_path_counter.add(1, {"path": session_path})
+            session_acquire_total_ms.record(total, {"session_path": session_path})
+            for _phase, _ms in _session_phases.items():
+                session_acquire_phase_duration_ms.record(
+                    _ms, {"phase": _phase, "session_path": session_path}
+                )
 
         return session
 
@@ -1274,6 +1323,7 @@ class WorkspaceManager:
             extra={"lazy_init": lazy_init},
         )
 
+        _cold_start_t0 = time.monotonic()
         try:
             # Get session from SessionManager
             core_config = self.config.to_core_config()
@@ -1354,6 +1404,11 @@ class WorkspaceManager:
                 # workspace up using a stale timestamp. Mirrors _recover_sandbox.
                 await update_workspace_activity(workspace_id)
                 logger.info(f"Workspace {workspace_id} restarted successfully")
+            # Non-lazy: cold-start finished here. Lazy: only initiation finished;
+            # the second-stage init runs in the background. Record both to keep
+            # the histogram non-empty on the lazy path — frontend latency is
+            # dominated by the non-lazy phase regardless.
+            safe_record(workspace_cold_start_duration_ms, (time.monotonic() - _cold_start_t0) * 1000.0)
             return session
 
         except Exception as e:
@@ -1375,7 +1430,7 @@ class WorkspaceManager:
         Returns:
             Updated workspace record
         """
-        async with self._acquire_workspace_lock(workspace_id):
+        async with self._observed_lock(workspace_id, "workspace.stop"):
             workspace = await db_get_workspace(workspace_id)
             if not workspace:
                 raise ValueError(f"Workspace {workspace_id} not found")
@@ -1437,7 +1492,7 @@ class WorkspaceManager:
 
     async def archive_workspace(self, workspace_id: str) -> Dict[str, Any]:
         """Archive a stopped workspace (moves sandbox to object storage)."""
-        async with self._acquire_workspace_lock(workspace_id):
+        async with self._observed_lock(workspace_id, "workspace.archive"):
             workspace = await db_get_workspace(workspace_id)
             if not workspace:
                 raise ValueError(f"Workspace {workspace_id} not found")
@@ -1482,7 +1537,7 @@ class WorkspaceManager:
         Returns:
             True if deleted successfully
         """
-        async with self._acquire_workspace_lock(workspace_id):
+        async with self._observed_lock(workspace_id, "workspace.delete"):
             workspace = await db_get_workspace(workspace_id)
             if not workspace:
                 raise ValueError(f"Workspace {workspace_id} not found")

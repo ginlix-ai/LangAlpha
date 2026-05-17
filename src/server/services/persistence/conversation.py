@@ -17,6 +17,7 @@ from datetime import datetime
 from uuid import uuid4
 
 from src.server.database import conversation as qr_db
+from src.observability.tracing import safe_aspan
 
 logger = logging.getLogger(__name__)
 
@@ -487,102 +488,106 @@ class ConversationPersistenceService:
         Returns:
             response_id: Created response ID
         """
-        turn_index = await self.get_or_calculate_turn_index()
+        async with safe_aspan(
+            "chat.turn.persist",
+            {"status": "completed", "thread_id_hash": (self.thread_id or "")[:16]},
+        ):
+            turn_index = await self.get_or_calculate_turn_index()
 
-        if turn_index in self._persisted_completions:
-            logger.warning(
-                f"[ConversationPersistence] Completion already persisted for thread_id={self.thread_id} "
-                f"turn_index={turn_index}, skipping"
-            )
-            # Advance turn if caller expects it (e.g. reinvoke dedup after pre-tail persist)
-            if not skip_finalize:
-                await self._finalize_pair()
-            return self._current_response_id
+            if turn_index in self._persisted_completions:
+                logger.warning(
+                    f"[ConversationPersistence] Completion already persisted for thread_id={self.thread_id} "
+                    f"turn_index={turn_index}, skipping"
+                )
+                # Advance turn if caller expects it (e.g. reinvoke dedup after pre-tail persist)
+                if not skip_finalize:
+                    await self._finalize_pair()
+                return self._current_response_id
 
-        try:
-            response_id = str(uuid4())
-            _checkpoint_id = await self._get_latest_checkpoint_id()
+            try:
+                response_id = str(uuid4())
+                _checkpoint_id = await self._get_latest_checkpoint_id()
 
-            # Stage-level transaction: group update + create + usage tracking
-            async with qr_db.get_db_connection() as conn:
-                async with conn.transaction():
-                    await qr_db.update_thread_status(
-                        self.thread_id, "completed",
-                        checkpoint_id=_checkpoint_id, conn=conn,
-                    )
-
-                    await qr_db.create_response(
-                        conversation_response_id=response_id,
-                        conversation_thread_id=self.thread_id,
-                        turn_index=turn_index,
-                        status="completed",
-                        metadata=metadata,
-                        warnings=warnings,
-                        errors=errors,
-                        execution_time=execution_time,
-                        created_at=timestamp,
-                        sse_events=sse_events,
-                        conn=conn
-                    )
-
-                    # NEW: Create usage record (token + infrastructure credits)
-                    if per_call_records or tool_usage:
-                        from src.server.services.persistence.usage import UsagePersistenceService
-
-                        usage_service = UsagePersistenceService(
-                            thread_id=self.thread_id,
-                            workspace_id=self.workspace_id,
-                            user_id=self.user_id
+                # Stage-level transaction: group update + create + usage tracking
+                async with qr_db.get_db_connection() as conn:
+                    async with conn.transaction():
+                        await qr_db.update_thread_status(
+                            self.thread_id, "completed",
+                            checkpoint_id=_checkpoint_id, conn=conn,
                         )
 
-                        # Track token usage if available
-                        if per_call_records:
-                            await usage_service.track_llm_usage(per_call_records)
-
-                        # Track tool usage if available
-                        if tool_usage:
-                            usage_service.record_tool_usage_batch(tool_usage)
-
-                        # Extract msg_type and deepthinking from metadata
-                        msg_type = metadata.get("msg_type") if metadata else None
-                        deepthinking = metadata.get("deepthinking", False) if metadata else False
-
-                        # Extract BYOK flag from metadata
-                        is_byok = metadata.get("is_byok", False) if metadata else False
-
-                        # Persist to conversation_usage table (status='completed')
-                        await usage_service.persist_usage(
-                            response_id=response_id,
-                            timestamp=timestamp,
-                            msg_type=msg_type,
-                            deepthinking=deepthinking,
+                        await qr_db.create_response(
+                            conversation_response_id=response_id,
+                            conversation_thread_id=self.thread_id,
+                            turn_index=turn_index,
                             status="completed",
-                            conn=conn,
-                            is_byok=is_byok
+                            metadata=metadata,
+                            warnings=warnings,
+                            errors=errors,
+                            execution_time=execution_time,
+                            created_at=timestamp,
+                            sse_events=sse_events,
+                            conn=conn
                         )
 
-            self._persisted_completions.add(turn_index)
-            self._current_response_id = response_id
+                        # Create usage record (token + infrastructure credits)
+                        if per_call_records or tool_usage:
+                            from src.server.services.persistence.usage import UsagePersistenceService
 
-            logger.debug(
-                f"[ConversationPersistence] Persisted completion for thread_id={self.thread_id} "
-                f"turn_index={turn_index} response_id={response_id}"
-            )
+                            usage_service = UsagePersistenceService(
+                                thread_id=self.thread_id,
+                                workspace_id=self.workspace_id,
+                                user_id=self.user_id
+                            )
 
-            if not skip_finalize:
-                # Increment turn_index and run post-persist hook (e.g. clear event buffer)
-                await self._finalize_pair()
+                            # Track token usage if available
+                            if per_call_records:
+                                await usage_service.track_llm_usage(per_call_records)
 
-            return response_id
+                            # Track tool usage if available
+                            if tool_usage:
+                                usage_service.record_tool_usage_batch(tool_usage)
+
+                            # Extract msg_type and deepthinking from metadata
+                            msg_type = metadata.get("msg_type") if metadata else None
+                            deepthinking = metadata.get("deepthinking", False) if metadata else False
+
+                            # Extract BYOK flag from metadata
+                            is_byok = metadata.get("is_byok", False) if metadata else False
+
+                            # Persist to conversation_usage table (status='completed')
+                            await usage_service.persist_usage(
+                                response_id=response_id,
+                                timestamp=timestamp,
+                                msg_type=msg_type,
+                                deepthinking=deepthinking,
+                                status="completed",
+                                conn=conn,
+                                is_byok=is_byok
+                            )
+
+                self._persisted_completions.add(turn_index)
+                self._current_response_id = response_id
+
+                logger.debug(
+                    f"[ConversationPersistence] Persisted completion for thread_id={self.thread_id} "
+                    f"turn_index={turn_index} response_id={response_id}"
+                )
+
+                if not skip_finalize:
+                    # Increment turn_index and run post-persist hook (e.g. clear event buffer)
+                    await self._finalize_pair()
+
+                return response_id
 
 
-        except Exception as e:
-            logger.error(
-                f"[ConversationPersistence] Failed to persist completion "
-                f"thread_id={self.thread_id}: {e}",
-                exc_info=True
-            )
-            raise
+            except Exception as e:
+                logger.error(
+                    f"[ConversationPersistence] Failed to persist completion "
+                    f"thread_id={self.thread_id}: {e}",
+                    exc_info=True
+                )
+                raise
 
     async def persist_error(
         self,

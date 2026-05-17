@@ -49,8 +49,16 @@ from src.server.database.workspace import get_workspace as db_get_workspace
 from src.server.services.workspace_manager import WorkspaceManager
 from src.server.services.persistence.file import FilePersistenceService
 from src.server.utils.secret_redactor import get_redactor, get_vault_secrets_for_redaction
+from src.observability import safe_record, workspace_fs_bytes
 
 logger = logging.getLogger(__name__)
+
+
+def _record_fs_bytes(op: str, size: int | None) -> None:
+    """Emit workspace.fs.bytes histogram. No-op when size is unknown / negative."""
+    if not size or size < 0:
+        return
+    safe_record(workspace_fs_bytes, int(size), {"op": op})
 
 router = APIRouter(prefix="/api/v1/workspaces", tags=["Workspace Files"])
 
@@ -503,6 +511,8 @@ async def read_workspace_file(
 
     mime, _enc = mimetypes.guess_type(client_path)
 
+    _record_fs_bytes("read", len(raw_bytes))
+
     return {
         "workspace_id": workspace_id,
         "path": client_path,
@@ -571,6 +581,8 @@ async def write_workspace_file(
                 session.invalidate_agent_md()
         except Exception:
             pass
+
+    _record_fs_bytes("write", len(content_bytes))
 
     return {
         "workspace_id": workspace_id,
@@ -678,6 +690,8 @@ async def download_workspace_file(
         vault_secrets = await get_vault_secrets_for_redaction(workspace_id)
         content = get_redactor().redact_bytes(content, vault_secrets=vault_secrets)
 
+    _record_fs_bytes("download", len(content))
+
     return _build_download_response(
         content, filename, mime or "application/octet-stream", request
     )
@@ -736,6 +750,7 @@ async def upload_workspace_file(
         raise HTTPException(status_code=500, detail="Upload failed")
 
     client_path = _to_client_path(sandbox, normalized)
+    _record_fs_bytes("upload", len(content))
     return {
         "workspace_id": workspace_id,
         "path": client_path,

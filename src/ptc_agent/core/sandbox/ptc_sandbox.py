@@ -15,6 +15,16 @@ from typing import Any
 
 import structlog
 
+from src.observability import (
+    safe_record,
+    sandbox_asset_sync_phase_duration_ms,
+    sandbox_asset_sync_total_ms,
+    sandbox_execute_duration_ms,
+    sandbox_user_data_upload_duration_ms,
+    workspace_fs_bytes,
+)
+from src.observability.tracing import tracer as _otel_tracer
+
 from ptc_agent.config.core import CoreConfig
 from ptc_agent.core.sandbox._defaults import DEFAULT_DEPENDENCIES, SNAPSHOT_PYTHON_VERSION
 from ptc_agent.core.sandbox.migration import CURRENT_LAYOUT_VERSION, run_layout_migrations
@@ -938,6 +948,7 @@ class PTCSandbox:
         user_data_path = f"{work_dir}/.agents/user"
 
         assert self.runtime is not None
+        _t0 = time.monotonic()
         await self._runtime_call(
             self.runtime.exec,
             f"mkdir -p {user_data_path}",
@@ -952,6 +963,7 @@ class PTCSandbox:
             batch,
             retry_policy=RetryPolicy.SAFE,
         )
+        safe_record(sandbox_user_data_upload_duration_ms, (time.monotonic() - _t0) * 1000.0)
         logger.debug("Uploaded user data files", file_count=len(files))
 
     # ── Unified manifest helpers ────────────────────────────────────────
@@ -1503,6 +1515,21 @@ class PTCSandbox:
                 f"[ASSET_SYNC] total={total:.0f}ms ({phases}) "
                 f"changed={','.join(sorted(refreshed)) or 'none'}"
             )
+            # Mirror the [ASSET_SYNC] log into OTel: one phase histogram sample
+            # per bucket + a total, labeled by whether any module changed (so
+            # dashboards can split fast no-op syncs from expensive ones).
+            _reuse_label = "reuse" if reusing_sandbox else "fresh"
+            safe_record(
+                sandbox_asset_sync_total_ms,
+                total,
+                {"changed": "yes" if refreshed else "no", "sandbox": _reuse_label},
+            )
+            for _phase, _ms in _sync_phases.items():
+                safe_record(
+                    sandbox_asset_sync_phase_duration_ms,
+                    _ms,
+                    {"phase": _phase, "sandbox": _reuse_label},
+                )
             return SyncResult(refreshed_modules=refreshed, forced=force_refresh)
 
     @staticmethod
@@ -2455,6 +2482,11 @@ except OSError as e:
         timeout_val = timeout or self.config.security.max_execution_time
         start_time = time.time()
 
+        _exec_span = _otel_tracer.start_span(
+            "sandbox.execute",
+            attributes={"code_bytes": len(code), "execution_id": execution_id},
+        )
+
         try:
             # Write code to thread dir or fallback to code/
             if thread_id:
@@ -2574,6 +2606,14 @@ except OSError as e:
                 charts_captured=len(charts),
             )
 
+            _exec_span.set_attribute("success", True)
+            safe_record(
+                sandbox_execute_duration_ms,
+                (time.time() - start_time) * 1000.0,
+                {"success": "true", "kind": "code"},
+            )
+            _exec_span.end()
+
             return execution_result
 
         except Exception as e:
@@ -2594,6 +2634,16 @@ except OSError as e:
                 duration=duration,
                 is_timeout=is_timeout,
             )
+
+            _exec_span.record_exception(e)
+            _exec_span.set_attribute("success", False)
+            _exec_span.set_attribute("is_timeout", is_timeout)
+            safe_record(
+                sandbox_execute_duration_ms,
+                duration * 1000.0,
+                {"success": "false", "kind": "code"},
+            )
+            _exec_span.end()
 
             return ExecutionResult(
                 success=False,
@@ -3191,6 +3241,11 @@ except OSError as e:
 
             exit_code = exec_result.exit_code
             stdout = exec_result.stdout
+            safe_record(
+                sandbox_execute_duration_ms,
+                (time.time() - start_time) * 1000.0,
+                {"success": "true" if exit_code == 0 else "false", "kind": "bash"},
+            )
 
             if exit_code == 0:
                 return {
@@ -3213,6 +3268,11 @@ except OSError as e:
 
         except Exception as e:
             duration = time.time() - start_time
+            safe_record(
+                sandbox_execute_duration_ms,
+                duration * 1000.0,
+                {"success": "false", "kind": "bash"},
+            )
             is_timeout, error_detail, stderr_msg = self._classify_execution_error(
                 e,
                 duration,
@@ -3276,11 +3336,14 @@ except OSError as e:
 
         try:
             async with self._download_semaphore:
-                return await self._runtime_call(
+                result = await self._runtime_call(
                     self.runtime.download_file,
                     filepath,
                     retry_policy=RetryPolicy.SAFE,
                 )
+            if result:
+                safe_record(workspace_fs_bytes, len(result), {"op": "read"})
+            return result
         except SandboxTransientError:
             raise
         except Exception as e:
@@ -3333,6 +3396,7 @@ except OSError as e:
                 normalized_path,
                 retry_policy=RetryPolicy.SAFE,
             )
+            safe_record(workspace_fs_bytes, len(content), {"op": "write"})
             return True
         except SandboxTransientError:
             raise

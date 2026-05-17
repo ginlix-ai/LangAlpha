@@ -21,6 +21,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
+from src.observability import observe_replay_stream
 from src.server.utils.http_headers import content_disposition
 from src.server.utils.secret_redactor import get_redactor, get_vault_secrets_for_redaction
 
@@ -174,7 +175,7 @@ async def replay_shared_thread(share_token: str):
         yield f"id: {seq}\nevent: replay_done\ndata: {json.dumps({'thread_id': thread_id}, default=str)}\n\n"
 
     return StreamingResponse(
-        event_generator(),
+        observe_replay_stream(event_generator(), source="public"),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"},
     )
