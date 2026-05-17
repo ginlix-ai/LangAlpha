@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Iterable
 
 from opentelemetry.metrics import CallbackOptions, Observation
@@ -16,29 +17,45 @@ logger = logging.getLogger(__name__)
 
 
 _conn = None  # lazy module-level sync psycopg connection
+_conn_lock = threading.Lock()  # callbacks fire from the OTel exporter thread
 
 
 def _connect():
-    """Open a sync psycopg connection from DB_* env vars (autocommit)."""
+    """Open a sync psycopg connection from DB_* env vars (autocommit).
+
+    Uses kwargs (not a DSN string) so passwords containing spaces, '=', or
+    backslashes don't silently break libpq parsing.
+    """
     import psycopg
 
-    dsn_parts = [
-        f"host={os.environ.get('DB_HOST', 'localhost')}",
-        f"port={os.environ.get('DB_PORT', '5432')}",
-        f"dbname={os.environ.get('DB_NAME', 'postgres')}",
-        f"user={os.environ.get('DB_USER', 'postgres')}",
-    ]
-    pw = os.environ.get("DB_PASSWORD")
-    if pw:
-        dsn_parts.append(f"password={pw}")
-    return psycopg.connect(" ".join(dsn_parts), autocommit=True)
+    return psycopg.connect(
+        host=os.environ.get("DB_HOST", "localhost"),
+        port=os.environ.get("DB_PORT", "5432"),
+        dbname=os.environ.get("DB_NAME", "postgres"),
+        user=os.environ.get("DB_USER", "postgres"),
+        password=os.environ.get("DB_PASSWORD") or None,
+        autocommit=True,
+    )
 
 
 def _get_conn():
+    """Return the shared sync connection, opening or reopening as needed.
+
+    The lock prevents two concurrent callbacks both seeing ``_conn is None``
+    and leaking a connection.
+    """
     global _conn
-    if _conn is None or _conn.closed:
-        _conn = _connect()
-    return _conn
+    with _conn_lock:
+        if _conn is None or _conn.closed:
+            _conn = _connect()
+        return _conn
+
+
+def _reset_conn() -> None:
+    """Drop the cached connection so the next callback reopens it."""
+    global _conn
+    with _conn_lock:
+        _conn = None
 
 
 # input_tokens in the source JSONB already includes the cached portion
@@ -72,8 +89,7 @@ def llm_tokens_observe(options: CallbackOptions) -> Iterable[Observation]:
             rows = cur.fetchall()
     except Exception as exc:  # noqa: BLE001
         logger.debug("llm_tokens_observe DB read failed: %s", exc)
-        global _conn
-        _conn = None
+        _reset_conn()
         return []
 
     out: list[Observation] = []
@@ -116,8 +132,7 @@ def credits_observe(options: CallbackOptions) -> Iterable[Observation]:
             rows = cur.fetchall()
     except Exception as exc:  # noqa: BLE001
         logger.debug("credits_observe DB read failed: %s", exc)
-        global _conn
-        _conn = None
+        _reset_conn()
         return []
 
     out: list[Observation] = []

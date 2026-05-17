@@ -501,9 +501,11 @@ async def lifespan(app: FastAPI):
 
     # 10. Flush + shut down OTel providers last, so spans/metrics emitted by
     # the earlier shutdown steps reach the collector before the daemon threads
-    # exit. No-op when OTel is disabled.
+    # exit. No-op when OTel is disabled. Run on a worker thread because
+    # BatchSpanProcessor.force_flush() is synchronous and can block up to its
+    # default 30s timeout — we must not stall the event loop here.
     try:
-        shutdown_otel_runtime()
+        await asyncio.to_thread(shutdown_otel_runtime)
     except Exception as e:
         logger.warning(f"Error shutting down OTel runtime: {e}")
 

@@ -57,6 +57,7 @@ from src.observability import (
     observe_background_chat_turn,
     observe_chat_stream,
     observe_replay_stream,
+    safe_add,
     sse_reconnects,
 )
 
@@ -654,7 +655,7 @@ async def reconnect_to_stream(
     await require_thread_owner(thread_id, x_user_id)
     from src.server.handlers.chat import reconnect_to_workflow_stream
 
-    sse_reconnects.add(1)
+    safe_add(sse_reconnects, 1)
 
     if last_event_id is None and last_event_id_header is not None:
         try:

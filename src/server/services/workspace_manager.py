@@ -25,6 +25,7 @@ from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientErr
 from ptc_agent.core.session import Session, SessionManager
 
 from src.observability import (
+    safe_add,
     safe_record,
     session_acquire_phase_duration_ms,
     session_acquire_total_ms,
@@ -756,8 +757,6 @@ class WorkspaceManager:
 
         logger.info(f"Creating workspace {workspace_id} for user {user_id}")
 
-        workspace_created.add(1)
-
         async with self._observed_lock(
             workspace_id, "workspace.create", user_id=_obs_hash_id(user_id)
         ):
@@ -807,6 +806,7 @@ class WorkspaceManager:
                 logger.info(
                     f"Workspace {workspace_id} created with sandbox {sandbox_id}"
                 )
+                safe_add(workspace_created, 1)
                 return workspace
 
             except Exception as e:
@@ -912,7 +912,7 @@ class WorkspaceManager:
                             f"Sandbox still initializing for {workspace_id}, "
                             f"skipping sync"
                         )
-                        session_path_counter.add(1, {"path": "warm_initializing"})
+                        safe_add(session_path_counter, 1, {"path": "warm_initializing"})
                         return session
                 else:
                     # Sandbox ready — check if sync is needed
@@ -922,7 +922,7 @@ class WorkspaceManager:
                     )
                     if not needs_sync:
                         # Cooldown active, skip expensive Daytona calls
-                        session_path_counter.add(1, {"path": "warm_cooldown"})
+                        safe_add(session_path_counter, 1, {"path": "warm_cooldown"})
                         return session
 
             # ── Slow path: need DB to determine what to do ──
@@ -1267,11 +1267,13 @@ class WorkspaceManager:
                 session_path = "warm_sync"
             else:
                 session_path = "cold_create"
-            session_path_counter.add(1, {"path": session_path})
-            session_acquire_total_ms.record(total, {"session_path": session_path})
+            safe_add(session_path_counter, 1, {"path": session_path})
+            safe_record(session_acquire_total_ms, total, {"session_path": session_path})
             for _phase, _ms in _session_phases.items():
-                session_acquire_phase_duration_ms.record(
-                    _ms, {"phase": _phase, "session_path": session_path}
+                safe_record(
+                    session_acquire_phase_duration_ms,
+                    _ms,
+                    {"phase": _phase, "session_path": session_path},
                 )
 
         return session

@@ -2486,7 +2486,8 @@ except OSError as e:
             "sandbox.execute",
             attributes={"code_bytes": len(code), "execution_id": execution_id},
         )
-
+        # finally — guarantees end() runs on asyncio.CancelledError too
+        # (it's a BaseException so the except-clauses below would skip it).
         try:
             # Write code to thread dir or fallback to code/
             if thread_id:
@@ -2612,7 +2613,6 @@ except OSError as e:
                 (time.time() - start_time) * 1000.0,
                 {"success": "true", "kind": "code"},
             )
-            _exec_span.end()
 
             return execution_result
 
@@ -2643,7 +2643,6 @@ except OSError as e:
                 duration * 1000.0,
                 {"success": "false", "kind": "code"},
             )
-            _exec_span.end()
 
             return ExecutionResult(
                 success=False,
@@ -2656,6 +2655,8 @@ except OSError as e:
                 code_hash=code_hash,
                 charts=[],
             )
+        finally:
+            _exec_span.end()
 
     @property
     def proxy_domain(self) -> str | None:
