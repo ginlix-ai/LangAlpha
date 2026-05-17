@@ -45,6 +45,8 @@ services:
     build:
       context: .
       dockerfile: deploy/Dockerfile.dev
+      args:
+        INSTALL_OBSERVABILITY: ${INSTALL_OBSERVABILITY:-${OTEL_EXPORTER_OTLP_ENDPOINT:+true}}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     init: true

@@ -19,8 +19,13 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY libs/ptc-cli/ libs/ptc-cli/
 
-# Install dependencies (frozen = use lockfile exactly)
-RUN uv sync --frozen --no-dev
+# Install dependencies (frozen = use lockfile exactly).
+ARG INSTALL_OBSERVABILITY=false
+RUN if [ "$INSTALL_OBSERVABILITY" = "true" ]; then \
+        uv sync --frozen --no-dev --extra observability; \
+    else \
+        uv sync --frozen --no-dev; \
+    fi
 
 # Install browsers for Scrapling crawling (--with-deps pulls OS libraries)
 # patchright: Chromium for DynamicFetcher (Tier 2)

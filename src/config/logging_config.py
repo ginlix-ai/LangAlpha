@@ -27,6 +27,25 @@ from src.config.settings import (
 _logging_configured = False
 
 
+class _TraceContextFormatter(logging.Formatter):
+    """Append ``[trace=<id> span=<id>]`` to log lines when OTel's
+    ``LoggingInstrumentor`` has injected the fields into the record.
+
+    The instrumentor sets ``otelTraceID`` / ``otelSpanID`` on every record
+    when an active span exists; otherwise the attributes default to a
+    zero string. We append only when both are non-zero, so OSS log output
+    is identical when OTel is disabled.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        base = super().format(record)
+        trace_id = getattr(record, "otelTraceID", "") or ""
+        span_id = getattr(record, "otelSpanID", "") or ""
+        if trace_id and trace_id != "0" * 32 and span_id and span_id != "0" * 16:
+            return f"{base} [trace={trace_id} span={span_id}]"
+        return base
+
+
 # =============================================================================
 # Library Group Mappings for Grouped Logging Configuration
 # =============================================================================
@@ -152,11 +171,14 @@ def configure_logging(force: bool = False) -> None:
     # Expand grouped configurations (e.g., group:third_party_libraries -> openai, httpx, etc.)
     module_log_levels = expand_module_log_levels(raw_module_log_levels)
 
-    # Configure root logger
+    # Configure root logger. Use a custom formatter so trace_id / span_id can be
+    # appended when OTel is active; output is identical when OTel is disabled.
+    root_handler = logging.StreamHandler()
+    root_handler.setFormatter(_TraceContextFormatter(fmt=log_format))
     logging.basicConfig(
         level=getattr(logging, log_level),
-        format=log_format,
-        force=True  # Override any existing basicConfig calls
+        handlers=[root_handler],
+        force=True,  # Override any existing basicConfig calls
     )
 
     # Configure module-specific loggers

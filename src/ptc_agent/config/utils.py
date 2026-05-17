@@ -262,17 +262,47 @@ def create_filesystem_config(data: dict[str, Any]) -> FilesystemConfig:
     )
 
 
+def _otel_trace_context_processor(_logger, _method_name, event_dict):
+    """Inject trace_id / span_id from the active OTel span into structlog events.
+
+    No-op when OTel isn't installed or no span is active. Stays cheap on the hot
+    path: a single ``trace.get_current_span()`` call returns the sentinel
+    ``INVALID_SPAN`` when nothing is active and we skip the dict mutation.
+    """
+    try:
+        from opentelemetry import trace as _otel_trace
+
+        span = _otel_trace.get_current_span()
+        ctx = span.get_span_context() if span is not None else None
+        if ctx is not None and ctx.is_valid:
+            event_dict.setdefault("trace_id", format(ctx.trace_id, "032x"))
+            event_dict.setdefault("span_id", format(ctx.span_id, "016x"))
+    except Exception:  # noqa: BLE001 — never break logging
+        pass
+    return event_dict
+
+
 def configure_structlog(level: str = "INFO") -> None:
-    """Configure structlog to respect log level from config.
+    """Configure structlog to respect log level from config and join with OTel.
 
-    This function configures log level filtering
-
-    Args:
-        level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    Adds a processor that injects ``trace_id`` / ``span_id`` from the active
+    span (when present) so structlog events emitted from agent code correlate
+    with traces.
     """
     log_level = getattr(logging, level.upper(), logging.INFO)
 
     structlog.configure(
         wrapper_class=structlog.make_filtering_bound_logger(log_level),
         cache_logger_on_first_use=True,
+        processors=[
+            _otel_trace_context_processor,
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            # NOTE: ConsoleRenderer formats exceptions itself; do NOT add
+            # structlog.processors.format_exc_info upstream of it or structlog
+            # warns about double-processing.
+            structlog.dev.ConsoleRenderer(),
+        ],
     )
