@@ -1943,5 +1943,10 @@
     "flashModelLabel": "Flash model",
     "notSet": "Not set",
     "notConfigured": "Not configured"
+  },
+  "marketView": {
+    "chatHistory": {
+      "missingThreadHint": "Don't see a thread? Threads are scoped to mode and workspace. Try switching between Flash and PTC, or pick a different workspace."
+    }
   }
 }

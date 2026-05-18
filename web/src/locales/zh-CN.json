@@ -1923,5 +1923,10 @@
     "flashModelLabel": "快速模型",
     "notSet": "未设置",
     "notConfigured": "未配置"
+  },
+  "marketView": {
+    "chatHistory": {
+      "missingThreadHint": "找不到对话？对话按模式和工作区隔离。请尝试在 Flash 与 PTC 之间切换，或选择其他工作区。"
+    }
   }
 }

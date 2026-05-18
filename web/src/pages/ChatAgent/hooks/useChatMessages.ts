@@ -496,6 +496,7 @@ export function useChatMessages(
   agentMode: string = 'ptc',
   clearSubagentCards: (() => void) | null = null,
   onWorkspaceCreated: ((info: { workspaceId: string; question: string }) => void) | null = null,
+  platform: string | null = null,
 ) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -3621,7 +3622,13 @@ export function useChatMessages(
         additionalContext,
         agentMode,
         userLocale,
-        userTimezone
+        userTimezone,
+        undefined,
+        undefined,
+        null,
+        null,
+        null,
+        platform,
       );
     } catch (err: unknown) {
       console.error('Error sending steering:', err);
@@ -3760,7 +3767,8 @@ export function useChatMessages(
         userLocale, userTimezone, undefined, undefined,
         model || null,
         reasoningEffort || null,
-        fastMode || null
+        fastMode || null,
+        platform,
       );
 
       if (result?.disconnected) {
@@ -4234,7 +4242,8 @@ export function useChatMessages(
         forkFromTurn,
         modelOptions.model || null,
         modelOptions.reasoningEffort || null,
-        modelOptions.fastMode || null
+        modelOptions.fastMode || null,
+        platform,
       );
 
       if (result?.disconnected) {
