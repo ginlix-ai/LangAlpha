@@ -23,6 +23,11 @@ class WorkspaceThreadListItem(BaseModel):
     first_query_content: Optional[str] = Field(
         None, description="First user query content (preview)"
     )
+    platform: Optional[str] = Field(
+        None,
+        description="Origin platform: 'web', 'market_view:<SYMBOL>', or channel "
+        "name ('telegram', 'slack', 'discord', 'feishu'). NULL for pre-tracking rows.",
+    )
     is_shared: bool = Field(False, description="Whether thread is publicly shared")
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
@@ -35,6 +40,7 @@ class WorkspaceThreadListItem(BaseModel):
             "current_status": "completed",
             "msg_type": "ptc",
             "title": "Tesla Stock Analysis",
+            "platform": "market_view:TSLA",
             "is_shared": False,
             "created_at": "2025-10-15T10:30:00Z",
             "updated_at": "2025-10-15T14:45:00Z",
