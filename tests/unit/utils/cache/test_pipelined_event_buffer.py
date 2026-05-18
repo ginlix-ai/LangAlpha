@@ -1,10 +1,11 @@
 """Unit tests for RedisCacheClient.pipelined_event_buffer.
 
-Verifies the conditional-write semantics:
-- ``events_key=None`` (main workflow): meta hash + Stream only, no RPUSH.
-- ``events_key`` provided (subagent): meta hash + Stream + List dual-write.
-- Stream branch gated on both ``stream_key`` AND ``last_event_id`` being set.
-- Dirty-resume guard DELs only the keys that will actually be written.
+Verifies the Stream-only semantics post-cutover:
+- Meta hash + XADD only (no List writes).
+- ``stream_record`` adds a second ``b"record"`` field on the XADD entry so
+  the post-turn collector can XRANGE it back out without a separate List.
+- Stream branch gated on both ``stream_key`` AND ``last_event_id``.
+- Dirty-resume guard DELs the stream and HDELs the seq counter.
 """
 
 from __future__ import annotations
@@ -19,9 +20,6 @@ from src.utils.cache.redis_cache import RedisCacheClient
 def _make_pipeline_mock() -> tuple[MagicMock, MagicMock]:
     """Build a redis-py-like async pipeline mock recording queued commands."""
     pipe = MagicMock()
-    # Each queued command (rpush, ltrim, expire, hincrby, etc.) is a no-op
-    # that returns the pipe object — we only care about call args, not order
-    # of magic-method binding.
     for fn in (
         "rpush",
         "ltrim",
@@ -35,10 +33,9 @@ def _make_pipeline_mock() -> tuple[MagicMock, MagicMock]:
     ):
         setattr(pipe, fn, MagicMock(return_value=pipe))
     # The implementation pulls ``seq`` from the HINCRBY result whose index
-    # depends on whether the dirty-resume guard fired (and whether a stream
-    # key is configured). Returning ``7`` at every position keeps the
-    # ``seq == 7`` assertion stable across all guard variants without
-    # hard-coding the per-test command count.
+    # depends on whether the dirty-resume guard fired. Returning ``7`` at
+    # every position keeps the ``seq == 7`` assertion stable across all
+    # guard variants without hard-coding the per-test command count.
     pipe.execute = AsyncMock(return_value=[7] * 20)
 
     pipeline_ctx = MagicMock()
@@ -58,15 +55,12 @@ def _make_client_with_pipeline(pipeline_ctx: MagicMock) -> RedisCacheClient:
 
 
 @pytest.mark.asyncio
-async def test_main_workflow_stream_only_when_events_key_none():
-    """Main-workflow caller passes ``events_key=None`` post PR 3.5: the
-    Stream is the only durable log; persistence comes from
-    ``StreamEventAccumulator``. No RPUSH/LTRIM, just XADD + meta + EXPIRE."""
+async def test_main_workflow_stream_only():
+    """Main-workflow caller writes the meta hash + XADD only — no RPUSH/LTRIM."""
     pipe, pipeline_ctx = _make_pipeline_mock()
     cache = _make_client_with_pipeline(pipeline_ctx)
 
     success, seq = await cache.pipelined_event_buffer(
-        events_key=None,
         meta_key="workflow:events:meta:t1",
         event="id: 42\nevent: x\ndata: hi\n\n",
         max_size=1000,
@@ -86,7 +80,7 @@ async def test_main_workflow_stream_only_when_events_key_none():
     assert kwargs["id"] == "42-0"
     assert kwargs["maxlen"] == 1000
     assert kwargs["approximate"] is True
-    # EXPIRE on meta + stream only (no events_key).
+    # EXPIRE on meta + stream only.
     assert pipe.expire.call_count == 2
     expire_keys = [call.args[0] for call in pipe.expire.call_args_list]
     assert "workflow:stream:t1" in expire_keys
@@ -94,15 +88,14 @@ async def test_main_workflow_stream_only_when_events_key_none():
 
 
 @pytest.mark.asyncio
-async def test_subagent_dual_write_when_events_key_provided():
-    """Subagent caller still passes events_key — RPUSH stays as the source
-    for ``iter_subagent_events_full``'s [1, tail_front_seq) gap fill until
-    that collector migrates to XRANGE on the Stream."""
+async def test_subagent_xadd_carries_record_field_when_stream_record_provided():
+    """Subagent caller passes ``stream_record`` → XADD entry has both
+    ``b"event"`` (pre-rendered SSE wire) and ``b"record"`` (JSON record) so
+    the post-turn collector can XRANGE the record back out."""
     pipe, pipeline_ctx = _make_pipeline_mock()
     cache = _make_client_with_pipeline(pipeline_ctx)
 
     await cache.pipelined_event_buffer(
-        events_key="subagent:events:t1:abc",
         meta_key="subagent:events:meta:t1:abc",
         event='{"seq": 5, "event": "message_chunk"}',
         max_size=1000,
@@ -110,30 +103,49 @@ async def test_subagent_dual_write_when_events_key_provided():
         last_event_id=5,
         stream_key="subagent:stream:t1:abc",
         stream_event="id: 5\nevent: message_chunk\ndata: {}\n\n",
+        stream_record='{"seq": 5, "event": "message_chunk"}',
     )
 
-    pipe.rpush.assert_called_once()
-    rpush_args = pipe.rpush.call_args.args
-    assert rpush_args[0] == "subagent:events:t1:abc"
-    assert rpush_args[1] == '{"seq": 5, "event": "message_chunk"}'
-
+    pipe.rpush.assert_not_called()
     pipe.xadd.assert_called_once()
     xadd_args = pipe.xadd.call_args.args
-    assert xadd_args[1] == {b"event": b"id: 5\nevent: message_chunk\ndata: {}\n\n"}
-    # EXPIRE on events_key, meta_key, and stream_key — three total.
-    assert pipe.expire.call_count == 3
+    fields = xadd_args[1]
+    assert fields[b"event"] == b"id: 5\nevent: message_chunk\ndata: {}\n\n"
+    assert fields[b"record"] == b'{"seq": 5, "event": "message_chunk"}'
+    # EXPIRE on meta_key + stream_key only.
+    assert pipe.expire.call_count == 2
 
 
 @pytest.mark.asyncio
-async def test_xadd_skipped_when_stream_key_missing():
-    """No stream_key → meta-only writes (List path also skipped if events_key
-    is None). Currently exercised only by tests; production callers always
-    provide a stream_key."""
+async def test_xadd_omits_record_field_when_stream_record_missing():
+    """Without ``stream_record``, XADD writes only the ``b"event"`` field —
+    used by the main-workflow path where there is nothing to collect."""
     pipe, pipeline_ctx = _make_pipeline_mock()
     cache = _make_client_with_pipeline(pipeline_ctx)
 
     await cache.pipelined_event_buffer(
-        events_key=None,
+        meta_key="workflow:events:meta:t1",
+        event="id: 1\nevent: x\ndata: hi\n\n",
+        max_size=1000,
+        ttl=86400,
+        last_event_id=1,
+        stream_key="workflow:stream:t1",
+    )
+
+    pipe.xadd.assert_called_once()
+    fields = pipe.xadd.call_args.args[1]
+    assert b"event" in fields
+    assert b"record" not in fields
+
+
+@pytest.mark.asyncio
+async def test_xadd_skipped_when_stream_key_missing():
+    """No stream_key → meta-only writes. Currently exercised only by tests;
+    production callers always provide a stream_key."""
+    pipe, pipeline_ctx = _make_pipeline_mock()
+    cache = _make_client_with_pipeline(pipeline_ctx)
+
+    await cache.pipelined_event_buffer(
         meta_key="m",
         event="id: 1\ndata: x\n\n",
         max_size=10,
@@ -157,7 +169,6 @@ async def test_xadd_skipped_when_last_event_id_missing():
     cache = _make_client_with_pipeline(pipeline_ctx)
 
     await cache.pipelined_event_buffer(
-        events_key=None,
         meta_key="m",
         event="event: x\ndata: hi\n\n",
         max_size=10,
@@ -168,19 +179,17 @@ async def test_xadd_skipped_when_last_event_id_missing():
 
     pipe.xadd.assert_not_called()
     pipe.rpush.assert_not_called()
-    # EXPIRE on meta only.
     assert pipe.expire.call_count == 1
 
 
 @pytest.mark.asyncio
-async def test_dirty_resume_guard_main_workflow_resets_stream_and_seq():
-    """First event of a fresh main-workflow turn must DEL the Stream and
-    HDEL the seq counter atomically. No events_key, no List DEL."""
+async def test_dirty_resume_guard_resets_stream_and_seq():
+    """First event of a fresh turn must DEL the Stream and HDEL the seq
+    counter atomically. ``created_at`` is preserved (HDEL only ``seq``)."""
     pipe, pipeline_ctx = _make_pipeline_mock()
     cache = _make_client_with_pipeline(pipeline_ctx)
 
     await cache.pipelined_event_buffer(
-        events_key=None,
         meta_key="workflow:events:meta:t1",
         event="id: 1\nevent: x\ndata: hi\n\n",
         max_size=1000,
@@ -191,35 +200,9 @@ async def test_dirty_resume_guard_main_workflow_resets_stream_and_seq():
 
     delete_calls = [call.args for call in pipe.delete.call_args_list]
     assert ("workflow:stream:t1",) in delete_calls
-    # No List DEL — events_key is None.
-    assert all(args != ("workflow:events:t1",) for args in delete_calls)
     pipe.hdel.assert_called_once_with("workflow:events:meta:t1", "seq")
     pipe.xadd.assert_called_once()
     assert pipe.xadd.call_args.kwargs["id"] == "1-0"
-
-
-@pytest.mark.asyncio
-async def test_dirty_resume_guard_subagent_resets_stream_list_and_seq():
-    """Subagent caller (events_key provided) DELs all three keys + HDEL seq
-    so the dual-write start state is clean."""
-    pipe, pipeline_ctx = _make_pipeline_mock()
-    cache = _make_client_with_pipeline(pipeline_ctx)
-
-    await cache.pipelined_event_buffer(
-        events_key="subagent:events:t1:abc",
-        meta_key="subagent:events:meta:t1:abc",
-        event='{"seq": 1, "event": "x"}',
-        max_size=1000,
-        ttl=86400,
-        last_event_id=1,
-        stream_key="subagent:stream:t1:abc",
-    )
-
-    delete_calls = [call.args for call in pipe.delete.call_args_list]
-    assert ("subagent:stream:t1:abc",) in delete_calls
-    assert ("subagent:events:t1:abc",) in delete_calls
-    pipe.hdel.assert_called_once_with("subagent:events:meta:t1:abc", "seq")
-    pipe.xadd.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -230,7 +213,6 @@ async def test_no_dirty_resume_del_when_last_event_id_is_not_one():
     cache = _make_client_with_pipeline(pipeline_ctx)
 
     await cache.pipelined_event_buffer(
-        events_key=None,
         meta_key="workflow:events:meta:t1",
         event="id: 7\nevent: x\ndata: hi\n\n",
         max_size=1000,
@@ -252,7 +234,6 @@ async def test_returns_false_zero_when_disabled():
     cache.stats = {"hits": 0, "misses": 0, "sets": 0, "deletes": 0, "errors": 0}
 
     success, seq = await cache.pipelined_event_buffer(
-        events_key=None,
         meta_key="m",
         event="x",
         max_size=10,

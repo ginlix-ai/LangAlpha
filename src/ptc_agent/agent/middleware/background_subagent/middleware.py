@@ -226,13 +226,16 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 cache = get_cache_client()
                 if getattr(cache, "enabled", False):
                     await cache.delete(
-                        f"subagent:events:{self.registry.thread_id}:{task.task_id}"
-                    )
-                    await cache.delete(
                         f"subagent:events:meta:{self.registry.thread_id}:{task.task_id}"
                     )
                     await cache.delete(
                         f"subagent:stream:{self.registry.thread_id}:{task.task_id}"
+                    )
+                    # One-release backward-compat sweep for the legacy List
+                    # key written by pre-cutover workers. Safe to drop once
+                    # no worker on the old code path is in rotation.
+                    await cache.delete(
+                        f"subagent:events:{self.registry.thread_id}:{task.task_id}"
                     )
             except Exception:
                 logger.warning(
@@ -244,7 +247,6 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         task.result = None
         task.result_seen = False
         task.error = None
-        task.captured_events_tail.clear()
         task.captured_event_seq = 0
         task.captured_event_count = 0
         task.captured_event_bytes = 0

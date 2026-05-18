@@ -51,14 +51,13 @@ async def thread_id():
 async def _produce(cache, thread_id: str, n: int, stream_key: str = None):
     """Write n events to the workflow stream with explicit IDs `<i>-0`.
 
-    Mirrors the main-workflow caller post PR 3.5: events_key=None, no List.
+    Mirrors the main-workflow caller: no List, just meta hash + XADD.
     """
     stream_key = stream_key or f"workflow:stream:{thread_id}"
     meta_key = f"workflow:events:meta:{thread_id}"
     for i in range(1, n + 1):
         sse = f"id: {i}\nevent: token\ndata: {{\"i\": {i}}}\n\n"
         ok, _ = await cache.pipelined_event_buffer(
-            events_key=None,
             meta_key=meta_key,
             event=sse,
             max_size=1000,
@@ -110,11 +109,10 @@ async def test_unified_consumer_paths_against_real_redis(real_cache, thread_id, 
         return workflow_done.is_set()
 
     stream_key = f"workflow:stream:{thread_id}"
-    events_key = f"workflow:events:{thread_id}"
     meta_key = f"workflow:events:meta:{thread_id}"
 
     # Pre-clean.
-    await real_cache.client.delete(stream_key, events_key, meta_key)
+    await real_cache.client.delete(stream_key, meta_key)
 
     # Produce 5 events.
     await _produce(real_cache, thread_id, n=5)
@@ -166,7 +164,7 @@ async def test_unified_consumer_paths_against_real_redis(real_cache, thread_id, 
 
     # Scenario D: LATE SUBSCRIBER after stream is DEL'd. XREAD on a non-
     # existent stream returns empty; with terminal=True we exit cleanly.
-    await real_cache.client.delete(stream_key, events_key, meta_key)
+    await real_cache.client.delete(stream_key, meta_key)
     d = sfl_mod._stream_from_redis_log(
         stream_key=stream_key,
         terminal_check=terminal,

@@ -56,93 +56,81 @@ async def iter_subagent_events_full(
 ) -> AsyncIterator[dict]:
     """Yield every captured record for a subagent in seq order.
 
-    Uses Redis as the durable store when the in-memory tail no longer covers
-    full history. Freezes the high-water mark at iteration entry so events
-    appended after the snapshot don't leak into the current pass.
-
-    Memory note: when the tail has rotated past the run's start, this
-    materializes the full Redis spill list (``cache.list_range(key, 0, -1)``)
-    into Python memory in one call. Bounded by ``max_stored_messages_per_agent``
-    and per-event byte caps, but operators raising those limits should expect
-    proportional collector-time RAM use. Off the hot path — runs at turn end
-    and on persistence, not during streaming.
+    Reads from the per-task Redis Stream's ``b"record"`` field via XRANGE.
+    Filters to ``seq <= captured_event_seq`` snapshot at entry so events
+    XADD'd after iteration starts don't leak into this pass.
 
     Yields dicts with shape::
 
         {"seq": int, "event": str, "data": dict, "agent_id": str | None,
          "ts": float (optional)}
     """
-    if task is None:
+    if task is None or not thread_id:
         return
 
     high_water = int(getattr(task, "captured_event_seq", 0) or 0)
     if high_water <= 0:
         return
 
-    snapshot = list(getattr(task, "captured_events_tail", ()) or [])
-    tail_front_seq = snapshot[0]["seq"] if snapshot else high_water + 1
+    try:
+        cache = get_cache_client()
+    except Exception as exc:
+        logger.warning(
+            "[SubagentCollector] Failed to obtain cache client for "
+            f"task {getattr(task, 'task_id', '?')}: {exc}"
+        )
+        return
+    if cache is None or not getattr(cache, "enabled", False) or cache.client is None:
+        return
 
-    redis_yielded = 0
+    stream_key = f"subagent:stream:{thread_id}:{task.task_id}"
+    try:
+        entries = await cache.client.xrange(stream_key, min="-", max="+")
+    except Exception as exc:
+        logger.warning(
+            f"[SubagentCollector] XRANGE failed for {stream_key}: {exc}"
+        )
+        return
 
-    # 1. Redis-fallback for the [1, tail_front_seq) gap when the tail rotated
-    #    past the start of the run. Skipped entirely when the tail still
-    #    covers everything (or thread_id is empty in tests).
-    if tail_front_seq > 1 and thread_id:
+    yielded = 0
+    for entry_id, fields in entries or []:
+        # entry_id format: b"<seq>-0"
         try:
-            cache = get_cache_client()
-        except Exception as exc:
-            logger.warning(
-                "[SubagentCollector] Failed to obtain cache client for "
-                f"task {getattr(task, 'task_id', '?')}: {exc}"
-            )
-            cache = None
-        if cache is not None and getattr(cache, "enabled", False):
-            events_key = f"subagent:events:{thread_id}:{task.task_id}"
-            try:
-                stored = await cache.list_range(events_key, 0, -1) or []
-            except Exception as exc:
-                logger.warning(
-                    f"[SubagentCollector] Redis list_range failed for "
-                    f"{events_key}: {exc}"
-                )
-                stored = []
-            for raw in stored:
-                if not raw:
-                    continue
-                try:
-                    record = json.loads(raw)
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    continue
-                seq = record.get("seq")
-                if not isinstance(seq, int):
-                    continue
-                if 1 <= seq < tail_front_seq:
-                    redis_yielded += 1
-                    yield record
+            seq_part = entry_id.decode("utf-8") if isinstance(entry_id, bytes) else entry_id
+            seq = int(seq_part.split("-", 1)[0])
+        except (ValueError, AttributeError):
+            continue
+        if seq <= 0 or seq > high_water:
+            continue
+        raw = fields.get(b"record")
+        if raw is None:
+            # Sentinel entries (subagent_stream_end) and any legacy
+            # single-field entries from before the dual-payload cutover
+            # have no record field — skip them in the collector path.
+            continue
+        try:
+            payload = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+            record = json.loads(payload)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        yielded += 1
+        yield record
 
-    # Honesty check: when the tail rotated past the run's start, [1, tail_front_seq)
-    # must come from Redis. If we yielded fewer records than that range, persisted
-    # history is truncated — surface it so the gap is observable in production logs
-    # rather than silently shipping incomplete ``conversation_responses.sse_events``.
-    expected_from_redis = tail_front_seq - 1
-    if tail_front_seq > 1 and thread_id and redis_yielded < expected_from_redis:
+    expected = high_water
+    if yielded < expected:
         logger.warning(
             "subagent_history_truncated",
             extra={
                 "thread_id": thread_id,
                 "task_id": getattr(task, "task_id", None),
-                "expected": expected_from_redis,
-                "recovered": redis_yielded,
-                "missing": expected_from_redis - redis_yielded,
+                "expected": expected,
+                "recovered": yielded,
+                "missing": expected - yielded,
                 "redis_write_failed": bool(getattr(task, "redis_write_failed", False)),
             },
         )
-
-    # 2. In-memory tail (clipped to high_water snapshot)
-    for record in snapshot:
-        seq = record.get("seq")
-        if isinstance(seq, int) and seq <= high_water:
-            yield record
 
 
 def _record_to_persist_event(record: dict, thread_id: str) -> dict:
@@ -706,12 +694,9 @@ class BackgroundTaskManager:
     async def _buffer_event_redis(self, thread_id: str, event: str):
         """Append a workflow event to the per-thread Redis Stream.
 
-        Returns silently if the TaskInfo is gone (already cleaned up). The
-        actual durability work — XADD, MAXLEN, EXPIRE, HINCRBY, meta HSET —
-        runs in one ``pipelined_event_buffer`` call outside the task_lock
-        so Redis I/O can never block other appends. Main-workflow path
-        passes ``events_key=None``: the Stream is the only durable log;
-        ``StreamEventAccumulator`` covers in-flight persistence.
+        Returns silently if the TaskInfo is gone (already cleaned up).
+        ``pipelined_event_buffer`` runs XADD + meta HSET in one MULTI/EXEC
+        outside the task_lock so Redis I/O can never block other appends.
         """
         async with self.task_lock:
             if thread_id not in self.tasks:
@@ -759,7 +744,6 @@ class BackgroundTaskManager:
         stream_key = f"workflow:stream:{thread_id}"
 
         success, seq = await cache.pipelined_event_buffer(
-            events_key=None,
             meta_key=meta_key,
             event=event,
             max_size=self.max_stored_messages,
@@ -976,10 +960,6 @@ class BackgroundTaskManager:
                 f"for thread_id={thread_id}: {exc}"
             )
         for task in tasks:
-            try:
-                task.captured_events_tail.clear()
-            except Exception:
-                pass
             task.per_call_records = []
             # Drop asyncio handles — the asyncio.Task object holds the
             # coroutine frame, which can keep middleware/tool/LLM-callback
@@ -989,12 +969,6 @@ class BackgroundTaskManager:
             if cache is not None:
                 try:
                     await cache.delete(
-                        f"subagent:events:{thread_id}:{task.task_id}"
-                    )
-                except Exception:
-                    pass
-                try:
-                    await cache.delete(
                         f"subagent:events:meta:{thread_id}:{task.task_id}"
                     )
                 except Exception:
@@ -1002,6 +976,17 @@ class BackgroundTaskManager:
                 try:
                     await cache.delete(
                         f"subagent:stream:{thread_id}:{task.task_id}"
+                    )
+                except Exception:
+                    pass
+                # One-release backward-compat sweep: pre-cutover workers
+                # RPUSH'd records to the legacy List under this key. The
+                # new code never reads or writes it, but stale entries
+                # from a worker that ran the same thread before deploy
+                # would otherwise sit in Redis until the 24h TTL.
+                try:
+                    await cache.delete(
+                        f"subagent:events:{thread_id}:{task.task_id}"
                     )
                 except Exception:
                     pass

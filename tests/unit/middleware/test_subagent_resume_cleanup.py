@@ -1,9 +1,9 @@
 """Regression test for resume-time Redis spool cleanup.
 
-Without clearing the Redis spool when a completed task is resumed, the
-new run's records (with seq starting at 1 again) would RPUSH onto the
-prior run's list, causing reconnect/persistence to replay both runs
-interleaved with overlapping seqs.
+Without clearing the Redis stream + meta hash when a completed task is
+resumed, the new run's records (with seq starting at 1 again) would XADD
+into the prior run's stream and the meta hash counter would advance from
+the prior run's high-water mark — both break reconnect/persistence.
 """
 
 from __future__ import annotations
@@ -41,11 +41,11 @@ def _make_completed_task(task_id: str = "abc123") -> BackgroundTask:
 
 
 @pytest.mark.asyncio
-async def test_reset_for_resume_deletes_both_redis_keys():
-    """Resume must DELETE both subagent:events:{thread}:{task} and
-    subagent:events:meta:{thread}:{task} before resetting seq counters.
-    Otherwise the new run's seq=1 record collides with the prior run's
-    seq=1 record on the same Redis list."""
+async def test_reset_for_resume_deletes_stream_and_meta_keys():
+    """Resume must DELETE both ``subagent:events:meta:{thread}:{task}`` and
+    ``subagent:stream:{thread}:{task}`` before resetting seq counters. Otherwise
+    the new run's seq=1 XADD lands after the prior run's seq=N entries and the
+    meta hash counter starts at N+1 instead of 1."""
     registry = BackgroundTaskRegistry(thread_id="thread-x")
     middleware = BackgroundSubagentMiddleware(registry=registry, enabled=True)
     task = _make_completed_task("abc123")
@@ -61,8 +61,11 @@ async def test_reset_for_resume_deletes_both_redis_keys():
         await middleware._reset_task_for_resume(task)
 
     deleted_keys = [call.args[0] for call in cache.delete.await_args_list]
-    assert "subagent:events:thread-x:abc123" in deleted_keys
     assert "subagent:events:meta:thread-x:abc123" in deleted_keys
+    assert "subagent:stream:thread-x:abc123" in deleted_keys
+    # Legacy List key gets a one-release backward-compat DEL so resumes that
+    # cross a rolling deploy don't leave pre-cutover RPUSH state behind.
+    assert "subagent:events:thread-x:abc123" in deleted_keys
 
 
 @pytest.mark.asyncio

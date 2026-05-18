@@ -284,16 +284,10 @@ class TestMarkCompletedCallbackFailure:
 
 class _FakeTask:
     def __init__(self, task_id: str = "abc123") -> None:
-        from collections import deque
-
         self.task_id = task_id
         self.tool_call_id = f"tc-{task_id}"
         self.display_id = f"Task-{task_id}"
         self.agent_id = f"general-purpose:{task_id}"
-        self.captured_events_tail = deque(
-            [{"seq": 1, "event": "x", "data": {}, "agent_id": self.agent_id}],
-            maxlen=1000,
-        )
         self.captured_event_seq = 1
         self.captured_event_count = 1
         self.captured_event_bytes = 0
@@ -321,7 +315,6 @@ class TestAwaitDrainCleanup:
              patch("src.server.services.background_task_manager.get_sse_drain_timeout", return_value=0.01):
             await btm._await_drain_and_cleanup_tasks([task], "thread-x")
 
-        assert len(task.captured_events_tail) == 0
         assert task.per_call_records == []
         assert task.asyncio_task is None
         assert task.handler_task is None
@@ -337,9 +330,12 @@ class TestAwaitDrainCleanup:
         assert task.captured_event_count == 1
 
     @pytest.mark.asyncio
-    async def test_deletes_both_redis_keys(self):
-        """Cleanup must delete both the events list AND the meta hash from
-        Redis after persistence — paired with the producer-driven spill."""
+    async def test_deletes_meta_stream_and_legacy_list_keys(self):
+        """Cleanup deletes meta + stream plus a one-release sweep of the
+        legacy List key. The sweep catches stale RPUSH entries from
+        pre-cutover workers handling the same thread before a rolling
+        deploy; once no old worker remains in rotation this DEL becomes a
+        no-op and can be dropped."""
         btm = _make_btm()
         task = _FakeTask("abc123")
 
@@ -350,8 +346,9 @@ class TestAwaitDrainCleanup:
             await btm._await_drain_and_cleanup_tasks([task], "thread-x")
 
         deleted_keys = {call.args[0] for call in cache.delete.await_args_list}
-        assert "subagent:events:thread-x:abc123" in deleted_keys
         assert "subagent:events:meta:thread-x:abc123" in deleted_keys
+        assert "subagent:stream:thread-x:abc123" in deleted_keys
+        assert "subagent:events:thread-x:abc123" in deleted_keys
 
     @pytest.mark.asyncio
     async def test_cache_client_failure_still_releases_local_refs(self):
@@ -368,7 +365,6 @@ class TestAwaitDrainCleanup:
         ):
             await btm._await_drain_and_cleanup_tasks([task], "thread-x")
 
-        assert len(task.captured_events_tail) == 0
         assert task.per_call_records == []
         assert task.asyncio_task is None
         assert task.handler_task is None

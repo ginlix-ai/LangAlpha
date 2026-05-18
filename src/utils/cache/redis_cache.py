@@ -602,7 +602,6 @@ class RedisCacheClient:
 
     async def pipelined_event_buffer(
         self,
-        events_key: Optional[str],
         meta_key: str,
         event: str,
         max_size: int,
@@ -610,24 +609,20 @@ class RedisCacheClient:
         last_event_id: Optional[int] = None,
         stream_key: Optional[str] = None,
         stream_event: Optional[str] = None,
+        stream_record: Optional[str] = None,
     ) -> tuple[bool, int]:
         """Atomic pipeline for the SSE event-buffer hot path.
 
-        Collapses meta-hash + Stream + (optional) List spill commands into
-        one MULTI/EXEC so the whole spill takes one pool checkout.
+        Collapses meta-hash + Stream commands into one MULTI/EXEC so the
+        whole spill takes one pool checkout. ``stream_event`` defaults to
+        ``event`` but lets callers store a different wire format in the
+        Stream — the subagent producer writes pre-rendered SSE wire
+        strings so the live consumer needs no JSON-render step.
 
-        ``events_key`` is optional. When ``None`` (main workflow path), no
-        List writes happen — the Stream is the only durable log and
-        ``StreamEventAccumulator`` covers in-flight persistence. When
-        provided (subagent path), the JSON record is RPUSH'd to the List as
-        the source for ``iter_subagent_events_full``'s [1, tail_front_seq)
-        gap fill; this stays until that collector migrates to XRANGE.
-
-        ``stream_event`` defaults to ``event`` but lets callers store a
-        different wire format in the Stream than in the List — the subagent
-        producer keeps JSON records in the List for the collector and
-        writes pre-rendered SSE wire strings to the Stream so the consumer
-        doesn't need a JSON-render step.
+        When ``stream_record`` is provided, the XADD entry carries a second
+        ``b"record"`` field with the JSON record payload. The post-turn
+        collector (``iter_subagent_events_full``) reads this field via
+        XRANGE to rebuild full subagent history without a separate List.
 
         Returns (success, seq). On success ``seq`` is the new event count
         (1+); on failure it's 0.
@@ -641,32 +636,16 @@ class RedisCacheClient:
                 # Dirty-resume guard. When last_event_id == 1 we're at the
                 # start of a fresh handler instance. If a prior turn left
                 # state behind (process crash before ``clear_event_buffer``
-                # ran), DEL the stream + (optional) List + ``seq`` counter
-                # in the same MULTI/EXEC so XADD with id=1-0, RPUSH, and
-                # HINCRBY all land on fresh state. ``created_at`` is
-                # preserved (HDEL only ``seq``) — it documents
-                # thread-first-write, not per-turn state.
+                # ran), DEL the stream + ``seq`` counter in the same
+                # MULTI/EXEC so XADD with id=1-0 and HINCRBY land on fresh
+                # state. ``created_at`` is preserved (HDEL only ``seq``).
                 guard_cmds = 0
                 if last_event_id == 1:
                     if stream_key is not None:
                         pipe.delete(stream_key)
                         guard_cmds += 1
-                    if events_key is not None:
-                        pipe.delete(events_key)
-                        guard_cmds += 1
                     pipe.hdel(meta_key, "seq")
                     guard_cmds += 1
-
-                # Pre-HINCRBY new writes — only the List branch contributes
-                # commands here. Counted so the post-execute index lookup
-                # for HINCRBY's return value stays correct under both
-                # stream-only (main) and dual-write (subagent) callers.
-                pre_hincrby_cmds = 0
-                if events_key is not None:
-                    pipe.rpush(events_key, event)
-                    pipe.ltrim(events_key, -max_size, -1)
-                    pipe.expire(events_key, ttl)
-                    pre_hincrby_cmds += 3
 
                 pipe.hincrby(meta_key, "seq", 1)
                 pipe.hsetnx(meta_key, "created_at", now_iso_json)
@@ -681,9 +660,17 @@ class RedisCacheClient:
                 if stream_key is not None and last_event_id is not None:
                     raw = stream_event if stream_event is not None else event
                     payload = raw.encode("utf-8") if isinstance(raw, str) else raw
+                    fields: dict[bytes, bytes] = {b"event": payload}
+                    if stream_record is not None:
+                        record_bytes = (
+                            stream_record.encode("utf-8")
+                            if isinstance(stream_record, str)
+                            else stream_record
+                        )
+                        fields[b"record"] = record_bytes
                     pipe.xadd(
                         stream_key,
-                        {b"event": payload},
+                        fields,
                         id=f"{last_event_id}-0",
                         maxlen=max_size,
                         approximate=True,
@@ -691,15 +678,14 @@ class RedisCacheClient:
                     pipe.expire(stream_key, ttl)
                 results = await pipe.execute()
             self.stats["sets"] += 1
-            hincrby_index = guard_cmds + pre_hincrby_cmds
             seq = (
-                int(results[hincrby_index])
-                if len(results) > hincrby_index
+                int(results[guard_cmds])
+                if len(results) > guard_cmds
                 else 0
             )
             return True, seq
         except Exception as e:
-            log_target = events_key or stream_key or meta_key
+            log_target = stream_key or meta_key
             self._log_error(f"Pipelined event buffer failed for {log_target}", e)
             self.stats["errors"] += 1
             return False, 0

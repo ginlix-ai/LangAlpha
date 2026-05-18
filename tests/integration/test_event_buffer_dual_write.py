@@ -1,17 +1,16 @@
-"""Integration test for the subagent dual-write path.
+"""Integration test for the subagent stream-only dual-payload path.
 
-Post PR 3.5 the main-workflow caller is stream-only (``events_key=None``).
-Subagents still dual-write because ``iter_subagent_events_full`` reads the
-List as the [1, tail_front_seq) gap fill until that collector migrates to
-XRANGE on the Stream. This test asserts parity for the subagent-style
-caller: after N events, ``LLEN events_key == XLEN stream_key`` and per-
-entry payloads match.
+After the cutover, the subagent caller writes a single XADD entry per event
+with two fields: ``b"event"`` (pre-rendered SSE wire string for live
+consumers) and ``b"record"`` (JSON record for the post-turn collector's
+XRANGE read). No List is involved.
 
 Requires a real Redis instance (run ``make setup-db`` first).
 """
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -28,14 +27,12 @@ async def real_cache():
     if not redis_url.startswith("redis://"):
         pytest.skip("REDIS_URL not set to a real Redis instance")
 
-    # Lazy import — avoids touching redis module during test collection on
-    # machines without redis-py installed.
     from src.utils.cache.redis_cache import RedisCacheClient
 
     cache = RedisCacheClient(url=redis_url, max_connections=10)
     try:
         await cache.connect()
-    except Exception as exc:  # auth required, refused, unreachable, etc.
+    except Exception as exc:
         pytest.skip(f"Redis is not reachable at REDIS_URL: {exc}")
     if not cache.enabled or not cache.client:
         pytest.skip("Redis client did not initialize")
@@ -47,46 +44,46 @@ async def real_cache():
 
 
 @pytest.mark.asyncio
-async def test_subagent_list_and_stream_are_in_lockstep(real_cache):
-    """Subagent-style dual-write: events_key + stream_key both populated."""
-    events_key = "test:dual:events"
+async def test_subagent_xadd_carries_event_and_record_fields(real_cache):
+    """Each XADD entry carries both fields; XRANGE recovers ordered records."""
     meta_key = "test:dual:events:meta"
     stream_key = "test:dual:stream"
 
-    await real_cache.client.delete(events_key)
     await real_cache.client.delete(meta_key)
     await real_cache.client.delete(stream_key)
 
     n = 25
     for i in range(1, n + 1):
         sse = f"id: {i}\nevent: token\ndata: {{\"i\": {i}}}\n\n"
+        record_payload = json.dumps(
+            {"seq": i, "event": "token", "data": {"i": i}, "agent_id": "x"}
+        )
         success, seq = await real_cache.pipelined_event_buffer(
-            events_key=events_key,
             meta_key=meta_key,
             event=sse,
             max_size=1000,
             ttl=60,
             last_event_id=i,
             stream_key=stream_key,
+            stream_event=sse,
+            stream_record=record_payload,
         )
         assert success is True
         assert seq == i
 
-    list_len = await real_cache.client.llen(events_key)
     stream_len = await real_cache.client.xlen(stream_key)
-    assert list_len == n
     assert stream_len == n
 
-    # Stream entries are ordered by explicit ID `<seq>-0`.
     entries = await real_cache.client.xrange(stream_key, min="-", max="+")
     assert len(entries) == n
     for idx, (entry_id, fields) in enumerate(entries, start=1):
-        # decode_responses=False — IDs and fields are bytes.
         assert entry_id == f"{idx}-0".encode("utf-8")
-        payload_bytes = fields[b"event"]
-        assert payload_bytes.startswith(f"id: {idx}\n".encode("utf-8"))
+        # b"event" is the SSE wire string for live consumers.
+        assert fields[b"event"].startswith(f"id: {idx}\n".encode("utf-8"))
+        # b"record" is the JSON record for the post-turn collector.
+        record = json.loads(fields[b"record"].decode("utf-8"))
+        assert record["seq"] == idx
+        assert record["event"] == "token"
 
-    # Cleanup
-    await real_cache.client.delete(events_key)
     await real_cache.client.delete(meta_key)
     await real_cache.client.delete(stream_key)
