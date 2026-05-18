@@ -704,12 +704,14 @@ class BackgroundTaskManager:
             )
 
     async def _buffer_event_redis(self, thread_id: str, event: str):
-        """Append a workflow event to the per-thread Redis Stream + List spill.
+        """Append a workflow event to the per-thread Redis Stream.
 
         Returns silently if the TaskInfo is gone (already cleaned up). The
-        actual durability work — XADD, RPUSH, MAXLEN/LTRIM, EXPIRE, HINCRBY,
-        meta HSET — runs in one ``pipelined_event_buffer`` call outside the
-        task_lock so Redis I/O can never block other appends.
+        actual durability work — XADD, MAXLEN, EXPIRE, HINCRBY, meta HSET —
+        runs in one ``pipelined_event_buffer`` call outside the task_lock
+        so Redis I/O can never block other appends. Main-workflow path
+        passes ``events_key=None``: the Stream is the only durable log;
+        ``StreamEventAccumulator`` covers in-flight persistence.
         """
         async with self.task_lock:
             if thread_id not in self.tasks:
@@ -739,14 +741,25 @@ class BackgroundTaskManager:
             first_line, _, _ = event.partition("\n")
             event_id = int(first_line.replace("id: ", "").strip())
         except (ValueError, IndexError):
-            logger.debug("[EventBuffer] Could not parse event ID from SSE string")
+            pass
 
-        events_key = f"workflow:events:{thread_id}"
+        # Without a parseable id the event can't land on the Stream
+        # (XADD needs an explicit ``<seq>-0`` id) and the meta hash counter
+        # would advance past an event that was never written, leaving a
+        # permanent gap in the stream. Bail and let the next event with
+        # a valid id keep the counter coherent.
+        if event_id is None:
+            logger.warning(
+                "[EventBuffer] Could not parse event ID from SSE string for "
+                f"{thread_id}; event dropped"
+            )
+            return
+
         meta_key = f"workflow:events:meta:{thread_id}"
         stream_key = f"workflow:stream:{thread_id}"
 
         success, seq = await cache.pipelined_event_buffer(
-            events_key=events_key,
+            events_key=None,
             meta_key=meta_key,
             event=event,
             max_size=self.max_stored_messages,

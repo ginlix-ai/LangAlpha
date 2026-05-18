@@ -49,14 +49,16 @@ async def thread_id():
 
 
 async def _produce(cache, thread_id: str, n: int, stream_key: str = None):
-    """Write n events to the workflow stream with explicit IDs `<i>-0`."""
+    """Write n events to the workflow stream with explicit IDs `<i>-0`.
+
+    Mirrors the main-workflow caller post PR 3.5: events_key=None, no List.
+    """
     stream_key = stream_key or f"workflow:stream:{thread_id}"
-    events_key = f"workflow:events:{thread_id}"
     meta_key = f"workflow:events:meta:{thread_id}"
     for i in range(1, n + 1):
         sse = f"id: {i}\nevent: token\ndata: {{\"i\": {i}}}\n\n"
         ok, _ = await cache.pipelined_event_buffer(
-            events_key=events_key,
+            events_key=None,
             meta_key=meta_key,
             event=sse,
             max_size=1000,

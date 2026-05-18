@@ -63,7 +63,10 @@ class TestBufferEventRedisHappyPath:
 
         assert mock_cache.pipelined_event_buffer.await_count == 1
         call = mock_cache.pipelined_event_buffer.await_args
-        assert call.kwargs["events_key"] == "workflow:events:thread-1"
+        # Main workflow path is stream-only post PR 3.5: events_key=None
+        # signals the helper to skip RPUSH/LTRIM. Persistence comes from
+        # StreamEventAccumulator, not the (deleted) List.
+        assert call.kwargs["events_key"] is None
         assert call.kwargs["meta_key"] == "workflow:events:meta:thread-1"
         assert call.kwargs["stream_key"] == "workflow:stream:thread-1"
         assert call.kwargs["last_event_id"] == 42
@@ -71,8 +74,14 @@ class TestBufferEventRedisHappyPath:
         assert call.kwargs["ttl"] == 86400
 
     @pytest.mark.asyncio
-    async def test_malformed_event_id_still_writes(self):
-        """An event without a parseable `id:` line still gets buffered."""
+    async def test_malformed_event_id_is_dropped(self):
+        """An event without a parseable ``id:`` line bails before any write.
+
+        XADD needs an explicit ``<seq>-0`` id, and bumping the meta hash
+        counter past an event that was never written would leave a
+        permanent gap in the stream. The bail keeps the counter coherent
+        for the next valid event.
+        """
         btm = _make_btm()
         _register_task(btm)
 
@@ -86,8 +95,7 @@ class TestBufferEventRedisHappyPath:
         ):
             await btm._buffer_event_redis("thread-1", "event: x\ndata: hi\n\n")
 
-        assert mock_cache.pipelined_event_buffer.await_count == 1
-        assert mock_cache.pipelined_event_buffer.await_args.kwargs["last_event_id"] is None
+        assert mock_cache.pipelined_event_buffer.await_count == 0
 
 
 class TestBufferEventRedisFailureModes:

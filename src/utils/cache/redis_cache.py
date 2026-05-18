@@ -602,7 +602,7 @@ class RedisCacheClient:
 
     async def pipelined_event_buffer(
         self,
-        events_key: str,
+        events_key: Optional[str],
         meta_key: str,
         event: str,
         max_size: int,
@@ -613,20 +613,24 @@ class RedisCacheClient:
     ) -> tuple[bool, int]:
         """Atomic pipeline for the SSE event-buffer hot path.
 
-        Collapses ~9 sequential Redis commands (list append, trim, meta hash,
-        optional stream append) into one MULTI/EXEC so the whole spill takes
-        one pool checkout.
+        Collapses meta-hash + Stream + (optional) List spill commands into
+        one MULTI/EXEC so the whole spill takes one pool checkout.
 
-        When ``stream_key`` and ``last_event_id`` are both provided, the event
-        is dual-written to a Redis Stream at ``stream_key`` with explicit
-        ID ``f"{last_event_id}-0"``. ``stream_event`` defaults to ``event``
-        but lets callers store a different wire format in the Stream than in
-        the List — used by the subagent producer, which keeps JSON records in
-        the legacy List for in-flight reads but writes pre-rendered SSE wire
-        strings to the Stream so the consumer doesn't need a JSON-render step.
+        ``events_key`` is optional. When ``None`` (main workflow path), no
+        List writes happen — the Stream is the only durable log and
+        ``StreamEventAccumulator`` covers in-flight persistence. When
+        provided (subagent path), the JSON record is RPUSH'd to the List as
+        the source for ``iter_subagent_events_full``'s [1, tail_front_seq)
+        gap fill; this stays until that collector migrates to XRANGE.
 
-        Returns (success, seq). On success `seq` is the new event count (1+);
-        on failure it's 0.
+        ``stream_event`` defaults to ``event`` but lets callers store a
+        different wire format in the Stream than in the List — the subagent
+        producer keeps JSON records in the List for the collector and
+        writes pre-rendered SSE wire strings to the Stream so the consumer
+        doesn't need a JSON-render step.
+
+        Returns (success, seq). On success ``seq`` is the new event count
+        (1+); on failure it's 0.
         """
         if not self.enabled or not self.client:
             return False, 0
@@ -634,47 +638,45 @@ class RedisCacheClient:
         try:
             now_iso_json = json.dumps(datetime.now().isoformat())
             async with self.client.pipeline(transaction=True) as pipe:
-                # Dirty-resume guard runs BEFORE the new writes so RPUSH and
-                # HINCRBY land on fresh state. When last_event_id == 1 we're
-                # at the start of a fresh handler instance (counter resets to
-                # 1 per turn). If a prior turn left state behind (process
-                # crash before the post-persist ``_on_pair_persisted``
-                # callback ran ``clear_event_buffer``), three things can be
-                # stale:
-                # - ``stream_key``: XADD with id=1-0 would fail because the
-                #   last id is N-0 from that prior turn — Redis enforces
-                #   strict id monotonicity.
-                # - ``events_key``: a stale RPUSH tail from the prior turn
-                #   would persist alongside the fresh entries, breaking
-                #   ``LLEN == XLEN`` parity until both are DEL'd together.
-                # - ``meta_key`` ``seq``: HINCRBY against a stale counter
-                #   would return N+1 instead of 1, drifting the returned
-                #   ``seq`` away from the SSE wire id.
-                # DEL'ing inside the same MULTI/EXEC keeps the reset atomic.
-                # ``created_at`` on the meta hash is preserved (HDEL only
-                # the ``seq`` field) since it documents thread-first-write
-                # for diagnostics, not per-turn state.
+                # Dirty-resume guard. When last_event_id == 1 we're at the
+                # start of a fresh handler instance. If a prior turn left
+                # state behind (process crash before ``clear_event_buffer``
+                # ran), DEL the stream + (optional) List + ``seq`` counter
+                # in the same MULTI/EXEC so XADD with id=1-0, RPUSH, and
+                # HINCRBY all land on fresh state. ``created_at`` is
+                # preserved (HDEL only ``seq``) — it documents
+                # thread-first-write, not per-turn state.
                 guard_cmds = 0
                 if last_event_id == 1:
                     if stream_key is not None:
                         pipe.delete(stream_key)
                         guard_cmds += 1
-                    pipe.delete(events_key)
+                    if events_key is not None:
+                        pipe.delete(events_key)
+                        guard_cmds += 1
                     pipe.hdel(meta_key, "seq")
-                    guard_cmds += 2
+                    guard_cmds += 1
 
-                pipe.rpush(events_key, event)
-                pipe.ltrim(events_key, -max_size, -1)
-                pipe.expire(events_key, ttl)
+                # Pre-HINCRBY new writes — only the List branch contributes
+                # commands here. Counted so the post-execute index lookup
+                # for HINCRBY's return value stays correct under both
+                # stream-only (main) and dual-write (subagent) callers.
+                pre_hincrby_cmds = 0
+                if events_key is not None:
+                    pipe.rpush(events_key, event)
+                    pipe.ltrim(events_key, -max_size, -1)
+                    pipe.expire(events_key, ttl)
+                    pre_hincrby_cmds += 3
+
                 pipe.hincrby(meta_key, "seq", 1)
                 pipe.hsetnx(meta_key, "created_at", now_iso_json)
                 pipe.hset(meta_key, "updated_at", now_iso_json)
                 if last_event_id is not None:
                     pipe.hset(meta_key, "last_event_id", json.dumps(last_event_id))
                 pipe.expire(meta_key, ttl)
-                # Dual-write to Redis Stream when both key and id are provided.
-                # Explicit ID `<seq>-0` keeps the cursor integer-friendly for
-                # the frontend's parseInt-based last_event_id parsing while
+                # Stream write when both key and id are provided. Explicit
+                # ID `<seq>-0` keeps the cursor integer-friendly for the
+                # frontend's parseInt-based last_event_id parsing while
                 # preserving Redis Streams' lexicographic ordering.
                 if stream_key is not None and last_event_id is not None:
                     raw = stream_event if stream_event is not None else event
@@ -689,10 +691,7 @@ class RedisCacheClient:
                     pipe.expire(stream_key, ttl)
                 results = await pipe.execute()
             self.stats["sets"] += 1
-            # HINCRBY's return value sits at index ``guard_cmds + 3``: 3
-            # commands of new-write prefix (RPUSH, LTRIM, EXPIRE) precede it,
-            # plus any dirty-resume guard commands that ran first.
-            hincrby_index = guard_cmds + 3
+            hincrby_index = guard_cmds + pre_hincrby_cmds
             seq = (
                 int(results[hincrby_index])
                 if len(results) > hincrby_index
@@ -700,7 +699,8 @@ class RedisCacheClient:
             )
             return True, seq
         except Exception as e:
-            self._log_error(f"Pipelined event buffer failed for {events_key}", e)
+            log_target = events_key or stream_key or meta_key
+            self._log_error(f"Pipelined event buffer failed for {log_target}", e)
             self.stats["errors"] += 1
             return False, 0
 

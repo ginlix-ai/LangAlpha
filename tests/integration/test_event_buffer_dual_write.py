@@ -1,8 +1,11 @@
-"""Integration test for the dual-write between the SSE event List and the
-new Redis Stream.
+"""Integration test for the subagent dual-write path.
 
-Asserts parity: after writing N events through ``pipelined_event_buffer``,
-``LLEN events_key == XLEN stream_key`` and the per-entry payloads match.
+Post PR 3.5 the main-workflow caller is stream-only (``events_key=None``).
+Subagents still dual-write because ``iter_subagent_events_full`` reads the
+List as the [1, tail_front_seq) gap fill until that collector migrates to
+XRANGE on the Stream. This test asserts parity for the subagent-style
+caller: after N events, ``LLEN events_key == XLEN stream_key`` and per-
+entry payloads match.
 
 Requires a real Redis instance (run ``make setup-db`` first).
 """
@@ -44,7 +47,8 @@ async def real_cache():
 
 
 @pytest.mark.asyncio
-async def test_list_and_stream_are_in_lockstep(real_cache):
+async def test_subagent_list_and_stream_are_in_lockstep(real_cache):
+    """Subagent-style dual-write: events_key + stream_key both populated."""
     events_key = "test:dual:events"
     meta_key = "test:dual:events:meta"
     stream_key = "test:dual:stream"

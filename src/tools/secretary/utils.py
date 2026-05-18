@@ -168,26 +168,36 @@ async def extract_text_from_thread(thread_id: str) -> dict[str, Any]:
 async def _extract_from_redis(thread_id: str) -> str:
     """Extract text content from Redis SSE event buffer.
 
-    Args:
-        thread_id: The conversation thread ID
-
-    Returns:
-        Concatenated text content from message_chunk events
+    Reads the tail of the per-thread Redis Stream (``workflow:stream:{tid}``)
+    and decodes the pre-rendered SSE wire string from each entry's
+    ``b"event"`` field. The Stream replaced the legacy Redis List spill;
+    XREVRANGE with COUNT yields the most-recent 500 entries cheaply, then
+    we reverse to chronological order to mirror the old RPUSH semantics.
     """
     from src.utils.cache.redis_cache import get_cache_client
 
     try:
         cache = get_cache_client()
-        raw_events = await cache.list_range(
-            f"workflow:events:{thread_id}", start=-500, end=-1
+        if not getattr(cache, "enabled", False) or cache.client is None:
+            return ""
+        entries = await cache.client.xrevrange(
+            f"workflow:stream:{thread_id}", count=500
         )
     except Exception as e:
         logger.error(f"Failed to read Redis events for thread {thread_id}: {e}")
         return ""
 
     chunks: list[str] = []
-    for raw in raw_events:
-        parsed = _parse_sse_string(raw)
+    # XREVRANGE returns newest first; reverse so chunks concatenate in order.
+    for _entry_id, fields in reversed(entries or []):
+        raw = fields.get(b"event")
+        if raw is None:
+            continue
+        try:
+            raw_str = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+        except UnicodeDecodeError:
+            continue
+        parsed = _parse_sse_string(raw_str)
         if parsed is None:
             continue
         event_type, data = parsed
