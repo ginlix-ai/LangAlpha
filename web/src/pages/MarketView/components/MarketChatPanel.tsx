@@ -255,6 +255,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
   const {
     messages,
     isLoading,
+    isLoadingHistory,
     messageError,
     threadId,
     threadModels,
@@ -328,8 +329,26 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     [chartImage, chartImageDesc, handleSendMessage, onClearChartImage],
   );
 
-  // Auto-scroll to bottom on new messages / streaming.
+  // Track whether the user is currently parked near the bottom of the
+  // message list. Auto-scroll only fires while this is true, so a user
+  // who has scrolled up to read earlier content during an active stream
+  // isn't yanked back down on every SSE chunk.
+  const isNearBottomRef = useRef(true);
   useEffect(() => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const threshold = 120;
+      isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
+
+  // Auto-scroll to bottom on new messages / streaming — only when the
+  // user is already near the bottom (see isNearBottomRef above).
+  useEffect(() => {
+    if (!isNearBottomRef.current) return;
     const el = messagesContainerRef.current;
     if (!el || messages.length === 0) return;
     const id = setTimeout(() => {
@@ -350,7 +369,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
 
   const initialModel = useMemo(() => threadModels[threadModels.length - 1] ?? null, [threadModels]);
 
-  const showQuickQueries = messages.length === 0 && !isLoading;
+  const showQuickQueries = messages.length === 0 && !isLoading && !isLoadingHistory;
 
   // Session title: first user message text (truncated) or fallback to "New chat".
   const newChatLabel = t('marketView.chatHistory.newChat');
@@ -392,7 +411,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         ref={messagesContainerRef}
         style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}
       >
-        {messages.length === 0 && !isLoading ? (
+        {messages.length === 0 && !isLoading && !isLoadingHistory ? (
           <div className="market-chat-empty-state" style={{ height: '100%' }}>
             <LogoLoading size={60} color="var(--color-accent-overlay)" />
             <p className="market-chat-empty-text" style={{ marginTop: 16 }}>
@@ -410,6 +429,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
               <MessageList
                 messages={messages as never[]}
                 isLoading={isLoading}
+                isLoadingHistory={isLoadingHistory}
                 hideAvatar={isNarrowChat}
                 onOpenSubagentTask={handleOpenSubagentTask}
                 onToolCallDetailClick={handleToolCallDetailClick}
