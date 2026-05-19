@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from uuid import UUID
 
 import redis.asyncio as redis
+import redis.exceptions as redis_exceptions
 from redis.asyncio.connection import ConnectionPool
 
 from src.config.settings import (
@@ -150,7 +151,7 @@ class RedisCacheClient:
         with getattr so a future rename degrades gracefully to a plain log line.
         """
         is_pool_exhaustion = (
-            isinstance(err, getattr(redis.exceptions, "MaxConnectionsError", ()))
+            isinstance(err, getattr(redis_exceptions, "MaxConnectionsError", ()))
             or "Too many connections" in str(err)
         )
         if is_pool_exhaustion:
@@ -603,9 +604,10 @@ class RedisCacheClient:
     async def pipelined_event_buffer(
         self,
         meta_key: str,
-        event: str,
         max_size: int,
         ttl: int,
+        *,
+        event: Optional[str] = None,
         last_event_id: Optional[int] = None,
         stream_key: Optional[str] = None,
         stream_event: Optional[str] = None,
@@ -614,15 +616,22 @@ class RedisCacheClient:
         """Atomic pipeline for the SSE event-buffer hot path.
 
         Collapses meta-hash + Stream commands into one MULTI/EXEC so the
-        whole spill takes one pool checkout. ``stream_event`` defaults to
-        ``event`` but lets callers store a different wire format in the
-        Stream — the subagent producer writes pre-rendered SSE wire
-        strings so the live consumer needs no JSON-render step.
+        whole spill takes one pool checkout. The XADD payload is taken
+        from ``stream_event`` when set, otherwise ``event``. Main-workflow
+        callers pass only ``event``; the subagent caller passes
+        ``stream_event`` (pre-rendered SSE wire) and ``stream_record``
+        (JSON record) — when both are passed, ``event`` is unused.
 
         When ``stream_record`` is provided, the XADD entry carries a second
         ``b"record"`` field with the JSON record payload. The post-turn
         collector (``iter_subagent_events_full``) reads this field via
         XRANGE to rebuild full subagent history without a separate List.
+
+        Raises ValueError when a stream write is requested (both
+        ``stream_key`` and ``last_event_id`` provided) but neither
+        ``event`` nor ``stream_event`` carries a payload — that would
+        advance the meta ``seq`` counter past an event that was never
+        written.
 
         Returns (success, seq). On success ``seq`` is the new event count
         (1+); on failure it's 0.
@@ -659,6 +668,11 @@ class RedisCacheClient:
                 # preserving Redis Streams' lexicographic ordering.
                 if stream_key is not None and last_event_id is not None:
                     raw = stream_event if stream_event is not None else event
+                    if raw is None:
+                        raise ValueError(
+                            "pipelined_event_buffer needs `event` or "
+                            "`stream_event` when writing to a stream"
+                        )
                     payload = raw.encode("utf-8") if isinstance(raw, str) else raw
                     fields: dict[bytes, bytes] = {b"event": payload}
                     if stream_record is not None:

@@ -462,7 +462,6 @@ class BackgroundTaskRegistry:
                 success, _seq = await asyncio.wait_for(
                     cache.pipelined_event_buffer(
                         meta_key=meta_key,
-                        event=payload,
                         max_size=get_max_stored_messages_per_agent(),
                         ttl=get_redis_ttl_workflow_events(),
                         last_event_id=record.get("seq"),

@@ -89,15 +89,15 @@ async def test_main_workflow_stream_only():
 
 @pytest.mark.asyncio
 async def test_subagent_xadd_carries_record_field_when_stream_record_provided():
-    """Subagent caller passes ``stream_record`` → XADD entry has both
-    ``b"event"`` (pre-rendered SSE wire) and ``b"record"`` (JSON record) so
-    the post-turn collector can XRANGE the record back out."""
+    """Subagent caller passes ``stream_event`` + ``stream_record`` (no
+    ``event``) → XADD entry has both ``b"event"`` (pre-rendered SSE wire)
+    and ``b"record"`` (JSON record) so the post-turn collector can XRANGE
+    the record back out."""
     pipe, pipeline_ctx = _make_pipeline_mock()
     cache = _make_client_with_pipeline(pipeline_ctx)
 
     await cache.pipelined_event_buffer(
         meta_key="subagent:events:meta:t1:abc",
-        event='{"seq": 5, "event": "message_chunk"}',
         max_size=1000,
         ttl=86400,
         last_event_id=5,
@@ -114,6 +114,29 @@ async def test_subagent_xadd_carries_record_field_when_stream_record_provided():
     assert fields[b"record"] == b'{"seq": 5, "event": "message_chunk"}'
     # EXPIRE on meta_key + stream_key only.
     assert pipe.expire.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_stream_write_without_payload_returns_failure():
+    """Requesting a stream write (stream_key + last_event_id) with neither
+    ``event`` nor ``stream_event`` would advance the meta ``seq`` counter
+    past an event that was never written, leaving a permanent gap. The
+    helper raises ValueError; the outer except returns ``(False, 0)`` so
+    the caller sees a clean failure rather than silent meta/stream drift."""
+    pipe, pipeline_ctx = _make_pipeline_mock()
+    cache = _make_client_with_pipeline(pipeline_ctx)
+
+    success, seq = await cache.pipelined_event_buffer(
+        meta_key="workflow:events:meta:t1",
+        max_size=1000,
+        ttl=86400,
+        last_event_id=1,
+        stream_key="workflow:stream:t1",
+    )
+
+    assert success is False
+    assert seq == 0
+    pipe.xadd.assert_not_called()
 
 
 @pytest.mark.asyncio
