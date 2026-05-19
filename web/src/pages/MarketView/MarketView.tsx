@@ -252,12 +252,13 @@ function MarketViewInner() {
         // Reconcile selectedWorkspaceId against the fresh list. If the stored
         // id is gone (workspace deleted between visits), drop back to a clean
         // default state — Flash mode + new chat — instead of silently picking
-        // a different PTC workspace the user didn't ask for.
-        setSelectedWorkspaceId((prev) => {
-          if (prev && list.some((ws) => ws.workspace_id === prev)) return prev;
-          if (prev) setMode('fast');
-          return list[0]?.workspace_id ?? null;
-        });
+        // a different PTC workspace the user didn't ask for. Resolve both
+        // decisions before calling either setter so neither updater runs
+        // a side effect on the other piece of state.
+        const storedId = loadPref<string | null>('selectedWorkspaceId', null);
+        const stillValid = storedId && list.some((ws) => ws.workspace_id === storedId);
+        if (storedId && !stillValid) setMode('fast');
+        if (!stillValid) setSelectedWorkspaceId(list[0]?.workspace_id ?? null);
       })
       .catch(() => { });
     return () => { cancelled = true; };

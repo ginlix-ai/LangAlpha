@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import { RefreshCw } from 'lucide-react';
 import { queryKeys } from '@/lib/queryKeys';
 import { ErrorBanner } from '@/components/ui/error-banner';
@@ -70,6 +71,7 @@ export default function MarketChatPanel(props: MarketChatPanelProps): React.Reac
     workspaces,
     selectedWorkspaceId,
   } = props;
+  const { t } = useTranslation();
 
   // Flash workspace: lazily fetched once, cached forever.
   const { data: flashWs } = useQuery({
@@ -145,7 +147,7 @@ export default function MarketChatPanel(props: MarketChatPanelProps): React.Reac
     return (
       <div className="market-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, padding: 16 }}>
         <span style={{ color: 'var(--color-text-tertiary)', fontSize: 14 }}>
-          No workspace selected. Pick one in the chat input.
+          {t('marketView.chatPanel.noWorkspacePrompt')}
         </span>
       </div>
     );
@@ -207,6 +209,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     onStartNewChat,
   } = props;
 
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [, setSearchParams] = useSearchParams();
   const [dialogPayload, setDialogPayload] = useState<DialogPayload | null>(null);
@@ -216,7 +219,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
 
   // PTC zero-state — disable PTC option if user has no non-flash workspaces.
   const ptcDisabledReason = ptcWorkspaces.length === 0
-    ? 'Create a workspace in /chat to use PTC mode'
+    ? t('marketView.chatPanel.ptcDisabledReason')
     : null;
 
   const agentMode = mode === 'fast' ? 'flash' : 'ptc';
@@ -349,17 +352,18 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
 
   const showQuickQueries = messages.length === 0 && !isLoading;
 
-  // Session title: first user message text (truncated) or "New chat".
+  // Session title: first user message text (truncated) or fallback to "New chat".
+  const newChatLabel = t('marketView.chatHistory.newChat');
   const activeTitle = useMemo(() => {
-    if (!threadId || threadId === '__default__') return 'New chat';
+    if (!threadId || threadId === '__default__') return newChatLabel;
     const firstUser = (messages as unknown as Array<Record<string, unknown>>).find(
       (m) => (m.role as string) === 'user',
     );
     const raw = (firstUser?.content as string) || '';
     const trimmed = raw.trim();
-    if (!trimmed) return 'New chat';
+    if (!trimmed) return newChatLabel;
     return trimmed.length > 40 ? `${trimmed.slice(0, 40)}…` : trimmed;
-  }, [messages, threadId]);
+  }, [messages, threadId, newChatLabel]);
 
   return (
     <div className="market-panel">
@@ -392,7 +396,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
           <div className="market-chat-empty-state" style={{ height: '100%' }}>
             <LogoLoading size={60} color="var(--color-accent-overlay)" />
             <p className="market-chat-empty-text" style={{ marginTop: 16 }}>
-              Start a conversation by typing a message below
+              {t('marketView.chatPanel.startConversation')}
             </p>
             {messageError && (
               <div style={{ margin: '16px 24px 0', maxWidth: '100%', width: '100%' }}>
@@ -454,7 +458,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
         onRemoveChartImage={onClearChartImage}
         prefillMessage={prefillMessage}
         onClearPrefill={onClearPrefill}
-        placeholder={placeholder ?? 'What would you like to know?'}
+        placeholder={placeholder ?? t('marketView.chatPanel.defaultPlaceholder')}
         initialModel={initialModel}
         threadModels={threadModels}
       />

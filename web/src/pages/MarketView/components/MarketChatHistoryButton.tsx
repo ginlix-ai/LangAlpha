@@ -114,7 +114,7 @@ export default function MarketChatHistoryButton({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          aria-label="Chat history"
+          aria-label={t('marketView.chatHistory.triggerLabel')}
           className="group inline-flex items-center gap-2 rounded-md px-2 py-1 max-w-[260px] transition-colors hover:bg-foreground/[0.06]"
           style={{ color: 'var(--color-text-primary)' }}
         >
@@ -172,7 +172,7 @@ export default function MarketChatHistoryButton({
             style={{ color: 'var(--color-accent-primary)' }}
           />
           <span className="text-sm font-medium" style={{ letterSpacing: '-0.005em' }}>
-            New chat
+            {t('marketView.chatHistory.newChat')}
           </span>
         </DropdownMenuItem>
 
@@ -185,7 +185,7 @@ export default function MarketChatHistoryButton({
               letterSpacing: '0.14em',
             }}
           >
-            Recent
+            {t('marketView.chatHistory.recent')}
           </span>
           <div
             className="flex-1 h-px"
@@ -241,7 +241,7 @@ export default function MarketChatHistoryButton({
               className="px-3 py-6 text-xs text-center"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
-              No workspace selected
+              {t('marketView.chatHistory.noWorkspace')}
             </div>
           )}
 
@@ -251,7 +251,7 @@ export default function MarketChatHistoryButton({
               style={{ color: 'var(--color-text-tertiary)' }}
             >
               <Loader2 className="h-3 w-3 animate-spin" />
-              <span style={{ letterSpacing: '0.04em' }}>Loading</span>
+              <span style={{ letterSpacing: '0.04em' }}>{t('marketView.chatHistory.loading')}</span>
             </div>
           )}
 
@@ -261,17 +261,17 @@ export default function MarketChatHistoryButton({
               style={{ color: 'var(--color-loss)' }}
             >
               <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
-              <span>Failed to load history</span>
+              <span>{t('marketView.chatHistory.loadError')}</span>
             </div>
           )}
 
-          {workspaceId && !isFetching && !error && threads.length === 0 && (
+          {workspaceId && !isFetching && !error && threads.length === 0 && page === 0 && (
             <div
               className="flex flex-col items-center gap-2 px-3 py-10 text-xs"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
               <MessageSquare className="h-4 w-4" style={{ opacity: 0.45 }} />
-              <span>No conversations yet</span>
+              <span>{t('marketView.chatHistory.empty')}</span>
             </div>
           )}
 
@@ -280,7 +280,7 @@ export default function MarketChatHistoryButton({
               className="flex flex-col items-center gap-2 px-3 py-8 text-xs"
               style={{ color: 'var(--color-text-tertiary)' }}
             >
-              <span>Nothing on this page</span>
+              <span>{t('marketView.chatHistory.emptyPage')}</span>
             </div>
           )}
 
@@ -344,7 +344,7 @@ export default function MarketChatHistoryButton({
           >
             <button
               type="button"
-              aria-label="Previous page"
+              aria-label={t('marketView.chatHistory.prevPage')}
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -370,7 +370,7 @@ export default function MarketChatHistoryButton({
 
             <button
               type="button"
-              aria-label="Next page"
+              aria-label={t('marketView.chatHistory.nextPage')}
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
