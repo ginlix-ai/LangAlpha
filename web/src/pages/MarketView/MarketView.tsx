@@ -7,14 +7,14 @@ import StockHeader from './components/StockHeader';
 import MarketChart from './components/MarketChart';
 import type { MarketChartHandle } from './components/MarketChart';
 import ChatInput from '../../components/ui/chat-input';
-import MarketPanel from './components/MarketPanel';
+import MarketChatPanel from './components/MarketChatPanel';
 import MarketSidebarPanel from './components/MarketSidebarPanel';
 import { supports1sInterval } from './utils/chartConstants';
 import { useMarketChat } from './hooks/useMarketChat';
 import { getWorkspaces } from '../ChatAgent/utils/api';
 import { attachmentsToContexts } from '../ChatAgent/utils/fileUpload';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, RefreshCw } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 import CompanyOverviewPanel from './components/CompanyOverviewPanel';
 import { MobileBottomSheet } from '../../components/ui/mobile-bottom-sheet';
 import { MobileFabChat } from '../../components/ui/mobile-fab-chat';
@@ -131,9 +131,22 @@ function MarketViewInner() {
   const isMobile = useIsMobile();
 
   const [prefillMessage, setPrefillMessage] = useState<string>('');
-  const [mode, setMode] = useState<'fast' | 'ptc'>('fast');
+  const [mode, setMode] = useState<'fast' | 'ptc'>(() => {
+    const stored = loadPref<string>('mode', 'fast');
+    return stored === 'ptc' ? 'ptc' : 'fast';
+  });
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(
+    () => loadPref<string | null>('selectedWorkspaceId', null),
+  );
+
+  useEffect(() => {
+    savePref('mode', mode);
+  }, [mode]);
+
+  useEffect(() => {
+    savePref('selectedWorkspaceId', selectedWorkspaceId);
+  }, [selectedWorkspaceId]);
 
   const pickRandomQueries = useCallback((symbol: string): string[] => {
     const shuffled = [...QUICK_QUERIES].sort(() => Math.random() - 0.5);
@@ -169,12 +182,15 @@ function MarketViewInner() {
   const dragStartX = useRef<number>(0);
   const dragStartWidth = useRef<number>(0);
 
-  const { messages, isLoading, error, handleSendMessage: handleFastModeSend } = useMarketChat();
+  // Mobile FAB still uses the legacy useMarketChat (no persistence). Desktop
+  // chat lives in MarketChatPanel which drives its own useChatMessages.
+  const { isLoading, handleSendMessage: handleFastModeSend } = useMarketChat();
 
   // Chat return path — captured from URL when navigating from chat DetailPanel
   const [chatReturnPath, setChatReturnPath] = useState<string | null>(null);
 
-  // Handle URL parameters (symbol + returnTo from chat context)
+  // Handle URL parameters (symbol + returnTo from chat context). Preserve `?thread`
+  // so MarketChatPanel can pick it up to resume the right conversation.
   useEffect(() => {
     const symbolParam = searchParams.get('symbol');
     const returnToParam = searchParams.get('returnTo');
@@ -189,9 +205,13 @@ function MarketViewInner() {
     if (returnToParam) {
       setChatReturnPath(returnToParam);
     }
-    // Clear all URL parameters after applying them
     if (symbolParam || returnToParam) {
-      setSearchParams({});
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('symbol');
+        next.delete('returnTo');
+        return next;
+      }, { replace: true });
     }
   }, [searchParams, selectedStock, setSearchParams]);
 
@@ -229,9 +249,16 @@ function MarketViewInner() {
         if (cancelled) return;
         const list = ((data.workspaces || []) as Workspace[]).filter((ws) => ws.status !== 'flash');
         setWorkspaces(list);
-        if (list.length > 0 && !selectedWorkspaceId) {
-          setSelectedWorkspaceId(list[0].workspace_id);
-        }
+        // Reconcile selectedWorkspaceId against the fresh list. If the stored
+        // id is gone (workspace deleted between visits), drop back to a clean
+        // default state — Flash mode + new chat — instead of silently picking
+        // a different PTC workspace the user didn't ask for. Resolve both
+        // decisions before calling either setter so neither updater runs
+        // a side effect on the other piece of state.
+        const storedId = loadPref<string | null>('selectedWorkspaceId', null);
+        const stillValid = storedId && list.some((ws) => ws.workspace_id === storedId);
+        if (storedId && !stillValid) setMode('fast');
+        if (!stillValid) setSelectedWorkspaceId(list[0]?.workspace_id ?? null);
       })
       .catch(() => { });
     return () => { cancelled = true; };
@@ -603,36 +630,23 @@ function MarketViewInner() {
             <div className="market-resize-handle" onMouseDown={handleDragStart} />
             <div className="market-right-panel" style={{ width: chatPanelWidth }}>
               <div className="market-right-panel-inner">
-                <MarketPanel
-                  messages={messages as any}
-                  isLoading={isLoading}
-                  error={error}
-                />
-                {messages.length === 0 && (
-                  <div className="market-quick-queries">
-                    {quickQueries.map((q, i) => (
-                      <button key={i} className="market-quick-query-card" onClick={() => handleQuickQuery(q)}>
-                        {q}
-                      </button>
-                    ))}
-                    <button className="market-quick-query-shuffle" onClick={handleShuffleQueries} title="Show different suggestions">
-                      <RefreshCw size={13} />
-                    </button>
-                  </div>
-                )}
-                <ChatInput
-                  onSend={handleSendMessage as any}
-                  isLoading={isLoading}
+                <MarketChatPanel
+                  symbol={selectedStock}
                   mode={mode}
-                  onModeChange={setMode as any}
-                  workspaces={workspaces as any}
+                  onModeChange={setMode}
+                  workspaces={workspaces}
                   selectedWorkspaceId={selectedWorkspaceId}
                   onWorkspaceChange={setSelectedWorkspaceId}
-                  onCaptureChart={handleCaptureChartForContext}
                   chartImage={chartImage}
-                  onRemoveChartImage={() => { setChartImage(null); setChartImageDesc(null); }}
+                  chartImageDesc={chartImageDesc}
+                  onCaptureChart={handleCaptureChartForContext}
+                  onClearChartImage={() => { setChartImage(null); setChartImageDesc(null); }}
                   prefillMessage={prefillMessage}
                   onClearPrefill={() => setPrefillMessage('')}
+                  quickQueries={quickQueries}
+                  onQuickQuery={handleQuickQuery}
+                  onShuffleQueries={handleShuffleQueries}
+                  onNavigateSubagent={(tid, taskId) => navigate(`/chat/t/${tid}/${taskId}`)}
                   placeholder="What would you like to know?"
                 />
               </div>

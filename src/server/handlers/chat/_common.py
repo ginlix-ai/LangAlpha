@@ -466,9 +466,10 @@ async def ensure_thread(
         initial_status="in_progress",
         msg_type=msg_type,
     )
-    if request.external_thread_id and request.platform:
-        ensure_kwargs["external_id"] = request.external_thread_id
+    if request.platform:
         ensure_kwargs["platform"] = request.platform
+    if request.external_thread_id:
+        ensure_kwargs["external_id"] = request.external_thread_id
     await qr_db.ensure_thread_exists(**ensure_kwargs)
 
 

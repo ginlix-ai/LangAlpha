@@ -269,9 +269,16 @@ class ChatRequest(BaseModel):
         description="Stable external thread identifier (e.g. 'chat_id:topic_id'). "
         "When provided with platform, langalpha resolves to an existing thread or creates a new one.",
     )
+    # Format: lowercase prefix (a-z, underscore), optionally `:<UPPERCASE_TOKEN>`
+    # where the suffix accepts A-Z 0-9 and `.` (for tickers like BRK.B).
+    # Current namespace: 'web', 'market_view:<SYMBOL>', 'telegram', 'slack',
+    # 'discord', 'feishu'. Reserved prefixes shouldn't be reused for other origins.
     platform: Optional[str] = Field(
         default=None,
-        description="Platform identifier (e.g. 'telegram', 'slack'). Used with external_thread_id.",
+        pattern=r"^[a-z_]+(:[A-Z][A-Z0-9.]*)?$",
+        max_length=50,
+        description="Origin/platform identifier. Examples: 'web', "
+        "'market_view:AAPL', 'telegram', 'slack', 'discord', 'feishu'.",
     )
 
 

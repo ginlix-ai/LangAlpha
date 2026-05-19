@@ -83,11 +83,16 @@ export async function getThread(threadId: string) {
  * @param {number} offset - Pagination offset (default: 0)
  * @returns {Promise<Object>} Response with threads array, total, limit, offset
  */
-export async function getWorkspaceThreads(workspaceId: string, limit: number = 20, offset: number = 0) {
+export async function getWorkspaceThreads(
+  workspaceId: string,
+  limit: number = 20,
+  offset: number = 0,
+  platformPrefix: string | null = null,
+) {
   if (!workspaceId) throw new Error('Workspace ID is required');
-  const { data } = await api.get('/api/v1/threads', {
-    params: { workspace_id: workspaceId, limit, offset },
-  });
+  const params: Record<string, string | number> = { workspace_id: workspaceId, limit, offset };
+  if (platformPrefix) params.platform_prefix = platformPrefix;
+  const { data } = await api.get('/api/v1/threads', { params });
   return data;
 }
 
@@ -243,7 +248,8 @@ export async function sendChatMessageStream(
   forkFromTurn: number | null = null,
   llmModel: string | null = null,
   reasoningEffort: string | null = null,
-  fastMode: boolean | null = null
+  fastMode: boolean | null = null,
+  platform: string | null = null,
 ) {
   // For checkpoint replay (regenerate/retry), send empty messages
   const messages = checkpointId && !message
@@ -269,6 +275,7 @@ export async function sendChatMessageStream(
   if (llmModel) body.llm_model = llmModel;
   if (reasoningEffort) body.reasoning_effort = reasoningEffort;
   if (fastMode) body.fast_mode = true;
+  if (platform) body.platform = platform;
   // Use /threads/{id}/messages for existing thread, /threads/messages for new
   const isNewThread = !threadId || threadId === '__default__';
   const url = isNewThread

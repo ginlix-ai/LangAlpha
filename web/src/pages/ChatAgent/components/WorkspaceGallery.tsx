@@ -17,6 +17,7 @@ import { useWorkspaces } from '../../../hooks/useWorkspaces';
 import { queryKeys } from '../../../lib/queryKeys';
 import { createWorkspace, deleteWorkspace, getFlashWorkspace, updateWorkspace, reorderWorkspaces } from '../utils/api';
 import { removeStoredThreadId } from '../hooks/useChatMessages';
+import { clearAllMarketThreadsForWorkspace } from '../../MarketView/utils/threadPersistence';
 import { clearChatSession } from '../hooks/utils/chatSessionRestore';
 
 const DEFAULT_PAGE_SIZE = 8;
@@ -497,8 +498,11 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
     try {
       await deleteWorkspace(workspaceId);
 
-      // Clean up localStorage: remove thread ID for deleted workspace
+      // Clean up localStorage: remove thread pointers for the deleted workspace
+      // in both ChatAgent (single key per workspace) and MarketView (one key per
+      // (workspace, symbol) pair).
       removeStoredThreadId(workspaceId);
+      clearAllMarketThreadsForWorkspace(workspaceId);
 
       // Invalidate workspace list cache
       queryClient.invalidateQueries({ queryKey: queryKeys.workspaces.lists() });

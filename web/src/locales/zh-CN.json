@@ -1923,5 +1923,27 @@
     "flashModelLabel": "快速模型",
     "notSet": "未设置",
     "notConfigured": "未配置"
+  },
+  "marketView": {
+    "chatHistory": {
+      "missingThreadHint": "找不到对话？对话按模式和工作区隔离。请尝试在 Flash 与 PTC 之间切换，或选择其他工作区。",
+      "triggerLabel": "聊天历史",
+      "newChat": "新对话",
+      "recent": "最近",
+      "noWorkspace": "未选择工作区",
+      "loading": "加载中",
+      "loadError": "加载历史失败",
+      "empty": "暂无对话",
+      "emptyPage": "本页无内容",
+      "untitled": "未命名",
+      "prevPage": "上一页",
+      "nextPage": "下一页"
+    },
+    "chatPanel": {
+      "ptcDisabledReason": "在 /chat 中创建工作区以使用 PTC 模式",
+      "noWorkspacePrompt": "未选择工作区。请在输入框中选择一个。",
+      "startConversation": "在下方输入消息开始对话",
+      "defaultPlaceholder": "你想了解什么？"
+    }
   }
 }

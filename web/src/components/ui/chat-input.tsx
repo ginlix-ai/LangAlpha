@@ -100,6 +100,8 @@ export interface ChatInputProps {
   files?: string[];
   mode?: 'fast' | 'ptc';
   onModeChange?: (mode: 'fast' | 'ptc') => void;
+  /** When set, disables switching into PTC mode and shows this reason as a tooltip. */
+  ptcDisabledReason?: string | null;
   workspaces?: Workspace[] | null;
   selectedWorkspaceId?: string | null;
   onWorkspaceChange?: ((wsId: string) => void) | null;
@@ -335,6 +337,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   // Mode toggle
   mode,
   onModeChange,
+  ptcDisabledReason = null,
   // Workspace selector
   workspaces = null,
   selectedWorkspaceId = null,
@@ -1402,29 +1405,47 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
               )}
 
               {/* Mode Toggle (fast/ptc) */}
-              {hasModeToggle && (
-                <button
-                  className="inline-flex items-center rounded-full border-none cursor-pointer"
-                  style={{
-                    gap: '6px',
-                    padding: '6px 10px',
-                    fontSize: '13px',
-                    fontWeight: 500,
-                    background: 'transparent',
-                    color: 'var(--color-text-muted, #8b8fa3)',
-                    border: '1px solid transparent',
-                    transition: 'background 0.2s, color 0.2s, border-color 0.2s',
-                  }}
-                  onClick={(e) => { e.stopPropagation(); onModeChange(mode === 'fast' ? 'ptc' : 'fast'); }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--color-border-muted)'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-                  type="button"
-                  title={mode === 'fast' ? 'Flash — quick answer using flash model' : 'PTC — full agent with workspace and tools'}
-                >
-                  {mode === 'fast' ? <Zap className="h-4 w-4" /> : <FileStack className="h-4 w-4" />}
-                  <span>{mode === 'fast' ? 'Flash' : 'PTC'}</span>
-                </button>
-              )}
+              {hasModeToggle && (() => {
+                const ptcBlocked = mode === 'fast' && !!ptcDisabledReason;
+                return (
+                  <button
+                    className="inline-flex items-center rounded-full border-none"
+                    style={{
+                      gap: '6px',
+                      padding: '6px 10px',
+                      fontSize: '13px',
+                      fontWeight: 500,
+                      background: 'transparent',
+                      color: ptcBlocked ? 'var(--color-text-quaternary, #9ca3af)' : 'var(--color-text-muted, #8b8fa3)',
+                      border: '1px solid transparent',
+                      cursor: ptcBlocked ? 'not-allowed' : 'pointer',
+                      opacity: ptcBlocked ? 0.6 : 1,
+                      transition: 'background 0.2s, color 0.2s, border-color 0.2s',
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (ptcBlocked) return;
+                      onModeChange(mode === 'fast' ? 'ptc' : 'fast');
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!ptcBlocked) e.currentTarget.style.background = 'var(--color-border-muted)';
+                    }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                    type="button"
+                    aria-disabled={ptcBlocked || undefined}
+                    title={
+                      ptcBlocked
+                        ? ptcDisabledReason!
+                        : mode === 'fast'
+                          ? 'Flash — quick answer using flash model'
+                          : 'PTC — full agent with workspace and tools'
+                    }
+                  >
+                    {mode === 'fast' ? <Zap className="h-4 w-4" /> : <FileStack className="h-4 w-4" />}
+                    <span>{mode === 'fast' ? 'Flash' : 'PTC'}</span>
+                  </button>
+                );
+              })()}
 
               {/* Workspace Selector */}
               {showWorkspaceSelector && (

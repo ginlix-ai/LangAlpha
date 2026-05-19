@@ -192,9 +192,15 @@ async def list_threads(
         "updated_at", description="Sort field (created_at, updated_at)"
     ),
     sort_order: str = Query("desc", description="Sort order (asc or desc)"),
+    platform_prefix: Optional[str] = Query(
+        None,
+        description="Prefix filter on platform column. 'market_view' matches "
+        "'market_view:AAPL' and any future 'market_view:*' suffixes; 'web' "
+        "matches exact 'web' since no suffix exists for that origin.",
+    ),
 ):
     """
-    List threads with optional workspace filter.
+    List threads with optional workspace + platform-prefix filter.
 
     When workspace_id is provided, returns threads for that workspace.
     Otherwise returns all threads for the authenticated user.
@@ -211,6 +217,7 @@ async def list_threads(
                 offset=offset,
                 sort_by=sort_by,
                 sort_order=sort_order,
+                platform_prefix=platform_prefix,
             )
         else:
             threads, total = await get_threads_for_user(
@@ -219,6 +226,7 @@ async def list_threads(
                 offset=offset,
                 sort_by=sort_by,
                 sort_order=sort_order,
+                platform_prefix=platform_prefix,
             )
 
         thread_items = [
@@ -230,6 +238,7 @@ async def list_threads(
                 msg_type=thread.get("msg_type"),
                 title=thread.get("title"),
                 first_query_content=thread.get("first_query_content"),
+                platform=thread.get("platform"),
                 is_shared=bool(thread.get("is_shared", False)),
                 created_at=thread["created_at"],
                 updated_at=thread["updated_at"],

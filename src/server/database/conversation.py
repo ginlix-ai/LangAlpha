@@ -33,6 +33,15 @@ def thread_exists_key(thread_id: str) -> str:
     return f"thread_exists:{thread_id}"
 
 
+def _like_escape(value: str) -> str:
+    """Escape LIKE wildcards so caller-supplied prefixes match literally.
+
+    Use with `ESCAPE '\\'` in the LIKE clause so `_` and `%` in the prefix
+    (e.g. `market_view`) bind to themselves instead of matching any character.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 # Module-level connection pool cache for conversation database operations
 # This ensures we reuse connections across operations, reducing connection overhead
 _conversation_db_pool_cache = {}
@@ -274,18 +283,13 @@ async def create_thread(
     """
     Create a thread entry (thread_index auto-calculated if not provided).
 
-    Args:
-        conversation_thread_id: Thread ID
-        workspace_id: Workspace ID
-        current_status: Initial status
-        msg_type: Message type
-        thread_index: Optional thread index (calculated if not provided)
-        title: Optional thread title
-        external_id: Optional external thread identifier (e.g. "chat_id:topic_id")
-        platform: Optional platform identifier (e.g. "telegram", "slack")
-        conn: Optional database connection to reuse
+    `platform` records where the chat originated. Conventions:
+      - "web"                   — main ChatAgent page
+      - "market_view:<SYMBOL>"  — MarketView side panel, symbol uppercased
+      - "telegram" | "slack" | "discord" | "feishu" — ginlix-integration channels
+    `external_id` is only set by channel integrations and combined with platform
+    is unique-indexed for dedup. Web-originated threads have external_id NULL.
     """
-    # Build SQL dynamically — only include external_id/platform for platform callers
     columns = [
         "conversation_thread_id",
         "workspace_id",
@@ -297,11 +301,13 @@ async def create_thread(
     base_params = [conversation_thread_id, workspace_id, current_status, msg_type]
     # thread_index is appended per-attempt (may be recalculated on retry)
 
-    if external_id and platform:
-        columns.extend(["external_id", "platform"])
-        extra_params = [external_id, platform]
-    else:
-        extra_params = []
+    extra_params: List[Any] = []
+    if platform:
+        columns.append("platform")
+        extra_params.append(platform)
+    if external_id:
+        columns.append("external_id")
+        extra_params.append(external_id)
 
     col_str = ", ".join(columns)
     placeholders = ", ".join(["%s"] * len(columns))
@@ -619,8 +625,15 @@ async def get_workspace_threads(
     offset: int = 0,
     sort_by: str = "updated_at",
     sort_order: str = "desc",
+    platform_prefix: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], int]:
-    """Get threads for a workspace with pagination."""
+    """Get threads for a workspace with pagination.
+
+    `platform_prefix`: if set, restricts to rows where `platform` LIKE
+    '<prefix>%' (e.g. "market_view" matches "market_view:AAPL" and any future
+    "market_view:*" suffixes). Sargable on Postgres btree, but after the
+    workspace_id filter this is a tiny scan in practice.
+    """
     # Validate sort parameters
     valid_sort_fields = ["created_at", "updated_at", "thread_index"]
     if sort_by not in valid_sort_fields:
@@ -629,17 +642,23 @@ async def get_workspace_threads(
     if sort_order.lower() not in ["asc", "desc"]:
         sort_order = "desc"
 
+    where_extra = ""
+    extra_params: List[Any] = []
+    if platform_prefix:
+        where_extra = " AND platform LIKE %s ESCAPE '\\'"
+        extra_params.append(f"{_like_escape(platform_prefix)}%")
+
     try:
         async with get_db_connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 # Get total count
                 await cur.execute(
-                    """
+                    f"""
                     SELECT COUNT(*) as total
                     FROM conversation_threads
-                    WHERE workspace_id = %s
+                    WHERE workspace_id = %s{where_extra}
                 """,
-                    (workspace_id,),
+                    (workspace_id, *extra_params),
                 )
 
                 total_result = await cur.fetchone()
@@ -649,13 +668,13 @@ async def get_workspace_threads(
                 query = f"""
                     SELECT
                         conversation_thread_id, workspace_id, current_status, msg_type, thread_index,
-                        title, is_shared, created_at, updated_at
+                        title, platform, is_shared, created_at, updated_at
                     FROM conversation_threads
-                    WHERE workspace_id = %s
+                    WHERE workspace_id = %s{where_extra}
                     ORDER BY {sort_by} {sort_order.upper()}
                     LIMIT %s OFFSET %s
                 """
-                await cur.execute(query, (workspace_id, limit, offset))
+                await cur.execute(query, (workspace_id, *extra_params, limit, offset))
 
                 threads = await cur.fetchall()
                 return [dict(row) for row in threads], total_count
@@ -671,8 +690,12 @@ async def get_threads_for_user(
     offset: int = 0,
     sort_by: str = "updated_at",
     sort_order: str = "desc",
+    platform_prefix: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], int]:
-    """Get all threads for a user across all workspaces."""
+    """Get all threads for a user across all workspaces.
+
+    `platform_prefix`: optional prefix match on `platform` (e.g. "market_view").
+    """
     sort_fields = {
         "created_at": "t.created_at",
         "updated_at": "t.updated_at",
@@ -686,17 +709,23 @@ async def get_threads_for_user(
 
     order_by = sort_fields[sort_by]
 
+    where_extra = ""
+    extra_params: List[Any] = []
+    if platform_prefix:
+        where_extra = " AND t.platform LIKE %s ESCAPE '\\'"
+        extra_params.append(f"{_like_escape(platform_prefix)}%")
+
     try:
         async with get_db_connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
-                    """
+                    f"""
                     SELECT COUNT(*) as total
                     FROM conversation_threads t
                     JOIN workspaces w ON t.workspace_id = w.workspace_id
-                    WHERE w.user_id = %s AND w.status != 'deleted'
+                    WHERE w.user_id = %s AND w.status != 'deleted'{where_extra}
                     """,
-                    (user_id,),
+                    (user_id, *extra_params),
                 )
                 total_result = await cur.fetchone()
                 total_count = total_result["total"] if total_result else 0
@@ -704,7 +733,7 @@ async def get_threads_for_user(
                 query = f"""
                     SELECT
                         t.conversation_thread_id, t.workspace_id, t.current_status, t.msg_type, t.thread_index,
-                        t.title, t.is_shared, t.created_at, t.updated_at,
+                        t.title, t.platform, t.is_shared, t.created_at, t.updated_at,
                         fq.content AS first_query_content
                     FROM conversation_threads t
                     JOIN workspaces w ON t.workspace_id = w.workspace_id
@@ -715,11 +744,11 @@ async def get_threads_for_user(
                         ORDER BY q.turn_index ASC
                         LIMIT 1
                     ) fq ON TRUE
-                    WHERE w.user_id = %s AND w.status != 'deleted'
+                    WHERE w.user_id = %s AND w.status != 'deleted'{where_extra}
                     ORDER BY {order_by} {sort_order.upper()}
                     LIMIT %s OFFSET %s
                 """
-                await cur.execute(query, (user_id, limit, offset))
+                await cur.execute(query, (user_id, *extra_params, limit, offset))
                 threads = await cur.fetchall()
                 return [dict(row) for row in threads], total_count
 

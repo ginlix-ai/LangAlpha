@@ -1943,5 +1943,27 @@
     "flashModelLabel": "Flash model",
     "notSet": "Not set",
     "notConfigured": "Not configured"
+  },
+  "marketView": {
+    "chatHistory": {
+      "missingThreadHint": "Don't see a thread? Threads are scoped to mode and workspace. Try switching between Flash and PTC, or pick a different workspace.",
+      "triggerLabel": "Chat history",
+      "newChat": "New chat",
+      "recent": "Recent",
+      "noWorkspace": "No workspace selected",
+      "loading": "Loading",
+      "loadError": "Failed to load history",
+      "empty": "No conversations yet",
+      "emptyPage": "Nothing on this page",
+      "untitled": "Untitled",
+      "prevPage": "Previous page",
+      "nextPage": "Next page"
+    },
+    "chatPanel": {
+      "ptcDisabledReason": "Create a workspace in /chat to use PTC mode",
+      "noWorkspacePrompt": "No workspace selected. Pick one in the chat input.",
+      "startConversation": "Start a conversation by typing a message below",
+      "defaultPlaceholder": "What would you like to know?"
+    }
   }
 }
