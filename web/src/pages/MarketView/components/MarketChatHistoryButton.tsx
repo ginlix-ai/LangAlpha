@@ -57,13 +57,13 @@ function formatRelative(iso: string | undefined): string {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-function threadLabel(thread: ThreadRecord): string {
+function threadLabel(thread: ThreadRecord, untitled: string): string {
   if (thread.title && thread.title.trim()) return thread.title;
   if (thread.first_query_content && thread.first_query_content.trim()) {
     const trimmed = thread.first_query_content.trim();
     return trimmed.length > 60 ? `${trimmed.slice(0, 60)}…` : trimmed;
   }
-  return 'Untitled';
+  return untitled;
 }
 
 export default function MarketChatHistoryButton({
@@ -315,7 +315,7 @@ export default function MarketChatHistoryButton({
                     opacity: isActive ? 1 : 0.88,
                   }}
                 >
-                  {threadLabel(thread)}
+                  {threadLabel(thread, t('marketView.chatHistory.untitled'))}
                 </span>
                 {thread.updated_at && (
                   <span

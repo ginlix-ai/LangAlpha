@@ -1955,6 +1955,7 @@
       "loadError": "Failed to load history",
       "empty": "No conversations yet",
       "emptyPage": "Nothing on this page",
+      "untitled": "Untitled",
       "prevPage": "Previous page",
       "nextPage": "Next page"
     },
