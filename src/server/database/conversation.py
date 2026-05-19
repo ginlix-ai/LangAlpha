@@ -33,6 +33,15 @@ def thread_exists_key(thread_id: str) -> str:
     return f"thread_exists:{thread_id}"
 
 
+def _like_escape(value: str) -> str:
+    """Escape LIKE wildcards so caller-supplied prefixes match literally.
+
+    Use with `ESCAPE '\\'` in the LIKE clause so `_` and `%` in the prefix
+    (e.g. `market_view`) bind to themselves instead of matching any character.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 # Module-level connection pool cache for conversation database operations
 # This ensures we reuse connections across operations, reducing connection overhead
 _conversation_db_pool_cache = {}
@@ -636,8 +645,8 @@ async def get_workspace_threads(
     where_extra = ""
     extra_params: List[Any] = []
     if platform_prefix:
-        where_extra = " AND platform LIKE %s"
-        extra_params.append(f"{platform_prefix}%")
+        where_extra = " AND platform LIKE %s ESCAPE '\\'"
+        extra_params.append(f"{_like_escape(platform_prefix)}%")
 
     try:
         async with get_db_connection() as conn:
@@ -703,8 +712,8 @@ async def get_threads_for_user(
     where_extra = ""
     extra_params: List[Any] = []
     if platform_prefix:
-        where_extra = " AND t.platform LIKE %s"
-        extra_params.append(f"{platform_prefix}%")
+        where_extra = " AND t.platform LIKE %s ESCAPE '\\'"
+        extra_params.append(f"{_like_escape(platform_prefix)}%")
 
     try:
         async with get_db_connection() as conn:
