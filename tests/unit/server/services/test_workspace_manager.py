@@ -167,9 +167,8 @@ class TestCreateWorkspace:
     @patch("src.server.services.workspace_manager.update_workspace_status", new_callable=AsyncMock)
     @patch("src.server.services.workspace_manager.db_create_workspace", new_callable=AsyncMock)
     @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.sync_user_data_to_sandbox", new_callable=AsyncMock)
     async def test_create_workspace_success(
-        self, mock_sync_user, mock_sm, mock_db_create, mock_update_status
+        self, mock_sm, mock_db_create, mock_update_status
     ):
         ws_id = str(uuid.uuid4())
         created_ws = _make_workspace(workspace_id=ws_id, status="creating")
@@ -197,9 +196,8 @@ class TestCreateWorkspace:
     @patch("src.server.services.workspace_manager.update_workspace_status", new_callable=AsyncMock)
     @patch("src.server.services.workspace_manager.db_create_workspace", new_callable=AsyncMock)
     @patch("src.server.services.workspace_manager.SessionManager")
-    @patch("src.server.services.workspace_manager.sync_user_data_to_sandbox", new_callable=AsyncMock)
     async def test_create_workspace_sandbox_failure_marks_error(
-        self, mock_sync_user, mock_sm, mock_db_create, mock_update_status
+        self, mock_sm, mock_db_create, mock_update_status
     ):
         ws_id = str(uuid.uuid4())
         created_ws = _make_workspace(workspace_id=ws_id, status="creating")
@@ -254,7 +252,6 @@ class TestStopWorkspace:
         wm = WorkspaceManager(config)
         mock_session = _make_mock_session()
         wm._sessions[ws_id] = mock_session
-        wm._user_data_synced.add(ws_id)
         wm._last_sync_at[ws_id] = time.monotonic()
 
         result = await wm.stop_workspace(ws_id)
@@ -262,7 +259,6 @@ class TestStopWorkspace:
         assert result["status"] == "stopped"
         mock_session.stop.assert_awaited_once()
         assert ws_id not in wm._sessions
-        assert ws_id not in wm._user_data_synced
         assert ws_id not in wm._last_sync_at
 
     @pytest.mark.asyncio
@@ -317,7 +313,6 @@ class TestDeleteWorkspace:
         wm = WorkspaceManager(config)
         mock_session = _make_mock_session()
         wm._sessions[ws_id] = mock_session
-        wm._user_data_synced.add(ws_id)
 
         result = await wm.delete_workspace(ws_id)
 
@@ -326,7 +321,6 @@ class TestDeleteWorkspace:
         mock_sm.cleanup_session.assert_awaited_once_with(ws_id)
         mock_db_delete.assert_awaited_once_with(ws_id)
         assert ws_id not in wm._sessions
-        assert ws_id not in wm._user_data_synced
 
     @pytest.mark.asyncio
     @patch("src.server.services.workspace_manager.db_get_workspace", new_callable=AsyncMock)
@@ -422,7 +416,6 @@ class TestShutdown:
         config = _make_config()
         wm = WorkspaceManager(config)
         wm._sessions["ws-1"] = _make_mock_session()
-        wm._user_data_synced.add("ws-1")
         wm._pending_lazy_sync.add("ws-1")
         wm._last_sync_at["ws-1"] = time.monotonic()
         wm._workspace_locks["ws-1"] = asyncio.Lock()
@@ -430,7 +423,6 @@ class TestShutdown:
         await wm.shutdown()
 
         assert wm._sessions == {}
-        assert len(wm._user_data_synced) == 0
         assert len(wm._pending_lazy_sync) == 0
         assert wm._last_sync_at == {}
         assert wm._workspace_locks == {}

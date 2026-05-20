@@ -20,7 +20,6 @@ from src.observability import (
     sandbox_asset_sync_phase_duration_ms,
     sandbox_asset_sync_total_ms,
     sandbox_execute_duration_ms,
-    sandbox_user_data_upload_duration_ms,
     workspace_fs_bytes,
 )
 from src.observability.tracing import tracer as _otel_tracer
@@ -141,12 +140,7 @@ class PTCSandbox:
     def __init__(
         self, config: CoreConfig, mcp_registry: MCPRegistry | None = None
     ) -> None:
-        """Initialize PTC sandbox.
-
-        Args:
-            config: Configuration object
-            mcp_registry: MCP registry with connected servers (can be None for reconnect)
-        """
+        """``mcp_registry`` may be None when reconnecting to an existing sandbox."""
         self.config = config
         self.mcp_registry = mcp_registry
 
@@ -942,30 +936,6 @@ class PTCSandbox:
         except Exception as e:
             logger.warning("Failed to upload vault helper module", error=str(e))
 
-    async def _upload_user_data_files(self, files: dict[str, str]) -> None:
-        """Upload pre-formatted user data markdown files to sandbox."""
-        work_dir = self._work_dir
-        user_data_path = f"{work_dir}/.agents/user"
-
-        assert self.runtime is not None
-        _t0 = time.monotonic()
-        await self._runtime_call(
-            self.runtime.exec,
-            f"mkdir -p {user_data_path}",
-            retry_policy=RetryPolicy.SAFE,
-        )
-        batch: list[tuple[bytes, str]] = [
-            (content.encode("utf-8"), f"{user_data_path}/{name}")
-            for name, content in files.items()
-        ]
-        await self._runtime_call(
-            self.runtime.upload_files,
-            batch,
-            retry_policy=RetryPolicy.SAFE,
-        )
-        safe_record(sandbox_user_data_upload_duration_ms, (time.monotonic() - _t0) * 1000.0)
-        logger.debug("Uploaded user data files", file_count=len(files))
-
     # ── Unified manifest helpers ────────────────────────────────────────
 
     def _compute_tool_schema_hash(self) -> str:
@@ -1090,7 +1060,6 @@ class PTCSandbox:
         tokens: dict | None = None,
         user_id: str | None = None,
         workspace_id: str | None = None,
-        user_data_hash: str | None = None,
     ) -> dict[str, Any]:
         """Compute the unified local manifest for all sandbox asset modules."""
         modules: dict[str, Any] = {}
@@ -1161,10 +1130,6 @@ class PTCSandbox:
                 "user_id": user_id or "",
                 "workspace_id": workspace_id or "",
             }
-
-        # ── Module: user_data ──
-        if user_data_hash:
-            modules["user_data"] = {"version": user_data_hash}
 
         return {
             "schema_version": 1,
@@ -1327,7 +1292,6 @@ class PTCSandbox:
         tokens: dict | None = None,
         user_id: str | None = None,
         workspace_id: str | None = None,
-        user_data_files: dict[str, str] | None = None,
         on_progress: Callable[[str], None] | None = None,
     ) -> SyncResult:
         """Sync all sandbox assets using a single unified manifest.
@@ -1367,13 +1331,6 @@ class PTCSandbox:
             # _compute_sandbox_manifest → local CPU/disk only
             # _read_unified_manifest → sandbox HTTP GET
             skill_roots = [d for d, _ in skill_dirs] if skill_dirs else None
-            # Compute user_data hash from pre-formatted content (if provided)
-            ud_hash: str | None = None
-            if user_data_files:
-                combined = "\n".join(
-                    f"{k}:{v}" for k, v in sorted(user_data_files.items())
-                )
-                ud_hash = hashlib.sha256(combined.encode()).hexdigest()
 
             _, local_manifest, remote_manifest = await asyncio.gather(
                 self._prune_disabled_tool_modules(),
@@ -1382,7 +1339,6 @@ class PTCSandbox:
                     tokens=tokens,
                     user_id=user_id,
                     workspace_id=workspace_id,
-                    user_data_hash=ud_hash,
                 ),
                 self._read_unified_manifest(),
             )
@@ -1472,12 +1428,6 @@ class PTCSandbox:
                 if on_progress:
                     on_progress("Uploading tokens...")
                 parallel_uploads.append(("tokens", self.upload_token_file(tokens)))
-            if "user_data" in changed_modules and user_data_files:
-                if on_progress:
-                    on_progress("Syncing user data...")
-                parallel_uploads.append(
-                    ("user_data", self._upload_user_data_files(user_data_files))
-                )
 
             if parallel_uploads:
                 await asyncio.gather(*[coro for _, coro in parallel_uploads])

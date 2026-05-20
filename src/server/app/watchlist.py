@@ -1,23 +1,6 @@
-"""
-Watchlist API Router.
+"""Watchlist API Router — CRUD endpoints for /api/v1/users/me/watchlists and their items.
 
-Provides REST endpoints for watchlist and watchlist item management.
-
-Watchlist Management Endpoints (/api/v1/users/me/watchlists):
-- GET /watchlists - List all watchlists
-- POST /watchlists - Create new watchlist
-- GET /watchlists/{watchlist_id} - Get watchlist with items
-- PUT /watchlists/{watchlist_id} - Update watchlist metadata
-- DELETE /watchlists/{watchlist_id} - Delete watchlist (cascades items)
-
-Watchlist Items Endpoints (/api/v1/users/me/watchlists/{watchlist_id}/items):
-- GET /watchlists/{watchlist_id}/items - List items in watchlist
-- POST /watchlists/{watchlist_id}/items - Add item to watchlist
-- GET /watchlists/{watchlist_id}/items/{item_id} - Get single item
-- PUT /watchlists/{watchlist_id}/items/{item_id} - Update item
-- DELETE /watchlists/{watchlist_id}/items/{item_id} - Remove item
-
-Note: Use "default" as watchlist_id to operate on the user's default watchlist.
+Use ``"default"`` as ``watchlist_id`` to operate on the user's default watchlist.
 """
 
 import logging
@@ -25,7 +8,6 @@ import logging
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
-from src.server.services.workspace_manager import WorkspaceManager
 from src.server.database.watchlist import (
     create_watchlist as db_create_watchlist,
     create_watchlist_item as db_create_watchlist_item,
@@ -64,16 +46,7 @@ router = APIRouter(prefix="/api/v1/users/me", tags=["Watchlist"])
 
 
 async def _resolve_watchlist_id(watchlist_id: str, user_id: str) -> str:
-    """
-    Resolve watchlist_id, handling "default" as a special case.
-
-    Args:
-        watchlist_id: Watchlist ID or "default"
-        user_id: User ID
-
-    Returns:
-        Resolved watchlist UUID string
-    """
+    """Resolve ``"default"`` to the user's default watchlist UUID; pass other IDs through."""
     if watchlist_id.lower() == "default":
         default_watchlist = await db_get_or_create_default_watchlist(user_id)
         return str(default_watchlist["watchlist_id"])
@@ -88,15 +61,6 @@ async def _resolve_watchlist_id(watchlist_id: str, user_id: str) -> str:
 @router.get("/watchlists", response_model=WatchlistsResponse)
 @handle_api_exceptions("list watchlists", logger)
 async def list_watchlists(user_id: CurrentUserId):
-    """
-    List all watchlists for the current user.
-
-    Args:
-        user_id: User ID from authentication header
-
-    Returns:
-        List of watchlists with total count
-    """
     watchlists = await db_get_user_watchlists(user_id)
 
     return WatchlistsResponse(
@@ -111,19 +75,7 @@ async def create_watchlist(
     request: WatchlistCreate,
     user_id: CurrentUserId,
 ):
-    """
-    Create a new watchlist.
-
-    Args:
-        request: Watchlist data
-        user_id: User ID from authentication header
-
-    Returns:
-        Created watchlist
-
-    Raises:
-        409: Watchlist with same name already exists
-    """
+    """409 if a watchlist with the same name already exists."""
     watchlist = await db_create_watchlist(
         user_id=user_id,
         name=request.name,
@@ -132,7 +84,6 @@ async def create_watchlist(
         display_order=request.display_order,
     )
 
-    WorkspaceManager.mark_user_data_stale(user_id)
     logger.info(f"Created watchlist {watchlist['watchlist_id']} for user {user_id}")
     return WatchlistResponse.model_validate(watchlist)
 
@@ -143,21 +94,7 @@ async def get_watchlist(
     watchlist_id: str,
     user_id: CurrentUserId,
 ):
-    """
-    Get a watchlist with its items.
-
-    Use "default" as watchlist_id to get the user's default watchlist.
-
-    Args:
-        watchlist_id: Watchlist ID or "default"
-        user_id: User ID from authentication header
-
-    Returns:
-        Watchlist with items
-
-    Raises:
-        404: Watchlist not found or not owned by user
-    """
+    """Get a watchlist with all its items. 404 if not found or not owned by the caller."""
     resolved_id = await _resolve_watchlist_id(watchlist_id, user_id)
     watchlist = await db_get_watchlist(resolved_id, user_id)
 
@@ -187,23 +124,7 @@ async def update_watchlist(
     request: WatchlistUpdate,
     user_id: CurrentUserId,
 ):
-    """
-    Update watchlist metadata.
-
-    Partial update supported - only provided fields are updated.
-
-    Args:
-        watchlist_id: Watchlist ID or "default"
-        request: Fields to update
-        user_id: User ID from authentication header
-
-    Returns:
-        Updated watchlist
-
-    Raises:
-        404: Watchlist not found or not owned by user
-        409: Name conflicts with existing watchlist
-    """
+    """Partial update. 404 if not found; 409 if name conflicts with existing watchlist."""
     resolved_id = await _resolve_watchlist_id(watchlist_id, user_id)
     watchlist = await db_update_watchlist(
         watchlist_id=resolved_id,
@@ -216,7 +137,6 @@ async def update_watchlist(
     if not watchlist:
         raise_not_found("Watchlist")
 
-    WorkspaceManager.mark_user_data_stale(user_id)
     logger.info(f"Updated watchlist {resolved_id} for user {user_id}")
     return WatchlistResponse.model_validate(watchlist)
 
@@ -227,26 +147,13 @@ async def delete_watchlist(
     watchlist_id: str,
     user_id: CurrentUserId,
 ):
-    """
-    Delete a watchlist (items are cascade deleted).
-
-    Args:
-        watchlist_id: Watchlist ID or "default"
-        user_id: User ID from authentication header
-
-    Returns:
-        204 No Content on success
-
-    Raises:
-        404: Watchlist not found or not owned by user
-    """
+    """Delete a watchlist and cascade-delete its items. 404 if not found or not owned by the caller."""
     resolved_id = await _resolve_watchlist_id(watchlist_id, user_id)
     deleted = await db_delete_watchlist(resolved_id, user_id)
 
     if not deleted:
         raise_not_found("Watchlist")
 
-    WorkspaceManager.mark_user_data_stale(user_id)
     logger.info(f"Deleted watchlist {resolved_id} for user {user_id}")
     return Response(status_code=204)
 
@@ -262,21 +169,7 @@ async def list_watchlist_items(
     watchlist_id: str,
     user_id: CurrentUserId,
 ):
-    """
-    List all items in a watchlist.
-
-    Use "default" as watchlist_id to list items from the default watchlist.
-
-    Args:
-        watchlist_id: Watchlist ID or "default"
-        user_id: User ID from authentication header
-
-    Returns:
-        List of watchlist items with total count
-
-    Raises:
-        404: Watchlist not found or not owned by user
-    """
+    """List items in a watchlist. 404 if watchlist not found or not owned by the caller."""
     resolved_id = await _resolve_watchlist_id(watchlist_id, user_id)
     watchlist = await db_get_watchlist(resolved_id, user_id)
     if not watchlist:
@@ -301,23 +194,7 @@ async def add_watchlist_item(
     request: WatchlistItemCreate,
     user_id: CurrentUserId,
 ):
-    """
-    Add an item to a watchlist.
-
-    Use "default" as watchlist_id to add to the default watchlist.
-
-    Args:
-        watchlist_id: Watchlist ID or "default"
-        request: Watchlist item data
-        user_id: User ID from authentication header
-
-    Returns:
-        Created watchlist item
-
-    Raises:
-        404: Watchlist not found or not owned by user
-        409: Item already exists in watchlist (same symbol + instrument_type)
-    """
+    """Add an item. 404 if watchlist not found; 409 if item already exists (same symbol + instrument_type)."""
     resolved_id = await _resolve_watchlist_id(watchlist_id, user_id)
     try:
         item = await db_create_watchlist_item(
@@ -340,7 +217,6 @@ async def add_watchlist_item(
         raise HTTPException(status_code=409, detail=str(e))
 
     await maybe_complete_onboarding(user_id)
-    WorkspaceManager.mark_user_data_stale(user_id)
 
     logger.info(
         f"Added item {item['watchlist_item_id']} to watchlist {resolved_id} for user {user_id}"
@@ -358,20 +234,7 @@ async def get_watchlist_item(
     item_id: str,
     user_id: CurrentUserId,
 ):
-    """
-    Get a single watchlist item.
-
-    Args:
-        watchlist_id: Watchlist ID or "default"
-        item_id: Watchlist item ID
-        user_id: User ID from authentication header
-
-    Returns:
-        Watchlist item details
-
-    Raises:
-        404: Item not found or not owned by user
-    """
+    """Get a single item. 404 if not found or belongs to a different watchlist."""
     resolved_id = await _resolve_watchlist_id(watchlist_id, user_id)
     item = await db_get_watchlist_item(item_id, user_id)
 
@@ -395,23 +258,7 @@ async def update_watchlist_item(
     request: WatchlistItemUpdate,
     user_id: CurrentUserId,
 ):
-    """
-    Update a watchlist item.
-
-    Partial update supported - only provided fields are updated.
-
-    Args:
-        watchlist_id: Watchlist ID or "default"
-        item_id: Watchlist item ID
-        request: Fields to update
-        user_id: User ID from authentication header
-
-    Returns:
-        Updated watchlist item
-
-    Raises:
-        404: Item not found or not owned by user
-    """
+    """Partial update. 404 if not found or belongs to a different watchlist."""
     resolved_id = await _resolve_watchlist_id(watchlist_id, user_id)
     existing = await db_get_watchlist_item(item_id, user_id)
     if not existing or str(existing["watchlist_id"]) != resolved_id:
@@ -432,7 +279,6 @@ async def update_watchlist_item(
     if not item:
         raise_not_found("Watchlist item")
 
-    WorkspaceManager.mark_user_data_stale(user_id)
     logger.info(f"Updated item {item_id} in watchlist {resolved_id} for user {user_id}")
     return WatchlistItemResponse.model_validate(item)
 
@@ -444,20 +290,7 @@ async def delete_watchlist_item(
     item_id: str,
     user_id: CurrentUserId,
 ):
-    """
-    Remove an item from a watchlist.
-
-    Args:
-        watchlist_id: Watchlist ID or "default"
-        item_id: Watchlist item ID
-        user_id: User ID from authentication header
-
-    Returns:
-        204 No Content on success
-
-    Raises:
-        404: Item not found or not owned by user
-    """
+    """Remove an item. 404 if not found or belongs to a different watchlist."""
     resolved_id = await _resolve_watchlist_id(watchlist_id, user_id)
     existing = await db_get_watchlist_item(item_id, user_id)
     if not existing or str(existing["watchlist_id"]) != resolved_id:
@@ -468,6 +301,5 @@ async def delete_watchlist_item(
     if not deleted:
         raise_not_found("Watchlist item")
 
-    WorkspaceManager.mark_user_data_stale(user_id)
     logger.info(f"Deleted item {item_id} from watchlist {resolved_id} for user {user_id}")
     return Response(status_code=204)

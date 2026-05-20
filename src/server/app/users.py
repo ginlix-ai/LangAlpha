@@ -11,7 +11,6 @@ from pydantic import BaseModel
 from src.utils.storage import get_public_url, upload_bytes
 
 from src.server.auth.jwt_bearer import get_current_auth_info, AuthInfo
-from src.server.services.workspace_manager import WorkspaceManager
 from src.server.database.user import (
     create_user as db_create_user,
     create_user_from_auth,
@@ -223,7 +222,6 @@ async def update_current_user(
     )
 
     await invalidate_user_profile_cache(user_id)
-    WorkspaceManager.mark_user_data_stale(user_id)
 
     if not user:
         raise_not_found("User")
@@ -440,7 +438,6 @@ async def update_preferences(
 
     await invalidate_user_prefs_cache(user_id)
     await invalidate_user_profile_cache(user_id)
-    WorkspaceManager.mark_user_data_stale(user_id)
 
     await maybe_complete_onboarding(user_id)
 
@@ -458,7 +455,6 @@ async def delete_preferences(user_id: CurrentUserId):
     await db_delete_user_preferences(user_id)
     await invalidate_user_prefs_cache(user_id)
     await invalidate_user_profile_cache(user_id)
-    WorkspaceManager.mark_user_data_stale(user_id)
     await db_update_user(user_id=user_id, onboarding_completed=False)
 
     logger.info(f"Cleared preferences and reset onboarding for user {user_id}")

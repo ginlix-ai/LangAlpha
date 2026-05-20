@@ -18,20 +18,16 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Map test class names to display categories
 _CLASS_DISPLAY = {
     "TestColdWarmSessionPath": "Cold / Warm Session Path",
     "TestHasReadySession": "`has_ready_session` Edge Cases",
     "TestUpdateWorkspaceActivityConditional": "Conditional `update_workspace_activity`",
-    "TestMarkUserDataStale": "`mark_user_data_stale`",
 }
 
-# Map test class names to a description of what the category tests
 _CLASS_DESCRIPTION = {
     "TestColdWarmSessionPath": "Session resolution with real PostgreSQL + Daytona sandbox",
     "TestHasReadySession": "Sync check accuracy for various session states",
     "TestUpdateWorkspaceActivityConditional": "60-second conditional SQL UPDATE behavior",
-    "TestMarkUserDataStale": "User data invalidation across workspaces",
 }
 
 _MODULE = "tests.integration.test_message_hot_path"
@@ -173,12 +169,11 @@ def group_by_category(results: list[TestResult]) -> list[CategorySummary]:
             )
         categories[cls].tests.append(result)
 
-    # Return in defined order
     ordered = []
     for cls in _CLASS_DISPLAY:
         if cls in categories:
             ordered.append(categories.pop(cls))
-    # Append any unknown categories at the end
+    # Unknown categories (not in _CLASS_DISPLAY) appended at the end.
     for cat in categories.values():
         ordered.append(cat)
 
@@ -198,7 +193,6 @@ def generate_comment(
     total_passed = sum(c.passed for c in categories)
     total_duration = sum(c.total_duration_s for c in categories)
 
-    # Build a lookup from test_name to total test duration for the timings table
     test_durations: dict[str, float] = {}
     for r in results:
         test_durations[r.name.removeprefix("test_")] = r.duration_s
@@ -241,7 +235,6 @@ def generate_comment(
 
         lines.append("")
 
-    # Summary line
     all_pass = total_passed == total_tests
     status_text = "100% pass" if all_pass else f"{total_passed}/{total_tests} passed"
     lines.append(
@@ -262,7 +255,6 @@ def main():
         )
         sys.exit(1)
 
-    # Parse args: positional JUnit XML paths + optional --metrics flag
     xml_paths: list[str] = []
     metrics_path: str | None = None
     args = sys.argv[1:]

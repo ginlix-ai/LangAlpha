@@ -300,22 +300,6 @@ class TestColdWarmSessionPath:
             mock_db.assert_not_called()
             assert session is not None
 
-    async def test_cold_path_populates_user_mappings(
-        self, workspace_manager, running_workspace, metrics_collector
-    ):
-        """Cold path records workspace-user bidirectional mappings."""
-        ws_id = str(running_workspace["workspace_id"])
-        user_id = running_workspace["user_id"]
-
-        async with metrics_collector.timed(
-            provider=_PROVIDER, category="session", operation="cold_mappings",
-            test_name="cold_path_populates_user_mappings",
-        ):
-            await workspace_manager.get_session_for_workspace(ws_id, user_id=user_id)
-
-        assert workspace_manager._workspace_to_user.get(ws_id) == user_id
-        assert ws_id in workspace_manager._user_to_workspaces.get(user_id, set())
-
     async def test_sync_cooldown_respected(
         self, workspace_manager, running_workspace, metrics_collector
     ):
@@ -366,8 +350,8 @@ class TestColdWarmSessionPath:
                     ws_id, user_id=user_id
                 )
 
-            # _sync_user_data_if_needed is called during Phase 2 re-sync
-            # (not _sync_sandbox_assets, because needs_deferred_sync is False)
+            # User-data is served by UserDataBackend on demand now — Phase 2
+            # re-sync just records the new sync timestamp, no user_data sync.
             assert session is not None
 
     async def test_multiple_workspaces_independent_sessions(
@@ -512,58 +496,3 @@ class TestUpdateWorkspaceActivityConditional:
 
         result = await update_workspace_activity(ws_id)
         assert result is False
-
-
-# ---------------------------------------------------------------------------
-# mark_user_data_stale integration
-# ---------------------------------------------------------------------------
-
-
-class TestMarkUserDataStale:
-    """Test that mark_user_data_stale clears sync flag for the right workspaces."""
-
-    async def test_stale_clears_sync_flag(
-        self, workspace_manager, seed_user, patched_get_db_connection
-    ):
-        """mark_user_data_stale clears _user_data_synced for all user workspaces."""
-        from src.server.database.workspace import create_workspace
-        from src.server.services.workspace_manager import WorkspaceManager
-
-        ws = await create_workspace(
-            user_id=seed_user["user_id"], name="Stale Test", status="running"
-        )
-        ws_id = str(ws["workspace_id"])
-        user_id = seed_user["user_id"]
-
-        # Cold path — creates session and syncs user data
-        await workspace_manager.get_session_for_workspace(ws_id, user_id=user_id)
-
-        # Simulate that user data was synced
-        workspace_manager._user_data_synced.add(ws_id)
-        assert ws_id in workspace_manager._user_data_synced
-
-        # Mark stale — should clear the sync flag
-        WorkspaceManager.mark_user_data_stale(user_id)
-        assert ws_id not in workspace_manager._user_data_synced
-
-    async def test_stale_only_affects_user_workspaces(
-        self, workspace_manager, seed_user, patched_get_db_connection
-    ):
-        """mark_user_data_stale does not affect other users' workspaces."""
-        from src.server.database.workspace import create_workspace
-        from src.server.services.workspace_manager import WorkspaceManager
-
-        ws1 = await create_workspace(
-            user_id=seed_user["user_id"], name="User1 WS", status="running"
-        )
-        ws1_id = str(ws1["workspace_id"])
-
-        # Set up session for user's workspace
-        await workspace_manager.get_session_for_workspace(
-            ws1_id, user_id=seed_user["user_id"]
-        )
-        workspace_manager._user_data_synced.add(ws1_id)
-
-        # Stale a different user — should not affect our workspace
-        WorkspaceManager.mark_user_data_stale("other-user-id")
-        assert ws1_id in workspace_manager._user_data_synced

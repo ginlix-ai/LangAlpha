@@ -46,6 +46,21 @@ describe('categorizeTool — memo classification', () => {
     ).toBe('memo');
   });
 
+  it('classifies user-profile reads + writes into profileRead / profileWrite buckets', () => {
+    expect(
+      categorizeTool('Read', { args: { file_path: '.agents/user/profile/portfolio.json' } })
+    ).toBe('profileRead');
+    expect(
+      categorizeTool('Read', { args: { file_path: '.agents/user/profile/watchlist.json' } })
+    ).toBe('profileRead');
+    expect(
+      categorizeTool('Write', { args: { file_path: '.agents/user/profile/preference.json' } })
+    ).toBe('profileWrite');
+    expect(
+      categorizeTool('Edit', { args: { file_path: '.agents/user/profile/portfolio.json' } })
+    ).toBe('profileWrite');
+  });
+
   it('does not change file/memory categorization', () => {
     expect(
       categorizeTool('Read', { args: { file_path: 'work/scratch.md' } })
@@ -120,4 +135,37 @@ describe('getToolIcon — memo write/edit icon variant', () => {
     const writeIcon = getToolIcon('Write', { file_path: '.agents/user/memo/x.md' });
     expect(editIcon).toBe(writeIcon);
   });
+});
+
+describe('user-profile — entity-aware labels for portfolio/watchlist/preference', () => {
+  const ENTITIES = ['portfolio', 'watchlist', 'preference'] as const;
+
+  for (const entity of ENTITIES) {
+    const filePath = `.agents/user/profile/${entity}.json`;
+
+    it(`returns "read_${entity}" completed-row title for Read on ${entity}.json`, () => {
+      const title = getCompletedRowTitle('Read', { args: { file_path: filePath } }, tIdentity);
+      expect(title).toBe(`toolArtifact.completed.read_${entity}`);
+    });
+
+    it(`returns "updated_${entity}" completed-row title for Write on ${entity}.json`, () => {
+      const title = getCompletedRowTitle('Write', { args: { file_path: filePath } }, tIdentity);
+      expect(title).toBe(`toolArtifact.completed.updated_${entity}`);
+    });
+
+    it(`returns "updated_${entity}" completed-row title for Edit on ${entity}.json`, () => {
+      const title = getCompletedRowTitle('Edit', { args: { file_path: filePath } }, tIdentity);
+      expect(title).toBe(`toolArtifact.completed.updated_${entity}`);
+    });
+
+    it(`emits "reading_${entity}" in-progress phrase for Read on ${entity}.json`, () => {
+      const out = getInProgressText('Read', { args: { file_path: filePath } }, tIdentity);
+      expect(out).toBe(`toolArtifact.inProgress.reading_${entity}`);
+    });
+
+    it(`emits "updating_${entity}" in-progress phrase for Write on ${entity}.json`, () => {
+      const out = getInProgressText('Write', { args: { file_path: filePath } }, tIdentity);
+      expect(out).toBe(`toolArtifact.inProgress.updating_${entity}`);
+    });
+  }
 });

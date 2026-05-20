@@ -1,11 +1,4 @@
-"""
-PTC Session Manager Service.
-
-Manages ptc-agent session lifecycle for the server:
-- Caches sessions by workspace_id
-- Handles sandbox initialization/cleanup
-- Implements idle timeout cleanup
-"""
+"""PTC Session Manager — caches Sessions by workspace_id with idle-timeout cleanup."""
 
 import asyncio
 import logging
@@ -38,12 +31,7 @@ class SessionMetadata:
 
 
 class SessionService:
-    """
-    Service for managing PTC agent sessions with idle timeout cleanup.
-
-    Sessions are cached by workspace_id and reused across requests.
-    Idle sessions are cleaned up periodically based on idle_timeout.
-    """
+    """Singleton that owns the in-process session cache with idle-timeout cleanup."""
 
     _instance: Optional["SessionService"] = None
 
@@ -53,14 +41,6 @@ class SessionService:
         idle_timeout: int = 1800,  # 30 minutes default
         cleanup_interval: int = 300,  # 5 minutes
     ):
-        """
-        Initialize PTC Session Service.
-
-        Args:
-            config: AgentConfig for creating sessions
-            idle_timeout: Seconds before idle sessions are cleaned up
-            cleanup_interval: Seconds between cleanup runs
-        """
         self.config = config
         self.idle_timeout = idle_timeout
         self.cleanup_interval = cleanup_interval
@@ -90,16 +70,7 @@ class SessionService:
         config: Optional[AgentConfig] = None,
         **kwargs,
     ) -> "SessionService":
-        """
-        Get or create singleton instance.
-
-        Args:
-            config: AgentConfig (required on first call)
-            **kwargs: Additional arguments for __init__
-
-        Returns:
-            SessionService instance
-        """
+        """Return or create the singleton. ``config`` required on the first call."""
         if cls._instance is None:
             if config is None:
                 raise ValueError("config is required on first call to get_instance")
@@ -140,19 +111,7 @@ class SessionService:
         self,
         workspace_id: str,
         sandbox_id: Optional[str] = None,
-        user_id: Optional[str] = None,
     ) -> Session:
-        """
-        Get existing session or create new one for workspace.
-
-        Args:
-            workspace_id: Unique workspace identifier
-            sandbox_id: Optional existing sandbox ID to reconnect to
-            user_id: Optional user ID for syncing user data to sandbox
-
-        Returns:
-            Initialized Session instance
-        """
         needs_init = False
 
         async with self._acquire_session_lock(workspace_id):
@@ -216,44 +175,11 @@ class SessionService:
                         exc_info=True,
                     )
 
-            # Sync user data to sandbox if user_id provided
-            if user_id and session.sandbox:
-                try:
-                    from src.server.services.sync_user_data import (
-                        sync_user_data_to_sandbox,
-                    )
-
-                    logger.info(
-                        f"Syncing user data for workspace: {workspace_id}, user_id: {user_id}"
-                    )
-                    sync_result = await sync_user_data_to_sandbox(
-                        session.sandbox, user_id
-                    )
-                    logger.info(
-                        f"User data sync result for workspace {workspace_id}: {sync_result}"
-                    )
-                except Exception as e:
-                    # User data sync is helpful but should not prevent session startup
-                    logger.warning(
-                        f"User data sync failed for {workspace_id}: {e}", exc_info=True
-                    )
-            else:
-                logger.debug(
-                    f"Skipping user data sync: user_id={user_id}, sandbox={session.sandbox is not None}"
-                )
 
         return session
 
     async def get_session(self, workspace_id: str) -> Optional[Session]:
-        """
-        Get existing session without creating new one.
-
-        Args:
-            workspace_id: Unique workspace identifier
-
-        Returns:
-            Session if exists and initialized, None otherwise
-        """
+        """Return the session if it exists and is initialized; else None."""
         if workspace_id not in self._metadata:
             return None
 
@@ -271,12 +197,6 @@ class SessionService:
         return self._metadata.get(workspace_id)
 
     async def cleanup_session(self, workspace_id: str) -> None:
-        """
-        Clean up a specific session.
-
-        Args:
-            workspace_id: Workspace identifier
-        """
         logger.info(f"Cleaning up session: {workspace_id}")
 
         # Remove metadata
@@ -291,12 +211,7 @@ class SessionService:
         await SessionManager.cleanup_session(workspace_id)
 
     async def cleanup_idle_sessions(self) -> int:
-        """
-        Clean up sessions that have been idle for too long.
-
-        Returns:
-            Number of sessions cleaned up
-        """
+        """Clean up sessions idle beyond ``idle_timeout``. Returns count cleaned."""
         now = datetime.now(timezone.utc)
         idle_workspaces = []
 
@@ -391,46 +306,19 @@ class SessionService:
 
 
 class SessionServiceProvider:
-    """SessionProvider implementation using server's SessionService.
-
-    This adapter wraps SessionService to conform to the SessionProvider protocol,
-    enabling the server to use the graph factory with its session management.
-
-    Usage:
-        from ptc_agent.agent.graph import build_ptc_graph
-
-        provider = SessionServiceProvider()
-        graph = await build_ptc_graph(
-            workspace_id="ws-123",
-            config=config,
-            session_provider=provider,
-        )
-    """
+    """``SessionProvider`` adapter that wraps ``SessionService`` for use with ``build_ptc_graph``."""
 
     def __init__(self) -> None:
-        """Initialize with SessionService singleton."""
         self._session_service = SessionService.get_instance()
 
     async def get_or_create_session(
         self,
-        workspace_id: str,
+        conversation_id: str,
         sandbox_id: Optional[str] = None,
-        user_id: Optional[str] = None,
     ) -> Session:
-        """Get or create a session using SessionService.
-
-        Args:
-            workspace_id: Unique workspace identifier
-            sandbox_id: Optional sandbox ID to reconnect to
-            user_id: Optional user ID for syncing user data to sandbox
-
-        Returns:
-            Initialized Session instance
-        """
         return await self._session_service.get_or_create_session(
-            workspace_id=workspace_id,
+            workspace_id=conversation_id,
             sandbox_id=sandbox_id,
-            user_id=user_id,
         )
 
 

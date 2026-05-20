@@ -119,8 +119,8 @@ chat_turn_phase_duration_ms = meter.create_histogram(
 )
 
 # Workspace session acquire — the chunk of `session` phase that's spent inside
-# WorkspaceManager.get_session_for_workspace. Three sub-phases reused from the
-# existing SESSION_TIMING log: lock_and_init | sandbox_ready | user_data_sync
+# WorkspaceManager.get_session_for_workspace. Sub-phases reused from the
+# existing SESSION_TIMING log: lock_and_init | sandbox_ready
 # (+ asset_sync, file_restore on the cold_resume path).
 session_acquire_phase_duration_ms = meter.create_histogram(
     "langalpha.workspace.session.phase.duration_ms",
@@ -155,12 +155,6 @@ sandbox_asset_sync_phase_duration_ms = meter.create_histogram(
 sandbox_asset_sync_total_ms = meter.create_histogram(
     "langalpha.sandbox.asset_sync.total_ms",
     description="Total wall time for one sync_sandbox_assets call.",
-    unit="ms",
-)
-
-sandbox_user_data_upload_duration_ms = meter.create_histogram(
-    "langalpha.sandbox.user_data_upload.duration_ms",
-    description="Wall time for _upload_user_data_files (markdown files into sandbox).",
     unit="ms",
 )
 

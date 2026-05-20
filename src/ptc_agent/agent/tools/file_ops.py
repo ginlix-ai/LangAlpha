@@ -10,6 +10,7 @@ import structlog
 from langchain_core.tools import tool
 
 from ptc_agent.agent.backends import FilesystemBackend, ReadOnlyStoreError
+from src.server.services.user_data_io import UserDataValidationError
 
 logger = structlog.get_logger(__name__)
 
@@ -30,42 +31,6 @@ _MEMO_TEXT_PREFIX = ".agents/user/memo/"
 
 # Type alias for operation callback
 OperationCallback = Callable[[dict[str, Any]], None]
-
-# Protected user data directory and files
-_PROTECTED_USER_DIR = ".agents/user/"
-_PROTECTED_USER_FILES = {"preference.md", "watchlist.md", "portfolio.md"}
-
-
-def _is_protected_user_path(path: str) -> bool:
-    """Check if ``path`` targets a legacy user-profile file under ``.agents/user/``."""
-    name = Path(path).name
-    if name not in _PROTECTED_USER_FILES:
-        return False
-    # Memory paths must stay writable even when the basename collides with a
-    # legacy protected filename.
-    normalized = path.lstrip("/")
-    memory_markers = (
-        ".agents/user/memory/",
-        "home/daytona/.agents/user/memory/",
-        "home/workspace/.agents/user/memory/",
-    )
-    if any(normalized.startswith(m) for m in memory_markers):
-        return False
-    return (
-        normalized.startswith("home/daytona/.agents/user/")
-        or normalized.startswith("home/workspace/.agents/user/")
-        or normalized.startswith(_PROTECTED_USER_DIR)
-    )
-
-
-def _get_protection_error(path: str) -> str:
-    return (
-        f"ERROR: Cannot modify {path} directly.\n\n"
-        "User data files are read-only. To update user data:\n"
-        "1. Load the skill: load_skill('user-profile')\n"
-        "2. Use update_user_data() or remove_user_data()\n\n"
-        "See .agents/skills/user-profile/SKILL.md for details."
-    )
 
 
 def create_filesystem_tools(
@@ -95,7 +60,7 @@ def create_filesystem_tools(
             File contents with line numbers, document loading confirmation, or ERROR.
         """
         try:
-            # Handle URLs - middleware will inject the content
+            # Middleware injects the actual content; this return is just a sentinel.
             if file_path.startswith(("http://", "https://")):
                 logger.info("Loading document from URL", url=file_path)
                 return f"Loading document from URL: {file_path}"
@@ -125,7 +90,6 @@ def create_filesystem_tools(
                     logger.error(error_msg, file_path=file_path)
                     return f"ERROR: {error_msg}"
 
-                # Return acknowledgment - middleware will handle content injection
                 file_type = "image" if suffix in IMAGE_EXTENSIONS else "document"
                 return f"Loading {file_type}: {file_path}"
 
@@ -166,11 +130,6 @@ def create_filesystem_tools(
             normalized_path = backend.normalize_path(file_path)
             logger.info("Writing file", file_path=file_path, normalized_path=normalized_path, size=len(content))
 
-            # Check for protected user data paths
-            if _is_protected_user_path(normalized_path):
-                logger.warning("Blocked write to protected user path", file_path=file_path)
-                return _get_protection_error(file_path)
-
             if backend.filesystem_config.enable_path_validation and not backend.validate_path(normalized_path):
                 error_msg = f"Access denied: {file_path} is not in allowed directories"
                 logger.error(error_msg, file_path=file_path)
@@ -184,10 +143,12 @@ def create_filesystem_tools(
                     file_path=file_path,
                 )
                 return f"ERROR: {exc}"
+            except UserDataValidationError as exc:
+                logger.info("user-data write rejected", file_path=file_path, error=str(exc))
+                return f"ERROR: {exc}"
             if not success:
                 return "ERROR: Write operation failed"
 
-            # Invoke operation callback for persistence
             if operation_callback:
                 try:
                     operation_callback({
@@ -195,7 +156,7 @@ def create_filesystem_tools(
                         "file_path": normalized_path,
                         "line_count": content.count("\n") + 1,
                         "timestamp": datetime.now(UTC).isoformat(),
-                        "content": content,  # Full file content for DB persistence
+                        "content": content,
                     })
                 except Exception as cb_err:
                     logger.warning("Operation callback failed", error=str(cb_err))
@@ -222,11 +183,6 @@ def create_filesystem_tools(
                 replace_all=replace_all,
             )
 
-            # Check for protected user data paths
-            if _is_protected_user_path(normalized_path):
-                logger.warning("Blocked edit to protected user path", file_path=file_path)
-                return _get_protection_error(file_path)
-
             if backend.filesystem_config.enable_path_validation and not backend.validate_path(normalized_path):
                 error_msg = f"Access denied: {file_path} is not in allowed directories"
                 logger.error(error_msg, file_path=file_path)
@@ -237,7 +193,6 @@ def create_filesystem_tools(
                 error_msg = result.get("error", "Edit operation failed")
                 return f"ERROR: {error_msg}"
 
-            # Invoke operation callback for persistence
             if operation_callback:
                 try:
                     content = await backend.aread_text(normalized_path)
@@ -247,8 +202,8 @@ def create_filesystem_tools(
                         "occurrences": result.get("occurrences", 1),
                         "replace_all": replace_all,
                         "timestamp": datetime.now(UTC).isoformat(),
-                        "old_string": old_string,  # Text being replaced
-                        "new_string": new_string,  # Replacement text
+                        "old_string": old_string,
+                        "new_string": new_string,
                         "content": content,
                     })
                 except Exception as cb_err:

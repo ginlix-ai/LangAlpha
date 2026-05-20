@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { classifyAgentPath, topicFromMemoryKey } from '../agentPaths';
+import {
+  classifyAgentPath,
+  computeAgentArtifactRouting,
+  isUserProfileReadmePath,
+  topicFromMemoryKey,
+} from '../agentPaths';
 
 describe('classifyAgentPath', () => {
   it('classifies a user memory entry', () => {
@@ -134,6 +139,72 @@ describe('classifyAgentPath', () => {
     expect(classifyAgentPath('.agents/user/memory/').kind).toBe('file');
     expect(classifyAgentPath('.agents/workspace/memory/').kind).toBe('file');
   });
+
+  describe('user-profile classification', () => {
+    it('classifies portfolio.json', () => {
+      const r = classifyAgentPath('.agents/user/profile/portfolio.json');
+      expect(r.kind).toBe('user-profile');
+      if (r.kind === 'user-profile') {
+        expect(r.entity).toBe('portfolio');
+      }
+    });
+
+    it('classifies watchlist.json', () => {
+      const r = classifyAgentPath('.agents/user/profile/watchlist.json');
+      expect(r.kind).toBe('user-profile');
+      if (r.kind === 'user-profile') expect(r.entity).toBe('watchlist');
+    });
+
+    it('classifies preference.json', () => {
+      const r = classifyAgentPath('.agents/user/profile/preference.json');
+      expect(r.kind).toBe('user-profile');
+      if (r.kind === 'user-profile') expect(r.entity).toBe('preference');
+    });
+
+    it('strips home/workspace/ sandbox-root prefix', () => {
+      const r = classifyAgentPath('home/workspace/.agents/user/profile/portfolio.json');
+      expect(r.kind).toBe('user-profile');
+    });
+
+    it('falls back to file for unknown filenames under the profile dir', () => {
+      expect(classifyAgentPath('.agents/user/profile/other.json').kind).toBe('file');
+      expect(classifyAgentPath('.agents/user/profile/').kind).toBe('file');
+    });
+
+    it('classifies README.md under the profile dir as a generic file', () => {
+      // README is classified generically; hiding happens via
+      // `isUserProfileReadmePath` at the UI layer, not via the routing kind.
+      expect(classifyAgentPath('.agents/user/profile/README.md').kind).toBe('file');
+    });
+
+    it('unwraps __wsref__ and propagates crossWorkspaceId', () => {
+      const r = classifyAgentPath('__wsref__/ws-7/.agents/user/profile/portfolio.json');
+      expect(r.kind).toBe('user-profile');
+      if (r.kind === 'user-profile') {
+        expect(r.entity).toBe('portfolio');
+        expect(r.crossWorkspaceId).toBe('ws-7');
+      }
+    });
+  });
+});
+
+describe('computeAgentArtifactRouting — user-profile', () => {
+  it('routes portfolio.json to Files tab with targetUserProfile + clearWorkspaceId', () => {
+    const r = computeAgentArtifactRouting('.agents/user/profile/portfolio.json');
+    expect(r.targetUserProfile).toBe('portfolio');
+    expect(r.targetFile).toBe('.agents/user/profile/portfolio.json');
+    expect(r.clearWorkspaceId).toBe(true);
+    // Mutually exclusive with memory/memo targets
+    expect(r.targetMemoryKey).toBeNull();
+    expect(r.targetMemoKey).toBeNull();
+  });
+
+  it('does not set setWorkspaceId for user-scoped user-profile paths', () => {
+    const r = computeAgentArtifactRouting('.agents/user/profile/watchlist.json', 'ws-A');
+    // User-profile is global to the user; ignore caller-supplied wsid.
+    expect(r.setWorkspaceId).toBeNull();
+    expect(r.clearWorkspaceId).toBe(true);
+  });
 });
 
 describe('topicFromMemoryKey', () => {
@@ -147,5 +218,45 @@ describe('topicFromMemoryKey', () => {
     expect(topicFromMemoryKey('')).toBe('');
     expect(topicFromMemoryKey('mixed-with_both.md')).toBe('mixed with both');
     expect(topicFromMemoryKey('NoExt')).toBe('NoExt');
+  });
+});
+
+describe('isUserProfileReadmePath', () => {
+  it('matches the relative path', () => {
+    expect(isUserProfileReadmePath('.agents/user/profile/README.md')).toBe(true);
+  });
+
+  it('matches an absolute sandbox path', () => {
+    expect(isUserProfileReadmePath('/home/workspace/.agents/user/profile/README.md')).toBe(true);
+    expect(isUserProfileReadmePath('home/daytona/.agents/user/profile/README.md')).toBe(true);
+  });
+
+  it('matches a file:/// wrapped path', () => {
+    expect(
+      isUserProfileReadmePath('file:///home/workspace/.agents/user/profile/README.md'),
+    ).toBe(true);
+  });
+
+  it('matches a __wsref__ cross-workspace path', () => {
+    expect(
+      isUserProfileReadmePath('__wsref__/ws-7/.agents/user/profile/README.md'),
+    ).toBe(true);
+  });
+
+  it('does not match the data files', () => {
+    expect(isUserProfileReadmePath('.agents/user/profile/portfolio.json')).toBe(false);
+    expect(isUserProfileReadmePath('.agents/user/profile/watchlist.json')).toBe(false);
+    expect(isUserProfileReadmePath('.agents/user/profile/preference.json')).toBe(false);
+  });
+
+  it('does not match other READMEs in the sandbox', () => {
+    expect(isUserProfileReadmePath('README.md')).toBe(false);
+    expect(isUserProfileReadmePath('.agents/skills/some-skill/README.md')).toBe(false);
+    expect(isUserProfileReadmePath('home/workspace/work/scratch/README.md')).toBe(false);
+  });
+
+  it('handles empty / nonsense input safely', () => {
+    expect(isUserProfileReadmePath('')).toBe(false);
+    expect(isUserProfileReadmePath('not-a-path')).toBe(false);
   });
 });

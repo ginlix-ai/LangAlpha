@@ -48,7 +48,6 @@ from .metrics import (
     sandbox_asset_sync_phase_duration_ms,
     sandbox_asset_sync_total_ms,
     sandbox_execute_duration_ms,
-    sandbox_user_data_upload_duration_ms,
     session_acquire_phase_duration_ms,
     session_acquire_total_ms,
     session_path_counter,
@@ -112,5 +111,4 @@ __all__ = [
     "session_path_counter",
     "sandbox_asset_sync_phase_duration_ms",
     "sandbox_asset_sync_total_ms",
-    "sandbox_user_data_upload_duration_ms",
 ]

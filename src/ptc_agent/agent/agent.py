@@ -59,7 +59,9 @@ from ptc_agent.core.paths import (
     MEMORY_INDEX_FILENAME,
     MEMORY_USER_DIR,
     MEMORY_WORKSPACE_DIR,
+    USER_PROFILE_DATA_DIR,
 )
+from ptc_agent.agent.backends.user_data import UserDataBackend
 from ptc_agent.agent.middleware.runtime_context import RuntimeContextMiddleware
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
@@ -102,13 +104,11 @@ from ptc_agent.config import AgentConfig
 from ptc_agent.core.mcp_registry import MCPRegistry
 from ptc_agent.core.sandbox import PTCSandbox
 
-# Import HITL middleware for plan mode
 try:
     from langchain.agents.middleware import HumanInTheLoopMiddleware
 except ImportError:
     HumanInTheLoopMiddleware = None  # type: ignore[misc,assignment]
 
-# Import model resilience middleware
 try:
     from langchain.agents.middleware import (
         ModelRetryMiddleware,
@@ -118,7 +118,6 @@ except ImportError:
     ModelRetryMiddleware = None  # type: ignore[misc,assignment]
     ModelFallbackMiddleware = None  # type: ignore[misc,assignment]
 
-# Import Checkpointer type for type hints
 try:
     from langgraph.types import Checkpointer
 except ImportError:
@@ -127,7 +126,6 @@ except ImportError:
 logger = structlog.get_logger(__name__)
 
 
-# Default limits for sub-agent coordination
 DEFAULT_MAX_CONCURRENT_TASK_UNITS = 3
 DEFAULT_MAX_TASK_ITERATIONS = 3
 DEFAULT_MAX_GENERAL_ITERATIONS = 10
@@ -237,6 +235,7 @@ class PTCAgent:
         on_signed_url: Any | None = None,
         vault_secrets: dict[str, str] | None = None,
         user_id: str | None = None,
+        user_data_counts: dict[str, Any] | None = None,
     ) -> Any:
         """Create a deepagent with PTC pattern capabilities.
 
@@ -287,6 +286,11 @@ class PTCAgent:
         # whenever the store is wired and we have a user identity.
         memo_enabled = store is not None and bool(user_id)
 
+        # User-profile data backend (portfolio + watchlist + preferences) —
+        # enabled whenever we have a user identity. Independent of `store`
+        # because it talks to the application DB tables, not the LangGraph store.
+        user_data_enabled = bool(user_id)
+
         filesystem_backend: Any = backend
         # Holds both MemoryContextMiddleware (memory.md injection) and
         # MemoAwarenessMiddleware (memo count block). Both append content
@@ -300,7 +304,7 @@ class PTCAgent:
         store_cache: RequestScopedStoreCache | None = (
             RequestScopedStoreCache() if (memory_enabled or memo_enabled) else None
         )
-        if memory_enabled or memo_enabled:
+        if memory_enabled or memo_enabled or user_data_enabled:
             sandbox_root = backend.root_dir.rstrip("/")
 
             # INVARIANT: these closures capture identity at agent-creation
@@ -309,7 +313,7 @@ class PTCAgent:
             # will cross-pollinate between users. Resolve identity at call time
             # (e.g. via `langgraph.runtime.get_runtime()`) before introducing
             # reuse.
-            routes: list[StoreBackend] = []
+            routes: list[Any] = []
             user_namespace_factory: NamespaceFactory | None = None
             workspace_namespace_factory: NamespaceFactory | None = None
             memo_namespace_factory: NamespaceFactory | None = None
@@ -373,6 +377,16 @@ class PTCAgent:
                             "upload via the memo panel."
                         ),
                         cache=store_cache,
+                    )
+                )
+
+            if user_data_enabled:
+                captured_user_id = user_id
+                routes.append(
+                    UserDataBackend(
+                        user_id=captured_user_id,
+                        sandbox_backend=backend,
+                        root_prefix=f"{sandbox_root}/{USER_PROFILE_DATA_DIR}/",
                     )
                 )
 
@@ -499,16 +513,12 @@ class PTCAgent:
                 custom_modalities=self.config.input_modalities,
             ))
 
-        # Add dynamic skill loader middleware for user onboarding etc.
-        # Includes filesystem scanning for user-installed skills when enabled
         skill_sources = (
             [f"{self.config.skills.sandbox_skills_base}/"]
             if self.config.skills.enabled
             else []
         )
 
-        # Extract pre-parsed skill metadata from the sandbox's cached manifest
-        # so the middleware can skip re-downloading SKILL.md files it already knows about.
         known_skills: dict[str, Any] = {}
         if backend.skills_manifest and backend.skills_manifest.get("skills"):
             known_skills = {
@@ -529,13 +539,9 @@ class PTCAgent:
         # --- Build main-only middleware (NOT passed to subagents) ---
         main_only_middleware: list[Any] = []
 
-        # Steering middleware - checks Redis for steering messages from the user
-        # before each LLM call (must be first so steering context is visible
-        # before any other middleware runs)
+        # Must be first: steering context must be visible before any other middleware.
         main_only_middleware.append(SteeringMiddleware())
 
-        # Create event capture middleware for subagent streaming and metrics
-        # (Created early so it can be passed to BackgroundSubagentMiddleware)
         _bg_registry = background_registry or BackgroundTaskRegistry()
         event_capture_middleware = SubagentEventCaptureMiddleware(registry=_bg_registry)
 
@@ -549,9 +555,7 @@ class PTCAgent:
         main_only_middleware.append(background_middleware)
         tools.extend(background_middleware.tools)
 
-        # Add HITL middleware (always available for future interrupt features)
         if HumanInTheLoopMiddleware is not None:
-            # Add HITL interrupt config for submit_plan
             interrupt_config: Any = create_plan_mode_interrupt_config()
             hitl_middleware = HumanInTheLoopMiddleware(interrupt_on=interrupt_config)
             main_only_middleware.append(hitl_middleware)
@@ -641,9 +645,6 @@ class PTCAgent:
         )
 
         # --- Build final middleware stacks ---
-
-        # Custom SSE-enabled compaction emits 'context_window' events
-        # Pass backend for offloading conversation history to sandbox
         compaction_config = self.config.compaction.model_dump()
         if self.config.llm and self.config.llm.compaction:
             compaction_config["llm"] = self.config.llm.compaction
@@ -659,12 +660,9 @@ class PTCAgent:
             compaction_config["_llm_client"] = self.config.llm_client.model_copy()
         compaction = CompactionMiddleware.from_config(config=compaction_config, backend=backend)
 
-        # Build model resilience middleware (retry + fallback)
         model_resilience = self._build_model_resilience_middleware()
 
-        # Subagent middleware (shared only, no SubAgentMiddleware/BackgroundSubagentMiddleware/HITL)
-        # SubagentSteeringMiddleware is first so follow-up messages are
-        # visible before any other middleware runs.
+        # SubagentSteeringMiddleware must be first so follow-up messages are visible before other middleware.
         subagent_middleware = [
             m
             for m in [
@@ -688,19 +686,13 @@ class PTCAgent:
         if session is not None:
             workspace_context_middleware = [WorkspaceContextMiddleware(session=session)]
 
-        # Memory context middleware (memory.md injection from LangGraph store).
-        # Built alongside the composite backend above; empty list when store is
-        # None so dev/MemorySaver runs skip the middleware entirely.
-        #
-        # Positioned next to workspace_context_middleware — both run innermost
-        # (after the prompt-cache breakpoint) so dynamic content doesn't
-        # invalidate the cached prefix.
-
-        # Runtime context middleware (time + user profile — after cache breakpoint)
+        # Positioned after the prompt-cache breakpoint (innermost) so dynamic
+        # content doesn't invalidate the cached prefix.
         runtime_context_middleware: list[Any] = [
             RuntimeContextMiddleware(
                 current_time=current_time,
                 user_profile=user_profile,
+                user_data_counts=user_data_counts,
             )
         ]
 

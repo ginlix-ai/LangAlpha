@@ -17,7 +17,7 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_LAYOUT_VERSION = 2  # bump for each new layout change
+CURRENT_LAYOUT_VERSION = 3  # bump for each new layout change
 
 
 async def migrate_layout_v1_to_v2(runtime: Any, work_dir: str) -> None:
@@ -72,9 +72,32 @@ async def migrate_layout_v1_to_v2(runtime: Any, work_dir: str) -> None:
     logger.info("Layout migration v1→v2 complete", work_dir=work_dir)
 
 
+async def migrate_layout_v2_to_v3(runtime: Any, work_dir: str) -> None:
+    """Remove legacy user-data markdown files now superseded by ``UserDataBackend``.
+
+    Targets (idempotent, ``rm -f``):
+        .agents/user/portfolio.md
+        .agents/user/watchlist.md
+        .agents/user/preference.md
+
+    The agent reads ``.agents/user/profile/*.json`` through the composite
+    backend (DB-backed); leaving these stale markdown files would let a Glob
+    from ``.agents/user/`` surface mismatched content.
+    """
+    targets = [
+        f"{work_dir}/.agents/user/portfolio.md",
+        f"{work_dir}/.agents/user/watchlist.md",
+        f"{work_dir}/.agents/user/preference.md",
+    ]
+    quoted = " ".join(shlex.quote(p) for p in targets)
+    await runtime.exec(f"rm -f {quoted}")
+    logger.info("Layout migration v2→v3 complete", work_dir=work_dir)
+
+
 # Registry: source_version → migration coroutine
 LAYOUT_MIGRATIONS: dict[int, Callable[..., Coroutine]] = {
     1: migrate_layout_v1_to_v2,
+    2: migrate_layout_v2_to_v3,
 }
 
 

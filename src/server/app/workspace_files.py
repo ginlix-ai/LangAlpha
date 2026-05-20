@@ -44,10 +44,15 @@ from ptc_agent.core.paths import (
     ALWAYS_HIDDEN_PATH_SEGMENTS,
     ALWAYS_HIDDEN_SUFFIXES,
     HIDDEN_DIR_NAMES,
+    USER_PROFILE_DATA_DIR,
+    USER_PROFILE_PORTFOLIO_FILE,
+    USER_PROFILE_PREFERENCE_FILE,
+    USER_PROFILE_WATCHLIST_FILE,
 )
 from src.server.database.workspace import get_workspace as db_get_workspace
 from src.server.services.workspace_manager import WorkspaceManager
 from src.server.services.persistence.file import FilePersistenceService
+from src.server.services import user_data_io
 from src.server.utils.secret_redactor import get_redactor, get_vault_secrets_for_redaction
 from src.observability import safe_record, workspace_fs_bytes
 
@@ -72,6 +77,41 @@ _CACHEABLE_IMAGE_TYPES = frozenset(
         "image/webp",
     }
 )
+
+# User-profile virtual files (served by user_data_io, not the sandbox FS).
+# These three paths bypass the system-path filter and route to the DB layer.
+_USER_PROFILE_PREFIX = f"{USER_PROFILE_DATA_DIR.rstrip('/')}/"
+_USER_PROFILE_FILES: dict[str, str] = {
+    f"{_USER_PROFILE_PREFIX}{USER_PROFILE_PORTFOLIO_FILE}": USER_PROFILE_PORTFOLIO_FILE,
+    f"{_USER_PROFILE_PREFIX}{USER_PROFILE_WATCHLIST_FILE}": USER_PROFILE_WATCHLIST_FILE,
+    f"{_USER_PROFILE_PREFIX}{USER_PROFILE_PREFERENCE_FILE}": USER_PROFILE_PREFERENCE_FILE,
+}
+
+
+def _is_user_profile_dir(client_path: str) -> bool:
+    """True when the path refers to the .agents/user/profile/ directory itself."""
+    return client_path.rstrip("/") == _USER_PROFILE_PREFIX.rstrip("/")
+
+
+def _is_user_profile_file(client_path: str) -> bool:
+    return client_path in _USER_PROFILE_FILES
+
+
+async def _serialize_user_profile_file(client_path: str, user_id: str) -> str:
+    """Fetch + serialize one of the three virtual user-profile JSON files."""
+    filename = _USER_PROFILE_FILES[client_path]
+    if filename == USER_PROFILE_PORTFOLIO_FILE:
+        rows = await user_data_io.fetch_portfolio_for_user(user_id)
+        payload = user_data_io.serialize_portfolio(rows)
+    elif filename == USER_PROFILE_WATCHLIST_FILE:
+        watchlists, items = await user_data_io.fetch_watchlist_for_user(user_id)
+        payload = user_data_io.serialize_watchlist(watchlists, items)
+    else:  # preference.json
+        prefs = await user_data_io.fetch_preferences_for_user(user_id)
+        payload = user_data_io.serialize_preferences(prefs)
+    visible = {k: v for k, v in payload.items() if k != "__version__"}
+    return user_data_io.serialize_json(visible)
+
 
 # Derived from shared constants (source of truth: ptc_agent.core.paths)
 _SYSTEM_DIR_PREFIXES = tuple(f"{d}/" for d in sorted(AGENT_SYSTEM_DIRS))
@@ -208,6 +248,10 @@ def _to_client_path(sandbox: Any, absolute_path: str) -> str:
 
 
 def _is_system_path(client_path: str) -> bool:
+    # User-profile virtual files live under .agents/ but are first-class
+    # user data — never hide them from the file panel.
+    if _is_user_profile_file(client_path) or _is_user_profile_dir(client_path):
+        return False
     return any(client_path.startswith(prefix) for prefix in _SYSTEM_DIR_PREFIXES)
 
 
@@ -356,8 +400,7 @@ async def list_workspace_files(
             detail=f"Sandbox is not reachable: {e}",
         )
 
-    # aglob_files returns absolute sandbox paths.
-    # Allow explicit listing of hidden internal paths (e.g. /view _internal/...).
+    # Allow explicit listing of hidden internal paths (e.g. _internal/...).
     allow_denied = _requested_hidden_ok(path, work_dir)
     try:
         absolute_paths: list[str] = await sandbox.aglob_files(
@@ -389,6 +432,20 @@ async def list_workspace_files(
             continue
 
         files.append(client_path)
+
+    # Splice in the three virtual user-profile files when the request scope
+    # includes .agents/user/profile/. They don't exist on the sandbox FS,
+    # so aglob_files never returns them.
+    requested_norm = _normalize_requested_path(path, work_dir)
+    if (
+        requested_norm == ""
+        or _USER_PROFILE_PREFIX.startswith(f"{requested_norm}/")
+        or _USER_PROFILE_PREFIX.rstrip("/") == requested_norm
+        or requested_norm.startswith(_USER_PROFILE_PREFIX)
+    ):
+        for virtual_path in _USER_PROFILE_FILES:
+            if virtual_path not in files:
+                files.append(virtual_path)
 
     return {
         "workspace_id": workspace_id,
@@ -425,9 +482,38 @@ async def read_workspace_file(
             status_code=400, detail="Flash workspaces do not have a sandbox"
         )
 
+    # Virtual user-profile JSON files — served from DB, independent of sandbox state.
+    # Works whether the workspace is running, stopped, or never started.
+    work_dir = _get_work_dir()
+    normalized_for_profile = _normalize_requested_path(path, work_dir)
+    if _is_user_profile_file(normalized_for_profile):
+        try:
+            text_content = await _serialize_user_profile_file(normalized_for_profile, x_user_id)
+        except Exception:
+            logger.exception(
+                "user-profile virtual read failed", extra={"path": normalized_for_profile}
+            )
+            raise HTTPException(status_code=500, detail="Failed to read user profile data")
+        if unlimited:
+            content = text_content
+            truncated = False
+        else:
+            lines = text_content.splitlines()
+            content = "\n".join(lines[offset : offset + limit])
+            truncated = len(lines) > offset + limit
+        return {
+            "workspace_id": workspace_id,
+            "path": normalized_for_profile,
+            "offset": offset,
+            "limit": limit,
+            "content": content,
+            "mime": "application/json",
+            "truncated": truncated,
+            "source": "user_data_backend",
+        }
+
     # DB fallback for stopped workspaces
     if workspace.get("status") in ("stopped", "stopping", "starting"):
-        work_dir = _get_work_dir()
         normalized_path = _normalize_requested_path(path, work_dir)
         if not normalized_path:
             raise HTTPException(status_code=400, detail="File path is required")
@@ -552,6 +638,22 @@ async def write_workspace_file(
         raise HTTPException(
             status_code=409,
             detail=f"Cannot write files — workspace is {workspace.get('status')}. Wait for it to be running.",
+        )
+
+    # User-profile virtual files are read-only through this API. Writes happen
+    # via the dashboard widgets (portfolio/watchlist CRUD) or the agent's
+    # CompositeFilesystemBackend → UserDataBackend route, both of which apply
+    # schema validation and version checks that this generic write endpoint
+    # cannot enforce safely.
+    work_dir = _get_work_dir()
+    normalized_for_profile = _normalize_requested_path(path, work_dir)
+    if _is_user_profile_file(normalized_for_profile):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "User-profile JSON files are read-only through the file panel. "
+                "Edit via the dashboard widget or ask the agent to update it."
+            ),
         )
 
     content_bytes = body.content.encode("utf-8")
@@ -935,6 +1037,15 @@ async def delete_workspace_files(
             continue
 
         client_path = _to_client_path(sandbox, normalized)
+        if _is_user_profile_file(client_path):
+            errors.append({
+                "path": path,
+                "detail": (
+                    "User-profile JSON files cannot be deleted through the file panel. "
+                    "Manage entries via the dashboard widgets."
+                ),
+            })
+            continue
         if _is_system_path(client_path):
             errors.append({"path": path, "detail": "Cannot delete system files"})
             continue

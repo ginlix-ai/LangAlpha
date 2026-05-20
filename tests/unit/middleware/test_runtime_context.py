@@ -73,6 +73,42 @@ class TestBuildContextBlock:
         assert "<user_profile>" not in mw._context_block
         loader.render.assert_called_once()
 
+    @patch("ptc_agent.agent.middleware.runtime_context.get_loader")
+    def test_user_data_counts_only_renders_profile_block(self, mock_get_loader):
+        """user_data_counts triggers the profile block even with no user_profile."""
+        loader = MagicMock()
+        loader.render.side_effect = ["time content", "rendered profile"]
+        mock_get_loader.return_value = loader
+
+        mw = RuntimeContextMiddleware(
+            current_time="now",
+            user_profile=None,
+            user_data_counts={"portfolio_count": 5, "watchlist_summary": "2:12", "prefs_set": True},
+        )
+
+        assert "<user_profile>" in mw._context_block
+        # The template render was called with the counts dict
+        _, kwargs = loader.render.call_args_list[1]
+        assert kwargs["user_data_counts"] == {
+            "portfolio_count": 5, "watchlist_summary": "2:12", "prefs_set": True,
+        }
+
+    @patch("ptc_agent.agent.middleware.runtime_context.get_loader")
+    def test_no_profile_no_counts_skips_block(self, mock_get_loader):
+        """Without profile or counts, the user_profile block is omitted."""
+        loader = MagicMock()
+        loader.render.return_value = "time content"
+        mock_get_loader.return_value = loader
+
+        mw = RuntimeContextMiddleware(
+            current_time="now",
+            user_profile=None,
+            user_data_counts=None,
+        )
+
+        assert "<user_profile>" not in mw._context_block
+        loader.render.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # Tests for awrap_model_call

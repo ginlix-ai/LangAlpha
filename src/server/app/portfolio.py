@@ -1,22 +1,10 @@
-"""
-Portfolio API Router.
-
-Provides REST endpoints for portfolio management.
-
-Endpoints:
-- GET /api/v1/users/me/portfolio - List all holdings
-- POST /api/v1/users/me/portfolio - Add holding
-- GET /api/v1/users/me/portfolio/{holding_id} - Get single holding
-- PUT /api/v1/users/me/portfolio/{holding_id} - Update holding
-- DELETE /api/v1/users/me/portfolio/{holding_id} - Remove holding
-"""
+"""Portfolio API Router — CRUD endpoints for /api/v1/users/me/portfolio."""
 
 import logging
 
 from fastapi import APIRouter
 from fastapi.responses import Response
 
-from src.server.services.workspace_manager import WorkspaceManager
 from src.server.database.portfolio import (
     delete_portfolio_holding as db_delete_portfolio_holding,
     get_portfolio_holding as db_get_portfolio_holding,
@@ -41,15 +29,6 @@ router = APIRouter(prefix="/api/v1/users/me/portfolio", tags=["Portfolio"])
 @router.get("", response_model=PortfolioResponse)
 @handle_api_exceptions("list portfolio", logger)
 async def list_portfolio(user_id: CurrentUserId):
-    """
-    List all portfolio holdings for the current user.
-
-    Args:
-        user_id: User ID from authentication header
-
-    Returns:
-        List of portfolio holdings with total count
-    """
     holdings = await db_get_user_portfolio(user_id)
 
     return PortfolioResponse(
@@ -93,7 +72,6 @@ async def add_portfolio_holding(
     )
 
     await maybe_complete_onboarding(user_id)
-    WorkspaceManager.mark_user_data_stale(user_id)
 
     if merge_details:
         response.status_code = 200
@@ -110,19 +88,7 @@ async def get_portfolio_holding(
     holding_id: str,
     user_id: CurrentUserId,
 ):
-    """
-    Get a single portfolio holding.
-
-    Args:
-        holding_id: Portfolio holding ID
-        user_id: User ID from authentication header
-
-    Returns:
-        Portfolio holding details
-
-    Raises:
-        404: Holding not found or not owned by user
-    """
+    """Get a single holding. 404 if not found or not owned by the caller."""
     holding = await db_get_portfolio_holding(holding_id, user_id)
 
     if not holding:
@@ -138,22 +104,7 @@ async def update_portfolio_holding(
     request: PortfolioHoldingUpdate,
     user_id: CurrentUserId,
 ):
-    """
-    Update a portfolio holding.
-
-    Partial update supported - only provided fields are updated.
-
-    Args:
-        holding_id: Portfolio holding ID
-        request: Fields to update
-        user_id: User ID from authentication header
-
-    Returns:
-        Updated portfolio holding
-
-    Raises:
-        404: Holding not found or not owned by user
-    """
+    """Partial update. 404 if not found or not owned by the caller."""
     holding = await db_update_portfolio_holding(
         user_portfolio_id=holding_id,
         user_id=user_id,
@@ -170,7 +121,6 @@ async def update_portfolio_holding(
     if not holding:
         raise_not_found("Portfolio holding")
 
-    WorkspaceManager.mark_user_data_stale(user_id)
     logger.info(f"Updated portfolio holding {holding_id} for user {user_id}")
     return PortfolioHoldingResponse.model_validate(holding)
 
@@ -181,24 +131,11 @@ async def delete_portfolio_holding(
     holding_id: str,
     user_id: CurrentUserId,
 ):
-    """
-    Remove a holding from the portfolio.
-
-    Args:
-        holding_id: Portfolio holding ID
-        user_id: User ID from authentication header
-
-    Returns:
-        204 No Content on success
-
-    Raises:
-        404: Holding not found or not owned by user
-    """
+    """Delete a holding. 404 if not found or not owned by the caller."""
     deleted = await db_delete_portfolio_holding(holding_id, user_id)
 
     if not deleted:
         raise_not_found("Portfolio holding")
 
-    WorkspaceManager.mark_user_data_stale(user_id)
     logger.info(f"Deleted portfolio holding {holding_id} for user {user_id}")
     return Response(status_code=204)

@@ -26,6 +26,9 @@ class RuntimeContextMiddleware(AgentMiddleware):
     Args:
         current_time: Pre-formatted current time string.
         user_profile: Optional user profile dict with name, timezone, locale, etc.
+        user_data_counts: Optional dict with portfolio/watchlist/preference
+            counts for the ``<user_profile>`` awareness block. Snapshot at
+            agent-creation time.
     """
 
     def __init__(
@@ -33,14 +36,18 @@ class RuntimeContextMiddleware(AgentMiddleware):
         *,
         current_time: str,
         user_profile: dict[str, Any] | None = None,
+        user_data_counts: dict[str, Any] | None = None,
     ) -> None:
-        self._context_block = self._build_context_block(current_time, user_profile)
+        self._context_block = self._build_context_block(
+            current_time, user_profile, user_data_counts
+        )
 
     @staticmethod
     def _build_context_block(
-        current_time: str, user_profile: dict[str, Any] | None
+        current_time: str,
+        user_profile: dict[str, Any] | None,
+        user_data_counts: dict[str, Any] | None,
     ) -> str:
-        """Render the context block once from templates."""
         loader = get_loader()
         parts: list[str] = []
 
@@ -50,10 +57,14 @@ class RuntimeContextMiddleware(AgentMiddleware):
         )
         parts.append(f"<time_awareness>\n{time_content}\n</time_awareness>")
 
-        if user_profile:
+        # Render the profile block when either the user profile dict OR the
+        # counts dict has content. Empty counts (no holdings + no watchlists +
+        # no prefs) skip the counts line via the template's conditional.
+        if user_profile or user_data_counts:
             profile_content = loader.render(
                 "components/user_profile.md.j2",
-                user_profile=user_profile,
+                user_profile=user_profile or {},
+                user_data_counts=user_data_counts,
             )
             parts.append(f"<user_profile>\n{profile_content}\n</user_profile>")
 
@@ -64,7 +75,7 @@ class RuntimeContextMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        # Sync fallback — shouldn't be hit in async agent, but keep for safety
+        # Sync fallback — the async agent won't call this but the protocol requires it.
         return handler(request)
 
     async def awrap_model_call(

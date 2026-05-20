@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo, useId, memo } from 'react';
+import React, { useState, useRef, useMemo, useEffect, useId, memo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Brain, ChevronDown, Wrench, X as XIcon } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -12,6 +12,7 @@ import {
   categorizeTool,
   type ToolCategory,
 } from './toolDisplayConfig';
+import { classifyAgentPath, isUserProfileReadmePath } from '../utils/agentPaths';
 import { TextShimmer } from '@/components/ui/text-shimmer';
 import { DotLoader } from '@/components/ui/dot-loader';
 import { useAnimatedText } from '@/components/ui/animated-text';
@@ -37,6 +38,21 @@ const FILE_NAV_TOOLS = new Set(['Read', 'Write']);
 function getFilePathFromArgs(args: Record<string, unknown> | undefined): string | null {
   if (!args) return null;
   return (args.file_path || args.filePath || args.path || args.filename || null) as string | null;
+}
+
+/**
+ * The agent occasionally reads `.agents/user/profile/README.md` to recall the
+ * JSON schema for portfolio/watchlist/preference. That's plumbing chatter — it
+ * doesn't represent meaningful work to a human reader and the README itself
+ * has no user-facing surface to open. Hide these rows from the timeline (and
+ * from the accordion summary fingerprint/counts) so the chat stays focused
+ * on actual data operations.
+ */
+function shouldHideTimelineItem(item: ActivityItem): boolean {
+  if (item.type !== 'tool_call') return false;
+  if (item.toolName !== 'Read') return false;
+  const fp = getFilePathFromArgs(item.toolCall?.args);
+  return fp ? isUserProfileReadmePath(fp) : false;
 }
 
 /** Map artifact type to inline chart component */
@@ -126,6 +142,10 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
     const inlineCharts: ActivityItem[] = [];
 
     for (const item of items) {
+      // Drop README schema-doc reads at the partition layer so they're invisible
+      // to every downstream consumer (live row, accordion summary, category
+      // counts, new-item animation tracker) — no need for per-site guards.
+      if (shouldHideTimelineItem(item)) continue;
       if (item._liveState === 'completed') {
         if (
           item.type === 'tool_call' &&
@@ -143,17 +163,25 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
     return { completedItems: completed, liveItems: live, inlineChartItems: inlineCharts };
   }, [items]);
 
-  // Detect newly completed items for entrance animation
-  const currentCompletedIds = new Set(completedItems.map(i => i.id || i.toolCallId));
-  const newlyCompletedIds = new Set<string | undefined>();
-  if (isStreaming) {
+  // Detect newly completed items for entrance animation. Memoized so a long
+  // turn with many completed rows doesn't re-walk the array every SSE chunk.
+  const currentCompletedIds = useMemo(
+    () => new Set(completedItems.map(i => i.id || i.toolCallId)),
+    [completedItems],
+  );
+  const newlyCompletedIds = useMemo(() => {
+    const out = new Set<string | undefined>();
+    if (!isStreaming) return out;
     for (const id of currentCompletedIds) {
-      if (!prevCompletedIdsRef.current.has(id)) {
-        newlyCompletedIds.add(id);
-      }
+      if (!prevCompletedIdsRef.current.has(id)) out.add(id);
     }
-  }
-  prevCompletedIdsRef.current = currentCompletedIds;
+    return out;
+  }, [currentCompletedIds, isStreaming]);
+  useEffect(() => {
+    // Ref mutation belongs in an effect, not render \u2014 strict-mode double
+    // render would otherwise over-advance the prev set.
+    prevCompletedIdsRef.current = currentCompletedIds;
+  }, [currentCompletedIds]);
 
   // Content-aware accordion header \u2014 group completed items by category and
   // emit `<count> <label>` fragments. Computed BEFORE any early-return so
@@ -163,20 +191,21 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
   // re-walks when an item's args arrive late (a common SSE pattern: row
   // created with empty args, file_path patched in a later chunk). The
   // earlier `[length, lastId]` key silently froze the category counts.
-  const summaryFingerprint = completedItems
+  const summaryFingerprint = useMemo(() => completedItems
     .map((i) => {
       const args = i.toolCall?.args as Record<string, unknown> | undefined;
       const fp = (args?.file_path || args?.filePath || '') as string;
       return `${i.id || i.toolCallId || ''}:${i.type}:${i.toolName || ''}:${fp}`;
     })
-    .join('|');
-  // Slot = what we emit in the header. `memory` collapses read+write into one
-  // fragment whose verb flips on any write (its store is conceptually one
-  // surface). `fileRead`/`fileEdit` and `memo`/`memoWrite` stay separate —
-  // distinct file/memo paths shouldn't collide under one label, and any
-  // memo modification is surfaced distinctly so a future regression letting
-  // the agent mutate a memo is visible.
-  type SummarySlot = 'skill' | 'memory' | 'memo' | 'memoWrite' | 'code' | 'web' | 'search' | 'fileRead' | 'fileEdit' | 'reasoning' | 'generic';
+    .join('|'), [completedItems]);
+  // Slot = what we emit in the header. `memory` and `profile` each collapse
+  // read+write into a single fragment whose verb flips on any write (each is
+  // conceptually one surface — the user's memory, the user's profile data).
+  // `fileRead`/`fileEdit` and `memo`/`memoWrite` stay separate — distinct
+  // file/memo paths shouldn't collide under one label, and any memo
+  // modification is surfaced distinctly so a future regression letting the
+  // agent mutate a memo is visible.
+  type SummarySlot = 'skill' | 'memory' | 'memo' | 'memoWrite' | 'profile' | 'code' | 'web' | 'search' | 'fileRead' | 'fileEdit' | 'reasoning' | 'generic';
   const summaryFragments = useMemo<{ slot: SummarySlot; count: number; modified?: boolean }[]>(() => {
     const counts = new Map<ToolCategory | 'reasoning', number>();
     for (const item of completedItems) {
@@ -188,11 +217,16 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
     const memReads = counts.get('memoryRead') ?? 0;
     const memWrites = counts.get('memoryWrite') ?? 0;
     const memTotal = memReads + memWrites;
-    const order: SummarySlot[] = ['skill', 'memory', 'memo', 'memoWrite', 'code', 'web', 'search', 'fileRead', 'fileEdit', 'reasoning', 'generic'];
+    const profileReads = counts.get('profileRead') ?? 0;
+    const profileWrites = counts.get('profileWrite') ?? 0;
+    const profileTotal = profileReads + profileWrites;
+    const order: SummarySlot[] = ['skill', 'memory', 'memo', 'memoWrite', 'profile', 'code', 'web', 'search', 'fileRead', 'fileEdit', 'reasoning', 'generic'];
     const out: { slot: SummarySlot; count: number; modified?: boolean }[] = [];
     for (const slot of order) {
       if (slot === 'memory') {
         if (memTotal > 0) out.push({ slot, count: memTotal, modified: memWrites > 0 });
+      } else if (slot === 'profile') {
+        if (profileTotal > 0) out.push({ slot, count: profileTotal, modified: profileWrites > 0 });
       } else if (counts.has(slot as ToolCategory | 'reasoning')) {
         out.push({ slot, count: counts.get(slot as ToolCategory | 'reasoning')! });
       }
@@ -220,7 +254,9 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
     // relative order of everything else.
     const FOLDED_MAX = 3;
     const isPriority = (f: { slot: SummarySlot; modified?: boolean }) =>
-      f.slot === 'memoWrite' || (f.slot === 'memory' && f.modified === true);
+      f.slot === 'memoWrite'
+      || (f.slot === 'memory' && f.modified === true)
+      || (f.slot === 'profile' && f.modified === true);
     const priority = summaryFragments.filter(isPriority);
     const rest = summaryFragments.filter((f) => !isPriority(f));
     const ordered = [...priority, ...rest];
@@ -233,6 +269,10 @@ const ActivityBlock = memo(function ActivityBlock({ items, preparingToolCall, is
         if (f.slot === 'memory') {
           // No count for memory — any write/edit overrules pure-read framing.
           return t(f.modified ? 'toolArtifact.categoryCount.memoryUpdated' : 'toolArtifact.categoryCount.memoryRead');
+        }
+        if (f.slot === 'profile') {
+          // Same single-surface framing as memory — verb flips on any write.
+          return t(f.modified ? 'toolArtifact.categoryCount.profileUpdated' : 'toolArtifact.categoryCount.profileRead');
         }
         if (f.slot === 'fileRead') return t('toolArtifact.categoryCount.fileRead', { count: f.count });
         if (f.slot === 'fileEdit') return t('toolArtifact.categoryCount.fileEdit', { count: f.count });
@@ -764,6 +804,7 @@ const ToolCallRow = memo(function ToolCallRow({ item, onClick }: ToolCallRowProp
 
   // No pill → the row title becomes the click target so the affordance isn't
   // lost (e.g., memory/memo index rows where the verb already names the file).
+  const openInTabLabel = t('toolArtifact.a11y.openInTab', { tab: tabLabel });
   const titleNode = summary ? (
     <span className="titem-title">{title}</span>
   ) : (
@@ -771,7 +812,8 @@ const ToolCallRow = memo(function ToolCallRow({ item, onClick }: ToolCallRowProp
       type="button"
       onClick={onClick}
       className="titem-title titem-title-button"
-      title={t('toolArtifact.a11y.openInTab', { tab: tabLabel })}
+      title={openInTabLabel}
+      aria-label={openInTabLabel}
     >
       {title}
     </button>
@@ -823,7 +865,13 @@ const EditToolRow = memo(function EditToolRow({ item, onOpenFile }: EditToolRowP
   const oldStr = (args.old_string || args.oldString || '') as string;
   const newStr = (args.new_string || args.newString || '') as string;
   const hasDiff = !!(oldStr || newStr);
-  const summary = getCompletedSummary(item.toolName || 'Edit', item.toolCall, t) || fileName;
+  // For user-profile paths the row title already names the entity
+  // ("Updated portfolio") — appending `portfolio.json` as a pill is redundant
+  // noise. Skip the filename fallback in that case; the title-as-button
+  // branch below preserves click-to-open.
+  const info = filePath ? classifyAgentPath(filePath) : null;
+  const fallbackName = info?.kind === 'user-profile' ? '' : fileName;
+  const summary = getCompletedSummary(item.toolName || 'Edit', item.toolCall, t) || fallbackName;
 
   // Match the destination tab label to the actual classification of the
   // path so the tooltip doesn't lie when the click routes to Memory.
@@ -835,6 +883,23 @@ const EditToolRow = memo(function EditToolRow({ item, onOpenFile }: EditToolRowP
         ? t('rightPanel.tabs.memo')
         : t('rightPanel.tabs.files');
 
+  // When there's no pill, fold the click affordance into the title so the
+  // user can still open the file. Mirrors ToolCallRow's no-summary branch.
+  const editOpenInTabLabel = t('toolArtifact.a11y.openInTab', { tab: editTabLabel });
+  const titleNode = summary ? (
+    <span className="titem-title">{title}</span>
+  ) : (
+    <button
+      type="button"
+      onClick={() => filePath && onOpenFile?.(filePath)}
+      className="titem-title titem-title-button"
+      title={editOpenInTabLabel}
+      aria-label={editOpenInTabLabel}
+    >
+      {title}
+    </button>
+  );
+
   return (
     <div className={`titem${isFailed ? ' failed' : ''}`}>
       <div className="titem-icon" title={isFailed ? failedLabel : undefined}>
@@ -843,7 +908,7 @@ const EditToolRow = memo(function EditToolRow({ item, onOpenFile }: EditToolRowP
       </div>
       <div className="titem-body">
         <div className="titem-line">
-          <span className="titem-title">{title}</span>
+          {titleNode}
           {summary && (
             <span className="titem-pill-wrap">
               <button

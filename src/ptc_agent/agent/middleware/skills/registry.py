@@ -81,7 +81,10 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
         description="Manage user profile: watchlists, portfolio, and preferences",
         tools=USER_PROFILE_TOOLS,
         skill_md_path="skills/user-profile/SKILL.md",
-        exposure="both",
+        # Flash-only: PTC edits user data via .agents/user/profile/*.json through
+        # the UserDataBackend filesystem surface, so the structured skill tools
+        # are redundant there. Flash has no filesystem, so it keeps them.
+        exposure="flash",
     ),
     "onboarding": SkillDefinition(
         name="onboarding",

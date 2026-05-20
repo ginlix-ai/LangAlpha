@@ -1638,7 +1638,10 @@
       "skill": "技能",
       "memory": "记忆",
       "workspaceMemory": "工作区记忆",
-      "memo": "备忘录"
+      "memo": "备忘录",
+      "portfolio": "持仓",
+      "watchlist": "自选股",
+      "preference": "偏好"
     },
     "completed": {
       "activatedSkill": "已激活技能",
@@ -1649,7 +1652,13 @@
       "readMemo": "已读取备忘",
       "readMemoIndex": "已读取备忘索引",
       "wroteMemo": "已写入备忘",
-      "updatedMemo": "已更新备忘"
+      "updatedMemo": "已更新备忘",
+      "read_portfolio": "已读取持仓",
+      "read_watchlist": "已读取自选股",
+      "read_preference": "已读取偏好",
+      "updated_portfolio": "已更新持仓",
+      "updated_watchlist": "已更新自选股",
+      "updated_preference": "已更新偏好"
     },
     "inProgress": {
       "activatingSkill": "激活技能中...",
@@ -1670,6 +1679,12 @@
       "readingMemoSlug": "读取备忘 {{slug}}...",
       "writingMemoSlug": "写入备忘 {{slug}}...",
       "updatingMemoSlug": "更新备忘 {{slug}}...",
+      "reading_portfolio": "读取持仓...",
+      "reading_watchlist": "读取自选股...",
+      "reading_preference": "读取偏好...",
+      "updating_portfolio": "更新持仓...",
+      "updating_watchlist": "更新自选股...",
+      "updating_preference": "更新偏好...",
       "fetchingSymbolPrices": "获取 {{symbol}} 价格...",
       "fetchingPrices": "获取价格...",
       "analyzingSymbol": "分析 {{symbol}}...",
@@ -1720,6 +1735,8 @@
       "memoryUpdated": "更新记忆",
       "memo": "读取 {{count}} 份备忘",
       "memoWrite": "写入 {{count}} 份备忘",
+      "profileRead": "读取偏好资料",
+      "profileUpdated": "更新偏好资料",
       "code": "执行 {{count}} 段代码",
       "web": "发起 {{count}} 次网络请求",
       "search": "执行 {{count}} 次搜索",

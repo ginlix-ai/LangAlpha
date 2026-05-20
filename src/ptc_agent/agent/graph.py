@@ -1,15 +1,4 @@
-"""
-PTC Graph Factory - Build per-conversation LangGraph graphs.
-
-This module creates LangGraph-compatible graphs for the PTC agent,
-with parameterized session handling for flexibility across different
-deployment contexts (CLI, server, etc.).
-
-Key Features:
-- SessionProvider protocol for dependency injection
-- Reusable outside server context
-- Support for custom session management strategies
-"""
+"""PTC Graph Factory — builds per-conversation agents with dependency-injected session management."""
 
 import asyncio
 import logging
@@ -25,18 +14,37 @@ logger = logging.getLogger(__name__)
 _USER_PROFILE_TTL = 86400  # 24h — freshness via explicit invalidation
 
 
+async def fetch_user_data_counts(user_id: str | None) -> dict[str, Any] | None:
+    """Lightweight counts for the static `<user_profile>` block.
+
+    Three indexed queries in parallel. Failure is non-fatal — returns None and
+    the awareness block omits the counts line.
+    """
+    if not user_id:
+        return None
+    try:
+        from src.server.services import user_data_io as io
+        portfolio_count, watchlist_counts, prefs_set = await asyncio.gather(
+            io.count_portfolio_for_user(user_id),
+            io.count_watchlist_for_user(user_id),
+            io.exists_preferences_for_user(user_id),
+        )
+        wl_count, item_count = watchlist_counts
+        return {
+            "portfolio_count": int(portfolio_count),
+            "watchlist_summary": f"{wl_count}:{item_count}",
+            "prefs_set": bool(prefs_set),
+        }
+    except Exception:
+        logger.warning("user-data counts fetch failed; awareness block will omit counts", exc_info=True)
+        return None
+
+
 async def get_user_profile_for_prompt(user_id: str) -> dict[str, Any] | None:
-    """Fetch user profile data for system prompt injection (cached in Redis).
+    """Fetch user profile for system prompt injection, cached in Redis for up to ``_USER_PROFILE_TTL`` seconds.
 
-    Result is cached for up to ``_USER_PROFILE_TTL`` seconds.  The cache
-    is explicitly invalidated by ``invalidate_user_profile_cache`` whenever
-    the user profile or preferences are updated.
-
-    Args:
-        user_id: The user's unique identifier
-
-    Returns:
-        Dict with name, timezone, locale, agent_preference if found, None otherwise
+    Explicitly invalidated by ``invalidate_user_profile_cache`` on profile/preferences updates.
+    Returns None on DB error; callers silently omit the profile block.
     """
     import json as _json
 
@@ -100,34 +108,11 @@ async def invalidate_user_profile_cache(user_id: str) -> None:
 
 @runtime_checkable
 class SessionProvider(Protocol):
-    """Protocol for session management.
-
-    Implementations provide get_or_create_session() for different contexts:
-    - Server: Uses SessionService for per-conversation sessions
-    - CLI: Uses SessionManager for standalone sessions
-    - Testing: Uses mock sessions
-
-    Example implementation:
-        class MySessionProvider:
-            async def get_or_create_session(
-                self, conversation_id: str, sandbox_id: str | None = None
-            ) -> Session:
-                # Return or create a Session instance
-                ...
-    """
+    """Dependency-injection boundary for session management (server, CLI, tests)."""
 
     async def get_or_create_session(
         self, conversation_id: str, sandbox_id: str | None = None
     ) -> Session:
-        """Get or create a session for the given conversation.
-
-        Args:
-            conversation_id: Unique conversation identifier
-            sandbox_id: Optional sandbox ID to reconnect to existing sandbox
-
-        Returns:
-            Initialized Session instance with sandbox and MCP registry
-        """
         ...
 
 
@@ -144,38 +129,7 @@ async def build_ptc_graph(
     on_signed_url: Any | None = None,
     user_id: str | None = None,
 ) -> Any:
-    """
-    Build a compiled LangGraph for a specific conversation.
-
-    This creates a per-conversation sandbox session and wraps the PTCAgent
-    in a LangGraph-compatible graph structure.
-
-    Args:
-        conversation_id: Unique conversation identifier for session management
-        config: AgentConfig with LLM and tool configuration
-        session_provider: SessionProvider implementation for session management
-        subagent_names: Optional list of subagent names to enable
-        sandbox_id: Optional specific sandbox ID to use (for reconnecting to existing sandbox)
-        operation_callback: Optional callback for file operation logging
-        checkpointer: Optional LangGraph checkpointer for state persistence (e.g., AsyncPostgresSaver)
-        background_registry: Optional shared registry for background subagent tasks
-        on_signed_url: Optional async callback(sandbox_id, port, url) to cache signed preview URLs
-
-    Returns:
-        Compiled StateGraph compatible with LangGraph streaming
-
-    Example:
-        # Using with a custom session provider
-        session_provider = MySessionProvider(config)
-        ptc_graph = await build_ptc_graph(
-            "conv-123",
-            agent_config,
-            session_provider,
-            checkpointer=checkpointer
-        )
-        async for event in ptc_graph.astream(input_state, config):
-            process_event(event)
-    """
+    """Build a BackgroundSubagentOrchestrator for ``conversation_id``, acquiring a session via ``session_provider``."""
     logger.debug(f"Building PTC graph for conversation: {conversation_id}")
 
     # Get session from provider
@@ -189,12 +143,11 @@ async def build_ptc_graph(
             f"Failed to initialize session for conversation {conversation_id}"
         )
 
-    # Create PTCAgent instance (blocking I/O wrapped in thread)
-    ptc_agent = await asyncio.to_thread(PTCAgent, config)
+    ptc_agent, user_data_counts = await asyncio.gather(
+        asyncio.to_thread(PTCAgent, config),
+        fetch_user_data_counts(user_id),
+    )
 
-    # Create the inner agent with conversation-specific sandbox.
-    # IMPORTANT: pass the server checkpointer into the deepagent so that partial
-    # progress (tools, intermediate messages, etc.) is checkpointed frequently.
     inner_agent = ptc_agent.create_agent(
         sandbox=session.sandbox,
         mcp_registry=session.mcp_registry,
@@ -207,6 +160,7 @@ async def build_ptc_graph(
         store=store,
         on_signed_url=on_signed_url,
         user_id=user_id,
+        user_data_counts=user_data_counts,
     )
 
     logger.debug(
@@ -215,8 +169,6 @@ async def build_ptc_graph(
         f"(checkpointer={'enabled' if checkpointer else 'disabled'})"
     )
 
-    # Return the deepagent/orchestrator directly.
-    # It supports .astream/.ainvoke/.aget_state and will persist state via checkpointer.
     return inner_agent
 
 
@@ -233,36 +185,7 @@ async def build_ptc_graph_with_session(
     store: Any | None = None,
     on_signed_url: Any | None = None,
 ) -> Any:
-    """
-    Build a compiled LangGraph using a provided session.
-
-    This is used for scenarios where the session is managed externally
-    (e.g., workspace-based requests where WorkspaceManager handles sessions).
-
-    Args:
-        session: Pre-initialized Session with sandbox and MCP registry
-        config: AgentConfig with LLM and tool configuration
-        subagent_names: Optional list of subagent names to enable
-        operation_callback: Optional callback for file operation logging
-        checkpointer: Optional LangGraph checkpointer for state persistence
-        background_registry: Optional shared registry for background subagent tasks
-        user_id: Optional user ID for fetching user profile to inject into system prompt
-        plan_mode: If True, enables submit_plan tool for plan review workflow
-        on_signed_url: Optional async callback(sandbox_id, port, url) to cache signed preview URLs
-
-    Returns:
-        Compiled StateGraph compatible with LangGraph streaming
-
-    Example:
-        session = await workspace_manager.get_session_for_workspace(workspace_id)
-        ptc_graph = await build_ptc_graph_with_session(
-            session,
-            config,
-            checkpointer=checkpointer
-        )
-        async for event in ptc_graph.astream(input_state, config):
-            process_event(event)
-    """
+    """Build a BackgroundSubagentOrchestrator from a pre-acquired session (WorkspaceManager path)."""
     workspace_id = session.conversation_id
     logger.debug(f"Building PTC graph with session for workspace: {workspace_id}")
 
@@ -271,22 +194,19 @@ async def build_ptc_graph_with_session(
             f"Session for workspace {workspace_id} is not properly initialized"
         )
 
-    # Fetch user profile + create PTCAgent in parallel (independent I/O)
     if user_id:
-        user_profile, ptc_agent = await asyncio.gather(
+        user_profile, user_data_counts, ptc_agent = await asyncio.gather(
             get_user_profile_for_prompt(user_id),
+            fetch_user_data_counts(user_id),
             asyncio.to_thread(PTCAgent, config),
         )
         if user_profile:
             logger.debug(f"Loaded user profile for {user_id}: {user_profile}")
     else:
         user_profile = None
+        user_data_counts = None
         ptc_agent = await asyncio.to_thread(PTCAgent, config)
 
-    # Create the inner agent with the session's sandbox.
-    # IMPORTANT: pass the server checkpointer into the deepagent so that partial
-    # progress (tools, intermediate messages, etc.) is checkpointed frequently.
-    # Read cached vault secrets from sandbox (populated by vault API on mutation)
     vault_secrets = getattr(session.sandbox, "vault_secrets", None)
 
     inner_agent = ptc_agent.create_agent(
@@ -305,6 +225,7 @@ async def build_ptc_graph_with_session(
         on_signed_url=on_signed_url,
         vault_secrets=vault_secrets,
         user_id=user_id,
+        user_data_counts=user_data_counts,
     )
 
     logger.debug(
@@ -313,6 +234,4 @@ async def build_ptc_graph_with_session(
         f"(checkpointer={'enabled' if checkpointer else 'disabled'})"
     )
 
-    # Return the deepagent/orchestrator directly.
-    # It supports .astream/.ainvoke/.aget_state and will persist state via checkpointer.
     return inner_agent

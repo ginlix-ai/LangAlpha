@@ -1649,7 +1649,10 @@
       "skill": "Skill",
       "memory": "Memory",
       "workspaceMemory": "Workspace Memory",
-      "memo": "Memo"
+      "memo": "Memo",
+      "portfolio": "Portfolio",
+      "watchlist": "Watchlist",
+      "preference": "Preferences"
     },
     "completed": {
       "activatedSkill": "Activated skill",
@@ -1660,7 +1663,13 @@
       "readMemo": "Read memo",
       "readMemoIndex": "Read memo index",
       "wroteMemo": "Wrote memo",
-      "updatedMemo": "Updated memo"
+      "updatedMemo": "Updated memo",
+      "read_portfolio": "Read portfolio",
+      "read_watchlist": "Read watchlist",
+      "read_preference": "Read preferences",
+      "updated_portfolio": "Updated portfolio",
+      "updated_watchlist": "Updated watchlist",
+      "updated_preference": "Updated preferences"
     },
     "inProgress": {
       "activatingSkill": "activating skill...",
@@ -1681,6 +1690,12 @@
       "readingMemoSlug": "reading memo {{slug}}...",
       "writingMemoSlug": "writing memo {{slug}}...",
       "updatingMemoSlug": "updating memo {{slug}}...",
+      "reading_portfolio": "reading portfolio...",
+      "reading_watchlist": "reading watchlist...",
+      "reading_preference": "reading preferences...",
+      "updating_portfolio": "updating portfolio...",
+      "updating_watchlist": "updating watchlist...",
+      "updating_preference": "updating preferences...",
       "fetchingSymbolPrices": "fetching {{symbol}} prices...",
       "fetchingPrices": "fetching prices...",
       "analyzingSymbol": "analyzing {{symbol}}...",
@@ -1734,6 +1749,8 @@
       "memo_other": "read {{count}} memos",
       "memoWrite": "wrote {{count}} memo",
       "memoWrite_other": "wrote {{count}} memos",
+      "profileRead": "read profile",
+      "profileUpdated": "updated profile",
       "code": "executed {{count}} code block",
       "code_other": "executed {{count}} code blocks",
       "web": "made {{count}} web call",

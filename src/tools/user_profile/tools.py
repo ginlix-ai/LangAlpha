@@ -40,62 +40,6 @@ def _get_user_id(config: RunnableConfig) -> str:
     return user_id
 
 
-def _get_workspace_id(config: RunnableConfig) -> str | None:
-    """Extract workspace_id from the runnable config."""
-    configurable = config.get("configurable", {})
-    return configurable.get("workspace_id")
-
-
-async def _sync_user_file_async(entity: str, user_id: str, workspace_id: str) -> None:
-    """
-    Sync user data file to sandbox (fire-and-forget).
-
-    Args:
-        entity: Entity type that was changed
-        user_id: User ID
-        workspace_id: Workspace ID to get sandbox from
-    """
-    try:
-        from src.server.services.workspace_manager import WorkspaceManager
-        from src.server.services.sync_user_data import sync_single_file
-
-        workspace_manager = WorkspaceManager.get_instance()
-        # Get session without user_id to avoid re-syncing all files
-        session = await workspace_manager.get_session_for_workspace(workspace_id)
-
-        if session and session.sandbox:
-            await sync_single_file(session.sandbox, entity, user_id)
-            logger.debug(f"[user_profile] Synced {entity} for user {user_id}")
-    except Exception as e:
-        # Non-blocking - don't fail the tool if sync fails
-        logger.warning(f"[user_profile] Failed to sync {entity}: {e}")
-
-
-def _schedule_sync(entity: str, config: RunnableConfig) -> None:
-    """
-    Schedule a background sync task for the affected file.
-
-    Args:
-        entity: Entity type that was changed
-        config: RunnableConfig with user_id and workspace_id
-    """
-    user_id = _get_user_id(config)
-    workspace_id = _get_workspace_id(config)
-
-    if not workspace_id:
-        logger.debug("[user_profile] No workspace_id in config, skipping sync")
-        return
-
-    # Flash workspaces have no sandbox — nothing to sync
-    agent_mode = config.get("configurable", {}).get("agent_mode")
-    if agent_mode == "flash":
-        return
-
-    # Fire-and-forget: schedule sync without awaiting
-    asyncio.create_task(_sync_user_file_async(entity, user_id, workspace_id))
-
-
-
 # ==================== GET Handlers ====================
 
 
@@ -224,8 +168,6 @@ async def _update_risk_preference(config: RunnableConfig, data: dict[str, Any], 
     await invalidate_user_prefs_cache(user_id)
     from src.ptc_agent.agent.graph import invalidate_user_profile_cache as _inv_profile
     await _inv_profile(user_id)
-    from src.server.services.workspace_manager import WorkspaceManager
-    WorkspaceManager.mark_user_data_stale(user_id)
     await maybe_complete_onboarding(user_id)
     return {"success": True, "risk_preference": prefs.get("risk_preference", {})}
 
@@ -245,8 +187,6 @@ async def _update_investment_preference(config: RunnableConfig, data: dict[str, 
     await invalidate_user_prefs_cache(user_id)
     from src.ptc_agent.agent.graph import invalidate_user_profile_cache as _inv_profile
     await _inv_profile(user_id)
-    from src.server.services.workspace_manager import WorkspaceManager
-    WorkspaceManager.mark_user_data_stale(user_id)
     return {"success": True, "investment_preference": prefs.get("investment_preference", {})}
 
 
@@ -265,8 +205,6 @@ async def _update_agent_preference(config: RunnableConfig, data: dict[str, Any],
     await invalidate_user_prefs_cache(user_id)
     from src.ptc_agent.agent.graph import invalidate_user_profile_cache as _inv_profile
     await _inv_profile(user_id)
-    from src.server.services.workspace_manager import WorkspaceManager
-    WorkspaceManager.mark_user_data_stale(user_id)
     return {"success": True, "agent_preference": prefs.get("agent_preference", {})}
 
 
@@ -541,11 +479,6 @@ async def update_user_data(
         return {"error": f"Unknown entity: {entity}. Valid entities: {list(UPDATE_HANDLERS.keys())}"}
 
     result = await handler(config, data, replace)
-
-    # Schedule sync if operation succeeded
-    if result.get("success"):
-        _schedule_sync(entity, config)
-
     return result
 
 
@@ -572,9 +505,4 @@ async def remove_user_data(
         return {"error": f"Unknown entity: {entity}. Valid entities: {list(REMOVE_HANDLERS.keys())}"}
 
     result = await handler(config, identifier)
-
-    # Schedule sync if operation succeeded
-    if result.get("success"):
-        _schedule_sync(entity, config)
-
     return result

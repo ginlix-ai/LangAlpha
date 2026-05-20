@@ -230,6 +230,8 @@ async def patched_get_db_connection(test_db_pool):
         "src.server.database.automation.get_db_connection",
         "src.server.database.oauth_tokens.get_db_connection",
         "src.server.database.vault_secrets.get_db_connection",
+        # Services that hold their own from-import of get_db_connection
+        "src.server.services.user_data_io.get_db_connection",
     ]
     from contextlib import ExitStack
 

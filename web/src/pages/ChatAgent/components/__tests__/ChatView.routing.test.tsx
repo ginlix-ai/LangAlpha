@@ -17,6 +17,7 @@ describe('computeAgentArtifactRouting — per-kind routing', () => {
       targetMemoryKey: 'risk-preferences.md',
       targetMemoryTier: 'user',
       targetMemoKey: null,
+      targetUserProfile: null,
       clearWorkspaceId: true,
       setWorkspaceId: null,
     });
@@ -41,6 +42,7 @@ describe('computeAgentArtifactRouting — per-kind routing', () => {
       targetMemoryKey: null,
       targetMemoryTier: null,
       targetMemoKey: 'my-report.pdf',
+      targetUserProfile: null,
       clearWorkspaceId: true,
       setWorkspaceId: null,
     });

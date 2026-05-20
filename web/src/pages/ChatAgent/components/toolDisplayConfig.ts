@@ -122,10 +122,21 @@ export function getDisplayName(rawToolName: string, t?: TFn, args?: ToolCallArgs
     if (info.kind === 'memo') {
       return t ? t('toolArtifact.tool.memo') : 'Memo';
     }
+    if (info.kind === 'user-profile') {
+      // entity is 'portfolio' | 'watchlist' | 'preference' — i18n key per entity.
+      return t ? t(`toolArtifact.tool.${info.entity}`) : entityLabel(info.entity);
+    }
   }
   const config = TOOL_DISPLAY_CONFIG[rawToolName];
   if (t && config?.i18nKey) return t(`toolArtifact.tool.${config.i18nKey}`);
   return config?.displayName || rawToolName;
+}
+
+/** Title-case fallback when no `t` is supplied (tests, server-rendered logs). */
+function entityLabel(entity: 'portfolio' | 'watchlist' | 'preference'): string {
+  if (entity === 'portfolio') return 'Portfolio';
+  if (entity === 'watchlist') return 'Watchlist';
+  return 'Preference';
 }
 
 export function getToolIcon(rawToolName: string, args?: ToolCallArgs): LucideIcon {
@@ -139,6 +150,7 @@ export function getToolIcon(rawToolName: string, args?: ToolCallArgs): LucideIco
       // though current backend rules make this read-only by design).
       return FILE_WRITE_TOOLS.has(rawToolName) ? BookPlus : BookText;
     }
+    if (info.kind === 'user-profile') return User;
   }
   return TOOL_DISPLAY_CONFIG[rawToolName]?.icon || Wrench;
 }
@@ -205,6 +217,16 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
       if (rawToolName === 'Edit') {
         return tr?.('updatingMemoSlug', { slug: info.key }) ?? `updating memo ${info.key}...`;
       }
+    }
+    if (info.kind === 'user-profile') {
+      // Write and Edit both surface as "updating" — UserDataBackend treats
+      // either as an upsert against the canonical DB row(s), so the user-
+      // facing verb is the same.
+      const entity = info.entity;
+      if (rawToolName === 'Read') {
+        return tr?.(`reading_${entity}`) ?? `reading ${entity}...`;
+      }
+      return tr?.(`updating_${entity}`) ?? `updating ${entity}...`;
     }
   }
 
@@ -323,6 +345,11 @@ export function getCompletedSummary(toolName: string, toolCall: ToolCall | undef
       if (info.isIndex) return null;
       return info.key || null;
     }
+    if (info.kind === 'user-profile') {
+      // Row title already says "Read portfolio" / "Updated watchlist" — no
+      // extra pill needed (would duplicate the entity name).
+      return null;
+    }
   }
   if (args.description) return args.description;
   if (args.symbol) return args.symbol;
@@ -399,6 +426,13 @@ export function getCompletedRowTitle(toolName: string, toolCall: ToolCall | unde
         return t ? t('toolArtifact.completed.updatedMemo') : 'Updated memo';
       }
     }
+    if (info.kind === 'user-profile') {
+      const entity = info.entity;
+      if (toolName === 'Read') {
+        return t ? t(`toolArtifact.completed.read_${entity}`) : `Read ${entity}`;
+      }
+      return t ? t(`toolArtifact.completed.updated_${entity}`) : `Updated ${entity}`;
+    }
   }
   return getDisplayName(toolName, t, args);
 }
@@ -419,6 +453,8 @@ export type ToolCategory =
                   // surface modifications distinctly so any future regression
                   // is visible to the user instead of being hidden behind the
                   // generic "read N memos" framing.)
+  | 'profileRead'   // Read on .agents/user/profile/{portfolio,watchlist,preference}.json
+  | 'profileWrite'  // Write/Edit on the same paths
   | 'code'
   | 'web'
   | 'search'      // Glob, Grep
@@ -436,6 +472,9 @@ export function categorizeTool(toolName: string, toolCall: ToolCall | undefined)
     }
     if (info.kind === 'memo') {
       return FILE_WRITE_TOOLS.has(toolName) ? 'memoWrite' : 'memo';
+    }
+    if (info.kind === 'user-profile') {
+      return FILE_WRITE_TOOLS.has(toolName) ? 'profileWrite' : 'profileRead';
     }
     // info.kind === 'file' (a known file tool but path is generic) falls
     // through to the per-tool bucketing below.

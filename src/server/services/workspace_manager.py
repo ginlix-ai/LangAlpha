@@ -1,11 +1,4 @@
-"""
-Workspace Manager Service.
-
-Manages workspace lifecycle with database persistence and sandbox integration:
-- Creates workspaces with dedicated Daytona sandboxes (1:1 mapping)
-- Stops sandboxes when idle (preserves data for quick restart)
-- Handles sandbox reconnection for stopped workspaces
-"""
+"""Workspace Manager — 1:1 workspace↔sandbox lifecycle with DB persistence and idle-stop."""
 
 import asyncio
 import hashlib
@@ -47,18 +40,12 @@ from src.server.database.workspace import (
     update_workspace_status,
 )
 from src.server.services.persistence.file import FilePersistenceService
-from src.server.services.sync_user_data import sync_user_data_to_sandbox
 
 logger = logging.getLogger(__name__)
 
 
 class WorkspaceManager:
-    """
-    Manages workspace lifecycle with database persistence.
-
-    Each workspace has a dedicated Daytona sandbox (1:1 mapping).
-    Workspaces are stopped (not deleted) when idle to preserve data.
-    """
+    """Singleton that owns in-process session cache and workspace lifecycle (DB + sandbox)."""
 
     _instance: Optional["WorkspaceManager"] = None
 
@@ -71,26 +58,12 @@ class WorkspaceManager:
         idle_timeout: int = 1800,  # 30 minutes default
         cleanup_interval: int = 300,  # 5 minutes
     ):
-        """
-        Initialize Workspace Manager.
-
-        Args:
-            config: AgentConfig for creating sessions
-            idle_timeout: Seconds before idle workspaces are stopped
-            cleanup_interval: Seconds between cleanup runs
-        """
         self.config = config
         self.idle_timeout = idle_timeout
         self.cleanup_interval = cleanup_interval
 
         # In-memory session cache (workspace_id -> Session)
         self._sessions: Dict[str, Session] = {}
-
-        # Track which sessions have had user data synced (to avoid syncing every request)
-        self._user_data_synced: set[str] = set()
-        # Bidirectional maps: workspace_id ↔ user_id (for mark_user_data_stale)
-        self._workspace_to_user: dict[str, str] = {}
-        self._user_to_workspaces: dict[str, set[str]] = {}
 
         # Track workspaces that used lazy init and still need skills/assets synced
         # Once sandbox is ready and sync completes, workspace is removed from this set
@@ -121,16 +94,7 @@ class WorkspaceManager:
         config: Optional[AgentConfig] = None,
         **kwargs,
     ) -> "WorkspaceManager":
-        """
-        Get or create singleton instance.
-
-        Args:
-            config: AgentConfig (required on first call)
-            **kwargs: Additional arguments for __init__
-
-        Returns:
-            WorkspaceManager instance
-        """
+        """Return or create the singleton. ``config`` required on the first call."""
         if cls._instance is None:
             if config is None:
                 raise ValueError("config is required on first call to get_instance")
@@ -141,19 +105,6 @@ class WorkspaceManager:
     def reset_instance(cls) -> None:
         """Reset singleton instance (for testing)."""
         cls._instance = None
-
-    @classmethod
-    def mark_user_data_stale(cls, user_id: str) -> None:
-        """Clear user data sync flag for all workspaces owned by a user.
-
-        Safe to call before the singleton is initialized (no-ops).
-        Next message to each affected workspace will re-sync user data.
-        """
-        inst = cls._instance
-        if inst is None:
-            return
-        for ws_id in inst._user_to_workspaces.get(user_id, ()):
-            inst._user_data_synced.discard(ws_id)
 
     async def _get_workspace_lock(self, workspace_id: str) -> asyncio.Lock:
         """Get or create a per-workspace lock."""
@@ -291,64 +242,6 @@ class WorkspaceManager:
             )
             return {}
 
-    @staticmethod
-    async def _prepare_user_data_files(user_id: str) -> dict[str, str] | None:
-        """Fetch user data from DB and format as markdown files.
-
-        Returns a dict of {filename: markdown_content} for the manifest-based
-        sync, or None if the fetch fails. The actual upload is handled by
-        PTCSandbox._upload_user_data_files when the manifest hash differs.
-        """
-        try:
-            from src.server.services.sync_user_data import (
-                PORTFOLIO_FILE,
-                PREFERENCE_FILE,
-                WATCHLIST_FILE,
-                fetch_all_user_data,
-                format_portfolio_md,
-                format_preferences_md,
-                format_watchlist_md,
-            )
-
-            data = await fetch_all_user_data(user_id)
-            return {
-                PREFERENCE_FILE: format_preferences_md(data),
-                WATCHLIST_FILE: format_watchlist_md(data),
-                PORTFOLIO_FILE: format_portfolio_md(data),
-            }
-        except Exception as e:
-            logger.warning(f"Failed to prepare user data files: {e}")
-            return None
-
-    async def _sync_user_data_if_needed(
-        self,
-        workspace_id: str,
-        user_id: str | None,
-        sandbox: Any,
-        force: bool = False,
-    ) -> None:
-        """
-        Sync user data to sandbox if not already synced for this workspace.
-
-        Args:
-            workspace_id: Workspace ID
-            user_id: User ID (sync skipped if None)
-            sandbox: Sandbox instance (sync skipped if None)
-            force: If True, sync even if already synced (for create/restart)
-        """
-        if not user_id or not sandbox:
-            return
-        if not force and workspace_id in self._user_data_synced:
-            return
-        try:
-            await sync_user_data_to_sandbox(sandbox, user_id)
-            self._user_data_synced.add(workspace_id)
-            self._workspace_to_user[workspace_id] = user_id
-            self._user_to_workspaces.setdefault(user_id, set()).add(workspace_id)
-            logger.debug(f"User data synced for workspace {workspace_id}")
-        except Exception as e:
-            logger.warning(f"User data sync failed for workspace {workspace_id}: {e}")
-
     async def _sync_sandbox_assets(
         self,
         workspace_id: str,
@@ -356,16 +249,10 @@ class WorkspaceManager:
         sandbox: Any,
         reusing_sandbox: bool = False,
     ) -> None:
-        """Sync all sandbox assets (tools, skills, data client, tokens) and user data.
+        """Sync all sandbox assets (unified manifest + vault secrets) in parallel.
 
-        Uses the unified manifest for tools/skills/data_client/tokens, and
-        syncs user data in parallel.
-
-        Args:
-            workspace_id: Workspace ID
-            user_id: User ID (user data sync skipped if None)
-            sandbox: Sandbox instance (all syncs skipped if None)
-            reusing_sandbox: If True, sandbox already has assets (skip unchanged)
+        ``reusing_sandbox=True`` passes the flag through to ``sync_sandbox_assets`` so
+        unchanged modules are skipped. No-op when ``sandbox`` is None.
         """
         if not sandbox:
             return
@@ -390,21 +277,10 @@ class WorkspaceManager:
             finally:
                 _sync_times[name] = (time.time() - t0) * 1000
 
-        _ud_files_ok = False  # set inside closure when user data was prepared
-
         async def _mint_and_sync_assets() -> Any:
-            nonlocal _ud_files_ok
             tokens = {}
             if reusing_sandbox and user_id:
                 tokens = await self._mint_sandbox_tokens(user_id, workspace_id)
-
-            # Fetch + format user data for manifest hash comparison.
-            # The actual upload only happens if the hash differs from the
-            # sandbox manifest (same pattern as tokens, skills, etc.).
-            user_data_files = None
-            if user_id:
-                user_data_files = await self._prepare_user_data_files(user_id)
-                _ud_files_ok = user_data_files is not None
 
             return await sandbox.sync_sandbox_assets(
                 skill_dirs=skill_dirs,
@@ -412,7 +288,6 @@ class WorkspaceManager:
                 tokens=tokens or None,
                 user_id=user_id,
                 workspace_id=workspace_id,
-                user_data_files=user_data_files,
             )
 
         tasks: list[Any] = [_timed("mint+manifest", _mint_and_sync_assets())]
@@ -426,16 +301,6 @@ class WorkspaceManager:
         for result in results:
             if isinstance(result, Exception):
                 logger.warning(f"Asset sync failed for {workspace_id}: {result}")
-
-        # Always maintain workspace↔user mapping (needed for mark_user_data_stale).
-        # Only mark user data as synced if the files were actually prepared —
-        # a transient DB failure in _prepare_user_data_files should retry on
-        # the next message, not be permanently suppressed.
-        if user_id and results and not isinstance(results[0], Exception):
-            self._workspace_to_user[workspace_id] = user_id
-            self._user_to_workspaces.setdefault(user_id, set()).add(workspace_id)
-            if _ud_files_ok:
-                self._user_data_synced.add(workspace_id)
 
         total = (time.time() - _sync_t0) * 1000
         parts = " ".join(f"{k}={v:.0f}ms" for k, v in _sync_times.items())
@@ -1184,20 +1049,6 @@ class WorkspaceManager:
                     _mark("file_restore")
                     self._pending_lazy_sync.discard(workspace_id)
 
-                # User data is now handled by the unified manifest inside
-                # _sync_sandbox_assets (hash comparison + upload if changed).
-                # _sync_sandbox_assets already manages _user_data_synced with
-                # proper gating (_ud_files_ok), so we only maintain the
-                # workspace↔user mappings here as a safety net.
-                if needs_deferred_sync and workspace_user_id:
-                    self._workspace_to_user[workspace_id] = workspace_user_id
-                    self._user_to_workspaces.setdefault(workspace_user_id, set()).add(workspace_id)
-
-                if not needs_deferred_sync:
-                    await self._sync_user_data_if_needed(
-                        workspace_id, workspace_user_id, session.sandbox
-                    )
-                _mark("user_data_sync")
                 self._record_sync(workspace_id)
             except SandboxGoneError as e:
                 logger.warning(
@@ -1462,11 +1313,6 @@ class WorkspaceManager:
                     # Remove from cache (will be recreated on restart)
                     del self._sessions[workspace_id]
 
-                # Clear user data sync tracking (will re-sync on restart)
-                self._user_data_synced.discard(workspace_id)
-                uid = self._workspace_to_user.pop(workspace_id, None)
-                if uid:
-                    self._user_to_workspaces.get(uid, set()).discard(workspace_id)
                 self._pending_lazy_sync.discard(workspace_id)
                 self._last_sync_at.pop(workspace_id, None)
 
@@ -1553,11 +1399,6 @@ class WorkspaceManager:
                 # Remove from local cache (SessionManager.cleanup_session handles actual cleanup)
                 self._sessions.pop(workspace_id, None)
 
-                # Clear user data sync tracking
-                self._user_data_synced.discard(workspace_id)
-                uid = self._workspace_to_user.pop(workspace_id, None)
-                if uid:
-                    self._user_to_workspaces.get(uid, set()).discard(workspace_id)
                 self._pending_lazy_sync.discard(workspace_id)
                 self._last_sync_at.pop(workspace_id, None)
 
@@ -1673,9 +1514,6 @@ class WorkspaceManager:
 
         # Clear session cache (don't stop workspaces on shutdown)
         self._sessions.clear()
-        self._user_data_synced.clear()
-        self._workspace_to_user.clear()
-        self._user_to_workspaces.clear()
         self._pending_lazy_sync.clear()
         self._last_sync_at.clear()
         self._workspace_locks.clear()
