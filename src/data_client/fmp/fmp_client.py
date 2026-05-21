@@ -1,6 +1,9 @@
 """
 FMP (Financial Modeling Prep) API Client
 Central client for all FMP API calls with caching, rate limiting, and error handling
+
+Uses the new stable API (https://financialmodelingprep.com/stable/)
+where symbols are passed as QUERY PARAMETERS, not path segments.
 """
 
 import os
@@ -17,7 +20,7 @@ class FMPClient:
     """Central client for Financial Modeling Prep API (Async)"""
 
     BASE_URL = "https://financialmodelingprep.com/api"
-    DEFAULT_VERSION = "v3"
+    DEFAULT_VERSION = "stable"
 
     def __init__(self, api_key: Optional[str] = None, cache_ttl: int = 300):
         """
@@ -92,7 +95,7 @@ class FMPClient:
         Args:
             endpoint: API endpoint path
             params: Query parameters
-            version: API version (default v3)
+            version: API version (default stable)
             use_cache: Whether to use caching
 
         Returns:
@@ -135,133 +138,133 @@ class FMPClient:
         except httpx.RequestError as e:
             raise Exception(f"FMP API request failed: {str(e)}")
 
-    # Financial Statements
+    # ── Financial Statements ──────────────────────────────────────────
+
     async def get_income_statement(
         self, symbol: str, period: str = "annual", limit: int = 5
     ) -> List[Dict]:
-        """Get income statement data"""
+        """Get income statement data → /stable/income-statement?symbol=AAPL"""
         return await self._make_request(
-            "income-statement/" + symbol, params={"period": period, "limit": limit}
+            "income-statement", params={"symbol": symbol, "period": period, "limit": limit}
         )
 
     async def get_income_statement_ttm(self, symbol: str) -> List[Dict]:
-        """Get TTM income statement"""
+        """Get TTM income statement → /stable/income-statement-ttm?symbol=AAPL"""
         return await self._make_request(
-            "income-statement-ttm",
-            params={"symbol": symbol, "limit": 1},
-            version="stable",
+            "income-statement-ttm", params={"symbol": symbol, "limit": 1}
         )
 
     async def get_balance_sheet(
         self, symbol: str, period: str = "annual", limit: int = 5
     ) -> List[Dict]:
-        """Get balance sheet data"""
+        """Get balance sheet data → /stable/balance-sheet-statement?symbol=AAPL"""
         return await self._make_request(
-            f"balance-sheet-statement/{symbol}",
-            params={"period": period, "limit": limit},
+            "balance-sheet-statement",
+            params={"symbol": symbol, "period": period, "limit": limit},
         )
 
     async def get_balance_sheet_ttm(self, symbol: str) -> List[Dict]:
-        """Get TTM balance sheet"""
+        """Get TTM balance sheet → /stable/balance-sheet-statement-ttm?symbol=AAPL"""
         return await self._make_request(
-            "balance-sheet-statement-ttm",
-            params={"symbol": symbol, "limit": 1},
-            version="stable",
+            "balance-sheet-statement-ttm", params={"symbol": symbol, "limit": 1}
         )
 
     async def get_cash_flow(
         self, symbol: str, period: str = "annual", limit: int = 5
     ) -> List[Dict]:
-        """Get cash flow statement"""
+        """Get cash flow statement → /stable/cash-flow-statement?symbol=AAPL"""
         return await self._make_request(
-            f"cash-flow-statement/{symbol}", params={"period": period, "limit": limit}
+            "cash-flow-statement", params={"symbol": symbol, "period": period, "limit": limit}
         )
 
     async def get_cash_flow_ttm(self, symbol: str) -> List[Dict]:
-        """Get TTM cash flow"""
+        """Get TTM cash flow → /stable/cash-flow-statement-ttm?symbol=AAPL"""
         return await self._make_request(
-            "cash-flow-statement-ttm",
-            params={"symbol": symbol, "limit": 1},
-            version="stable",
+            "cash-flow-statement-ttm", params={"symbol": symbol, "limit": 1}
         )
 
-    # Key Metrics & Ratios
+    # ── Key Metrics & Ratios ───────────────────────────────────────────
+
     async def get_key_metrics(
         self, symbol: str, period: str = "annual", limit: int = 5
     ) -> List[Dict]:
-        """Get key financial metrics"""
+        """Get key financial metrics → /stable/key-metrics?symbol=AAPL"""
         return await self._make_request(
-            f"key-metrics/{symbol}", params={"period": period, "limit": limit}
+            "key-metrics", params={"symbol": symbol, "period": period, "limit": limit}
         )
 
     async def get_key_metrics_ttm(self, symbol: str) -> List[Dict]:
-        """Get TTM key metrics"""
-        return await self._make_request(f"key-metrics-ttm/{symbol}")
+        """Get TTM key metrics → /stable/key-metrics-ttm?symbol=AAPL"""
+        return await self._make_request(
+            "key-metrics-ttm", params={"symbol": symbol, "limit": 1}
+        )
 
     async def get_financial_ratios(
         self, symbol: str, period: str = "annual", limit: int = 5
     ) -> List[Dict]:
-        """Get financial ratios"""
-        # Use stable version which has operatingCashFlowRatio
+        """Get financial ratios → /stable/ratios?symbol=AAPL"""
         return await self._make_request(
-            "ratios",
-            params={"symbol": symbol, "period": period, "limit": limit},
-            version="stable",
+            "ratios", params={"symbol": symbol, "period": period, "limit": limit}
         )
 
     async def get_ratios_ttm(self, symbol: str) -> List[Dict]:
-        """Get TTM financial ratios"""
-        # Use stable version for consistency
+        """Get TTM financial ratios → /stable/ratios-ttm?symbol=AAPL"""
         return await self._make_request(
-            "ratios-ttm", params={"symbol": symbol}, version="stable"
+            "ratios-ttm", params={"symbol": symbol, "limit": 1}
         )
 
-    # Growth Metrics
+    # ── Growth Metrics ─────────────────────────────────────────────────
+
     async def get_financial_growth(
         self, symbol: str, period: str = "annual", limit: int = 5
     ) -> List[Dict]:
-        """Get financial statement growth"""
+        """Get financial statement growth → /stable/financial-growth?symbol=AAPL"""
         return await self._make_request(
-            f"financial-growth/{symbol}", params={"period": period, "limit": limit}
+            "financial-growth", params={"symbol": symbol, "period": period, "limit": limit}
         )
 
     async def get_income_statement_growth(
         self, symbol: str, period: str = "annual", limit: int = 5
     ) -> List[Dict]:
-        """Get income statement growth rates"""
+        """Get income statement growth → /stable/income-statement-growth?symbol=AAPL"""
         return await self._make_request(
-            f"income-statement-growth/{symbol}",
-            params={"period": period, "limit": limit},
+            "income-statement-growth",
+            params={"symbol": symbol, "period": period, "limit": limit},
         )
 
     async def get_balance_sheet_growth(
         self, symbol: str, period: str = "annual", limit: int = 5
     ) -> List[Dict]:
-        """Get balance sheet growth rates"""
+        """Get balance sheet growth → /stable/balance-sheet-statement-growth?symbol=AAPL"""
         return await self._make_request(
-            f"balance-sheet-growth/{symbol}", params={"period": period, "limit": limit}
+            "balance-sheet-statement-growth",
+            params={"symbol": symbol, "period": period, "limit": limit},
         )
 
     async def get_cash_flow_growth(
         self, symbol: str, period: str = "annual", limit: int = 5
     ) -> List[Dict]:
-        """Get cash flow growth rates"""
+        """Get cash flow growth → /stable/cash-flow-statement-growth?symbol=AAPL"""
         return await self._make_request(
-            f"cash-flow-growth/{symbol}", params={"period": period, "limit": limit}
+            "cash-flow-statement-growth",
+            params={"symbol": symbol, "period": period, "limit": limit},
         )
 
-    # Valuation
+    # ── Valuation ──────────────────────────────────────────────────────
+
     async def get_dcf(self, symbol: str) -> List[Dict]:
-        """Get DCF valuation"""
-        return await self._make_request(f"discounted-cash-flow/{symbol}")
+        """Get DCF valuation → /stable/discounted-cash-flow?symbol=AAPL"""
+        return await self._make_request(
+            "discounted-cash-flow", params={"symbol": symbol}
+        )
 
     async def get_historical_dcf(
         self, symbol: str, period: str = "annual", limit: int = 5
     ) -> List[Dict]:
-        """Get historical DCF valuations"""
+        """Get historical DCF valuations (may not be available in stable API)"""
         return await self._make_request(
-            f"historical-discounted-cash-flow/{symbol}",
-            params={"period": period, "limit": limit},
+            "historical-discounted-cash-flow",
+            params={"symbol": symbol, "period": period, "limit": limit},
         )
 
     async def get_custom_dcf(
@@ -340,39 +343,39 @@ class FMPClient:
         return await self._make_request(
             "custom-discounted-cash-flow",
             params=params,
-            version="stable",
             use_cache=False,  # Don't cache custom DCF results
         )
 
     async def get_enterprise_value(
         self, symbol: str, period: str = "annual", limit: int = 5
     ) -> List[Dict]:
-        """Get enterprise value"""
+        """Get enterprise value → /stable/enterprise-values?symbol=AAPL"""
         return await self._make_request(
-            f"enterprise-values/{symbol}", params={"period": period, "limit": limit}
+            "enterprise-values", params={"symbol": symbol, "period": period, "limit": limit}
         )
 
-    # Company Information
+    # ── Company Information ────────────────────────────────────────────
+
     async def get_profile(self, symbol: str) -> List[Dict]:
-        """Get company profile"""
-        return await self._make_request(f"profile/{symbol}")
+        """Get company profile → /stable/profile?symbol=AAPL"""
+        return await self._make_request("profile", params={"symbol": symbol})
 
     async def get_market_cap(self, symbol: str) -> List[Dict]:
-        """Get current market capitalization"""
-        return await self._make_request(f"market-capitalization/{symbol}")
+        """Get current market capitalization → /stable/market-capitalization?symbol=AAPL"""
+        return await self._make_request("market-capitalization", params={"symbol": symbol})
 
     async def get_historical_market_cap(
         self, symbol: str, limit: int = 100
     ) -> List[Dict]:
-        """Get historical market cap"""
+        """Get historical market cap → /stable/historical-market-capitalization?symbol=AAPL"""
         return await self._make_request(
-            f"historical-market-capitalization/{symbol}", params={"limit": limit}
+            "historical-market-capitalization", params={"symbol": symbol, "limit": limit}
         )
 
     async def get_stock_peers(self, symbol: str) -> List[str]:
-        """Get peer companies list"""
+        """Get peer companies list → /stable/stock-peers?symbol=AAPL"""
         response = await self._make_request(
-            "stock_peers", params={"symbol": symbol}, version="v4"
+            "stock-peers", params={"symbol": symbol}
         )
         # Extract the actual peer list from the API response
         if response and len(response) > 0 and isinstance(response[0], dict):
@@ -380,69 +383,71 @@ class FMPClient:
                 return response[0]["peersList"]
         return []
 
-    # Ownership & Capital Structure
+    # ── Ownership & Capital Structure ──────────────────────────────────
+
     async def get_insider_trades(self, symbol: str, limit: int = 100) -> List[Dict]:
-        """Get insider trading transactions (SEC Form 4 filings)"""
+        """Get insider trading transactions (SEC Form 4 filings)
+        → /stable/insider-trading/search?symbol=AAPL"""
         return await self._make_request(
-            "insider-trading/search",
-            params={"symbol": symbol, "limit": limit},
-            version="stable",
+            "insider-trading/search", params={"symbol": symbol, "limit": limit}
         )
 
     async def get_insider_trade_stats(self, symbol: str) -> List[Dict]:
-        """Get aggregate insider trading statistics (buy/sell totals)"""
+        """Get aggregate insider trading statistics (buy/sell totals)
+        → /stable/insider-trading/statistics?symbol=AAPL"""
         return await self._make_request(
-            "insider-trading/statistics", params={"symbol": symbol}, version="stable"
+            "insider-trading/statistics", params={"symbol": symbol}
         )
 
     async def get_dividends(self, symbol: str) -> List[Dict]:
-        """Get historical dividend payments"""
-        return await self._make_request(
-            "dividends", params={"symbol": symbol}, version="stable"
-        )
+        """Get historical dividend payments → /stable/dividends?symbol=AAPL"""
+        return await self._make_request("dividends", params={"symbol": symbol})
 
     async def get_splits(self, symbol: str) -> List[Dict]:
-        """Get historical stock splits"""
-        return await self._make_request(
-            "splits", params={"symbol": symbol}, version="stable"
-        )
+        """Get historical stock splits → /stable/splits?symbol=AAPL"""
+        return await self._make_request("splits", params={"symbol": symbol})
 
     async def get_shares_float(self, symbol: str) -> List[Dict]:
-        """Get shares float, outstanding shares, and float percentage"""
-        return await self._make_request(
-            "shares-float", params={"symbol": symbol}, version="stable"
-        )
+        """Get shares float → /stable/shares-float?symbol=AAPL"""
+        return await self._make_request("shares-float", params={"symbol": symbol})
 
     async def get_key_executives(self, symbol: str) -> List[Dict]:
-        """Get key executives with title and compensation"""
-        return await self._make_request(
-            "key-executives", params={"symbol": symbol}, version="stable"
-        )
+        """Get key executives → /stable/key-executives?symbol=AAPL"""
+        return await self._make_request("key-executives", params={"symbol": symbol})
 
-    # Analyst Data
+    # ── Analyst Data ───────────────────────────────────────────────────
+
     async def get_analyst_estimates(
         self, symbol: str, period: str = "annual", limit: int = 5
     ) -> List[Dict]:
-        """Get analyst estimates"""
+        """Get analyst estimates → /stable/analyst-estimates?symbol=AAPL"""
         return await self._make_request(
-            f"analyst-estimates/{symbol}", params={"period": period, "limit": limit}
+            "analyst-estimates", params={"symbol": symbol, "period": period, "limit": limit}
         )
 
     async def get_price_target(self, symbol: str) -> List[Dict]:
-        """Get analyst price targets"""
-        return await self._make_request(f"price-target/{symbol}", version="v4")
+        """Get analyst price targets (alias for price-target-summary)
+        → /stable/price-target-summary?symbol=AAPL"""
+        return await self._make_request(
+            "price-target-summary", params={"symbol": symbol}
+        )
 
     async def get_price_target_summary(self, symbol: str) -> List[Dict]:
-        """Get price target consensus"""
-        return await self._make_request(f"price-target-summary/{symbol}", version="v4")
+        """Get price target summary → /stable/price-target-summary?symbol=AAPL"""
+        return await self._make_request(
+            "price-target-summary", params={"symbol": symbol}
+        )
 
     async def get_rating(self, symbol: str) -> List[Dict]:
-        """Get stock rating"""
-        return await self._make_request(f"rating/{symbol}")
+        """Get stock rating (alias for ratings-snapshot)
+        → /stable/ratings-snapshot?symbol=AAPL"""
+        return await self._make_request(
+            "ratings-snapshot", params={"symbol": symbol}
+        )
 
     async def get_ratings_snapshot(self, symbol: str) -> List[Dict]:
         """
-        Get comprehensive financial ratings snapshot
+        Get comprehensive financial ratings snapshot → /stable/ratings-snapshot?symbol=AAPL
 
         Provides ratings based on key financial ratios including:
         - Overall score
@@ -452,379 +457,232 @@ class FMPClient:
         - Debt to equity score
         - Price to earnings score
         - Price to book score
-
-        Returns:
-            List with rating snapshot data
         """
         return await self._make_request(
-            "ratings-snapshot", params={"symbol": symbol}, version="stable"
+            "ratings-snapshot", params={"symbol": symbol}
         )
 
     async def get_price_target_consensus(self, symbol: str) -> List[Dict]:
         """
-        Get analyst price target consensus
+        Get analyst price target consensus → /stable/price-target-consensus?symbol=AAPL
 
         Provides high, low, median, and consensus price targets from analysts.
-
-        Returns:
-            List with consensus price target data
         """
         return await self._make_request(
-            "price-target-consensus", params={"symbol": symbol}, version="stable"
+            "price-target-consensus", params={"symbol": symbol}
         )
 
     async def get_stock_grades(self, symbol: str, limit: int = 100) -> List[Dict]:
         """
-        Get latest stock grades from analysts
+        Get latest stock grades from analysts → /stable/grades?symbol=AAPL
 
         Track analyst grading actions (upgrades, downgrades, maintained ratings)
         from various financial institutions over time.
-
-        Args:
-            symbol: Stock ticker symbol
-            limit: Number of grade records to return (default 100)
-
-        Returns:
-            List of grade records with date, grading company, previous/new grade, action
         """
         return await self._make_request(
-            "grades", params={"symbol": symbol, "limit": limit}, version="stable"
+            "grades", params={"symbol": symbol, "limit": limit}
         )
 
     async def get_grades_summary(self, symbol: str) -> List[Dict]:
         """
-        Get consolidated analyst ratings summary
+        Get consolidated analyst ratings summary → /stable/grades-consensus?symbol=AAPL
 
         Provides a summary of analyst sentiment with counts for:
-        - Strong buy
-        - Buy
-        - Hold
-        - Sell
-        - Strong sell
+        - Strong buy, Buy, Hold, Sell, Strong sell
         - Overall consensus rating
-
-        Returns:
-            List with grades summary data
         """
         return await self._make_request(
-            "grades-consensus", params={"symbol": symbol}, version="stable"
+            "grades-consensus", params={"symbol": symbol}
         )
 
     async def get_earnings_report(self, symbol: str, limit: int = 100) -> List[Dict]:
         """
-        Get earnings report information
+        Get earnings report information → /stable/earnings?symbol=AAPL
 
         Retrieves earnings data including:
         - Earnings report dates
         - EPS estimates and actuals
         - Revenue estimates and actuals
         - Earnings surprises
-
-        Args:
-            symbol: Stock ticker symbol
-            limit: Maximum number of earnings records to return (default 100)
-
-        Returns:
-            List of earnings report data
         """
         return await self._make_request(
-            "earnings", params={"symbol": symbol, "limit": limit}, version="stable"
+            "earnings", params={"symbol": symbol, "limit": limit}
         )
 
     async def get_earnings_call_transcript(
         self, symbol: str, year: int, quarter: int
     ) -> List[Dict]:
         """
-        Get earnings call transcript
+        Get earnings call transcript → /stable/earning-call-transcript?symbol=AAPL&year=2020&quarter=3
 
         Retrieves the full transcript of a company's earnings call, including
-        management's prepared remarks and Q&A session. Access management's
-        communication about financial performance, future plans, and strategy.
-
-        Args:
-            symbol: Stock ticker symbol
-            year: Fiscal year (e.g., 2020) - REQUIRED
-            quarter: Fiscal quarter (1, 2, 3, or 4) - REQUIRED
-
-        Returns:
-            List of transcript objects with:
-            - symbol: Stock ticker
-            - period: Fiscal period (e.g., "Q3")
-            - year: Fiscal year
-            - date: Earnings call date
-            - content: Full transcript text
-
-        Example:
-            # Get Q3 2020 transcript for Apple
-            transcript = await client.get_earnings_call_transcript("AAPL", year=2020, quarter=3)
+        management's prepared remarks and Q&A session.
         """
-        params = {"symbol": symbol, "year": year, "quarter": quarter}
-
         return await self._make_request(
-            "earning-call-transcript", params=params, version="stable"
+            "earning-call-transcript",
+            params={"symbol": symbol, "year": year, "quarter": quarter},
         )
 
     async def get_earnings_call_dates(self, symbol: str) -> List[List]:
         """
         Get all available earnings call dates for a symbol.
+        → /stable/earning-call-transcript-dates?symbol=AAPL
 
         Returns a list of all earnings call transcripts with their dates,
         allowing date-based matching rather than fiscal year/quarter guessing.
-
-        Args:
-            symbol: Stock ticker symbol
-
-        Returns:
-            List of [quarter, fiscal_year, call_datetime] lists
-            e.g., [[3, 2026, "2025-11-19 17:00:00"], [2, 2026, "2025-08-27 17:00:00"], ...]
-
-        Example:
-            # Get all transcript dates for NVIDIA
-            dates = await client.get_earnings_call_dates("NVDA")
-            # Returns: [[3, 2026, "2025-11-19 17:00:00"], ...]
         """
         return await self._make_request(
-            "earning_call_transcript", params={"symbol": symbol}, version="v4"
+            "earning-call-transcript-dates", params={"symbol": symbol}
         )
 
     async def get_sec_filings(
         self, symbol: str, filing_type: Optional[str] = None, limit: int = 20
     ) -> List[Dict]:
         """
-        Get SEC filings for a company.
+        Get SEC filings for a company → /stable/sec-filings-search/symbol?symbol=AAPL
 
         Retrieves SEC filings including 10-K (annual), 10-Q (quarterly),
         8-K (current reports), and other filing types.
-
-        Args:
-            symbol: Stock ticker symbol
-            filing_type: Filter by filing type (e.g., "10-K", "10-Q", "8-K")
-            limit: Maximum number of filings to return (default 20)
-
-        Returns:
-            List of filing objects with:
-            - symbol: Stock ticker
-            - fillingDate: Filing date
-            - acceptedDate: SEC acceptance timestamp
-            - type: Filing type (10-K, 10-Q, etc.)
-            - link: SEC filing index link
-            - finalLink: Direct link to filing document
-
-        Example:
-            # Get latest 10-Q filings
-            filings = await client.get_sec_filings("NVDA", filing_type="10-Q", limit=5)
         """
-        params = {"limit": limit}
+        params: Dict[str, Any] = {"symbol": symbol, "limit": limit}
         if filing_type:
-            params["type"] = filing_type
+            params["formType"] = filing_type
 
-        return await self._make_request(
-            f"sec_filings/{symbol}", params=params, version="v3"
-        )
+        return await self._make_request("sec-filings-search/symbol", params=params)
 
     async def get_historical_earnings_calendar(
         self, symbol: str, limit: int = 20
     ) -> List[Dict]:
         """
         Get historical and upcoming earnings calendar for a symbol.
+        → /stable/earnings?symbol=AAPL
 
         Provides earnings announcement dates with fiscal period end dates,
         enabling accurate fiscal period identification.
-
-        Args:
-            symbol: Stock ticker symbol
-            limit: Maximum number of records (default 20)
-
-        Returns:
-            List of earnings calendar objects with:
-            - date: Earnings announcement date
-            - fiscalDateEnding: Fiscal period end date
-            - time: "amc" (after market close) or "bmo" (before market open)
-            - eps: Actual EPS (None if not yet reported)
-            - epsEstimated: Estimated EPS
-            - revenue: Actual revenue (None if not yet reported)
-            - revenueEstimated: Estimated revenue
-
-        Example:
-            # Get earnings calendar including next report
-            calendar = await client.get_historical_earnings_calendar("NVDA")
-            # First entry with eps=None is the next upcoming report
         """
         result = await self._make_request(
-            f"historical/earning_calendar/{symbol}", version="v3"
+            "earnings", params={"symbol": symbol}
         )
         if result and limit:
             return result[:limit]
         return result
 
-    # Financial Scores
-    async def get_financial_score(self, symbol: str) -> List[Dict]:
-        """Get financial health scores (Altman Z, Piotroski)"""
-        return await self._make_request(f"score/{symbol}", version="v4")
+    # ── Financial Scores ───────────────────────────────────────────────
 
-    # Revenue Segmentation
+    async def get_financial_score(self, symbol: str) -> List[Dict]:
+        """Get financial health scores (Altman Z, Piotroski)
+        → /stable/financial-scores?symbol=AAPL"""
+        return await self._make_request("financial-scores", params={"symbol": symbol})
+
+    # ── Revenue Segmentation ───────────────────────────────────────────
+
     async def get_revenue_product_segmentation(
         self, symbol: str, period: str = "annual", structure: str = "flat"
     ) -> List[Dict]:
-        """Get revenue breakdown by product"""
+        """Get revenue breakdown by product
+        → /stable/revenue-product-segmentation?symbol=AAPL"""
         return await self._make_request(
             "revenue-product-segmentation",
             params={"symbol": symbol, "period": period, "structure": structure},
-            version="v4",
         )
 
     async def get_revenue_geographic_segmentation(
         self, symbol: str, period: str = "annual", structure: str = "flat"
     ) -> List[Dict]:
-        """Get revenue breakdown by geography"""
+        """Get revenue breakdown by geography
+        → /stable/revenue-geographic-segmentation?symbol=AAPL"""
         return await self._make_request(
             "revenue-geographic-segmentation",
             params={"symbol": symbol, "period": period, "structure": structure},
-            version="v4",
         )
 
-    # Real-Time Quotes
+    # ── Real-Time Quotes ───────────────────────────────────────────────
+
     async def get_quote(self, symbol: str) -> List[Dict]:
         """
-        Get real-time stock quote
+        Get real-time stock quote → /stable/quote?symbol=AAPL
 
         Provides current market data including price, volume, bid/ask, and daily changes.
         Updated in real-time during market hours.
-
-        Args:
-            symbol: Stock ticker symbol
-
-        Returns:
-            List with real-time quote data including price, volume, dayLow, dayHigh,
-            yearLow, yearHigh, marketCap, priceAvg50, priceAvg200, volume, avgVolume,
-            open, previousClose, eps, pe, earningsAnnouncement, sharesOutstanding, timestamp
         """
-        return await self._make_request(f"quote/{symbol}", use_cache=False)
+        return await self._make_request("quote", params={"symbol": symbol}, use_cache=False)
 
     async def get_aftermarket_quote(self, symbol: str) -> List[Dict]:
         """
         Get after-market quote (post-market hours)
+        → /stable/aftermarket-quote?symbol=AAPL
 
         Provides post-market trading data including price, volume, and bid/ask
         during after-hours trading sessions (typically 4:00 PM - 8:00 PM ET).
-
-        Args:
-            symbol: Stock ticker symbol
-
-        Returns:
-            List with after-market quote data
         """
         return await self._make_request(
-            "aftermarket-quote",
-            params={"symbol": symbol},
-            version="stable",
-            use_cache=False,
+            "aftermarket-quote", params={"symbol": symbol}, use_cache=False
         )
 
     async def get_stock_price_change(self, symbol: str) -> List[Dict]:
         """
         Get stock price changes over multiple time periods
+        → /stable/stock-price-change?symbol=AAPL
 
-        Tracks stock price fluctuations in real-time across various time periods
-        including daily, weekly, monthly, and long-term performance. Provides
-        percentage and absolute value changes for quick growth assessment.
-
-        Args:
-            symbol: Stock ticker symbol
-
-        Returns:
-            List with price change data including:
-            - symbol: Stock ticker
-            - 1D: 1 day change
-            - 5D: 5 day change
-            - 1M: 1 month change
-            - 3M: 3 month change
-            - 6M: 6 month change
-            - ytd: Year to date change
-            - 1Y: 1 year change
-            - 3Y: 3 year change
-            - 5Y: 5 year change
-            - 10Y: 10 year change
-            - max: Maximum available period change
-
-        Example:
-            # Get price changes for Apple
-            changes = await client.get_stock_price_change("AAPL")
+        Tracks stock price fluctuations across various time periods
+        including 1D, 5D, 1M, 3M, 6M, YTD, 1Y, 3Y, 5Y, 10Y, max.
         """
         return await self._make_request(
-            "stock-price-change", params={"symbol": symbol}, version="stable"
+            "stock-price-change", params={"symbol": symbol}
         )
 
-    # Batch Operations
+    # ── Batch Operations ───────────────────────────────────────────────
+
     async def get_batch_profiles(self, symbols: List[str]) -> List[Dict]:
-        """Get profiles for multiple companies"""
+        """Get profiles for multiple companies → /stable/profile?symbol=AAPL,MSFT"""
         symbol_str = ",".join(symbols)
-        return await self._make_request(f"profile/{symbol_str}")
+        return await self._make_request("profile", params={"symbol": symbol_str})
 
     async def get_batch_quotes(self, symbols: List[str]) -> List[Dict]:
-        """Get quotes for multiple companies"""
+        """Get quotes for multiple companies → /stable/batch-quote?symbols=AAPL,MSFT"""
         symbol_str = ",".join(symbols)
-        return await self._make_request(f"quote/{symbol_str}")
+        return await self._make_request("batch-quote", params={"symbols": symbol_str})
 
     async def get_batch_market_cap(self, symbols: List[str]) -> Dict:
-        """Get market cap for multiple companies"""
+        """Get market cap for multiple companies
+        → /stable/market-capitalization-batch?symbols=AAPL,MSFT"""
         return await self._make_request(
-            "market-capitalization", params={"symbol": ",".join(symbols)}, version="v4"
+            "market-capitalization-batch", params={"symbols": ",".join(symbols)}
         )
 
-    # News & Press Releases
+    # ── News & Press Releases ──────────────────────────────────────────
+
     async def get_fmp_articles(self, limit: int = 10, page: int = 0) -> List[Dict]:
         """
-        Get latest FMP articles
-
-        Args:
-            limit: Number of articles to return (default 10)
-            page: Page number for pagination (default 0)
-
-        Returns:
-            List of article objects with title, date, content, tickers, image, link, author, site
+        Get latest FMP articles → /stable/fmp-articles?page=0&limit=10
         """
         result = await self._make_request(
-            "fmp-articles", params={"limit": limit, "page": page}, version="stable"
+            "fmp-articles", params={"limit": limit, "page": page}
         )
-        # FMP API may ignore limit parameter, enforce it client-side
         return result[:limit] if isinstance(result, list) else result
 
     async def get_general_news(self, limit: int = 10, page: int = 0) -> List[Dict]:
         """
-        Get latest general news articles from various sources
-
-        Args:
-            limit: Number of articles to return (default 10)
-            page: Page number for pagination (default 0)
-
-        Returns:
-            List of news objects with symbol, publishedDate, publisher, title, image, site, text, url
+        Get latest general news articles → /stable/news/general-latest?page=0&limit=10
         """
         result = await self._make_request(
-            "news/general-latest",
-            params={"limit": limit, "page": page},
-            version="stable",
+            "news/general-latest", params={"limit": limit, "page": page}
         )
-        # FMP API may ignore limit parameter, enforce it client-side
         return result[:limit] if isinstance(result, list) else result
 
     async def get_stock_news(
         self, tickers: str, limit: int = 20, page: int = 0
     ) -> List[Dict]:
         """
-        Get stock-specific news articles
+        Get stock-specific news articles → /stable/news/stock?symbols=AAPL,MSFT
 
         Args:
             tickers: Comma-separated ticker symbols (e.g. "AAPL,MSFT")
             limit: Number of articles to return (default 20)
             page: Page number for pagination (default 0)
-
-        Returns:
-            List of news objects with symbol, publishedDate, title, image, site, text, url
         """
         result = await self._make_request(
-            "stock_news", params={"tickers": tickers, "limit": limit, "page": page}
+            "news/stock", params={"symbols": tickers, "limit": limit, "page": page}
         )
         return result[:limit] if isinstance(result, list) else result
 
@@ -832,47 +690,44 @@ class FMPClient:
         self, symbol: str, limit: int = 10, page: int = 0
     ) -> List[Dict]:
         """
-        Get company press releases
+        Get company press releases → /stable/news/press-releases?symbols=AAPL
 
         Args:
             symbol: Stock ticker symbol
             limit: Number of press releases to return (default 10)
             page: Page number for pagination (default 0)
-
-        Returns:
-            List of press release objects with symbol, date, title, text
         """
         result = await self._make_request(
-            f"press-releases/{symbol}", params={"limit": limit, "page": page}
+            "news/press-releases", params={"symbols": symbol, "limit": limit, "page": page}
         )
-        # FMP API may ignore limit parameter, enforce it client-side
         return result[:limit] if isinstance(result, list) else result
 
-    # Hot lists
+    # ── Hot Lists ──────────────────────────────────────────────────────
+
     async def get_biggest_losers(self, limit: int = 50) -> List[Dict]:
-        """Get biggest losers list from stable endpoint"""
-        result = await self._make_request("biggest-losers", version="stable")
+        """Get biggest losers list → /stable/biggest-losers"""
+        result = await self._make_request("biggest-losers")
         return result[:limit] if isinstance(result, list) else result
 
     async def get_most_actives(self, limit: int = 50) -> List[Dict]:
-        """Get most actives list from stable endpoint"""
-        result = await self._make_request("most-actives", version="stable")
+        """Get most actives list → /stable/most-actives"""
+        result = await self._make_request("most-actives")
         return result[:limit] if isinstance(result, list) else result
 
     async def get_biggest_gainers(self, limit: int = 50) -> List[Dict]:
-        """Get biggest gainers list from stable endpoint"""
-        result = await self._make_request("biggest-gainers", version="stable")
+        """Get biggest gainers list → /stable/biggest-gainers"""
+        result = await self._make_request("biggest-gainers")
         return result[:limit] if isinstance(result, list) else result
 
-    # Company Screener
-    async def get_company_screener(self, **filters) -> List[Dict]:
-        """Screen stocks using FMP company screener"""
-        params = {k: v for k, v in filters.items() if v is not None}
-        return await self._make_request(
-            "company-screener", params=params, version="stable"
-        )
+    # ── Company Screener ───────────────────────────────────────────────
 
-    # Technical Indicators
+    async def get_company_screener(self, **filters) -> List[Dict]:
+        """Screen stocks using FMP company screener → /stable/company-screener"""
+        params = {k: v for k, v in filters.items() if v is not None}
+        return await self._make_request("company-screener", params=params)
+
+    # ── Technical Indicators ───────────────────────────────────────────
+
     async def get_sma(
         self,
         symbol: str,
@@ -883,20 +738,10 @@ class FMPClient:
     ) -> List[Dict]:
         """
         Get Simple Moving Average (SMA) indicator data
-
-        Args:
-            symbol: Stock ticker symbol
-            period_length: SMA period (e.g., 5, 20, 60)
-            from_date: Start date (YYYY-MM-DD format or date object)
-            to_date: End date (YYYY-MM-DD format or date object)
-            timeframe: Timeframe for calculation (default "1day")
-
-        Returns:
-            List of SMA data points with date, open, high, low, close, volume, sma
+        → /stable/technical-indicators/sma?symbol=AAPL&periodLength=10&timeframe=1day
         """
         from datetime import date, timedelta
 
-        # Set default dates if not provided - increased to 500 days for better backtest coverage
         if from_date is None:
             from_date = (date.today() - timedelta(days=500)).isoformat()
         elif isinstance(from_date, date):
@@ -915,9 +760,7 @@ class FMPClient:
             "to": to_date,
         }
 
-        return await self._make_request(
-            "technical-indicators/sma", params=params, version="stable"
-        )
+        return await self._make_request("technical-indicators/sma", params=params)
 
     async def get_technical_indicator(
         self,
@@ -930,17 +773,7 @@ class FMPClient:
     ) -> List[Dict]:
         """
         Get technical indicator data (RSI, EMA, MACD, ADX, WMA, DEMA, TEMA, Williams %R, StdDev)
-
-        Args:
-            symbol: Stock ticker symbol
-            indicator: Indicator name (e.g., "rsi", "ema", "macd", "adx", "wma", "dema", "tema", "williams", "standardDeviation")
-            period: Indicator period length (default 14)
-            timeframe: Timeframe for calculation (default "1day")
-            from_date: Start date (YYYY-MM-DD)
-            to_date: End date (YYYY-MM-DD)
-
-        Returns:
-            List of indicator data points
+        → /stable/technical-indicators/{indicator}?symbol=AAPL&periodLength=14&timeframe=1day
         """
         from datetime import date
 
@@ -963,8 +796,10 @@ class FMPClient:
         }
 
         return await self._make_request(
-            f"technical-indicators/{indicator}", params=params, version="stable"
+            f"technical-indicators/{indicator}", params=params
         )
+
+    # ── Historical Price Data ──────────────────────────────────────────
 
     async def get_stock_price(
         self,
@@ -974,18 +809,10 @@ class FMPClient:
     ) -> List[Dict]:
         """
         Get historical stock price data (OHLCV)
-
-        Args:
-            symbol: Stock ticker symbol
-            from_date: Start date (YYYY-MM-DD format or date object)
-            to_date: End date (YYYY-MM-DD format or date object)
-
-        Returns:
-            List of historical price data with date, open, high, low, close, volume
+        → /stable/historical-price-eod/full?symbol=AAPL
         """
         from datetime import date, timedelta
 
-        # Set default dates if not provided - increased to 500 days for better backtest coverage
         if from_date is None:
             from_date = (date.today() - timedelta(days=500)).isoformat()
         elif isinstance(from_date, date):
@@ -998,9 +825,7 @@ class FMPClient:
 
         params = {"symbol": symbol, "from": from_date, "to": to_date}
 
-        return await self._make_request(
-            "historical-price-eod/full", params=params, version="stable"
-        )
+        return await self._make_request("historical-price-eod/full", params=params)
 
     async def get_intraday_chart(
         self,
@@ -1010,23 +835,9 @@ class FMPClient:
         to_date: Optional[str] = None,
     ) -> List[Dict]:
         """
-        Get intraday stock chart data with 1-minute intervals
+        Get intraday stock chart data → /stable/historical-chart/{interval}?symbol=AAPL
 
         Retrieves historical intraday OHLCV data at various time intervals.
-        Useful for detailed technical analysis and intraday trading patterns.
-
-        Args:
-            symbol: Stock ticker symbol
-            interval: Time interval - one of: '1min', '5min', '15min', '30min', '1hour', '4hour'
-            from_date: Start date (YYYY-MM-DD format)
-            to_date: End date (YYYY-MM-DD format)
-
-        Returns:
-            List of intraday price data with date, open, high, low, close, volume
-
-        Example:
-            # Get 5-minute intraday data for Apple
-            data = await client.get_intraday_chart("AAPL", "5min", from_date="2024-01-01", to_date="2024-01-31")
         """
         params = {"symbol": symbol}
 
@@ -1035,9 +846,9 @@ class FMPClient:
         if to_date:
             params["to"] = to_date
 
-        return await self._make_request(
-            f"historical-chart/{interval}", params=params, version="stable"
-        )
+        return await self._make_request(f"historical-chart/{interval}", params=params)
+
+    # ── Commodity Data ─────────────────────────────────────────────────
 
     async def get_commodity_price(
         self,
@@ -1047,22 +858,10 @@ class FMPClient:
     ) -> List[Dict]:
         """
         Get historical commodity price data (OHLCV)
-
-        Args:
-            symbol: Commodity symbol (e.g., 'GCUSD' for Gold, 'SIUSD' for Silver, 'CLUSD' for Crude Oil)
-            from_date: Start date (YYYY-MM-DD format or date object)
-            to_date: End date (YYYY-MM-DD format or date object)
-
-        Returns:
-            List of historical price data with date, open, high, low, close, volume
-
-        Example:
-            # Get gold price history
-            data = await client.get_commodity_price("GCUSD", from_date="2024-01-01", to_date="2024-12-31")
+        → /stable/historical-price-eod/full?symbol=GCUSD
         """
         from datetime import date, timedelta
 
-        # Set default dates if not provided - 500 days lookback for consistency with stocks
         if from_date is None:
             from_date = (date.today() - timedelta(days=500)).isoformat()
         elif isinstance(from_date, date):
@@ -1075,9 +874,7 @@ class FMPClient:
 
         params = {"symbol": symbol, "from": from_date, "to": to_date}
 
-        return await self._make_request(
-            "historical-price-eod/full", params=params, version="stable"
-        )
+        return await self._make_request("historical-price-eod/full", params=params)
 
     async def get_commodity_intraday_chart(
         self,
@@ -1086,25 +883,7 @@ class FMPClient:
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
     ) -> List[Dict]:
-        """
-        Get intraday commodity chart data
-
-        Retrieves historical intraday OHLCV data for commodities at various time intervals.
-        Useful for detailed technical analysis and short-term trading patterns.
-
-        Args:
-            symbol: Commodity symbol (e.g., 'GCUSD' for Gold, 'SIUSD' for Silver)
-            interval: Time interval - one of: '1min', '5min', '1hour'
-            from_date: Start date (YYYY-MM-DD format)
-            to_date: End date (YYYY-MM-DD format)
-
-        Returns:
-            List of intraday price data with date (timestamp), open, high, low, close, volume
-
-        Example:
-            # Get 5-minute intraday data for Gold
-            data = await client.get_commodity_intraday_chart("GCUSD", "5min", from_date="2024-01-01", to_date="2024-01-31")
-        """
+        """Get intraday commodity chart data → /stable/historical-chart/{interval}?symbol=GCUSD"""
         params = {"symbol": symbol}
 
         if from_date:
@@ -1112,9 +891,9 @@ class FMPClient:
         if to_date:
             params["to"] = to_date
 
-        return await self._make_request(
-            f"historical-chart/{interval}", params=params, version="stable"
-        )
+        return await self._make_request(f"historical-chart/{interval}", params=params)
+
+    # ── Crypto Data ────────────────────────────────────────────────────
 
     async def get_crypto_price(
         self,
@@ -1124,22 +903,10 @@ class FMPClient:
     ) -> List[Dict]:
         """
         Get historical cryptocurrency price data (OHLCV)
-
-        Args:
-            symbol: Cryptocurrency symbol (e.g., 'BTCUSD' for Bitcoin, 'ETHUSD' for Ethereum, 'SOLUSD' for Solana)
-            from_date: Start date (YYYY-MM-DD format or date object)
-            to_date: End date (YYYY-MM-DD format or date object)
-
-        Returns:
-            List of historical price data with date, open, high, low, close, volume
-
-        Example:
-            # Get Bitcoin price history
-            data = await client.get_crypto_price("BTCUSD", from_date="2024-01-01", to_date="2024-12-31")
+        → /stable/historical-price-eod/full?symbol=BTCUSD
         """
         from datetime import date, timedelta
 
-        # Set default dates if not provided - 500 days lookback for consistency
         if from_date is None:
             from_date = (date.today() - timedelta(days=500)).isoformat()
         elif isinstance(from_date, date):
@@ -1152,9 +919,7 @@ class FMPClient:
 
         params = {"symbol": symbol, "from": from_date, "to": to_date}
 
-        return await self._make_request(
-            "historical-price-eod/full", params=params, version="stable"
-        )
+        return await self._make_request("historical-price-eod/full", params=params)
 
     async def get_crypto_intraday_chart(
         self,
@@ -1163,25 +928,7 @@ class FMPClient:
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
     ) -> List[Dict]:
-        """
-        Get intraday cryptocurrency chart data
-
-        Retrieves historical intraday OHLCV data for cryptocurrencies at various time intervals.
-        Useful for detailed technical analysis and short-term trading patterns.
-
-        Args:
-            symbol: Cryptocurrency symbol (e.g., 'BTCUSD' for Bitcoin, 'ETHUSD' for Ethereum)
-            interval: Time interval - one of: '1min', '5min', '1hour'
-            from_date: Start date (YYYY-MM-DD format)
-            to_date: End date (YYYY-MM-DD format)
-
-        Returns:
-            List of intraday price data with date (timestamp), open, high, low, close, volume
-
-        Example:
-            # Get 5-minute intraday data for Bitcoin
-            data = await client.get_crypto_intraday_chart("BTCUSD", "5min", from_date="2024-01-01", to_date="2024-01-31")
-        """
+        """Get intraday cryptocurrency chart data → /stable/historical-chart/{interval}?symbol=BTCUSD"""
         params = {"symbol": symbol}
 
         if from_date:
@@ -1189,9 +936,9 @@ class FMPClient:
         if to_date:
             params["to"] = to_date
 
-        return await self._make_request(
-            f"historical-chart/{interval}", params=params, version="stable"
-        )
+        return await self._make_request(f"historical-chart/{interval}", params=params)
+
+    # ── Forex Data ─────────────────────────────────────────────────────
 
     async def get_forex_price(
         self,
@@ -1201,22 +948,10 @@ class FMPClient:
     ) -> List[Dict]:
         """
         Get historical forex price data (OHLCV)
-
-        Args:
-            symbol: Forex pair symbol (e.g., 'EURUSD', 'GBPUSD', 'USDJPY')
-            from_date: Start date (YYYY-MM-DD format or date object)
-            to_date: End date (YYYY-MM-DD format or date object)
-
-        Returns:
-            List of historical price data with date, open, high, low, close, volume
-
-        Example:
-            # Get EUR/USD price history
-            data = await client.get_forex_price("EURUSD", from_date="2024-01-01", to_date="2024-12-31")
+        → /stable/historical-price-eod/full?symbol=EURUSD
         """
         from datetime import date, timedelta
 
-        # Set default dates if not provided - 500 days lookback for consistency
         if from_date is None:
             from_date = (date.today() - timedelta(days=500)).isoformat()
         elif isinstance(from_date, date):
@@ -1229,9 +964,7 @@ class FMPClient:
 
         params = {"symbol": symbol, "from": from_date, "to": to_date}
 
-        return await self._make_request(
-            "historical-price-eod/full", params=params, version="stable"
-        )
+        return await self._make_request("historical-price-eod/full", params=params)
 
     async def get_forex_intraday_chart(
         self,
@@ -1240,25 +973,7 @@ class FMPClient:
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
     ) -> List[Dict]:
-        """
-        Get intraday forex chart data
-
-        Retrieves historical intraday OHLCV data for forex pairs at various time intervals.
-        Useful for detailed technical analysis and short-term trading patterns.
-
-        Args:
-            symbol: Forex pair symbol (e.g., 'EURUSD', 'GBPUSD', 'USDJPY')
-            interval: Time interval - one of: '1min', '5min', '1hour'
-            from_date: Start date (YYYY-MM-DD format)
-            to_date: End date (YYYY-MM-DD format)
-
-        Returns:
-            List of intraday price data with date (timestamp), open, high, low, close, volume
-
-        Example:
-            # Get 5-minute intraday data for EUR/USD
-            data = await client.get_forex_intraday_chart("EURUSD", "5min", from_date="2024-01-01", to_date="2024-01-31")
-        """
+        """Get intraday forex chart data → /stable/historical-chart/{interval}?symbol=EURUSD"""
         params = {"symbol": symbol}
 
         if from_date:
@@ -1266,107 +981,74 @@ class FMPClient:
         if to_date:
             params["to"] = to_date
 
-        return await self._make_request(
-            f"historical-chart/{interval}", params=params, version="stable"
-        )
+        return await self._make_request(f"historical-chart/{interval}", params=params)
 
-    # Stock Search
+    # ── Stock Search ───────────────────────────────────────────────────
+
     async def search_stocks(self, query: str, limit: int = 50) -> List[Dict]:
         """
         Search for stocks by symbol or company name.
-
-        Uses FMP API's search endpoint to find matching stocks based on keywords.
-        Searches both ticker symbols and company names.
-
-        Args:
-            query: Search query (e.g., "AAPL", "Apple", "Microsoft")
-            limit: Maximum number of results to return (default 50)
-
-        Returns:
-            List of stock search results with:
-            - symbol: Stock ticker symbol
-            - name: Company name
-            - currency: Currency code
-            - stockExchange: Stock exchange
-            - exchangeShortName: Short exchange name
-
-        Example:
-            # Search for Apple
-            results = await client.search_stocks("Apple", limit=10)
+        → /stable/search-symbol?query=AAPL (preferred for symbol search)
         """
         return await self._make_request(
-            "search",
+            "search-symbol",
             params={"query": query, "limit": limit},
-            use_cache=True,  # Cache search results for better performance
+            use_cache=True,
         )
 
-    # Macro & Economic Data
+    # ── Macro & Economic Data ──────────────────────────────────────────
+
     async def get_economic_indicators(self, name: str, limit: int = 50) -> List[Dict]:
         """
-        Get economic indicator time series
-
-        Args:
-            name: Indicator name (e.g., "GDP", "CPI", "unemploymentRate", "federalFundsRate",
-                  "inflationRate", "retailSales", "industrialProductionTotalIndex",
-                  "housingStarts", "consumerSentiment", "nonFarmPayrolls")
-            limit: Number of data points (default 50)
+        Get economic indicator time series → /stable/economic-indicators?name=GDP
         """
         return await self._make_request(
-            "economic-indicators",
-            params={"name": name, "limit": limit},
-            version="stable",
+            "economic-indicators", params={"name": name, "limit": limit}
         )
 
     async def get_economic_calendar(
         self, from_date: Optional[str] = None, to_date: Optional[str] = None
     ) -> List[Dict]:
-        """Get upcoming economic events with prior/estimate/actual values"""
+        """Get upcoming economic events → /stable/economic-calendar"""
         params = {}
         if from_date:
             params["from"] = from_date
         if to_date:
             params["to"] = to_date
-        return await self._make_request(
-            "economic-calendar", params=params, version="stable"
-        )
+        return await self._make_request("economic-calendar", params=params)
 
     async def get_treasury_rates(
         self, from_date: Optional[str] = None, to_date: Optional[str] = None
     ) -> List[Dict]:
-        """Get treasury rates across the full yield curve (1M to 30Y)"""
+        """Get treasury rates → /stable/treasury-rates"""
         params = {}
         if from_date:
             params["from"] = from_date
         if to_date:
             params["to"] = to_date
-        return await self._make_request(
-            "treasury-rates", params=params, version="stable"
-        )
+        return await self._make_request("treasury-rates", params=params)
 
     async def get_market_risk_premium(self) -> List[Dict]:
-        """Get market risk premium by country (for WACC/CAPM calculations)"""
-        return await self._make_request("market-risk-premium", version="stable")
+        """Get market risk premium → /stable/market-risk-premium"""
+        return await self._make_request("market-risk-premium")
 
     async def get_earnings_calendar_by_date(
         self, from_date: str, to_date: str
     ) -> List[Dict]:
         """
         Get earnings calendar for all companies in a date range
-
-        Different from get_historical_earnings_calendar which is per-symbol.
-        This returns all companies reporting between from_date and to_date.
+        → /stable/earnings-calendar?from=...&to=...
         """
         return await self._make_request(
-            "earnings-calendar",
-            params={"from": from_date, "to": to_date},
-            version="stable",
+            "earnings-calendar", params={"from": from_date, "to": to_date}
         )
 
-    # Utility Methods
+    # ── Utility Methods ────────────────────────────────────────────────
+
     def clear_cache(self):
         """Clear all cached data"""
-        self._cache = {}
-        self._cache_timestamps = {}
+        self._cache.clear()
+        self._cache_timestamps.clear()
 
     def clear_cache_for_symbol(self, symbol: str):
         """Clear cache for specific symbol"""

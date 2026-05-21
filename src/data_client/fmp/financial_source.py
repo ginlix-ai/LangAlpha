@@ -73,7 +73,8 @@ class FMPFinancialSource:
         )
 
     async def get_sector_performance(self) -> list[dict[str, Any]]:
-        return await self._client._make_request("sectors-performance")
+        """Get sector performance snapshot → /stable/sector-performance-snapshot"""
+        return await self._client._make_request("sector-performance-snapshot")
 
     async def screen_stocks(self, **filters: Any) -> list[dict[str, Any]]:
         return await self._client.get_company_screener(**filters)
