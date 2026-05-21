@@ -38,7 +38,16 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger("skill.fetch_data")
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = SKILL_DIR / "data"
+
+# 数据输出目录：优先使用 workspace 根目录的 data/（沙箱环境）
+# 判断逻辑：如果脚本在 .agents/skills/ 下运行，说明是沙箱环境，输出到 workspace 根目录
+# 否则（本地开发时）输出到 skill 自身目录下
+_in_sandbox = ".agents/skills" in str(SKILL_DIR)
+if _in_sandbox:
+    # 沙箱路径: /home/workspace/.agents/skills/sirius-valuation/ → /home/workspace/data/
+    DATA_DIR = SKILL_DIR.parent.parent.parent / "data"
+else:
+    DATA_DIR = SKILL_DIR / "data"
 
 # ═══════════════════════════════════════════
 # FMP API 配置

@@ -26,7 +26,8 @@
       {"file": "knowledge/valuation_examples.md", "label": "4 个完整估值计算案例", "used_by": ["d6", "d7"]},
       {"file": "knowledge/report_template.md", "label": "估值报告 Markdown 模板", "used_by": ["d6", "d7"]},
       {"file": "knowledge/output_schema.md", "label": "D1-D6 结构化参数输出 Schema", "used_by": ["all"]},
-      {"file": "knowledge/writing_style.md", "label": "写作风格规范", "used_by": ["all"]}
+      {"file": "knowledge/writing_style.md", "label": "写作风格规范", "used_by": ["all"]},
+      {"file": "knowledge/catalog_schema.md", "label": "知识库数据目录 Schema 与命名规范", "used_by": ["all"]}
     ]
   },
 
@@ -45,6 +46,44 @@
         "data/{symbol}/raw/*.json": "FMP 原始 JSON（profile, incomeStatement, balanceSheet, cashFlow, keyMetrics, ratios）",
         "data/{symbol}/financial_context.md": "格式化的财务数据 Markdown（Agent 读取此文件作为分析输入）",
         "data/{symbol}/engine_result.json": "Python 估值引擎预计算结果（WACC、各方法估值、敏感性矩阵、交叉验证、分类）"
+      }
+    },
+    "download_knowledge": {
+      "file": "scripts/download_knowledge.py",
+      "description": "一站式下载股票分析知识数据：财报PDF（港股HKEx/A股巨潮）、公告、研报（国内外机构）、电话会纪要，自动维护 catalog.json 目录索引",
+      "usage": "python scripts/download_knowledge.py --symbol 0700.HK --market hk --all",
+      "requires": ["requests"],
+      "env": ["FMP_API_KEY", "SERPAPI_KEY"],
+      "inputs": {
+        "symbol": "股票代码（如 0700.HK / AAPL / 600519.SS）",
+        "market": "市场标识（cn/hk/us），空=自动推断",
+        "company-name": "公司名称（可选，用于研报搜索）",
+        "flags": "--all | --financials | --announcements | --research | --transcripts"
+      },
+      "outputs": {
+        "data/{symbol}/knowledge/catalog.json": "数据目录索引（自动维护）",
+        "data/{symbol}/knowledge/financials/*.pdf": "财报 PDF",
+        "data/{symbol}/knowledge/announcements/*.pdf": "公司公告",
+        "data/{symbol}/knowledge/research/*": "研报（按日期-机构命名）",
+        "data/{symbol}/knowledge/transcripts/*.md": "电话会纪要"
+      }
+    },
+    "manage_knowledge": {
+      "file": "scripts/manage_knowledge.py",
+      "description": "知识库目录管理：增删查改、搜索、导出可读索引、验证完整性",
+      "usage": "python scripts/manage_knowledge.py --symbol 0700.HK --action list",
+      "requires": [],
+      "env": [],
+      "inputs": {
+        "symbol": "股票代码",
+        "action": "list | search | delete | stats | export-md | verify",
+        "category": "financials | announcements | research | transcripts（可选）",
+        "query": "搜索关键词（search 时必填）",
+        "filename": "文件名（delete 时必填）"
+      },
+      "outputs": {
+        "stdout": "目录内容、搜索结果、统计信息",
+        "data/{symbol}/knowledge/INDEX.md": "export-md 时生成的可读目录清单"
       }
     }
   },

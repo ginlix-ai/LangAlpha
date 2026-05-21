@@ -92,6 +92,102 @@ Phase 3: persist_entry.py
 
 ---
 
+## 知识库下载与管理（独立 Skill）
+
+### 功能概述
+
+一站式下载和管理股票分析所需的所有知识数据：
+- **财报 PDF**：港股（HKEx 披露易）/ A股（巨潮资讯）/ 美股（SEC 10-K）
+- **公司公告**：盈利预告、内幕消息、股权变动等
+- **研究报告**：国内外专业投研机构（按日期-机构命名）
+- **电话会纪要**：FMP Earnings Call Transcript
+
+### 下载全部数据
+
+```bash
+python3 scripts/download_knowledge.py --symbol {symbol} --market {market} --all
+```
+
+### 仅下载某类数据
+
+```bash
+# 财报
+python3 scripts/download_knowledge.py --symbol {symbol} --market {market} --financials
+
+# 公告
+python3 scripts/download_knowledge.py --symbol {symbol} --market {market} --announcements
+
+# 研报（国内外投研机构）
+python3 scripts/download_knowledge.py --symbol {symbol} --market {market} --research
+
+# 电话会纪要
+python3 scripts/download_knowledge.py --symbol {symbol} --market {market} --transcripts
+```
+
+### 目录管理
+
+```bash
+# 查看数据目录
+python3 scripts/manage_knowledge.py --symbol {symbol} --action list
+
+# 搜索
+python3 scripts/manage_knowledge.py --symbol {symbol} --action search --query "goldman"
+
+# 统计
+python3 scripts/manage_knowledge.py --symbol {symbol} --action stats
+
+# 导出可读的 Markdown 索引
+python3 scripts/manage_knowledge.py --symbol {symbol} --action export-md
+
+# 验证文件完整性
+python3 scripts/manage_knowledge.py --symbol {symbol} --action verify
+
+# 删除
+python3 scripts/manage_knowledge.py --symbol {symbol} --action delete --category research --filename "xxx.pdf"
+```
+
+### 输出目录结构
+
+下载的数据保存在 `data/{symbol}/knowledge/` 下：
+
+```
+data/{symbol}/knowledge/
+├── catalog.json                    # 数据目录索引（自动维护）
+├── INDEX.md                        # 可读目录清单（export-md 生成）
+├── financials/                     # 财报 PDF
+│   ├── 2024-annual-report.pdf
+│   └── 2024-H1-interim-report.pdf
+├── announcements/                  # 公告
+│   ├── 2024-12-01_profit-warning.pdf
+│   └── ...
+├── research/                       # 研报（日期_机构 命名）
+│   ├── 2024-12-15_Goldman-Sachs.pdf
+│   ├── 2024-11-20_中金公司.pdf
+│   └── ...
+└── transcripts/                    # 电话会纪要
+    ├── 2024-Q3-earnings-call.md
+    └── ...
+```
+
+### 数据来源覆盖
+
+| 市场 | 财报 | 公告 | 研报 | 电话会 |
+|------|------|------|------|--------|
+| 港股 | HKEx 披露易 | HKEx | FMP + SerpAPI | FMP |
+| A股 | 巨潮资讯 | 巨潮资讯 | 东方财富 + FMP | FMP |
+| 美股 | FMP/SEC (10-K) | SEC | FMP + SerpAPI | FMP |
+
+### 与分析流程的集成
+
+知识库数据在 D1-D7 维度分析中作为额外参考材料使用：
+- D1（商业模式）：参考年报业务描述章节
+- D3（外部环境）：参考公告中的监管政策变化
+- D4（管理层）：参考电话会纪要中的管理层发言
+- D5（MD&A）：直接对应年报 MD&A 章节 + 电话会 Q&A
+- D6/D7：综合参考研报中其他机构的估值判断
+
+---
+
 ## 文件目录结构
 
 ```
@@ -99,6 +195,13 @@ data/{symbol}/
 ├── financial_context.md
 ├── engine_result.json
 ├── raw/                          # FMP 原始数据
+├── knowledge/                    # 知识库数据（download_knowledge.py 产出）
+│   ├── catalog.json
+│   ├── INDEX.md
+│   ├── financials/
+│   ├── announcements/
+│   ├── research/
+│   └── transcripts/
 ├── reports/                      # Phase 2 Step 1 产出
 │   ├── d1_report.md
 │   ├── d2_report.md
