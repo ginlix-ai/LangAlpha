@@ -284,6 +284,14 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
         exposure="ptc",
         command="web-scraping",
     ),
+    "sirius-valuation": SkillDefinition(
+        name="sirius-valuation",
+        description="Sirius 七维度价值分析（D1~D7）：商业模式、护城河、外部环境、管理层、MD&A、综合评估、估值修正。自包含数据获取+估值引擎",
+        tools=[],
+        skill_md_path="skills/sirius-valuation/SKILL.md",
+        exposure="ptc",
+        command="sirius-valuation",
+    ),
 }
 
 

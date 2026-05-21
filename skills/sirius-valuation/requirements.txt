@@ -1,0 +1,2 @@
+# Sirius Valuation Skill 依赖（仅 requests）
+requests>=2.28

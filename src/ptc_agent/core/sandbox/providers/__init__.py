@@ -34,4 +34,9 @@ def create_provider(config) -> SandboxProvider:
 
         return DockerProvider(config.sandbox.docker, working_dir=working_dir)
 
+    if provider_name == "memory":
+        from ptc_agent.core.sandbox.providers.memory import LocalProvider
+
+        return LocalProvider()
+
     raise ValueError(f"Unknown sandbox provider: {provider_name!r}")

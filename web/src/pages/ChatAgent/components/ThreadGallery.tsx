@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
 import { ArrowLeft, Loader2, Folder, FileText, Zap } from 'lucide-react';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
@@ -18,6 +18,12 @@ import { clampPanelWidth as clampPanelWidthUtil } from '@/lib/panelUtils';
 import SandboxSettingsPanel from './SandboxSettingsPanel';
 import { getWorkspaceThreads, deleteThread, updateThreadTitle } from '../utils/api';
 import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
+
+// Template report panel (lazy-loaded, only renders for template workspaces)
+const SiriusReportPanel = lazy(
+  () => import('../../Templates/sirius/SiriusReportPanel').then((m) => ({ default: m.SiriusReportPanel }))
+);
+import { getTemplateEntryByWorkspace } from '../../Templates/utils/api';
 import { removeStoredThreadId } from '../hooks/utils/threadStorage';
 import { saveChatSession } from '../hooks/utils/chatSessionRestore';
 import iconComputerLight from '../../../assets/img/icon-computer.svg';
@@ -78,6 +84,16 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
   const workspaceName = (wsData?.name || locationState?.workspaceName || '') as string;
   const workspaceStatus = (wsData?.status || locationState?.workspaceStatus || null) as string | null;
   const isFlash = workspaceStatus === 'flash';
+
+  // Fetch template entry if this workspace was created by a template
+  const templateId = (wsData?.config as any)?.template_id as string | undefined;
+  const { data: templateEntry } = useQuery({
+    queryKey: [...queryKeys.templates.entries(templateId ?? '', {}), 'by_workspace', workspaceId],
+    queryFn: () => getTemplateEntryByWorkspace(templateId!, workspaceId),
+    enabled: !!templateId && !!workspaceId,
+    staleTime: 60_000,
+    retry: false,
+  });
 
   // Thread loading via React Query
   const { data: threadData, isLoading: isThreadsLoading, error: threadError } = useQuery({
@@ -556,6 +572,45 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
     );
   }
 
+  // =========================================================================
+  // TEMPLATE WORKSPACE MODE
+  // Report is the main view; threads go to a collapsible left sidebar;
+  // new-conversation input floats at the bottom (like Dashboard).
+  // =========================================================================
+  if (!isFlash && templateEntry && templateEntry.status === 'completed') {
+    return (
+      <TemplateWorkspaceView
+        workspaceId={workspaceId}
+        workspaceName={workspaceName}
+        templateEntry={templateEntry}
+        threads={threads}
+        isLoadingMore={isLoadingMore}
+        isSendingMessage={isSendingMessage}
+        chatInputRef={chatInputRef}
+        panelFiles={panelFiles}
+        panelFilesLoading={panelFilesLoading}
+        panelFilesError={panelFilesError}
+        onRefreshFiles={refreshPanelFiles}
+        showFilePanel={showFilePanel}
+        filePanelWidth={filePanelWidth}
+        isDragging={isDragging}
+        isMobile={isMobile}
+        showSystemFiles={showSystemFiles}
+        onToggleSystemFiles={() => {
+          setShowSystemFiles((v) => {
+            localStorage.setItem('filePanel.showSystemFiles', String(!v));
+            return !v;
+          });
+        }}
+        onBack={onBack}
+        onThreadSelect={handleThreadClick}
+        onSend={handleSendMessage as any}
+        onToggleFilePanel={handleToggleFilePanel}
+        onDividerMouseDown={handleDividerMouseDown}
+      />
+    );
+  }
+
   return (
     <div
       ref={containerRef}
@@ -794,3 +849,252 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
 }
 
 export default ThreadGallery;
+
+// =============================================================================
+// TemplateWorkspaceView — full-screen layout for template workspaces
+// =============================================================================
+
+interface TemplateWorkspaceViewProps {
+  workspaceId: string;
+  workspaceName: string;
+  templateEntry: import('@/types/template').TemplateEntry;
+  threads: ThreadRecord[];
+  isLoadingMore: boolean;
+  isSendingMessage: boolean;
+  chatInputRef: React.RefObject<ChatInputHandle>;
+  panelFiles: string[];
+  panelFilesLoading: boolean;
+  panelFilesError: string | null;
+  onRefreshFiles: () => void;
+  showFilePanel: boolean;
+  filePanelWidth: number;
+  isDragging: boolean;
+  isMobile: boolean;
+  showSystemFiles: boolean;
+  onToggleSystemFiles: () => void;
+  onBack: () => void;
+  onThreadSelect: (thread: ThreadRecord) => void;
+  onSend: (...args: any[]) => void;
+  onToggleFilePanel: () => void;
+  onDividerMouseDown: (e: React.MouseEvent) => void;
+}
+
+function TemplateWorkspaceView({
+  workspaceId,
+  workspaceName,
+  templateEntry,
+  threads,
+  isLoadingMore,
+  isSendingMessage,
+  chatInputRef,
+  panelFiles,
+  panelFilesLoading,
+  panelFilesError,
+  onRefreshFiles,
+  showFilePanel,
+  filePanelWidth,
+  isDragging,
+  isMobile,
+  showSystemFiles,
+  onToggleSystemFiles,
+  onBack,
+  onThreadSelect,
+  onSend,
+  onToggleFilePanel,
+  onDividerMouseDown,
+}: TemplateWorkspaceViewProps) {
+  const { t } = useTranslation();
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [targetFile, setTargetFile] = useState<string | null>(null);
+
+  return (
+    <div
+      className="h-screen flex overflow-hidden"
+      style={{
+        backgroundColor: 'var(--color-bg-page)',
+        backgroundImage: 'radial-gradient(circle at center, var(--color-dot-grid) 0.75px, transparent 0.75px)',
+        backgroundSize: '18px 18px',
+      }}
+    >
+      {/* ── Left sidebar: thread history ── */}
+      <div
+        className={`flex-shrink-0 flex flex-col border-r overflow-hidden transition-all duration-200 ${sidebarOpen ? 'w-60' : 'w-12'}`}
+        style={{
+          borderColor: 'var(--color-border-muted)',
+          backgroundColor: 'var(--color-bg-subtle)',
+        }}
+      >
+        {/* Sidebar header */}
+        <div className="flex items-center justify-between px-3 py-3 flex-shrink-0">
+          {sidebarOpen && (
+            <button
+              onClick={onBack}
+              className="flex items-center gap-1.5 text-xs transition-colors"
+              style={{ color: 'var(--color-text-tertiary)' }}
+              onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--color-text-primary)')}
+              onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--color-text-tertiary)')}
+            >
+              <ArrowLeft className="h-3.5 w-3.5" />
+              <span>{t('thread.backToWorkspaces')}</span>
+            </button>
+          )}
+          <button
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+            className={`p-1.5 rounded-md transition-colors ${!sidebarOpen ? 'mx-auto' : ''}`}
+            style={{ color: 'var(--color-text-tertiary)' }}
+            onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--color-border-muted)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = ''; }}
+            title={sidebarOpen ? '折叠历史' : '展开历史'}
+          >
+            {sidebarOpen
+              ? <ArrowLeft className="h-4 w-4" />
+              : <FileText className="h-4 w-4" />}
+          </button>
+        </div>
+
+        {sidebarOpen && (
+          <>
+            <div className="px-3 pb-2 flex-shrink-0">
+              <p className="text-xs font-medium truncate" style={{ color: 'var(--color-text-primary)' }}>
+                {workspaceName}
+              </p>
+              <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)' }}>
+                {t('thread.tasks')}
+              </p>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-2 pb-4">
+              {threads.length === 0 ? (
+                <p className="text-xs px-2 py-3" style={{ color: 'var(--color-text-tertiary)' }}>
+                  {t('thread.noThreadsYet')}
+                </p>
+              ) : (
+                <div className="flex flex-col gap-1">
+                  {threads.map((thread) => (
+                    <button
+                      key={thread.thread_id}
+                      onClick={() => onThreadSelect(thread)}
+                      className="w-full text-left px-2 py-2 rounded-md text-xs truncate transition-colors"
+                      style={{ color: 'var(--color-text-secondary)' }}
+                      onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--color-border-muted)'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = ''; }}
+                      title={thread.title || `对话 ${(thread.thread_index as number ?? 0) + 1}`}
+                    >
+                      {thread.title || `对话 ${(thread.thread_index as number ?? 0) + 1}`}
+                    </button>
+                  ))}
+                  {isLoadingMore && (
+                    <div className="flex justify-center py-2">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+
+          </>
+        )}
+      </div>
+
+      {/* ── Main area: report + right panel ── */}
+      <div className="flex-1 flex overflow-hidden relative">
+        {/* Top-right file toggle icon */}
+        {!showFilePanel && (
+          <button
+            onClick={onToggleFilePanel}
+            className="absolute top-3 right-3 z-30 p-2 rounded-md transition-colors"
+            style={{ color: 'var(--color-text-tertiary)' }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = 'var(--color-border-muted)';
+              e.currentTarget.style.color = 'var(--color-text-primary)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = '';
+              e.currentTarget.style.color = 'var(--color-text-tertiary)';
+            }}
+            title="工作区文件"
+          >
+            <Folder className="h-4.5 w-4.5" />
+          </button>
+        )}
+        {/* Report scrollable body */}
+        <div className="flex-1 overflow-y-auto pb-28">
+          <Suspense fallback={null}>
+            <SiriusReportPanel
+              entry={templateEntry}
+              onOpenFile={(filePath) => {
+                setTargetFile(filePath);
+                if (!showFilePanel) onToggleFilePanel();
+              }}
+            />
+          </Suspense>
+        </div>
+
+        {/* Right: File panel */}
+        <AnimatePresence>
+          {showFilePanel && (
+            <motion.div
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: filePanelWidth + 4, opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              transition={{ duration: isDragging ? 0 : 0.25, ease: [0.22, 1, 0.36, 1] }}
+              className="flex flex-shrink-0 overflow-hidden"
+            >
+              <div
+                className="w-[4px] bg-transparent hover:bg-foreground/20 cursor-col-resize flex-shrink-0 transition-colors"
+                onMouseDown={onDividerMouseDown}
+              />
+              <div className="flex-1 overflow-hidden">
+                <RightPanel
+                  workspaceId={workspaceId}
+                  onClose={onToggleFilePanel}
+                  targetFile={targetFile}
+                  onTargetFileHandled={() => setTargetFile(null)}
+                  files={panelFiles}
+                  filesLoading={panelFilesLoading}
+                  filesError={panelFilesError}
+                  onRefreshFiles={onRefreshFiles}
+                  showSystemFiles={showSystemFiles}
+                  onToggleSystemFiles={onToggleSystemFiles}
+                />
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* ── Floating chat input (Dashboard style) ── */}
+        <div
+          className="pointer-events-none absolute bottom-8 left-0 right-0 z-40 flex justify-center"
+          style={{ right: showFilePanel ? filePanelWidth + 4 : 0 }}
+        >
+          <div className="pointer-events-auto w-full max-w-2xl px-4">
+            <div
+              className="dashboard-floating-chat"
+              style={{
+                background: 'var(--color-bg-elevated)',
+                backdropFilter: 'blur(48px)',
+                WebkitBackdropFilter: 'blur(48px)',
+                border: '1px solid var(--color-border-muted)',
+                borderRadius: '9999px',
+                boxShadow: '0 0 30px var(--color-accent-soft)',
+                transition: 'all 0.3s',
+              }}
+            >
+              <ChatInput
+                ref={chatInputRef}
+                onSend={onSend}
+                disabled={isSendingMessage || !workspaceId}
+                files={panelFiles}
+                dropdownDirection="up"
+                mode="ptc"
+                minRows={1}
+                placeholder="继续分析或追问…"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

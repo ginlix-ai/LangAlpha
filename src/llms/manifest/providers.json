@@ -1428,6 +1428,14 @@
       "byok_eligible": true,
       "display_name": "DeepSeek"
     },
+    "lkeap": {
+      "sdk": "openai",
+      "base_url": "https://api.lkeap.cloud.tencent.com/plan/v3",
+      "env_key": "LKEAP_API_KEY",
+      "access_type": "api_key",
+      "byok_eligible": true,
+      "display_name": "Tencent LKEAP (Hunyuan)"
+    },
     "groq": {
       "sdk": "openai",
       "base_url": "https://api.groq.com/openai/v1",

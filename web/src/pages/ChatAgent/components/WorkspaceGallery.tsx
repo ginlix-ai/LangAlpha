@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Plus, Loader2, Search, ArrowDownUp, MoreHorizontal, Zap, MessageSquareText, Pin, Trash2, GripVertical, Check } from 'lucide-react';
+import { Plus, Loader2, Search, ArrowDownUp, MoreHorizontal, Zap, MessageSquareText, Pin, Trash2, GripVertical, Check, LayoutTemplate } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -177,6 +177,11 @@ function WorkspaceCard({ workspace, onSelect, onTogglePin, onDelete, prefetchThr
   const { t, i18n } = useTranslation();
   const isMobile = useIsMobile();
   const isFlash = workspace.status === 'flash';
+  const templateId = (workspace.config as any)?.template_id as string | undefined;
+
+  const TEMPLATE_NAMES: Record<string, string> = {
+    'sirius-valuation': 'Sirius 估值',
+  };
 
   return (
     <div
@@ -196,6 +201,8 @@ function WorkspaceCard({ workspace, onSelect, onTogglePin, onDelete, prefetchThr
               : 'var(--color-bg-card-gradient, linear-gradient(to bottom, var(--color-border-muted), var(--color-border-muted)))',
             border: isFlash
               ? '0.5px solid var(--color-accent-overlay)'
+              : templateId
+              ? '1.5px solid rgb(59 130 246 / 0.6)'
               : '0.5px solid var(--color-bg-card-border, var(--color-border-muted))',
             backdropFilter: 'blur(8px)',
             WebkitBackdropFilter: 'blur(8px)',
@@ -213,8 +220,24 @@ function WorkspaceCard({ workspace, onSelect, onTogglePin, onDelete, prefetchThr
                 {workspace.name}
               </div>
             </div>
+            {/* Template badge */}
+            {templateId && (
+              <div className="flex items-center gap-1">
+                <span
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium"
+                  style={{
+                    backgroundColor: 'rgb(59 130 246 / 0.12)',
+                    color: 'rgb(59 130 246)',
+                    border: '1px solid rgb(59 130 246 / 0.25)',
+                  }}
+                >
+                  <LayoutTemplate className="h-3 w-3" />
+                  {TEMPLATE_NAMES[templateId] ?? templateId}
+                </span>
+              </div>
+            )}
             <div className="text-sm line-clamp-2 flex-grow" style={{ color: 'var(--color-text-tertiary)' }}>
-              {workspace.description || ''}
+              {!templateId ? workspace.description || '' : ''}
             </div>
             <div className="text-xs mt-auto pt-3 flex justify-between" style={{ color: 'var(--color-text-tertiary)' }}>
               <span>
@@ -254,6 +277,7 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [filterType, setFilterType] = useState<'all' | 'template' | 'normal'>('all');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [sortBy, setSortBy] = useState<'activity' | 'name' | 'custom'>('activity');
   const [currentPage, setCurrentPage] = useState(0);
@@ -313,6 +337,16 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
     }
     return list;
   }, [wsData, flashWs, isFirstPage, isSearching]);
+
+  // Client-side filter by template / normal
+  const filteredWorkspaces = useMemo((): WorkspaceRecord[] => {
+    if (filterType === 'all') return workspaces;
+    return workspaces.filter((ws) => {
+      const templateId = (ws.config as any)?.template_id;
+      if (filterType === 'template') return !!templateId;
+      return !templateId && ws.status !== 'flash';
+    });
+  }, [workspaces, filterType]);
 
   const totalWorkspaces = (wsData as any)?.total || 0; // TODO: type properly
   const totalPages = Math.ceil((totalWorkspaces + 1) / pageSize);
@@ -644,7 +678,7 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
    * Filter and sort workspaces
    */
   // Server handles sort order; client only filters by search and keeps flash on top
-  const filteredAndSortedWorkspaces = workspaces
+  const filteredAndSortedWorkspaces = filteredWorkspaces
     .filter((workspace) =>
       workspace.name.toLowerCase().includes(searchQuery.toLowerCase())
     )
@@ -833,19 +867,33 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
           <h1 className="text-2xl font-semibold title-font" style={{ color: 'var(--color-text-primary)' }}>
             {t('workspace.workspaces')}
           </h1>
-          {hasWorkspaces && (
+          <div className="flex items-center gap-2">
             <button
-              onClick={() => setIsModalOpen(true)}
-              className="flex items-center gap-1.5 px-4 py-2 h-9 rounded-lg transition-all hover:scale-[1.01] active:scale-[0.985]"
+              onClick={() => navigate('/chat/templates')}
+              className="flex items-center gap-1.5 px-3 py-2 h-9 rounded-lg transition-all hover:scale-[1.01] active:scale-[0.985] border"
               style={{
-                backgroundColor: 'var(--color-accent-primary)',
-                color: 'var(--color-text-on-accent)',
+                borderColor: 'var(--color-border)',
+                color: 'var(--color-text-primary)',
               }}
+              title="进入模板市场"
             >
-              <Plus className="h-4 w-4" />
-              <span className="text-sm font-medium">{t('workspace.newWorkspace')}</span>
+              <LayoutTemplate className="h-4 w-4" />
+              <span className="text-sm font-medium">模板</span>
             </button>
-          )}
+            {hasWorkspaces && (
+              <button
+                onClick={() => setIsModalOpen(true)}
+                className="flex items-center gap-1.5 px-4 py-2 h-9 rounded-lg transition-all hover:scale-[1.01] active:scale-[0.985]"
+                style={{
+                  backgroundColor: 'var(--color-accent-primary)',
+                  color: 'var(--color-text-on-accent)',
+                }}
+              >
+                <Plus className="h-4 w-4" />
+                <span className="text-sm font-medium">{t('workspace.newWorkspace')}</span>
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
@@ -894,7 +942,30 @@ function WorkspaceGallery({ onWorkspaceSelect, prefetchThreads }: WorkspaceGalle
 
           {/* Sort By + Reorder */}
           <div className="flex w-full gap-4 justify-between items-center">
-            <div></div>
+            {/* Filter tabs: All / Template / Normal */}
+            <div className="flex items-center gap-1.5">
+              {(['all', 'template', 'normal'] as const).map((type) => (
+                <button
+                  key={type}
+                  onClick={() => setFilterType(type)}
+                  className="flex items-center px-2.5 py-1 h-7 rounded-md text-xs font-medium transition-colors"
+                  style={{
+                    backgroundColor: filterType === type
+                      ? 'var(--color-accent-primary)'
+                      : 'var(--color-bg-subtle)',
+                    color: filterType === type
+                      ? 'var(--color-text-on-accent)'
+                      : 'var(--color-text-tertiary)',
+                    border: '1px solid',
+                    borderColor: filterType === type
+                      ? 'var(--color-accent-primary)'
+                      : 'var(--color-border-muted)',
+                  }}
+                >
+                  {type === 'all' ? '全部' : type === 'template' ? '模板' : '普通'}
+                </button>
+              ))}
+            </div>
             <div className="flex items-center gap-2.5">
               <span className="text-sm hidden md:inline" style={{ color: 'var(--color-text-tertiary)' }}>
                 {t('workspace.sortBy')}

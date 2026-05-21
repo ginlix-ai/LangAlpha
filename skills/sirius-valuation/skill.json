@@ -1,0 +1,84 @@
+{
+  "name": "sirius-valuation",
+  "version": "2.0.0",
+  "description": "Sirius 七维度价值分析（D1~D7）：商业模式、护城河、外部环境、管理层、MD&A、综合评估、估值修正。自包含数据获取 + 估值引擎，Agent 一键获取数据后按知识指南执行分析。",
+  "author": "Sirius Investment",
+  "tags": ["valuation", "fundamental-analysis", "equity-research"],
+
+  "knowledge": {
+    "description": "所有知识文档位于 knowledge/ 目录，分为维度知识和通用参考知识两类。",
+    "dimensions": [
+      {"id": "d1", "file": "knowledge/d1_business_model.md", "label": "D1 商业模式与资本特征", "depends_on": []},
+      {"id": "d2", "file": "knowledge/d2_moat.md", "label": "D2 竞争优势与护城河", "depends_on": []},
+      {"id": "d3", "file": "knowledge/d3_environment.md", "label": "D3 外部环境", "depends_on": []},
+      {"id": "d4", "file": "knowledge/d4_management.md", "label": "D4 管理层与公司治理", "depends_on": []},
+      {"id": "d5", "file": "knowledge/d5_forward_guidance.md", "label": "D5 MD&A 解读与前瞻", "depends_on": []},
+      {"id": "d6", "file": "knowledge/d6_comprehensive.md", "label": "D6 综合评估与投资论点", "depends_on": ["d1", "d2", "d3", "d4", "d5"]},
+      {"id": "d7", "file": "knowledge/d7_qualitative_adjustment.md", "label": "D7 定性调整与估值修正", "depends_on": ["d1", "d2", "d3", "d4", "d5", "d6"]}
+    ],
+    "references": [
+      {"file": "knowledge/system.md", "label": "System Prompt（角色设定与写作风格）"},
+      {"file": "knowledge/framework_guide.md", "label": "Greenwald 框架与评级标准", "used_by": ["d2"]},
+      {"file": "knowledge/judgment_examples.md", "label": "判断锚点与 Logic Chain 示例", "used_by": ["d2"]},
+      {"file": "knowledge/framework_scope.md", "label": "框架适用范围与局限性", "used_by": ["all"]},
+      {"file": "knowledge/classification_rules.md", "label": "公司分类规则与估值方法选择矩阵", "used_by": ["d6", "d7"]},
+      {"file": "knowledge/valuation_methods.md", "label": "6 种估值方法完整公式（WACC/DCF/DDM/PE/PEG/PS）", "used_by": ["d6", "d7"]},
+      {"file": "knowledge/valuation_examples.md", "label": "4 个完整估值计算案例", "used_by": ["d6", "d7"]},
+      {"file": "knowledge/report_template.md", "label": "估值报告 Markdown 模板", "used_by": ["d6", "d7"]},
+      {"file": "knowledge/output_schema.md", "label": "D1-D6 结构化参数输出 Schema", "used_by": ["all"]},
+      {"file": "knowledge/writing_style.md", "label": "写作风格规范", "used_by": ["all"]}
+    ]
+  },
+
+  "scripts": {
+    "fetch_data": {
+      "file": "scripts/fetch_data.py",
+      "description": "一键获取股票一定需要的 FMP 财务数据 + 运行估值引擎，输出到 data/{symbol}/ 目录",
+      "usage": "python scripts/fetch_data.py --symbol 1357.HK --market hk",
+      "requires": ["requests"],
+      "env": ["FMP_API_KEY"],
+      "inputs": {
+        "symbol": "股票代码（如 1357.HK / AAPL / 600519.SS）",
+        "market": "市场标识（cn/hk/us），空=自动推断"
+      },
+      "outputs": {
+        "data/{symbol}/raw/*.json": "FMP 原始 JSON（profile, incomeStatement, balanceSheet, cashFlow, keyMetrics, ratios）",
+        "data/{symbol}/financial_context.md": "格式化的财务数据 Markdown（Agent 读取此文件作为分析输入）",
+        "data/{symbol}/engine_result.json": "Python 估值引擎预计算结果（WACC、各方法估值、敏感性矩阵、交叉验证、分类）"
+      }
+    }
+  },
+
+  "workflow": {
+    "description": "Agent 执行工作流：先运行脚本获取数据，再按知识指南逐维度分析。",
+    "steps": [
+      {
+        "step": 1,
+        "action": "run_script",
+        "script": "scripts/fetch_data.py --symbol {symbol} --market {market}",
+        "output": "data/{symbol}/financial_context.md + data/{symbol}/engine_result.json"
+      },
+      {
+        "step": 2,
+        "action": "parallel_analysis",
+        "dimensions": ["d1", "d2", "d3", "d4", "d5"],
+        "input": "knowledge/d{N}_{name}.md + data/{symbol}/financial_context.md",
+        "output": "每个维度输出一个 JSON 结果（含 score、summary、analysis、metrics）"
+      },
+      {
+        "step": 3,
+        "action": "sequential_analysis",
+        "dimension": "d6",
+        "input": "knowledge/d6_comprehensive.md + D1-D5 JSON 结果 + data/{symbol}/financial_context.md + data/{symbol}/engine_result.json",
+        "output": "D6 JSON 结果（含投资论点、止损条件、定性调整参数建议）"
+      },
+      {
+        "step": 4,
+        "action": "sequential_analysis",
+        "dimension": "d7",
+        "input": "knowledge/d7_qualitative_adjustment.md + D1-D6 JSON 结果 + data/{symbol}/engine_result.json",
+        "output": "D7 JSON 结果（含 7 类定性调整的 before/after 对比、最终估值判断）"
+      }
+    ]
+  }
+}

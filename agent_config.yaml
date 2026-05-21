@@ -6,15 +6,12 @@
 # For non agent related config, see config.yaml
 
 llm:
-  # Model name from src/llms/manifest/models.json
-  name: "qwen3.5-plus"
-  flash: "qwen3.6-flash"
-  compaction: "qwen3.6-flash" # defaults to flash model
-  fetch: "qwen3.6-flash"         # defaults to flash model
-  fallback:
-    - "kimi-k2.5"
-    - "minimax-m2.7"
-    - "glm-5-turbo"
+  # Tencent LKEAP - Hunyuan T1 (OpenAI 兼容)
+  name: "hy3-preview"
+  flash: "hy3-preview-flash"
+  compaction: "hy3-preview-flash"
+  fetch: "hy3-preview-flash"
+  fallback: []
 
 sandbox:
   # Provider selection: "daytona" (cloud) or "docker" (local).
