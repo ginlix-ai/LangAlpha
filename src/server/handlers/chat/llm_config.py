@@ -58,8 +58,13 @@ async def _resolve_custom_model_byok(
         if byok_config:
             parent = cp_by_name["parent_provider"]
             base_url = byok_config.get("base_url") or mc.get_provider_info(parent).get("base_url")
-            if cp_by_name.get("use_response_api"):
-                custom_config = {**custom_config, "_use_response_api": True}
+            # Forward user's explicit setting (truthy OR falsy) so it can
+            # override the parent manifest's default. Truthy-only check would
+            # silently lose a user's ``false`` and re-inherit the parent's
+            # ``true`` — breaking OpenAI-compat gateways that don't ship
+            # ``/v1/responses``.
+            if "use_response_api" in cp_by_name:
+                custom_config = {**custom_config, "_use_response_api": cp_by_name["use_response_api"]}
             # Rewrite provider to parent so ``from_custom_config`` reads SDK /
             # default_headers from the manifest. Without this, an Anthropic-
             # parented custom provider (e.g. matrixllm) defaults to sdk="openai"
@@ -74,8 +79,8 @@ async def _resolve_custom_model_byok(
         if byok_config:
             parent = cp_by_provider["parent_provider"]
             base_url = byok_config.get("base_url") or mc.get_provider_info(parent).get("base_url")
-            if cp_by_provider.get("use_response_api"):
-                custom_config = {**custom_config, "_use_response_api": True}
+            if "use_response_api" in cp_by_provider:
+                custom_config = {**custom_config, "_use_response_api": cp_by_provider["use_response_api"]}
             custom_config = {**custom_config, "provider": parent}
             return byok_config, base_url, custom_config
 
