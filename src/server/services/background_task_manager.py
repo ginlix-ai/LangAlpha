@@ -2,10 +2,17 @@
 Background Task Manager
 
 Manages workflow execution as background asyncio tasks that continue running
-independently of SSE client connections. Workflows write events to a Redis
-Stream; consumers attach by stream key and read via XREAD BLOCK, sharing no
-in-process state with the workflow. Cleanup runs periodically to evict stale
-tasks.
+independently of SSE client connections. Workflows write events to per-run
+Redis Streams (``workflow:stream:{thread_id}:{run_id}``); consumers attach by
+stream key and read via XREAD BLOCK, sharing no in-process state with the
+workflow. Cleanup runs periodically to evict stale tasks.
+
+State is keyed by ``(thread_id, run_id)`` — each POST gets a fresh ``run_id``
+at the handler entry, so cross-turn state aliasing is impossible by
+construction. Per-thread admission locks still serialize the
+``wait_or_steer → persist_query_start → start_workflow`` window because
+Pregel doesn't serialize concurrent ``astream`` on the same thread, and the
+admission policy lives in our layer.
 """
 
 import asyncio
@@ -48,23 +55,26 @@ from src.server.utils.persistence_utils import (
 logger = logging.getLogger(__name__)
 
 
+# ========== Redis key helpers ==========
+
+
+def stream_key(thread_id: str, run_id: str) -> str:
+    """Per-run workflow event stream."""
+    return f"workflow:stream:{thread_id}:{run_id}"
+
+
+def stream_meta_key(thread_id: str, run_id: str) -> str:
+    """Per-run event-buffer metadata (HSET counter)."""
+    return f"workflow:events:meta:{thread_id}:{run_id}"
+
+
 # ========== Shared Helpers (DRY) ==========
 
 
 async def iter_subagent_events_full(
     thread_id: str, task
 ) -> AsyncIterator[dict]:
-    """Yield every captured record for a subagent in seq order.
-
-    Reads from the per-task Redis Stream's ``b"record"`` field via XRANGE.
-    Filters to ``seq <= captured_event_seq`` snapshot at entry so events
-    XADD'd after iteration starts don't leak into this pass.
-
-    Yields dicts with shape::
-
-        {"seq": int, "event": str, "data": dict, "agent_id": str | None,
-         "ts": float (optional)}
-    """
+    """Yield every captured record for a subagent in seq order."""
     if task is None or not thread_id:
         return
 
@@ -83,18 +93,17 @@ async def iter_subagent_events_full(
     if cache is None or not getattr(cache, "enabled", False) or cache.client is None:
         return
 
-    stream_key = f"subagent:stream:{thread_id}:{task.task_id}"
+    sa_stream_key = f"subagent:stream:{thread_id}:{task.task_id}"
     try:
-        entries = await cache.client.xrange(stream_key, min="-", max="+")
+        entries = await cache.client.xrange(sa_stream_key, min="-", max="+")
     except Exception as exc:
         logger.warning(
-            f"[SubagentCollector] XRANGE failed for {stream_key}: {exc}"
+            f"[SubagentCollector] XRANGE failed for {sa_stream_key}: {exc}"
         )
         return
 
     yielded = 0
     for entry_id, fields in entries or []:
-        # entry_id format: b"<seq>-0"
         try:
             seq_part = entry_id.decode("utf-8") if isinstance(entry_id, bytes) else entry_id
             seq = int(seq_part.split("-", 1)[0])
@@ -104,9 +113,6 @@ async def iter_subagent_events_full(
             continue
         raw = fields.get(b"record")
         if raw is None:
-            # Sentinel entries (subagent_stream_end) and any legacy
-            # single-field entries from before the dual-payload cutover
-            # have no record field — skip them in the collector path.
             continue
         try:
             payload = raw.decode("utf-8") if isinstance(raw, bytes) else raw
@@ -134,11 +140,7 @@ async def iter_subagent_events_full(
 
 
 def _record_to_persist_event(record: dict, thread_id: str) -> dict:
-    """Convert a captured-event record to persistence shape ``{event, data}``.
-
-    Injects ``thread_id`` into a copy of ``data`` so downstream consumers
-    can identify the originating thread without mutating the stored record.
-    """
+    """Convert a captured-event record to persistence shape ``{event, data}``."""
     data = dict(record.get("data") or {})
     data["thread_id"] = thread_id
     out: dict = {
@@ -166,40 +168,33 @@ class TaskStatus(str, Enum):
 class TaskInfo:
     """Information about a background workflow task."""
     thread_id: str
+    run_id: str
     status: TaskStatus
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     last_access_at: datetime = field(default_factory=datetime.now)
 
-    # Task execution
     task: Optional[asyncio.Task] = None
-    inner_task: Optional[asyncio.Task] = None  # Reference to consume_workflow task
+    inner_task: Optional[asyncio.Task] = None
     error: Optional[str] = None
 
-    # Cancellation control
-    explicit_cancel: bool = False  # True if user explicitly cancelled
-    cancel_event: asyncio.Event = field(default_factory=asyncio.Event)  # Cooperative cancellation signal
+    explicit_cancel: bool = False
+    cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
 
-    # Soft interrupt control (pause main agent, keep subagents running)
     soft_interrupt_event: asyncio.Event = field(default_factory=asyncio.Event)
     soft_interrupted: bool = False
 
     final_result: Optional[Any] = None
 
-    # Connection tracking
     active_connections: int = 0
 
-    # Metadata
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-    # Completion callback
-    completion_callback: Optional[Callable[[], Coroutine[Any, Any, None]]] = None
+    completion_callback: Optional[Callable[["TaskInfo"], Coroutine[Any, Any, None]]] = None
 
-    # Signalled when _mark_completed finishes (persistence done)
     persistence_complete: asyncio.Event = field(default_factory=asyncio.Event)
 
-    # LangGraph compiled graph for state queries (stored per-task, not global)
     graph: Optional[Any] = None
 
 
@@ -207,24 +202,29 @@ class SoftInterruptError(Exception):
     """Internal control-flow exception for user ESC soft-interrupt."""
 
 
+# Type alias for the key used throughout the manager.
+TaskKey = tuple[str, str]
+
+
 class BackgroundTaskManager:
-    """
-    Manages background workflow task execution.
+    """Manages background workflow task execution.
 
-    Singleton service that handles:
-    - Task lifecycle (create, execute, complete, cleanup)
-    - Result buffering and streaming
-    - Connection management
-    - Automatic cleanup
+    Singleton. State keyed by ``(thread_id, run_id)`` — each POST gets a
+    fresh ``run_id`` so concurrent turns on the same thread are isolated
+    by construction.
     """
 
-    # Singleton instance
     _instance: Optional['BackgroundTaskManager'] = None
 
     def __init__(self):
-        """Initialize background task manager."""
-        self.tasks: Dict[str, TaskInfo] = {}
+        # Keyed by (thread_id, run_id). One slot per turn; no cross-turn
+        # aliasing because run_id is fresh per POST.
+        self.tasks: Dict[TaskKey, TaskInfo] = {}
         self.task_lock = asyncio.Lock()
+        # Per-thread admission locks remain thread-keyed: admission policy
+        # (wait_or_steer / one foreground turn at a time) is a thread-level
+        # invariant, independent of the per-turn key.
+        self._admission_locks: Dict[str, asyncio.Lock] = {}
 
         # Configuration
         self.max_concurrent = get_max_concurrent_workflows()
@@ -234,46 +234,57 @@ class BackgroundTaskManager:
         self.enable_storage = is_intermediate_storage_enabled()
         self.max_stored_messages = get_max_stored_messages_per_agent()
 
-        # Event storage configuration
         self.event_storage_backend = get_event_storage_backend()
         self.redis_event_ttl = get_redis_ttl_workflow_events()
 
-        # Cleanup task
         self.cleanup_task: Optional[asyncio.Task] = None
 
     @classmethod
     def get_instance(cls) -> 'BackgroundTaskManager':
-        """
-        Get singleton instance of BackgroundTaskManager.
-
-        Returns:
-            BackgroundTaskManager instance
-        """
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
 
-    async def _get_task_info_locked(self, thread_id: str) -> Optional[TaskInfo]:
+    # ---------- helpers ----------
+
+    def _find_latest_for_thread(self, thread_id: str) -> Optional[TaskInfo]:
+        """Return the most-recently-created TaskInfo for ``thread_id`` or None.
+
+        Used for thread-scoped lookups (e.g., /status?thread_id=...) where
+        the caller didn't provide a run_id.
         """
-        Acquire lock and get task info.
+        best: Optional[TaskInfo] = None
+        for (tid, _rid), info in self.tasks.items():
+            if tid != thread_id:
+                continue
+            if best is None or info.created_at > best.created_at:
+                best = info
+        return best
 
-        Helper method to reduce boilerplate of locking + dict lookup pattern.
+    def _find_active_for_thread(
+        self,
+        thread_id: str,
+        exclude_run_id: Optional[str] = None,
+    ) -> Optional[TaskInfo]:
+        """Return the most-recently-created active (non-terminal) TaskInfo.
 
-        Args:
-            thread_id: Workflow thread identifier
-
-        Returns:
-            TaskInfo or None if not found
+        ``exclude_run_id`` skips a specific run — used by dispatched flows
+        that want to check for OTHER active runs on the thread while
+        ignoring their own pre-registered placeholder.
         """
-        async with self.task_lock:
-            return self.tasks.get(thread_id)
+        best: Optional[TaskInfo] = None
+        live = (TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.SOFT_INTERRUPTED)
+        for (tid, rid), info in self.tasks.items():
+            if tid != thread_id or info.status not in live:
+                continue
+            if exclude_run_id is not None and rid == exclude_run_id:
+                continue
+            if best is None or info.created_at > best.created_at:
+                best = info
+        return best
 
     async def has_active_tasks_for_workspace(self, workspace_id: str) -> bool:
-        """Check if any active tasks exist for a workspace.
-
-        Includes SOFT_INTERRUPTED because the workflow may still be
-        winding down (flushing checkpoints, writing final state).
-        """
+        """Check if any active tasks exist for a workspace."""
         async with self.task_lock:
             active = (TaskStatus.RUNNING, TaskStatus.QUEUED, TaskStatus.SOFT_INTERRUPTED)
             for info in self.tasks.values():
@@ -306,27 +317,17 @@ class BackgroundTaskManager:
             logger.info("[BackgroundTaskManager] Stopped cleanup task")
 
     async def shutdown(self, timeout: float | None = None):
-        """
-        Gracefully shutdown background task manager.
-
-        Cancels all running workflows and waits for them to complete
-        before database pools are closed.
-
-        Args:
-            timeout: Maximum time to wait for tasks to complete (seconds)
-        """
+        """Gracefully shutdown background task manager."""
         if timeout is None:
             timeout = get_shutdown_timeout()
         logger.info("[BackgroundTaskManager] Starting graceful shutdown...")
 
-        # Stop cleanup task first
         await self.stop_cleanup_task()
 
-        # Get list of running workflows
         async with self.task_lock:
             running_tasks = [
-                (thread_id, info)
-                for thread_id, info in self.tasks.items()
+                (key, info)
+                for key, info in self.tasks.items()
                 if info.status in [TaskStatus.RUNNING, TaskStatus.QUEUED]
             ]
 
@@ -338,36 +339,30 @@ class BackgroundTaskManager:
             f"[BackgroundTaskManager] Cancelling {len(running_tasks)} running workflows"
         )
 
-        # Cancel all running workflows
-        for thread_id, info in running_tasks:
-            await self.cancel_workflow(thread_id)
+        for (thread_id, run_id), _info in running_tasks:
+            await self.cancel_workflow(thread_id, run_id)
 
-        # Wait for tasks to complete with timeout
         try:
             async with asyncio.timeout(timeout):
-                for thread_id, info in running_tasks:
+                for _key, info in running_tasks:
                     if info.task and not info.task.done():
                         try:
                             await info.task
                         except (asyncio.CancelledError, Exception):
-                            pass  # Expected during shutdown
+                            pass
         except asyncio.TimeoutError:
             logger.warning(
                 f"[BackgroundTaskManager] Shutdown timeout after {timeout}s, "
                 f"forcing cancellation of stuck tasks"
             )
-
-            # Aggressive cancellation: force cancel stuck tasks
             stuck_tasks = []
-            for thread_id, info in running_tasks:
+            for key, info in running_tasks:
                 if info.task and not info.task.done():
                     logger.warning(
-                        f"[BackgroundTaskManager] Force-cancelling stuck task: {thread_id}"
+                        f"[BackgroundTaskManager] Force-cancelling stuck task: {key}"
                     )
                     info.task.cancel()
                     stuck_tasks.append(info.task)
-
-            # Wait briefly for forced cancellations to complete
             if stuck_tasks:
                 try:
                     async with asyncio.timeout(5.0):
@@ -384,7 +379,6 @@ class BackgroundTaskManager:
         logger.info("[BackgroundTaskManager] Shutdown complete")
 
     async def _cleanup_loop(self):
-        """Periodic cleanup loop for stale tasks."""
         while True:
             try:
                 await asyncio.sleep(self.cleanup_interval)
@@ -401,11 +395,10 @@ class BackgroundTaskManager:
         abandoned_threshold = now - timedelta(seconds=self.abandoned_timeout)
         completed_threshold = now - timedelta(seconds=self.result_ttl)
 
-        to_remove = []
+        to_remove: list[TaskKey] = []
 
         async with self.task_lock:
-            for thread_id, info in self.tasks.items():
-                # Remove completed tasks after TTL
+            for key, info in self.tasks.items():
                 if info.status in [
                     TaskStatus.COMPLETED,
                     TaskStatus.FAILED,
@@ -413,98 +406,117 @@ class BackgroundTaskManager:
                     TaskStatus.SOFT_INTERRUPTED,
                 ]:
                     if info.completed_at and info.completed_at < completed_threshold:
-                        to_remove.append(thread_id)
+                        to_remove.append(key)
                         logger.info(
                             f"[BackgroundTaskManager] Cleanup: removing completed task "
-                            f"{thread_id} (age: {now - info.completed_at})"
+                            f"{key} (age: {now - info.completed_at})"
                         )
 
-                # Remove abandoned running tasks
                 elif info.status == TaskStatus.RUNNING:
                     if info.active_connections == 0 and info.last_access_at < abandoned_threshold:
-                        to_remove.append(thread_id)
+                        to_remove.append(key)
                         logger.warning(
                             f"[BackgroundTaskManager] Cleanup: removing abandoned task "
-                            f"{thread_id} (no connections for {now - info.last_access_at})"
+                            f"{key} (no connections for {now - info.last_access_at})"
                         )
-                        # Cancel the task
                         if info.task and not info.task.done():
                             info.task.cancel()
 
-            # Remove from registry
-            for thread_id in to_remove:
-                del self.tasks[thread_id]
+                elif info.status == TaskStatus.QUEUED and info.task is None:
+                    if info.created_at < abandoned_threshold:
+                        to_remove.append(key)
+                        logger.warning(
+                            f"[BackgroundTaskManager] Cleanup: removing orphaned QUEUED "
+                            f"placeholder {key} (age: {now - info.created_at})"
+                        )
+
+            for key in to_remove:
+                del self.tasks[key]
+
+            # Admission locks are NOT reclaimed here. ``get_admission_lock``
+            # returns the Lock object under ``task_lock`` but the caller
+            # then awaits ``acquire()`` outside the lock — if cleanup were
+            # to delete the entry in that gap, a concurrent ``get_admission_lock``
+            # would create a fresh Lock and both POSTs would acquire
+            # different lock objects, defeating admission. The dict is
+            # tiny (one entry per thread that has ever seen traffic);
+            # leave it.
 
         if to_remove:
             logger.info(
                 f"[BackgroundTaskManager] Cleaned up {len(to_remove)} tasks: {to_remove}"
             )
 
-    async def pre_register(self, thread_id: str) -> None:
-        """Pre-register a thread as QUEUED before the workflow generator starts.
+    async def get_admission_lock(self, thread_id: str) -> asyncio.Lock:
+        """Return the per-thread admission lock, creating it on first use.
 
-        Used by background dispatch (X-Dispatch: background) to close the timing
-        gap between the HTTP response and the generator reaching start_workflow().
-        Reconnecting clients see a QUEUED TaskInfo and attach to
-        ``workflow:stream:{thread_id}`` (initially empty) instead of a 404.
+        Serializes ``wait_or_steer → persist_query_start → start_workflow``
+        on a given thread so two simultaneous cold POSTs can't both pass
+        ``wait_or_steer`` and race on the same ``turn_index``.
         """
         async with self.task_lock:
-            if thread_id in self.tasks:
-                existing = self.tasks[thread_id]
-                if existing.status in [TaskStatus.QUEUED, TaskStatus.RUNNING]:
-                    return  # Already registered or running
-                # Remove old completed/failed task so the placeholder can be inserted
-                del self.tasks[thread_id]
+            lock = self._admission_locks.get(thread_id)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._admission_locks[thread_id] = lock
+        return lock
 
-            self.tasks[thread_id] = TaskInfo(
+    # ---------- workflow lifecycle ----------
+
+    async def pre_register(
+        self,
+        thread_id: str,
+        run_id: str,
+    ) -> bool:
+        """Pre-register a turn as QUEUED before the workflow generator starts.
+
+        Used by background dispatch (X-Dispatch: background) to close the
+        timing gap between dispatcher return and ``start_workflow``.
+        Reconnecting clients see a QUEUED TaskInfo and attach to the per-run
+        stream key (initially empty) instead of a 404.
+
+        Returns True if the placeholder was created, False if a record for
+        this exact ``(thread_id, run_id)`` already existed.
+        """
+        async with self.task_lock:
+            key = (thread_id, run_id)
+            if key in self.tasks:
+                return False
+
+            self.tasks[key] = TaskInfo(
                 thread_id=thread_id,
+                run_id=run_id,
                 status=TaskStatus.QUEUED,
                 created_at=datetime.now(),
             )
             logger.info(
                 f"[BackgroundTaskManager] Pre-registered dispatch placeholder "
-                f"for {thread_id}"
+                f"for thread_id={thread_id} run_id={run_id}"
             )
+            return True
 
     async def start_workflow(
         self,
         thread_id: str,
+        run_id: str,
         workflow_generator: Any,
         metadata: Optional[Dict[str, Any]] = None,
-        completion_callback: Optional[Callable[[], Coroutine[Any, Any, None]]] = None,
+        completion_callback: Optional[Callable[["TaskInfo"], Coroutine[Any, Any, None]]] = None,
         graph: Optional[Any] = None,
     ) -> TaskInfo:
-        """
-        Start a workflow as a background task.
-
-        Args:
-            thread_id: Workflow thread identifier
-            workflow_generator: Async generator from graph.astream()
-            metadata: Optional metadata about the workflow
-            completion_callback: Optional callback to invoke when workflow completes
-            graph: Optional LangGraph compiled graph for state queries during completion/error handling
-
-        Returns:
-            TaskInfo object tracking the background task
-
-        Raises:
-            ValueError: If max concurrent workflows exceeded
-            RuntimeError: If workflow already exists for thread_id
-        """
+        """Start a workflow as a background task."""
+        key = (thread_id, run_id)
         async with self.task_lock:
-            # Check if already exists
-            if thread_id in self.tasks:
-                existing = self.tasks[thread_id]
+            if key in self.tasks:
+                existing = self.tasks[key]
                 if existing.status == TaskStatus.QUEUED and existing.task is None:
-                    # Pre-registered dispatch placeholder — upgrade in-place so
-                    # the same TaskInfo identity stays valid for any
-                    # consumers already attached to workflow:stream:{thread_id}.
+                    # Upgrade pre-registered placeholder in-place.
                     existing.metadata = metadata or {}
                     existing.completion_callback = completion_callback
                     existing.graph = graph
                     existing.task = asyncio.create_task(
                         self._run_workflow_shielded(
-                            thread_id, workflow_generator,
+                            thread_id, run_id, workflow_generator,
                             cancel_event=existing.cancel_event,
                             soft_interrupt_event=existing.soft_interrupt_event,
                         )
@@ -513,28 +525,13 @@ class BackgroundTaskManager:
                     existing.started_at = datetime.now()
                     logger.info(
                         f"[BackgroundTaskManager] Upgraded pre-registered "
-                        f"workflow {thread_id} to RUNNING"
+                        f"workflow thread_id={thread_id} run_id={run_id} to RUNNING"
                     )
                     return existing
-                if existing.status in [TaskStatus.QUEUED, TaskStatus.RUNNING]:
-                    raise RuntimeError(
-                        f"Workflow {thread_id} already running with status {existing.status}"
-                    )
-                # Also block on SOFT_INTERRUPTED - the workflow just stopped and
-                # wait_for_soft_interrupted should be given time to see it
-                if existing.status == TaskStatus.SOFT_INTERRUPTED:
-                    raise RuntimeError(
-                        f"Workflow {thread_id} was just soft-interrupted. "
-                        f"Use wait_for_soft_interrupted() before starting a new workflow."
-                    )
-                # Remove completed task to allow re-run
-                logger.debug(
-                    f"[BackgroundTaskManager] Removing completed task {thread_id} "
-                    f"to start new execution"
+                raise RuntimeError(
+                    f"Workflow {key} already exists with status {existing.status}"
                 )
-                del self.tasks[thread_id]
 
-            # Check concurrent limit
             running_count = sum(
                 1 for t in self.tasks.values()
                 if t.status in [TaskStatus.QUEUED, TaskStatus.RUNNING]
@@ -545,9 +542,9 @@ class BackgroundTaskManager:
                     f"Currently running: {running_count}"
                 )
 
-            # Create task info
             task_info = TaskInfo(
                 thread_id=thread_id,
+                run_id=run_id,
                 status=TaskStatus.QUEUED,
                 created_at=datetime.now(),
                 metadata=metadata or {},
@@ -555,10 +552,9 @@ class BackgroundTaskManager:
                 graph=graph,
             )
 
-            # Start background task
             task_info.task = asyncio.create_task(
                 self._run_workflow_shielded(
-                    thread_id, workflow_generator,
+                    thread_id, run_id, workflow_generator,
                     cancel_event=task_info.cancel_event,
                     soft_interrupt_event=task_info.soft_interrupt_event,
                 )
@@ -566,12 +562,11 @@ class BackgroundTaskManager:
             task_info.status = TaskStatus.RUNNING
             task_info.started_at = datetime.now()
 
-            # Register task
-            self.tasks[thread_id] = task_info
+            self.tasks[key] = task_info
 
             logger.info(
-                f"[BackgroundTaskManager] Started workflow {thread_id} "
-                f"(running: {running_count + 1}/{self.max_concurrent})"
+                f"[BackgroundTaskManager] Started workflow thread_id={thread_id} "
+                f"run_id={run_id} (running: {running_count + 1}/{self.max_concurrent})"
             )
 
             return task_info
@@ -579,26 +574,15 @@ class BackgroundTaskManager:
     async def _run_workflow_shielded(
         self,
         thread_id: str,
+        run_id: str,
         workflow_generator: Any,
         cancel_event: asyncio.Event,
         soft_interrupt_event: asyncio.Event,
     ):
-        """
-        Run workflow with shield protection and cooperative cancellation.
-
-        Uses asyncio.shield() to protect from accidental disconnects, while
-        supporting explicit cancellation via cooperative event signaling.
-
-        Args:
-            thread_id: Workflow thread identifier
-            workflow_generator: Async generator from graph.astream()
-            cancel_event: Event signaling explicit cancellation
-            soft_interrupt_event: Event signaling soft interrupt (pause)
-        """
+        """Run workflow with shield protection and cooperative cancellation."""
+        key = (thread_id, run_id)
         try:
-            # Define the workflow consumer coroutine with cooperative cancellation
             async def consume_workflow(wf_gen):
-                """Consume workflow generator with cancellation/soft-interrupt checks."""
                 async for event in wf_gen:
                     if cancel_event.is_set():
                         with suppress(Exception):
@@ -611,56 +595,39 @@ class BackgroundTaskManager:
                         raise SoftInterruptError("Soft-interrupted by user")
 
                     if self.enable_storage:
-                        await self._buffer_event_redis(thread_id, event)
+                        await self._buffer_event_redis(thread_id, run_id, event)
 
-            # ----------------------------------------------------------
-            # First graph turn
-            # ----------------------------------------------------------
             inner_task = asyncio.create_task(consume_workflow(workflow_generator))
 
             async with self.task_lock:
-                task_info = self.tasks.get(thread_id)
+                task_info = self.tasks.get(key)
                 if task_info:
                     task_info.inner_task = inner_task
 
-            # ALWAYS use shield - cancellation handled cooperatively inside task
             await asyncio.shield(inner_task)
 
-            # Main graph finished — mark completed unconditionally.
-            # _mark_completed handles both cases:
-            # - No subagents: completion_callback persists, done.
-            # - Subagents pending: completion_callback persists main turn,
-            #   collector spawned to wait for subagents and persist their events.
-            await self._mark_completed(thread_id)
+            await self._mark_completed(thread_id, run_id)
 
         except SoftInterruptError:
-            # User pressed ESC: flush whatever state we have so follow-up queries
-            # can restore maximum progress.
-            await self._flush_checkpoint(thread_id)
-            await self._mark_soft_interrupted(thread_id)
+            await self._flush_checkpoint(thread_id, run_id)
+            await self._mark_soft_interrupted(thread_id, run_id)
             return
 
         except asyncio.CancelledError:
-            await self._mark_cancelled(thread_id)
+            await self._mark_cancelled(thread_id, run_id)
             raise
 
         except Exception as e:
-            # Workflow failed
             logger.error(
-                f"[BackgroundTaskManager] Workflow {thread_id} failed: {e}",
+                f"[BackgroundTaskManager] Workflow {key} failed: {e}",
                 exc_info=True
             )
-            await self._mark_failed(thread_id, str(e))
+            await self._mark_failed(thread_id, run_id, str(e))
 
-    async def _flush_checkpoint(self, thread_id: str) -> None:
-        """Force a checkpoint write for the current thread state.
-
-        The agent/checkpointer normally writes checkpoints at safe boundaries.
-        If the user presses ESC mid-run, this explicit flush makes sure the
-        latest available state is persisted so the next request can restore it.
-        """
+    async def _flush_checkpoint(self, thread_id: str, run_id: str) -> None:
+        """Force a checkpoint write for the current thread state on ESC."""
         async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
+            task_info = self.tasks.get((thread_id, run_id))
             graph = task_info.graph if task_info else None
 
         if not graph:
@@ -691,36 +658,29 @@ class BackgroundTaskManager:
                 f"[BackgroundTaskManager] Failed to flush checkpoint for {thread_id}: {e}"
             )
 
-    async def _buffer_event_redis(self, thread_id: str, event: str):
-        """Append a workflow event to the per-thread Redis Stream.
-
-        Returns silently if the TaskInfo is gone (already cleaned up).
-        ``pipelined_event_buffer`` runs XADD + meta HSET in one MULTI/EXEC
-        outside the task_lock so Redis I/O can never block other appends.
-        """
+    async def _buffer_event_redis(self, thread_id: str, run_id: str, event: str):
+        """Append a workflow event to the per-run Redis Stream."""
+        key = (thread_id, run_id)
         async with self.task_lock:
-            if thread_id not in self.tasks:
+            if key not in self.tasks:
                 return
 
         try:
             cache = get_cache_client()
         except Exception as e:
             logger.warning(
-                f"[EventBuffer] get_cache_client() failed for {thread_id}: {e}; "
-                "dropping event"
+                f"[EventBuffer] get_cache_client() failed for {key}: {e}; dropping event"
             )
             return
         use_redis = self.event_storage_backend == "redis" and cache.enabled
 
         if not use_redis:
             logger.warning(
-                f"[EventBuffer] Redis unavailable for {thread_id}; "
+                f"[EventBuffer] Redis unavailable for {key}; "
                 "consumers attached to workflow:stream:* will see no events"
             )
             return
 
-        # Parse event ID from SSE format ("id: N\n..."). `partition` avoids
-        # allocating a full split list for events with multi-KB JSON bodies.
         event_id = None
         try:
             first_line, _, _ = event.partition("\n")
@@ -728,51 +688,43 @@ class BackgroundTaskManager:
         except (ValueError, IndexError):
             pass
 
-        # Without a parseable id the event can't land on the Stream
-        # (XADD needs an explicit ``<seq>-0`` id) and the meta hash counter
-        # would advance past an event that was never written, leaving a
-        # permanent gap in the stream. Bail and let the next event with
-        # a valid id keep the counter coherent.
         if event_id is None:
             logger.warning(
                 "[EventBuffer] Could not parse event ID from SSE string for "
-                f"{thread_id}; event dropped"
+                f"{key}; event dropped"
             )
             return
 
-        meta_key = f"workflow:events:meta:{thread_id}"
-        stream_key = f"workflow:stream:{thread_id}"
+        meta_k = stream_meta_key(thread_id, run_id)
+        stream_k = stream_key(thread_id, run_id)
 
         success, seq = await cache.pipelined_event_buffer(
-            meta_key=meta_key,
+            meta_key=meta_k,
             event=event,
             max_size=self.max_stored_messages,
             ttl=self.redis_event_ttl,
             last_event_id=event_id,
-            stream_key=stream_key,
+            stream_key=stream_k,
         )
 
         if not success:
             logger.error(
-                f"[EventBuffer] Redis pipeline failed for {thread_id}; "
+                f"[EventBuffer] Redis pipeline failed for {key}; "
                 "event dropped from workflow:stream:*"
             )
             return
 
-        logger.debug(f"[EventBuffer] Buffered event to Redis: {thread_id} (id={event_id}, seq={seq})")
+        logger.debug(f"[EventBuffer] Buffered event to Redis: {key} (id={event_id}, seq={seq})")
 
-        # Capacity warning — sample above 90% of max. Uses `seq` from HINCRBY so
-        # no extra round-trip. Strict `==` would silently skip the alert if seq
-        # jumped past threshold (pipeline retry, restart mid-burst). `>=` with
-        # a 1000-event modulo keeps the log quiet but guarantees every thread
-        # near-capacity produces at least one warning per 1000 events over.
         capacity_threshold = int(self.max_stored_messages * 0.9)
         if seq >= capacity_threshold and (seq - capacity_threshold) % 1000 == 0:
             logger.warning(
-                f"[EventBuffer] Buffer near capacity for {thread_id}: "
+                f"[EventBuffer] Buffer near capacity for {key}: "
                 f"{seq}/{self.max_stored_messages} events. "
                 "Oldest events will be dropped (FIFO)."
             )
+
+    # ========== Subagent collection ==========
 
     async def _collect_subagent_results_for_turn(
         self,
@@ -786,18 +738,10 @@ class BackgroundTaskManager:
         is_byok: bool = False,
         sandbox=None,
     ) -> None:
-        """Collect subagent results for a specific turn's tasks.
-
-        Similar to _collect_subagent_results_after_interrupt but operates on
-        a specific list of tasks (filtered by spawned_turn_index).
-        """
         if timeout is None:
             timeout = get_subagent_collector_timeout()
 
         try:
-            # Sync completion status: asyncio_task may be done but completed flag
-            # not yet set (e.g., after tail phase which checks asyncio_task.done()
-            # but doesn't set task.completed)
             for task in tasks:
                 if not task.completed and task.asyncio_task and task.asyncio_task.done():
                     task.completed = True
@@ -815,21 +759,17 @@ class BackgroundTaskManager:
 
             all_subagent_events: list[dict] = []
 
-            # Collect from already-completed tasks (Redis-fallback for any
-            # events that rotated past the in-memory tail during the run).
             for task in tasks:
                 if task.completed and task.captured_event_count > 0:
                     async for record in iter_subagent_events_full(thread_id, task):
                         enriched = _record_to_persist_event(record, thread_id)
                         all_subagent_events.append(enriched)
 
-            # Get pending tasks
             pending = {
                 t.asyncio_task: t for t in tasks
                 if t.is_pending and t.asyncio_task
             }
 
-            # Persist initial batch if any
             if all_subagent_events:
                 await self._persist_collected_events(
                     main_chunks, all_subagent_events, response_id,
@@ -837,17 +777,13 @@ class BackgroundTaskManager:
                 )
 
             if not pending:
-                # Persist subagent token usage as separate rows
                 await self._persist_subagent_usage(
                     response_id, tasks, thread_id, workspace_id, user_id,
                     is_byok=is_byok,
                 )
-                # Deferred cleanup: wait for per-task SSE streams to finish their
-                # final drain before clearing the captured-event tail and Redis buffers.
                 await self._await_drain_and_cleanup_tasks(tasks, thread_id)
                 return
 
-            # Wait for remaining tasks one-by-one
             deadline = time.time() + timeout
 
             while pending:
@@ -889,7 +825,6 @@ class BackgroundTaskManager:
                         thread_id, workspace_id, user_id, sandbox=sandbox,
                     )
 
-            # Spawn orphan collector for tasks that outlived the initial deadline
             if pending:
                 orphaned_tasks = list(pending.values())
                 logger.info(
@@ -911,15 +846,11 @@ class BackgroundTaskManager:
                     name=f"subagent-orphan-collector-{thread_id}",
                 )
 
-            # Persist subagent token usage as separate rows
-            # (only for tasks that were actually collected, not timed-out ones)
             collected_tasks = [t for t in tasks if t not in pending.values()]
             await self._persist_subagent_usage(
                 response_id, collected_tasks, thread_id, workspace_id, user_id,
                 is_byok=is_byok,
             )
-            # Deferred cleanup: wait for per-task SSE streams to finish their
-            # final drain before clearing captured_events and Redis buffers.
             await self._await_drain_and_cleanup_tasks(collected_tasks, thread_id)
 
         except Exception as e:
@@ -931,23 +862,14 @@ class BackgroundTaskManager:
     async def _await_drain_and_cleanup_tasks(
         self, tasks: list, thread_id: str, timeout: float | None = None
     ) -> None:
-        """Wait for per-task SSE streams to finish emitting, then clear buffers.
-
-        Each task carries an ``sse_drain_complete`` event that is set by
-        ``stream_subagent_task_events`` after its final drain.  We await all of
-        them concurrently so the collector only clears captured_events once every
-        live SSE consumer has delivered the full event sequence.
-
-        If no SSE consumer is connected (event never set), the timeout ensures
-        cleanup still happens — persistence has already succeeded at this point.
-        """
         if timeout is None:
             timeout = get_sse_drain_timeout()
+
         async def _wait_one(event: "asyncio.Event") -> None:
             try:
                 await asyncio.wait_for(event.wait(), timeout=timeout)
             except asyncio.TimeoutError:
-                pass  # No active SSE consumer, or too slow — safe to clear
+                pass
 
         await asyncio.gather(*[_wait_one(t.sse_drain_complete) for t in tasks])
 
@@ -959,11 +881,9 @@ class BackgroundTaskManager:
                 f"[SubagentCleanup] Cache client unavailable during cleanup "
                 f"for thread_id={thread_id}: {exc}"
             )
+
         for task in tasks:
             task.per_call_records = []
-            # Drop asyncio handles — the asyncio.Task object holds the
-            # coroutine frame, which can keep middleware/tool/LLM-callback
-            # closures alive long after the task itself is done.
             task.asyncio_task = None
             task.handler_task = None
             if cache is not None:
@@ -979,11 +899,6 @@ class BackgroundTaskManager:
                     )
                 except Exception:
                     pass
-                # One-release backward-compat sweep: pre-cutover workers
-                # RPUSH'd records to the legacy List under this key. The
-                # new code never reads or writes it, but stale entries
-                # from a worker that ran the same thread before deploy
-                # would otherwise sit in Redis until the 24h TTL.
                 try:
                     await cache.delete(
                         f"subagent:events:{thread_id}:{task.task_id}"
@@ -1014,26 +929,12 @@ class BackgroundTaskManager:
         is_byok: bool = False,
         sandbox=None,
     ) -> None:
-        """Continue collecting results for tasks that outlived the initial collector.
-
-        Spawned as a fire-and-forget task when the initial collector's deadline
-        expires with pending tasks.  Uses an **idle timeout** instead of a fixed
-        deadline: the timer resets whenever any pending task shows progress
-        (new captured events or tool call activity).  This means a subagent that
-        is actively working will never be abandoned, while a truly stuck one is
-        cleaned up after the idle period.
-
-        The tasks' collector_response_id is already set (retained from the initial
-        collector), preventing other collectors from double-claiming.
-        """
         idle_timeout = get_subagent_orphan_collector_timeout()
-        # How often to poll for progress when no task completes
         poll_interval = min(30.0, idle_timeout)
 
         try:
             all_subagent_events = list(prior_subagent_events)
 
-            # Sync completion: tasks may have finished between parent timeout and now
             for task in tasks:
                 if not task.completed and task.asyncio_task and task.asyncio_task.done():
                     task.completed = True
@@ -1048,7 +949,6 @@ class BackgroundTaskManager:
                 if t.is_pending and t.asyncio_task
             }
 
-            # Collect events from tasks that completed in the gap
             for task in tasks:
                 if (
                     task.completed
@@ -1060,7 +960,6 @@ class BackgroundTaskManager:
                         all_subagent_events.append(enriched)
 
             if not pending:
-                # All tasks completed between parent timeout and our start
                 if all_subagent_events:
                     await self._persist_collected_events(
                         main_chunks, all_subagent_events, response_id,
@@ -1082,10 +981,6 @@ class BackgroundTaskManager:
                 f"{idle_timeout}s idle timeout, thread_id={thread_id}"
             )
 
-            # Snapshot current activity state per pending task. ``count`` is
-            # the total events ever captured (includes those rotated out of
-            # the in-memory tail) so the liveness check stays correct even
-            # when subagents emit far past the tail size.
             last_activity: dict[asyncio.Task, tuple[float, int]] = {
                 at: (t.last_updated_at, t.captured_event_count)
                 for at, t in pending.items()
@@ -1093,7 +988,6 @@ class BackgroundTaskManager:
             last_progress_time = time.time()
 
             while pending:
-                # Check idle deadline
                 if time.time() - last_progress_time > idle_timeout:
                     logger.warning(
                         f"[OrphanCollector] Idle timeout ({idle_timeout}s) for "
@@ -1108,7 +1002,6 @@ class BackgroundTaskManager:
                 )
 
                 if done:
-                    # Task completion is progress
                     last_progress_time = time.time()
 
                     for asyncio_task in done:
@@ -1138,7 +1031,6 @@ class BackgroundTaskManager:
                             thread_id, workspace_id, user_id, sandbox=sandbox,
                         )
                 else:
-                    # No task completed this cycle — check for activity progress
                     for asyncio_task, task in pending.items():
                         prev_update, prev_events = last_activity.get(
                             asyncio_task, (0.0, 0)
@@ -1149,7 +1041,6 @@ class BackgroundTaskManager:
                             last_progress_time = time.time()
                             last_activity[asyncio_task] = (cur_update, cur_events)
 
-            # Release claims on tasks that are truly idle
             if pending:
                 for asyncio_task, task in pending.items():
                     task.collector_response_id = None
@@ -1172,21 +1063,19 @@ class BackgroundTaskManager:
                 f"[OrphanCollector] Failed for thread_id={thread_id}: {e}",
                 exc_info=True,
             )
-            # Release claims on failure so tasks aren't permanently locked
             for task in tasks:
                 if task.collector_response_id == response_id:
                     task.collector_response_id = None
 
-    # ========== Workflow Completion & Error Handlers ==========
+    # ========== Terminal handlers ==========
 
-    def _release_terminal_refs(self, thread_id: str) -> None:
-        """Drop heavy in-process refs once a TaskInfo is in terminal state.
-
-        Idempotent. Preserves small scalars used by /status, debug paths, and
-        downstream readers (workspace_id, user_id, is_byok, dispatch_kind,
-        response_id).
-        """
-        info = self.tasks.get(thread_id)
+    def _release_terminal_refs(
+        self,
+        thread_id: str,
+        run_id: str,
+    ) -> None:
+        """Drop heavy in-process refs once a TaskInfo is in terminal state."""
+        info = self.tasks.get((thread_id, run_id))
         if not info:
             return
         info.graph = None
@@ -1196,29 +1085,23 @@ class BackgroundTaskManager:
         info.metadata.pop("handler", None)
         info.metadata.pop("token_callback", None)
         info.metadata.pop("sandbox", None)
+        info.metadata.pop("persistence_service", None)
 
-    async def _mark_completed(self, thread_id: str):
-        """Mark workflow as completed and notify live subscribers.
-
-        Split into two phases to avoid holding the lock during heavy async I/O:
-        - Phase 1 (under lock): status update, sentinels, copy refs
-        - Phase 2 (outside lock): aget_state, persistence, callbacks, collector
-        """
-        # Phase 1: Quick state update under lock
+    async def _mark_completed(self, thread_id: str, run_id: str):
+        """Mark workflow as completed and notify live subscribers."""
+        key = (thread_id, run_id)
         async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
+            task_info = self.tasks.get(key)
             if not task_info:
                 return
 
             task_info.status = TaskStatus.COMPLETED
             task_info.completed_at = datetime.now()
 
-            # Copy refs needed for persistence phase
             graph = task_info.graph
             metadata = task_info.metadata
             completion_callback = task_info.completion_callback
 
-        # Phase 2: Heavy I/O outside lock (with timeout protection)
         is_interrupted = False
         try:
             if graph:
@@ -1227,48 +1110,45 @@ class BackgroundTaskManager:
                     timeout=get_checkpoint_flush_timeout(),
                 )
                 if snapshot and snapshot.next:
-                    # Workflow has pending nodes = interrupted, not completed
                     is_interrupted = True
         except asyncio.TimeoutError:
             logger.error(
-                f"[BackgroundTaskManager] aget_state timed out for {thread_id} in _mark_completed"
+                f"[BackgroundTaskManager] aget_state timed out for {key} in _mark_completed"
             )
         except Exception as state_error:
             logger.warning(
-                f"[BackgroundTaskManager] Could not check workflow state for {thread_id}: {state_error}"
+                f"[BackgroundTaskManager] Could not check workflow state for {key}: {state_error}"
             )
 
-        # Database status will be updated by persistence service in transaction
         workspace_id = metadata.get("workspace_id")
         user_id = metadata.get("user_id")
 
-        # Persist workflow state based on completion vs interrupt
         if is_interrupted:
-            # Workflow interrupted - persist interrupt state with all required fields
             if workspace_id and user_id:
                 try:
                     from src.server.services.persistence.conversation import ConversationPersistenceService
 
-                    persistence_service = ConversationPersistenceService.get_instance(thread_id)
-                    persistence_service._on_pair_persisted = lambda: self.clear_event_buffer(thread_id)
+                    persistence_service = metadata.get("persistence_service")
+                    if persistence_service is None:
+                        persistence_service = ConversationPersistenceService.get_instance(
+                            thread_id, run_id,
+                            workspace_id=workspace_id, user_id=user_id,
+                        )
+                    persistence_service._on_pair_persisted = (
+                        lambda: self.clear_event_buffer(thread_id, run_id)
+                    )
 
-                    # Get token usage and per_call_records from token_callback
                     _, per_call_records = get_token_usage_from_callback(
                         metadata, "interrupt", thread_id
                     )
-
-                    # Get tool usage from handler (has cached result from SSE emission)
                     tool_usage = get_tool_usage_from_handler(
                         metadata, "interrupt", thread_id
                     )
-
-                    # Get SSE events for persistence (plan description, reasoning, etc.)
                     sse_events = get_sse_events_from_handler(
                         metadata, "interrupt", thread_id
                     )
 
-                    # Determine actual interrupt reason from SSE events
-                    interrupt_reason = "plan_review_required"  # default fallback
+                    interrupt_reason = "plan_review_required"
                     if sse_events:
                         for chunk in sse_events:
                             if chunk.get("event") == "interrupt":
@@ -1280,15 +1160,13 @@ class BackgroundTaskManager:
                                         interrupt_reason = "user_question"
                                 break
 
-                    # Calculate execution time from start_time
                     execution_time = calculate_execution_time(metadata)
 
-                    # Build metadata with all context
                     persist_metadata = {
                         "msg_type": metadata.get("msg_type"),
                         "stock_code": metadata.get("stock_code"),
                         "deepthinking": metadata.get("deepthinking", False),
-                        "is_byok": metadata.get("is_byok", False)
+                        "is_byok": metadata.get("is_byok", False),
                     }
 
                     await persistence_service.persist_interrupt(
@@ -1297,137 +1175,122 @@ class BackgroundTaskManager:
                         metadata=persist_metadata,
                         per_call_records=per_call_records,
                         tool_usage=tool_usage,
-                        sse_events=sse_events
+                        sse_events=sse_events,
                     )
-                    logger.info(f"[WorkflowPersistence] Workflow {thread_id} paused for human feedback")
+                    logger.info(f"[WorkflowPersistence] Workflow {key} paused for human feedback")
 
-                    # Update Redis workflow tracker to interrupted
-                    # (prevents frontend from reconnecting to a paused workflow)
                     tracker = WorkflowTracker.get_instance()
                     await tracker.mark_interrupted(
                         thread_id=thread_id,
-                        metadata={"interrupt_reason": interrupt_reason},
+                        metadata={"interrupt_reason": interrupt_reason, "run_id": run_id},
                     )
                 except Exception as persist_error:
                     logger.error(
-                        f"[WorkflowPersistence] Failed to persist interrupt for thread_id={thread_id}: {persist_error}",
-                        exc_info=True
+                        f"[WorkflowPersistence] Failed to persist interrupt for {key}: {persist_error}",
+                        exc_info=True,
                     )
         else:
-            # Workflow completed - invoke completion callback for full persistence
             if completion_callback:
                 try:
-                    await completion_callback()
+                    await completion_callback(task_info)
                 except Exception as e:
                     logger.error(
-                        f"[BackgroundTaskManager] Completion callback failed for {thread_id}: {e}",
-                        exc_info=True
+                        f"[BackgroundTaskManager] Completion callback failed for {key}: {e}",
+                        exc_info=True,
                     )
-                    # Update workflow status to error when callback fails.
-                    # Returning short-circuits the post-else collector spawn and
-                    # the second release_burst_slot — _mark_failed handles both.
-                    await self._mark_failed(thread_id, f"Completion callback failed: {str(e)}")
+                    await self._mark_failed(
+                        thread_id, run_id,
+                        f"Completion callback failed: {str(e)}",
+                    )
                     return
 
-        # Spawn collector for subagent events + usage merge
-        from src.server.services.persistence.conversation import ConversationPersistenceService
-        ps = ConversationPersistenceService.get_instance(thread_id)
-        response_id = ps._current_response_id
+        # Spawn collector for subagent events. response_id == run_id by 1:1 contract.
+        response_id = run_id
 
-        if response_id:
-            from src.server.services.background_registry_store import BackgroundRegistryStore
-            bg_store = BackgroundRegistryStore.get_instance()
-            bg_registry = await bg_store.get_registry(thread_id)
-            if bg_registry:
-                # Atomically claim uncollected tasks to prevent double-persist
-                # when two collectors run concurrently (e.g. subagent from turn 0
-                # still pending when turn 1 completes).
-                tasks_to_collect = []
-                for t in bg_registry._tasks.values():
-                    if t.collector_response_id:
-                        continue  # Already claimed by another turn's collector
-                    if t.is_pending or t.captured_event_count > 0 or t.per_call_records:
-                        t.collector_response_id = response_id
-                        tasks_to_collect.append(t)
-                if tasks_to_collect:
-                    workspace_id = metadata.get("workspace_id")
-                    user_id = metadata.get("user_id")
-                    handler = metadata.get("handler")
-                    sse_events = handler.get_sse_events() if handler else []
-                    if workspace_id and user_id:
-                        asyncio.create_task(
-                            self._collect_subagent_results_for_turn(
-                                thread_id=thread_id,
-                                response_id=response_id,
-                                original_chunks=sse_events or [],
-                                tasks=tasks_to_collect,
-                                workspace_id=workspace_id,
-                                user_id=user_id,
-                                is_byok=metadata.get("is_byok", False),
-                                sandbox=metadata.get("sandbox"),
-                            ),
-                            name=f"subagent-collector-{thread_id}-post-tail",
-                        )
+        from src.server.services.background_registry_store import BackgroundRegistryStore
+        bg_store = BackgroundRegistryStore.get_instance()
+        bg_registry = await bg_store.get_registry(thread_id)
+        if bg_registry:
+            tasks_to_collect = []
+            for t in bg_registry._tasks.values():
+                if t.collector_response_id:
+                    continue
+                if t.is_pending or t.captured_event_count > 0 or t.per_call_records:
+                    t.collector_response_id = response_id
+                    tasks_to_collect.append(t)
+            if tasks_to_collect:
+                handler = metadata.get("handler")
+                sse_events = handler.get_sse_events() if handler else []
+                if workspace_id and user_id:
+                    asyncio.create_task(
+                        self._collect_subagent_results_for_turn(
+                            thread_id=thread_id,
+                            response_id=response_id,
+                            original_chunks=sse_events or [],
+                            tasks=tasks_to_collect,
+                            workspace_id=workspace_id,
+                            user_id=user_id,
+                            is_byok=metadata.get("is_byok", False),
+                            sandbox=metadata.get("sandbox"),
+                        ),
+                        name=f"subagent-collector-{thread_id}-{run_id}-post-tail",
+                    )
 
-        # Release burst slot for all completion paths (normal + interrupt)
         if user_id:
             await release_burst_slot(user_id)
 
-        # Signal that persistence is done so callers (e.g. automation_executor)
-        # can safely read persisted data from the DB.
+        task_info.persistence_complete.set()
         async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
-            if task_info:
-                task_info.persistence_complete.set()
-            self._release_terminal_refs(thread_id)
+            self._release_terminal_refs(thread_id, run_id)
 
-    async def wait_for_persistence(self, thread_id: str, timeout: float | None = None) -> bool:
-        """Wait until _mark_completed has finished persisting for *thread_id*.
+    async def wait_for_persistence(
+        self, thread_id: str, run_id: str, timeout: float | None = None
+    ) -> bool:
+        """Wait until _mark_completed has finished persisting for the given turn.
 
-        Returns True if persistence completed, False on timeout or missing task.
+        Captures the ``persistence_complete`` event reference under the lock
+        so a concurrent ``wait_for_soft_interrupted`` deletion of the entry
+        doesn't make us drop a still-pending wait on the floor.
         """
         if timeout is None:
             timeout = get_wait_for_persistence_timeout()
         async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
-        if not task_info:
+            task_info = self.tasks.get((thread_id, run_id))
+            event = task_info.persistence_complete if task_info else None
+        if event is None:
             return False
         try:
-            await asyncio.wait_for(task_info.persistence_complete.wait(), timeout=timeout)
+            await asyncio.wait_for(event.wait(), timeout=timeout)
             return True
         except asyncio.TimeoutError:
             logger.warning(
-                f"[BackgroundTaskManager] wait_for_persistence timed out for {thread_id} "
-                f"after {timeout}s"
+                f"[BackgroundTaskManager] wait_for_persistence timed out for "
+                f"thread_id={thread_id} run_id={run_id} after {timeout}s"
             )
             return False
 
-    async def _mark_failed(self, thread_id: str, error: str):
-        """Mark workflow as failed and notify live subscribers.
-
-        Split into two phases to avoid holding the lock during heavy async I/O:
-        - Phase 1 (under lock): status update, sentinels, copy refs
-        - Phase 2 (outside lock): aget_state, persistence
-        """
-        # Phase 1: Quick state update under lock
+    async def _mark_failed(
+        self,
+        thread_id: str,
+        run_id: str,
+        error: str,
+    ):
+        """Mark workflow as failed and notify live subscribers."""
+        key = (thread_id, run_id)
         async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
+            task_info = self.tasks.get(key)
             if not task_info:
                 return
 
             task_info.status = TaskStatus.FAILED
             task_info.completed_at = datetime.now()
             task_info.error = error
-
-            # Copy refs needed for persistence phase
             metadata = task_info.metadata
 
-        # Phase 2: Heavy I/O outside lock
         logger.error(
-            f"[BackgroundTaskManager] Workflow {thread_id} failed: {error}"
+            f"[BackgroundTaskManager] Workflow {key} failed: {error}"
         )
 
-        # Persist error with full details
         workspace_id = metadata.get("workspace_id")
         user_id = metadata.get("user_id")
 
@@ -1435,33 +1298,33 @@ class BackgroundTaskManager:
             try:
                 from src.server.services.persistence.conversation import ConversationPersistenceService
 
-                persistence_service = ConversationPersistenceService.get_instance(thread_id)
-                persistence_service._on_pair_persisted = lambda: self.clear_event_buffer(thread_id)
+                persistence_service = metadata.get("persistence_service")
+                if persistence_service is None:
+                    persistence_service = ConversationPersistenceService.get_instance(
+                        thread_id, run_id,
+                        workspace_id=workspace_id, user_id=user_id,
+                    )
+                persistence_service._on_pair_persisted = (
+                    lambda: self.clear_event_buffer(thread_id, run_id)
+                )
 
-                # Calculate execution time
                 execution_time = calculate_execution_time(metadata)
-
-                # Get token usage and per_call_records from token_callback
                 _, per_call_records = get_token_usage_from_callback(
                     metadata, "error", thread_id
                 )
-
-                # Get tool usage from handler (has cached result from SSE emission)
                 tool_usage = get_tool_usage_from_handler(
                     metadata, "error", thread_id
                 )
-
                 sse_events = get_sse_events_from_handler(
                     metadata, "error", thread_id
                 )
 
-                # Build metadata with all context
                 persist_metadata = {
                     "msg_type": metadata.get("msg_type"),
                     "stock_code": metadata.get("stock_code"),
                     "agent_llm_preset": metadata.get("agent_llm_preset", "default"),
                     "deepthinking": metadata.get("deepthinking", False),
-                    "is_byok": metadata.get("is_byok", False)
+                    "is_byok": metadata.get("is_byok", False),
                 }
 
                 await persistence_service.persist_error(
@@ -1471,63 +1334,44 @@ class BackgroundTaskManager:
                     per_call_records=per_call_records,
                     tool_usage=tool_usage,
                     sse_events=sse_events,
-                    metadata=persist_metadata
+                    metadata=persist_metadata,
                 )
-                logger.info(f"[WorkflowPersistence] Error persisted for thread_id={thread_id}")
+                logger.info(f"[WorkflowPersistence] Error persisted for {key}")
             except Exception as persist_error:
                 logger.error(
-                    f"[WorkflowPersistence] Failed to persist error for {thread_id}: {persist_error}",
-                    exc_info=True
+                    f"[WorkflowPersistence] Failed to persist error for {key}: {persist_error}",
+                    exc_info=True,
                 )
 
-        # Release burst slot for failure path
         if user_id:
             await release_burst_slot(user_id)
 
-        # Push terminal status to Redis so /status reports FAILED with bounded
-        # TTL instead of leaving the key as ACTIVE until natural expiry.
-        # Mirrors mark_completed/mark_cancelled.
         try:
             tracker = WorkflowTracker.get_instance()
             await tracker.mark_failed(thread_id, error=error)
         except Exception as tracker_err:
             logger.warning(
-                f"[BackgroundTaskManager] tracker.mark_failed failed for {thread_id}: {tracker_err}"
+                f"[BackgroundTaskManager] tracker.mark_failed failed for {key}: {tracker_err}"
             )
 
+        task_info.persistence_complete.set()
         async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
-            if task_info:
-                task_info.persistence_complete.set()
-            self._release_terminal_refs(thread_id)
+            self._release_terminal_refs(thread_id, run_id)
 
-    async def _mark_soft_interrupted(self, thread_id: str) -> None:
-        """Mark workflow as soft-interrupted (ESC).
-
-        This ends the foreground workflow execution so the user can immediately
-        send a follow-up message on the same `thread_id`, while leaving any
-        independently running background subagent tasks alone.
-
-        Split into two phases to avoid holding the lock during heavy async I/O:
-        - Phase 1 (under lock): status update, sentinels, copy refs
-        - Phase 2 (outside lock): aget_state, persistence, subagent collector
-        """
-        # Phase 1: Quick state update under lock
+    async def _mark_soft_interrupted(self, thread_id: str, run_id: str) -> None:
+        """Mark workflow as soft-interrupted (ESC)."""
+        key = (thread_id, run_id)
         async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
+            task_info = self.tasks.get(key)
             if not task_info:
                 return
 
             task_info.status = TaskStatus.SOFT_INTERRUPTED
             task_info.completed_at = datetime.now()
-
-            # Copy refs needed for persistence phase
             metadata = task_info.metadata
 
-        # Phase 2: Heavy I/O outside lock
-        logger.info(f"[BackgroundTaskManager] Marked as soft-interrupted: {thread_id}")
+        logger.info(f"[BackgroundTaskManager] Marked as soft-interrupted: {key}")
 
-        # Persist soft interrupt so query/response pair is saved
         workspace_id = metadata.get("workspace_id")
         user_id = metadata.get("user_id")
 
@@ -1535,25 +1379,25 @@ class BackgroundTaskManager:
             try:
                 from src.server.services.persistence.conversation import ConversationPersistenceService
 
-                persistence_service = ConversationPersistenceService.get_instance(
-                    thread_id,
-                    workspace_id=workspace_id,
-                    user_id=user_id
+                persistence_service = metadata.get("persistence_service")
+                if persistence_service is None:
+                    persistence_service = ConversationPersistenceService.get_instance(
+                        thread_id, run_id,
+                        workspace_id=workspace_id, user_id=user_id,
+                    )
+                persistence_service._on_pair_persisted = (
+                    lambda: self.clear_event_buffer(thread_id, run_id)
                 )
-                persistence_service._on_pair_persisted = lambda: self.clear_event_buffer(thread_id)
 
                 _, per_call_records = get_token_usage_from_callback(
                     metadata, "interrupt", thread_id
                 )
-
                 tool_usage = get_tool_usage_from_handler(
                     metadata, "interrupt", thread_id
                 )
-
                 sse_events = get_sse_events_from_handler(
                     metadata, "interrupt", thread_id
                 )
-
                 execution_time = calculate_execution_time(metadata)
 
                 persist_metadata = {
@@ -1562,7 +1406,7 @@ class BackgroundTaskManager:
                     "agent_llm_preset": metadata.get("agent_llm_preset", "default"),
                     "deepthinking": metadata.get("deepthinking", False),
                     "is_byok": metadata.get("is_byok", False),
-                    "soft_interrupted": True
+                    "soft_interrupted": True,
                 }
 
                 response_id = await persistence_service.persist_interrupt(
@@ -1571,11 +1415,10 @@ class BackgroundTaskManager:
                     metadata=persist_metadata,
                     per_call_records=per_call_records,
                     tool_usage=tool_usage,
-                    sse_events=sse_events
+                    sse_events=sse_events,
                 )
-                logger.info(f"[WorkflowPersistence] Soft interrupt persisted for thread_id={thread_id}")
+                logger.info(f"[WorkflowPersistence] Soft interrupt persisted for {key}")
 
-                # Spawn collector if subagents are still running
                 from src.server.services.background_registry_store import BackgroundRegistryStore
                 bg_store = BackgroundRegistryStore.get_instance()
                 bg_registry = await bg_store.get_registry(thread_id)
@@ -1583,7 +1426,7 @@ class BackgroundTaskManager:
                 if bg_registry and bg_registry.has_pending_tasks():
                     logger.info(
                         f"[WorkflowPersistence] {bg_registry.pending_count} subagents still running, "
-                        f"spawning result collector for thread_id={thread_id}"
+                        f"spawning result collector for {key}"
                     )
                     asyncio.create_task(
                         self._collect_subagent_results_after_interrupt(
@@ -1596,32 +1439,28 @@ class BackgroundTaskManager:
                             timeout=get_subagent_collector_timeout(),
                             is_byok=metadata.get("is_byok", False),
                         ),
-                        name=f"subagent-collector-{thread_id}",
+                        name=f"subagent-collector-{thread_id}-{run_id}",
                     )
             except Exception as persist_error:
                 logger.error(
-                    f"[WorkflowPersistence] Failed to persist soft interrupt for {thread_id}: {persist_error}",
-                    exc_info=True
+                    f"[WorkflowPersistence] Failed to persist soft interrupt for {key}: {persist_error}",
+                    exc_info=True,
                 )
 
-        # Release burst slot for soft interrupt path
         if user_id:
             await release_burst_slot(user_id)
 
-        # Push terminal status to Redis (bounded TTL).
         try:
             tracker = WorkflowTracker.get_instance()
             await tracker.mark_soft_interrupted(thread_id)
         except Exception as tracker_err:
             logger.warning(
-                f"[BackgroundTaskManager] tracker.mark_soft_interrupted failed for {thread_id}: {tracker_err}"
+                f"[BackgroundTaskManager] tracker.mark_soft_interrupted failed for {key}: {tracker_err}"
             )
 
+        task_info.persistence_complete.set()
         async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
-            if task_info:
-                task_info.persistence_complete.set()
-            self._release_terminal_refs(thread_id)
+            self._release_terminal_refs(thread_id, run_id)
 
     async def _collect_subagent_results_after_interrupt(
         self,
@@ -1634,28 +1473,17 @@ class BackgroundTaskManager:
         timeout: float | None = None,
         is_byok: bool = False,
     ) -> None:
-        """Wait for subagents incrementally, persist as each completes.
-
-        Fire-and-forget task spawned by _mark_soft_interrupted() when background
-        subagents are still running after the user presses ESC.
-
-        Uses asyncio.FIRST_COMPLETED so each subagent's events are persisted
-        to DB as soon as that subagent finishes, rather than waiting for all.
-        """
         if timeout is None:
             timeout = get_subagent_collector_timeout()
 
         try:
-            # Claim uncollected tasks atomically to prevent double-persist
-            all_tasks = [
-                t for t in await bg_registry.get_all_tasks()
-                if not t.collector_response_id
-            ]
-            for t in all_tasks:
+            all_tasks = []
+            for t in bg_registry._tasks.values():
+                if t.collector_response_id:
+                    continue
                 t.collector_response_id = response_id
+                all_tasks.append(t)
 
-            # Sync completion status: asyncio_task may be done but completed flag
-            # not yet set (same gap as in _collect_subagent_results_for_turn)
             for task in all_tasks:
                 if not task.completed and task.asyncio_task and task.asyncio_task.done():
                     task.completed = True
@@ -1673,30 +1501,24 @@ class BackgroundTaskManager:
                 f"pending={bg_registry.pending_count}"
             )
 
-            # Main agent events (unchanged throughout)
             main_chunks = [
                 c for c in original_chunks
                 if c.get("data", {}).get("agent", "") not in subagent_agent_ids
             ]
 
-            # Accumulate subagent events across iterations
             all_subagent_events: list[dict] = []
 
-            # Collect from already-completed tasks (Redis-fallback covers
-            # events that rotated past the in-memory tail during the run)
             for task in all_tasks:
                 if task.completed and task.captured_event_count > 0:
                     async for record in iter_subagent_events_full(thread_id, task):
                         enriched = _record_to_persist_event(record, thread_id)
                         all_subagent_events.append(enriched)
 
-            # Get pending tasks
             pending = {
                 t.asyncio_task: t for t in all_tasks
                 if t.is_pending and t.asyncio_task
             }
 
-            # Persist initial batch if any already-completed tasks had events
             if all_subagent_events:
                 await self._persist_collected_events(
                     main_chunks, all_subagent_events, response_id,
@@ -1709,7 +1531,6 @@ class BackgroundTaskManager:
                         f"[SubagentCollector] No subagent events captured "
                         f"for thread_id={thread_id}"
                     )
-                # Persist subagent token usage as separate rows
                 await self._persist_subagent_usage(
                     response_id, all_tasks, thread_id, workspace_id, user_id,
                     is_byok=is_byok,
@@ -1717,7 +1538,6 @@ class BackgroundTaskManager:
                 await self._await_drain_and_cleanup_tasks(all_tasks, thread_id)
                 return
 
-            # Wait for remaining tasks one-by-one
             deadline = time.time() + timeout
 
             while pending:
@@ -1736,12 +1556,11 @@ class BackgroundTaskManager:
                 )
 
                 if not done:
-                    break  # timeout
+                    break
 
                 for asyncio_task in done:
                     task = pending.pop(asyncio_task)
 
-                    # Mark task completed
                     async with bg_registry._lock:
                         task.completed = True
                         try:
@@ -1750,7 +1569,6 @@ class BackgroundTaskManager:
                             task.error = str(e)
                             task.result = {"success": False, "error": str(e)}
 
-                    # Collect this task's captured events
                     if task.captured_event_count > 0:
                         async for record in iter_subagent_events_full(thread_id, task):
                             enriched = _record_to_persist_event(record, thread_id)
@@ -1761,14 +1579,12 @@ class BackgroundTaskManager:
                         f"persisting {len(all_subagent_events)} total events"
                     )
 
-                # Persist after each batch of completions
                 if all_subagent_events:
                     await self._persist_collected_events(
                         main_chunks, all_subagent_events, response_id,
                         thread_id, workspace_id, user_id,
                     )
 
-            # Spawn orphan collector for tasks that outlived the initial deadline
             if pending:
                 orphaned_tasks = list(pending.values())
                 logger.info(
@@ -1789,8 +1605,6 @@ class BackgroundTaskManager:
                     name=f"subagent-orphan-collector-{thread_id}",
                 )
 
-            # Persist subagent token usage as separate rows
-            # (only for tasks that were actually collected, not timed-out ones)
             collected_tasks = [t for t in all_tasks if t not in pending.values()]
             await self._persist_subagent_usage(
                 response_id, collected_tasks, thread_id, workspace_id, user_id,
@@ -1814,14 +1628,7 @@ class BackgroundTaskManager:
         user_id: str,
         sandbox=None,
     ) -> None:
-        """Clean and persist main + subagent events to DB.
-
-        Subagent events are already in correct sequential order from
-        event_capture.py's await-based capture (append_captured_event under lock).
-        We preserve this insertion order rather than sorting by timestamp,
-        which can reorder events captured in tight loops with identical
-        time.time() values.
-        """
+        """Clean and persist main + subagent events to DB."""
         import copy
 
         cleaned = []
@@ -1832,7 +1639,6 @@ class BackgroundTaskManager:
 
         updated_chunks = main_chunks + cleaned
 
-        # Capture sandbox images from subagent events → upload to cloud storage
         if sandbox:
             try:
                 from src.server.services.persistence.image_capture import (
@@ -1847,15 +1653,25 @@ class BackgroundTaskManager:
                     "[IMAGE_CAPTURE] Hook B failed", exc_info=True,
                 )
 
-        from src.server.services.persistence.conversation import (
-            ConversationPersistenceService,
-        )
-        persistence_service = ConversationPersistenceService.get_instance(
-            thread_id, workspace_id=workspace_id, user_id=user_id,
-        )
-        await persistence_service.update_sse_events(
-            response_id=response_id, sse_events=updated_chunks,
-        )
+        # Direct DB update — we know the response_id, no need to go through
+        # the persistence-service singleton (which would key by run_id and
+        # might not match a subagent collector running across turns).
+        from src.server.database import conversation as qr_db
+        try:
+            await qr_db.update_sse_events(
+                conversation_response_id=response_id,
+                sse_events=updated_chunks,
+            )
+            logger.info(
+                f"[SubagentCollector] Updated sse_events for "
+                f"response_id={response_id} ({len(updated_chunks)} events)"
+            )
+        except Exception as e:
+            logger.error(
+                f"[SubagentCollector] Failed to update sse_events "
+                f"response_id={response_id}: {e}",
+                exc_info=True,
+            )
 
     async def _persist_subagent_usage(
         self,
@@ -1866,20 +1682,7 @@ class BackgroundTaskManager:
         user_id: str,
         is_byok: bool = False,
     ) -> None:
-        """Persist each subagent's token usage as a separate row with msg_type='task'.
-
-        Instead of merging subagent costs into the parent turn's record, each
-        subagent gets its own conversation_usages row linked to the same
-        response_id. This avoids complex read-merge-write and keeps subagent
-        costs independently queryable.
-
-        Args:
-            response_id: The parent conversation_response_id (for association)
-            tasks: List of BackgroundTask objects with per_call_records
-            thread_id: Thread ID for logging
-            workspace_id: Workspace ID for the usage record
-            user_id: User ID for the usage record
-        """
+        """Persist each subagent's token usage as a separate row with msg_type='task'."""
         from src.server.services.persistence.usage import UsagePersistenceService
 
         tasks_with_records = [t for t in tasks if t.per_call_records]
@@ -1897,8 +1700,6 @@ class BackgroundTaskManager:
                 )
                 await usage_service.track_llm_usage(task.per_call_records)
 
-                # Enrich the computed token_usage with subagent identity
-                # (track_llm_usage already aggregated tokens + costs correctly)
                 if usage_service._token_usage is not None:
                     usage_service._token_usage["task_id"] = task.task_id
                     usage_service._token_usage["agent_id"] = task.agent_id
@@ -1927,29 +1728,20 @@ class BackgroundTaskManager:
                 f"thread_id={thread_id}"
             )
 
-    async def _mark_cancelled(self, thread_id: str):
-        """Mark workflow as cancelled and notify live subscribers.
-
-        Split into two phases to avoid holding the lock during heavy async I/O:
-        - Phase 1 (under lock): status update, sentinels, copy refs
-        - Phase 2 (outside lock): aget_state, persistence
-        """
-        # Phase 1: Quick state update under lock
+    async def _mark_cancelled(self, thread_id: str, run_id: str):
+        """Mark workflow as cancelled and notify live subscribers."""
+        key = (thread_id, run_id)
         async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
+            task_info = self.tasks.get(key)
             if not task_info:
                 return
 
             task_info.status = TaskStatus.CANCELLED
             task_info.completed_at = datetime.now()
-
-            # Copy refs needed for persistence phase
             metadata = task_info.metadata
 
-        # Phase 2: Heavy I/O outside lock
-        logger.debug(f"[BackgroundTaskManager] Marked as cancelled: {thread_id}")
+        logger.debug(f"[BackgroundTaskManager] Marked as cancelled: {key}")
 
-        # Persist cancellation with full details
         workspace_id = metadata.get("workspace_id")
         user_id = metadata.get("user_id")
 
@@ -1957,34 +1749,34 @@ class BackgroundTaskManager:
             try:
                 from src.server.services.persistence.conversation import ConversationPersistenceService
 
-                persistence_service = ConversationPersistenceService.get_instance(thread_id)
-                persistence_service._on_pair_persisted = lambda: self.clear_event_buffer(thread_id)
+                persistence_service = metadata.get("persistence_service")
+                if persistence_service is None:
+                    persistence_service = ConversationPersistenceService.get_instance(
+                        thread_id, run_id,
+                        workspace_id=workspace_id, user_id=user_id,
+                    )
+                persistence_service._on_pair_persisted = (
+                    lambda: self.clear_event_buffer(thread_id, run_id)
+                )
 
-                # Calculate token usage AND keep per_call_records
                 _, per_call_records = get_token_usage_from_callback(
                     metadata, "cancellation", thread_id
                 )
-
-                # Get tool usage from handler (has cached result from SSE emission)
                 tool_usage = get_tool_usage_from_handler(
                     metadata, "cancellation", thread_id
                 )
-
                 sse_events = get_sse_events_from_handler(
                     metadata, "cancellation", thread_id
                 )
-
-                # Calculate execution time
                 execution_time = calculate_execution_time(metadata)
 
-                # Build persist metadata (include deepthinking for usage tracking)
                 persist_metadata = {
                     "msg_type": metadata.get("msg_type"),
                     "stock_code": metadata.get("stock_code"),
                     "agent_llm_preset": metadata.get("agent_llm_preset", "default"),
                     "deepthinking": metadata.get("deepthinking", False),
                     "is_byok": metadata.get("is_byok", False),
-                    "cancelled_by_user": True
+                    "cancelled_by_user": True,
                 }
 
                 await persistence_service.persist_cancelled(
@@ -1992,191 +1784,155 @@ class BackgroundTaskManager:
                     metadata=persist_metadata,
                     per_call_records=per_call_records,
                     tool_usage=tool_usage,
-                    sse_events=sse_events
+                    sse_events=sse_events,
                 )
-                logger.info(f"[WorkflowPersistence] Cancellation persisted for thread_id={thread_id}")
+                logger.info(f"[WorkflowPersistence] Cancellation persisted for {key}")
             except Exception as persist_error:
                 logger.error(
-                    f"[WorkflowPersistence] Failed to persist cancellation for {thread_id}: {persist_error}",
-                    exc_info=True
+                    f"[WorkflowPersistence] Failed to persist cancellation for {key}: {persist_error}",
+                    exc_info=True,
                 )
 
-        # Release burst slot for cancellation path
         if user_id:
             await release_burst_slot(user_id)
 
-        # Push terminal status to Redis from the single canonical site so
-        # every cancel path (cancel endpoint, stale-cancel reaper, soft-
-        # interrupt-abort) updates Redis. ``cancel_workflow`` in
-        # ``workflow_handler.py`` also marks the tracker before signalling
-        # us, so this call is a belt-and-braces in the cases where the
-        # workflow self-cancels without going through that endpoint.
         try:
             tracker = WorkflowTracker.get_instance()
             await tracker.mark_cancelled(thread_id)
         except Exception as tracker_err:
             logger.warning(
-                f"[BackgroundTaskManager] tracker.mark_cancelled failed for {thread_id}: {tracker_err}"
+                f"[BackgroundTaskManager] tracker.mark_cancelled failed for {key}: {tracker_err}"
             )
 
+        task_info.persistence_complete.set()
         async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
-            if task_info:
-                task_info.persistence_complete.set()
-            self._release_terminal_refs(thread_id)
+            self._release_terminal_refs(thread_id, run_id)
 
-    async def get_task_status(self, thread_id: str) -> Optional[TaskStatus]:
-        """
-        Get status of a background task.
+    # ---------- status & introspection ----------
 
-        Args:
-            thread_id: Workflow thread identifier
-
-        Returns:
-            TaskStatus or None if not found
-        """
-        task_info = await self._get_task_info_locked(thread_id)
-        return task_info.status if task_info else None
-
-    async def get_task_info(self, thread_id: str) -> Optional[TaskInfo]:
-        """
-        Get full task information.
-
-        Args:
-            thread_id: Workflow thread identifier
-
-        Returns:
-            TaskInfo or None if not found
-        """
+    async def get_task_status(
+        self, thread_id: str, run_id: Optional[str] = None
+    ) -> Optional[TaskStatus]:
+        """Get status for a specific run, or latest run on thread if ``run_id`` omitted."""
         async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
+            if run_id is not None:
+                task_info = self.tasks.get((thread_id, run_id))
+            else:
+                task_info = self._find_latest_for_thread(thread_id)
+            return task_info.status if task_info else None
+
+    async def get_task_info(
+        self, thread_id: str, run_id: Optional[str] = None
+    ) -> Optional[TaskInfo]:
+        """Get full task info for a specific run, or latest on thread."""
+        async with self.task_lock:
+            if run_id is not None:
+                task_info = self.tasks.get((thread_id, run_id))
+            else:
+                task_info = self._find_latest_for_thread(thread_id)
             if task_info:
-                # Update last access time
                 task_info.last_access_at = datetime.now()
             return task_info
 
-    async def increment_connection(self, thread_id: str) -> bool:
-        """
-        Increment active connection count for a workflow.
-
-        Args:
-            thread_id: Workflow thread identifier
-
-        Returns:
-            True if successful, False if task not found
-        """
+    async def increment_connection(
+        self, thread_id: str, run_id: Optional[str] = None
+    ) -> bool:
         async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
+            if run_id is not None:
+                task_info = self.tasks.get((thread_id, run_id))
+            else:
+                task_info = self._find_latest_for_thread(thread_id)
             if task_info:
                 task_info.active_connections += 1
                 task_info.last_access_at = datetime.now()
-                logger.debug(
-                    f"[BackgroundTaskManager] Connection attached to {thread_id} "
-                    f"(active: {task_info.active_connections})"
-                )
                 return True
             return False
 
-    async def decrement_connection(self, thread_id: str) -> bool:
-        """
-        Decrement active connection count for a workflow.
-
-        Args:
-            thread_id: Workflow thread identifier
-
-        Returns:
-            True if successful, False if task not found
-        """
+    async def decrement_connection(
+        self, thread_id: str, run_id: Optional[str] = None
+    ) -> bool:
         async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
+            if run_id is not None:
+                task_info = self.tasks.get((thread_id, run_id))
+            else:
+                task_info = self._find_latest_for_thread(thread_id)
             if task_info:
                 task_info.active_connections = max(0, task_info.active_connections - 1)
-                logger.debug(
-                    f"[BackgroundTaskManager] Connection detached from {thread_id} "
-                    f"(active: {task_info.active_connections})"
-                )
                 return True
             return False
 
-    async def clear_event_buffer(self, thread_id: str):
-        """Drop the workflow's Redis event keys after persistence.
+    async def clear_event_buffer(self, thread_id: str, run_id: str):
+        """Drop the per-run workflow event keys after persistence.
 
-        Called from `_on_pair_persisted` once the response row is saved. The
-        24h TTL on the keys is a safety net; this DEL is the explicit happy
-        path so a long-lived thread doesn't accumulate dozens of stream keys.
+        Per-run keying makes this trivially safe: a concurrent new POST gets
+        a different ``run_id`` and therefore different keys, so this DEL can
+        never wipe an in-flight workflow's live stream.
         """
         try:
             cache = get_cache_client()
 
             if self.event_storage_backend == "redis" and cache.enabled:
-                events_key = f"workflow:events:{thread_id}"
-                meta_key = f"workflow:events:meta:{thread_id}"
-                stream_key = f"workflow:stream:{thread_id}"
+                stream_k = stream_key(thread_id, run_id)
+                meta_k = stream_meta_key(thread_id, run_id)
 
-                await cache.delete(events_key)
-                await cache.delete(meta_key)
-                await cache.delete(stream_key)
+                await cache.delete(stream_k)
+                await cache.delete(meta_k)
 
-                logger.debug(f"[EventBuffer] Cleared Redis event buffer for {thread_id}")
-
+                logger.debug(
+                    f"[EventBuffer] Cleared Redis event buffer for "
+                    f"thread_id={thread_id} run_id={run_id}"
+                )
         except Exception as e:
             logger.error(
-                f"[EventBuffer] Error clearing event buffer for {thread_id}: {e}",
-                exc_info=True
+                f"[EventBuffer] Error clearing event buffer for "
+                f"thread_id={thread_id} run_id={run_id}: {e}",
+                exc_info=True,
             )
 
-    async def cancel_workflow(self, thread_id: str) -> bool:
-        """
-        Cancel a running workflow using cooperative event signaling.
+    async def cancel_workflow(
+        self, thread_id: str, run_id: Optional[str] = None
+    ) -> bool:
+        """Cancel a running workflow.
 
-        Sets the cancel_event flag which will be detected on the next event
-        iteration inside the shielded task, allowing graceful cancellation.
-
-        Args:
-            thread_id: Workflow thread identifier
-
-        Returns:
-            True if cancellation signaled, False if not found or already completed
+        ``run_id`` may be omitted — falls back to the most recent active
+        run on the thread.
         """
         async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
+            if run_id is not None:
+                task_info = self.tasks.get((thread_id, run_id))
+            else:
+                task_info = self._find_active_for_thread(thread_id)
+
             if not task_info:
                 logger.warning(
-                    f"[BackgroundTaskManager] Cannot cancel {thread_id}: "
-                    f"workflow not found"
+                    f"[BackgroundTaskManager] Cannot cancel "
+                    f"thread_id={thread_id} run_id={run_id}: workflow not found"
                 )
                 return False
 
             if task_info.status not in [TaskStatus.QUEUED, TaskStatus.RUNNING]:
                 logger.info(
-                    f"[BackgroundTaskManager] Cannot cancel {thread_id}: "
+                    f"[BackgroundTaskManager] Cannot cancel "
+                    f"thread_id={thread_id} run_id={task_info.run_id}: "
                     f"status={task_info.status}"
                 )
                 return False
 
             task_info.cancel_event.set()
             task_info.explicit_cancel = True
-            logger.debug(f"[BackgroundTaskManager] Cancellation signaled: {thread_id}")
+            logger.debug(
+                f"[BackgroundTaskManager] Cancellation signaled: "
+                f"thread_id={thread_id} run_id={task_info.run_id}"
+            )
             return True
 
-    async def cancel_stale_workflow(self, thread_id: str, timeout: float = 10.0) -> bool:
-        """Cancel a stale workflow whose sandbox is dead.
-
-        Unlike cancel_workflow(), this also cancels the inner shielded task
-        and waits for the outer task to exit.  No-ops silently if no workflow
-        exists.  Only use for dead-sandbox cleanup, not user-initiated
-        cancellation.
-
-        Handles QUEUED, RUNNING, and SOFT_INTERRUPTED states (all stale when
-        the sandbox is gone).
-
-        Returns True if a workflow was found and cancelled.
-        """
+    async def cancel_stale_workflow(
+        self, thread_id: str, timeout: float = 10.0
+    ) -> bool:
+        """Cancel a stale workflow on the given thread."""
         async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
-            if not task_info or task_info.status not in (
-                TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.SOFT_INTERRUPTED
-            ):
+            task_info = self._find_active_for_thread(thread_id)
+            if not task_info:
                 return False
 
             task_info.cancel_event.set()
@@ -2186,33 +1942,19 @@ class BackgroundTaskManager:
                 task_info.inner_task.cancel()
             stale_task = task_info.task
 
-        # Wait OUTSIDE the lock — _mark_completed/_mark_failed re-enter task_lock
         if stale_task and not stale_task.done():
             done, _ = await asyncio.wait({stale_task}, timeout=timeout)
             if not done:
                 logger.warning(
-                    f"[BackgroundTaskManager] Stale workflow {thread_id} "
+                    f"[BackgroundTaskManager] Stale workflow thread_id={thread_id} "
                     f"did not exit within {timeout}s"
                 )
         return True
 
     async def soft_interrupt_workflow(self, thread_id: str) -> Dict[str, Any]:
-        """
-        Soft interrupt a running workflow - pause main agent, keep subagents running.
-
-        Unlike cancel_workflow which stops everything, soft interrupt:
-        - Signals the main agent to pause at the next safe point
-        - Background subagents continue execution
-        - Workflow can be resumed with new input
-
-        Args:
-            thread_id: Workflow thread identifier
-
-        Returns:
-            Dict with status, can_resume, and active_subagents
-        """
+        """Soft interrupt the latest running workflow on the given thread."""
         async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
+            task_info = self._find_active_for_thread(thread_id)
             if not task_info:
                 logger.warning(
                     f"[BackgroundTaskManager] Cannot soft interrupt {thread_id}: "
@@ -2227,7 +1969,6 @@ class BackgroundTaskManager:
                     "completed_subagents": [],
                 }
 
-            # Query registry for active/completed task IDs
             active_tasks: list[str] = []
             completed_tasks: list[str] = []
             try:
@@ -2250,52 +1991,41 @@ class BackgroundTaskManager:
                 return {
                     "status": task_info.status.value,
                     "thread_id": thread_id,
+                    "run_id": task_info.run_id,
                     "can_resume": False,
-                    # Backward-compatible key
                     "background_tasks": active_tasks,
-                    # Preferred keys (used by CLI)
                     "active_subagents": active_tasks,
                     "completed_subagents": completed_tasks,
                 }
 
-            # Set soft interrupt flag (different from cancel)
             task_info.soft_interrupt_event.set()
             task_info.soft_interrupted = True
             logger.info(
-                f"[BackgroundTaskManager] Soft interrupt signaled: {thread_id}, "
+                f"[BackgroundTaskManager] Soft interrupt signaled: "
+                f"thread_id={thread_id} run_id={task_info.run_id}, "
                 f"active_subagents={active_tasks}"
             )
 
             return {
                 "status": "soft_interrupted",
                 "thread_id": thread_id,
+                "run_id": task_info.run_id,
                 "can_resume": True,
-                # Backward-compatible key
                 "background_tasks": active_tasks,
-                # Preferred keys (used by CLI)
                 "active_subagents": active_tasks,
                 "completed_subagents": completed_tasks,
             }
 
     async def get_workflow_status(self, thread_id: str) -> Dict[str, Any]:
-        """
-        Get detailed workflow status including subagent information.
-
-        Args:
-            thread_id: Workflow thread identifier
-
-        Returns:
-            Dict with status, subagent info, timestamps
-        """
+        """Get detailed status for the latest run on a thread."""
         async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
+            task_info = self._find_latest_for_thread(thread_id)
             if not task_info:
                 return {
                     "status": "not_found",
                     "thread_id": thread_id,
                 }
 
-            # Query registry for actual task IDs (not just agent names)
             active_tasks: list[str] = []
             try:
                 from src.server.services.background_registry_store import BackgroundRegistryStore
@@ -2310,6 +2040,7 @@ class BackgroundTaskManager:
             return {
                 "status": task_info.status.value,
                 "thread_id": thread_id,
+                "run_id": task_info.run_id,
                 "soft_interrupted": task_info.soft_interrupted,
                 "active_tasks": active_tasks,
                 "created_at": task_info.created_at.isoformat() if task_info.created_at else None,
@@ -2321,94 +2052,82 @@ class BackgroundTaskManager:
     async def wait_for_soft_interrupted(
         self,
         thread_id: str,
-        timeout: float | None = None
+        timeout: float | None = None,
+        exclude_run_id: Optional[str] = None,
     ) -> bool:
-        """
-        Wait for a soft-interrupted workflow to complete.
+        """Wait for the latest active workflow on the thread to settle.
 
-        Called before starting a new workflow on the same thread_id to ensure
-        seamless continuation after ESC interrupt.
+        Called before starting a new workflow on the same ``thread_id`` to
+        ensure clean continuation after an ESC interrupt. Per-thread (not
+        per-run) because callers are deciding whether a new run is admissible.
 
-        Args:
-            thread_id: Workflow thread identifier
-            timeout: Maximum time to wait in seconds
-
-        Returns:
-            True if workflow completed (or wasn't running), False if timed out
+        ``exclude_run_id`` lets dispatched callers ignore their own
+        pre-registered placeholder while checking for OTHER active runs.
         """
         if timeout is None:
             timeout = get_soft_interrupt_wait_timeout()
         async with self.task_lock:
-            task_info = self.tasks.get(thread_id)
+            task_info = self._find_active_for_thread(
+                thread_id, exclude_run_id=exclude_run_id
+            )
             if not task_info:
-                return True  # No workflow to wait for
+                return True
 
-            # Include SOFT_INTERRUPTED - the task may still be wrapping up
             if task_info.status not in [
                 TaskStatus.QUEUED, TaskStatus.RUNNING,
                 TaskStatus.SOFT_INTERRUPTED,
             ]:
-                return True  # Already fully completed
+                return True
 
             if not task_info.soft_interrupted and task_info.status != TaskStatus.SOFT_INTERRUPTED:
-                # Workflow is running but wasn't soft-interrupted
-                # This is an unexpected state - user might be trying to send
-                # concurrent messages. We'll wait briefly but not block too long.
                 timeout = min(timeout, 5.0)
 
             task = task_info.task
+            key = (task_info.thread_id, task_info.run_id)
 
         if not task:
             return True
 
         logger.info(
             f"[BackgroundTaskManager] Waiting for soft-interrupted workflow "
-            f"{thread_id} to complete (timeout={timeout}s)"
+            f"{key} to complete (timeout={timeout}s)"
         )
 
         try:
-            # Wait for the task to complete with timeout
             await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
 
-            # Clean up the finished task so start_workflow can proceed
             async with self.task_lock:
-                task_info = self.tasks.get(thread_id)
+                task_info = self.tasks.get(key)
                 if task_info and task_info.status in (
                     TaskStatus.SOFT_INTERRUPTED, TaskStatus.COMPLETED,
                 ):
                     logger.info(
-                        f"[BackgroundTaskManager] Cleaning up {task_info.status.value} task {thread_id}"
+                        f"[BackgroundTaskManager] Cleaning up {task_info.status.value} "
+                        f"task {key}"
                     )
-                    del self.tasks[thread_id]
+                    del self.tasks[key]
 
             logger.info(
-                f"[BackgroundTaskManager] Previous workflow {thread_id} "
+                f"[BackgroundTaskManager] Previous workflow {key} "
                 f"completed, ready for new request"
             )
             return True
         except asyncio.TimeoutError:
             logger.warning(
                 f"[BackgroundTaskManager] Timeout waiting for soft-interrupted "
-                f"workflow {thread_id} after {timeout}s"
+                f"workflow {key} after {timeout}s"
             )
             return False
         except asyncio.CancelledError:
-            # Task was cancelled, which is fine - we can proceed
             return True
         except Exception as e:
             logger.warning(
                 f"[BackgroundTaskManager] Error waiting for soft-interrupted "
-                f"workflow {thread_id}: {e}"
+                f"workflow {key}: {e}"
             )
-            return True  # Proceed anyway
+            return True
 
     async def get_stats(self) -> Dict[str, Any]:
-        """
-        Get statistics about background tasks.
-
-        Returns:
-            Dictionary with task statistics
-        """
         async with self.task_lock:
             total = len(self.tasks)
             by_status = {}
@@ -2423,5 +2142,5 @@ class BackgroundTaskManager:
                 "max_concurrent": self.max_concurrent,
                 "active_connections": sum(
                     t.active_connections for t in self.tasks.values()
-                )
+                ),
             }

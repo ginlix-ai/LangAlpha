@@ -45,10 +45,12 @@ def _make_task_info(
     status: TaskStatus = TaskStatus.RUNNING,
     task: asyncio.Task | None = None,
     inner_task: asyncio.Task | None = None,
+    run_id: str = "run-1",
 ) -> TaskInfo:
     """Create a TaskInfo with sensible defaults for testing."""
     return TaskInfo(
         thread_id=thread_id,
+        run_id=run_id,
         status=status,
         created_at=datetime.now(),
         started_at=datetime.now(),
@@ -100,7 +102,7 @@ class TestCancelStaleWorkflowRunning:
             task=outer_future,
             inner_task=mock_inner,
         )
-        btm.tasks["thread-1"] = task_info
+        btm.tasks[("thread-1", "run-1")] = task_info
 
         result = await btm.cancel_stale_workflow("thread-1")
 
@@ -133,7 +135,7 @@ class TestCancelStaleWorkflowSoftInterrupted:
             task=outer_future,
             inner_task=mock_inner,
         )
-        btm.tasks["thread-1"] = task_info
+        btm.tasks[("thread-1", "run-1")] = task_info
 
         result = await btm.cancel_stale_workflow("thread-1")
 
@@ -154,7 +156,7 @@ class TestCancelStaleWorkflowCompleted:
         btm = _make_btm()
 
         task_info = _make_task_info(status=TaskStatus.COMPLETED)
-        btm.tasks["thread-1"] = task_info
+        btm.tasks[("thread-1", "run-1")] = task_info
 
         result = await btm.cancel_stale_workflow("thread-1")
 
@@ -186,7 +188,7 @@ class TestCancelStaleWorkflowTimeout:
             task=never_done,
             inner_task=mock_inner,
         )
-        btm.tasks["thread-1"] = task_info
+        btm.tasks[("thread-1", "run-1")] = task_info
 
         with caplog.at_level(logging.WARNING):
             result = await btm.cancel_stale_workflow("thread-1", timeout=0.05)
@@ -198,6 +200,87 @@ class TestCancelStaleWorkflowTimeout:
 # ---------------------------------------------------------------------------
 # consume_workflow uses closure-captured events
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# cancel_workflow — run_id targeting (active vs latest, explicit vs implicit)
+# ---------------------------------------------------------------------------
+
+class TestCancelWorkflowRunIdTargeting:
+    """``cancel_workflow(thread_id)`` without an explicit run_id must target
+    the still-active run on the thread — not the most recently *created* row
+    (which may already be terminal). With an explicit run_id, the cancel
+    must hit exactly that key even if another run is more recent."""
+
+    @pytest.mark.asyncio
+    async def test_implicit_targets_active_not_latest_completed(self):
+        """Older RUNNING + newer COMPLETED on the same thread ⇒ cancel hits
+        the RUNNING one. The COMPLETED row stays untouched (no cancel_event)."""
+        btm = _make_btm()
+
+        # Older RUNNING task (created earlier)
+        older_running = _make_task_info(
+            status=TaskStatus.RUNNING, run_id="run-older"
+        )
+        older_running.created_at = datetime(2024, 1, 1, 12, 0, 0)
+
+        # Newer COMPLETED task (created later)
+        newer_completed = _make_task_info(
+            status=TaskStatus.COMPLETED, run_id="run-newer"
+        )
+        newer_completed.created_at = datetime(2024, 1, 1, 12, 5, 0)
+
+        btm.tasks[("thread-1", "run-older")] = older_running
+        btm.tasks[("thread-1", "run-newer")] = newer_completed
+
+        result = await btm.cancel_workflow("thread-1")
+
+        assert result is True
+        assert older_running.cancel_event.is_set()
+        assert older_running.explicit_cancel is True
+        # Newer terminal row must NOT have been disturbed.
+        assert not newer_completed.cancel_event.is_set()
+        assert newer_completed.explicit_cancel is False
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_only_terminal_runs_exist(self):
+        """No live runs on the thread ⇒ cancel is a no-op + returns False."""
+        btm = _make_btm()
+
+        for status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED):
+            ti = _make_task_info(status=status, run_id=f"run-{status.value}")
+            btm.tasks[("thread-1", ti.run_id)] = ti
+
+        result = await btm.cancel_workflow("thread-1")
+
+        assert result is False
+        for ti in btm.tasks.values():
+            assert not ti.cancel_event.is_set()
+            assert ti.explicit_cancel is False
+
+    @pytest.mark.asyncio
+    async def test_explicit_run_id_targets_that_run_even_when_older(self):
+        """A caller that passes a specific run_id wants THAT run cancelled,
+        not "the most recent thing on the thread"."""
+        btm = _make_btm()
+
+        target = _make_task_info(status=TaskStatus.RUNNING, run_id="run-target")
+        target.created_at = datetime(2024, 1, 1, 12, 0, 0)
+
+        more_recent = _make_task_info(status=TaskStatus.RUNNING, run_id="run-newer")
+        more_recent.created_at = datetime(2024, 1, 1, 12, 10, 0)
+
+        btm.tasks[("thread-1", "run-target")] = target
+        btm.tasks[("thread-1", "run-newer")] = more_recent
+
+        result = await btm.cancel_workflow("thread-1", run_id="run-target")
+
+        assert result is True
+        assert target.cancel_event.is_set()
+        assert target.explicit_cancel is True
+        # The more-recent unrelated run must NOT be affected.
+        assert not more_recent.cancel_event.is_set()
+        assert more_recent.explicit_cancel is False
+
 
 class TestConsumeWorkflowUsesClosureEvents:
 
@@ -223,7 +306,7 @@ class TestConsumeWorkflowUsesClosureEvents:
 
         # Pre-register a RUNNING task so _run_workflow_shielded can find it
         task_info = _make_task_info(thread_id="thread-closure", status=TaskStatus.RUNNING)
-        btm.tasks["thread-closure"] = task_info
+        btm.tasks[("thread-closure", "run-1")] = task_info
 
         # Patch _mark_completed, _mark_cancelled, _mark_failed, _mark_soft_interrupted
         # so they don't try to do real persistence work
@@ -245,6 +328,7 @@ class TestConsumeWorkflowUsesClosureEvents:
             try:
                 await btm._run_workflow_shielded(
                     thread_id="thread-closure",
+                    run_id="run-1",
                     workflow_generator=fake_workflow(),
                     cancel_event=cancel_event,
                     soft_interrupt_event=soft_interrupt_event,

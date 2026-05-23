@@ -131,6 +131,7 @@ async def _run_to_sentinel(request, workspace_manager):
         gen = astream_ptc_workflow(
             request=request,
             thread_id="t-1",
+            run_id="r-1",
             user_input="hi",
             user_id="u-1",
             workspace_id="ws-1",

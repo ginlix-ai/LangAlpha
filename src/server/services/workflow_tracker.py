@@ -167,7 +167,8 @@ class WorkflowTracker:
         thread_id: str,
         workspace_id: str,
         user_id: str,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        run_id: Optional[str] = None,
     ) -> bool:
         """
         Mark workflow as active (currently executing with connection).
@@ -177,6 +178,7 @@ class WorkflowTracker:
             workspace_id: Workspace identifier
             user_id: User identifier
             metadata: Optional additional metadata
+            run_id: Current turn's LangGraph run_id (== conversation_response_id)
 
         Returns:
             True if successfully marked, False otherwise
@@ -191,6 +193,7 @@ class WorkflowTracker:
                 "thread_id": thread_id,
                 "workspace_id": workspace_id,
                 "user_id": user_id,
+                "run_id": run_id,
                 "started_at": datetime.now().isoformat(),
                 "last_update": datetime.now().isoformat(),
                 "metadata": metadata or {}

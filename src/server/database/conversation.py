@@ -20,6 +20,28 @@ from src.server.utils.pg_sanitize import SafeJson, strip_pg_nul_str
 
 logger = logging.getLogger(__name__)
 
+
+class QueryConflictError(Exception):
+    """Raised when create_query (idempotent) collides with an existing
+    row whose content differs from the new write.
+
+    The idempotent ``ON CONFLICT DO UPDATE`` is gated on
+    ``content IS NOT DISTINCT FROM EXCLUDED.content``, so legitimate
+    retry-of-same-content stays a silent no-op while different-content
+    races (e.g. a concurrent POST that bypassed the in-process admission
+    lock) surface here instead of silently overwriting the loser's row.
+    """
+
+    def __init__(self, thread_id: str, turn_index: int, existing_content: Optional[str]):
+        self.thread_id = thread_id
+        self.turn_index = turn_index
+        self.existing_content = existing_content
+        super().__init__(
+            f"conversation_queries collision for thread_id={thread_id} "
+            f"turn_index={turn_index}: existing row has different content"
+        )
+
+
 # Cache key helpers — single source of truth for key format.
 # Invalidation sites import these instead of hardcoding the prefix.
 _EXISTS_TTL = 86400  # 24h — freshness via explicit invalidation
@@ -842,7 +864,15 @@ async def create_query(
             # Reuse provided connection
             async with conn.cursor(row_factory=dict_row) as cur:
                 if idempotent:
-                    # Idempotent: ON CONFLICT DO UPDATE for safe retries
+                    # Idempotent: ON CONFLICT DO UPDATE for safe retries.
+                    # The WHERE clause gates the UPDATE on content equality
+                    # so a legitimate retry-of-same-content (HITL resume,
+                    # network retry) succeeds silently while a concurrent
+                    # different-content INSERT collision (worker race that
+                    # bypassed the in-process admission lock) produces no
+                    # RETURNING row — we surface ``QueryConflictError``
+                    # instead of letting ``ON CONFLICT DO UPDATE`` silently
+                    # overwrite the loser's row.
                     await cur.execute(
                         """
                         INSERT INTO conversation_queries (
@@ -856,6 +886,7 @@ async def create_query(
                             feedback_action = EXCLUDED.feedback_action,
                             metadata = EXCLUDED.metadata,
                             created_at = EXCLUDED.created_at
+                        WHERE conversation_queries.content IS NOT DISTINCT FROM EXCLUDED.content
                         RETURNING conversation_query_id, conversation_thread_id, turn_index, content, type,
                                   feedback_action, metadata, created_at
                     """,
@@ -870,6 +901,23 @@ async def create_query(
                             created_at,
                         ),
                     )
+                    result = await cur.fetchone()
+                    if result is None:
+                        await cur.execute(
+                            "SELECT content FROM conversation_queries "
+                            "WHERE conversation_thread_id = %s AND turn_index = %s",
+                            (conversation_thread_id, turn_index),
+                        )
+                        existing = await cur.fetchone()
+                        raise QueryConflictError(
+                            thread_id=conversation_thread_id,
+                            turn_index=turn_index,
+                            existing_content=(existing or {}).get("content"),
+                        )
+                    logger.debug(
+                        f"[conversation_db] create_query query_id={conversation_query_id} thread_id={conversation_thread_id} turn_index={turn_index} type={query_type}"
+                    )
+                    return dict(result)
                 else:
                     # Non-idempotent: fail on conflict
                     await cur.execute(
@@ -903,7 +951,8 @@ async def create_query(
             async with get_db_connection() as conn:
                 async with conn.cursor(row_factory=dict_row) as cur:
                     if idempotent:
-                        # Idempotent: ON CONFLICT DO UPDATE for safe retries
+                        # Idempotent: ON CONFLICT DO UPDATE for safe retries.
+                        # See the parallel branch above for the WHERE gating.
                         await cur.execute(
                             """
                             INSERT INTO conversation_queries (
@@ -917,6 +966,7 @@ async def create_query(
                                 feedback_action = EXCLUDED.feedback_action,
                                 metadata = EXCLUDED.metadata,
                                 created_at = EXCLUDED.created_at
+                            WHERE conversation_queries.content IS NOT DISTINCT FROM EXCLUDED.content
                             RETURNING conversation_query_id, conversation_thread_id, turn_index, content, type,
                                       feedback_action, metadata, created_at
                         """,
@@ -931,6 +981,23 @@ async def create_query(
                                 created_at,
                             ),
                         )
+                        result = await cur.fetchone()
+                        if result is None:
+                            await cur.execute(
+                                "SELECT content FROM conversation_queries "
+                                "WHERE conversation_thread_id = %s AND turn_index = %s",
+                                (conversation_thread_id, turn_index),
+                            )
+                            existing = await cur.fetchone()
+                            raise QueryConflictError(
+                                thread_id=conversation_thread_id,
+                                turn_index=turn_index,
+                                existing_content=(existing or {}).get("content"),
+                            )
+                        logger.info(
+                            f"[conversation_db] create_query query_id={conversation_query_id} thread_id={conversation_thread_id} turn_index={turn_index} type={query_type}"
+                        )
+                        return dict(result)
                     else:
                         # Non-idempotent: fail on conflict
                         await cur.execute(

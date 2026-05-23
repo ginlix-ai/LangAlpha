@@ -293,6 +293,7 @@ class WorkflowStreamHandler:
     def __init__(
         self,
         thread_id: str,
+        run_id: str,
         token_callback: Optional[Any] = None,
         tool_tracker: Optional[Any] = None,
         workflow_timeout: Optional[int] = None,
@@ -304,8 +305,16 @@ class WorkflowStreamHandler:
 
         Keepalives live in the SSE consumer (``stream_from_log``), not here —
         the producer side is just a thin LangGraph pass-through.
+
+        ``run_id`` is REQUIRED — it's emitted as the first SSE event
+        (``event: metadata``) of each stream so the frontend learns the
+        canonical per-turn identity immediately and can drive reconnect /
+        steering / demotion off it. Constructing a handler without a
+        ``run_id`` would silently strip that frame and leave the client
+        racing on reconnect.
         """
         self.thread_id = thread_id
+        self.run_id = run_id
         self.token_callback = token_callback
         self.tool_tracker = tool_tracker
         self.workflow_timeout = workflow_timeout or WORKFLOW_TIMEOUT
@@ -404,6 +413,16 @@ class WorkflowStreamHandler:
             attributes={"thread_id_hash": (self.thread_id or "")[:16]},
         )
         try:
+            # First event of every stream: ``metadata`` payload announcing
+            # the canonical run_id for this turn. Mirrors the
+            # langgraph_sdk SSE protocol so frontend reconnect/demotion
+            # logic can latch onto the authoritative identity immediately.
+            yield self._format_sse_event(
+                "metadata",
+                {"thread_id": self.thread_id, "run_id": self.run_id},
+                accumulate=False,
+            )
+
             # Snapshot old task IDs and emit initial batch of captured events.
             # Events are streamed with accumulate=False so they are NOT persisted
             # with this (new) response — the collector owns persistence to the

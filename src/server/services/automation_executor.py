@@ -148,10 +148,16 @@ class AutomationExecutor:
                 astream_ptc_workflow,
             )
 
+            # Generate run_id locally — automations don't pass through the
+            # HTTP handler that normally creates it. Per-turn keying for
+            # BTM / persistence / Redis stream.
+            run_id = str(uuid4())
+
             if agent_mode == "flash":
                 generator = astream_flash_workflow(
                     request=request,
                     thread_id=thread_id,
+                    run_id=run_id,
                     user_input=instruction,
                     user_id=user_id,
                 )
@@ -159,6 +165,7 @@ class AutomationExecutor:
                 generator = astream_ptc_workflow(
                     request=request,
                     thread_id=thread_id,
+                    run_id=run_id,
                     user_input=instruction,
                     user_id=user_id,
                     workspace_id=workspace_id,
@@ -182,7 +189,7 @@ class AutomationExecutor:
             # may return empty text because the DB write hasn't landed yet.
             from src.server.services.background_task_manager import BackgroundTaskManager
             manager = BackgroundTaskManager.get_instance()
-            await manager.wait_for_persistence(thread_id)
+            await manager.wait_for_persistence(thread_id, run_id)
 
             # ─── Success ───────────────────────────────────────────
             await auto_db.update_execution_status(

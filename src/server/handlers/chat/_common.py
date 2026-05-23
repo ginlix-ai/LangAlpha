@@ -97,15 +97,17 @@ async def _setup_fork_and_persistence(
     *,
     request: ChatRequest,
     thread_id: str,
+    run_id: str,
     workspace_id: str,
     user_id: str,
     log_prefix: str = "FORK",
 ) -> tuple[str, bool, ConversationPersistenceService]:
-    """Compute query_type, apply fork cleanup, and init persistence service.
+    """Compute query_type, apply fork cleanup, init per-run persistence service.
 
-    Shared by both flash and PTC handlers. Returns (query_type, is_fork, persistence_service).
+    Shared by flash and PTC handlers. Returns
+    ``(query_type, is_fork, persistence_service)``. Persistence is keyed
+    by ``(thread_id, run_id)`` — fresh per turn, no cross-turn aliasing.
     """
-    # Determine query type (allow explicit override for internal callers)
     if request.query_type:
         query_type = request.query_type
     else:
@@ -118,10 +120,8 @@ async def _setup_fork_and_persistence(
         else:
             query_type = "initial"
 
-    # Fork cleanup: truncate app DB when branching from a checkpoint
     is_fork = request.fork_from_turn is not None and request.checkpoint_id
     if is_fork:
-        # Parallelize the two DB operations (different tables, no dependency)
         deleted, _ = await asyncio.gather(
             qr_db.truncate_thread_from_turn(
                 thread_id,
@@ -134,19 +134,17 @@ async def _setup_fork_and_persistence(
             f"[{log_prefix}] Truncated {deleted} rows from turn_index>={request.fork_from_turn} "
             f"thread_id={thread_id} checkpoint_id={request.checkpoint_id}"
         )
-        # Clear Redis event buffer (stale events from old branch) — fault-tolerant
-        try:
-            manager = BackgroundTaskManager.get_instance()
-            await manager.clear_event_buffer(thread_id)
-        except Exception as e:
-            logger.warning(f"[{log_prefix}] Failed to clear event buffer: {e}")
+        # Fork buffer clearing now happens once the run starts emitting under
+        # the new per-run key; pre-clearing the legacy thread-keyed buffer
+        # is unnecessary because the new key didn't exist yet.
 
-    # Initialize persistence service
     persistence_service = ConversationPersistenceService.get_instance(
-        thread_id=thread_id, workspace_id=workspace_id, user_id=user_id
+        thread_id=thread_id,
+        run_id=run_id,
+        workspace_id=workspace_id,
+        user_id=user_id,
     )
 
-    # Reset persistence cache if forking, otherwise calculate from DB
     if is_fork:
         persistence_service.reset_for_fork(request.fork_from_turn)
     else:
@@ -486,9 +484,9 @@ async def persist_or_skip_replay(
 ) -> None:
     """Persist query start or skip persistence for checkpoint replay.
 
-    For checkpoint replays (regenerate/retry), marks the preserved query turn
-    as already persisted so ``persist_completion`` doesn't skip.  Otherwise
-    calls ``persist_query_start``.
+    For checkpoint replays (regenerate/retry), the preserved query row is
+    already in the database, so we skip the re-insert.  Otherwise calls
+    ``persist_query_start``.
     """
     if is_checkpoint_replay:
         turn_to_mark = (
@@ -496,7 +494,6 @@ async def persist_or_skip_replay(
             if request.fork_from_turn is not None
             else await persistence_service.get_or_calculate_turn_index()
         )
-        persistence_service.mark_query_persisted(turn_to_mark)
         logger.debug(
             f"[{log_prefix}] Skipped query persist (checkpoint replay): "
             f"thread_id={thread_id} turn_index={turn_to_mark}"

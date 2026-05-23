@@ -86,16 +86,18 @@ from .stream_from_log import stream_from_log
 async def astream_flash_workflow(
     request: ChatRequest,
     thread_id: str,
+    run_id: str,
     user_input: str,
     user_id: str,
     is_byok: bool = False,
     config=None,
+    dispatched: bool = False,
 ):
     """Async generator that streams Flash agent workflow events.
 
     Flash mode: no sandbox, no MCP, external tools only (web search, market
-    data, SEC filings). Follows the same background-task / reconnect pattern
-    as PTC but skips workspace and session setup.
+    data, SEC filings). State keyed by ``(thread_id, run_id)``; same
+    contract as PTC.
     """
     start_time = time.time()
     handler = None
@@ -110,12 +112,68 @@ async def astream_flash_workflow(
     logger.info(f"[FLASH_CHAT] Starting flash workflow: thread_id={thread_id}")
 
     slot_owned = True
+    admission_held = False
+    admission_lock = None
     try:
         if not setup.agent_config:
             raise HTTPException(
                 status_code=503,
                 detail="Flash Agent not initialized. Check server startup logs.",
             )
+
+        # =================================================================
+        # Admission gate
+        # =================================================================
+        # Per-thread asyncio.Lock that serializes the
+        # ``wait_or_steer → persist_query_start → start_workflow`` window.
+        # See the BTM docstring on ``get_admission_lock`` for the race
+        # this defends against.
+        manager = BackgroundTaskManager.get_instance()
+        admission_lock = await manager.get_admission_lock(thread_id)
+        await admission_lock.acquire()
+        admission_held = True
+
+        # =================================================================
+        # Early steering routing
+        # =================================================================
+        # If a workflow is already running (or soft-interrupted) for this
+        # thread, route this POST through the steering queue *before* any DB
+        # write. The persistence singleton's ``_turn_index_cache`` is shared
+        # across concurrent POSTs on the same thread, and
+        # ``qr_db.create_query`` uses ``ON CONFLICT (thread_id, turn_index)
+        # DO UPDATE``, so a second ``persist_query_start`` here would
+        # overwrite the running turn's query content with the steering text.
+        # Dispatched flow owns the BTM placeholder ``threads.py`` already
+        # reserved for it under the same ``(thread_id, run_id)`` key. We
+        # still must guarantee at most one in-flight LangGraph ``astream``
+        # per ``thread_id`` (the checkpointer is thread-keyed), so wait for
+        # any OTHER active run on the thread to settle. ``exclude_run_id``
+        # skips our own placeholder.
+        if dispatched:
+            settled = await manager.wait_for_soft_interrupted(
+                thread_id, exclude_run_id=run_id
+            )
+            if not settled:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Workflow {thread_id} is still running; dispatched "
+                        "follow-up could not be admitted."
+                    ),
+                )
+            ready, steering_event = True, None
+        else:
+            ready, steering_event = await wait_or_steer(
+                manager, thread_id, user_input, user_id
+            )
+        if not ready:
+            slot_owned = False
+            await release_burst_slot(user_id)
+            admission_lock.release()
+            admission_held = False
+            if steering_event:
+                yield steering_event
+            return
 
         # =================================================================
         # Database Persistence Setup
@@ -132,6 +190,7 @@ async def astream_flash_workflow(
         query_type, is_fork, persistence_service = await _setup_fork_and_persistence(
             request=request,
             thread_id=thread_id,
+            run_id=run_id,
             workspace_id=workspace_id,
             user_id=user_id,
             log_prefix="FLASH_FORK",
@@ -331,9 +390,11 @@ async def astream_flash_workflow(
             is_byok=is_byok,
             recursion_limit=get_flash_recursion_limit(),
         )
+        graph_config["run_id"] = run_id
 
         handler = WorkflowStreamHandler(
             thread_id=thread_id,
+            run_id=run_id,
             token_callback=token_callback,
             tool_tracker=tool_tracker,
             agent_config=config,
@@ -348,24 +409,14 @@ async def astream_flash_workflow(
         # =================================================================
 
         tracker = WorkflowTracker.get_instance()
-        manager = BackgroundTaskManager.get_instance()
-
-        # Wait for any running/soft-interrupted workflow to complete before
-        # starting new one
-        ready, steering_event = await wait_or_steer(
-            manager, thread_id, user_input, user_id
-        )
-        if not ready:
-            slot_owned = False
-            await release_burst_slot(user_id)
-            if steering_event:
-                yield steering_event
-            return
+        # ``manager`` was acquired at the top of this handler for the early
+        # steering-routing check; reuse it here.
 
         await tracker.mark_active(
             thread_id=thread_id,
             workspace_id=workspace_id,
             user_id=user_id,
+            run_id=run_id,
             metadata={
                 "started_at": datetime.now().isoformat(),
                 "msg_type": "flash",
@@ -374,8 +425,8 @@ async def astream_flash_workflow(
             },
         )
 
-        # Completion callback for background persistence
-        async def on_flash_workflow_complete():
+        async def on_flash_workflow_complete(task_info):
+            """Per-run state — no identity guards needed."""
             try:
                 execution_time = time.time() - start_time
                 _per_call_records = (
@@ -404,6 +455,7 @@ async def astream_flash_workflow(
                     metadata={
                         "completed_at": datetime.now().isoformat(),
                         "execution_time": execution_time,
+                        "run_id": run_id,
                     },
                 )
 
@@ -427,6 +479,7 @@ async def astream_flash_workflow(
         try:
             await manager.start_workflow(
                 thread_id=thread_id,
+                run_id=run_id,
                 workflow_generator=handler.stream_workflow(
                     graph=flash_graph,
                     input_state=input_state,
@@ -443,17 +496,21 @@ async def astream_flash_workflow(
                     "timezone": timezone_str,
                     "handler": handler,
                     "token_callback": token_callback,
+                    "persistence_service": persistence_service,
                 },
                 completion_callback=on_flash_workflow_complete,
                 graph=flash_graph,
             )
         except RuntimeError:
             # Race condition: another request registered first -- queue the
-            # message
+            # message. The admission lock should normally prevent reaching
+            # this branch, but it's kept as a belt-and-braces fallback.
             result = await steer_thread(thread_id, user_input, user_id)
             if result:
                 slot_owned = False
                 await release_burst_slot(user_id)
+                admission_lock.release()
+                admission_held = False
                 event_data = json.dumps(
                     {
                         "thread_id": thread_id,
@@ -474,8 +531,12 @@ async def astream_flash_workflow(
             )
         else:
             slot_owned = False  # Manager owns burst slot release from here
+            # Admission complete — release the lock so subsequent POSTs
+            # can see the new RUNNING TaskInfo via wait_or_steer.
+            admission_lock.release()
+            admission_held = False
 
-        async for event in stream_from_log(thread_id, last_event_id=None):
+        async for event in stream_from_log(thread_id, run_id, last_event_id=None):
             yield event
 
         # After the workflow ends, return any unconsumed steering messages so
@@ -524,4 +585,8 @@ async def astream_flash_workflow(
         raise
 
     finally:
+        # Release admission lock if any error path bypassed the normal
+        # release (e.g., exception before start_workflow).
+        if admission_held and admission_lock is not None:
+            admission_lock.release()
         ExecutionTracker.stop_tracking()

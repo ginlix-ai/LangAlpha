@@ -199,7 +199,7 @@ class TestWorkflowStreamHandlerFormatting:
     def _make_handler(self, thread_id="test-thread"):
         from src.server.handlers.streaming_handler import WorkflowStreamHandler
 
-        return WorkflowStreamHandler(thread_id=thread_id)
+        return WorkflowStreamHandler(thread_id=thread_id, run_id="r-test")
 
     def test_format_sse_event_basic(self):
         handler = self._make_handler()
@@ -395,7 +395,7 @@ class TestToolCallFiltering:
     def _make_handler(self):
         from src.server.handlers.streaming_handler import WorkflowStreamHandler
 
-        return WorkflowStreamHandler(thread_id="test-thread")
+        return WorkflowStreamHandler(thread_id="test-thread", run_id="r-test")
 
     def test_filters_empty_name(self):
         handler = self._make_handler()
@@ -465,7 +465,7 @@ class TestInterruptHandling:
     def _make_handler(self):
         from src.server.handlers.streaming_handler import WorkflowStreamHandler
 
-        return WorkflowStreamHandler(thread_id="int-thread")
+        return WorkflowStreamHandler(thread_id="int-thread", run_id="r-test")
 
     def test_handles_dict_interrupt_value(self):
         handler = self._make_handler()
@@ -517,7 +517,7 @@ class TestTaskArtifactEvent:
     def _make_handler(self):
         from src.server.handlers.streaming_handler import WorkflowStreamHandler
 
-        return WorkflowStreamHandler(thread_id="t-task-artifact")
+        return WorkflowStreamHandler(thread_id="t-task-artifact", run_id="r-test")
 
     def test_task_artifact_event_includes_tool_call_id(self):
         """Artifact event for a spawned task must carry tool_call_id."""
@@ -574,7 +574,7 @@ class TestEventCounter:
     def test_uses_event_counter_when_set(self):
         from src.server.handlers.streaming_handler import WorkflowStreamHandler
 
-        handler = WorkflowStreamHandler(thread_id="t1")
+        handler = WorkflowStreamHandler(thread_id="t1", run_id="r-test")
         counter = MagicMock()
         counter.next.side_effect = [42, 43]
         handler.event_counter = counter
@@ -595,7 +595,7 @@ class TestToolNodeInnerLLMSuppression:
 
     def _handler(self):
         from src.server.handlers.streaming_handler import WorkflowStreamHandler
-        return WorkflowStreamHandler(thread_id="t-tool-gate")
+        return WorkflowStreamHandler(thread_id="t-tool-gate", run_id="r-test")
 
     def _chunk(self, content, kwargs=None):
         from langchain_core.messages import AIMessageChunk
@@ -758,7 +758,7 @@ class TestResolveTokenThreshold:
     def _handler(self, agent_config=None):
         from src.server.handlers.streaming_handler import WorkflowStreamHandler
 
-        return WorkflowStreamHandler(thread_id="t1", agent_config=agent_config)
+        return WorkflowStreamHandler(thread_id="t1", run_id="r-test", agent_config=agent_config)
 
     def _cfg(self, threshold: int):
         cfg = MagicMock()
@@ -803,7 +803,7 @@ class TestCompactionChunkRouting:
     def _handler(self):
         from src.server.handlers.streaming_handler import WorkflowStreamHandler
 
-        return WorkflowStreamHandler(thread_id="t1")
+        return WorkflowStreamHandler(thread_id="t1", run_id="r-test")
 
     def test_reasoning_signal_routes_to_compaction_when_flagged(self):
         handler = self._handler()

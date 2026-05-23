@@ -26,6 +26,10 @@ from src.server.services.background_task_manager import (
     BackgroundTaskManager,
     TaskStatus,
 )
+from src.server.services.workflow_tracker import (
+    TERMINAL_STATUSES,
+    WorkflowTracker,
+)
 from src.utils.cache.redis_cache import get_cache_client
 
 from ._common import logger
@@ -198,7 +202,7 @@ async def _stream_from_redis_log(
                         continue
                     if isinstance(payload, bytes):
                         try:
-                            yield payload.decode("utf-8")
+                            decoded = payload.decode("utf-8")
                         except UnicodeDecodeError:
                             logger.warning(
                                 "[stream_from_log] Non-UTF8 payload in %s entry %s",
@@ -206,6 +210,7 @@ async def _stream_from_redis_log(
                                 entry_id,
                             )
                             continue
+                        yield decoded
                     else:
                         yield payload
 
@@ -231,44 +236,72 @@ async def _stream_from_redis_log(
 
 async def stream_from_log(
     thread_id: str,
+    run_id: Optional[str] = None,
     last_event_id: Optional[int] = None,
 ) -> AsyncGenerator[str, None]:
     """SSE consumer for the main workflow stream.
 
-    First-connect callers pass ``last_event_id=None`` (cursor at 0 — replay
-    everything in the stream then wait for new). Reconnect callers pass the
-    integer seq from ``Last-Event-ID`` / ``?last_event_id=`` so XREAD
-    resumes after that seq.
-
-    The ``increment_connection``/``decrement_connection`` calls bump the
-    workflow's ``active_connections`` counter (and refresh
-    ``last_access_at``). Without them, the abandoned-task cleanup at
-    ``BackgroundTaskManager._periodic_cleanup`` would force-cancel any
-    RUNNING task whose ``active_connections == 0`` after
-    ``abandoned_workflow_timeout`` (6 h default).
+    The stream is keyed by ``(thread_id, run_id)``. Callers without a
+    ``run_id`` fall back to the most recent run on the thread (status
+    endpoint convenience). A legacy ``workflow:stream:{thread_id}``
+    fallback covers reconnects to a workflow that started before the
+    run_id refactor was deployed; remove after one release window.
     """
     manager = BackgroundTaskManager.get_instance()
 
+    # Resolve run_id if caller didn't provide one. We may be reconnecting
+    # to a turn that is still in the cache (latest) — pick the most recent.
+    if run_id is None:
+        async with manager.task_lock:
+            info = manager._find_latest_for_thread(thread_id)
+        if info is not None:
+            run_id = info.run_id
+
+    if run_id is None:
+        # Fall back to the legacy thread-only key. Compat shim for reconnects
+        # to a pre-deploy in-flight workflow whose TaskInfo was lost on
+        # restart. Drop in the next deploy once no in-flight workflows are
+        # running on the old key.
+        legacy_key = f"workflow:stream:{thread_id}"
+        tracker = WorkflowTracker.get_instance()
+
+        async def _terminal_legacy() -> bool:
+            # WorkflowTracker.status is the cross-process source of truth
+            # when the in-process TaskInfo is gone. Eager-True here would
+            # exit immediately, dropping a reconnect during a rolling deploy.
+            status_obj = await tracker.get_status(thread_id)
+            if status_obj is None:
+                # No tracker record either — nothing to wait for; let the
+                # two-empty-round handshake drain whatever is in the stream
+                # and exit.
+                return True
+            status_val = status_obj.get("status")
+            return status_val in {s.value for s in TERMINAL_STATUSES}
+
+        async for event in _stream_from_redis_log(
+            stream_key=legacy_key,
+            terminal_check=_terminal_legacy,
+            last_event_id=last_event_id,
+        ):
+            yield event
+        return
+
     async def terminal_check() -> bool:
-        status = await manager.get_task_status(thread_id)
-        # ``status is None`` means the TaskInfo entry is gone (e.g. the
-        # placeholder cleanup in ``threads.py`` finally-block deleted a
-        # never-started workflow). Treat that as terminal so the consumer
-        # exits via the two-empty-round handshake instead of spinning
-        # XREAD/keepalive forever — the comment at threads.py:137-141
-        # explicitly relies on this behaviour.
-        return status is None or status in (
+        info = manager.tasks.get((thread_id, run_id))
+        if info is None:
+            return True
+        return info.status in (
             TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED
         )
 
     async def on_attach() -> None:
-        await manager.increment_connection(thread_id)
+        await manager.increment_connection(thread_id, run_id)
 
     async def on_detach() -> None:
-        await manager.decrement_connection(thread_id)
+        await manager.decrement_connection(thread_id, run_id)
 
     async for event in _stream_from_redis_log(
-        stream_key=f"workflow:stream:{thread_id}",
+        stream_key=f"workflow:stream:{thread_id}:{run_id}",
         terminal_check=terminal_check,
         last_event_id=last_event_id,
         on_attach=on_attach,

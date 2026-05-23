@@ -25,18 +25,18 @@ from .stream_from_log import stream_from_log, stream_subagent_from_log
 
 async def reconnect_to_workflow_stream(
     thread_id: str,
+    run_id: str | None = None,
     last_event_id: int | None = None,
 ):
     """Reconnect to a running or completed workflow via Redis Streams.
 
-    ``stream_from_log`` maps both ``None`` and ``<= 0`` to cursor ``0``
-    (replay from the beginning), so we pass ``last_event_id`` through
-    untouched.
+    ``run_id`` targets a specific turn (canonical form). When omitted,
+    falls back to the latest run on the thread.
     """
     manager = BackgroundTaskManager.get_instance()
     tracker = WorkflowTracker.get_instance()
 
-    task_info = await manager.get_task_info(thread_id)
+    task_info = await manager.get_task_info(thread_id, run_id)
     workflow_status = await tracker.get_status(thread_id)
 
     if not task_info:
@@ -46,7 +46,11 @@ async def reconnect_to_workflow_stream(
             )
         raise HTTPException(status_code=404, detail=f"Workflow {thread_id} not found")
 
-    async for event in stream_from_log(thread_id, last_event_id):
+    # Resolve effective run_id from the task_info we just looked up so
+    # the downstream consumer uses the exact key.
+    effective_run_id = run_id or task_info.run_id
+
+    async for event in stream_from_log(thread_id, effective_run_id, last_event_id):
         yield event
 
     # After the workflow ends, return any unconsumed steering messages so the

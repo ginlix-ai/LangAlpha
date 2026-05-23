@@ -512,11 +512,11 @@ class TestEnsureThread:
 
 class TestPersistOrSkipReplay:
     @pytest.mark.asyncio
-    async def test_checkpoint_replay_marks_persisted(self):
+    async def test_checkpoint_replay_skips_persist(self):
         from src.server.handlers.chat._common import persist_or_skip_replay
 
         persistence = MagicMock()
-        persistence.mark_query_persisted = MagicMock()
+        persistence.persist_query_start = AsyncMock()
         request = MagicMock()
         request.fork_from_turn = 3
 
@@ -532,7 +532,7 @@ class TestPersistOrSkipReplay:
             log_prefix="TEST",
         )
 
-        persistence.mark_query_persisted.assert_called_once_with(3)
+        persistence.persist_query_start.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_checkpoint_replay_no_fork_calculates_turn(self):
@@ -540,7 +540,7 @@ class TestPersistOrSkipReplay:
 
         persistence = MagicMock()
         persistence.get_or_calculate_turn_index = AsyncMock(return_value=5)
-        persistence.mark_query_persisted = MagicMock()
+        persistence.persist_query_start = AsyncMock()
         request = MagicMock()
         request.fork_from_turn = None
 
@@ -556,7 +556,8 @@ class TestPersistOrSkipReplay:
             log_prefix="TEST",
         )
 
-        persistence.mark_query_persisted.assert_called_once_with(5)
+        persistence.get_or_calculate_turn_index.assert_awaited_once()
+        persistence.persist_query_start.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_normal_query_persists(self):

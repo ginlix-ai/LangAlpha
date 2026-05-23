@@ -28,9 +28,6 @@ from src.server.models.chat import (
 )
 from src.server.services.background_registry_store import BackgroundRegistryStore
 from src.server.services.background_task_manager import BackgroundTaskManager
-from src.server.services.persistence.conversation import (
-    ConversationPersistenceService,
-)
 from src.server.services.workflow_tracker import WorkflowTracker
 from src.server.services.workspace_manager import WorkspaceManager
 from src.observability import (
@@ -200,17 +197,24 @@ async def _flash_report_back(ptc_thread_id: str, workspace_id: str | None) -> No
 async def astream_ptc_workflow(
     request: ChatRequest,
     thread_id: str,
+    run_id: str,
     user_input: str,
     user_id: str,
     workspace_id: str,
     is_byok: bool = False,
     config=None,
+    dispatched: bool = False,
 ):
     """Async generator that streams PTC agent workflow events.
 
-    Builds a per-workspace LangGraph graph and delegates streaming to
-    WorkflowStreamHandler. Workspace startup, background orchestration,
-    HITL resume, and completion persistence are all handled inline.
+    ``run_id`` is generated at the handler entry in ``threads.py`` and is
+    1:1 with ``conversation_response_id``. State (BTM, persistence, Redis
+    stream key) is keyed by ``(thread_id, run_id)`` so concurrent turns
+    on the same thread share no cross-turn state by construction.
+
+    ``dispatched`` marks the call as an X-Dispatch=background invocation
+    whose BTM placeholder was created upstream in ``threads.py``. The
+    handler skips ``wait_or_steer`` in that case.
     """
     start_time = time.time()
     handler = None
@@ -234,12 +238,85 @@ async def astream_ptc_workflow(
     ExecutionTracker.start_tracking()
 
     slot_owned = True
+    admission_held = False
+    admission_lock = None
     try:
         if not setup.agent_config:
             raise HTTPException(
                 status_code=503,
                 detail="PTC Agent not initialized. Check server startup logs.",
             )
+
+        # =====================================================================
+        # Admission gate
+        # =====================================================================
+        # Per-thread asyncio.Lock that serializes the
+        # ``wait_or_steer → persist_query_start → start_workflow`` window.
+        # Without this, two simultaneous cold POSTs on an idle thread both
+        # see "no in-flight task" in ``wait_or_steer``, both compute the
+        # same next ``turn_index``, and both ``persist_query_start`` calls
+        # race on the same row — the loser's content gets silently
+        # overwritten by ``ON CONFLICT DO UPDATE``.
+        manager = BackgroundTaskManager.get_instance()
+        admission_lock = await manager.get_admission_lock(thread_id)
+        await admission_lock.acquire()
+        admission_held = True
+
+        # =====================================================================
+        # Early steering routing
+        # =====================================================================
+        # If a workflow is already running (or soft-interrupted) for this
+        # thread, route this POST through the steering queue *before* any DB
+        # write. ``persist_query_start`` uses ``ON CONFLICT (thread_id,
+        # turn_index) DO UPDATE`` and the persistence singleton's cached
+        # ``_turn_index_cache`` is shared across concurrent POSTs on the same
+        # thread, so a second persist_query_start here would overwrite the
+        # currently-running turn's original query content with the steering
+        # text. Detecting steering here keeps ``conversation_queries`` clean
+        # and lets ``backfill_steering_queries`` write the canonical
+        # ``type='steering'`` row after the workflow completes.
+        workspace_manager = WorkspaceManager.get_instance()
+        needs_startup = not workspace_manager.has_ready_session(workspace_id)
+        # When the workspace was evicted/restarted, any in-BTM TaskInfo for
+        # this thread holds a stale sandbox reference. ``wait_or_steer``
+        # would block up to ~5s waiting on that zombie before timing out —
+        # cancel it first so steering routes against live state only.
+        if needs_startup:
+            await manager.cancel_stale_workflow(thread_id)
+        # Dispatched flow owns the BTM placeholder ``threads.py`` already
+        # reserved for it under the same ``(thread_id, run_id)`` key.
+        # We still must guarantee at most one in-flight LangGraph ``astream``
+        # per ``thread_id`` (the checkpointer is thread-keyed), so wait for
+        # any OTHER active run on the thread to settle. ``exclude_run_id``
+        # skips our own placeholder.
+        if dispatched:
+            settled = await manager.wait_for_soft_interrupted(
+                thread_id, exclude_run_id=run_id
+            )
+            if not settled:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Workflow {thread_id} is still running; dispatched "
+                        "follow-up could not be admitted."
+                    ),
+                )
+            ready, steering_event = True, None
+        else:
+            ready, steering_event = await wait_or_steer(
+                manager, thread_id, user_input, user_id
+            )
+        if not ready:
+            slot_owned = False
+            await release_burst_slot(user_id)
+            # Release admission immediately — no workflow will register
+            # under this lock, so holding it would needlessly block any
+            # follow-up POST.
+            admission_lock.release()
+            admission_held = False
+            if steering_event:
+                yield steering_event
+            return
 
         # =====================================================================
         # Database Persistence Setup
@@ -253,6 +330,7 @@ async def astream_ptc_workflow(
         query_type, is_fork, persistence_service = await _setup_fork_and_persistence(
             request=request,
             thread_id=thread_id,
+            run_id=run_id,
             workspace_id=workspace_id,
             user_id=user_id,
             log_prefix="PTC_FORK",
@@ -350,16 +428,15 @@ async def astream_ptc_workflow(
         subagents = request.subagents_enabled or config.subagents.enabled
         sandbox_id = None
 
-        workspace_manager = WorkspaceManager.get_instance()
-
-        # Check if workspace needs startup — emit early SSE so frontend
-        # can show "Starting workspace..." instead of a silent wait.
-        # NOTE: This is broader than the old `ws_status == "stopped"` check.
-        # It also fires on server-restart cold starts (workspace running in
-        # Daytona but no session in memory). The extra "starting/ready" SSE
-        # pair is harmless — frontend treats it as a brief spinner.
-        needs_startup = not workspace_manager.has_ready_session(workspace_id)
-
+        # ``workspace_manager`` and ``needs_startup`` were resolved above for
+        # the pre-steering stale-cancel hook. Reuse them — recomputing here
+        # would race with a concurrent reconnect that could flip the state.
+        #
+        # The branch below emits an early "Starting workspace..." SSE pair so
+        # the frontend can show a spinner instead of a silent wait. This is
+        # broader than the old `ws_status == "stopped"` check — it also fires
+        # on server-restart cold starts (workspace running in Daytona but no
+        # session in memory). The extra "starting/ready" SSE pair is harmless.
         if not needs_startup:
             session = await workspace_manager.get_session_for_workspace(
                 workspace_id, user_id=user_id
@@ -682,6 +759,10 @@ async def astream_ptc_workflow(
             recursion_limit=get_ptc_recursion_limit(),
             plan_mode=effective_plan_mode,
         )
+        # Propagate run_id to LangGraph via the top-level config key; it
+        # lands on ExecutionInfo.run_id and CheckpointMetadata.run_id so
+        # LangSmith / checkpoint inspection can correlate by this UUID.
+        graph_config["run_id"] = run_id
 
         # Extract background task registry from orchestrator (single source of truth for SSE events)
         # The orchestrator wraps the middleware which owns the registry
@@ -696,6 +777,7 @@ async def astream_ptc_workflow(
 
         handler = WorkflowStreamHandler(
             thread_id=thread_id,
+            run_id=run_id,
             token_callback=token_callback,
             tool_tracker=tool_tracker,
             background_registry=background_registry,
@@ -711,6 +793,7 @@ async def astream_ptc_workflow(
                 thread_id=thread_id,
                 workspace_id=workspace_id,
                 user_id=user_id,
+                run_id=run_id,
                 metadata={
                     "type": "ptc_agent",
                     "sandbox_id": sandbox_id,
@@ -725,53 +808,30 @@ async def astream_ptc_workflow(
         # Background Execution with Completion Callback
         # =====================================================================
 
-        manager = BackgroundTaskManager.get_instance()
-
-        # If the workspace was not ready (stopped or server restarted), any
-        # old workflow holds stale sandbox references.  Cancel it silently.
-        if needs_startup:
-            await manager.cancel_stale_workflow(thread_id)
-
-        # Wait for any soft-interrupted workflow to complete before starting new one
-        ready, steering_event = await wait_or_steer(
-            manager, thread_id, user_input, user_id
-        )
-        if not ready:
-            slot_owned = False
-            await release_burst_slot(user_id)
-            if steering_event:
-                yield steering_event
-            return
+        # ``manager`` was acquired at the top of this handler for the early
+        # steering-routing check; reuse it here. ``cancel_stale_workflow``
+        # already ran there (gated on ``needs_startup``) so steering routed
+        # against live state.
 
         # Define completion callback for background persistence
-        async def on_background_workflow_complete():
+        async def on_background_workflow_complete(task_info):
             """Persist workflow data after background execution completes.
 
-            Reads handler/token_callback from task_info metadata in case
-            reinvocation replaced them with new instances.
+            State is per-run, so this callback is naturally identity-safe:
+            ``task_info``, ``persistence_service``, and the Redis stream
+            key are all bound to this turn's ``run_id``. No cross-turn
+            checks needed.
             """
             try:
-                # Read fresh refs from task_info (may have been updated by reinvoke)
-                task_info = manager.tasks.get(thread_id)
-                _handler = task_info.metadata.get("handler") if task_info else handler
-                _token_cb = (
-                    task_info.metadata.get("token_callback")
-                    if task_info
-                    else token_callback
-                )
-                _start_time = (
-                    task_info.metadata.get("start_time", start_time)
-                    if task_info
-                    else start_time
-                )
+                _handler = task_info.metadata.get("handler", handler)
+                _token_cb = task_info.metadata.get("token_callback", token_callback)
+                _start_time = task_info.metadata.get("start_time", start_time)
 
                 execution_time = time.time() - _start_time
 
-                _persistence_service = ConversationPersistenceService.get_instance(
-                    thread_id
-                )
+                _persistence_service = persistence_service
                 _persistence_service._on_pair_persisted = (
-                    lambda: manager.clear_event_buffer(thread_id)
+                    lambda: manager.clear_event_buffer(thread_id, run_id)
                 )
 
                 _per_call_records = _token_cb.per_call_records if _token_cb else None
@@ -812,12 +872,12 @@ async def astream_ptc_workflow(
                     sse_events=_sse_events,
                 )
 
-                # Mark completed in Redis tracker
                 await tracker.mark_completed(
                     thread_id=thread_id,
                     metadata={
                         "completed_at": datetime.now().isoformat(),
                         "execution_time": execution_time,
+                        "run_id": run_id,
                     },
                 )
 
@@ -864,6 +924,7 @@ async def astream_ptc_workflow(
         # Start workflow in background with event buffering
         await manager.start_workflow(
             thread_id=thread_id,
+            run_id=run_id,
             workflow_generator=handler.stream_workflow(
                 graph=ptc_graph,
                 input_state=input_state,
@@ -882,11 +943,17 @@ async def astream_ptc_workflow(
                 "timezone": timezone_str,
                 "handler": handler,
                 "token_callback": token_callback,
+                "persistence_service": persistence_service,
             },
             completion_callback=on_background_workflow_complete,
-            graph=ptc_graph,  # Pass graph for state queries in completion/error handlers
+            graph=ptc_graph,
         )
         slot_owned = False  # Manager owns burst slot release from here
+        # Admission complete — release the lock so concurrent POSTs can
+        # see the new RUNNING TaskInfo via ``wait_or_steer`` and route
+        # to steering instead of contending here.
+        admission_lock.release()
+        admission_held = False
 
         _mark_phase("workflow_start")
         total_ms = (time.time() - start_time) * 1000
@@ -913,10 +980,10 @@ async def astream_ptc_workflow(
         for _k, _v in _phase_times.items():
             safe_record(chat_turn_phase_duration_ms, _v, {"phase": _k, "mode": "ptc"})
 
-        # Stream-backed first-connect: read from workflow:stream:{thread_id}
+        # Stream-backed first-connect: read from workflow:stream:{tid}:{rid}
         # via XREAD BLOCK. The workflow runs as a fully detached background
         # task — disconnect cannot reach it.
-        async for event in stream_from_log(thread_id, last_event_id=None):
+        async for event in stream_from_log(thread_id, run_id, last_event_id=None):
             yield event
 
         # After the workflow ends, return any unconsumed steering messages so
@@ -968,5 +1035,10 @@ async def astream_ptc_workflow(
         raise
 
     finally:
+        # Release admission lock if any error path bypassed the normal
+        # release (e.g., exception before start_workflow). Safe to call
+        # multiple times because ``admission_held`` gates the release.
+        if admission_held and admission_lock is not None:
+            admission_lock.release()
         # Always stop execution tracking to prevent memory leaks and context pollution
         ExecutionTracker.stop_tracking()

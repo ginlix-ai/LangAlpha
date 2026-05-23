@@ -582,8 +582,14 @@ async def test_stream_from_log_bumps_workflow_connection_counter(monkeypatch):
     cache = _make_cache([[], []])  # two empty rounds → terminal handshake
     monkeypatch.setattr(sfl_mod, "get_cache_client", lambda: cache)
 
+    # Build a fake manager with the new (thread_id, run_id)-keyed surface.
+    fake_task = MagicMock()
+    fake_task.run_id = "r-1"
+    fake_task.status = TaskStatus.COMPLETED
+
     fake_manager = MagicMock()
-    fake_manager.get_task_status = AsyncMock(return_value=TaskStatus.COMPLETED)
+    fake_manager.tasks = {("t-housekeeping", "r-1"): fake_task}
+    fake_manager._find_latest_for_thread = MagicMock(return_value=fake_task)
     fake_manager.increment_connection = AsyncMock(return_value=True)
     fake_manager.decrement_connection = AsyncMock(return_value=True)
     monkeypatch.setattr(
@@ -593,8 +599,8 @@ async def test_stream_from_log_bumps_workflow_connection_counter(monkeypatch):
     async for _ in stream_from_log("t-housekeeping", last_event_id=None):
         pass
 
-    fake_manager.increment_connection.assert_awaited_once_with("t-housekeeping")
-    fake_manager.decrement_connection.assert_awaited_once_with("t-housekeeping")
+    fake_manager.increment_connection.assert_awaited_once_with("t-housekeeping", "r-1")
+    fake_manager.decrement_connection.assert_awaited_once_with("t-housekeeping", "r-1")
 
 
 @pytest.mark.asyncio

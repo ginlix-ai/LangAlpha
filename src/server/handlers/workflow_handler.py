@@ -225,6 +225,7 @@ async def get_workflow_status(thread_id: str) -> dict:
         # Get subagent info from background task manager
         active_tasks = []
         soft_interrupted = False
+        run_id = None
 
         try:
             from src.server.services.background_task_manager import (
@@ -236,6 +237,7 @@ async def get_workflow_status(thread_id: str) -> dict:
             if bg_status.get("status") != "not_found":
                 active_tasks = bg_status.get("active_tasks", [])
                 soft_interrupted = bg_status.get("soft_interrupted", False)
+                run_id = bg_status.get("run_id")
             elif can_reconnect:
                 # Redis says active/disconnected but BackgroundTaskManager has no
                 # record — likely a stale Redis key surviving a server restart.
@@ -283,6 +285,7 @@ async def get_workflow_status(thread_id: str) -> dict:
 
         response = {
             "thread_id": thread_id,
+            "run_id": run_id,
             "status": status,
             "can_reconnect": can_reconnect,
             "last_update": last_update,

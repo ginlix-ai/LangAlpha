@@ -32,12 +32,11 @@ def _make_btm() -> BackgroundTaskManager:
         return BackgroundTaskManager()
 
 
-def _make_info(thread_id: str = "t-1", **metadata) -> TaskInfo:
+def _make_info(thread_id: str = "t-1", run_id: str = "r-1", **metadata) -> TaskInfo:
     md = {
         "workspace_id": "ws-1",
         "user_id": "u-1",
         "is_byok": False,
-        "dispatch_kind": "foreground",
         "response_id": "r-1",
         "handler": object(),
         "token_callback": object(),
@@ -46,6 +45,7 @@ def _make_info(thread_id: str = "t-1", **metadata) -> TaskInfo:
     md.update(metadata)
     info = TaskInfo(
         thread_id=thread_id,
+        run_id=run_id,
         status=TaskStatus.RUNNING,
         created_at=datetime.now(),
         metadata=md,
@@ -66,9 +66,9 @@ class TestReleaseTerminalRefs:
     async def test_releases_heavy_refs_keeps_scalars(self):
         btm = _make_btm()
         info = _make_info()
-        btm.tasks["t-1"] = info
+        btm.tasks[("t-1", "r-1")] = info
 
-        btm._release_terminal_refs("t-1")
+        btm._release_terminal_refs("t-1", "r-1")
 
         assert info.graph is None
         assert info.completion_callback is None
@@ -79,17 +79,16 @@ class TestReleaseTerminalRefs:
         assert info.metadata["workspace_id"] == "ws-1"
         assert info.metadata["user_id"] == "u-1"
         assert info.metadata["is_byok"] is False
-        assert info.metadata["dispatch_kind"] == "foreground"
         assert info.metadata["response_id"] == "r-1"
 
     @pytest.mark.asyncio
     async def test_idempotent(self):
         btm = _make_btm()
         info = _make_info()
-        btm.tasks["t-1"] = info
+        btm.tasks[("t-1", "r-1")] = info
 
-        btm._release_terminal_refs("t-1")
-        btm._release_terminal_refs("t-1")  # No exception
+        btm._release_terminal_refs("t-1", "r-1")
+        btm._release_terminal_refs("t-1", "r-1")  # No exception
 
         assert info.graph is None
         assert info.metadata["workspace_id"] == "ws-1"
@@ -97,7 +96,7 @@ class TestReleaseTerminalRefs:
     @pytest.mark.asyncio
     async def test_missing_thread_is_safe(self):
         btm = _make_btm()
-        btm._release_terminal_refs("missing")  # Must not raise
+        btm._release_terminal_refs("missing", "r-x")  # Must not raise
 
     @pytest.mark.asyncio
     async def test_inner_task_only_dropped_when_done(self):
@@ -106,9 +105,9 @@ class TestReleaseTerminalRefs:
         running = MagicMock(spec=asyncio.Task)
         running.done.return_value = False
         info.inner_task = running
-        btm.tasks["t-1"] = info
+        btm.tasks[("t-1", "r-1")] = info
 
-        btm._release_terminal_refs("t-1")
+        btm._release_terminal_refs("t-1", "r-1")
 
         assert info.inner_task is running
 
@@ -127,19 +126,18 @@ class TestMarkCompletedReleases:
         info.completion_callback = AsyncMock()
         info.metadata["workspace_id"] = "ws-1"
         info.metadata["user_id"] = "u-1"
-        btm.tasks["t-1"] = info
+        btm.tasks[("t-1", "r-1")] = info
 
-        bg_store = MagicMock()
-        bg_store.get_instance.return_value.get_registry = AsyncMock(return_value=None)
-        ps_module = MagicMock()
-        ps_module.ConversationPersistenceService.get_instance.return_value._current_response_id = None
+        bg_store_module = MagicMock()
+        bg_store_instance = MagicMock()
+        bg_store_instance.get_registry = AsyncMock(return_value=None)
+        bg_store_module.BackgroundRegistryStore.get_instance.return_value = bg_store_instance
 
         with patch("src.server.services.background_task_manager.release_burst_slot", new=AsyncMock()), \
              patch.dict("sys.modules", {
-                 "src.server.services.background_registry_store": bg_store,
-                 "src.server.services.persistence.conversation": ps_module,
+                 "src.server.services.background_registry_store": bg_store_module,
              }):
-            await btm._mark_completed("t-1")
+            await btm._mark_completed("t-1", "r-1")
 
         assert info.persistence_complete.is_set()
         assert info.graph is None
@@ -167,12 +165,12 @@ class TestMarkFailedReleases:
         btm = _make_btm()
         info = _make_info()
         info.metadata["workspace_id"] = None  # Skip persistence body
-        btm.tasks["t-1"] = info
+        btm.tasks[("t-1", "r-1")] = info
 
         tracker_patch, mock_tracker = _patch_tracker()
         with patch("src.server.services.background_task_manager.release_burst_slot", new=AsyncMock()), \
              tracker_patch:
-            await btm._mark_failed("t-1", "boom")
+            await btm._mark_failed("t-1", "r-1", "boom")
 
         assert info.persistence_complete.is_set()
         assert info.graph is None
@@ -189,16 +187,15 @@ class TestMarkCancelledReleases:
         btm = _make_btm()
         info = _make_info()
         info.metadata["workspace_id"] = None  # Skip persistence body
-        btm.tasks["t-1"] = info
+        btm.tasks[("t-1", "r-1")] = info
 
         tracker_patch, mock_tracker = _patch_tracker()
         with patch("src.server.services.background_task_manager.release_burst_slot", new=AsyncMock()), \
              tracker_patch:
-            await btm._mark_cancelled("t-1")
+            await btm._mark_cancelled("t-1", "r-1")
 
         assert info.persistence_complete.is_set()
         assert info.graph is None
-        assert info.metadata["dispatch_kind"] == "foreground"
         # Wiring: tracker.mark_cancelled called from the canonical site so
         # stale-cancel reaper / soft-interrupt-abort paths also update Redis.
         mock_tracker.mark_cancelled.assert_awaited_once_with("t-1")
@@ -211,12 +208,12 @@ class TestMarkSoftInterruptedReleases:
         btm = _make_btm()
         info = _make_info()
         info.metadata["workspace_id"] = None  # Skip persistence body
-        btm.tasks["t-1"] = info
+        btm.tasks[("t-1", "r-1")] = info
 
         tracker_patch, mock_tracker = _patch_tracker()
         with patch("src.server.services.background_task_manager.release_burst_slot", new=AsyncMock()), \
              tracker_patch:
-            await btm._mark_soft_interrupted("t-1")
+            await btm._mark_soft_interrupted("t-1", "r-1")
 
         assert info.persistence_complete.is_set()
         assert info.graph is None
@@ -235,7 +232,7 @@ class TestMarkCompletedCallbackFailure:
         btm = _make_btm()
         info = _make_info()
         info.completion_callback = AsyncMock(side_effect=RuntimeError("boom"))
-        btm.tasks["t-1"] = info
+        btm.tasks[("t-1", "r-1")] = info
 
         burst_release = AsyncMock()
         bg_store_module = MagicMock()
@@ -261,7 +258,7 @@ class TestMarkCompletedCallbackFailure:
                  "src.server.services.background_registry_store": bg_store_module,
                  "src.server.services.persistence.conversation": ps_module,
              }):
-            await btm._mark_completed("t-1")
+            await btm._mark_completed("t-1", "r-1")
 
         # Burst slot released exactly once (via _mark_failed only)
         assert burst_release.call_count == 1

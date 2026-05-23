@@ -110,6 +110,53 @@ async def test_cache_disabled_returns_empty():
 
 
 @pytest.mark.asyncio
+async def test_extract_from_redis_uses_per_run_key_when_taskinfo_present():
+    """When BTM has a TaskInfo for the thread, read the per-run stream
+    (``workflow:stream:{tid}:{run_id}``) — not the legacy thread-only key."""
+    import asyncio
+    from datetime import datetime
+
+    from src.server.services.background_task_manager import (
+        BackgroundTaskManager,
+        TaskInfo,
+        TaskStatus,
+    )
+
+    info = TaskInfo(
+        thread_id="t-test",
+        run_id="r-test-123",
+        status=TaskStatus.RUNNING,
+        created_at=datetime.now(),
+    )
+    stub_btm = MagicMock()
+    stub_btm.task_lock = asyncio.Lock()
+    stub_btm._find_latest_for_thread = MagicMock(return_value=info)
+
+    cache = MagicMock()
+    cache.enabled = True
+    cache.client = MagicMock()
+    cache.client.xrevrange = AsyncMock(
+        return_value=[(b"1-0", {b"event": _sse(1, "per-run hit")})]
+    )
+
+    BackgroundTaskManager._instance = None
+    try:
+        with patch.object(
+            BackgroundTaskManager, "get_instance", return_value=stub_btm
+        ), patch(
+            "src.utils.cache.redis_cache.get_cache_client", return_value=cache
+        ):
+            text = await _extract_from_redis("t-test")
+    finally:
+        BackgroundTaskManager._instance = None
+
+    assert text == "per-run hit"
+    cache.client.xrevrange.assert_awaited_once_with(
+        "workflow:stream:t-test:r-test-123", count=500
+    )
+
+
+@pytest.mark.asyncio
 async def test_xrevrange_failure_returns_empty():
     cache = MagicMock()
     cache.enabled = True

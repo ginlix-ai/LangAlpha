@@ -83,30 +83,22 @@ def _track_task(task: asyncio.Task) -> None:
     task.add_done_callback(_background_tasks.discard)
 
 
-async def _consume_background_gen(gen, label: str, thread_id: str) -> bool:
-    """Drain an async generator in the background, cleaning up Redis on failure.
-
-    Returns True on success, False if the generator raised. Failures are logged
-    and Redis state cleaned up here; the exception is intentionally swallowed
-    so the caller can decide how to surface it (e.g. metric labeling).
-    """
+async def _consume_background_gen(
+    gen, label: str, thread_id: str, run_id: str
+) -> bool:
+    """Drain an async generator in the background, cleaning up Redis on failure."""
     _ok = True
+    _error_text: str | None = None
     try:
         async for _ in gen:
             pass
-    except Exception:
+    except Exception as exc:
         _ok = False
+        _error_text = f"{type(exc).__name__}: {exc}"
         logger.error(
-            f"[{label}] Background workflow failed: thread_id={thread_id}",
+            f"[{label}] Background workflow failed: thread_id={thread_id} run_id={run_id}",
             exc_info=True,
         )
-        # Clean up Redis state so the frontend doesn't show a permanent
-        # "pending" indicator for a dispatch that will never complete.
-        # NOTE: When called for the flash-side background task, ptc_origin
-        # is keyed by the PTC thread_id (not the flash thread_id passed here),
-        # so the lookup returns None and cleanup is a no-op. This is expected;
-        # _flash_report_back already handles ptc_origin cleanup before the
-        # flash workflow starts, and TTL covers any remaining edge cases.
         try:
             from src.utils.cache.redis_cache import get_cache_client
 
@@ -122,7 +114,6 @@ async def _consume_background_gen(gen, label: str, thread_id: str) -> bool:
                         remaining = await cache.client.scard(watch_key)
                         if remaining == 0:
                             await cache.client.delete(watch_key)
-                        # Notify frontend so the watch connection closes
                         await cache.client.publish(
                             f"thread:wake:{flash_tid}",
                             '{"error": "background_workflow_failed"}',
@@ -130,10 +121,41 @@ async def _consume_background_gen(gen, label: str, thread_id: str) -> bool:
         except Exception:
             logger.warning(f"[{label}] Redis cleanup after failure also failed", exc_info=True)
     finally:
-        # Clean up pre-registered dispatch state if the generator failed before
-        # reaching start_workflow().  The pre-registered TaskInfo is QUEUED with
-        # no asyncio task; once start_workflow() upgrades it, BackgroundTaskManager
-        # owns the lifecycle and this block is a no-op.
+        # When the generator raised before reaching start_workflow, the
+        # frontend already received {status: dispatched, run_id} and
+        # navigated to workflow:stream:{tid}:{rid} — but no events will
+        # ever land. Write a terminal `error` SSE so a reconnected client
+        # sees the failure instead of silently waiting on an empty stream.
+        # Wrapped in its own try/except so failure to emit never blocks
+        # the placeholder/tracker cleanup below.
+        if not _ok:
+            try:
+                from src.server.services.background_task_manager import stream_key
+                from src.utils.cache.redis_cache import get_cache_client
+
+                cache = get_cache_client()
+                if cache.enabled and cache.client:
+                    error_payload = {
+                        "thread_id": thread_id,
+                        "content": "background workflow failed",
+                        "error_type": "background_failure",
+                        "error": _error_text or "background workflow failed",
+                    }
+                    sse_wire = (
+                        f"event: error\n"
+                        f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
+                    )
+                    await cache.client.xadd(
+                        stream_key(thread_id, run_id),
+                        {b"event": sse_wire.encode("utf-8")},
+                    )
+            except Exception:
+                logger.warning(
+                    f"[{label}] Failed to emit terminal error SSE for "
+                    f"thread_id={thread_id} run_id={run_id}",
+                    exc_info=True,
+                )
+
         try:
             from src.server.services.background_task_manager import (
                 BackgroundTaskManager,
@@ -142,26 +164,25 @@ async def _consume_background_gen(gen, label: str, thread_id: str) -> bool:
             from src.server.services.workflow_tracker import WorkflowTracker
 
             manager = BackgroundTaskManager.get_instance()
+            key = (thread_id, run_id)
             async with manager.task_lock:
-                task_info = manager.tasks.get(thread_id)
+                task_info = manager.tasks.get(key)
                 if task_info and task_info.status == TaskStatus.QUEUED and task_info.task is None:
-                    # Workflow never started — drop the placeholder. Any
-                    # reconnect consumer attached to workflow:stream:* will
-                    # eventually exit via its terminal-check + handshake when
-                    # the missing TaskInfo flips it to a no-task state.
-                    del manager.tasks[thread_id]
+                    del manager.tasks[key]
                     logger.info(
                         f"[{label}] Cleaned up pre-registered placeholder "
-                        f"for {thread_id} (workflow never started)"
+                        f"for {key} (workflow never started)"
                     )
 
             tracker = WorkflowTracker.get_instance()
             status = await tracker.get_status(thread_id)
             if status and status.get("status") == "active":
-                # Only clean up if this was our pre-registration (metadata.dispatched)
                 meta = status.get("metadata", {})
-                if meta.get("dispatched"):
-                    await tracker.mark_completed(thread_id)
+                if meta.get("dispatched") and meta.get("run_id") == run_id:
+                    if _ok:
+                        await tracker.mark_completed(thread_id)
+                    else:
+                        await tracker.mark_failed(thread_id, error=_error_text)
         except Exception:
             pass
     return _ok
@@ -408,6 +429,14 @@ async def _handle_send_message(
 
     from src.server.database.workspace import get_workspace
 
+    # Canonical run_id generation site. Each POST gets a fresh UUID that
+    # flows through every downstream key: BTM ``(tid, rid)``, persistence
+    # service, ``workflow:stream:{tid}:{rid}``, LangGraph ``config["run_id"]``
+    # → ``CheckpointMetadata.run_id``, and the SSE ``metadata`` event the
+    # frontend sees as the first event of the stream. 1:1 with
+    # ``conversation_response_id``.
+    run_id = str(uuid4())
+
     user_id = auth.user_id
     is_byok = auth.is_byok
     agent_mode = request.agent_mode or "ptc"
@@ -532,37 +561,81 @@ async def _handle_send_message(
     _llm = getattr(config, "llm", None)
     _model = (getattr(_llm, "flash", None) if agent_mode == "flash" else getattr(_llm, "name", None)) or ""
 
+    # Content-Location header advertises the reconnect URL for this run.
+    # Mirrors langgraph_sdk's protocol so reconnects target the exact run.
+    sse_headers_with_loc = {
+        **SSE_HEADERS,
+        "Content-Location": f"/api/v1/threads/{thread_id}/messages/stream?run_id={run_id}",
+    }
+
     # Route to appropriate streaming function based on agent mode
     if agent_mode == "flash":
+        is_flash_dispatch = (
+            is_internal
+            and raw_request
+            and raw_request.headers.get("X-Dispatch") == "background"
+        )
         flash_gen = astream_flash_workflow(
             request=request,
             thread_id=thread_id,
+            run_id=run_id,
             user_input=user_input,
             user_id=user_id,
             is_byok=is_byok,
             config=config,
+            dispatched=is_flash_dispatch,
         )
 
-        # Background dispatch for flash (used by PTC completion report-back).
-        if is_internal and raw_request and raw_request.headers.get("X-Dispatch") == "background":
+        if is_flash_dispatch:
+            from src.server.services.background_task_manager import BackgroundTaskManager
+            manager = BackgroundTaskManager.get_instance()
+            # Fail-fast admission at the HTTP boundary: if another run is
+            # still active on this thread, wait for it to settle (up to
+            # the soft-interrupt timeout). If it doesn't settle, return
+            # 409 here rather than dispatching a doomed background task.
+            #
+            # The admission_lock is held across wait_for_soft_interrupted +
+            # pre_register so two concurrent dispatched POSTs on the same
+            # thread can't both pass the gate and start workflows on the
+            # same LangGraph thread_id (the foreground branch acquires
+            # this same lock inside its handler via wait_or_steer; the
+            # dispatched branch must do it here because it skips
+            # wait_or_steer entirely). Released before _track_task
+            # schedules the background workflow.
+            admission_lock = await manager.get_admission_lock(thread_id)
+            async with admission_lock:
+                settled = await manager.wait_for_soft_interrupted(
+                    thread_id, exclude_run_id=run_id
+                )
+                if not settled:
+                    await release_burst_slot(user_id)
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"Workflow {thread_id} is still running; dispatched "
+                            "follow-up could not be admitted."
+                        ),
+                    )
+                await manager.pre_register(thread_id, run_id)
             _track_task(asyncio.create_task(
                 observe_background_chat_turn(
-                    _consume_background_gen(flash_gen, "FLASH_DISPATCH", thread_id),
+                    _consume_background_gen(flash_gen, "FLASH_DISPATCH", thread_id, run_id),
                     mode="flash",
                     model=_model,
                     user_id=user_id,
                     workspace_id=workspace_id,
                     thread_id=thread_id,
                 ),
-                name=f"flash-dispatch-{thread_id}",
+                name=f"flash-dispatch-{thread_id}-{run_id[:8]}",
             ))
             logger.info(
                 f"[FLASH_DISPATCH] Started background workflow: "
-                f"thread_id={thread_id}"
+                f"thread_id={thread_id} run_id={run_id}"
             )
             return JSONResponse({
                 "status": "dispatched",
                 "thread_id": thread_id,
+                "run_id": run_id,
             })
 
         return StreamingResponse(
@@ -575,61 +648,86 @@ async def _handle_send_message(
                 thread_id=thread_id,
             ),
             media_type="text/event-stream",
-            headers=SSE_HEADERS,
+            headers=sse_headers_with_loc,
         )
 
+    is_ptc_dispatch = (
+        is_internal
+        and raw_request
+        and raw_request.headers.get("X-Dispatch") == "background"
+    )
     ptc_gen = astream_ptc_workflow(
         request=request,
         thread_id=thread_id,
+        run_id=run_id,
         user_input=user_input,
         user_id=user_id,
         workspace_id=workspace_id,
         is_byok=is_byok,
         config=config,
+        dispatched=is_ptc_dispatch,
     )
 
-    # Internal dispatch mode: run the PTC workflow in a background task
-    # instead of streaming SSE.  The ptc_agent tool (secretary) uses this
-    # to avoid the generator being cancelled when the HTTP connection closes.
-    # Only honoured for internal service-to-service calls (X-Service-Token).
-    if is_internal and raw_request and raw_request.headers.get("X-Dispatch") == "background":
-        # Pre-register in WorkflowTracker and BackgroundTaskManager BEFORE the
-        # asyncio task starts.  This closes the timing gap where the frontend
-        # navigates to the new PTC workspace before the generator reaches
-        # tracker.mark_active() / manager.start_workflow() (~20 async ops later).
-        # Without this, /status returns {can_reconnect: false, status: unknown}
-        # and the frontend incorrectly marks the agent as completed.
+    if is_ptc_dispatch:
         from src.server.services.background_task_manager import BackgroundTaskManager
         from src.server.services.workflow_tracker import WorkflowTracker
 
         tracker = WorkflowTracker.get_instance()
         manager = BackgroundTaskManager.get_instance()
-        await tracker.mark_active(
-            thread_id=thread_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            metadata={"type": "ptc_agent", "dispatched": True},
-        )
-        await manager.pre_register(thread_id)
+        # Fail-fast admission at the HTTP boundary: if another run is still
+        # active on this thread, wait for it to settle. If it doesn't,
+        # return 409 here rather than dispatching a doomed background task.
+        #
+        # The admission_lock is held across wait_for_soft_interrupted +
+        # mark_active + pre_register so two concurrent dispatched POSTs on
+        # the same thread can't both pass the gate and start workflows on
+        # the same LangGraph thread_id (the foreground branch acquires
+        # this same lock inside its handler via wait_or_steer; the
+        # dispatched branch must do it here because it skips
+        # wait_or_steer entirely). Released before _track_task schedules
+        # the background workflow.
+        admission_lock = await manager.get_admission_lock(thread_id)
+        async with admission_lock:
+            settled = await manager.wait_for_soft_interrupted(
+                thread_id, exclude_run_id=run_id
+            )
+            if not settled:
+                await release_burst_slot(user_id)
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Workflow {thread_id} is still running; dispatched "
+                        "follow-up could not be admitted."
+                    ),
+                )
+            await tracker.mark_active(
+                thread_id=thread_id,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                run_id=run_id,
+                metadata={"type": "ptc_agent", "dispatched": True},
+            )
+            await manager.pre_register(thread_id, run_id)
 
         _track_task(asyncio.create_task(
             observe_background_chat_turn(
-                _consume_background_gen(ptc_gen, "PTC_DISPATCH", thread_id),
+                _consume_background_gen(ptc_gen, "PTC_DISPATCH", thread_id, run_id),
                 mode="ptc",
                 model=_model,
                 user_id=user_id,
                 workspace_id=workspace_id,
                 thread_id=thread_id,
             ),
-            name=f"ptc-dispatch-{thread_id}",
+            name=f"ptc-dispatch-{thread_id}-{run_id[:8]}",
         ))
         logger.info(
             f"[PTC_DISPATCH] Started background workflow: "
-            f"thread_id={thread_id} workspace_id={workspace_id}"
+            f"thread_id={thread_id} run_id={run_id} workspace_id={workspace_id}"
         )
         return JSONResponse({
             "status": "dispatched",
             "thread_id": thread_id,
+            "run_id": run_id,
             "workspace_id": workspace_id,
         })
 
@@ -643,7 +741,7 @@ async def _handle_send_message(
             thread_id=thread_id,
         ),
         media_type="text/event-stream",
-        headers=SSE_HEADERS,
+        headers=sse_headers_with_loc,
     )
 
 
@@ -653,13 +751,12 @@ async def reconnect_to_stream(
     x_user_id: CurrentUserId,
     last_event_id: Optional[int] = Query(None, description="Last received event ID"),
     last_event_id_header: Optional[str] = Header(None, alias="Last-Event-ID"),
+    run_id: Optional[str] = Query(None, description="Specific run to reconnect to"),
 ):
-    """
-    Reconnect to a running or completed workflow's SSE stream.
+    """Reconnect to a running or completed workflow's SSE stream.
 
-    Replays buffered events, then attaches to live stream if still running.
-    Accepts the cursor as either ``?last_event_id=N`` (existing) or the
-    SSE-spec ``Last-Event-ID`` HTTP header (preferred when present).
+    ``run_id`` targets a specific turn. If omitted, falls back to the
+    latest run on the thread (matches the single-turn happy path).
     """
     await require_thread_owner(thread_id, x_user_id)
     from src.server.handlers.chat import reconnect_to_workflow_stream
@@ -670,11 +767,13 @@ async def reconnect_to_stream(
         try:
             last_event_id = int(last_event_id_header)
         except ValueError:
-            pass  # Invalid header → fall through, treated as no resume.
+            pass
 
     async def stream_reconnection():
         try:
-            async for event in reconnect_to_workflow_stream(thread_id, last_event_id):
+            async for event in reconnect_to_workflow_stream(
+                thread_id, run_id, last_event_id
+            ):
                 yield event
         except HTTPException:
             raise

@@ -32,14 +32,17 @@ def _make_btm(backend: str = "redis") -> BackgroundTaskManager:
     return btm
 
 
-def _register_task(btm: BackgroundTaskManager, thread_id: str = "thread-1") -> TaskInfo:
+def _register_task(
+    btm: BackgroundTaskManager, thread_id: str = "thread-1", run_id: str = "run-1"
+) -> TaskInfo:
     task_info = TaskInfo(
         thread_id=thread_id,
+        run_id=run_id,
         status=TaskStatus.RUNNING,
         created_at=datetime.now(),
         started_at=datetime.now(),
     )
-    btm.tasks[thread_id] = task_info
+    btm.tasks[(thread_id, run_id)] = task_info
     return task_info
 
 
@@ -59,15 +62,15 @@ class TestBufferEventRedisHappyPath:
             "src.server.services.background_task_manager.get_cache_client",
             return_value=mock_cache,
         ):
-            await btm._buffer_event_redis("thread-1", "id: 42\nevent: x\ndata: hi\n\n")
+            await btm._buffer_event_redis("thread-1", "run-1", "id: 42\nevent: x\ndata: hi\n\n")
 
         assert mock_cache.pipelined_event_buffer.await_count == 1
         call = mock_cache.pipelined_event_buffer.await_args
         # Main workflow path is stream-only; persistence comes from
         # StreamEventAccumulator, not from a separate List.
         assert "events_key" not in call.kwargs
-        assert call.kwargs["meta_key"] == "workflow:events:meta:thread-1"
-        assert call.kwargs["stream_key"] == "workflow:stream:thread-1"
+        assert call.kwargs["meta_key"] == "workflow:events:meta:thread-1:run-1"
+        assert call.kwargs["stream_key"] == "workflow:stream:thread-1:run-1"
         assert call.kwargs["last_event_id"] == 42
         assert call.kwargs["max_size"] == 1000
         assert call.kwargs["ttl"] == 86400
@@ -92,7 +95,7 @@ class TestBufferEventRedisHappyPath:
             "src.server.services.background_task_manager.get_cache_client",
             return_value=mock_cache,
         ):
-            await btm._buffer_event_redis("thread-1", "event: x\ndata: hi\n\n")
+            await btm._buffer_event_redis("thread-1", "run-1", "event: x\ndata: hi\n\n")
 
         assert mock_cache.pipelined_event_buffer.await_count == 0
 
@@ -121,7 +124,7 @@ class TestBufferEventRedisFailureModes:
             return_value=mock_cache,
         ):
             # Must not raise.
-            await btm._buffer_event_redis("thread-1", "id: 1\ndata: lost-if-broken\n\n")
+            await btm._buffer_event_redis("thread-1", "run-1", "id: 1\ndata: lost-if-broken\n\n")
 
         assert mock_cache.pipelined_event_buffer.await_count == 1
 
@@ -135,7 +138,7 @@ class TestBufferEventRedisFailureModes:
             "src.server.services.background_task_manager.get_cache_client",
             side_effect=RuntimeError("cache singleton init failed"),
         ):
-            await btm._buffer_event_redis("thread-1", "id: 42\ndata: must-survive\n\n")
+            await btm._buffer_event_redis("thread-1", "run-1", "id: 42\ndata: must-survive\n\n")
 
     @pytest.mark.asyncio
     async def test_redis_disabled_skips_pipeline(self):
@@ -151,6 +154,6 @@ class TestBufferEventRedisFailureModes:
             "src.server.services.background_task_manager.get_cache_client",
             return_value=mock_cache,
         ):
-            await btm._buffer_event_redis("thread-1", "id: 1\ndata: x\n\n")
+            await btm._buffer_event_redis("thread-1", "run-1", "id: 1\ndata: x\n\n")
 
         assert mock_cache.pipelined_event_buffer.await_count == 0

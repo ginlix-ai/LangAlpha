@@ -89,7 +89,8 @@ class TestHasActiveTasksForWorkspace:
     @pytest.mark.asyncio
     async def test_running_task_matches(self):
         mgr = BackgroundTaskManager()
-        mgr.tasks["thread-1"] = TaskInfo(
+        mgr.tasks[("thread-1", "run-1")] = TaskInfo(
+            run_id="run-1",
             thread_id="thread-1",
             status=TaskStatus.RUNNING,
             created_at=datetime.now(),
@@ -100,7 +101,8 @@ class TestHasActiveTasksForWorkspace:
     @pytest.mark.asyncio
     async def test_queued_task_matches(self):
         mgr = BackgroundTaskManager()
-        mgr.tasks["thread-1"] = TaskInfo(
+        mgr.tasks[("thread-1", "run-1")] = TaskInfo(
+            run_id="run-1",
             thread_id="thread-1",
             status=TaskStatus.QUEUED,
             created_at=datetime.now(),
@@ -111,7 +113,8 @@ class TestHasActiveTasksForWorkspace:
     @pytest.mark.asyncio
     async def test_completed_task_does_not_match(self):
         mgr = BackgroundTaskManager()
-        mgr.tasks["thread-1"] = TaskInfo(
+        mgr.tasks[("thread-1", "run-1")] = TaskInfo(
+            run_id="run-1",
             thread_id="thread-1",
             status=TaskStatus.COMPLETED,
             created_at=datetime.now(),
@@ -122,7 +125,8 @@ class TestHasActiveTasksForWorkspace:
     @pytest.mark.asyncio
     async def test_soft_interrupted_task_matches(self):
         mgr = BackgroundTaskManager()
-        mgr.tasks["thread-1"] = TaskInfo(
+        mgr.tasks[("thread-1", "run-1")] = TaskInfo(
+            run_id="run-1",
             thread_id="thread-1",
             status=TaskStatus.SOFT_INTERRUPTED,
             created_at=datetime.now(),
@@ -133,7 +137,8 @@ class TestHasActiveTasksForWorkspace:
     @pytest.mark.asyncio
     async def test_different_workspace_does_not_match(self):
         mgr = BackgroundTaskManager()
-        mgr.tasks["thread-1"] = TaskInfo(
+        mgr.tasks[("thread-1", "run-1")] = TaskInfo(
+            run_id="run-1",
             thread_id="thread-1",
             status=TaskStatus.RUNNING,
             created_at=datetime.now(),
