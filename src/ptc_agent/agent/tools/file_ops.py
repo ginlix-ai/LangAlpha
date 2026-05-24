@@ -126,6 +126,20 @@ def create_filesystem_tools(
                 logger.warning(error_msg, file_path=file_path)
                 return f"ERROR: {error_msg}"
 
+            # Visual extensions (.png, .pdf, etc) routed above. This catches
+            # everything else binary (.pyc, .o, .zip, .so, archives, audio).
+            # Null-byte sniff is the same heuristic file(1) and git use --
+            # cheap, robust, and avoids cat-n'ing garbled bytes at the model.
+            if "\x00" in content[:8192]:
+                error_msg = (
+                    f"'{file_path}' appears to be a binary file. Read can't "
+                    f"display binary content. Use `bash file '{file_path}'` "
+                    f"to identify the type, or `xxd '{file_path}' | head` "
+                    f"to inspect as hex."
+                )
+                logger.info("Binary file rejected", file_path=file_path)
+                return f"ERROR: {error_msg}"
+
             lines = content.splitlines()
             formatted = _format_cat_n(lines, start_line_number=start_offset + 1)
 

@@ -193,6 +193,40 @@ class TestReadToolCharCap:
         assert "hello" in result and "world" in result
 
 
+class TestReadToolBinaryDetection:
+    """Pre-fix, binary files either returned `File not found` (when the
+    backend's text decode failed) or got cat-n'ed and produced garbled
+    output for the model. Now a null-byte sniff returns a clear error with
+    bash escape hints, matching what file(1) and git do."""
+
+    @pytest.mark.asyncio
+    async def test_binary_content_returns_clear_error(self):
+        # ELF magic header + null padding, classic shape for a .o / .so / a.out.
+        binary_content = "ELF\x02\x01\x01" + ("\x00" * 100) + "more"
+        backend = _make_backend(content=binary_content)
+        read = _get_read_tool(backend)
+
+        result = await read.ainvoke({"file_path": "/tmp/program.o"})
+
+        assert result.startswith("ERROR")
+        assert "binary" in result.lower()
+        assert "/tmp/program.o" in result
+        assert "xxd" in result or "file" in result
+
+    @pytest.mark.asyncio
+    async def test_text_with_no_null_bytes_passes_through(self):
+        # Sanity check: a normal text file with control chars (tab, newline)
+        # but no null bytes must NOT trip the binary detector.
+        text = "line1\n\tindented\nline3\twith\ttabs"
+        backend = _make_backend(content=text)
+        read = _get_read_tool(backend)
+
+        result = await read.ainvoke({"file_path": "/tmp/text.txt"})
+
+        assert not result.startswith("ERROR")
+        assert "line1" in result and "line3" in result
+
+
 class TestReadToolPassthroughs:
     """URLs, images, and missing files must still route to their existing
     handlers — the size guard must not change these branches."""
