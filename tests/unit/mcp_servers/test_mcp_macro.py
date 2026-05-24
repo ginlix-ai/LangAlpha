@@ -195,6 +195,19 @@ class TestGetEarningsCalendar:
         )
 
     @pytest.mark.asyncio
+    async def test_truncated_when_provider_cap_reached(self):
+        from mcp_servers.macro_mcp_server import get_earnings_calendar
+
+        client = _make_fmp_client()
+        client.get_earnings_calendar_by_date = AsyncMock(return_value=[{}] * 4000)
+        with patch(f"{_MOD}.get_fmp_client", return_value=client):
+            result = await get_earnings_calendar("2025-01-01", "2025-01-31")
+
+        assert result["count"] == 4000
+        assert result["truncated"] is True
+        assert "Narrow the date range" in result["note"]
+
+    @pytest.mark.asyncio
     async def test_fmp_init_error(self):
         from mcp_servers.macro_mcp_server import get_earnings_calendar
 
