@@ -973,11 +973,11 @@
             {
               "max_tokens": 128000,
               "rate": 1.398,
-              "cached_input": 0.140
+              "cached_input": 0.14
             },
             {
               "max_tokens": 256000,
-              "rate": 2.150,
+              "rate": 2.15,
               "cached_input": 0.215
             }
           ],
@@ -1309,11 +1309,7 @@
       "variants": {
         "dashscope": {
           "sdk": "openai",
-          "base_url": "https://dashscope.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1",
-          "use_response_api": true,
-          "default_headers": {
-            "x-dashscope-session-cache": "enabled"
-          }
+          "base_url": "https://coding.dashscope.aliyuncs.com/v1"
         },
         "dashscope-intl": {
           "sdk": "openai",
@@ -1427,6 +1423,14 @@
       "access_type": "api_key",
       "byok_eligible": true,
       "display_name": "DeepSeek"
+    },
+    "lkeap": {
+      "sdk": "openai",
+      "base_url": "https://api.lkeap.cloud.tencent.com/plan/v3",
+      "env_key": "LKEAP_API_KEY",
+      "access_type": "api_key",
+      "byok_eligible": true,
+      "display_name": "Tencent LKEAP (Hunyuan)"
     },
     "groq": {
       "sdk": "openai",

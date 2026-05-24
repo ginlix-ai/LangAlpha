@@ -55,4 +55,13 @@ export const queryKeys = {
     list: () => [...queryKeys.memo.all, 'list'],
     read: (key: string) => [...queryKeys.memo.all, 'read', key],
   },
+  templates: {
+    all:           ['templates'],
+    manifests:     () => [...queryKeys.templates.all, 'manifests'],
+    manifest:      (id: string) => [...queryKeys.templates.all, 'manifest', id],
+    entries:       (templateId: string, params?: Record<string, unknown>) =>
+      [...queryKeys.templates.all, 'entries', templateId, params ?? {}],
+    entry:         (templateId: string, entryId: string) =>
+      [...queryKeys.templates.all, 'entry', templateId, entryId],
+  },
 };

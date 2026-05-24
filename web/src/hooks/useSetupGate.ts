@@ -21,6 +21,11 @@ export function skipSetup(): void {
  * that suppresses the redirect for the rest of this browser session.
  */
 export function useSetupGate(): { isLoading: boolean; needsSetup: boolean } {
+  // Local dev: skip the setup wizard entirely
+  if (import.meta.env.DEV) {
+    return { isLoading: false, needsSetup: false };
+  }
+
   const { user, isLoading } = useUser();
 
   if (isLoading || !user) {

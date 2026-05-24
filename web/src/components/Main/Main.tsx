@@ -12,6 +12,8 @@ const DetailPage = React.lazy(() => import('../../pages/Detail/DetailPage'));
 const NewsDetailPage = React.lazy(() => import('../../pages/Detail/NewsDetailPage'));
 const Automations = React.lazy(() => import('../../pages/Automations/Automations'));
 const Settings = React.lazy(() => import('../../pages/Settings/Settings'));
+const TemplateMarket = React.lazy(() => import('../../pages/Templates/TemplateMarket'));
+const TemplateHome = React.lazy(() => import('../../pages/Templates/TemplateHome'));
 
 function Main() {
   const location = useLocation();
@@ -25,6 +27,8 @@ function Main() {
       <Routes location={location}>
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/chat" element={<ChatAgent />} />
+        <Route path="/chat/templates" element={<TemplateMarket />} />
+        <Route path="/chat/templates/:templateId" element={<TemplateHome />} />
         <Route path="/chat/t/:threadId/:taskId" element={<ChatAgent />} />
         <Route path="/chat/t/:threadId" element={<ChatAgent />} />
         <Route path="/chat/:workspaceId" element={<ChatAgent />} />

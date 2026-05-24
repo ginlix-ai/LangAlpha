@@ -958,5 +958,38 @@
     "additional_betas": [
       "context-1m-2025-08-07"
     ]
+  },
+  "hy3-preview": {
+    "model_id": "hy3-preview",
+    "provider": "lkeap",
+    "display_name": "Hunyuan T1 Preview (Tencent LKEAP)",
+    "visible": true,
+    "input_modalities": [
+      "text"
+    ]
+  },
+  "hy3-preview-flash": {
+    "model_id": "hy3-preview",
+    "provider": "lkeap",
+    "display_name": "Hunyuan T1 Preview (Flash alias)",
+    "visible": false,
+    "input_modalities": [
+      "text"
+    ]
+  },
+  "glm-5.1-lkeap": {
+    "model_id": "glm-5.1",
+    "provider": "lkeap",
+    "visible": true,
+    "parameters": {
+      "max_tokens": 128000,
+      "thinking": {
+        "type": "enabled"
+      }
+    },
+    "input_modalities": [
+      "text",
+      "image"
+    ]
   }
 }

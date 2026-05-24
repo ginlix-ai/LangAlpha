@@ -619,6 +619,7 @@ from src.server.app.insights import router as insights_router
 from src.server.app.oauth import router as oauth_router
 from src.server.app.public import router as public_router
 from src.server.app.skills import router as skills_router
+from src.server.app.templates import router as templates_router
 from src.server.app.vault import router as vault_router
 from src.server.app.memo import router as memo_router
 from src.server.app.memory import router as memory_router
@@ -680,6 +681,9 @@ app.include_router(
     public_router
 )  # /api/v1/public/* - Public shared thread access (no auth)
 app.include_router(skills_router)  # /api/v1/skills - Available agent skills
+app.include_router(
+    templates_router
+)  # /api/v1/templates/* - Template system (Sirius valuation, etc.)
 app.include_router(
     vault_router
 )  # /api/v1/workspaces/{id}/vault/secrets - Per-workspace secret storage

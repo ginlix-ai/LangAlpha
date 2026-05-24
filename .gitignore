@@ -103,3 +103,11 @@ TODO.md
 # Per-developer skills (canonical) and Claude Code's symlinked mirror — both local-only.
 .agents/
 .claude/
+
+# Local sandbox data & dev logs (memory provider)
+.local_sandboxes/
+.codebuddy/logs/
+.codebuddy/pids/
+
+./docs_siri
+agent_config.yaml

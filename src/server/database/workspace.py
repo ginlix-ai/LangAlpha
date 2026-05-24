@@ -545,6 +545,20 @@ async def delete_workspace(
             logger.info(
                 f"{'Hard' if hard_delete else 'Soft'} deleted workspace: {workspace_id}"
             )
+            # Also remove any template_entries linked to this workspace
+            # (hard delete triggers CASCADE, soft delete needs explicit cleanup)
+            if not hard_delete:
+                try:
+                    async with get_db_connection() as c2:
+                        async with c2.cursor() as cur2:
+                            await cur2.execute(
+                                "DELETE FROM template_entries WHERE workspace_id = %s",
+                                (workspace_id,),
+                            )
+                except Exception as te_err:
+                    logger.warning(
+                        f"Failed to cleanup template_entries for workspace {workspace_id}: {te_err}"
+                    )
             return True
         return False
 
