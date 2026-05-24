@@ -9,6 +9,7 @@ files that defeat the line-cap), and the well-known passthrough paths
 
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -90,6 +91,53 @@ class TestReadToolCharCap:
         assert "/tmp/huge.md" in result
 
     @pytest.mark.asyncio
+    async def test_long_path_does_not_overflow_max_read_chars(self):
+        # The single-line overflow marker embeds file_path three times
+        # (narrative + head -c hint + sed -n hint). At 250 chars (close to
+        # the POSIX 255-char filesystem cap), the marker alone is ~960
+        # chars. If marker_budget is too small the result blows past
+        # _MAX_READ_CHARS, the cap stops being a cap.
+        long_path = "/home/daytona/work/" + ("subdir/" * 32) + "result.md"
+        assert len(long_path) >= 250, f"path needs to actually be long, got {len(long_path)}"
+        huge_line = "x" * (_MAX_READ_CHARS * 2)
+        backend = _make_backend(content=huge_line)
+        read = _get_read_tool(backend)
+
+        result = await read.ainvoke({"file_path": long_path})
+
+        assert len(result) <= _MAX_READ_CHARS, (
+            f"result length {len(result)} exceeds budget {_MAX_READ_CHARS} "
+            f"for path of {len(long_path)} chars"
+        )
+        assert long_path in result
+
+    @pytest.mark.asyncio
+    async def test_single_line_overflow_reports_first_line_size_only(self):
+        # The single-line overflow size hint feeds the agent's bash slice
+        # plan. If we report `len(formatted)` it counts trailing lines that
+        # fit after the huge first line and inflates the slice target. The
+        # reported size should be the offending line itself.
+        first_line = "x" * (_MAX_READ_CHARS * 2)
+        trailing = "y" * 1000  # a small second line that happens to fit
+        backend = _make_backend(content=first_line + "\n" + trailing)
+        read = _get_read_tool(backend)
+
+        result = await read.ainvoke({"file_path": "/tmp/mixed.md"})
+
+        # Extract the reported "~N characters" figure.
+        match = re.search(r"is ~(\d+) characters", result)
+        assert match, f"single-line marker missing: {result[-400:]}"
+        reported = int(match.group(1))
+        # Allow a few chars of wiggle (off-by-one with cat-n prefix) but
+        # must NOT include the trailing 1000-char line.
+        assert reported <= len(first_line) + 10, (
+            f"reported={reported} overstates first-line size {len(first_line)}"
+        )
+        assert reported < len(first_line) + 1000, (
+            "reported size includes trailing lines — should not"
+        )
+
+    @pytest.mark.asyncio
     async def test_multi_line_truncation_reports_accurate_next_offset(self):
         # 500 lines × 1000 chars each + cat-n prefix = ~500KB formatted. The
         # char cap will fire and clip to a newline boundary. The recovery hint
@@ -104,8 +152,6 @@ class TestReadToolCharCap:
         assert len(result) <= _MAX_READ_CHARS
         assert "Read truncated" in result
         # Extract the "You saw lines 1..K" range and the next offset N.
-        import re
-
         range_match = re.search(r"You saw lines (\d+)\.\.(\d+)", result)
         next_match = re.search(r"offset=(\d+)", result)
         assert range_match and next_match, f"recovery markers missing: {result[-400:]}"

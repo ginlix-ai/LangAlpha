@@ -130,10 +130,13 @@ def create_filesystem_tools(
             formatted = _format_cat_n(lines, start_line_number=start_offset + 1)
 
             if len(formatted) > _MAX_READ_CHARS:
-                # Reserve room for the truncation marker. Use a pessimistic
-                # placeholder length so the marker always fits even when the
-                # final offset/line numbers turn out to be larger.
-                marker_budget = 400
+                # Reserve room for the truncation marker. The single-line
+                # overflow path embeds ``file_path`` three times (narrative +
+                # head -c + sed -n), so the budget has to cover ~200 chars of
+                # static text plus 3*path. 1200 covers paths up to ~320 chars,
+                # which is past the POSIX 255-char limit for any realistic
+                # filesystem.
+                marker_budget = 1200
                 content_budget = max(_MAX_READ_CHARS - marker_budget, 0)
 
                 # Clip to the last newline boundary inside the budget so we
@@ -151,14 +154,21 @@ def create_filesystem_tools(
                     visible_lines = 1
                     single_line_overflow = True
 
-                next_offset = start_offset + visible_lines
-                last_visible_line = start_offset + visible_lines
+                # The 0-indexed offset for the next Read call and the
+                # 1-indexed last-visible-line number coincide: the last
+                # shown line is start_offset + visible_lines (because the
+                # off-by-one from 1-indexing cancels against the off-by-one
+                # from "lines shown"). One variable, two uses.
+                next_line = start_offset + visible_lines
 
                 if single_line_overflow:
                     # Read is line-based; calling Read again with the same
                     # offset would just return the same overflowing line. The
                     # only real escape is a byte-level slice via bash.
-                    line_size = len(formatted)
+                    # Report the offending line's size only — `len(formatted)`
+                    # would include any trailing lines that fit after the
+                    # huge first line and overstate the agent's slice target.
+                    line_size = len(lines[0]) if lines else 0
                     slice_budget = _MAX_READ_CHARS // 20  # ~8 KB chunks
                     marker = (
                         f"\n\n[Read truncated: line {start_offset + 1} of '{file_path}' "
@@ -170,8 +180,8 @@ def create_filesystem_tools(
                 else:
                     marker = (
                         f"\n\n[Read truncated at {_MAX_READ_CHARS} characters to protect the context window. "
-                        f"You saw lines {start_offset + 1}..{last_visible_line}. "
-                        f"Call Read(file_path='{file_path}', offset={next_offset}, limit={max_lines}) "
+                        f"You saw lines {start_offset + 1}..{next_line}. "
+                        f"Call Read(file_path='{file_path}', offset={next_line}, limit={max_lines}) "
                         "to continue, or pass a smaller limit to keep each chunk shorter.]"
                     )
                 formatted = clipped + marker
