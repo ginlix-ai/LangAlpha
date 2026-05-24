@@ -4,6 +4,7 @@ Responses pass through unchanged except for the sector performance snapshot;
 see :func:`_format_sector_change_pct`.
 """
 
+import asyncio
 import json
 import os
 from collections import OrderedDict
@@ -15,6 +16,11 @@ import httpx
 _CACHE_MAX_SIZE = 512
 
 
+def _today_utc() -> date:
+    """UTC equivalent of ``date.today()`` — the server runs in UTC; local-clock dates drift."""
+    return datetime.now(timezone.utc).date()
+
+
 def _format_sector_change_pct(row: Dict[str, Any]) -> Dict[str, Any]:
     """Render sector snapshot's ``averageChange`` as a percentage string.
 
@@ -23,14 +29,15 @@ def _format_sector_change_pct(row: Dict[str, Any]) -> Dict[str, Any]:
     is the same value as a percentage string under ``changePctStr`` (e.g.
     ``"1.42832%"``). The numeric copy survives on the artifact under
     ``changePercentage``, so string and numeric live alongside without ambiguity.
+
+    Returns a fresh dict — the source row may be held by the LRU cache, so
+    in-place mutation would leak the derived field back into cached responses.
     """
-    if "averageChange" in row and "changePctStr" not in row:
-        val = row["averageChange"]
-        if isinstance(val, (int, float)):
-            row["changePctStr"] = f"{val:.5f}%"
-        else:
-            row["changePctStr"] = str(val)
-    return row
+    if "averageChange" not in row or "changePctStr" in row:
+        return row
+    val = row["averageChange"]
+    formatted = f"{val:.5f}%" if isinstance(val, (int, float)) else str(val)
+    return {**row, "changePctStr": formatted}
 
 
 class FMPClient:
@@ -386,12 +393,10 @@ class FMPClient:
         """Analyst price target summary.
 
         Legacy v4 ``price-target`` returned per-analyst news-style entries;
-        the stable API consolidated this into ``price-target-summary``.
-        Callers get the same summary shape as :meth:`get_price_target_summary`.
+        the stable API consolidated this into ``price-target-summary``, so
+        this delegates to :meth:`get_price_target_summary` for the same shape.
         """
-        return await self._make_request(
-            "price-target-summary", params={"symbol": symbol}
-        )
+        return await self.get_price_target_summary(symbol)
 
     async def get_price_target_summary(self, symbol: str) -> List[Dict]:
         return await self._make_request(
@@ -479,9 +484,9 @@ class FMPClient:
         Param ``type`` was renamed to ``formType``.
         """
         if not from_date:
-            from_date = (date.today() - timedelta(days=365 * 5)).isoformat()
+            from_date = (_today_utc() - timedelta(days=365 * 5)).isoformat()
         if not to_date:
-            to_date = date.today().isoformat()
+            to_date = _today_utc().isoformat()
 
         params: Dict[str, Any] = {
             "symbol": symbol,
@@ -569,8 +574,6 @@ class FMPClient:
         Stable does not support CSV-batch on ``/profile``; we fan out one
         request per symbol in parallel.
         """
-        import asyncio
-
         results = await asyncio.gather(
             *(self.get_profile(s) for s in symbols),
             return_exceptions=True,
@@ -679,7 +682,7 @@ class FMPClient:
             )
             return [_format_sector_change_pct(row) for row in (data or [])]
 
-        today = datetime.now(timezone.utc).date()
+        today = _today_utc()
         for offset in range(7):
             probe = (today - timedelta(days=offset)).isoformat()
             data = await self._make_request(
@@ -702,11 +705,11 @@ class FMPClient:
         timeframe: str = "1day",
     ) -> List[Dict]:
         if from_date is None:
-            from_date = (date.today() - timedelta(days=500)).isoformat()
+            from_date = (_today_utc() - timedelta(days=500)).isoformat()
         elif isinstance(from_date, date):
             from_date = from_date.isoformat()
         if to_date is None:
-            to_date = date.today().isoformat()
+            to_date = _today_utc().isoformat()
         elif isinstance(to_date, date):
             to_date = to_date.isoformat()
 
@@ -731,11 +734,11 @@ class FMPClient:
         to_date: Optional[str] = None,
     ) -> List[Dict]:
         if from_date is None:
-            from_date = (date.today() - timedelta(days=500)).isoformat()
+            from_date = (_today_utc() - timedelta(days=500)).isoformat()
         elif isinstance(from_date, date):
             from_date = from_date.isoformat()
         if to_date is None:
-            to_date = date.today().isoformat()
+            to_date = _today_utc().isoformat()
         elif isinstance(to_date, date):
             to_date = to_date.isoformat()
 
@@ -761,11 +764,11 @@ class FMPClient:
         to_date: Optional[str] = None,
     ) -> List[Dict]:
         if from_date is None:
-            from_date = (date.today() - timedelta(days=500)).isoformat()
+            from_date = (_today_utc() - timedelta(days=500)).isoformat()
         elif isinstance(from_date, date):
             from_date = from_date.isoformat()
         if to_date is None:
-            to_date = date.today().isoformat()
+            to_date = _today_utc().isoformat()
         elif isinstance(to_date, date):
             to_date = to_date.isoformat()
 
@@ -853,8 +856,6 @@ class FMPClient:
         (symbol prefix match) and ``search-name`` (company name match);
         we call both in parallel and merge by symbol.
         """
-        import asyncio
-
         sym_task = self._make_request(
             "search-symbol", params={"query": query, "limit": limit}
         )
