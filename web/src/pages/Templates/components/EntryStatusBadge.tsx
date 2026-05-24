@@ -1,7 +1,7 @@
 /**
  * EntryStatusBadge — small visual indicator for an entry's analysis status.
  */
-import { CheckCircle2, Clock, Loader2, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Clock, Loader2, XCircle } from 'lucide-react';
 import type { TemplateEntryStatus } from '@/types/template';
 
 const CONFIG: Record<
@@ -15,6 +15,7 @@ const CONFIG: Record<
   pending: { label: '等待中', icon: Clock, color: 'text-muted-foreground' },
   analyzing: { label: '分析中', icon: Loader2, color: 'text-blue-500' },
   completed: { label: '已完成', icon: CheckCircle2, color: 'text-green-600' },
+  partial: { label: '部分完成', icon: AlertTriangle, color: 'text-amber-600' },
   failed: { label: '失败', icon: XCircle, color: 'text-red-500' },
 };
 
@@ -29,3 +30,4 @@ export function EntryStatusBadge({ status }: { status: TemplateEntryStatus }) {
     </span>
   );
 }
+

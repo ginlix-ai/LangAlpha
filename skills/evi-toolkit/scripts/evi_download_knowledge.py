@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Sirius Knowledge Base Downloader & Manager.
+"""EVI Knowledge Base Downloader & Manager (forked from sirius-valuation).
 
 一站式下载和管理股票分析所需的所有知识数据：
-  - 财报 PDF（港股 HKEx / A股巨潮资讯）
+  - 财报 PDF（港股 HKEx / A股巨潮资讯 / 美股 SEC 10-K/10-Q/20-F）
   - 公司公告（港股 HKEx / A股巨潮资讯）
   - 研报（国内外专业投研机构）
   - 电话会纪要（FMP Earnings Call Transcript）
 
-下载后自动维护 catalog.json 目录索引，供 Agent 加载和查询。
+EVI fork 与 sirius 版本的差异：
+  - catalog 文件名为 `_dl_catalog.json`，避免和 evi-toolkit/update_catalog.py 维护的
+    `base/catalog.json` 冲突（后者由 update_catalog.py --rebuild 统一聚合）。
 
 用法：
     # 下载全部数据
-    python scripts/download_knowledge.py --symbol 0700.HK --market hk --all
+    python evi_download_knowledge.py --symbol 0700.HK --market hk --all --data-dir data/0700_HK
 
     # 仅下载财报
     python scripts/download_knowledge.py --symbol 0700.HK --market hk --financials
@@ -140,7 +142,7 @@ def _fmp_get(endpoint: str, params: dict | None = None, timeout: int = 15) -> An
 
 
 def _fmp_get_v4(endpoint: str, params: dict | None = None, timeout: int = 30) -> Any:
-    """调用 FMP V4 API。"""
+    """调用 FMP V4 API（用于 batch_earning_call_transcript 等）。"""
     import requests
     params = dict(params or {})
     key = _fmp_key()
@@ -168,7 +170,10 @@ class CatalogManager:
 
     def __init__(self, knowledge_dir: Path):
         self.knowledge_dir = knowledge_dir
-        self.catalog_path = knowledge_dir / "catalog.json"
+        # EVI fork 的特殊处理：避免和 evi-toolkit/update_catalog.py 维护的 EVI 风格
+        # base/catalog.json 冲突。下载器把自己的 catalog 写到 _dl_catalog.json，
+        # 由 update_catalog.py --rebuild 统一聚合。
+        self.catalog_path = knowledge_dir / "_dl_catalog.json"
         self.catalog = self._load()
 
     def _load(self) -> dict[str, Any]:
@@ -1111,7 +1116,16 @@ def download_research_reports(
 # ═══════════════════════════════════════════
 
 def download_transcripts(symbol: str, knowledge_dir: Path, catalog: CatalogManager, years: int = 2) -> int:
-    """下载电话会纪要（FMP API）。"""
+    """下载电话会纪要（FMP API）。
+
+    ⚠️ FMP V3 `earning_call_transcript/{symbol}` 一次只返回最新 1 条（即使 limit=10）。
+       必须用 V4 `batch_earning_call_transcript/{symbol}?year=YYYY` 按年份获取所有季度。
+
+    覆盖范围：
+      - 美股：本土公司（AAPL/NVDA 等）+ ADR（BABA/TCEHY 等）
+      - 港股：用 .HK 后缀（如 0700.HK / 9988.HK，FMP 部分覆盖）
+      - A 股：FMP 不覆盖
+    """
     transcripts_dir = _ensure_dir(knowledge_dir / "transcripts")
     count = 0
 
@@ -1121,7 +1135,7 @@ def download_transcripts(symbol: str, knowledge_dir: Path, catalog: CatalogManag
         log.warning("  [skip] FMP_API_KEY 未配置，跳过电话会下载")
         return 0
 
-    # ⚠️ 必须用 V4 batch API 按年份拉取（V3 单调用一次只返回 1 条最新的）
+    # 按年份拉取（V4 batch endpoint）
     current_year = datetime.now().year
     target_years = list(range(current_year - years + 1, current_year + 1))
 
@@ -1141,7 +1155,7 @@ def download_transcripts(symbol: str, knowledge_dir: Path, catalog: CatalogManag
         log.info("  [info] FMP 无电话会数据（可能：A 股 / 次新股 / FMP 未覆盖）")
         return 0
 
-    # 按日期倒序
+    # 按 date 倒序
     all_transcripts.sort(key=lambda x: x.get("date", ""), reverse=True)
 
     for t in all_transcripts:
@@ -1215,7 +1229,7 @@ def main():
     parser.add_argument("--years", type=int, default=3, help="财报下载年数 (默认 3)")
     parser.add_argument("--limit", type=int, default=20, help="公告/研报数量限制 (默认 20)")
     parser.add_argument("--data-dir", default=None,
-                        help="项目根目录（如 data/0700_HK）。下载的文件会写入 "
+                        help="EVI 项目根目录（如 data/0700_HK）。下载的文件会写入 "
                              "<data-dir>/knowledge/{financials,announcements,research,transcripts}/。"
                              "若不提供，回退到默认 data/<symbol>/knowledge/。")
 
@@ -1234,9 +1248,11 @@ def main():
 
     # 设置输出目录
     if args.data_dir:
+        # EVI 模式：data-dir 是项目根目录，knowledge 写到 <data-dir>/knowledge/
         out_dir = Path(args.data_dir).expanduser().resolve()
         knowledge_dir = _ensure_dir(out_dir / "knowledge")
     else:
+        # 默认模式：data/<symbol>/knowledge/
         symbol_dir = symbol.replace(".", "_")
         out_dir = DATA_DIR / symbol_dir
         knowledge_dir = _ensure_dir(out_dir / "knowledge")

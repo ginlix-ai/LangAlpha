@@ -28,12 +28,16 @@ import type { TemplateManifest } from '@/types/template';
 const SiriusDashboard = lazy(
   () => import('./sirius/SiriusDashboard'),
 );
+const EviDashboard = lazy(
+  () => import('./evi/EviDashboard'),
+);
 
 const CUSTOM_DASHBOARDS: Record<
   string,
   React.LazyExoticComponent<React.ComponentType<any>>
 > = {
   'sirius-valuation': SiriusDashboard,
+  'evi-strategy': EviDashboard,
 };
 
 export default function TemplateHome() {
@@ -168,6 +172,17 @@ const TEMPLATE_BANNERS: Record<string, React.ReactNode> = {
         <strong className="text-foreground/70">Sirius 七维度估值：</strong>
         D1 商业模式 → D2 护城河 → D3 外部环境 → D4 管理层 → D5 MD&A → D6 综合评估 → D7 定性调整（修正 DCF/PEG/PS 假设，选敏感性矩阵坐标，输出公允价值与买入建议）。
         数据来源 FMP API，WACC 自动计算，三场景 DCF + PEG + PS 交叉验证。
+      </p>
+    </div>
+  ),
+  'evi-strategy': (
+    <div className="px-6 pt-3 pb-1 max-w-4xl">
+      <p className="text-xs text-muted-foreground leading-relaxed">
+        <strong className="text-foreground/70">EVI 估值策略：</strong>
+        多业务分部 SOTP 估值 + 持续监控。建立公司基础数据库（财报/公告/研报/电话会/MD&A/Segment/指标）→
+        识别业务分部 → 路由 DCF/PS/PEG/DDM/Comps 方法 → 索引化事实 [1][2][3] →
+        构建假设账本 → 三场景估值 + 反向估值解读 → SOTP 汇总。
+        支持定时监控新材料并自动重估。
       </p>
     </div>
   ),

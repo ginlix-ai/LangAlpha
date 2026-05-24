@@ -181,6 +181,7 @@ function WorkspaceCard({ workspace, onSelect, onTogglePin, onDelete, prefetchThr
 
   const TEMPLATE_NAMES: Record<string, string> = {
     'sirius-valuation': 'Sirius 估值',
+    'evi-strategy': 'EVI 估值策略',
   };
 
   return (

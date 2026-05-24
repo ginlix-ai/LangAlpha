@@ -23,6 +23,15 @@ import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
 const SiriusReportPanel = lazy(
   () => import('../../Templates/sirius/SiriusReportPanel').then((m) => ({ default: m.SiriusReportPanel }))
 );
+const EviReportPanel = lazy(
+  () => import('../../Templates/evi/EviReportPanel').then((m) => ({ default: m.EviReportPanel }))
+);
+
+// Pick the right panel for a given template id; falls back to Sirius (legacy).
+const TEMPLATE_PANELS: Record<string, React.LazyExoticComponent<React.ComponentType<any>>> = {
+  'sirius-valuation': SiriusReportPanel,
+  'evi-strategy': EviReportPanel,
+};
 import { getTemplateEntryByWorkspace } from '../../Templates/utils/api';
 import { removeStoredThreadId } from '../hooks/utils/threadStorage';
 import { saveChatSession } from '../hooks/utils/chatSessionRestore';
@@ -577,7 +586,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
   // Report is the main view; threads go to a collapsible left sidebar;
   // new-conversation input floats at the bottom (like Dashboard).
   // =========================================================================
-  if (!isFlash && templateEntry && templateEntry.status === 'completed') {
+  if (!isFlash && templateEntry && (templateEntry.status === 'completed' || templateEntry.status === 'partial')) {
     return (
       <TemplateWorkspaceView
         workspaceId={workspaceId}
@@ -1021,13 +1030,18 @@ function TemplateWorkspaceView({
         {/* Report scrollable body */}
         <div className="flex-1 overflow-y-auto pb-28">
           <Suspense fallback={null}>
-            <SiriusReportPanel
-              entry={templateEntry}
-              onOpenFile={(filePath) => {
-                setTargetFile(filePath);
-                if (!showFilePanel) onToggleFilePanel();
-              }}
-            />
+            {(() => {
+              const Panel = TEMPLATE_PANELS[templateEntry.template_id] ?? SiriusReportPanel;
+              return (
+                <Panel
+                  entry={templateEntry}
+                  onOpenFile={(filePath: string) => {
+                    setTargetFile(filePath);
+                    if (!showFilePanel) onToggleFilePanel();
+                  }}
+                />
+              );
+            })()}
           </Suspense>
         </div>
 

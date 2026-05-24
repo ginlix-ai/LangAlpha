@@ -91,6 +91,13 @@ class TemplateDefinition:
     params_enricher: Callable[
         [str, str | None, dict[str, Any]], dict[str, Any]
     ] | None = None
+    # Extra seed files written into the sandbox at instantiation time.
+    # Returns ``[(sandbox_path, content), ...]`` — paths are sandbox-relative.
+    # Templates use this for things like seeding `.agents/workspace/memory/memory.md`,
+    # initial CHECKLIST stubs, etc. The orchestrator writes them after agent.md.
+    seed_files_builder: Callable[
+        [str, str | None, dict[str, Any]], list[tuple[str, str]]
+    ] | None = None
 
     @property
     def id(self) -> str:
@@ -152,6 +159,23 @@ class TemplateDefinition:
                 f"but it was not in context keys={list(ctx)}"
             ) from e
 
+    def build_seed_files(
+        self, entry_key: str, display_name: str | None, params: dict[str, Any]
+    ) -> list[tuple[str, str]]:
+        """Return ``[(sandbox_path, content), ...]`` extra seed files.
+
+        Empty list when the template doesn't provide a seed_files_builder.
+        Errors are caught here so a single bad seed file can't break workspace
+        creation — the orchestrator only logs and skips.
+        """
+        if not self.seed_files_builder:
+            return []
+        try:
+            return list(self.seed_files_builder(entry_key, display_name, params))
+        except Exception:
+            # Caller logs; we just bail.
+            return []
+
 
 # ---------------------------------------------------------------------------
 # Registered templates
@@ -162,10 +186,14 @@ class TemplateDefinition:
 from src.server.templates.manifests.sirius_valuation import (  # noqa: E402
     SIRIUS_VALUATION,
 )
+from src.server.templates.manifests.evi_strategy import (  # noqa: E402
+    EVI_STRATEGY,
+)
 
 
 TEMPLATE_REGISTRY: dict[str, TemplateDefinition] = {
     SIRIUS_VALUATION.id: SIRIUS_VALUATION,
+    EVI_STRATEGY.id: EVI_STRATEGY,
 }
 
 

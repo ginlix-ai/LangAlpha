@@ -3,7 +3,7 @@
  * Mirrors src/server/models/template.py on the backend.
  */
 
-export type TemplateEntryStatus = 'pending' | 'analyzing' | 'completed' | 'failed';
+export type TemplateEntryStatus = 'pending' | 'analyzing' | 'completed' | 'partial' | 'failed';
 
 export interface TemplateField {
   name: string;

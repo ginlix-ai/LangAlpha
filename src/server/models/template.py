@@ -18,6 +18,7 @@ class TemplateEntryStatus(str, Enum):
     PENDING = "pending"
     ANALYZING = "analyzing"
     COMPLETED = "completed"
+    PARTIAL = "partial"   # 部分完成（如 EVI 模板：分部估值 OK，但集团 SOTP 未完成）
     FAILED = "failed"
 
 

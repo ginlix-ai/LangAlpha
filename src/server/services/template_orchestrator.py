@@ -425,6 +425,35 @@ class TemplateOrchestrator:
         except Exception as e:
             logger.warning("[TEMPLATE] Error writing agent.md: %s", e)
 
+        # Write any additional seed files (e.g. EVI seeds memory.md / CHECKLIST stub).
+        try:
+            seeds = template.build_seed_files(
+                entry_key=entry_key,
+                display_name=display_name,
+                params=enriched_params,
+            )
+        except Exception as e:
+            logger.warning("[TEMPLATE] build_seed_files failed for %s: %s", template.id, e)
+            seeds = []
+
+        for path, body in seeds:
+            try:
+                ok = await sandbox.awrite_file_text(path, body)
+                if ok:
+                    logger.info(
+                        "[TEMPLATE] Seeded %s for entry=%s workspace=%s",
+                        path, entry_id, workspace_id,
+                    )
+                else:
+                    logger.warning(
+                        "[TEMPLATE] Failed to write seed file %s for workspace=%s",
+                        path, workspace_id,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "[TEMPLATE] Error writing seed file %s: %s", path, e,
+                )
+
 
 # ---------------------------------------------------------------------------
 # Helpers

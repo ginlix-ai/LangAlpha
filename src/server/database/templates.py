@@ -245,8 +245,8 @@ async def finalize_entry(
     On success: status='completed', writes summary + payload, sets completed_at.
     On failure: status='failed', writes error_message.
     """
-    if status not in ("completed", "failed"):
-        raise ValueError(f"finalize_entry status must be completed/failed, got {status!r}")
+    if status not in ("completed", "partial", "failed"):
+        raise ValueError(f"finalize_entry status must be completed/partial/failed, got {status!r}")
 
     now = datetime.now(timezone.utc)
 

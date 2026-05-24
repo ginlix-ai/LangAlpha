@@ -976,5 +976,20 @@
     "input_modalities": [
       "text"
     ]
+  },
+  "glm-5.1-lkeap": {
+    "model_id": "glm-5.1",
+    "provider": "lkeap",
+    "visible": true,
+    "parameters": {
+      "max_tokens": 128000,
+      "thinking": {
+        "type": "enabled"
+      }
+    },
+    "input_modalities": [
+      "text",
+      "image"
+    ]
   }
 }
