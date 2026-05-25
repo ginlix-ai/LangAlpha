@@ -136,3 +136,42 @@ data/{symbol_dir}/valuation/group/assumption_ledger.json
 - 每条假设至少 1 个 fact_refs / display_refs。
 - 低可靠性事实不能单独支撑核心估值假设；至少需 1 条 medium+ 或 2 条 low。
 - 集团层 assumption_ledger 必须含：`wacc_pct` / `tax_rate_pct` / 公司层永续增长率。
+
+---
+
+## 与 evi-market-sizing 的协作（增长率推导核心）
+
+> ⚠️ **收入增长率是估值中最重要的假设**。不能拍脑袋，必须建立在市场空间推演之上。
+
+### 何时触发 market-sizing？
+
+当你构建某个 segment 的收入增长假设时：
+1. 检查 `valuation/{seg_id}/market_sizing.json` 是否存在
+2. 如果**不存在**或**数据超过 30 天** → 先 Read `evi-market-sizing/SKILL.md` 做推演
+3. 推演完成后再回来构建假设
+
+### 如何使用 market-sizing 结果？
+
+```
+market_sizing.json 中有：
+  company_revenue.2027E = { bear: 380, base: 500, bull: 650 }
+  company_revenue.2030E = { bear: 620, base: 940, bull: 1300 }
+
+growth_bridge.json 中直接使用：
+  revenue.2027E = { bear: 380M, base: 500M, bull: 650M }
+  → 对应 YoY growth = (500 - 200) / 200 = 150%（来自 market sizing，不是拍脑袋）
+```
+
+### 增长率推导链条
+
+```
+市场空间推演（TAM × 渗透率 × 份额 × ASP）
+         ↓ 得到绝对收入值
+增长率 = (下一年收入 - 当年收入) / 当年收入
+         ↓ 对比
+管理层指引 / 分析师一致预期 / 历史趋势
+         ↓ 交叉验证
+最终假设（取中间值 or 加权）
+```
+
+这样你的假设就有了**物理量约束**——"为什么是 42% 增长？因为 2030 年割草机器人渗透率到 20%，速腾份额 30%，推出来就是这个数"。

@@ -70,6 +70,14 @@ router = APIRouter(prefix="/api/v1/templates", tags=["Templates"])
 
 
 def _entry_to_response(entry: dict[str, Any]) -> TemplateEntryResponse:
+    params = entry.get("params") or {}
+    current_version = params.get("_agent_md_version", "0.0.0")
+
+    # Check if upgradable
+    template = get_template(entry["template_id"])
+    latest_version = template.manifest.version if template else current_version
+    upgradable = current_version < latest_version
+
     return TemplateEntryResponse(
         entry_id=str(entry["entry_id"]),
         user_id=entry["user_id"],
@@ -81,8 +89,11 @@ def _entry_to_response(entry: dict[str, Any]) -> TemplateEntryResponse:
         progress=entry.get("progress") or {},
         summary=entry.get("summary") or {},
         payload=entry.get("payload") or {},
-        params=entry.get("params") or {},
+        params=params,
         error_message=entry.get("error_message"),
+        upgradable=upgradable,
+        current_version=current_version,
+        latest_version=latest_version,
         created_at=entry["created_at"],
         updated_at=entry["updated_at"],
         completed_at=entry.get("completed_at"),
@@ -97,6 +108,19 @@ def _verify_internal_token(token: str | None) -> None:
         return
     if not token or not hmac.compare_digest(token, expected):
         raise HTTPException(status_code=401, detail="Invalid internal service token")
+
+
+def _collect_release_notes(
+    template: Any, from_version: str, to_version: str,
+) -> list[dict[str, Any]]:
+    """Collect release notes between from_version (exclusive) and to_version (inclusive)."""
+    if template is None or not hasattr(template, "release_notes"):
+        return []
+    notes = []
+    for version, note in sorted(template.release_notes.items()):
+        if version > from_version and version <= to_version:
+            notes.append({"version": version, **note})
+    return notes
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +247,46 @@ async def rerun_entry(
         return _entry_to_response(entry)
     except TemplateError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post(
+    "/{template_id}/entries/{entry_id}/upgrade",
+)
+async def upgrade_entry_agent_md(
+    template_id: str,
+    entry_id: str,
+    user_id: CurrentUserId,
+) -> dict[str, Any]:
+    """Upgrade the entry's agent.md to the latest manifest version.
+
+    Returns:
+      - entry: updated entry response
+      - release_notes: version changelog (summary + changes + suggested_actions)
+      - from_version / to_version
+    """
+    orch = TemplateOrchestrator.get_instance()
+    entry_before = await orch.get_entry(entry_id, user_id)
+    if entry_before is None:
+        raise HTTPException(status_code=404, detail="Entry not found")
+
+    from_version = (entry_before.get("params") or {}).get("_agent_md_version", "0.0.0")
+
+    try:
+        entry = await orch.upgrade_agent_md(entry_id, user_id)
+    except TemplateError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    # Collect release notes for all versions between from_version and to_version
+    template = get_template(template_id)
+    to_version = template.manifest.version if template else from_version
+    notes = _collect_release_notes(template, from_version, to_version)
+
+    return {
+        "entry": _entry_to_response(entry),
+        "from_version": from_version,
+        "to_version": to_version,
+        "release_notes": notes,
+    }
 
 
 @router.delete(

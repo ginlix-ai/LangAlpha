@@ -111,7 +111,8 @@ class TemplateOrchestrator:
         )
         workspace_id = str(workspace["workspace_id"])
 
-        # 2. INSERT entry row.
+        # 2. INSERT entry row (inject version into params for upgrade tracking).
+        versioned_params = {**params, "_agent_md_version": template.manifest.version}
         try:
             entry = await tdb.create_entry(
                 user_id=user_id,
@@ -119,7 +120,7 @@ class TemplateOrchestrator:
                 workspace_id=workspace_id,
                 entry_key=effective_entry_key,
                 display_name=display_name,
-                params=params,
+                params=versioned_params,
             )
         except Exception as e:
             logger.warning(
@@ -243,6 +244,97 @@ class TemplateOrchestrator:
         return await tdb.update_progress(
             entry_id=entry_id, progress=progress, status=status
         )
+
+    async def check_upgradable(
+        self, entry: dict[str, Any]
+    ) -> bool:
+        """Check if the entry's agent.md is outdated vs the current manifest."""
+        template = get_template(entry["template_id"])
+        if template is None:
+            return False
+        params = entry.get("params") or {}
+        entry_version = params.get("_agent_md_version", "0.0.0")
+        return entry_version < template.manifest.version
+
+    async def upgrade_agent_md(
+        self, entry_id: str, user_id: str
+    ) -> dict[str, Any]:
+        """Upgrade an entry's agent.md to the latest manifest version.
+
+        Steps:
+          1. Validate entry ownership
+          2. Render new agent.md using entry's params
+          3. Write to sandbox
+          4. Update params._agent_md_version in DB
+
+        Returns the updated entry.
+        """
+        entry = await self.get_entry(entry_id, user_id)
+        if entry is None:
+            raise TemplateError(f"Entry not found: {entry_id}")
+
+        template = get_template(entry["template_id"])
+        if template is None:
+            raise TemplateError(f"Template {entry['template_id']!r} no longer registered")
+
+        current_version = (entry.get("params") or {}).get("_agent_md_version", "0.0.0")
+        if current_version >= template.manifest.version:
+            raise TemplateError(
+                f"Already at latest version ({current_version}). No upgrade needed."
+            )
+
+        # Get sandbox
+        workspace_id = entry["workspace_id"]
+        manager = WorkspaceManager.get_instance()
+        session = manager._sessions.get(workspace_id)
+        sandbox = getattr(session, "sandbox", None) if session else None
+
+        if sandbox is None:
+            raise TemplateError(
+                "Sandbox not active. Open the workspace first (send a message), "
+                "then retry the upgrade."
+            )
+
+        # Render new agent.md
+        entry_key = entry["entry_key"]
+        display_name = entry.get("display_name")
+        params = dict(entry.get("params") or {})
+        params["entry_id"] = entry_id
+        params.setdefault("symbol_dir", _safe_symbol_dir(entry_key))
+
+        try:
+            content = template.build_agent_md(
+                entry_key=entry_key,
+                display_name=display_name,
+                params=params,
+            )
+        except Exception as e:
+            raise TemplateError(f"Failed to render agent.md: {e}") from e
+
+        # Write to sandbox
+        try:
+            ok = await sandbox.awrite_file_text("agent.md", content)
+            if not ok:
+                raise TemplateError("Failed to write agent.md to sandbox")
+        except TemplateError:
+            raise
+        except Exception as e:
+            raise TemplateError(f"Error writing agent.md: {e}") from e
+
+        # Update params._agent_md_version in DB
+        new_params = {**params, "_agent_md_version": template.manifest.version}
+        # Remove internal keys that shouldn't be persisted
+        new_params.pop("entry_id", None)
+        new_params.pop("symbol_dir", None)
+
+        await tdb.update_params(entry_id, new_params)
+
+        logger.info(
+            "[TEMPLATE] Upgraded agent.md for entry=%s from %s to %s",
+            entry_id, current_version, template.manifest.version,
+        )
+
+        return await tdb.get_entry(entry_id) or entry
 
     # =====================================================================
     # Internals

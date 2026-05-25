@@ -118,6 +118,11 @@ class TemplateEntryResponse(BaseModel):
     params: Dict[str, Any] = Field(default_factory=dict)
     error_message: Optional[str] = None
 
+    # Upgrade tracking
+    upgradable: bool = Field(default=False, description="True if agent.md has a newer version available")
+    current_version: Optional[str] = Field(default=None, description="Entry's agent.md version")
+    latest_version: Optional[str] = Field(default=None, description="Latest manifest version")
+
     created_at: datetime
     updated_at: datetime
     completed_at: Optional[datetime] = None

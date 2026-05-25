@@ -37,6 +37,10 @@ export interface TemplateEntry {
   payload: Record<string, unknown>;
   params: Record<string, unknown>;
   error_message?: string | null;
+  // Upgrade tracking
+  upgradable?: boolean;
+  current_version?: string;
+  latest_version?: string;
   created_at: string;
   updated_at: string;
   completed_at?: string | null;

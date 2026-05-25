@@ -22,7 +22,7 @@ import {
   TrendingUp, TrendingDown, Minus,
   Bell, Database, FileText,
   CheckCircle2, XCircle, AlertTriangle, BarChart3,
-  Building2, List, Activity,
+  Building2, List, Activity, History,
 } from 'lucide-react';
 import type { TemplateEntry } from '@/types/template';
 import Markdown from '@/pages/ChatAgent/components/Markdown';
@@ -325,7 +325,7 @@ interface TabDef {
   key: string;
   label: string;
   Icon: React.ComponentType<{ className?: string }>;
-  type: 'valuation' | 'segment' | 'automation' | 'data';
+  type: 'valuation' | 'segment' | 'changelog' | 'automation' | 'data';
   segment_id?: string;
 }
 
@@ -407,7 +407,15 @@ function EviReportPanelInner({ entry, onOpenFile }: Props) {
       });
     }
 
-    // 4) 自动化任务
+    // 4) 更新记录
+    out.push({
+      key: 'changelog',
+      label: '更新记录',
+      Icon: History,
+      type: 'changelog',
+    });
+
+    // 5) 自动化任务
     out.push({
       key: 'automation',
       label: '自动化任务',
@@ -415,7 +423,7 @@ function EviReportPanelInner({ entry, onOpenFile }: Props) {
       type: 'automation',
     });
 
-    // 5) 数据收集
+    // 6) 数据收集
     out.push({
       key: 'data',
       label: '数据收集',
@@ -445,12 +453,17 @@ function EviReportPanelInner({ entry, onOpenFile }: Props) {
             )}
           </div>
         </div>
-        {judgmentInfo && (
-          <div className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 ${judgmentInfo.bg}`}>
-            <judgmentInfo.Icon className={`h-3.5 w-3.5 ${judgmentInfo.color}`} />
-            <span className={`text-xs font-medium ${judgmentInfo.color}`}>{judgment}</span>
-          </div>
-        )}
+        <div className="flex items-center gap-2 shrink-0">
+          {entry.upgradable && (
+            <UpgradeButton entry={entry} />
+          )}
+          {judgmentInfo && (
+            <div className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 ${judgmentInfo.bg}`}>
+              <judgmentInfo.Icon className={`h-3.5 w-3.5 ${judgmentInfo.color}`} />
+              <span className={`text-xs font-medium ${judgmentInfo.color}`}>{judgment}</span>
+            </div>
+          )}
+        </div>
       </div>
 
       {partial && (
@@ -508,6 +521,10 @@ function EviReportPanelInner({ entry, onOpenFile }: Props) {
           reports={classified.companyResearch}
           onOpenFile={onOpenFile}
         />
+      )}
+
+      {activeTab.type === 'changelog' && (
+        <ChangelogTab reports={reports} onOpenFile={onOpenFile} />
       )}
 
       {activeTab.type === 'automation' && (
@@ -719,6 +736,172 @@ function CompanyResearchTab({
         </div>
       )}
       <ReportWithToc report={reports[activeIdx] || reports[0]} onOpenFile={onOpenFile} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Upgrade Button — 右上角显示，当 entry.upgradable = true
+// ---------------------------------------------------------------------------
+
+function UpgradeButton({ entry }: { entry: { entry_id: string; template_id: string; workspace_id: string; current_version?: string; latest_version?: string } }) {
+  const [loading, setLoading] = useState(false);
+  const [upgradeResult, setUpgradeResult] = useState<{
+    from_version: string;
+    to_version: string;
+    release_notes: Array<{
+      version: string;
+      summary: string;
+      changes: string[];
+      suggested_actions?: Array<{ label: string; prompt: string }>;
+    }>;
+  } | null>(null);
+  const [error, setError] = useState('');
+
+  const handleUpgrade = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const resp = await fetch(
+        `/api/v1/templates/${entry.template_id}/entries/${entry.entry_id}/upgrade`,
+        { method: 'POST' }
+      );
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.detail || `HTTP ${resp.status}`);
+      }
+      const data = await resp.json();
+      setUpgradeResult(data);
+    } catch (e: any) {
+      setError(e.message || '升级失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 发送建议操作给 Agent（通过对话框）
+  const sendToAgent = (prompt: string) => {
+    // 跳转到对话页面并发送消息
+    const chatUrl = `/chat/${entry.workspace_id}?auto_send=${encodeURIComponent(prompt)}`;
+    window.location.href = chatUrl;
+  };
+
+  // 升级完成后：显示更新纪要 + 建议操作
+  if (upgradeResult) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setUpgradeResult(null)}>
+        <div className="bg-card border rounded-xl shadow-xl max-w-lg w-full mx-4 max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+          <div className="px-5 py-4 border-b">
+            <div className="flex items-center gap-2 text-sm font-medium text-emerald-600">
+              <CheckCircle2 className="h-4 w-4" />
+              模板已更新到 v{upgradeResult.to_version}
+            </div>
+            <div className="text-xs text-muted-foreground mt-1">
+              从 v{upgradeResult.from_version} 升级
+            </div>
+          </div>
+
+          {upgradeResult.release_notes.map((note) => (
+            <div key={note.version} className="px-5 py-4 border-b last:border-b-0">
+              <div className="text-sm font-medium mb-2">{note.summary}</div>
+              <ul className="text-xs text-muted-foreground space-y-1.5 mb-4">
+                {note.changes.map((c, i) => (
+                  <li key={i} className="flex gap-2">
+                    <span className="text-emerald-500 shrink-0">✓</span>
+                    <span>{c}</span>
+                  </li>
+                ))}
+              </ul>
+
+              {note.suggested_actions && note.suggested_actions.length > 0 && (
+                <div>
+                  <div className="text-xs font-medium text-foreground mb-2">建议操作（点击立即执行）：</div>
+                  <div className="flex flex-wrap gap-2">
+                    {note.suggested_actions.map((action, i) => (
+                      <button
+                        key={i}
+                        onClick={() => sendToAgent(action.prompt)}
+                        className="text-xs px-3 py-1.5 rounded-full border border-blue-500/50 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 transition-colors"
+                      >
+                        {action.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+
+          <div className="px-5 py-3 border-t bg-muted/20 flex justify-end">
+            <button
+              onClick={() => setUpgradeResult(null)}
+              className="text-xs px-3 py-1.5 rounded bg-muted hover:bg-muted/80 transition-colors"
+            >
+              关闭
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative">
+      <button
+        onClick={handleUpgrade}
+        disabled={loading}
+        className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 border border-blue-500/50 bg-blue-500/10 text-blue-500 text-xs font-medium hover:bg-blue-500/20 transition-colors disabled:opacity-50"
+        title={`当前 v${entry.current_version || '0.0.0'} → 最新 v${entry.latest_version}`}
+      >
+        {loading ? (
+          <span className="animate-spin h-3 w-3 border-2 border-blue-500 border-t-transparent rounded-full" />
+        ) : (
+          <TrendingUp className="h-3.5 w-3.5" />
+        )}
+        {loading ? '更新中...' : `更新到 v${entry.latest_version}`}
+      </button>
+      {error && (
+        <div className="absolute top-full right-0 mt-1 px-2 py-1 rounded bg-red-500/10 text-red-500 text-[10px] whitespace-nowrap z-10">
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tab: 更新记录（changelog.md）
+// ---------------------------------------------------------------------------
+
+function ChangelogTab({
+  reports, onOpenFile,
+}: { reports: ReportEntry[]; onOpenFile?: (f: string) => void }) {
+  // 找 changelog.md
+  const changelog = reports.find((r) => r.key === 'changelog');
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border bg-card p-4">
+        <div className="text-sm font-medium mb-2 flex items-center gap-2">
+          <History className="h-4 w-4" />
+          更新记录
+        </div>
+        <div className="text-xs text-muted-foreground">
+          AI 每次完成分析/修改/重估后自动追加。用户指正、监控触发的变更都会记录在此。
+        </div>
+      </div>
+
+      {changelog ? (
+        <ReportWithToc report={changelog} onOpenFile={onOpenFile} />
+      ) : (
+        <div className="rounded-lg border bg-card p-6 text-center">
+          <div className="text-muted-foreground text-sm mb-2">暂无更新记录</div>
+          <div className="text-xs text-muted-foreground">
+            首次分析完成后，AI 会在 <code className="text-foreground">reports/changelog.md</code> 追加变更纪要。<br />
+            后续每次修改（用户指正 / 监控触发 / 数据刷新）都会自动记录。
+          </div>
+        </div>
+      )}
     </div>
   );
 }

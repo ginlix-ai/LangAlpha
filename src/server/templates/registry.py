@@ -80,6 +80,11 @@ class TemplateDefinition:
         Optional. ``(entry_key, display_name, params) -> dict``.
         Produces *extra* derived keys for both prompt and agent.md templates.
         Merged AFTER user params, so it can override defaults.
+
+      release_notes:
+        Version upgrade release notes. Dict keyed by version string.
+        Each value: {summary, changes: [...], suggested_actions: [{label, prompt}]}
+        Used by the upgrade flow to tell user + agent what changed.
     """
 
     manifest: TemplateManifest
@@ -91,13 +96,12 @@ class TemplateDefinition:
     params_enricher: Callable[
         [str, str | None, dict[str, Any]], dict[str, Any]
     ] | None = None
-    # Extra seed files written into the sandbox at instantiation time.
-    # Returns ``[(sandbox_path, content), ...]`` — paths are sandbox-relative.
-    # Templates use this for things like seeding `.agents/workspace/memory/memory.md`,
-    # initial CHECKLIST stubs, etc. The orchestrator writes them after agent.md.
     seed_files_builder: Callable[
         [str, str | None, dict[str, Any]], list[tuple[str, str]]
     ] | None = None
+    # Release notes for version upgrades
+    # Format: {"3.1.0": {"summary": "...", "changes": [...], "suggested_actions": [...]}}
+    release_notes: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def id(self) -> str:

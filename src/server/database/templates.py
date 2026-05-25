@@ -323,6 +323,33 @@ async def reset_for_rerun(entry_id: str, conn=None) -> dict[str, Any] | None:
     return dict(result) if result else None
 
 
+async def update_params(entry_id: str, params: dict[str, Any], conn=None) -> dict[str, Any] | None:
+    """Update params (e.g. after agent_md upgrade changes _agent_md_version)."""
+    now = datetime.now(timezone.utc)
+
+    async def _execute(cur):
+        await cur.execute(
+            f"""
+            UPDATE template_entries
+            SET params = %s, updated_at = %s
+            WHERE entry_id = %s
+            RETURNING {_RETURN_COLS}
+            """,
+            (Json(params), now, entry_id),
+        )
+        return await cur.fetchone()
+
+    if conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            result = await _execute(cur)
+    else:
+        async with get_db_connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                result = await _execute(cur)
+
+    return dict(result) if result else None
+
+
 # =============================================================================
 # Delete (rarely used directly — workspace CASCADE will usually handle this)
 # =============================================================================

@@ -80,6 +80,8 @@ DEFAULT_REPORT_ORDER = (
     # 公司层调研
     "company_overview",
     "industry_research",
+    # 更新记录（独立 Tab）
+    "changelog",
     # 数据 / 监控
     "data",
     "data_index",
@@ -99,6 +101,7 @@ REPORT_TITLES = {
     "reverse_valuation":   "反向估值",
     "company_overview":    "公司产业调研",
     "industry_research":   "产业调研报告",
+    "changelog":           "更新记录",
     "data":                "数据收集报告",
     "data_index":          "数据索引",
     "monitor":             "监控记录",
@@ -110,7 +113,6 @@ REPORT_TITLES = {
 }
 
 # Tab 映射（前端用于把 report 归到哪个 Tab）
-# v3：估值在前 → segment Tab → 自动化 → 数据
 REPORT_TAB_MAP = {
     "final":               "valuation",
     "valuation_summary":   "valuation",
@@ -118,6 +120,7 @@ REPORT_TAB_MAP = {
     "reverse_valuation":   "valuation",
     "company_overview":    "company-research",
     "industry_research":   "company-research",
+    "changelog":           "changelog",
     "monitor":             "automation",
     "data":                "data",
     "data_index":          "data",
