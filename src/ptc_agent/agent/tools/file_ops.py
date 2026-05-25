@@ -32,6 +32,15 @@ _MEMO_TEXT_PREFIX = ".agents/user/memo/"
 # Type alias for operation callback
 OperationCallback = Callable[[dict[str, Any]], None]
 
+# Read tool defaults. The line cap covers the common case; the char cap is the
+# floor that catches files with very long lines (OCR markdown, minified JSON)
+# that would otherwise sneak past the line cap. The char cap matches
+# `LargeResultEvictionMiddleware`'s 40k-token/~160KB budget so a Read result
+# can never single-handedly bust the context window the eviction middleware
+# is otherwise responsible for protecting.
+_DEFAULT_READ_LIMIT = 2000
+_MAX_READ_CHARS = 160_000
+
 
 def create_filesystem_tools(
     backend: FilesystemBackend,
@@ -50,6 +59,11 @@ def create_filesystem_tools(
     @tool("Read")
     async def read_file(file_path: str, offset: int | None = None, limit: int | None = None) -> str:
         """Read a file with line numbers (cat -n format). Also supports images (PNG, JPG, GIF, WebP), PDFs, and URLs.
+
+        Output is capped to protect the context window: at most ``limit`` lines
+        (default 2000) and at most ~160k characters of formatted output. If
+        either cap fires, the result ends with a marker telling you how to
+        continue with a follow-up Read.
 
         Args:
             file_path: Path to file (relative or absolute), or image/PDF URL.
@@ -103,20 +117,90 @@ def create_filesystem_tools(
                 return f"ERROR: {error_msg}"
 
             start_offset = offset or 0
-            max_lines = limit or 2000
+            max_lines = limit or _DEFAULT_READ_LIMIT
 
-            if offset is not None or limit is not None:
-                content = await backend.aread_range(normalized_path, start_offset, max_lines)
-            else:
-                content = await backend.aread_text(normalized_path)
+            content = await backend.aread_range(normalized_path, start_offset, max_lines)
 
             if content is None:
                 error_msg = f"File not found: {file_path}"
                 logger.warning(error_msg, file_path=file_path)
                 return f"ERROR: {error_msg}"
 
+            # Visual extensions (.png, .pdf, etc) routed above. This catches
+            # everything else binary (.pyc, .o, .zip, .so, archives, audio).
+            # Null-byte sniff is the same heuristic file(1) and git use --
+            # cheap, robust, and avoids cat-n'ing garbled bytes at the model.
+            if "\x00" in content[:8192]:
+                error_msg = (
+                    f"'{file_path}' appears to be a binary file. Read can't "
+                    f"display binary content. Use `bash file '{file_path}'` "
+                    f"to identify the type, or `xxd '{file_path}' | head` "
+                    f"to inspect as hex."
+                )
+                logger.info("Binary file rejected", file_path=file_path)
+                return f"ERROR: {error_msg}"
+
             lines = content.splitlines()
-            return _format_cat_n(lines, start_line_number=start_offset + 1)
+            formatted = _format_cat_n(lines, start_line_number=start_offset + 1)
+
+            if len(formatted) > _MAX_READ_CHARS:
+                # Reserve room for the truncation marker. The single-line
+                # overflow path embeds ``file_path`` three times (narrative +
+                # head -c + sed -n), so the budget has to cover ~200 chars of
+                # static text plus 3*path. 1200 covers paths up to ~320 chars,
+                # which is past the POSIX 255-char limit for any realistic
+                # filesystem.
+                marker_budget = 1200
+                content_budget = max(_MAX_READ_CHARS - marker_budget, 0)
+
+                # Clip to the last newline boundary inside the budget so we
+                # report a line range the agent actually saw end-to-end. If
+                # the first line itself is larger than the budget, there is
+                # no clean cut: we keep one (truncated) line, mark it, and
+                # tell the agent it must page with offset/limit to see more.
+                clipped = formatted[:content_budget]
+                last_nl = clipped.rfind("\n")
+                if last_nl >= 0:
+                    clipped = clipped[:last_nl]
+                    visible_lines = clipped.count("\n") + 1
+                    single_line_overflow = False
+                else:
+                    visible_lines = 1
+                    single_line_overflow = True
+
+                # The 0-indexed offset for the next Read call and the
+                # 1-indexed last-visible-line number coincide: the last
+                # shown line is start_offset + visible_lines (because the
+                # off-by-one from 1-indexing cancels against the off-by-one
+                # from "lines shown"). One variable, two uses.
+                next_line = start_offset + visible_lines
+
+                if single_line_overflow:
+                    # Read is line-based; calling Read again with the same
+                    # offset would just return the same overflowing line. The
+                    # only real escape is a byte-level slice via bash.
+                    # Report the offending line's size only — `len(formatted)`
+                    # would include any trailing lines that fit after the
+                    # huge first line and overstate the agent's slice target.
+                    line_size = len(lines[0]) if lines else 0
+                    slice_budget = _MAX_READ_CHARS // 20  # ~8 KB chunks
+                    marker = (
+                        f"\n\n[Read truncated: line {start_offset + 1} of '{file_path}' "
+                        f"is ~{line_size} characters, exceeds the {_MAX_READ_CHARS}-character "
+                        f"context budget. Read won't help here (it's line-based). Use bash to "
+                        f"slice the file, e.g. `head -c {slice_budget} '{file_path}'` or "
+                        f"`sed -n '{start_offset + 1}p' '{file_path}' | head -c {slice_budget}`.]"
+                    )
+                else:
+                    marker = (
+                        f"\n\n[Read truncated at {_MAX_READ_CHARS} characters to protect the context window. "
+                        f"You saw lines {start_offset + 1}..{next_line}. "
+                        f"Call Read(file_path='{file_path}', offset={next_line}, limit={max_lines}) "
+                        "to continue, or pass a smaller limit to keep each chunk shorter.]"
+                    )
+                formatted = clipped + marker
+
+            return formatted
 
         except Exception as e:
             error_msg = f"Failed to read file: {e!s}"
