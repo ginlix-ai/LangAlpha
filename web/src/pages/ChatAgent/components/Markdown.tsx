@@ -611,9 +611,11 @@ interface MarkdownProps {
   onOpenFile?: (path: string, workspaceId?: string) => void;
   /** Force code blocks to use a specific syntax theme regardless of app theme */
   codeTheme?: 'light' | 'dark';
+  /** Override specific element renderers (e.g., custom h2/h3 with action buttons) */
+  componentOverrides?: Partial<Record<string, React.ComponentType<any>>>;
 }
 
-function Markdown({ content, variant = 'panel', className = '', style, onOpenFile, codeTheme }: MarkdownProps): React.ReactElement {
+function Markdown({ content, variant = 'panel', className = '', style, onOpenFile, codeTheme, componentOverrides }: MarkdownProps): React.ReactElement {
   const config = VARIANTS[variant];
   const processed = useMemo(
     () => normalizeLatexDelimiters(escapeCurrencyDollars(transformCitationBubbles(fixMarkdownTables(normalizeFileRefs(stripFrontMatter(content)))))),
@@ -623,7 +625,7 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
   const lineKey = useMemo(() => (processed.match(/\n/g) || []).length, [processed]);
 
   const components = useMemo(() => {
-    let result = config.components;
+    let result = { ...config.components, ...componentOverrides };
 
     // Override pre to pass codeTheme to CodeBlock when specified
     if (codeTheme) {
@@ -695,7 +697,7 @@ function Markdown({ content, variant = 'panel', className = '', style, onOpenFil
       return <DefaultA node={_node} href={href} {...props}>{children}</DefaultA>;
     };
     return { ...result, a: fileAwareA };
-  }, [onOpenFile, variant, config.components, codeTheme]);
+  }, [onOpenFile, variant, config.components, codeTheme, componentOverrides]);
 
   return (
     <div

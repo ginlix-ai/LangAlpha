@@ -1,359 +1,403 @@
 ---
 name: evi-valuation-analysis
-description: "EVI Phase 2 总控：基于 Phase 1 产业调研做估值。自适应整体估值 vs SOTP，支持反向请求 Phase 1 补数据的迭代闭环。输出整体估值 + 各分部估值（如适用）。"
+description: "EVI Phase 2 总控（planning-only）：基于 Phase 1 调研，编排估值流程并分派给子 skill。本 skill 不做计算，所有 DCF/PS/Comps 数字必须由对应子 skill 的脚本产出。"
 ---
 
-# EVI Valuation Analysis — Phase 2：估值分析
+# EVI Valuation Analysis — Phase 2 总控
 
-> **你是 Phase 2 的总控**。读取 Phase 1 的产业调研报告，根据公司结构（单一 vs 多分部）执行整体估值或 SOTP 估值，并在数据不足时**反向请求 Phase 1 补充**。
+> ⚠️ **本 skill 是 planning（编排者），不是 calculator（执行者）**。
+> 你的工作是按 DAG 顺序调度子 skill，不是自己写 Python 算 DCF。
 
 ---
 
 ## 1. 一句话职责
 
-> 基于 Phase 1 的产业调研 → 自适应估值（整体估值 or SOTP）→ 数据不足时反向请求 Phase 1 补充 → 迭代到收敛 → 输出最终估值 + facets.json + persist(completed)。
+> 读 Phase 1 调研产物 → 按公司结构（single / multi segment）选估值路径 → 调度子 skill 完成 1) 路由 2) 假设 3) 多方法估值 4) 反向 5) 汇总 → 产出 facets.json + reports/final.md。
+
+**不要做的事**：
+
+- ❌ 不要自己写 Python 算 DCF / PS / Comps（必须用 evi-valuation-{dcf,ps,comps}/scripts 里的脚本）
+- ❌ 不要"为了快"跳过子 skill 直接写最终结论（结论必须基于子 skill 的产物 JSON）
+- ❌ 不要在本文件 §14 之后做任何持久化操作（framework 自动接管）
 
 ---
 
-## 2. 核心理念：估值结构匹配业务结构
+## 2. 输入门禁（先检查再开工）
 
 ```
-读 business_segments.json → structure_type
-   │
-   ├─ single_segment（小公司/单一业务）
-   │     └─ 整体估值（一份估值报告）
-   │           - DCF / PE Band / EV/Sales
-   │           - 不做 SOTP
-   │
-   └─ multi_segment（多业务线公司）
-         └─ SOTP 估值
-               - 每个分部独立估值（基于该分部的 segments/{seg_id}.md）
-               - 集团层：合并 + 反向估值 + 持续派息（DDM if applicable）
-               - 输出 estimates / segment 共 N+1 份报告
-```
+读 base/CHECKLIST.json
+   if overall == "blocked":
+     STOP. 告知用户 "Phase 1 数据未就绪，请先完成产业调研。"
 
----
+读 reports/company_overview.md（或 segments/*.md）
+   if 不存在: STOP.
 
-## 3. 前置检查
-
-```
-读 base/CHECKLIST.json:
-  if overall == "blocked":
-    STOP. 告知"Phase 1 数据未就绪，请先完成产业调研。"
-
-读 reports/company_overview.md:
-  if 不存在: STOP. "Phase 1 总报告缺失"
-
-读 business_segments.json:
-  if structure_type == "multi_segment":
-    检查 reports/segments/*.md 是否齐全（每个分部都要有）
-    若缺失 → 反向请求 Phase 1 补
+读 business_segments.json
+   if structure_type == "multi_segment":
+     检查每个 segment 都有 reports/segments/{seg_id}.md
+     若缺失 → 反向请求 Phase 1 补（见 §8）
 ```
 
 ---
 
-## 4. 数据闭环：Phase 2 ⇄ Phase 1 迭代
+## 3. 权责矩阵（**理解后再开工**）
 
-> 这是新设计的核心。Phase 2 不是单向消费 Phase 1，而是可以反向请求补数据。
+| 子 skill | 类型 | 是否有脚本 | 你的动作 | 产物 |
+|---|---|---|---|---|
+| `evi-valuation-router` | **planning** | ❌ | Read → 按规则推理 → 写 JSON | `valuation_method_matrix.json` |
+| `evi-assumption-builder` | **planning** | ❌ | Read → 综合 Phase 1 数据 → 写 JSON + md | `assumption_ledger.json` / `growth_bridge.json` / `margin_bridge.json` |
+| `evi-valuation-dcf` | **executor** | ✅ `dcf_calc.py` | Read → **必须** Bash 跑脚本 | `dcf_result.json` |
+| `evi-valuation-ps` | **executor** | ✅ `ps_calc.py` | Read → **必须** Bash 跑脚本 | `ps_result.json` |
+| `evi-valuation-comps` | **executor** | ✅ `comps_calc.py` | Read → **必须** Bash 跑脚本 | `comps_result.json` |
+| `evi-valuation-peg` | **planning** | ❌ | Read → 推理 → 写 JSON | `peg_result.json` |
+| `evi-valuation-ddm` | **planning** | ❌ | Read → 推理 → 写 JSON | `ddm_result.json` |
+| `evi-reverse-valuation` | **planning** | ❌ | Read → 反推 → 写 JSON + md | `reverse_valuation.json` / `reports/reverse_valuation.md` |
+| `evi-valuation-orchestrator` | **executor** | ✅ `aggregate.py` | Read → **必须** Bash 跑脚本汇总 | `final_segment_valuation.json` / `final_company_valuation.json` / `facets.json` |
 
-```
-Phase 2 进行中
-   ↓
-   发现数据不足（如某分部的 peer 倍数缺失）
-   ↓
-   写 monitor/phase1_gap_request.json：
-   {
-     "request_id": "req_001",
-     "segment_id": "cloud",
-     "gap_type": "peer_multiples_missing",
-     "specific_need": "需要 AWS / Azure 最新 EV/Sales 倍数",
-     "blocking_for": ["evi-valuation-ps cloud segment"]
-   }
-   ↓
-   实例化子 agent 调用 evi-information-search 补数据
-   ↓
-   补完后追加到 indexed_facts.json + 对应 segment 报告
-   ↓
-   Phase 2 继续，重新计算
-```
-
-每个分部的估值 skill 在缺数据时**必须用此机制**，而不是用模拟数据填坑。
+**铁律**：标"executor"的 skill 必须用脚本。**严禁自己重写 DCF/PS/Comps/aggregate 的逻辑**——脚本已经处理了 WACC、TTM、time alignment、敏感性等坑，重写一遍只会出错。
 
 ---
 
-## 5. 编排方案
+## 4. 执行 DAG
 
-### 5.1 单一估值模式（structure_type == single_segment）
-
-```
-┌──────────────────────────────────────────────────┐
-│       evi-valuation-analysis (单一估值模式)        │
-│                                                  │
-│  Phase 2.1: 估值方法路由                          │
-│    └─ evi-valuation-router → 选 1-3 个方法       │
-│                                                  │
-│  Phase 2.2: 假设构建                              │
-│    └─ evi-assumption-builder（公司层）            │
-│                                                  │
-│  Phase 2.3: 多方法估值（并发）                    │
-│    ├─ DCF（如适用）                              │
-│    ├─ PE Band / Comps                           │
-│    └─ EV/Sales（如未盈利）                       │
-│                                                  │
-│  Phase 2.4: 反向估值（可选）                      │
-│    └─ evi-reverse-valuation                     │
-│                                                  │
-│  Phase 2.5: 整体汇总                              │
-│    └─ 写 reports/valuation.md（一份）             │
-│                                                  │
-│  Phase 2.6: facets.json + persist(completed)     │
-└──────────────────────────────────────────────────┘
-```
-
-### 5.2 SOTP 估值模式（structure_type == multi_segment）
+### 4.1 single_segment 模式
 
 ```
-┌────────────────────────────────────────────────────────────────┐
-│           evi-valuation-analysis (SOTP 估值模式)                  │
-│                                                                │
-│  Phase 2.1: 估值方法路由（每分部独立）                            │
-│    └─ evi-valuation-router → 每个 segment 的方法                │
-│                                                                │
-│  Phase 2.2: 假设构建（每分部并发）                                │
-│    └─ evi-assumption-builder × N segments                     │
-│                                                                │
-│  Phase 2.3: 多方法估值（segment × method 并发）                  │
-│    ├─ segment 1: DCF + EV/Sales + Comps                       │
-│    ├─ segment 2: DCF + Comps + PEG                            │
-│    ├─ segment 3: PS + Comps                                   │
-│    └─ ...（按 valuation_method_matrix）                        │
-│                                                                │
-│  Phase 2.4: 数据闭环检查                                         │
-│    ├─ 任何 segment 数据不足 → 反向请求 Phase 1                  │
-│    └─ 等补完 → 重新跑该 segment                                 │
-│                                                                │
-│  Phase 2.5: 反向估值（集团层）                                    │
-│    └─ evi-reverse-valuation                                    │
-│                                                                │
-│  Phase 2.6: SOTP 汇总                                           │
-│    ├─ 各 segment 加权汇总                                        │
-│    ├─ 集团调整（净债 / 现金 / 投资资产 / 控股折价）                │
-│    └─ 写 reports/valuation_summary.md（总） +                  │
-│        reports/segments/{seg_id}_valuation.md（每分部）         │
-│                                                                │
-│  Phase 2.7: facets.json + persist(completed)                   │
-└────────────────────────────────────────────────────────────────┘
+                    Step 0: 输入门禁
+                          │
+                          ▼
+                    Step 1: Router
+                    Read evi-valuation-router/SKILL.md
+                    → valuation_method_matrix.json (公司层)
+                          │
+                          ▼
+                    Step 2: Assumptions
+                    Read evi-assumption-builder/SKILL.md
+                    → valuation/group/assumption_ledger.json
+                    → valuation/group/{growth,margin,risk}_bridge.json
+                          │
+                          ▼
+              ┌───────────┴───────────┐
+              │                       │
+         Step 3a (必脚本)         Step 3b (planning 方法)
+         DCF / PS / Comps         PEG / DDM (如适用)
+         Bash dcf_calc.py         Read SKILL.md → 写 *_result.json
+         Bash ps_calc.py
+         Bash comps_calc.py
+              │                       │
+              └───────────┬───────────┘
+                          ▼
+                    Step 4: Aggregate
+                    Bash evi-valuation-orchestrator/scripts/aggregate.py
+                    → valuation/group/final_company_valuation.json
+                          │
+                          ▼
+                    Step 5: Reverse Valuation
+                    Read evi-reverse-valuation/SKILL.md
+                    → reports/reverse_valuation.md
+                    → 抽取 rerate_triggers
+                          │
+                          ▼
+                    Step 6: Final report + facets
+                    写 reports/final.md（手写，结论优先）
+                    Bash aggregate.py --emit-facets
+                    → facets.json（含 rerate_triggers）
+                          │
+                          ▼
+                    （结束。framework 自动 finalize）
+```
+
+### 4.2 multi_segment 模式（SOTP）
+
+```
+                    Step 0: 输入门禁
+                          │
+                          ▼
+                    Step 1: Router (per segment)
+                    每个 segment 都跑一次 router 推理
+                    → valuation_method_matrix.json（含 N 个 segments + group_methods）
+                          │
+                          ▼
+                    Step 2: Assumptions
+                    每个 segment 并发：
+                    ├─ segment_1: assumption-builder → valuation/seg_1/*
+                    ├─ segment_2: assumption-builder → valuation/seg_2/*
+                    └─ ... (N 个)
+                    集团层：assumption-builder → valuation/group/* (WACC等)
+                          │
+                          ▼
+                    Step 3: 多方法估值（segment × method 并发）
+                    每个 (segment, method) 一个并发任务：
+                    ├─ (seg_1, DCF)   → Bash dcf_calc.py --segment seg_1
+                    ├─ (seg_1, PS)    → Bash ps_calc.py --segment seg_1
+                    ├─ (seg_1, Comps) → Bash comps_calc.py --segment seg_1
+                    ├─ (seg_2, DCF)   → Bash dcf_calc.py --segment seg_2
+                    ├─ (seg_2, PEG)   → planning（Read SKILL.md → 写 peg_result.json）
+                    └─ ...
+                          │
+                          ▼
+                    Step 4: Per-segment aggregate
+                    每个 segment：
+                    Bash evi-valuation-orchestrator/scripts/aggregate.py --segment {seg}
+                    → valuation/{seg}/final_segment_valuation.json
+                          │
+                          ▼
+                    Step 5: Group aggregate (SOTP)
+                    Bash aggregate.py --group
+                    → valuation/group/final_company_valuation.json
+                      含：Σ segment_EV + 投资资产 +/- 控股折价 + 净现金
+                          │
+                          ▼
+                    Step 6: Reverse Valuation (集团层)
+                    Read evi-reverse-valuation/SKILL.md
+                    → reports/reverse_valuation.md
+                    → 抽取 rerate_triggers
+                          │
+                          ▼
+                    Step 7: 写报告 + facets
+                    ├─ 写 reports/segments/{seg}_valuation.md（每分部一篇）
+                    ├─ 写 reports/final.md（集团层结论 + SOTP 表 + 推荐）
+                    └─ Bash aggregate.py --emit-facets
+                       → facets.json（含 segments[] + rerate_triggers）
+                          │
+                          ▼
+                    （结束。framework 自动 finalize）
+```
+
+### 4.3 数据闭环（Step 3 内每个估值方法都可触发）
+
+任一估值脚本返回 `status == "missing_inputs"`：
+
+```
+1. 写 monitor/phase1_gap_request.json
+2. 调 evi-information-search 补数据（最多 3 轮迭代）
+3. 跑 evi-toolkit/scripts/format_facts.py 更新事实库
+4. 重跑该 (segment, method)
+5. 仍补不上 → 该方法标 "skipped"，其它方法继续
 ```
 
 ---
 
-## 6. Phase 2.1 — 估值方法路由
+## 5. Step 1 —— Router 详解
 
-调用 `evi-valuation-router`：
+**目标**：决定每个 segment（或公司）适用哪些估值方法、谁是 primary、谁是 cross_check。
 
-输入：
-- `business_segments.json`
-- `base/financials/indicators/key_metrics.json`
-- 各分部的 segments/{seg_id}.md（multi_segment）或 company_overview.md（single_segment）
+**怎么做**：
 
-输出 `valuation_method_matrix.json`：
-
-```jsonc
-{
-  "structure_type": "multi_segment",
-  "matrix": [
-    {
-      "segment_id": "cloud",
-      "methods": [
-        {"method":"DCF",        "role":"primary",     "data_needs":[...]},
-        {"method":"EV/Sales",   "role":"cross_check", "data_needs":["peer_ev_sales"]},
-        {"method":"Comps",      "role":"cross_check"}
-      ]
-    },
-    {
-      "segment_id": "games",
-      "methods": [
-        {"method":"DCF",        "role":"primary"},
-        {"method":"PEG",        "role":"cross_check"},
-        {"method":"Comps",      "role":"cross_check"}
-      ]
-    }
-  ],
-  "group_methods": ["SOTP", "DDM", "Reverse"]   // multi_segment 才有
-}
 ```
+1. Read .agents/skills/evi-valuation-router/SKILL.md
+2. 按 router 给的判定规则（盈利状况 / 行业 / 业务模式）打 method 组合
+3. 对每个 segment 写 1 行：
+   {segment_id, methods:[{method, role, data_needs}]}
+4. 写 valuation_method_matrix.json
+```
+
+**典型组合**：
+
+| 业务画像 | primary | cross_check |
+|---|---|---|
+| 成熟现金牛（盈利稳定） | DCF | Comps + PE Band |
+| 高增长 SaaS / 平台 | DCF | EV/Sales（PS） + Comps |
+| 未盈利成长股 | EV/Sales（PS） | Comps |
+| 周期股 | Comps（Mid-cycle） | DCF（去周期） |
+| 派息稳态金融 | DDM | DCF |
+| 投资性资产（如腾讯投资组合） | NAV / 上市公允价值 - 折价 | — |
 
 ---
 
-## 7. Phase 2.2 — 假设构建
+## 6. Step 2 —— Assumptions 详解
 
-调用 `evi-assumption-builder`，对每个分部（multi_segment）或公司（single_segment）：
+**目标**：每个 segment 准备好估值方法所需的输入（增长率、毛利率、WACC、风险加项等）。
 
-输入（来自 Phase 1）：
-- `reports/segments/{seg_id}.md` 或 `reports/company_overview.md`
-- `information/indexed_facts.json`
-- `business_segments.json`
-- `valuation_method_matrix.json`
-- `base/financials/indicators/*`
+**怎么做**：
 
-输出每个 segment：
-- `valuation/{segment_id}/assumption_ledger.json`
-- `valuation/{segment_id}/growth_bridge.json`
-- `valuation/{segment_id}/margin_bridge.json`
-- `valuation/{segment_id}/risk_adjustment.json`
-- `reports/segments/{seg_id}_assumptions.md`（人类可读）
+```
+1. Read .agents/skills/evi-assumption-builder/SKILL.md
+2. 综合输入：
+   - reports/segments/{seg}.md（Phase 1 调研，含 quality.json.assumption_hints）
+   - information/indexed_facts.json（结构化事实）
+   - business_segments.json
+   - valuation_method_matrix.json
+   - base/financials/indicators/key_metrics.json
+3. 对每个 segment 写：
+   - valuation/{seg}/assumption_ledger.json   ← 所有数字 + 来源链路
+   - valuation/{seg}/growth_bridge.json       ← 5-10 年增长率拆解
+   - valuation/{seg}/margin_bridge.json       ← 利润率走廊
+   - valuation/{seg}/risk_adjustment.json     ← WACC 风险加项
+   - reports/segments/{seg}_assumptions.md    ← 人类可读
+4. 集团层写 valuation/group/assumption_ledger.json（WACC、税率、永续增长 g）
+```
 
-集团层：
-- `valuation/group/assumption_ledger.json`（含 WACC、税率、永续增长等）
+**质量门**：增长率必须有 market-sizing（TAM/SAM/SOM）支撑或历史趋势 + 内生增长 g=ROIC×再投资率交叉验证。**禁止拍脑袋**。
 
 ---
 
-## 8. Phase 2.3 — 多方法估值（segment × method 并发）
+## 7. Step 3 —— 多方法估值
 
-按 valuation_method_matrix 并发执行：
+### 7.1 必脚本方法（DCF / PS / Comps）
 
-```
-multi_segment 模式（如腾讯）:
-├── cloud 分部（并发）:
-│   ├── DCF:       evi-valuation-dcf
-│   ├── EV/Sales:  evi-valuation-ps
-│   └── Comps:     evi-valuation-comps
-├── games 分部（并发）:
-│   ├── DCF
-│   ├── PEG
-│   └── Comps
-└── ...
+每个 (segment, method) 一次：
 
-single_segment 模式（小公司）:
-└── 公司层（并发）:
-    ├── DCF
-    ├── PE Band / Comps
-    └── EV/Sales（如未盈利）
+```bash
+python3 .agents/skills/evi-valuation-dcf/scripts/dcf_calc.py \
+    --data-dir data/{symbol_dir} --segment {seg_id}
+# → valuation/{seg}/dcf_result.json
+
+python3 .agents/skills/evi-valuation-ps/scripts/ps_calc.py \
+    --data-dir data/{symbol_dir} --segment {seg_id} --peers TICK1,TICK2,TICK3
+# → valuation/{seg}/ps_result.json
+
+python3 .agents/skills/evi-valuation-comps/scripts/comps_calc.py \
+    --data-dir data/{symbol_dir} --segment {seg_id} --peers TICK1,TICK2,TICK3
+# → valuation/{seg}/comps_result.json
 ```
 
-每个 segment 完成后聚合：
+**严禁手算**。这些脚本已经处理了：
+
+- TTM 时间对齐（peer 倍数必须取 FMP keyMetrics-TTM，不是实时报价）
+- 敏感性 Tornado / 三场景
+- 输入校验 + status="missing_inputs" 反馈
+
+如果你看着脚本不存在 / 看着 stderr 报错，**先 Read 对应 SKILL.md 的 §脚本用法**，而不是自己写一份。
+
+### 7.2 Planning 方法（PEG / DDM）
+
+没有脚本，是因为输入很简单：
+
+```
+Read .agents/skills/evi-valuation-peg/SKILL.md
+→ 用预测 EPS × 行业 PEG → 写 peg_result.json
+
+Read .agents/skills/evi-valuation-ddm/SKILL.md
+→ Gordon / 三阶段 DDM → 写 ddm_result.json
+```
+
+JSON schema 与 dcf_result.json 对齐（{bear, base, bull, method, confidence, status}），保证 Step 4 的 aggregate.py 能消费。
+
+---
+
+## 8. Step 4-5 —— Aggregate + Reverse
+
+### 8.1 Per-segment aggregate（multi_segment）
 
 ```bash
 python3 .agents/skills/evi-valuation-orchestrator/scripts/aggregate.py \
     --data-dir data/{symbol_dir} --segment {seg_id}
+# → valuation/{seg}/final_segment_valuation.json
 ```
 
-→ `valuation/{segment_id}/final_segment_valuation.json`
+权重规则：primary=0.5，cross_check 平分剩 0.5；偏离 base >30% 砍半。
+
+### 8.2 Group aggregate
+
+```bash
+# single_segment：直接合并多方法
+python3 aggregate.py --data-dir ... --group
+
+# multi_segment：SOTP
+python3 aggregate.py --data-dir ... --group --sotp
+```
+
+### 8.3 Reverse Valuation
+
+```
+Read .agents/skills/evi-reverse-valuation/SKILL.md
+→ 写 valuation/group/reverse_valuation.json
+→ 写 reports/reverse_valuation.md
+→ 抽 rerate_triggers，回填 facets.json
+```
 
 ---
 
-## 9. Phase 2.4 — 数据闭环检查（关键创新）
+## 9. Step 6/7 —— 报告 + facets
 
-每个估值 skill 完成后，检查输出 status：
+### 9.1 reports/final.md（必写）
 
+**结论优先 + 总分结构**。开头先给：
+
+```markdown
+## 结论
+
+**判断**：低估 | 合理 | 高估
+**Base 公允价**：HKD XXX（Bear: XXX / Bull: XXX）
+**当前价**：HKD XXX
+**Upside**：+XX% / -XX%
+
+**核心逻辑**（3 句话内）：...
+
+**关键风险**：...
+
+**重估触发条件**：（前 3 条）...
 ```
-if result.status == "missing_inputs" or "insufficient_peers" or ...:
-   1. 写 monitor/phase1_gap_request.json
-   2. 实例化子 agent 调 evi-information-search 补数据
-   3. 等子 agent 完成 → format_facts.py 更新事实库
-   4. 重跑该 segment 的对应方法
-   5. 最多 3 轮迭代
+
+下面再展开：估值方法对照、SOTP 表（multi_segment）、敏感性、与市场分歧。
+
+### 9.2 facets.json
+
+**不要手写**，由 aggregate.py 生成：
+
+```bash
+python3 .agents/skills/evi-valuation-orchestrator/scripts/aggregate.py \
+    --data-dir data/{symbol_dir} --emit-facets
 ```
 
-**典型缺口与补救**：
+facets schema 见 [§13](#13-facetsjson-结构) 例子。
+
+---
+
+## 10. 数据闭环失败处理
 
 | 缺口 | 补救动作 |
 |---|---|
-| Peer 倍数不足 3 家 | WebSearch 同行业公司，从 FMP 拉倍数 |
-| 行业增速 consensus 缺失 | WebSearch 行业研报 |
-| 分部利润率历史缺失 | 重新解析财报附注 |
-| 管理层指引未抽取 | 重新解析最新电话会 |
+| Peer 倍数不足 3 家 | WebSearch 同行业公司，Bash `evi-toolkit/scripts/evi_fetch_data.py --peers ...` 拉倍数 |
+| 行业增速 consensus 缺 | WebSearch 行业研报 → 补 indexed_facts.json |
+| 分部利润率历史缺 | 重新解析 base/filings/ 下的财报附注 |
+| 管理层指引未抽取 | 重 parse 最新电话会 |
+| 3 轮仍补不上 | 该方法标 status="skipped"，其它方法继续。最终汇总用 partial。 |
 
 ---
 
-## 10. Phase 2.5 — 反向估值（集团层）
+## 11. 报告产出（最终交付）
 
-调用 `evi-reverse-valuation`：
-
-- single_segment：基于公司整体 DCF 反推
-- multi_segment：基于 SOTP 函数反推
-
-输出 `valuation/group/reverse_valuation.json` + `reports/reverse_valuation.md`。
-
-**关键产出**：触发重估的指标清单（写入 `rerate_triggers`），供 evi-monitor 使用。
-
----
-
-## 11. Phase 2.6 — SOTP 汇总
-
-调用 `evi-valuation-orchestrator`：
-
-### 11.1 multi_segment 模式
-
-```
-1. 各 segment 用权重合并多方法 → final_segment_valuation
-2. SOTP 加总：
-   group_EV = Σ segment_EV
-            + 投资资产（上市折价 20-25% / 非上市折价 50-60%）
-            + 净现金
-            - 控股公司折价
-3. group_EV → 每股价值 (Bear/Base/Bull)
-4. 写 valuation/group/final_company_valuation.json
-5. 写 reports/valuation_summary.md（总）
-6. 写 reports/segments/{seg_id}_valuation.md（每分部）
-7. 写 facets.json
-```
-
-### 11.2 single_segment 模式
-
-```
-1. 多方法权重合并 → 最终估值
-2. 写 valuation/group/final_company_valuation.json
-3. 写 reports/valuation.md（一份）
-4. 写 facets.json
-```
-
----
-
-## 12. 报告产出（最终交付）
-
-### 12.1 multi_segment 模式
+### 11.1 multi_segment
 
 ```
 reports/
-├── company_overview.md         ← Phase 1 总报告（已有）
+├── company_overview.md         ← Phase 1（已有）
+├── quality.md                  ← Phase 1（已有）
 ├── segments/
-│   ├── cloud.md                ← Phase 1 分部调研（已有）
-│   ├── cloud_valuation.md      ← Phase 2 分部估值（新）
-│   ├── games.md
-│   ├── games_valuation.md
-│   └── ...
-├── valuation_summary.md        ← Phase 2 估值总报告（SOTP）
-├── reverse_valuation.md
-└── final.md                    ← 最终结论（一句话 + 推荐）
+│   ├── {seg}.md                ← Phase 1（已有）
+│   ├── {seg}_assumptions.md    ← Step 2（新）
+│   └── {seg}_valuation.md      ← Step 7（新）
+├── reverse_valuation.md         ← Step 5（新）
+└── final.md                     ← Step 7（新，最终结论）
 ```
 
-### 12.2 single_segment 模式
+### 11.2 single_segment
 
 ```
 reports/
-├── company_overview.md         ← Phase 1 总报告
-├── valuation.md                ← Phase 2 估值（一份）
+├── company_overview.md
+├── quality.md
 ├── reverse_valuation.md
-└── final.md                    ← 最终结论
+└── final.md
 ```
 
 ---
 
-## 13. facets.json 结构（看板核心）
+## 12. facets.json 结构（看板核心）
 
 ```jsonc
 {
   "company_name": "腾讯科技",
-  "structure_type": "multi_segment",   // 看板用这个决定怎么展示
+  "structure_type": "multi_segment",
   "currency_unit": "HKD per share",
   "fair_value": {"bear": 577.5, "base": 685.6, "bull": 859.3},
   "current_price": 441.0,
   "upside_pct": 55.5,
   "judgment": "低估",
   "n_segments": 4,
-  
-  // multi_segment 才有：每个 segment 的估值快照（看板按这个动态展示）
+
   "segments": [
     {
       "segment_id": "vas",
@@ -362,57 +406,65 @@ reports/
       "contribution_pct_base": 43.0,
       "primary_method": "DCF",
       "confidence": 0.75
-    },
-    {
-      "segment_id": "marketing_services",
-      "name": "营销服务",
-      "fair_value_share": {"bear": 95, "base": 115, "bull": 140},
-      "contribution_pct_base": 16.8,
-      "primary_method": "DCF + Comps",
-      "confidence": 0.7
     }
-    // ... N 个 segments
+    // ... N 个
   ],
-  
+
   "key_drivers": ["AI 商业化", "游戏稳态利润率"],
   "key_risks": ["监管", "海外宏观"],
-  
-  // 给 monitor 用
+
   "rerate_triggers": [
     {"metric": "cloud_revenue_yoy", "threshold_down": 18, "threshold_up": 26}
-  ]
+  ],
+
+  // Phase 1 quality 快照（在 Phase 1 已经写入，Phase 2 不要覆盖）
+  "quality": { ... }
 }
 ```
 
 ---
 
-## 14. 持久化
+## 13. 持久化（一句话）
 
-```bash
-python3 .agents/skills/evi-toolkit/scripts/persist_evi_report.py \
-    --entry-id {entry_id} --data-dir data/{symbol_dir} \
-    --display-name "{display_name}" --symbol "{symbol}" --market "{market}" \
-    --status completed
-```
+**不需要你做。** Framework 在你结束本轮后自动扫产物 + 调 persist + 推 DB。如果缺 required 文件，会以 user message 形式重新告诉你缺什么、怎么补。
+
+> 只要你产出了 §11 列的报告 + §12 的 facets.json + 写了 changelog 摘要，就可以正常结束本轮。
+
+> 开发者诊断（不是必经路径）：`python3 .agents/skills/evi-toolkit/scripts/wakeup_check.py --data-dir data/{symbol_dir} --check-only`
 
 ---
 
-## 15. 汇报
+## 14. 汇报（结束本轮前）
 
 告知用户：
+
 - 估值结构：整体估值 / SOTP（N 分部）
+- 每个估值方法用一段话说核心假设、逻辑、结论（**总分结构**，不要直接陷入数字细节）
 - 最终估值（Bear/Base/Bull + 判断 + Upside）
 - 各分部估值贡献（multi_segment）
-- 方法一致性（CV）
-- 反向估值解读（市场已 price-in 多少）
-- 触发重估指标清单
+- 方法一致性（CV：标准差/均值）
+- 反向估值解读（市场已 price-in 了多少）
+- 触发重估指标清单（前 3 条）
 - 提示"可注册 Automation 持续监控"
 
 ---
 
-## 16. 失败处理
+## 15. 失败处理
 
-- 某 segment 估值方法失败 + 3 轮迭代仍缺数据 → 跳过该方法，用其它方法继续
-- 某 segment 完全失败 → SOTP 中标 partial，并在 valuation_summary.md 说明
-- 所有 segment 都失败 → persist failed
-- 数据闭环死循环（同一缺口补不上）→ 标 partial + 在报告说明
+- 某 (segment, method) 失败 + 3 轮闭环仍缺数据 → 跳过该方法
+- 某 segment 全部方法失败 → SOTP 标 partial，在 final.md 单独说明
+- 所有 segment 失败 → framework 会基于产物清单自动 partial / failed
+- 数据闭环死循环（同一缺口反复补不上）→ 标 partial + 报告说明
+
+---
+
+## 附录 A：常见错误清单
+
+| ❌ 错误行为 | ✅ 正确行为 |
+|---|---|
+| "Phase 2 复杂，我直接写一份完整的 DCF 脚本" | Bash 现成的 dcf_calc.py |
+| 自己根据 P/E 推一个估值价 | 走 evi-valuation-comps 的 comps_calc.py（用 FMP TTM 倍数） |
+| 跳过 router/assumption-builder 直接写 final.md | 必须先有 method_matrix.json + assumption_ledger.json |
+| 在本 skill 调 persist_evi_report.py | framework 自动接管，不需要 |
+| facets.json 手写 | 用 aggregate.py --emit-facets |
+| Peer 倍数自己估一个 | comps_calc.py 必须传 --peers 让脚本去 FMP 拉 |

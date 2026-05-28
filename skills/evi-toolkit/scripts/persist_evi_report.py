@@ -77,6 +77,8 @@ DEFAULT_REPORT_ORDER = (
     "valuation_summary",
     "valuation",
     "reverse_valuation",
+    # 公司层定性分析（v3.5）
+    "quality",
     # 公司层调研
     "company_overview",
     "industry_research",
@@ -99,6 +101,7 @@ REPORT_TITLES = {
     "valuation_summary":   "估值汇总（SOTP）",
     "valuation":           "估值分析",
     "reverse_valuation":   "反向估值",
+    "quality":             "定性分析（4 维度）",
     "company_overview":    "公司产业调研",
     "industry_research":   "产业调研报告",
     "changelog":           "更新记录",
@@ -118,6 +121,7 @@ REPORT_TAB_MAP = {
     "valuation_summary":   "valuation",
     "valuation":           "valuation",
     "reverse_valuation":   "valuation",
+    "quality":             "valuation",
     "company_overview":    "company-research",
     "industry_research":   "company-research",
     "changelog":           "changelog",
@@ -188,6 +192,7 @@ def _collect_reports(data_dir: Path) -> list[dict[str, Any]]:
             "scope":    "company",
             "doc_type": "valuation" if k in ("final","valuation","valuation_summary","reverse_valuation") else
                         "research" if k in ("company_overview","industry_research") else
+                        "quality" if k == "quality" else
                         "monitor" if k == "monitor" else
                         "data" if k in ("data","data_index") else "unknown",
             "path":     str(f.relative_to(data_dir)),

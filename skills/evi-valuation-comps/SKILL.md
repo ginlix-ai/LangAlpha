@@ -206,3 +206,40 @@ Reverse                  ★ (当前价格隐含)
 - CV > 30% 时标 `"applicability":"low"`，建议改用 DCF
 - peer 表格必须含增速 + 毛利率（仅倍数没有意义）
 - 必须输出足球场图所需数据（每方法的 bear/base/bull）
+
+---
+
+## 9. 脚本计算（必须使用）
+
+⚠️ **严禁手动计算倍数！必须用脚本 `comps_calc.py`。**
+
+原因：手动从不同源拼凑 Market Cap（实时）+ EBITDA/Revenue（历史 FY）会导致**时间口径严重错配**。
+
+### 使用方法
+
+```bash
+python3 .agents/skills/evi-valuation-comps/scripts/comps_calc.py \
+    --symbol 0981.HK \
+    --peers "UMC,GFS,TSM,1347.HK" \
+    --segment foundry \
+    --data-dir data/{symbol_dir}
+```
+
+只需要输入**股票代码**，脚本自动从 FMP 获取：目标公司全部财务数据 + 所有 peer 的多维倍数（TTM 时间对齐）。
+
+### 参数说明
+
+| 参数 | 含义 |
+|------|------|
+| `--symbol` | 目标公司代码 |
+| `--peers` | 逗号分隔的 peer 代码 |
+| `--segment` | 分部名称（默认 overall） |
+| `--data-dir` | 输出目录（可选） |
+
+### 脚本保证
+
+1. **所有 peer 倍数来自 FMP `keyMetrics-TTM`** — 时间对齐，不手动拼凑
+2. **多倍数交叉**：EV/EBITDA + EV/Sales + P/E + P/B 全部自动计算
+3. **自动输出三场景** — 用 P25/Median/P75 分位
+4. **EV → Equity 转换** — 自动扣除 net debt 得出每股价值
+5. **输出路径**：`data/{symbol_dir}/valuation/{segment}/comps_result.json`

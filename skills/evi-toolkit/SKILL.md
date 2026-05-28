@@ -1,13 +1,13 @@
 ---
 name: evi-toolkit
-description: "EVI Strategy 共享工具集（v2）：项目骨架、PDF→MD、MD&A 抽取、catalog 维护、CHECKLIST 构建、Facts Index 抽取、报告优先持久化、以及 fork 自 sirius 的 fetch/download/manage 三件套。"
+description: "EVI Strategy 共享工具集（v2）：项目骨架、PDF→MD、MD&A 抽取、catalog 维护、CHECKLIST 构建、Facts Index 抽取、报告优先持久化、以及 fetch/download/manage 三件套。"
 ---
 
 # EVI Toolkit (v2)
 
 > 这是 EVI Strategy 模板的共享工具 skill。所有其它 `evi-*` skill 在执行流水线中都会调用本 skill 提供的脚本。
 >
-> **与 sirius 的关系（v2 起）**：本 skill 自带 `evi_fetch_data.py` / `evi_download_knowledge.py` / `evi_manage_knowledge.py`（fork 自 sirius，已与 sirius 解耦）。EVI 不再调用 sirius 的任何脚本。
+> 本 skill 自带 `evi_fetch_data.py` / `evi_download_knowledge.py` / `evi_manage_knowledge.py`，与外部依赖完全解耦。
 
 ---
 

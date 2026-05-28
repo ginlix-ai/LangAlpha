@@ -190,3 +190,32 @@ Per Share = Equity Value / Total Shares Outstanding
 - 所有 peer fact_id 写入 fact_refs 以便审计
 - 报告必须列出 peer 表格（含增速 + 毛利率，不能只有倍数）
 - pct_adj_pp 必须有理由（不能直接套同行倍数）
+
+---
+
+## 8. 脚本计算（必须使用）
+
+⚠️ **严禁手动计算 EV/Sales！必须用脚本 `ps_calc.py`。**
+
+原因：手动从不同来源拼凑 Market Cap（实时）+ Revenue（历史 FY）会导致**时间口径错配**，产出的 EV/Sales 与 FMP 原生数据差异 2-3x。
+
+### 使用方法
+
+```bash
+python3 .agents/skills/evi-valuation-ps/scripts/ps_calc.py \
+    --symbol 0981.HK \
+    --peers "UMC,GFS,TSM" \
+    --segment foundry \
+    --data-dir data/{symbol_dir}
+```
+
+只需要输入**股票代码**，脚本自动从 FMP 获取：目标公司 EV/Revenue/股本/净债务 + 所有 peer 的 EV/Sales 倍数（TTM 时间对齐）。
+
+### 脚本保证
+
+1. **Peer 倍数来自 FMP `keyMetrics-TTM`** — FMP 内部对齐了 EV 快照日期与收入期间
+2. **绝不手动计算 EV = MCap + Debt - Cash** — 避免实时 vs 历史数据混用
+3. **自动输出三场景** — bear(P25) / base(median×adj) / bull(P75×adj)
+4. **自动 EV → Equity → per share** — 扣除净债务，算出每股价值
+5. **输出路径**：`data/{symbol_dir}/valuation/{segment}/ps_result.json`
+

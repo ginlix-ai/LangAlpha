@@ -22,10 +22,12 @@ import {
   TrendingUp, TrendingDown, Minus,
   Bell, Database, FileText,
   CheckCircle2, XCircle, AlertTriangle, BarChart3,
-  Building2, List, Activity, History,
+  Building2, List, Activity, History, MessageSquareQuote,
+  ShieldCheck, Loader2, Hourglass, Sparkles,
 } from 'lucide-react';
 import type { TemplateEntry } from '@/types/template';
 import Markdown from '@/pages/ChatAgent/components/Markdown';
+import { ContextBus } from '@/lib/contextBus';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -99,8 +101,21 @@ interface Facets {
     current_value?: number;
     status?: string;
   }>;
+  /** v3.5：4 维度定性分析摘要 */
+  quality?: QualitySummary;
   [k: string]: any;
 }
+
+interface QualitySummary {
+  overall_score?: number;
+  scores?: Partial<Record<QualityDim, number>>;
+  verdicts?: Partial<Record<QualityDim, string>>;
+  investment_pillars?: string[];
+  key_risk_signals?: string[];
+  report_path?: string;
+}
+
+type QualityDim = 'business_model' | 'moat' | 'management' | 'forward_guidance';
 
 interface MonitorBlock {
   last_run_id?: string | null;
@@ -229,6 +244,96 @@ function extractToc(md: string): TocItem[] {
 }
 
 // ---------------------------------------------------------------------------
+// Section extraction — 按 heading text 提取对应章节内容
+// ---------------------------------------------------------------------------
+
+function extractSection(md: string, headingText: string, headingLevel: number): string {
+  const lines = md.split('\n');
+  let capturing = false;
+  let result: string[] = [];
+
+  for (const line of lines) {
+    if (capturing) {
+      // 遇到同级或更高级别的 heading 就停止
+      const m = line.match(/^(#{2,4})\s+/);
+      if (m && m[1].length <= headingLevel) break;
+      result.push(line);
+    } else {
+      // 找到目标 heading
+      const m = line.match(/^(#{2,4})\s+(.+)$/);
+      if (m && m[1].length === headingLevel) {
+        const text = m[2].replace(/[*_`#]/g, '').trim();
+        if (text === headingText) {
+          capturing = true;
+          result.push(line); // 包含 heading 本身
+        }
+      }
+    }
+  }
+  return result.join('\n').trim();
+}
+
+// ---------------------------------------------------------------------------
+// Quotable heading — 为 h2/h3 添加"引用问 AI"按钮
+// ---------------------------------------------------------------------------
+
+function makeQuotableHeading(
+  level: 2 | 3,
+  markdown: string,
+  reportTitle: string,
+): React.ComponentType<any> {
+  const baseStyles = level === 2
+    ? { color: 'var(--color-text-primary)', fontSize: '1.25em', fontWeight: 700, lineHeight: '1.3', marginTop: '1.1em', marginBottom: '0.35em' }
+    : { color: 'var(--color-text-primary)', fontSize: '1.1em', fontWeight: 600, lineHeight: '1.3', marginTop: '1em', marginBottom: '0.3em' };
+
+  return function QuotableHeading({ node: _node, children, ...props }: any) {
+    const [quoted, setQuoted] = useState(false);
+    const text = typeof children === 'string'
+      ? children
+      : Array.isArray(children)
+        ? children.map((c: any) => (typeof c === 'string' ? c : c?.props?.children ?? '')).join('')
+        : String(children ?? '');
+
+    const handleQuote = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      const section = extractSection(markdown, text.replace(/[*_`#]/g, '').trim(), level);
+      if (!section) return;
+      ContextBus.attach({
+        widget_type: 'evi-report-section',
+        widget_id: `evi-quote-${Date.now()}`,
+        label: `${reportTitle} › ${text}`,
+        captured_at: new Date().toISOString(),
+        text: `<widget-context type="report-section" source="${reportTitle}">\n${section}\n</widget-context>`,
+        data: { section: text, report: reportTitle },
+      });
+      setQuoted(true);
+      setTimeout(() => setQuoted(false), 1500);
+    };
+
+    const Tag = level === 2 ? 'h2' : 'h3';
+    return (
+      <Tag className="group first:mt-0 flex items-center gap-2" style={baseStyles} {...props}>
+        <span className="flex-1">{children}</span>
+        <button
+          onClick={handleQuote}
+          className={`shrink-0 p-1 rounded transition-colors ${
+            quoted
+              ? 'text-emerald-500 bg-emerald-500/10'
+              : 'text-muted-foreground/60 hover:text-blue-500 hover:bg-blue-500/10'
+          }`}
+          title={quoted ? '已添加到对话上下文' : '引用此段落问 AI'}
+        >
+          {quoted
+            ? <CheckCircle2 className="h-4 w-4" />
+            : <MessageSquareQuote className="h-4 w-4" />
+          }
+        </button>
+      </Tag>
+    );
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Report classification (for backward compat with v2 reports)
 // ---------------------------------------------------------------------------
 
@@ -236,6 +341,7 @@ function extractToc(md: string): TocItem[] {
  * 把 reports 按 scope/segment 分类：
  * - 公司层估值类报告（company-valuation）
  * - 公司层调研类报告（company-research）
+ * - 公司层定性分析（company-quality, v3.5+）
  * - 分部报告（按 segment_id 归集，含 research + valuation）
  * - 监控类（monitor）
  * - 数据类（data）
@@ -243,6 +349,7 @@ function extractToc(md: string): TocItem[] {
 interface ClassifiedReports {
   companyValuation: ReportEntry[];   // valuation_summary, valuation, final, reverse_valuation
   companyResearch: ReportEntry[];    // company_overview
+  companyQuality: ReportEntry[];     // quality (v3.5+)
   bySegment: Record<string, ReportEntry[]>;  // 每个分部的所有报告
   monitor: ReportEntry[];
   data: ReportEntry[];
@@ -253,6 +360,7 @@ function classifyReports(reports: ReportEntry[]): ClassifiedReports {
   const out: ClassifiedReports = {
     companyValuation: [],
     companyResearch: [],
+    companyQuality: [],
     bySegment: {},
     monitor: [],
     data: [],
@@ -278,7 +386,12 @@ function classifyReports(reports: ReportEntry[]): ClassifiedReports {
       continue;
     }
 
-    // 3) 公司层 — 估值
+    // 3) 公司层 — 定性分析（v3.5+）
+    if (key === 'quality') {
+      out.companyQuality.push(r);
+      continue;
+    }
+    // 4) 公司层 — 估值
     if (
       key === 'final' ||
       key === 'valuation' ||
@@ -288,22 +401,22 @@ function classifyReports(reports: ReportEntry[]): ClassifiedReports {
       out.companyValuation.push(r);
       continue;
     }
-    // 4) 公司层 — 产业调研
+    // 5) 公司层 — 产业调研
     if (key === 'company_overview' || key === 'industry_research') {
       out.companyResearch.push(r);
       continue;
     }
-    // 5) 监控
+    // 6) 监控
     if (key === 'monitor') {
       out.monitor.push(r);
       continue;
     }
-    // 6) 数据
+    // 7) 数据
     if (key === 'data' || key === 'data_index') {
       out.data.push(r);
       continue;
     }
-    // 7) v2 旧 key（向后兼容）
+    // 8) v2 旧 key（向后兼容）
     if (
       key === 'segments' || key === 'facts' ||
       key === 'assumptions' || key === 'valuation_router'
@@ -325,7 +438,7 @@ interface TabDef {
   key: string;
   label: string;
   Icon: React.ComponentType<{ className?: string }>;
-  type: 'valuation' | 'segment' | 'changelog' | 'automation' | 'data';
+  type: 'valuation' | 'segment' | 'quality' | 'changelog' | 'automation' | 'data';
   segment_id?: string;
 }
 
@@ -354,6 +467,16 @@ function EviReportPanelInner({ entry, onOpenFile }: Props) {
   const judgmentInfo = judgment ? JUDGMENT_MAP[judgment] : undefined;
   const partial = entry.status === 'partial' || (!facets.fair_value);
 
+  // 数据完整性：是否已经有任何可展示的产物（fair_value、报告、payload）
+  const hasAnyArtifact = !!facets.fair_value
+    || (reports?.length ?? 0) > 0
+    || Object.keys(payload).length > 1;
+  const isFailed = entry.status === 'failed';
+  const isPending = entry.status === 'pending';
+  const isAnalyzing = entry.status === 'analyzing';
+  // 在产物完全没有时，把『等待』状态作为 hero 显示，避免渲染空 Tabs
+  const showHeroState = (isPending || isAnalyzing || isFailed) && !hasAnyArtifact;
+
   // Classify reports
   const classified = useMemo(() => classifyReports(reports), [reports]);
 
@@ -369,7 +492,15 @@ function EviReportPanelInner({ entry, onOpenFile }: Props) {
       type: 'valuation',
     });
 
-    // 2) 各分部 Tab（按 facets.segments 顺序，回退到 classified.bySegment）
+    // 2) 定性分析 Tab（v3.5+）— 始终展示，没数据显示空态
+    out.push({
+      key: 'quality',
+      label: '定性分析',
+      Icon: ShieldCheck,
+      type: 'quality',
+    });
+
+    // 3) 各分部 Tab（按 facets.segments 顺序，回退到 classified.bySegment）
     const segOrder = facets.segments?.map((s) => s.segment_id) || Object.keys(classified.bySegment);
     const seenSegs = new Set<string>();
     for (const segId of segOrder) {
@@ -397,7 +528,7 @@ function EviReportPanelInner({ entry, onOpenFile }: Props) {
       });
     }
 
-    // 3) 公司产业调研（如果是 single_segment 或没有分部 tab）
+    // 4) 公司产业调研（如果是 single_segment 或没有分部 tab）
     if (out.filter((t) => t.type === 'segment').length === 0 && classified.companyResearch.length > 0) {
       out.push({
         key: 'company-research',
@@ -407,7 +538,7 @@ function EviReportPanelInner({ entry, onOpenFile }: Props) {
       });
     }
 
-    // 4) 更新记录
+    // 5) 更新记录
     out.push({
       key: 'changelog',
       label: '更新记录',
@@ -415,7 +546,7 @@ function EviReportPanelInner({ entry, onOpenFile }: Props) {
       type: 'changelog',
     });
 
-    // 5) 自动化任务
+    // 6) 自动化任务
     out.push({
       key: 'automation',
       label: '自动化任务',
@@ -423,7 +554,7 @@ function EviReportPanelInner({ entry, onOpenFile }: Props) {
       type: 'automation',
     });
 
-    // 6) 数据收集
+    // 7) 数据收集
     out.push({
       key: 'data',
       label: '数据收集',
@@ -454,9 +585,7 @@ function EviReportPanelInner({ entry, onOpenFile }: Props) {
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {entry.upgradable && (
-            <UpgradeButton entry={entry} />
-          )}
+          <VersionBadge entry={entry} />
           {judgmentInfo && (
             <div className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 ${judgmentInfo.bg}`}>
               <judgmentInfo.Icon className={`h-3.5 w-3.5 ${judgmentInfo.color}`} />
@@ -466,87 +595,103 @@ function EviReportPanelInner({ entry, onOpenFile }: Props) {
         </div>
       </div>
 
-      {partial && (
-        <div className="flex items-start gap-2 rounded-md border border-amber-300/50 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-          <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />
-          <span>分析处于<b>部分完成</b>状态——可以让 Agent 继续完成剩余 Phase。</span>
-        </div>
-      )}
+      {/* 状态横幅：根据 entry.status 显示不同提示 */}
+      <StatusBanner status={entry.status} partial={partial} errorMessage={entry.error_message} />
 
-      {/* Top-level Tabs */}
-      <div className="border-b overflow-x-auto">
-        <div className="flex gap-0.5">
-          {tabs.map((t) => {
-            const active = t.key === activeTabKey;
-            return (
-              <button
-                key={t.key}
-                onClick={() => setActiveTabKey(t.key)}
-                className={`flex items-center gap-1.5 px-4 py-2.5 text-sm whitespace-nowrap border-b-2 transition-colors ${
-                  active
-                    ? 'border-primary text-primary font-medium'
-                    : 'border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30'
-                }`}
-              >
-                <t.Icon className="h-4 w-4" />
-                {t.label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Tab Content */}
-      {activeTab.type === 'valuation' && (
-        <ValuationTab
-          facets={facets}
-          companyValuation={classified.companyValuation}
-          others={classified.others}
-          onOpenFile={onOpenFile}
+      {/* Hero 状态：完全没有产物时直接显示等待/失败大卡，不渲染 Tabs */}
+      {showHeroState ? (
+        <HeroStatusCard
+          status={entry.status}
+          entry={entry}
+          progress={entry.progress as Record<string, unknown> | undefined}
         />
-      )}
+      ) : (
+        <>
+          {/* Top-level Tabs */}
+          <div className="border-b overflow-x-auto">
+            <div className="flex gap-0.5">
+              {tabs.map((t) => {
+                const active = t.key === activeTabKey;
+                return (
+                  <button
+                    key={t.key}
+                    onClick={() => setActiveTabKey(t.key)}
+                    className={`flex items-center gap-1.5 px-4 py-2.5 text-sm whitespace-nowrap border-b-2 transition-colors ${
+                      active
+                        ? 'border-primary text-primary font-medium'
+                        : 'border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/30'
+                    }`}
+                  >
+                    <t.Icon className="h-4 w-4" />
+                    {t.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
-      {activeTab.type === 'segment' && activeTab.segment_id && (
-        <SegmentTab
-          segmentId={activeTab.segment_id}
-          segmentMeta={facets.segments?.find((s) => s.segment_id === activeTab.segment_id)}
-          reports={classified.bySegment[activeTab.segment_id] || []}
-          currencyUnit={facets.currency_unit}
-          onOpenFile={onOpenFile}
-        />
-      )}
+          {/* Tab Content */}
+          {activeTab.type === 'valuation' && (
+            <ValuationTab
+              facets={facets}
+              companyValuation={classified.companyValuation}
+              others={classified.others}
+              onJumpToQuality={() => setActiveTabKey('quality')}
+              onOpenFile={onOpenFile}
+            />
+          )}
 
-      {activeTab.type === 'segment' && !activeTab.segment_id && (
-        <CompanyResearchTab
-          reports={classified.companyResearch}
-          onOpenFile={onOpenFile}
-        />
-      )}
+          {activeTab.type === 'quality' && (
+            <QualityTab
+              quality={facets.quality}
+              reports={classified.companyQuality}
+              onOpenFile={onOpenFile}
+            />
+          )}
 
-      {activeTab.type === 'changelog' && (
-        <ChangelogTab reports={reports} onOpenFile={onOpenFile} />
-      )}
+          {activeTab.type === 'segment' && activeTab.segment_id && (
+            <SegmentTab
+              segmentId={activeTab.segment_id}
+              segmentMeta={facets.segments?.find((s) => s.segment_id === activeTab.segment_id)}
+              reports={classified.bySegment[activeTab.segment_id] || []}
+              currencyUnit={facets.currency_unit}
+              onOpenFile={onOpenFile}
+            />
+          )}
 
-      {activeTab.type === 'automation' && (
-        <AutomationTab
-          monitor={monitor}
-          reports={classified.monitor}
-          rerateTriggers={facets.rerate_triggers}
-          onOpenFile={onOpenFile}
-        />
-      )}
+          {activeTab.type === 'segment' && !activeTab.segment_id && (
+            <CompanyResearchTab
+              reports={classified.companyResearch}
+              onOpenFile={onOpenFile}
+            />
+          )}
 
-      {activeTab.type === 'data' && (
-        <DataTab
-          checklist={checklist}
-          reports={classified.data}
-          factsSummary={factsSummary}
-          onOpenFile={onOpenFile}
-        />
-      )}
+          {activeTab.type === 'changelog' && (
+            <ChangelogTab reports={reports} onOpenFile={onOpenFile} />
+          )}
 
-      {/* Raw payload */}
-      <RawPayloadCard payload={payload} />
+          {activeTab.type === 'automation' && (
+            <AutomationTab
+              monitor={monitor}
+              reports={classified.monitor}
+              rerateTriggers={facets.rerate_triggers}
+              onOpenFile={onOpenFile}
+            />
+          )}
+
+          {activeTab.type === 'data' && (
+            <DataTab
+              checklist={checklist}
+              reports={classified.data}
+              factsSummary={factsSummary}
+              onOpenFile={onOpenFile}
+            />
+          )}
+
+          {/* Raw payload */}
+          <RawPayloadCard payload={payload} />
+        </>
+      )}
     </div>
   );
 }
@@ -556,11 +701,12 @@ function EviReportPanelInner({ entry, onOpenFile }: Props) {
 // ---------------------------------------------------------------------------
 
 function ValuationTab({
-  facets, companyValuation, others, onOpenFile,
+  facets, companyValuation, others, onJumpToQuality, onOpenFile,
 }: {
   facets: Facets;
   companyValuation: ReportEntry[];
   others: ReportEntry[];
+  onJumpToQuality?: () => void;
   onOpenFile?: (f: string) => void;
 }) {
   const allReports = [...companyValuation, ...others];
@@ -576,6 +722,11 @@ function ValuationTab({
     <div className="space-y-4">
       {/* Summary card */}
       <SummaryCard facets={facets} />
+
+      {/* 定性分析摘要卡（v3.5+）— 只显示 4 维度评级 + 跳转链接，详情在『定性分析』Tab */}
+      {facets.quality && (
+        <QualityCard quality={facets.quality} onJumpToReport={onJumpToQuality} />
+      )}
 
       {/* Segment contribution chart (if multi_segment) */}
       {facets.segments && facets.segments.length > 0 && (
@@ -703,6 +854,64 @@ function SegmentTab({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Tab: 定性分析（v3.5+）— 完整 4 维度报告 + reports/quality.md
+// ---------------------------------------------------------------------------
+
+function QualityTab({
+  quality, reports, onOpenFile,
+}: {
+  quality?: QualitySummary;
+  reports: ReportEntry[];
+  onOpenFile?: (f: string) => void;
+}) {
+  const qualityReport = reports.find((r) => r.key === 'quality') ?? reports[0];
+
+  // 没有 quality 摘要，也没有 quality.md → 完全空态
+  const hasQuality = !!quality;
+  const hasReport = !!qualityReport;
+
+  if (!hasQuality && !hasReport) {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-lg border bg-card p-6 text-center">
+          <ShieldCheck className="h-8 w-8 mx-auto opacity-30 mb-2" />
+          <div className="text-sm font-medium mb-2">尚未生成定性分析</div>
+          <div className="text-xs text-muted-foreground max-w-md mx-auto leading-relaxed">
+            EVI v3.5 起在 Phase 1 产业调研收尾时会自动生成 4 维度定性分析（<b>商业模式 / 护城河 / 管理层 / MD&A 前瞻</b>），
+            并写入 <code className="text-foreground">reports/quality.md</code> 与 <code className="text-foreground">facets.json.quality</code>。<br />
+            <br />
+            如果当前公司是历史 entry，可以让 Agent 补一份：
+          </div>
+          <div className="mt-3 inline-block text-xs text-foreground/80 bg-muted/40 px-3 py-1.5 rounded font-mono">
+            "请 Read .agents/skills/evi-quality-analysis/SKILL.md 执行 4 维度定性分析"
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* 4 维度评级卡（与估值结论顶部相同的 QualityCard，但不带跳转按钮）*/}
+      {hasQuality && <QualityCard quality={quality!} />}
+
+      {/* 完整报告渲染 */}
+      {hasReport ? (
+        <ReportWithToc report={qualityReport!} onOpenFile={onOpenFile} />
+      ) : (
+        <div className="rounded-lg border bg-card p-6 text-center">
+          <div className="text-sm text-muted-foreground">
+            评级摘要已生成，但 <code className="text-foreground">reports/quality.md</code> 缺失。
+            <br />
+            可以让 Agent 把详细 4 维度报告补全。
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CompanyResearchTab({
   reports, onOpenFile,
 }: { reports: ReportEntry[]; onOpenFile?: (f: string) => void }) {
@@ -741,131 +950,107 @@ function CompanyResearchTab({
 }
 
 // ---------------------------------------------------------------------------
-// Upgrade Button — 右上角显示，当 entry.upgradable = true
+// Version Badge — 显示当前版本号 + 更新日志弹窗；如有新版本则自动静默升级
 // ---------------------------------------------------------------------------
 
-function UpgradeButton({ entry }: { entry: { entry_id: string; template_id: string; workspace_id: string; current_version?: string; latest_version?: string } }) {
-  const [loading, setLoading] = useState(false);
-  const [upgradeResult, setUpgradeResult] = useState<{
-    from_version: string;
-    to_version: string;
-    release_notes: Array<{
-      version: string;
-      summary: string;
-      changes: string[];
-      suggested_actions?: Array<{ label: string; prompt: string }>;
-    }>;
-  } | null>(null);
-  const [error, setError] = useState('');
+function VersionBadge({ entry }: { entry: { entry_id: string; template_id: string; workspace_id: string; current_version?: string; latest_version?: string; upgradable?: boolean } }) {
+  const [showChangelog, setShowChangelog] = useState(false);
+  const [releaseNotes, setReleaseNotes] = useState<Array<{
+    version: string;
+    summary: string;
+    changes: string[];
+  }> | null>(null);
+  const [currentVersion, setCurrentVersion] = useState(entry.current_version || '0.0.0');
+  const [upgrading, setUpgrading] = useState(false);
+  const hasAutoUpgraded = useRef(false);
 
-  const handleUpgrade = async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const resp = await fetch(
-        `/api/v1/templates/${entry.template_id}/entries/${entry.entry_id}/upgrade`,
-        { method: 'POST' }
-      );
-      if (!resp.ok) {
-        const data = await resp.json().catch(() => ({}));
-        throw new Error(data.detail || `HTTP ${resp.status}`);
+  // 自动静默升级：如果 upgradable 为 true，组件挂载时自动执行
+  React.useEffect(() => {
+    if (!entry.upgradable || hasAutoUpgraded.current) return;
+    hasAutoUpgraded.current = true;
+    setUpgrading(true);
+    fetch(`/api/v1/templates/${entry.template_id}/entries/${entry.entry_id}/upgrade`, { method: 'POST' })
+      .then(resp => resp.ok ? resp.json() : null)
+      .then(data => {
+        if (data) {
+          setCurrentVersion(data.to_version);
+          setReleaseNotes(data.release_notes);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setUpgrading(false));
+  }, [entry.upgradable, entry.template_id, entry.entry_id]);
+
+  // 点击版本号 → 打开更新日志弹窗
+  const handleShowChangelog = async () => {
+    setShowChangelog(true);
+    // 如果还没有 release notes（比如没触发自动升级），尝试获取
+    if (!releaseNotes) {
+      try {
+        const resp = await fetch(`/api/v1/templates/${entry.template_id}/entries/${entry.entry_id}/release-notes`);
+        if (resp.ok) {
+          const data = await resp.json();
+          setReleaseNotes(data.release_notes || []);
+        }
+      } catch {
+        // 静默失败
       }
-      const data = await resp.json();
-      setUpgradeResult(data);
-    } catch (e: any) {
-      setError(e.message || '升级失败');
-    } finally {
-      setLoading(false);
     }
   };
 
-  // 发送建议操作给 Agent（通过对话框）
-  const sendToAgent = (prompt: string) => {
-    // 跳转到对话页面并发送消息
-    const chatUrl = `/chat/${entry.workspace_id}?auto_send=${encodeURIComponent(prompt)}`;
-    window.location.href = chatUrl;
-  };
-
-  // 升级完成后：显示更新纪要 + 建议操作
-  if (upgradeResult) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setUpgradeResult(null)}>
-        <div className="bg-card border rounded-xl shadow-xl max-w-lg w-full mx-4 max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-          <div className="px-5 py-4 border-b">
-            <div className="flex items-center gap-2 text-sm font-medium text-emerald-600">
-              <CheckCircle2 className="h-4 w-4" />
-              模板已更新到 v{upgradeResult.to_version}
-            </div>
-            <div className="text-xs text-muted-foreground mt-1">
-              从 v{upgradeResult.from_version} 升级
-            </div>
-          </div>
-
-          {upgradeResult.release_notes.map((note) => (
-            <div key={note.version} className="px-5 py-4 border-b last:border-b-0">
-              <div className="text-sm font-medium mb-2">{note.summary}</div>
-              <ul className="text-xs text-muted-foreground space-y-1.5 mb-4">
-                {note.changes.map((c, i) => (
-                  <li key={i} className="flex gap-2">
-                    <span className="text-emerald-500 shrink-0">✓</span>
-                    <span>{c}</span>
-                  </li>
-                ))}
-              </ul>
-
-              {note.suggested_actions && note.suggested_actions.length > 0 && (
-                <div>
-                  <div className="text-xs font-medium text-foreground mb-2">建议操作（点击立即执行）：</div>
-                  <div className="flex flex-wrap gap-2">
-                    {note.suggested_actions.map((action, i) => (
-                      <button
-                        key={i}
-                        onClick={() => sendToAgent(action.prompt)}
-                        className="text-xs px-3 py-1.5 rounded-full border border-blue-500/50 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 transition-colors"
-                      >
-                        {action.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
-
-          <div className="px-5 py-3 border-t bg-muted/20 flex justify-end">
-            <button
-              onClick={() => setUpgradeResult(null)}
-              className="text-xs px-3 py-1.5 rounded bg-muted hover:bg-muted/80 transition-colors"
-            >
-              关闭
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="relative">
+    <>
       <button
-        onClick={handleUpgrade}
-        disabled={loading}
-        className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 border border-blue-500/50 bg-blue-500/10 text-blue-500 text-xs font-medium hover:bg-blue-500/20 transition-colors disabled:opacity-50"
-        title={`当前 v${entry.current_version || '0.0.0'} → 最新 v${entry.latest_version}`}
+        onClick={handleShowChangelog}
+        className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-mono text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+        title="查看更新日志"
       >
-        {loading ? (
-          <span className="animate-spin h-3 w-3 border-2 border-blue-500 border-t-transparent rounded-full" />
+        {upgrading ? (
+          <span className="animate-spin h-3 w-3 border-2 border-muted-foreground border-t-transparent rounded-full" />
         ) : (
-          <TrendingUp className="h-3.5 w-3.5" />
+          <History className="h-3 w-3" />
         )}
-        {loading ? '更新中...' : `更新到 v${entry.latest_version}`}
+        v{currentVersion}
       </button>
-      {error && (
-        <div className="absolute top-full right-0 mt-1 px-2 py-1 rounded bg-red-500/10 text-red-500 text-[10px] whitespace-nowrap z-10">
-          {error}
+
+      {/* 更新日志弹窗 */}
+      {showChangelog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowChangelog(false)}>
+          <div className="bg-card border rounded-xl shadow-xl max-w-lg w-full mx-4 max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium">更新日志</div>
+                <div className="text-xs text-muted-foreground mt-0.5">当前版本 v{currentVersion}</div>
+              </div>
+              <button onClick={() => setShowChangelog(false)} className="text-muted-foreground hover:text-foreground">
+                <XCircle className="h-4 w-4" />
+              </button>
+            </div>
+
+            {releaseNotes && releaseNotes.length > 0 ? (
+              releaseNotes.map((note) => (
+                <div key={note.version} className="px-5 py-4 border-b last:border-b-0">
+                  <div className="text-xs font-mono text-muted-foreground mb-1">v{note.version}</div>
+                  <div className="text-sm font-medium mb-2">{note.summary}</div>
+                  <ul className="text-xs text-muted-foreground space-y-1.5">
+                    {note.changes.map((c, i) => (
+                      <li key={i} className="flex gap-2">
+                        <span className="text-emerald-500 shrink-0">✓</span>
+                        <span>{c}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))
+            ) : (
+              <div className="px-5 py-8 text-center text-xs text-muted-foreground">
+                暂无更新记录
+              </div>
+            )}
+          </div>
         </div>
       )}
-    </div>
+    </>
   );
 }
 
@@ -1315,6 +1500,135 @@ function SummaryCard({ facets }: { facets: Facets }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// QualityCard — 4 维度定性分析摘要（v3.5）
+// ---------------------------------------------------------------------------
+
+const QUALITY_DIM_META: Record<QualityDim, { label: string; short: string; color: string }> = {
+  business_model:    { label: '商业模式与资本特征', short: '商业模式', color: 'text-sky-500' },
+  moat:              { label: '竞争优势与护城河',   short: '护城河',   color: 'text-emerald-500' },
+  management:        { label: '管理层与公司治理',   short: '管理层',   color: 'text-amber-500' },
+  forward_guidance:  { label: 'MD&A 与前瞻指引',     short: 'MD&A',     color: 'text-violet-500' },
+};
+
+const QUALITY_DIM_ORDER: QualityDim[] = [
+  'business_model', 'moat', 'management', 'forward_guidance',
+];
+
+function scoreTone(score?: number): { bar: string; text: string; bg: string } {
+  if (score === undefined) return { bar: 'bg-muted', text: 'text-muted-foreground', bg: 'bg-muted/20' };
+  if (score >= 8) return { bar: 'bg-emerald-500', text: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-500/10' };
+  if (score >= 6) return { bar: 'bg-sky-500', text: 'text-sky-600 dark:text-sky-400', bg: 'bg-sky-500/10' };
+  if (score >= 4) return { bar: 'bg-amber-500', text: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-500/10' };
+  return { bar: 'bg-red-500', text: 'text-red-500', bg: 'bg-red-500/10' };
+}
+
+function QualityCard({
+  quality, onJumpToReport,
+}: { quality: QualitySummary; onJumpToReport?: () => void }) {
+  const overall = quality.overall_score;
+  const overallTone = scoreTone(overall);
+  const scores = quality.scores ?? {};
+  const verdicts = quality.verdicts ?? {};
+  const pillars = quality.investment_pillars ?? [];
+  const risks = quality.key_risk_signals ?? [];
+
+  return (
+    <div className="rounded-lg border bg-card p-4 space-y-4">
+      {/* 标题行 */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="h-4 w-4 text-primary" />
+          <span className="text-sm font-medium">定性分析（4 维度）</span>
+          {overall !== undefined && (
+            <span className={`inline-flex items-center gap-1 text-xs font-mono px-2 py-0.5 rounded ${overallTone.bg} ${overallTone.text}`}>
+              综合 {overall.toFixed(1)} / 10
+            </span>
+          )}
+        </div>
+        {onJumpToReport && (
+          <button
+            onClick={onJumpToReport}
+            className="text-[11px] text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+          >
+            查看完整报告 →
+          </button>
+        )}
+      </div>
+
+      {/* 4 维度评级 */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {QUALITY_DIM_ORDER.map((dim) => {
+          const score = scores[dim];
+          const verdict = verdicts[dim];
+          const meta = QUALITY_DIM_META[dim];
+          const tone = scoreTone(score);
+          return (
+            <div key={dim} className={`rounded-md border p-3 ${tone.bg}`}>
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <span className={`text-xs font-medium ${meta.color}`}>{meta.label}</span>
+                <span className={`text-xs font-mono ${tone.text}`}>
+                  {score !== undefined ? `${score}/10` : '—'}
+                </span>
+              </div>
+              {/* 进度条 */}
+              <div className="h-1.5 bg-muted rounded-full overflow-hidden mb-2">
+                <div
+                  className={`h-full ${tone.bar} rounded-full transition-all`}
+                  style={{ width: `${Math.max(0, Math.min(100, ((score ?? 0) / 10) * 100))}%` }}
+                />
+              </div>
+              {verdict && (
+                <div className="text-[11px] text-foreground/80 leading-relaxed line-clamp-2">
+                  {verdict}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* 投资支柱 / 风险信号 */}
+      {(pillars.length > 0 || risks.length > 0) && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t">
+          {pillars.length > 0 && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5 flex items-center gap-1">
+                <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+                投资支柱
+              </div>
+              <ul className="text-xs space-y-1">
+                {pillars.map((p, i) => (
+                  <li key={i} className="flex gap-1.5">
+                    <span className="text-emerald-500 shrink-0">✓</span>
+                    <span className="text-foreground/80">{p}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {risks.length > 0 && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5 flex items-center gap-1">
+                <AlertTriangle className="h-3 w-3 text-amber-500" />
+                风险信号
+              </div>
+              <ul className="text-xs space-y-1">
+                {risks.map((r, i) => (
+                  <li key={i} className="flex gap-1.5">
+                    <span className="text-amber-500 shrink-0">⚠</span>
+                    <span className="text-foreground/80">{r}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SegmentContributionCard({
   segments, currencyUnit,
 }: { segments: SegmentSummary[]; currencyUnit?: string }) {
@@ -1355,6 +1669,12 @@ function ReportWithToc({
   const toc = useMemo(() => extractToc(report.markdown ?? ''), [report.markdown]);
   const contentRef = useRef<HTMLDivElement>(null);
   const [tocCollapsed, setTocCollapsed] = useState(false);
+
+  // 构建带引用按钮的 h2/h3 渲染器
+  const headingOverrides = useMemo(() => ({
+    h2: makeQuotableHeading(2, report.markdown ?? '', report.title ?? '报告'),
+    h3: makeQuotableHeading(3, report.markdown ?? '', report.title ?? '报告'),
+  }), [report.markdown, report.title]);
 
   const scrollToHeading = useCallback((id: string) => {
     if (!contentRef.current) return;
@@ -1434,7 +1754,7 @@ function ReportWithToc({
 
         <div className="flex-1 min-w-0 overflow-y-auto max-h-[70vh] px-5 py-4" ref={contentRef}>
           <article className="prose prose-sm dark:prose-invert max-w-none">
-            <Markdown content={report.markdown ?? ''} variant="panel" onOpenFile={onOpenFile} />
+            <Markdown content={report.markdown ?? ''} variant="panel" onOpenFile={onOpenFile} componentOverrides={headingOverrides} />
           </article>
         </div>
       </div>
@@ -1475,6 +1795,146 @@ function ChecklistCard({ checklist }: { checklist: Checklist }) {
           阻塞项：{(s.blocking_missing ?? []).join(', ')}
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// StatusBanner — entry.status 横幅（在 Header 下、Tabs 上方）
+// ---------------------------------------------------------------------------
+
+function StatusBanner({
+  status, partial, errorMessage,
+}: {
+  status: TemplateEntry['status'];
+  partial: boolean;
+  errorMessage?: string | null;
+}) {
+  if (status === 'completed') return null;
+  if (status === 'partial' || partial) {
+    return (
+      <div className="flex items-start gap-2 rounded-md border border-amber-300/50 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+        <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+        <span>分析处于<b>部分完成</b>状态——可以让 Agent 继续完成剩余 Phase。</span>
+      </div>
+    );
+  }
+  if (status === 'analyzing') {
+    return (
+      <div className="flex items-start gap-2 rounded-md border border-sky-300/50 bg-sky-500/5 px-3 py-2 text-xs text-sky-700 dark:text-sky-300">
+        <Loader2 className="h-4 w-4 flex-shrink-0 mt-0.5 animate-spin" />
+        <span>分析进行中——Agent 正在执行 EVI 流程，完成后看板会自动刷新。</span>
+      </div>
+    );
+  }
+  if (status === 'pending') {
+    return (
+      <div className="flex items-start gap-2 rounded-md border border-muted bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+        <Hourglass className="h-4 w-4 flex-shrink-0 mt-0.5" />
+        <span>排队中——分析任务尚未启动。</span>
+      </div>
+    );
+  }
+  if (status === 'failed') {
+    return (
+      <div className="flex items-start gap-2 rounded-md border border-red-300/50 bg-red-500/5 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+        <XCircle className="h-4 w-4 flex-shrink-0 mt-0.5" />
+        <span>
+          分析失败{errorMessage ? `：${errorMessage.slice(0, 200)}` : '。'}
+        </span>
+      </div>
+    );
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// HeroStatusCard — 完全没有产物时的占位大卡（pending / analyzing / failed）
+// ---------------------------------------------------------------------------
+
+function HeroStatusCard({
+  status, entry, progress,
+}: {
+  status: TemplateEntry['status'];
+  entry: TemplateEntry;
+  progress?: Record<string, unknown>;
+}) {
+  const display = entry.display_name || entry.entry_key;
+
+  // 把 progress 里非空的 key:value 简单展开（容错任意结构）
+  const progressLines: Array<{ key: string; value: string }> = [];
+  if (progress && typeof progress === 'object') {
+    for (const [k, v] of Object.entries(progress)) {
+      if (v === null || v === undefined || v === '') continue;
+      const valStr = typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean'
+        ? String(v)
+        : JSON.stringify(v);
+      progressLines.push({ key: k, value: valStr.length > 80 ? valStr.slice(0, 80) + '…' : valStr });
+    }
+  }
+
+  if (status === 'failed') {
+    return (
+      <div className="rounded-lg border border-red-300/50 bg-red-500/5 p-6 text-center space-y-3">
+        <XCircle className="h-10 w-10 mx-auto text-red-500" />
+        <div className="text-base font-medium text-red-700 dark:text-red-300">分析失败</div>
+        <div className="text-xs text-muted-foreground max-w-md mx-auto leading-relaxed">
+          {entry.error_message
+            ? <span className="text-red-600 dark:text-red-400">{entry.error_message}</span>
+            : <>EVI 流程没能完成。可以让 Agent 重新尝试（在底部对话框发送『继续』或『重新分析』）。</>
+          }
+        </div>
+        <div className="text-[11px] text-muted-foreground font-mono">{display}</div>
+      </div>
+    );
+  }
+
+  if (status === 'pending') {
+    return (
+      <div className="rounded-lg border bg-card p-6 text-center space-y-3">
+        <Hourglass className="h-10 w-10 mx-auto opacity-40" />
+        <div className="text-base font-medium">排队中</div>
+        <div className="text-xs text-muted-foreground max-w-md mx-auto leading-relaxed">
+          分析任务尚未启动。如果一直停在此状态，可以让 Agent 发送『开始分析』触发。
+        </div>
+        <div className="text-[11px] text-muted-foreground font-mono">{display}</div>
+      </div>
+    );
+  }
+
+  // analyzing — 默认 / 最常见
+  return (
+    <div className="rounded-lg border border-sky-300/40 bg-gradient-to-br from-sky-500/5 to-transparent p-6 text-center space-y-4">
+      <div className="relative inline-flex items-center justify-center">
+        <Loader2 className="h-10 w-10 text-sky-500 animate-spin" />
+        <Sparkles className="h-4 w-4 text-sky-400 absolute top-0 right-0" />
+      </div>
+      <div>
+        <div className="text-base font-medium">EVI 分析进行中</div>
+        <div className="text-[11px] text-muted-foreground font-mono mt-1">{display}</div>
+      </div>
+      <div className="text-xs text-muted-foreground max-w-md mx-auto leading-relaxed">
+        Agent 正在执行：<b>数据获取 → 产业调研 → 定性分析 → 估值分析 → 持久化</b>。<br />
+        预计 20–30 分钟。完成后看板会自动刷新，无需手动操作。
+      </div>
+
+      {progressLines.length > 0 && (
+        <div className="mx-auto max-w-md text-left rounded-md border bg-card/60 p-3 mt-2">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">实时进度</div>
+          <div className="space-y-1">
+            {progressLines.slice(0, 8).map((p, i) => (
+              <div key={i} className="text-xs flex gap-2">
+                <span className="text-muted-foreground shrink-0 min-w-[6rem]">{p.key}</span>
+                <span className="text-foreground/80 break-all">{p.value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="text-[11px] text-muted-foreground/80 pt-2">
+        小贴士：左侧的任务列表里可以打开对话查看 Agent 实时执行细节。
+      </div>
     </div>
   );
 }

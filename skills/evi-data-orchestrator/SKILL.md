@@ -102,7 +102,11 @@ reports/
 │  Step 5: 提取结构化事实库                                         │
 │    └─ format_facts.py → information/indexed_facts.json          │
 │                                                                 │
-│  Step 6: CHECKLIST 质检 + persist(partial)                       │
+│  Step 6: 定性分析 — 4 维度（business_model/moat/management/      │
+│           forward_guidance）→ reports/quality.md + quality.json │
+│    └─ 调用 evi-quality-analysis（复用本 phase 数据，不做下载）   │
+│                                                                 │
+│  Step 7: CHECKLIST 质检 + persist(partial)                       │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -437,44 +441,68 @@ python3 .agents/skills/evi-toolkit/scripts/format_facts.py \
 
 ---
 
-## 10. Step 6 — CHECKLIST + 持久化
+## 10. Step 6 — 定性分析（4 维度）
+
+> 在产业调研报告 + 事实库已经齐备的情况下，**立即**调用 `evi-quality-analysis` 完成商业模式 / 护城河 / 管理层 / MD&A 前瞻 4 个维度的轻量定性判断。
+
+```
+Read .agents/skills/evi-quality-analysis/SKILL.md → 按其 § 7 执行步骤
+```
+
+**为什么放在 Phase 1 的 Step 6**：
+- FMP 财务数据 + MD&A + 电话会 + 研报已经齐了，写定性结论不需要再下载任何东西。
+- 把"对估值假设的影响"提前确定，可以直接喂给 Phase 2 `evi-assumption-builder`。
+- 把"监控建议"提前确定，可以喂给 `evi-reverse-valuation` 合并到 rerate_triggers。
+
+**产出**：
+- `reports/quality.md` ⭐（人类可读的 4 维度报告，单页 2500 字内）
+- `data/{symbol_dir}/quality.json`（结构化结论 + assumption_hints + monitor_suggestions）
+- 同步把 quality 字段塞进 `facets.json`（看板用）
+
+> 单一业务 / 多业务都做 — 这是公司层定性，不分分部。如果 4 维度有缺口（如 A 股缺电话会），按 quality-analysis SKILL 的 §11 失败处理执行。
+
+---
+
+## 11. Step 7 — CHECKLIST（数据质量记分卡）
 
 ```bash
 python3 .agents/skills/evi-toolkit/scripts/build_checklist.py \
     --data-dir data/{symbol_dir} --required-periods 6
-
-python3 .agents/skills/evi-toolkit/scripts/persist_evi_report.py \
-    --entry-id {entry_id} --data-dir data/{symbol_dir} \
-    --display-name "{display_name}" --symbol "{symbol}" --market "{market}" \
-    --status partial
 ```
+
+**持久化交给 framework**：Phase 1 完成后**不需要**手动调任何 finalize / persist 脚本。当 Phase 2 也跑完、`reports/final.md` + `facets.json` 都齐了，framework 会自动扫产物并把 entry 推到 `completed`。
+
+如果你只跑 Phase 1 就把对话交回给用户（典型场景：用户说"先做调研"），不用做任何事——framework 检查到 required 文件（facets.json / final.md）还缺时会标 partial，下次用户触发 Phase 2 估值后再次扫描即可推到 completed。
+
+> 仅用于开发者诊断（不是必经路径）：`python3 .agents/skills/evi-toolkit/scripts/wakeup_check.py --data-dir data/{symbol_dir} --check-only`
 
 ---
 
-## 11. Step 7 — 汇报
+## 12. Step 8 — 汇报
 
 告知用户：
 - 公司结构判断：单一业务 / N 分部
 - 总报告大小 + 分部报告数量
 - 数据收集状态（FMP 几期 / 财报几份 / 研报几家 / 电话会几期）
+- **定性分析 4 维度评级**（B1 商业模式 / B2 护城河 / B3 管理层 / B4 前瞻）+ 一句话总结
 - CHECKLIST 状态
 - 关键数据缺口
 - 提示"发送「继续估值分析」触发 Phase 2"
 
 ---
 
-## 12. 与 sirius-valuation 的复用关系
+## 13. 关键脚本一览
 
-| 功能 | 使用脚本 |
+| 功能 | 脚本 |
 |---|---|
-| 财报/公告下载 | evi-toolkit/scripts/evi_download_knowledge.py --financials --announcements |
-| 知识库管理 | sirius-valuation/scripts/manage_knowledge.py |
-| FMP 数据 + TTM + 增长率 | evi-toolkit/scripts/evi_fetch_data.py |
-| 电话会下载 | evi-toolkit/scripts/evi_download_knowledge.py --transcripts |
+| 财报/公告下载 | `.agents/skills/evi-toolkit/scripts/evi_download_knowledge.py --financials --announcements` |
+| 电话会下载 | `.agents/skills/evi-toolkit/scripts/evi_download_knowledge.py --transcripts` |
+| FMP 数据 + TTM + 增长率 | `.agents/skills/evi-toolkit/scripts/evi_fetch_data.py` |
+| 知识库管理 | `.agents/skills/evi-toolkit/scripts/evi_manage_knowledge.py` |
 
 ---
 
-## 13. 失败处理
+## 14. 失败处理
 
 - 财报下载 0 → 用 WebSearch 找官方 IR 网站补
 - 某分部数据严重缺失 → 在该 segment 报告中明确标注"数据缺口"，Phase 2 会反向请求补充
