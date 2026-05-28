@@ -180,7 +180,6 @@ function WorkspaceCard({ workspace, onSelect, onTogglePin, onDelete, prefetchThr
   const templateId = (workspace.config as any)?.template_id as string | undefined;
 
   const TEMPLATE_NAMES: Record<string, string> = {
-    'sirius-valuation': 'Sirius 估值',
     'evi-strategy': 'EVI 估值策略',
   };
 

@@ -11,7 +11,7 @@ import DeleteConfirmModal from './DeleteConfirmModal';
 import RenameThreadModal from './RenameThreadModal';
 import ChatInput from '../../../components/ui/chat-input';
 import type { ChatInputHandle } from '../../../components/ui/chat-input';
-import { attachmentsToContexts } from '../utils/fileUpload';
+import { attachmentsToContexts, widgetSnapshotsToContexts } from '../utils/fileUpload';
 import { SYSTEM_DIR_PREFIXES } from './FilePanel';
 import RightPanel from './RightPanel';
 import { clampPanelWidth as clampPanelWidthUtil } from '@/lib/panelUtils';
@@ -20,16 +20,12 @@ import { getWorkspaceThreads, deleteThread, updateThreadTitle } from '../utils/a
 import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
 
 // Template report panel (lazy-loaded, only renders for template workspaces)
-const SiriusReportPanel = lazy(
-  () => import('../../Templates/sirius/SiriusReportPanel').then((m) => ({ default: m.SiriusReportPanel }))
-);
 const EviReportPanel = lazy(
   () => import('../../Templates/evi/EviReportPanel').then((m) => ({ default: m.EviReportPanel }))
 );
 
-// Pick the right panel for a given template id; falls back to Sirius (legacy).
+// Pick the right panel for a given template id.
 const TEMPLATE_PANELS: Record<string, React.LazyExoticComponent<React.ComponentType<any>>> = {
-  'sirius-valuation': SiriusReportPanel,
   'evi-strategy': EviReportPanel,
 };
 import { getTemplateEntryByWorkspace } from '../../Templates/utils/api';
@@ -451,7 +447,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
     planMode = false,
     attachments: Array<{ file: File; type: string; preview: string | null; dataUrl: string | null }> = [],
     slashCommands: Array<{ type: string; skillName?: string; name?: string }> = [],
-    { model, reasoningEffort }: { model?: string; reasoningEffort?: string } = {},
+    { model, reasoningEffort, widgetSnapshots }: { model?: string; reasoningEffort?: string; widgetSnapshots?: import('@/pages/Dashboard/widgets/framework/contextSnapshot').WidgetContextSnapshot[] } = {},
   ) => {
     if ((!message.trim() && (!attachments || attachments.length === 0)) || isSendingMessage || !workspaceId) {
       return;
@@ -481,6 +477,12 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
         }
       }
 
+      // Widget context snapshots (from report section quotes, dashboard widgets, etc.)
+      if (widgetSnapshots && widgetSnapshots.length > 0) {
+        const items = widgetSnapshotsToContexts(widgetSnapshots);
+        contexts.push(...(items as unknown as Record<string, unknown>[]));
+      }
+
       const additionalContext = contexts.length > 0 ? contexts : null;
 
       navigate(`/chat/t/__default__`, {
@@ -493,6 +495,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
           ...(attachmentMeta ? { attachmentMeta } : {}),
           ...(model ? { model } : {}),
           ...(reasoningEffort ? { reasoningEffort } : {}),
+          ...(widgetSnapshots && widgetSnapshots.length > 0 ? { widgetSnapshots } : {}),
         },
       });
     } catch (error) {
@@ -585,8 +588,14 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
   // TEMPLATE WORKSPACE MODE
   // Report is the main view; threads go to a collapsible left sidebar;
   // new-conversation input floats at the bottom (like Dashboard).
+  //
+  // Always render for any template entry (pending / analyzing / completed /
+  // partial / failed). The report panel itself shows a friendly placeholder
+  // when the analysis hasn't finished yet — better UX than falling back to
+  // the generic ChatAgent view (which previously made template workspaces
+  // appear "broken" while running).
   // =========================================================================
-  if (!isFlash && templateEntry && (templateEntry.status === 'completed' || templateEntry.status === 'partial')) {
+  if (!isFlash && templateEntry) {
     return (
       <TemplateWorkspaceView
         workspaceId={workspaceId}
@@ -1031,7 +1040,7 @@ function TemplateWorkspaceView({
         <div className="flex-1 overflow-y-auto pb-28">
           <Suspense fallback={null}>
             {(() => {
-              const Panel = TEMPLATE_PANELS[templateEntry.template_id] ?? SiriusReportPanel;
+              const Panel = TEMPLATE_PANELS[templateEntry.template_id] ?? EviReportPanel;
               return (
                 <Panel
                   entry={templateEntry}
@@ -1090,9 +1099,10 @@ function TemplateWorkspaceView({
                 backdropFilter: 'blur(48px)',
                 WebkitBackdropFilter: 'blur(48px)',
                 border: '1px solid var(--color-border-muted)',
-                borderRadius: '9999px',
+                borderRadius: '1.25rem',
                 boxShadow: '0 0 30px var(--color-accent-soft)',
                 transition: 'all 0.3s',
+                overflow: 'visible',
               }}
             >
               <ChatInput
