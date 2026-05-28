@@ -596,6 +596,7 @@ class PTCAgent:
             user_profile=user_profile,
             current_time=current_time,
             thread_id=short_thread_id,
+            config=self.config,
         )
         subagents = create_subagents(
             registry=subagent_registry,
