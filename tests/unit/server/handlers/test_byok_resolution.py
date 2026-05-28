@@ -84,9 +84,9 @@ class TestResolveBYOKSystemModel:
         with (
             patch("src.llms.llm.LLM.get_model_config", return_value=mc),
             patch(
-                f"{DB_KEYS}.get_byok_config_for_provider",
+                f"{DB_KEYS}.get_byok_configs_for_providers",
                 new_callable=AsyncMock,
-                return_value={"api_key": "user-key-123", "base_url": None},
+                return_value={"openai": {"api_key": "user-key-123", "base_url": None}},
             ),
             patch("src.llms.llm.create_llm", return_value=mock_llm) as mock_create,
         ):
@@ -109,9 +109,9 @@ class TestResolveBYOKSystemModel:
         with (
             patch("src.llms.llm.LLM.get_model_config", return_value=mc),
             patch(
-                f"{DB_KEYS}.get_byok_config_for_provider",
+                f"{DB_KEYS}.get_byok_configs_for_providers",
                 new_callable=AsyncMock,
-                return_value=None,
+                return_value={},
             ),
         ):
             result = await resolve_byok_llm_client("user-1", "gpt-4o", True)
@@ -131,9 +131,9 @@ class TestResolveBYOKSystemModel:
         with (
             patch("src.llms.llm.LLM.get_model_config", return_value=mc),
             patch(
-                f"{DB_KEYS}.get_byok_config_for_provider",
+                f"{DB_KEYS}.get_byok_configs_for_providers",
                 new_callable=AsyncMock,
-                return_value={"api_key": "key", "base_url": "https://custom.openai.com"},
+                return_value={"openai": {"api_key": "key", "base_url": "https://custom.openai.com"}},
             ),
             patch("src.llms.llm.create_llm", return_value=mock_llm) as mock_create,
         ):
@@ -144,7 +144,8 @@ class TestResolveBYOKSystemModel:
 
     @pytest.mark.asyncio
     async def test_sub_provider_resolves_parent(self):
-        """Platform sub-provider should resolve to parent's BYOK key."""
+        """A sub-provider model resolves the key stored under its parent slug,
+        but builds against the model's OWN provider endpoint."""
         from src.server.handlers.chat.llm_config import resolve_byok_llm_client
 
         mc = _mock_model_config(
@@ -158,16 +159,19 @@ class TestResolveBYOKSystemModel:
         with (
             patch("src.llms.llm.LLM.get_model_config", return_value=mc),
             patch(
-                f"{DB_KEYS}.get_byok_config_for_provider",
+                f"{DB_KEYS}.get_byok_configs_for_providers",
                 new_callable=AsyncMock,
-                return_value={"api_key": "acme-key", "base_url": None},
+                # Key stored only under the parent slug.
+                return_value={"acme": {"api_key": "acme-key", "base_url": None}},
             ),
             patch("src.llms.llm.create_llm", return_value=mock_llm) as mock_create,
         ):
             result = await resolve_byok_llm_client("user-1", "test-model", True)
 
-        # Should look up parent provider, not platform variant
+        # Resolves via the parent key, but builds against the model's OWN
+        # provider endpoint (acme-platform), never the parent's.
         assert result is mock_llm
+        assert mock_create.call_args.kwargs["base_url"] == "https://proxy.example.com"
 
 
 # ---------------------------------------------------------------------------

@@ -7,8 +7,11 @@ lookups.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
-from typing import NoReturn
+from typing import Any, NoReturn
+
+from ptc_agent.config.agent import CredentialSource
 
 from ._common import logger
 
@@ -22,9 +25,72 @@ _MODE_MODEL_MAP = {
 }
 
 
+@dataclass(frozen=True)
+class ResolvedClient:
+    """A resolved LLM client plus its model and credential provenance.
+
+    ``model_source`` (a ``ModelSource``) and ``credential_source`` are
+    orthogonal — a BYOK user on a system-catalog model yields SYSTEM + BYOK.
+    """
+
+    client: Any | None
+    model_source: Any | None  # ModelSource
+    credential_source: CredentialSource
+
+
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+
+async def _walk_byok_candidates(
+    user_id,
+    provider,
+    mc,
+    *,
+    _byok_cache=None,
+):
+    """Walk [provider → parent → sibling variants] for a stored BYOK key.
+
+    Returns ``(byok_config, holding_slug)`` — the first candidate (in priority
+    order) that has a key, or ``(None, None)``. Honors a request-scoped
+    ``_byok_cache`` (``dict[str, dict | None] | None``): a slug mapping to a
+    dict is a confirmed key, a slug mapping to ``None`` is confirmed-absent, and
+    a slug absent from the cache is NOT prefetched — it MUST fall back to a
+    direct ``get_byok_configs_for_providers`` lookup so a cache miss is never a
+    silent false "no key". Direct-fetch results are written back into the cache.
+    """
+    from src.server.database.api_keys import get_byok_configs_for_providers
+
+    parent = mc.get_parent_provider(provider)
+    candidates: list[str] = [provider]
+    if parent and parent != provider:
+        candidates.append(parent)
+    root = parent if parent else provider
+    for sibling in mc.get_child_variants(root):
+        if sibling not in candidates:
+            candidates.append(sibling)
+
+    if _byok_cache is None:
+        # Back-compat path: no request-scoped cache, batch-fetch all candidates.
+        configs = await get_byok_configs_for_providers(user_id, candidates)
+    else:
+        # Tri-state cache: a slug absent from the cache was never prefetched, so
+        # it must be fetched directly — only a recorded ``None`` counts as a
+        # confirmed absence.
+        missing = [c for c in candidates if c not in _byok_cache]
+        if missing:
+            fetched = await get_byok_configs_for_providers(user_id, missing)
+            for slug in missing:
+                _byok_cache[slug] = fetched.get(slug)
+        configs = {c: _byok_cache.get(c) for c in candidates}
+
+    for candidate in candidates:  # keep the provider → parent → sibling priority
+        byok_config = configs.get(candidate)
+        if byok_config:
+            return byok_config, candidate
+
+    return None, None
 
 
 async def _resolve_custom_model_byok(
@@ -33,6 +99,7 @@ async def _resolve_custom_model_byok(
     custom_config: dict,
     mc,
     _pref_cache: dict | None = None,
+    _byok_cache: dict | None = None,
 ):
     """
     Resolve BYOK key + base_url for a user-defined custom model.
@@ -71,42 +138,25 @@ async def _resolve_custom_model_byok(
                 custom_config = {**custom_config, "_use_response_api": True}
             return byok_config, base_url, custom_config
 
-    # 3. System provider — try the provider's own slug first (variants like
-    #    ``moonshot-coding`` store their key under their own slug), then the
-    #    parent, then any sibling variants of the parent. The last step covers
-    #    the mirror case where a custom model is tagged with the parent slug
-    #    but the user only configured a variant (e.g. coding-plan) so the key
-    #    lives under the variant.
-    #
-    #    Single batch query instead of a per-candidate round-trip: typical
-    #    candidate list is 2-4 entries, and the chat hot path can't afford
-    #    N round-trips per request.
-    from src.server.database.api_keys import get_byok_configs_for_providers
-
-    parent = mc.get_parent_provider(provider)
-    candidates: list[str] = [provider]
-    if parent and parent != provider:
-        candidates.append(parent)
-    root = parent if parent else provider
-    for sibling in mc.get_child_variants(root):
-        if sibling not in candidates:
-            candidates.append(sibling)
-
-    configs = await get_byok_configs_for_providers(user_id, candidates)
-    for candidate in candidates:  # keep the provider → parent → sibling priority
-        byok_config = configs.get(candidate)
-        if byok_config:
-            base_url = byok_config.get("base_url") or mc.get_provider_info(candidate).get("base_url")
-            # Rewrite ``provider`` to the candidate that actually held the key.
-            # ``create_llm_from_custom`` reads SDK / default_headers /
-            # use_response_api from the provider field, so if a custom model
-            # tagged ``dashscope`` resolves via its ``dashscope-coding``
-            # sibling, we need the SDK to match the coding-plan endpoint —
-            # otherwise we'd build a Qwen client pointed at an
-            # Anthropic-shaped URL and fail every request.
-            if candidate != provider:
-                custom_config = {**custom_config, "provider": candidate}
-            return byok_config, base_url, custom_config
+    # 3. System provider — walk [provider → parent → sibling variants] for a
+    #    stored key. The sibling step covers the mirror case where a custom
+    #    model is tagged with the parent slug but the user only configured a
+    #    variant (e.g. coding-plan) so the key lives under the variant.
+    byok_config, holding = await _walk_byok_candidates(
+        user_id, provider, mc, _byok_cache=_byok_cache,
+    )
+    if byok_config:
+        base_url = byok_config.get("base_url") or mc.get_provider_info(holding).get("base_url")
+        # Rewrite ``provider`` to the candidate that actually held the key.
+        # ``create_llm_from_custom`` reads SDK / default_headers /
+        # use_response_api from the provider field, so if a custom model
+        # tagged ``dashscope`` resolves via its ``dashscope-coding``
+        # sibling, we need the SDK to match the coding-plan endpoint —
+        # otherwise we'd build a Qwen client pointed at an
+        # Anthropic-shaped URL and fail every request.
+        if holding != provider:
+            custom_config = {**custom_config, "provider": holding}
+        return byok_config, base_url, custom_config
 
     return None, None, custom_config
 
@@ -243,6 +293,7 @@ async def resolve_byok_llm_client(
     reasoning_effort: str | None = None,
     _pref_cache: dict | None = None,
     cache_key: str | None = None,
+    _byok_cache: dict | None = None,
 ):
     """
     If BYOK is active, build an LLM client for ``model_name``. Returns None
@@ -251,8 +302,10 @@ async def resolve_byok_llm_client(
     HTTPException for custom models on the main-model path — this function
     stays at debug log level so the user sees one error, not two.
 
-    - System model: look up BYOK key under the model's parent provider,
-      resolving variants to the parent's endpoint.
+    - System model: walk [provider → parent → sibling variants] for the BYOK
+      key (coding-plan variants store it under their own slug), but build
+      against the MODEL'S OWN provider endpoint, never the candidate that
+      merely held the key.
     - Custom model (custom shadows built-in when names collide): walk the
       custom/provider/variant key chain via ``_resolve_custom_model_byok``.
     - Unknown name but matches a user's ``custom_providers`` slug:
@@ -260,12 +313,12 @@ async def resolve_byok_llm_client(
 
     ``classify_model`` is O(1) with ``_pref_cache`` populated, so callers
     don't need to pre-classify — pass the cache and this function does its
-    own lookup.
+    own lookup. ``_byok_cache`` is a request-scoped tri-state cache threaded
+    into ``_walk_byok_candidates`` (see its contract).
     """
     if not is_byok:
         return None
 
-    from src.server.database.api_keys import get_byok_config_for_provider
     from src.llms.llm import LLM as LLMFactory, create_llm, create_llm_from_custom
 
     mc = LLMFactory.get_model_config()
@@ -278,7 +331,8 @@ async def resolve_byok_llm_client(
     # variant's key to handle this name.
     if source == ModelSource.CUSTOM:
         byok_config, base_url, custom_config = await _resolve_custom_model_byok(
-            user_id, model_name, config_entry, mc, _pref_cache=_pref_cache,
+            user_id, model_name, config_entry, mc,
+            _pref_cache=_pref_cache, _byok_cache=_byok_cache,
         )
         if not byok_config:
             # ``resolve_llm_config`` converts this None into an HTTPException
@@ -315,7 +369,8 @@ async def resolve_byok_llm_client(
             "provider": cp_config["parent_provider"],
         }
         byok_config, base_url, custom_config = await _resolve_custom_model_byok(
-            user_id, model_name, synthetic_cm, mc, _pref_cache=_pref_cache,
+            user_id, model_name, synthetic_cm, mc,
+            _pref_cache=_pref_cache, _byok_cache=_byok_cache,
         )
         if not byok_config:
             return None
@@ -326,19 +381,25 @@ async def resolve_byok_llm_client(
             cache_key=cache_key,
         )
 
-    # System model — BYOK key lives under the parent provider.
+    # System model — the BYOK key may live under the model's own provider
+    # slug (coding-plan variants store it there), its parent, or a sibling
+    # variant. Walk all three; but pin SDK + base_url to the MODEL'S OWN
+    # provider, never the candidate that merely held the key.
     provider = config_entry["provider"]
-    parent = mc.get_parent_provider(provider)
-    byok_config = await get_byok_config_for_provider(user_id, parent)
+    byok_config, holding = await _walk_byok_candidates(
+        user_id, provider, mc, _byok_cache=_byok_cache,
+    )
     if not byok_config:
         return None
-
-    base_url = byok_config.get("base_url")
-    if not base_url:
-        base_url = mc.get_provider_info(parent).get("base_url")
-
+    # base_url precedence: a user custom base_url on the holding slug wins;
+    # otherwise the MODEL'S OWN provider endpoint (NOT the parent's, NOT the
+    # candidate's). This is the coding-variant fix: a dashscope-coding model
+    # (anthropic SDK) whose key lives under parent `dashscope` (openai SDK)
+    # must still build against the anthropic coding endpoint.
+    base_url = byok_config.get("base_url") or mc.get_provider_info(provider).get("base_url")
     logger.debug(
-        f"[CHAT] Resolved BYOK client for model={model_name} parent={parent} base_url={base_url or 'SDK default'}"
+        f"[CHAT] Resolved BYOK client for system model={model_name} "
+        f"provider={provider} key_held_by={holding} base_url={base_url or 'SDK default'}"
     )
     return create_llm(
         model_name,
@@ -414,6 +475,57 @@ async def resolve_oauth_llm_client(
         cache_key=cache_key,
         **({"service_tier": service_tier} if service_tier and provider != "claude-oauth" else {}),
     )
+
+
+async def resolve_model_client(
+    user_id,
+    model_name,
+    *,
+    is_byok,
+    cache_key=None,
+    reasoning_effort=None,
+    service_tier=None,
+    allow_platform_fallback=False,
+    _pref_cache=None,
+    _byok_cache=None,
+) -> ResolvedClient:
+    """Resolve a client for ``model_name`` and report which credential built it.
+
+    Tries OAuth first (always, independent of ``is_byok``), then BYOK (if
+    enabled), then a platform-keyed client (only for SYSTEM models when
+    ``allow_platform_fallback`` is set). ``model_source`` classifies the model;
+    ``credential_source`` records which credential produced the client — the two
+    are orthogonal. An OAuth-required HTTPException is allowed to propagate.
+    """
+    source, _ = await classify_model(user_id, model_name, _pref_cache=_pref_cache)
+
+    client = await resolve_oauth_llm_client(
+        user_id, model_name, reasoning_effort,
+        service_tier=service_tier, cache_key=cache_key,
+    )
+    if client:
+        return ResolvedClient(client, source, CredentialSource.OAUTH)
+
+    if is_byok:
+        client = await resolve_byok_llm_client(
+            user_id, model_name, is_byok, reasoning_effort,
+            _pref_cache=_pref_cache, cache_key=cache_key, _byok_cache=_byok_cache,
+        )
+        if client:
+            return ResolvedClient(client, source, CredentialSource.BYOK)
+
+    # Platform fallback — only for SYSTEM-catalog models. Reached when OAuth and
+    # BYOK both miss. service_tier is OAuth-only (matches the main-branch
+    # reasoning path), so it is intentionally NOT passed here.
+    if allow_platform_fallback and source == ModelSource.SYSTEM:
+        from src.llms.llm import create_llm
+
+        client = create_llm(
+            model_name, reasoning_effort=reasoning_effort, cache_key=cache_key,
+        )
+        return ResolvedClient(client, source, CredentialSource.PLATFORM)
+
+    return ResolvedClient(None, source, CredentialSource.NONE)
 
 
 async def get_model_preference(user_id: str) -> dict:
