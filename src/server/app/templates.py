@@ -289,6 +289,33 @@ async def upgrade_entry_agent_md(
     }
 
 
+@router.get(
+    "/{template_id}/entries/{entry_id}/release-notes",
+)
+async def get_entry_release_notes(
+    template_id: str,
+    entry_id: str,
+    user_id: CurrentUserId,
+) -> dict[str, Any]:
+    """Get all release notes for the template up to the entry's current version."""
+    orch = TemplateOrchestrator.get_instance()
+    entry = await orch.get_entry(entry_id, user_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Entry not found")
+
+    template = get_template(template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    current_version = (entry.get("params") or {}).get("_agent_md_version", "0.0.0")
+    notes = _collect_release_notes(template, "0.0.0", current_version)
+
+    return {
+        "current_version": current_version,
+        "release_notes": notes,
+    }
+
+
 @router.delete(
     "/{template_id}/entries/{entry_id}",
     response_model=dict,

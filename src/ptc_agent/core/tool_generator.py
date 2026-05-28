@@ -409,7 +409,8 @@ except ImportError:
                     env_keys_repr = repr(list(server.env.keys()))
 
                 # Transform Python MCP servers for sandbox execution
-                # uv run python mcp_servers/xxx.py -> uv run python {working_dir}/mcp_servers/xxx.py
+                # Use relative path since code_run sets cwd to sandbox root;
+                # for Docker/Daytona the absolute path also works since cwd is working_dir.
                 command = server.command
                 args = list(server.args)
 
@@ -422,9 +423,9 @@ except ImportError:
                     # Extract the Python file path (e.g., "mcp_servers/yfinance_mcp_server.py")
                     local_path = args[2]
                     filename = Path(local_path).name
-                    # Keep uv run, just fix the path to sandbox
+                    # Use relative path so it works regardless of sandbox provider
                     command = "uv"
-                    args = ["run", "python", f"{working_dir}/mcp_servers/{filename}"]
+                    args = ["run", "python", f"mcp_servers/{filename}"]
                     logger.debug(
                         "Transformed MCP server command for sandbox",
                         server=server.name,

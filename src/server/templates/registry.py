@@ -23,9 +23,72 @@ and never inspects template-specific logic.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from src.server.models.template import TemplateManifest
+
+
+# ---------------------------------------------------------------------------
+# Finalize spec — 模板的"最后必须做的事"
+# ---------------------------------------------------------------------------
+# 这是模板通用能力（框架层），但具体清单是模板自己声明的（声明式）。
+# 框架的 finalize runner 读这份 spec 决定：
+#   - 哪些文件必须有
+#   - 缺哪些就告诉 Agent 怎么补
+#   - 全齐时调哪个脚本把 entry 推到 completed
+#
+# 任何模板想接入"跑完自动持久化 + 缺件回填消息给 AI"机制，只要在
+# TemplateDefinition.finalize_spec 里填这份 spec 即可，不需要自己写脚本。
+
+
+FinalizeLevel = Literal["required", "optional"]
+
+
+@dataclass(frozen=True)
+class FinalizeExpected:
+    """一项预期产出（在 sandbox 内、相对于 data_dir 的路径）。"""
+
+    rel_path: str
+    level: FinalizeLevel
+    description: str
+    placeholder: str | None = None  # 仅 optional 缺失时自动写入
+
+
+@dataclass(frozen=True)
+class FinalizeSpec:
+    """模板 finalize 配置。
+
+    Fields:
+      data_dir_builder:
+        ``(entry_key, display_name, params) -> sandbox_path``。
+        返回 sandbox 内的数据根目录（如 ``data/{symbol_dir}``），
+        所有 expected_files 的 rel_path 都相对这个目录解析。
+
+      expected_files:
+        预期产出清单（required + optional）。
+
+      persist_script:
+        sandbox 内调用的持久化脚本路径（如
+        ``.agents/skills/evi-toolkit/scripts/persist_evi_report.py``）。
+        runner 会用 ``python3 <persist_script> --entry-id ... --data-dir
+        ... --status completed|partial`` 调它。
+
+      persist_args_builder:
+        可选 ``(entry_key, display_name, params) -> list[str]``，
+        返回**额外**的命令行参数（如 ``--symbol ... --market ...``）。
+        默认只传 entry-id / data-dir / status / display-name。
+
+      max_retries:
+        缺 required 时，最多让 Agent 再跑几轮（默认 1 = 主跑 + 1 次补救）。
+    """
+
+    data_dir_builder: Callable[[str, str | None, dict[str, Any]], str]
+    expected_files: tuple[FinalizeExpected, ...]
+    persist_script: str
+    persist_args_builder: (
+        Callable[[str, str | None, dict[str, Any]], list[str]] | None
+    ) = None
+    max_retries: int = 1
 
 
 # Default agent.md template used when a template doesn't supply its own.
@@ -85,6 +148,20 @@ class TemplateDefinition:
         Version upgrade release notes. Dict keyed by version string.
         Each value: {summary, changes: [...], suggested_actions: [{label, prompt}]}
         Used by the upgrade flow to tell user + agent what changed.
+
+      allowed_skill_names:
+        Optional skill whitelist for this template's workspace sandbox.
+        - None (default): all local skills under ./skills/* are uploaded
+          (legacy behavior, same as ordinary chat workspaces).
+        - set[str]: only the listed skill directory names are uploaded
+          to the template workspace's sandbox. Use this to keep the
+          ``.agents/skills/`` directory clean (avoid mixing template-specific
+          skills with generic ones that might confuse the agent).
+
+          Names refer to the directory name under ``skills/``, e.g.
+          ``"evi-data-orchestrator"``. Skills in SKILL_REGISTRY that match
+          the names are still uploaded; skills outside the whitelist are
+          skipped during the per-workspace upload.
     """
 
     manifest: TemplateManifest
@@ -102,6 +179,14 @@ class TemplateDefinition:
     # Release notes for version upgrades
     # Format: {"3.1.0": {"summary": "...", "changes": [...], "suggested_actions": [...]}}
     release_notes: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Skill whitelist for the template workspace's sandbox.
+    # None = upload everything (legacy). A set keeps the sandbox lean.
+    allowed_skill_names: set[str] | None = field(default=None)
+
+    # Finalize spec — 模板的"最后必须做的事"。
+    # None = 模板不接入 finalize runner（保持旧行为：靠 Agent 自觉调 persist）。
+    # 提供则在 _run_agent generator 结束后由 finalize.runner 接管。
+    finalize_spec: FinalizeSpec | None = field(default=None)
 
     @property
     def id(self) -> str:
@@ -187,16 +272,12 @@ class TemplateDefinition:
 
 # Imports here are intentionally local (not at module top) so a malformed
 # manifest doesn't blow up the whole server on import.
-from src.server.templates.manifests.sirius_valuation import (  # noqa: E402
-    SIRIUS_VALUATION,
-)
 from src.server.templates.manifests.evi_strategy import (  # noqa: E402
     EVI_STRATEGY,
 )
 
 
 TEMPLATE_REGISTRY: dict[str, TemplateDefinition] = {
-    SIRIUS_VALUATION.id: SIRIUS_VALUATION,
     EVI_STRATEGY.id: EVI_STRATEGY,
 }
 

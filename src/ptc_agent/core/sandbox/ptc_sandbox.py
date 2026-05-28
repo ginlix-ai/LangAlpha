@@ -973,11 +973,24 @@ class PTCSandbox:
                 )
         return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
-    async def _compute_skills_module(self, skill_roots: list[str]) -> dict[str, Any]:
+    async def _compute_skills_module(
+        self,
+        skill_roots: list[str],
+        *,
+        allowed_skill_names: set[str] | None = None,
+    ) -> dict[str, Any]:
         """Compute a skills module manifest with content-based SHA-256 hashing.
 
         Unlike the legacy ``_compute_skills_manifest`` (size+mtime), this hashes
         actual file contents so the manifest is deterministic and portable.
+
+        Args:
+            skill_roots: Local directories to scan for skill subdirectories.
+            allowed_skill_names: Optional whitelist of skill directory names.
+                When provided (template workspace), only skills whose names
+                appear in the set are included; everything else is skipped.
+                ``None`` (default) preserves the legacy "include all eligible"
+                behavior used by ordinary chat workspaces.
         """
 
         skills_base = f"{self._work_dir}/.agents/skills"
@@ -1009,6 +1022,12 @@ class PTCSandbox:
                     if (
                         skill_name not in sandbox_skill_names
                         and skill_name in all_registry_names
+                    ):
+                        continue
+                    # Template-workspace whitelist filter
+                    if (
+                        allowed_skill_names is not None
+                        and skill_name not in allowed_skill_names
                     ):
                         continue
 
@@ -1079,6 +1098,7 @@ class PTCSandbox:
         user_id: str | None = None,
         workspace_id: str | None = None,
         user_data_hash: str | None = None,
+        allowed_skill_names: set[str] | None = None,
     ) -> dict[str, Any]:
         """Compute the unified local manifest for all sandbox asset modules."""
         modules: dict[str, Any] = {}
@@ -1133,7 +1153,9 @@ class PTCSandbox:
 
         # ── Module: skills ──
         if skill_roots:
-            modules["skills"] = await self._compute_skills_module(skill_roots)
+            modules["skills"] = await self._compute_skills_module(
+                skill_roots, allowed_skill_names=allowed_skill_names
+            )
 
         # ── Module: tokens ──
         if tokens:
@@ -1317,6 +1339,7 @@ class PTCSandbox:
         workspace_id: str | None = None,
         user_data_files: dict[str, str] | None = None,
         on_progress: Callable[[str], None] | None = None,
+        allowed_skill_names: set[str] | None = None,
     ) -> SyncResult:
         """Sync all sandbox assets using a single unified manifest.
 
@@ -1332,6 +1355,11 @@ class PTCSandbox:
             user_id: User ID for token tracking.
             workspace_id: Workspace ID for token tracking.
             on_progress: Optional callback for reporting progress.
+            allowed_skill_names: Optional skill directory whitelist for
+                template workspaces. When set, only skills in this whitelist
+                are uploaded, and any other skill found in the sandbox is
+                pruned. ``None`` (default) keeps the legacy "upload everything
+                eligible" behavior used by ordinary chat workspaces.
 
         Returns:
             SyncResult with list of refreshed module names.
@@ -1371,6 +1399,7 @@ class PTCSandbox:
                     user_id=user_id,
                     workspace_id=workspace_id,
                     user_data_hash=ud_hash,
+                    allowed_skill_names=allowed_skill_names,
                 ),
                 self._read_unified_manifest(),
             )
@@ -1415,7 +1444,8 @@ class PTCSandbox:
             async def _do_skills_upload() -> None:
                 """Skills sub-chain: collect → prune → upload (internally sequential)."""
                 local_skill_names = await self._collect_local_skill_names(
-                    [d for d, _ in skill_dirs]  # type: ignore[union-attr]
+                    [d for d, _ in skill_dirs],  # type: ignore[union-attr]
+                    allowed_skill_names=allowed_skill_names,
                 )
                 sandbox_base = skill_dirs[-1][1].rstrip("/")  # type: ignore[index]
 
@@ -1431,6 +1461,7 @@ class PTCSandbox:
                         skill_dirs,
                         manifest=skills_mod,  # type: ignore[arg-type]
                         existing_lock=existing_lock,
+                        allowed_skill_names=allowed_skill_names,
                     )
                     # Build complete skills cache from merged lock data
                     if merged_lock:
@@ -1628,7 +1659,10 @@ class PTCSandbox:
         )
 
     async def _collect_local_skill_names(
-        self, local_skill_roots: list[str]
+        self,
+        local_skill_roots: list[str],
+        *,
+        allowed_skill_names: set[str] | None = None,
     ) -> set[str]:
         def build() -> set[str]:
             sandbox_skill_names, all_registry_names = _get_sandbox_eligible_skills()
@@ -1648,6 +1682,14 @@ class PTCSandbox:
                     if (
                         skill_name not in sandbox_skill_names
                         and skill_name in all_registry_names
+                    ):
+                        continue
+                    # Template-workspace whitelist filter — anything outside
+                    # the whitelist is treated as "not present locally" so
+                    # _prune_remote_skills can clean it up from the sandbox.
+                    if (
+                        allowed_skill_names is not None
+                        and skill_name not in allowed_skill_names
                     ):
                         continue
                     names.add(skill_name)
@@ -1923,6 +1965,7 @@ except OSError as e:
         *,
         manifest: dict[str, Any] | None = None,
         existing_lock: dict[str, Any] | None = None,
+        allowed_skill_names: set[str] | None = None,
     ) -> dict[str, Any] | None:
         """Upload skill files from local filesystem to sandbox.
 
@@ -1936,6 +1979,8 @@ except OSError as e:
                 Example: [("~/.ptc-agent/skills", "{working_directory}/skills")]
             manifest: Pre-computed skills manifest. If None, computed from local_skills_dirs.
             existing_lock: Previously downloaded lock entries, or None for fresh sandbox.
+            allowed_skill_names: Optional whitelist of skill directory names for
+                template workspaces (only listed skills get uploaded).
 
         Returns:
             Merged lock file dict if lock entries were written, else None.
@@ -1945,7 +1990,9 @@ except OSError as e:
 
         if manifest is None:
             local_roots = [local_dir for local_dir, _ in local_skills_dirs]
-            manifest = await self._compute_skills_module(local_roots)
+            manifest = await self._compute_skills_module(
+                local_roots, allowed_skill_names=allowed_skill_names
+            )
 
         if not manifest.get("files"):
             logger.debug("No skills found; skipping upload")
@@ -1997,6 +2044,12 @@ except OSError as e:
                     if (
                         skill_name not in sandbox_skill_names
                         and skill_name in all_registry_names
+                    ):
+                        continue
+                    # Template-workspace whitelist filter
+                    if (
+                        allowed_skill_names is not None
+                        and skill_name not in allowed_skill_names
                     ):
                         continue
 

@@ -283,17 +283,11 @@ class TemplateOrchestrator:
                 f"Already at latest version ({current_version}). No upgrade needed."
             )
 
-        # Get sandbox
+        # Get sandbox — try active session first, fallback to direct file write
         workspace_id = entry["workspace_id"]
         manager = WorkspaceManager.get_instance()
         session = manager._sessions.get(workspace_id)
         sandbox = getattr(session, "sandbox", None) if session else None
-
-        if sandbox is None:
-            raise TemplateError(
-                "Sandbox not active. Open the workspace first (send a message), "
-                "then retry the upgrade."
-            )
 
         # Render new agent.md
         entry_key = entry["entry_key"]
@@ -311,15 +305,42 @@ class TemplateOrchestrator:
         except Exception as e:
             raise TemplateError(f"Failed to render agent.md: {e}") from e
 
-        # Write to sandbox
-        try:
-            ok = await sandbox.awrite_file_text("agent.md", content)
-            if not ok:
-                raise TemplateError("Failed to write agent.md to sandbox")
-        except TemplateError:
-            raise
-        except Exception as e:
-            raise TemplateError(f"Error writing agent.md: {e}") from e
+        # Write to sandbox (via session if active, else direct file write)
+        if sandbox is not None:
+            try:
+                ok = await sandbox.awrite_file_text("agent.md", content)
+                if not ok:
+                    raise TemplateError("Failed to write agent.md to sandbox")
+            except TemplateError:
+                raise
+            except Exception as e:
+                raise TemplateError(f"Error writing agent.md: {e}") from e
+        else:
+            # Fallback: direct file write to local sandbox directory
+            try:
+                ws = await get_workspace(workspace_id)
+                sandbox_id = ws.get("sandbox_id") if ws else None
+                if not sandbox_id:
+                    raise TemplateError("No sandbox_id found for workspace")
+
+                from pathlib import Path
+                # Find sandbox root (same logic as memory.py provider)
+                project_root = Path(__file__).resolve().parent.parent.parent.parent
+                sandbox_dir = project_root.parent / ".langalpha_sandboxes" / sandbox_id
+                if not sandbox_dir.exists():
+                    raise TemplateError(
+                        f"Sandbox directory not found: {sandbox_dir}. "
+                        "The workspace may not have been initialized yet."
+                    )
+                agent_md_path = sandbox_dir / "agent.md"
+                agent_md_path.write_text(content, encoding="utf-8")
+                logger.info(
+                    "[TEMPLATE] Wrote agent.md directly to %s", agent_md_path
+                )
+            except TemplateError:
+                raise
+            except Exception as e:
+                raise TemplateError(f"Direct file write failed: {e}") from e
 
         # Update params._agent_md_version in DB
         new_params = {**params, "_agent_md_version": template.manifest.version}
@@ -410,7 +431,13 @@ class TemplateOrchestrator:
         entry: dict[str, Any],
         workspace_id: str,
     ) -> None:
-        """Build prompt + run astream_ptc_workflow + drain generator."""
+        """Build prompt + run astream_ptc_workflow + drain generator.
+
+        若模板声明了 ``finalize_spec``：drain 完后会调 finalize runner，
+        缺 required → 在**同一个 thread_id** 上把缺件提示作为后续 user
+        message 再喂给 Agent，最多 retry ``finalize_spec.max_retries`` 次。
+        每次重试后再走一次 finalize 检查，直到 status != blocked 或耗尽次数。
+        """
         entry_id = str(entry["entry_id"])
         entry_key = entry["entry_key"]
         display_name = entry.get("display_name")
@@ -426,11 +453,6 @@ class TemplateOrchestrator:
         )
 
         thread_id = str(uuid4())
-        request = ChatRequest(
-            agent_mode="ptc",
-            workspace_id=workspace_id,
-            messages=[ChatMessage(role="user", content=prompt)],
-        )
 
         # Late import to avoid circular dependency at module load.
         from src.server.handlers.chat import astream_ptc_workflow
@@ -440,20 +462,128 @@ class TemplateOrchestrator:
             entry_id, template.id, thread_id,
         )
 
+        # ---- Round 1：跑初始 prompt ----
+        await self._drain_one_round(
+            astream_ptc_workflow,
+            user_input=prompt,
+            thread_id=thread_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            entry_id=entry_id,
+            round_label="initial",
+        )
+
+        # ---- 若模板有 finalize_spec：检查并按需重试 ----
+        spec = template.finalize_spec
+        if spec is None:
+            return
+
+        max_retries = max(0, int(spec.max_retries))
+        for attempt in range(max_retries + 1):
+            outcome = await self._run_finalize(
+                template=template,
+                entry_id=entry_id,
+                entry_key=entry_key,
+                display_name=display_name,
+                params=params,
+                workspace_id=workspace_id,
+            )
+
+            logger.info(
+                "[TEMPLATE] entry=%s finalize attempt=%d status=%s detail=%s",
+                entry_id, attempt, outcome.status, outcome.detail,
+            )
+
+            if not outcome.should_reinvoke:
+                # completed / partial / failed / skipped 都不再重试
+                return
+
+            if attempt >= max_retries:
+                # 用尽次数，停手（外层 _run_agent_safe 的 fallback 会把
+                # entry 置 failed，至少不会卡在 analyzing）
+                logger.warning(
+                    "[TEMPLATE] entry=%s finalize exhausted retries (%d), "
+                    "leaving for outer fallback",
+                    entry_id, max_retries,
+                )
+                return
+
+            # 把缺件提示作为后续 user message 喂回同一 thread
+            assert outcome.agent_message is not None
+            await self._drain_one_round(
+                astream_ptc_workflow,
+                user_input=outcome.agent_message,
+                thread_id=thread_id,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                entry_id=entry_id,
+                round_label=f"finalize_retry_{attempt + 1}",
+            )
+
+    @staticmethod
+    async def _drain_one_round(
+        astream_ptc_workflow,
+        *,
+        user_input: str,
+        thread_id: str,
+        workspace_id: str,
+        user_id: str,
+        entry_id: str,
+        round_label: str,
+    ) -> None:
+        """Run one round of astream_ptc_workflow on the given thread."""
+        request = ChatRequest(
+            agent_mode="ptc",
+            workspace_id=workspace_id,
+            messages=[ChatMessage(role="user", content=user_input)],
+        )
         generator = astream_ptc_workflow(
             request=request,
             thread_id=thread_id,
-            user_input=prompt,
+            user_input=user_input,
             user_id=user_id,
             workspace_id=workspace_id,
+            is_byok=True,
         )
-
         event_count = 0
         async for _ in generator:
             event_count += 1
-
         logger.info(
-            "[TEMPLATE] entry=%s drained %d events", entry_id, event_count
+            "[TEMPLATE] entry=%s round=%s drained %d events",
+            entry_id, round_label, event_count,
+        )
+
+    @staticmethod
+    async def _run_finalize(
+        template: TemplateDefinition,
+        entry_id: str,
+        entry_key: str,
+        display_name: str | None,
+        params: dict[str, Any],
+        workspace_id: str,
+    ):
+        """Resolve sandbox + delegate to the generic finalize runner."""
+        from src.server.templates.finalize import run_template_finalize
+
+        # 拿 sandbox：复用 workspace session
+        sandbox = None
+        try:
+            manager = WorkspaceManager.get_instance()
+            session = manager._sessions.get(workspace_id)
+            sandbox = getattr(session, "sandbox", None) if session else None
+        except Exception as e:
+            logger.warning(
+                "[TEMPLATE] entry=%s acquire sandbox failed: %s",
+                entry_id, e,
+            )
+
+        return await run_template_finalize(
+            template=template,
+            entry_id=entry_id,
+            entry_key=entry_key,
+            display_name=display_name,
+            params=params,
+            sandbox=sandbox,
         )
 
     async def _seed_template_agent_md(

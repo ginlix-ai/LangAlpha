@@ -326,6 +326,55 @@ class WorkspaceManager:
         except Exception as e:
             logger.warning(f"User data sync failed for workspace {workspace_id}: {e}")
 
+    async def _resolve_template_skill_whitelist(
+        self, workspace_id: str
+    ) -> set[str] | None:
+        """Look up an optional skill whitelist for a template-bound workspace.
+
+        Returns:
+          - ``None`` for non-template workspaces or templates that don't
+            declare a whitelist (legacy: upload everything).
+          - ``set[str]`` of allowed skill directory names when the workspace
+            is bound to a template that declares ``allowed_skill_names``.
+
+        Best-effort: any failure (DB hiccup, unknown template, malformed
+        config) falls back to ``None`` to avoid blocking sandbox sync.
+        """
+        try:
+            ws = await db_get_workspace(workspace_id)
+        except Exception as e:
+            logger.debug(
+                "Skill whitelist: get_workspace(%s) failed: %s", workspace_id, e
+            )
+            return None
+        if not ws:
+            return None
+        cfg = ws.get("config") or {}
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg)
+            except Exception:
+                cfg = {}
+        template_id = (cfg or {}).get("template_id")
+        if not template_id:
+            return None
+        try:
+            from src.server.templates import get_template
+
+            template = get_template(template_id)
+        except Exception as e:
+            logger.debug(
+                "Skill whitelist: get_template(%s) failed: %s", template_id, e
+            )
+            return None
+        if template is None:
+            return None
+        allowed = getattr(template, "allowed_skill_names", None)
+        if allowed is None:
+            return None
+        # Defensive copy in case the template stores a frozenset/list.
+        return set(allowed)
+
     async def _sync_sandbox_assets(
         self,
         workspace_id: str,
@@ -352,6 +401,14 @@ class WorkspaceManager:
             self.config.skills.local_skill_dirs_with_sandbox()
             if self.config.skills.enabled
             else None
+        )
+
+        # Template workspaces can opt into a skill whitelist so the sandbox
+        # only sees template-relevant skills (avoids cross-contamination with
+        # generic chat skills like dcf-model / comps-analysis that overlap
+        # with template-internal skills).
+        allowed_skill_names = await self._resolve_template_skill_whitelist(
+            workspace_id
         )
 
         # All sync tasks run in parallel. Token minting and user data fetching
@@ -390,6 +447,7 @@ class WorkspaceManager:
                 user_id=user_id,
                 workspace_id=workspace_id,
                 user_data_files=user_data_files,
+                allowed_skill_names=allowed_skill_names,
             )
 
         tasks: list[Any] = [_timed("mint+manifest", _mint_and_sync_assets())]
