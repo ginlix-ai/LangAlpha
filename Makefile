@@ -8,7 +8,11 @@ config: ## Interactive setup wizard (LLM, data, sandbox, search)
 # ---------------------------------------------------------------------------
 # Docker Compose (full-stack)
 # ---------------------------------------------------------------------------
-up: _sandbox-prepare ## Start full stack (PROVIDER=docker|daytona)
+# Default to the docker sandbox provider so plain `make up` works out of the
+# box. Override with `make up PROVIDER=daytona` to skip the sandbox image build.
+PROVIDER ?= docker
+
+up: _sandbox-prepare ## Start full stack (PROVIDER=docker|daytona, default docker)
 	SANDBOX_PROVIDER=$(PROVIDER) docker compose up --build
 
 down: ## Stop all Docker Compose services
@@ -19,11 +23,16 @@ clean: down ## Stop everything and remove stale sandbox containers
 	@docker rm -f $$(docker ps -aq --filter "name=langalpha-sandbox") 2>/dev/null || true
 	@echo "Clean."
 
-# Build sandbox image only when provider needs it (docker)
+# Build sandbox image only when provider needs it (docker), and only if the
+# image isn't already present locally — avoids a ~25 min rebuild on every `up`.
 _sandbox-prepare:
 ifeq ($(PROVIDER),docker)
-	@echo "Building sandbox image for docker provider..."
-	docker build -f Dockerfile.sandbox -t langalpha-sandbox:latest .
+	@if ! docker image inspect langalpha-sandbox:latest >/dev/null 2>&1; then \
+		echo "Building sandbox image for docker provider..."; \
+		docker build -f Dockerfile.sandbox -t langalpha-sandbox:latest .; \
+	else \
+		echo "Sandbox image langalpha-sandbox:latest already present, skipping build."; \
+	fi
 endif
 
 # ---------------------------------------------------------------------------
