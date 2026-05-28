@@ -525,6 +525,7 @@ async def _handle_send_message(
         # Resolve LLM config eagerly — credit check must happen before SSE stream starts
         from src.server.handlers.chat import resolve_llm_config
         from src.server.dependencies.usage_limits import enforce_credit_limit
+        from ptc_agent.config.agent import CredentialSource
 
         config = await resolve_llm_config(
             setup.agent_config,
@@ -538,9 +539,9 @@ async def _handle_send_message(
             enabled_subagents=request.subagents_enabled,
         )
 
-        # is_byok reflects whether THIS request actually uses a user-provided key
-        # (BYOK, custom model via BYOK, or OAuth), not just whether the toggle is on
-        is_byok = config.llm_client is not None
+        # is_byok is True only when the stamped credential_source confirms the user
+        # supplied their own key (OAUTH or BYOK), not merely that a client object exists.
+        is_byok = config.credential_source in (CredentialSource.OAUTH, CredentialSource.BYOK)
 
         # Credit check: always enforce.
         # - Platform-served (is_byok=False): block when daily limit reached.
