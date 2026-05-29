@@ -11,6 +11,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { updateCurrentUser } from '../../Dashboard/utils/api';
 import { softInterruptWorkflow, getWorkspace, summarizeThread, offloadThread, getPreviewUrl } from '../utils/api';
+import { mergeWarmingDisplay } from '../utils/warmWorkspace';
 import { useChatMessages } from '../hooks/useChatMessages';
 import { saveChatSession, getChatSession, clearChatSession } from '../hooks/utils/chatSessionRestore';
 import type { PreviewData } from '../hooks/utils/types';
@@ -197,6 +198,10 @@ interface ChatViewProps {
   workspaceName?: string;
   isActive?: boolean;
   onThreadResolved?: (oldThreadId: string, newThreadId: string) => void;
+  // Warming state from the entry-time /events stream (useWarmWorkspaceSandbox).
+  // Lets the spinner show the slow-restore copy when a background warm — not a
+  // chat message — owns the sandbox start.
+  warmingState?: false | 'starting' | 'archived';
 }
 
 interface SubagentStatusIndicatorProps {
@@ -286,7 +291,7 @@ function SubagentStatusIndicator({ status, currentTool, toolCalls = 0, messages 
   );
 }
 
-function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName: initialWorkspaceName, isActive = true, onThreadResolved }: ChatViewProps): React.ReactElement | null {
+function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName: initialWorkspaceName, isActive = true, onThreadResolved, warmingState = false }: ChatViewProps): React.ReactElement | null {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -637,6 +642,16 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     getSubagentHistory,
     resolveSubagentIdToAgentId,
   } = useChatMessages(workspaceId, threadId, updateTodoListCard as (todoData: Record<string, unknown>) => void, updateSubagentCard, inactivateAllSubagents, finalizePendingTodos, handleOnboardingRelatedToolComplete, handleFileArtifact, handleOpenPreviewFromStream, agentMode, clearSubagentCards, handleWorkspaceCreated, 'web');
+
+  // Spinner state merges the in-conversation signal (chat SSE `workspace_status`
+  // events, set when this client's message owns the start) with the entry-time
+  // warming signal (the /events stream, which sees the start even when a
+  // background warm owns it). 'archived' from either source wins so the slow-
+  // restore copy survives a plain 'starting' from the other.
+  const displayWorkspaceStarting = mergeWarmingDisplay(
+    workspaceStarting,
+    warmingState,
+  );
 
   const chatPlaceholder = useMemo(() => {
     if (pendingRejection) return t('chat.placeholderPendingRejection');
@@ -2206,11 +2221,11 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                         {t('chat.backgroundTasksRunning')}
                       </div>
                     )}
-                    {workspaceStarting && (
+                    {displayWorkspaceStarting && (
                       <div className="flex items-center gap-2 px-3 py-1.5 text-xs"
                         style={{ color: 'var(--color-text-tertiary)' }}>
                         <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ color: 'var(--color-accent-primary)' }} />
-                        <span>{t(workspaceStarting === 'archived' ? 'chat.workspaceRestoring' : 'chat.workspaceStarting')}</span>
+                        <span>{t(displayWorkspaceStarting === 'archived' ? 'chat.workspaceRestoring' : 'chat.workspaceStarting')}</span>
                         <HoverCard openDelay={150} closeDelay={100}>
                           <HoverCardTrigger asChild>
                             <button
@@ -2224,12 +2239,12 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                           </HoverCardTrigger>
                           <HoverCardContent side="top" align="start" className="w-80 text-xs leading-relaxed">
                             <div className="font-medium mb-1" style={{ color: 'var(--color-text-primary)' }}>
-                              {t(workspaceStarting === 'archived' ? 'chat.workspaceStateArchivedTitle' : 'chat.workspaceStateStartingTitle')}
+                              {t(displayWorkspaceStarting === 'archived' ? 'chat.workspaceStateArchivedTitle' : 'chat.workspaceStateStartingTitle')}
                             </div>
                             <p style={{ color: 'var(--color-text-secondary)' }}>
-                              {t(workspaceStarting === 'archived' ? 'chat.workspaceStateArchivedBody' : 'chat.workspaceStateStartingBody')}
+                              {t(displayWorkspaceStarting === 'archived' ? 'chat.workspaceStateArchivedBody' : 'chat.workspaceStateStartingBody')}
                             </p>
-                            {workspaceStarting === 'archived' && (
+                            {displayWorkspaceStarting === 'archived' && (
                               <p className="mt-2" style={{ color: 'var(--color-text-tertiary)' }}>
                                 {t('chat.workspaceStateArchivedFootnote')}
                               </p>

@@ -8,6 +8,8 @@ import { queryKeys } from '../../lib/queryKeys';
 import { getWorkspaceThreads, getThread } from './utils/api';
 import { getChatSession } from './hooks/utils/chatSessionRestore';
 import { useChatViewCache } from './hooks/useChatViewCache';
+import { useWarmWorkspaceSandbox } from './hooks/useWarmWorkspaceSandbox';
+import { warmWorkspace } from './utils/warmWorkspace';
 import ChatView from './components/ChatView';
 import './ChatAgent.css';
 
@@ -162,6 +164,12 @@ function ChatAgent(): React.ReactElement | null {
 
   const queryClient = useQueryClient();
 
+  // Proactively warm the sandbox the moment a user enters a workspace.
+  // Covers direct URL nav, refresh, and back-button — the gallery-click
+  // path also calls warmWorkspace via handleWorkspaceSelect; both share
+  // the same in-flight dedupe Map.
+  const warmingState = useWarmWorkspaceSandbox(workspaceId);
+
   // Track in-progress __default__ → real threadId resolutions. Keyed by workspaceId:
   // at most one such resolution can be in flight per workspace (a fresh __default__
   // can't be created while the previous one is still bridging, because the source-side
@@ -225,13 +233,16 @@ function ChatAgent(): React.ReactElement | null {
    * Passes workspace name via route state to avoid refetching all workspaces
    */
   const handleWorkspaceSelect = useCallback((selectedWorkspaceId: string, workspaceName?: string, workspaceStatus?: string) => {
+    if (workspaceStatus === 'stopped') {
+      void warmWorkspace(selectedWorkspaceId, queryClient);
+    }
     navigate(`/chat/${selectedWorkspaceId}`, {
       state: {
         workspaceName: workspaceName || 'Workspace',
         workspaceStatus: workspaceStatus || null,
       },
     });
-  }, [navigate]);
+  }, [navigate, queryClient]);
 
   const handleBackToWorkspaceGallery = useCallback(() => {
     navigate('/chat');
@@ -352,6 +363,7 @@ function ChatAgent(): React.ReactElement | null {
           onBack={handleBackToThreadGallery}
           workspaceName={entry.workspaceName}
           isActive={isEntryActive}
+          warmingState={entry.workspaceId === workspaceId ? warmingState : false}
           onThreadResolved={(oldTid, newTid) => {
             if (import.meta.env.DEV && resolvingRef.current.has(entry.workspaceId)) {
               console.warn('[ChatAgent] overlapping thread resolution for workspace', entry.workspaceId);

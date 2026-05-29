@@ -63,6 +63,107 @@ export async function reorderWorkspaces(items: Array<{ workspace_id: string; pos
   await api.post('/api/v1/workspaces/reorder', { items });
 }
 
+export interface WorkspaceActionResponse {
+  workspace_id: string;
+  status: string;
+  message?: string;
+}
+
+/**
+ * Start (or warm) a stopped workspace. When { lazy: true }, the backend
+ * returns 202 immediately and continues the restart in a background task.
+ */
+export async function startWorkspace(
+  workspaceId: string,
+  opts: { lazy?: boolean } = {},
+): Promise<WorkspaceActionResponse> {
+  if (!workspaceId) throw new Error('Workspace ID is required');
+  const params = opts.lazy ? '?lazy=true' : '';
+  const { data } = await api.post(`/api/v1/workspaces/${workspaceId}/start${params}`);
+  return data;
+}
+
+/**
+ * Subscribe to workspace lifecycle status via SSE. Invokes `onStatus`
+ * for each status transition reported by the backend, passing an optional
+ * `sandboxState` refinement (e.g. 'archived') when present so callers can
+ * show a slow-restore spinner. Resolves when the stream closes (terminal
+ * status, server timeout, or aborted via the AbortController signal).
+ * Best-effort: network errors resolve without throwing so callers don't
+ * need defensive wrappers.
+ */
+export async function streamWorkspaceEvents(
+  workspaceId: string,
+  onStatus: (status: string, sandboxState?: string) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  if (!workspaceId) return;
+  const authHeaders = await getAuthHeaders();
+  let res: Response;
+  try {
+    res = await fetch(`${baseURL}/api/v1/workspaces/${workspaceId}/events`, {
+      method: 'GET',
+      headers: { ...authHeaders, Accept: 'text/event-stream' },
+      signal,
+    });
+  } catch {
+    return; // network error or aborted — caller wants best-effort
+  }
+  if (!res.ok || !res.body) return;
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split('\n\n');
+      buffer = chunks.pop() ?? '';
+      for (const chunk of chunks) {
+        let eventType = '';
+        let data = '';
+        for (const raw of chunk.split('\n')) {
+          if (raw.startsWith('event:')) eventType = raw.slice(6).trim();
+          else if (raw.startsWith('data:')) data += raw.slice(5).trim();
+          // Comments (lines starting with ':') and unknown fields ignored.
+        }
+        if (eventType === 'status' && data) {
+          try {
+            const parsed = JSON.parse(data) as {
+              status?: string;
+              sandbox_state?: string;
+            };
+            if (typeof parsed.status === 'string') {
+              onStatus(
+                parsed.status,
+                typeof parsed.sandbox_state === 'string'
+                  ? parsed.sandbox_state
+                  : undefined,
+              );
+            }
+          } catch { /* ignore malformed payload */ }
+        } else if (eventType === 'timeout') {
+          return;
+        }
+      }
+    }
+  } catch (err) {
+    if ((err as { name?: string })?.name === 'AbortError') return;
+    // Best-effort — drop everything else.
+  } finally {
+    // Deterministically release the stream so repeated workspace navigation
+    // doesn't retain fetch/body resources until browser GC. cancel() also
+    // releases the lock; both are no-ops if the stream already closed.
+    try {
+      await reader.cancel();
+    } catch {
+      /* already closed / aborted */
+    }
+  }
+}
+
 // --- Threads ---
 
 /**
