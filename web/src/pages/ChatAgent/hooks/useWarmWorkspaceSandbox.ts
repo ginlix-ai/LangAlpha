@@ -25,7 +25,7 @@ import { useQueryClient } from '@tanstack/react-query';
 
 import { queryKeys } from '@/lib/queryKeys';
 
-import { streamWorkspaceEvents } from '../utils/api';
+import { getWorkspace, streamWorkspaceEvents } from '../utils/api';
 import { patchWorkspaceStatusInCaches, warmWorkspace } from '../utils/warmWorkspace';
 
 const TERMINAL_STATUSES = new Set(['running', 'error', 'deleted']);
@@ -87,16 +87,30 @@ export function useWarmWorkspaceSandbox(
       // The stream closed (terminal status, server timeout, or a dropped
       // connection). If we never observed a terminal status, the optimistic
       // 'starting' written by warmWorkspace could be stale — the backend may
-      // have reached 'running' after the stream died. Refetch to reconcile so
-      // a dropped stream can't pin the UI on 'starting' indefinitely.
+      // have reached 'running' after the stream died.
       if (controller.signal.aborted) return;
       const current = queryClient.getQueryData<{ status?: string }>(
         queryKeys.workspaces.detail(workspaceId),
       );
       if (!current?.status || !TERMINAL_STATUSES.has(current.status)) {
-        void queryClient.invalidateQueries({
-          queryKey: queryKeys.workspaces.detail(workspaceId),
-        });
+        // Fetch the authoritative status and reconcile local state. A bare
+        // invalidateQueries can't clear the spinner: in TanStack v5 it only
+        // refetches *active* queries, and even on refetch it never updates this
+        // hook's local `warming` — so a stream that ends mid-'starting' (600s
+        // server timeout or a dropped connection) would pin the spinner on
+        // 'starting' indefinitely.
+        try {
+          const fresh = await queryClient.fetchQuery({
+            queryKey: queryKeys.workspaces.detail(workspaceId),
+            queryFn: () => getWorkspace(workspaceId),
+          });
+          const status = (fresh as { status?: string })?.status;
+          if (status) patchWorkspaceStatusInCaches(queryClient, workspaceId, status);
+          if (status !== 'starting') setWarming(false);
+        } catch {
+          // Best-effort reconcile; chat-time start surfaces real errors.
+          setWarming(false);
+        }
       } else {
         // Reached a terminal status — clear the warming spinner.
         setWarming(false);
