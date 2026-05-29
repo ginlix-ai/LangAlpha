@@ -452,13 +452,16 @@ async def update_workspace_status(
 
 async def try_claim_workspace_for_start(
     workspace_id: str,
-    conn=None,
 ) -> Optional[Dict[str, Any]]:
     """Atomically claim a stopped workspace for a start transition.
 
     Cross-worker mutex for the stopped → starting transition. Only the worker
     whose UPDATE returns a row should proceed to restart the sandbox; losers
     must wait for the winner to flip status to 'running' (or 'error').
+
+    Owns its own connection so the UPDATE is committed before the publish
+    fires — a caller-supplied transaction would let publish_status_change
+    wake SSE subscribers that then read the still-'stopped' row.
 
     Returns:
         The updated workspace row (status='starting') if claimed; None if
@@ -477,17 +480,10 @@ async def try_claim_workspace_for_start(
         """
         params = (now, workspace_id)
 
-        async def _execute(cur):
-            await cur.execute(query, params)
-            return await cur.fetchone()
-
-        if conn:
+        async with get_db_connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
-                result = await _execute(cur)
-        else:
-            async with get_db_connection() as conn:
-                async with conn.cursor(row_factory=dict_row) as cur:
-                    result = await _execute(cur)
+                await cur.execute(query, params)
+                result = await cur.fetchone()
 
         if result:
             logger.debug(f"Claimed workspace {workspace_id} for start (was stopped)")

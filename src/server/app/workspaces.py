@@ -291,21 +291,23 @@ async def workspace_status_events(workspace_id: str, x_user_id: CurrentUserId):
                     # chat) owns the start.
                     sandbox_state = payload.get("sandbox_state")
                     hinted = payload.get("status")
+                    # Pair the refinement with the payload's own status, not the
+                    # cached last_status. A publish can carry {status:'starting',
+                    # sandbox_state:'archived'} while reconcile() still has
+                    # last_status on 'stopped' (the 'starting' publish raced ahead
+                    # of its commit). Emitting 'stopped' here makes the FE drop
+                    # the archived hint, and the follow-up plain 'starting' (from
+                    # reconcile) carries no refinement — the spinner is lost.
+                    event_status = hinted if isinstance(hinted, str) else last_status
                     if (
                         sandbox_state
                         and sandbox_state != last_sandbox_state
-                        and last_status not in _EVENTS_TERMINAL
+                        and event_status not in _EVENTS_TERMINAL
                     ):
+                        # Guard on event_status (what we emit), not last_status —
+                        # this is a non-terminal hint, so it must never carry a
+                        # terminal status. reconcile() owns terminal transitions.
                         last_sandbox_state = sandbox_state
-                        # Pair the refinement with the payload's own status, not
-                        # the cached last_status. A publish can carry
-                        # {status:'starting', sandbox_state:'archived'} while
-                        # reconcile() still has last_status on 'stopped' (the
-                        # 'starting' publish raced ahead of its commit). Emitting
-                        # 'stopped' here makes the FE drop the archived hint, and
-                        # the follow-up plain 'starting' (from reconcile) carries
-                        # no refinement — so the slow-restore spinner is lost.
-                        event_status = hinted if isinstance(hinted, str) else last_status
                         yield _sse_status_event(
                             workspace_id, event_status, sandbox_state=sandbox_state
                         )
