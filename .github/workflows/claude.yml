@@ -46,21 +46,20 @@ jobs:
             repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews/${{ github.event.review.id }}/comments \
             --jq '.[].body' 2>/dev/null || echo "")
 
-          # Also check the review body itself
-          REVIEW_BODY="${{ github.event.review.body }}"
-
-          # Combine both and check for @claude
+          # Combine the review body (passed via env so it is never interpolated
+          # into this script) with the inline comments, then check for @claude.
           ALL_TEXT="$REVIEW_COMMENTS $REVIEW_BODY"
 
           if echo "$ALL_TEXT" | grep -q "@claude"; then
-            echo "has_claude=true" >> $GITHUB_OUTPUT
+            echo "has_claude=true" >> "$GITHUB_OUTPUT"
             echo "Found @claude in review"
           else
-            echo "has_claude=false" >> $GITHUB_OUTPUT
+            echo "has_claude=false" >> "$GITHUB_OUTPUT"
             echo "No @claude found in review"
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REVIEW_BODY: ${{ github.event.review.body }}
 
       - name: Run Claude Code
         id: claude
