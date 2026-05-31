@@ -71,6 +71,26 @@ def _get_content_type(key: str) -> str | None:
     return mime_type
 
 
+_VALID_ADDRESSING_STYLES = {"virtual", "path", "auto"}
+
+
+def _resolve_addressing_style() -> str:
+    """Read STORAGE_ADDRESSING_STYLE, trimmed and validated; default 'virtual'.
+
+    Warns on an unrecognized value rather than silently coercing it, so a typo
+    or stray whitespace on a path-only backend surfaces instead of reintroducing
+    key doubling.
+    """
+    raw = (os.getenv("STORAGE_ADDRESSING_STYLE") or "virtual").strip().lower()
+    if raw not in _VALID_ADDRESSING_STYLES:
+        logger.warning(
+            "Invalid STORAGE_ADDRESSING_STYLE=%r; falling back to 'virtual' (valid: virtual, path, auto)",
+            raw,
+        )
+        return "virtual"
+    return raw
+
+
 class StorageConfig:
     """Storage configuration loaded from environment variables.
 
@@ -97,8 +117,7 @@ class StorageConfig:
     # boto3's own default ("path" for custom endpoints) double-prefixes keys
     # against an endpoint that already embeds the bucket. Self-hosted / path-only
     # backends (e.g. MinIO) should set STORAGE_ADDRESSING_STYLE=path.
-    _ADDR = (os.getenv("STORAGE_ADDRESSING_STYLE") or "virtual").lower()
-    ADDRESSING_STYLE = _ADDR if _ADDR in {"virtual", "path", "auto"} else "virtual"
+    ADDRESSING_STYLE = _resolve_addressing_style()
 
     @classmethod
     def get_public_url_base(cls) -> str:
