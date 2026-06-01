@@ -13,7 +13,9 @@ import {
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent,
 } from './dropdown-menu';
 import { usePreferences } from '@/hooks/usePreferences';
+import { useAllModels } from '@/hooks/useAllModels';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { areModelsCompatible, deriveQuickAccessModels, type ModelMetadata } from './chat-input.models';
 import { supportsXhighEffort } from '@/lib/modelCapabilities';
 import { getSkills, getModelMetadata } from '../../pages/ChatAgent/utils/api';
 import { useToast } from './use-toast';
@@ -213,23 +215,6 @@ function getModelDisplayName(key: string | null): string {
   return name;
 }
 
-/**
- * Check if two models are compatible for mid-session switching.
- * - Different SDKs → incompatible
- * - openai/codex SDK → must be same provider (sub-provider)
- * - Other SDKs (anthropic, gemini, etc.) → compatible if same SDK
- */
-function areModelsCompatible(modelA: string | null, modelB: string | null, metadata: Record<string, { sdk?: string; provider?: string }>): boolean {
-  if (!modelA || !modelB) return true;
-  const a = metadata[modelA], b = metadata[modelB];
-  if (!a || !b) return true; // unknown models → allow
-  if (a.sdk !== b.sdk) return false;
-  if (a.sdk === 'openai' || a.sdk === 'codex') {
-    return a.provider === b.provider;
-  }
-  return true;
-}
-
 /* --- MAIN COMPONENT --- */
 
 const speechSupported = typeof window !== 'undefined' && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
@@ -366,8 +351,9 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   const { toast } = useToast();
   const isMobile = useIsMobile();
   const { preferences } = usePreferences();
+  const { validModelNames } = useAllModels();
   const otherPref = (preferences as Record<string, Record<string, unknown>> | null)?.other_preference;
-  const starredModels = (otherPref?.starred_models as string[] | undefined) || [];
+  const starredModels = Array.isArray(otherPref?.starred_models) ? (otherPref.starred_models as string[]) : [];
   const preferredModel = (otherPref?.preferred_model as string | undefined) || null;
   const preferredFlashModel = (otherPref?.preferred_flash_model as string | undefined) || null;
   const [message, setMessage] = useState('');
@@ -384,7 +370,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   const [showMoreModels, setShowMoreModels] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
 
-  const [modelMetadata, setModelMetadata] = useState<Record<string, { sdk?: string; provider?: string }>>({});
+  const [modelMetadata, setModelMetadata] = useState<ModelMetadata>({});
   const navigate = useNavigate();
 
   // Sync selectedModel when initialModel or preferredModel changes
@@ -1160,10 +1146,16 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
 
   const showWorkspaceSelector = hasModeToggle && mode === 'ptc' && workspaces && workspaces.length > 0;
 
-  /** Render starred model items — used by both desktop submenu and mobile inline expand */
-  const moreModelsItems = useMemo(() => {
-    return starredModels.filter((m) => !initialModel || areModelsCompatible(selectedModel, m, modelMetadata));
-  }, [starredModels, initialModel, selectedModel, modelMetadata]);
+  /** Quick-access models for both the desktop submenu and mobile inline expand */
+  const moreModelsItems = useMemo(
+    () => deriveQuickAccessModels({
+      preferredModel, preferredFlashModel, starredModels,
+      validModelNames, initialModel, selectedModel, modelMetadata,
+      // Don't repeat models already shown in the primary (selected + thread) section.
+      excludeModels: [selectedModel, ...threadModelsProp].filter((m): m is string => !!m),
+    }),
+    [preferredModel, preferredFlashModel, starredModels, validModelNames, initialModel, selectedModel, modelMetadata, threadModelsProp],
+  );
 
   return (
     <div
@@ -1531,7 +1523,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
             {/* Right Tools */}
             <div className="flex flex-row items-center min-w-0 gap-1">
               {/* Model Selector */}
-              {(starredModels.length > 0 || selectedModel) && (
+              {(moreModelsItems.length > 0 || starredModels.length > 0 || selectedModel) && (
                 <DropdownMenu modal={false} open={modelMenuOpen} onOpenChange={(open) => { setModelMenuOpen(open); if (!open) setShowMoreModels(false); }}>
                   <DropdownMenuTrigger asChild>
                     <button
