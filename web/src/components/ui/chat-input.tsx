@@ -353,7 +353,9 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   const { preferences } = usePreferences();
   const { validModelNames } = useAllModels();
   const otherPref = (preferences as Record<string, Record<string, unknown>> | null)?.other_preference;
-  const starredModels = Array.isArray(otherPref?.starred_models) ? (otherPref.starred_models as string[]) : [];
+  const starredModels = Array.isArray(otherPref?.starred_models)
+    ? (otherPref.starred_models as unknown[]).filter((m): m is string => typeof m === 'string')
+    : [];
   const preferredModel = (otherPref?.preferred_model as string | undefined) || null;
   const preferredFlashModel = (otherPref?.preferred_flash_model as string | undefined) || null;
   const [message, setMessage] = useState('');
@@ -1522,7 +1524,9 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
 
             {/* Right Tools */}
             <div className="flex flex-row items-center min-w-0 gap-1">
-              {/* Model Selector */}
+              {/* Model Selector — show if there's anything to pick (quick-access
+                  list or current selection), or if the user has stars to manage
+                  even when they all filter out (keeps the settings link reachable). */}
               {(moreModelsItems.length > 0 || starredModels.length > 0 || selectedModel) && (
                 <DropdownMenu modal={false} open={modelMenuOpen} onOpenChange={(open) => { setModelMenuOpen(open); if (!open) setShowMoreModels(false); }}>
                   <DropdownMenuTrigger asChild>

@@ -159,6 +159,16 @@ describe('deriveQuickAccessModels', () => {
   it('returns an empty list when there are no defaults or stars', () => {
     expect(deriveQuickAccessModels(params())).toEqual([]);
   });
+
+  it('drops non-string entries from a malformed starred_models pref', () => {
+    // A corrupt pref could carry non-string truthy values; they must not reach
+    // getModelDisplayName (key.startsWith) and crash the composer.
+    expect(
+      deriveQuickAccessModels(params({
+        starredModels: [123, '', null, {}, 'gpt-5'] as unknown as string[],
+      })),
+    ).toEqual(['gpt-5']);
+  });
 });
 
 describe('areModelsCompatible', () => {

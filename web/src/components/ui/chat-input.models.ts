@@ -16,7 +16,7 @@ export type ModelMetadata = Record<string, { sdk?: string; provider?: string }>;
 export function areModelsCompatible(modelA: string | null, modelB: string | null, metadata: ModelMetadata): boolean {
   if (!modelA || !modelB) return true;
   const a = metadata[modelA], b = metadata[modelB];
-  if (!a || !b) return true; // unknown models → allow
+  if (!a || !b) return true; // allow unknown models (no metadata on either side)
   if (a.sdk !== b.sdk) return false;
   if (a.sdk === 'openai' || a.sdk === 'codex') {
     return a.provider === b.provider;
@@ -54,7 +54,11 @@ export function deriveQuickAccessModels({
 }: QuickAccessParams): string[] {
   const exclude = new Set(excludeModels);
   const union = [...new Set(
-    [preferredModel, preferredFlashModel, ...starredModels].filter((m): m is string => !!m),
+    // typeof check (not just `!!m`) so a malformed pref with non-string entries
+    // can't reach getModelDisplayName's `key.startsWith` and crash the composer.
+    [preferredModel, preferredFlashModel, ...starredModels].filter(
+      (m): m is string => typeof m === 'string' && m.length > 0,
+    ),
   )];
   return union.filter((m) => {
     // Already rendered in the primary section (selected + thread models).
