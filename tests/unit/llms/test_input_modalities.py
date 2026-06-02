@@ -41,6 +41,11 @@ class TestGetInputModalities:
         result = model_config.get_input_modalities("minimax-m2.7")
         assert result == ["text"]
 
+    def test_minimax_m3_supports_image(self, model_config):
+        result = model_config.get_input_modalities("minimax-m3")
+        assert "text" in result
+        assert "image" in result
+
     def test_moonshot_supports_image_not_pdf(self, model_config):
         result = model_config.get_input_modalities("kimi-k2.5")
         assert "image" in result

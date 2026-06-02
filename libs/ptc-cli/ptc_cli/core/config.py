@@ -81,7 +81,7 @@ PTC_AGENT_ASCII = """
 MODEL_OPTIONS = [
     {"name": "gpt-5.2", "description": "OpenAI GPT-5.2 with reasoning"},
     {"name": "glm-4.7", "description": "Z.AI GLM-4.7 with thinking"},
-    {"name": "minimax-m2.1", "description": "MiniMax M2.1 for coding"},
+    {"name": "minimax-m3", "description": "MiniMax M3 flagship model"},
     {"name": "claude-sonnet-4-5-proxy", "description": "Claude 4.5 Sonnet via proxy"},
     {"name": "claude-opus-4-5-proxy", "description": "Claude 4.5 Opus via proxy"},
     {"name": "claude-haiku-4-5-proxy", "description": "Claude 4.5 Haiku via proxy"},

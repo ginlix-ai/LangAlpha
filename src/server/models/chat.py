@@ -241,7 +241,7 @@ class ChatRequest(BaseModel):
     # LLM selection (optional - defaults to agent_config.yaml setting)
     llm_model: Optional[str] = Field(
         default=None,
-        description="LLM model name from models.json (e.g., 'minimax-m2.1', 'claude-sonnet-4-5')",
+        description="LLM model name from models.json (e.g., 'minimax-m3', 'claude-sonnet-4-5')",
     )
 
     # Reasoning effort override (optional - defaults to model's configured level)

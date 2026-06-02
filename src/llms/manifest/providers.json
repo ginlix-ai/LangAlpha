@@ -482,6 +482,22 @@
     ],
     "minimax": [
       {
+        "id": "minimax-m3",
+        "name": "MiniMax-M3",
+        "alias": [
+          "MiniMax-M3",
+          "minimax-m3"
+        ],
+        "is_reasoning": false,
+        "description": "MiniMax's flagship M3 model with 512K context and image input",
+        "pricing": {
+          "input": 0.6,
+          "output": 2.4,
+          "cached_input": 0.12,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
         "id": "minimax-m2.7",
         "name": "MiniMax-M2.7",
         "alias": [

@@ -13,6 +13,7 @@ llm:
   fetch: "qwen3.6-flash"         # defaults to flash model
   fallback:
     - "kimi-k2.5"
+    - "minimax-m3"
     - "minimax-m2.7"
     - "glm-5-turbo"
 

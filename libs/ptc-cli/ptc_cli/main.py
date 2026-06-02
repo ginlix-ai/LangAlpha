@@ -188,7 +188,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        help="LLM model name from models.json (e.g., 'minimax-m2.1', 'claude-sonnet-4-5')",
+        help="LLM model name from models.json (e.g., 'minimax-m3', 'claude-sonnet-4-5')",
     )
     parser.add_argument(
         "--flash",

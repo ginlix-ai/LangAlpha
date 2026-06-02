@@ -517,6 +517,21 @@
       "pdf"
     ]
   },
+  "minimax-m3": {
+    "model_id": "MiniMax-M3",
+    "provider": "minimax",
+    "visible": true,
+    "parameters": {
+      "max_tokens": 128000,
+      "thinking": {
+        "type": "enabled"
+      }
+    },
+    "input_modalities": [
+      "text",
+      "image"
+    ]
+  },
   "minimax-m2.7": {
     "model_id": "MiniMax-M2.7",
     "provider": "minimax",

@@ -202,7 +202,7 @@ class SessionState:
             no_splash: Whether to skip the splash screen
             persist_session: Whether to persist sandbox sessions
             plan_mode: Whether to inject plan mode reminder
-            llm_model: LLM model name from models.json (e.g., 'minimax-m2.1')
+            llm_model: LLM model name from models.json (e.g., 'minimax-m3')
             flash_mode: Whether to use Flash Agent (no sandbox)
         """
         self.auto_approve = auto_approve

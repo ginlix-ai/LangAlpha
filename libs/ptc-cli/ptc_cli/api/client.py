@@ -382,7 +382,7 @@ class SSEStreamClient:
             thread_id: Thread identifier for conversation continuity
             hitl_response: HITL interrupt response (for resume)
             plan_mode: Whether to enable plan mode (agent submits plan for approval)
-            llm_model: LLM model name from models.json (e.g., 'minimax-m2.1')
+            llm_model: LLM model name from models.json (e.g., 'minimax-m3')
             agent_mode: Agent mode ('flash' for Flash Agent, None for default)
             **kwargs: Additional request parameters
 
