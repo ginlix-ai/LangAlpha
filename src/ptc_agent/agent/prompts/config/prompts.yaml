@@ -34,6 +34,7 @@ system:
     - citation_rules
     - data_processing
     - visualizations
+    - trading_constraints
 
 # Sub-agent template metadata (for documentation)
 subagents:

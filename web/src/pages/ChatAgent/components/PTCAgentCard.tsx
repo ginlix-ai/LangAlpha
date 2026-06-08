@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useTranslation } from 'react-i18next';
 import { FlaskConical, Loader2, Check, X, ChevronRight, ExternalLink, Activity, AlertCircle, Clock, Wrench } from 'lucide-react';
-import { getWorkflowStatus, reconnectToWorkflowStream } from '../utils/api';
+import { getWorkflowStatus, reconnectToWorkflowStream } from '@/pages/ChatAgent/utils/api';
 
 interface ProposalData {
   workspace_name?: string;
@@ -25,8 +26,9 @@ interface PTCAgentCardProps {
   flashContext?: FlashContext | null;
 }
 
-type ProgressPhase = 'idle' | 'waiting' | 'running' | 'completed' | 'failed' | 'disconnected';
+type ProgressPhase = 'idle' | 'waiting' | 'running' | 'paused' | 'completed' | 'failed' | 'disconnected';
 type ToolStepStatus = 'running' | 'completed' | 'failed';
+type TranslateFn = (key: string, options?: Record<string, unknown>) => string;
 
 interface ToolStep {
   id: string;
@@ -53,9 +55,9 @@ interface WorkflowStatusSnapshot {
   active_tasks?: unknown[];
 }
 
-const INITIAL_PROGRESS: ProgressState = {
+const BASE_PROGRESS: ProgressState = {
   phase: 'idle',
-  statusText: 'Waiting for analysis to start',
+  statusText: '',
   completedSteps: 0,
   totalSteps: 0,
   activeLabel: null,
@@ -65,32 +67,44 @@ const INITIAL_PROGRESS: ProgressState = {
   tools: [],
 };
 
-const TERMINAL_STATUS = new Set(['completed', 'cancelled', 'failed', 'soft_interrupted']);
+function createInitialProgress(t: TranslateFn): ProgressState {
+  return {
+    ...BASE_PROGRESS,
+    statusText: t('chat.ptcAgent.progress.waitingStart'),
+  };
+}
 
-const TOOL_LABELS: Record<string, string> = {
-  execute_code: 'Running Python analysis',
-  bash: 'Running shell command',
-  Read: 'Reading workspace file',
-  Write: 'Writing workspace file',
-  Edit: 'Editing workspace file',
-  Glob: 'Scanning files',
-  Grep: 'Searching files',
-  web_search: 'Searching the web',
-  web_fetch: 'Fetching web source',
-  get_stock_daily_prices: 'Loading market prices',
-  get_company_overview: 'Loading company data',
-  get_sec_filing: 'Reading SEC filing',
-  screen_stocks: 'Screening stocks',
-  TodoWrite: 'Updating plan',
+const FAILURE_STATUS = new Set(['cancelled', 'failed']);
+
+const TOOL_LABEL_KEYS: Record<string, string> = {
+  execute_code: 'executeCode',
+  ExecuteCode: 'executeCode',
+  bash: 'bash',
+  Bash: 'bash',
+  Read: 'read',
+  Write: 'write',
+  Edit: 'edit',
+  Glob: 'glob',
+  Grep: 'grep',
+  web_search: 'webSearch',
+  WebSearch: 'webSearch',
+  web_fetch: 'webFetch',
+  WebFetch: 'webFetch',
+  get_stock_daily_prices: 'stockPrices',
+  get_company_overview: 'companyData',
+  get_sec_filing: 'secFiling',
+  screen_stocks: 'stockScreener',
+  TodoWrite: 'todoWrite',
 };
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function humanizeToolName(name?: string): string {
-  if (!name) return 'Running tool';
-  if (TOOL_LABELS[name]) return TOOL_LABELS[name];
+function humanizeToolName(name: string | undefined, t: TranslateFn): string {
+  if (!name) return t('chat.ptcAgent.toolLabels.fallback');
+  const labelKey = TOOL_LABEL_KEYS[name];
+  if (labelKey) return t(`chat.ptcAgent.toolLabels.${labelKey}`);
   return name
     .replace(/[_-]+/g, ' ')
     .replace(/\b\w/g, (char) => char.toUpperCase());
@@ -126,27 +140,28 @@ function isToolFailure(content: unknown): boolean {
   }
 }
 
-function phaseFromStatus(status: string | undefined): ProgressPhase | null {
+function phaseFromStatus(status: string | undefined, canReconnect = false): ProgressPhase | null {
   if (!status) return null;
   if (status === 'active') return 'running';
   if (status === 'completed') return 'completed';
-  if (TERMINAL_STATUS.has(status)) return 'failed';
+  if (status === 'interrupted' || status === 'soft_interrupted') return canReconnect ? 'running' : 'paused';
+  if (FAILURE_STATUS.has(status)) return 'failed';
   return null;
 }
 
-function updateFromStatus(prev: ProgressState, snapshot: WorkflowStatusSnapshot): ProgressState {
-  const statusPhase = phaseFromStatus(snapshot.status);
+function updateFromStatus(prev: ProgressState, snapshot: WorkflowStatusSnapshot, t: TranslateFn): ProgressState {
+  const statusPhase = phaseFromStatus(snapshot.status, Boolean(snapshot.can_reconnect));
   const activeTasks = Array.isArray(snapshot.active_tasks) ? snapshot.active_tasks.length : 0;
   const nextPhase = statusPhase ?? (snapshot.can_reconnect ? 'running' : prev.phase);
   const activeLabel = activeTasks > 0
-    ? `${activeTasks} background task${activeTasks === 1 ? '' : 's'} running`
+    ? t('chat.ptcAgent.progress.backgroundTasksRunning', { count: activeTasks })
     : prev.activeLabel;
 
   if (nextPhase === 'completed') {
     return {
       ...prev,
       phase: 'completed',
-      statusText: 'Analysis complete',
+      statusText: t('chat.ptcAgent.progress.analysisComplete'),
       completedSteps: Math.max(prev.completedSteps, prev.totalSteps),
       activeLabel: null,
       error: null,
@@ -155,12 +170,15 @@ function updateFromStatus(prev: ProgressState, snapshot: WorkflowStatusSnapshot)
   }
 
   if (nextPhase === 'failed') {
+    const failureText = snapshot.status === 'cancelled'
+      ? t('chat.ptcAgent.progress.analysisCancelled')
+      : t('chat.ptcAgent.progress.analysisStopped');
     return {
       ...prev,
       phase: 'failed',
-      statusText: snapshot.status === 'cancelled' ? 'Analysis cancelled' : 'Analysis stopped',
+      statusText: failureText,
       activeLabel: null,
-      error: snapshot.status || 'failed',
+      error: failureText,
       runId: snapshot.run_id || prev.runId,
     };
   }
@@ -169,8 +187,21 @@ function updateFromStatus(prev: ProgressState, snapshot: WorkflowStatusSnapshot)
     return {
       ...prev,
       phase: 'running',
-      statusText: 'Analysis running',
+      statusText: t('chat.ptcAgent.progress.analysisRunning'),
       activeLabel,
+      error: null,
+      runId: snapshot.run_id || prev.runId,
+    };
+  }
+
+  if (nextPhase === 'paused') {
+    return {
+      ...prev,
+      phase: 'paused',
+      statusText: t('chat.ptcAgent.progress.analysisPaused'),
+      activeLabel: snapshot.status === 'soft_interrupted'
+        ? t('chat.ptcAgent.progress.softInterrupted')
+        : t('chat.ptcAgent.progress.waitingForInput'),
       error: null,
       runId: snapshot.run_id || prev.runId,
     };
@@ -182,8 +213,8 @@ function updateFromStatus(prev: ProgressState, snapshot: WorkflowStatusSnapshot)
   };
 }
 
-function usePtcProgress(threadId: string | undefined, enabled: boolean): ProgressState {
-  const [progress, setProgress] = useState<ProgressState>(INITIAL_PROGRESS);
+function usePtcProgress(threadId: string | undefined, enabled: boolean, t: TranslateFn): ProgressState {
+  const [progress, setProgress] = useState<ProgressState>(() => createInitialProgress(t));
   const lastEventIdRef = useRef<number | null>(null);
   const finalTextRef = useRef('');
 
@@ -198,7 +229,7 @@ function usePtcProgress(threadId: string | undefined, enabled: boolean): Progres
       setProgress((prev) => ({
         ...prev,
         phase: 'running',
-        statusText: 'Analysis running',
+        statusText: t('chat.ptcAgent.progress.analysisRunning'),
         runId: typeof event.run_id === 'string' ? event.run_id : prev.runId,
         error: null,
       }));
@@ -206,7 +237,7 @@ function usePtcProgress(threadId: string | undefined, enabled: boolean): Progres
     }
 
     if (eventType === 'workflow_status') {
-      setProgress((prev) => updateFromStatus(prev, event as WorkflowStatusSnapshot));
+      setProgress((prev) => updateFromStatus(prev, event as WorkflowStatusSnapshot, t));
       return;
     }
 
@@ -215,8 +246,10 @@ function usePtcProgress(threadId: string | undefined, enabled: boolean): Progres
       setProgress((prev) => ({
         ...prev,
         phase: prev.phase === 'idle' || prev.phase === 'waiting' ? 'running' : prev.phase,
-        statusText: 'Analysis running',
-        activeLabel: isComplete ? 'Reasoning complete' : 'Reasoning through next step',
+        statusText: t('chat.ptcAgent.progress.analysisRunning'),
+        activeLabel: isComplete
+          ? t('chat.ptcAgent.progress.reasoningComplete')
+          : t('chat.ptcAgent.progress.reasoning'),
       }));
       return;
     }
@@ -228,7 +261,7 @@ function usePtcProgress(threadId: string | undefined, enabled: boolean): Progres
         ...prev,
         phase: prev.phase === 'idle' || prev.phase === 'waiting' ? 'running' : prev.phase,
         latestText: latest,
-        activeLabel: 'Reasoning through next step',
+        activeLabel: t('chat.ptcAgent.progress.reasoning'),
       }));
       return;
     }
@@ -241,7 +274,7 @@ function usePtcProgress(threadId: string | undefined, enabled: boolean): Progres
         const additions: ToolStep[] = calls
           .map((call, idx) => ({
             id: String(call.id || `${Date.now()}-${idx}`),
-            label: humanizeToolName(typeof call.name === 'string' ? call.name : undefined),
+            label: humanizeToolName(typeof call.name === 'string' ? call.name : undefined, t),
             status: 'running' as const,
           }))
           .filter((tool) => !existing.has(tool.id));
@@ -250,7 +283,7 @@ function usePtcProgress(threadId: string | undefined, enabled: boolean): Progres
         return {
           ...prev,
           phase: 'running',
-          statusText: 'Analysis running',
+          statusText: t('chat.ptcAgent.progress.analysisRunning'),
           totalSteps: prev.totalSteps + additions.length,
           activeLabel: additions[additions.length - 1]?.label || prev.activeLabel,
           tools,
@@ -279,19 +312,23 @@ function usePtcProgress(threadId: string | undefined, enabled: boolean): Progres
               ...tools,
               {
                 id: toolCallId || `result-${Date.now()}`,
-                label: 'Completed tool step',
+                label: t('chat.ptcAgent.progress.completedToolStep'),
                 status: failed ? 'failed' as const : 'completed' as const,
               },
             ].slice(-5);
         return {
           ...prev,
           phase: prev.phase === 'completed' || prev.phase === 'failed' ? prev.phase : 'running',
-          statusText: failed ? 'Tool step returned an error' : 'Analysis running',
+          statusText: failed
+            ? t('chat.ptcAgent.progress.toolStepError')
+            : t('chat.ptcAgent.progress.analysisRunning'),
           completedSteps: prev.completedSteps + (countedCompletion || !found ? 1 : 0),
           totalSteps: found ? prev.totalSteps : prev.totalSteps + 1,
-          activeLabel: failed ? 'Agent is recovering from a tool error' : 'Tool step completed',
+          activeLabel: failed
+            ? t('chat.ptcAgent.progress.recoveringToolError')
+            : t('chat.ptcAgent.progress.toolStepCompleted'),
           latestText: latest || prev.latestText,
-          error: failed ? latest || 'Tool step failed' : null,
+          error: failed ? latest || t('chat.ptcAgent.progress.toolStepFailed') : null,
           tools: nextTools,
         };
       });
@@ -305,15 +342,15 @@ function usePtcProgress(threadId: string | undefined, enabled: boolean): Progres
         setProgress((prev) => ({
           ...prev,
           phase: prev.phase === 'idle' || prev.phase === 'waiting' ? 'running' : prev.phase,
-          activeLabel: 'Writing final response',
+          activeLabel: t('chat.ptcAgent.progress.writingFinal'),
           latestText: latest || prev.latestText,
         }));
       }
       if (event.finish_reason === 'stop') {
         setProgress((prev) => ({
           ...prev,
-          statusText: 'Final response ready',
-          activeLabel: 'Final response ready',
+          statusText: t('chat.ptcAgent.progress.finalReady'),
+          activeLabel: t('chat.ptcAgent.progress.finalReady'),
         }));
       }
       return;
@@ -323,7 +360,7 @@ function usePtcProgress(threadId: string | undefined, enabled: boolean): Progres
       setProgress((prev) => ({
         ...prev,
         phase: prev.phase === 'idle' || prev.phase === 'waiting' ? 'running' : prev.phase,
-        activeLabel: 'Generated an artifact',
+        activeLabel: t('chat.ptcAgent.progress.generatedArtifact'),
       }));
       return;
     }
@@ -332,7 +369,7 @@ function usePtcProgress(threadId: string | undefined, enabled: boolean): Progres
       setProgress((prev) => ({
         ...prev,
         phase: 'completed',
-        statusText: 'Analysis complete',
+        statusText: t('chat.ptcAgent.progress.analysisComplete'),
         completedSteps: Math.max(prev.completedSteps, prev.totalSteps),
         activeLabel: null,
         error: null,
@@ -341,20 +378,20 @@ function usePtcProgress(threadId: string | undefined, enabled: boolean): Progres
     }
 
     if (eventType === 'error') {
-      const errorText = compactText(event.message || event.content || event.error) || 'Analysis failed';
+      const errorText = compactText(event.message || event.content || event.error) || t('chat.ptcAgent.progress.analysisFailed');
       setProgress((prev) => ({
         ...prev,
         phase: 'failed',
-        statusText: 'Analysis failed',
+        statusText: t('chat.ptcAgent.progress.analysisFailed'),
         activeLabel: null,
         error: errorText,
       }));
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (!enabled || !threadId) {
-      setProgress(INITIAL_PROGRESS);
+      setProgress(createInitialProgress(t));
       lastEventIdRef.current = null;
       finalTextRef.current = '';
       return;
@@ -364,10 +401,12 @@ function usePtcProgress(threadId: string | undefined, enabled: boolean): Progres
     const abort = new AbortController();
 
     const run = async () => {
+      lastEventIdRef.current = null;
+      finalTextRef.current = '';
       setProgress({
-        ...INITIAL_PROGRESS,
+        ...createInitialProgress(t),
         phase: 'waiting',
-        statusText: 'Starting analysis stream',
+        statusText: t('chat.ptcAgent.progress.startingStream'),
       });
 
       try {
@@ -376,11 +415,11 @@ function usePtcProgress(threadId: string | undefined, enabled: boolean): Progres
           if (disposed || abort.signal.aborted) return;
           snapshot = await getWorkflowStatus(threadId) as WorkflowStatusSnapshot;
           if (disposed || abort.signal.aborted) return;
-          setProgress((prev) => updateFromStatus(prev, snapshot!));
+          setProgress((prev) => updateFromStatus(prev, snapshot!, t));
 
-          const phase = phaseFromStatus(snapshot.status);
+          const phase = phaseFromStatus(snapshot.status, Boolean(snapshot.can_reconnect));
           if (snapshot.can_reconnect || phase === 'running') break;
-          if (phase === 'completed' || phase === 'failed') return;
+          if (phase === 'completed' || phase === 'failed' || phase === 'paused') return;
           await sleep(attempt < 3 ? 800 : 1500);
         }
 
@@ -388,42 +427,62 @@ function usePtcProgress(threadId: string | undefined, enabled: boolean): Progres
         let runId = snapshot?.run_id || null;
         for (let attempt = 0; attempt < 4; attempt += 1) {
           try {
-            await reconnectToWorkflowStream(
+            const result = await reconnectToWorkflowStream(
               threadId,
               runId,
               lastEventIdRef.current,
               handleEvent,
               abort.signal,
             );
-            break;
+            if (!result?.disconnected) break;
           } catch (streamError) {
             if (disposed || abort.signal.aborted) return;
 
             const latestSnapshot = await getWorkflowStatus(threadId) as WorkflowStatusSnapshot;
             if (disposed || abort.signal.aborted) return;
-            setProgress((prev) => updateFromStatus(prev, latestSnapshot));
+            setProgress((prev) => updateFromStatus(prev, latestSnapshot, t));
 
-            const latestPhase = phaseFromStatus(latestSnapshot.status);
-            if (latestPhase === 'completed' || latestPhase === 'failed') return;
+            const latestPhase = phaseFromStatus(latestSnapshot.status, Boolean(latestSnapshot.can_reconnect));
+            if (latestPhase === 'completed' || latestPhase === 'failed' || latestPhase === 'paused') return;
             if (attempt === 3) throw streamError;
 
             runId = latestSnapshot.run_id || runId;
             setProgress((prev) => ({
               ...prev,
               phase: 'waiting',
-              statusText: 'Waiting for analysis stream',
-              activeLabel: 'Connecting to live progress',
+              statusText: t('chat.ptcAgent.progress.waitingStream'),
+              activeLabel: t('chat.ptcAgent.progress.connectingProgress'),
             }));
             await sleep(900 + attempt * 600);
+            continue;
           }
+
+          if (disposed || abort.signal.aborted) return;
+
+          const latestSnapshot = await getWorkflowStatus(threadId) as WorkflowStatusSnapshot;
+          if (disposed || abort.signal.aborted) return;
+          setProgress((prev) => updateFromStatus(prev, latestSnapshot, t));
+
+          const latestPhase = phaseFromStatus(latestSnapshot.status, Boolean(latestSnapshot.can_reconnect));
+          if (latestPhase === 'completed' || latestPhase === 'failed' || latestPhase === 'paused') return;
+          if (attempt === 3) throw new Error(t('chat.ptcAgent.progress.streamDisconnected'));
+
+          runId = latestSnapshot.run_id || runId;
+          setProgress((prev) => ({
+            ...prev,
+            phase: 'waiting',
+            statusText: t('chat.ptcAgent.progress.waitingStream'),
+            activeLabel: t('chat.ptcAgent.progress.connectingProgress'),
+          }));
+          await sleep(900 + attempt * 600);
         }
       } catch (err) {
         if (disposed || abort.signal.aborted) return;
-        const error = err instanceof Error ? err.message : 'Unable to stream progress';
+        const error = err instanceof Error ? err.message : t('chat.ptcAgent.progress.unableToStream');
         setProgress((prev) => ({
           ...prev,
           phase: 'disconnected',
-          statusText: 'Live progress paused',
+          statusText: t('chat.ptcAgent.progress.livePaused'),
           activeLabel: null,
           error,
         }));
@@ -433,13 +492,13 @@ function usePtcProgress(threadId: string | undefined, enabled: boolean): Progres
             const snapshot = await getWorkflowStatus(threadId) as WorkflowStatusSnapshot;
             if (!disposed && !abort.signal.aborted) {
               setProgress((prev) => {
-                const next = updateFromStatus(prev, snapshot);
+                const next = updateFromStatus(prev, snapshot, t);
                 if (next.phase === 'running') {
                   return {
                     ...next,
                     phase: 'disconnected',
-                    statusText: 'Live progress paused',
-                    activeLabel: 'Open the analysis thread for the full stream',
+                    statusText: t('chat.ptcAgent.progress.livePaused'),
+                    activeLabel: t('chat.ptcAgent.progress.openThreadFullStream'),
                   };
                 }
                 return next;
@@ -458,7 +517,7 @@ function usePtcProgress(threadId: string | undefined, enabled: boolean): Progres
       disposed = true;
       abort.abort();
     };
-  }, [enabled, handleEvent, threadId]);
+  }, [enabled, handleEvent, threadId, t]);
 
   return progress;
 }
@@ -472,12 +531,14 @@ function usePtcProgress(threadId: string | undefined, enabled: boolean): Progres
  *   rejected - collapsed "Research declined"
  */
 function PTCAgentCard({ proposalData, onApprove, onReject, flashContext }: PTCAgentCardProps) {
+  const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(true);
   const [reportBack, setReportBack] = useState(proposalData?.report_back ?? true);
   const navigate = useNavigate();
   const progress = usePtcProgress(
     proposalData?.thread_id,
     proposalData?.status === 'approved' && Boolean(proposalData?.thread_id),
+    t as TranslateFn,
   );
 
   if (!proposalData) return null;
@@ -499,7 +560,7 @@ function PTCAgentCard({ proposalData, onApprove, onReject, flashContext }: PTCAg
     ? AlertCircle
     : progress.phase === 'completed'
       ? Check
-      : progress.phase === 'waiting'
+      : progress.phase === 'waiting' || progress.phase === 'paused'
         ? Clock
         : Activity;
 
@@ -544,7 +605,7 @@ function PTCAgentCard({ proposalData, onApprove, onReject, flashContext }: PTCAg
                   color: 'var(--color-text-tertiary)',
                 }}
               >
-                Open
+                {t('chat.ptcAgent.card.open')}
                 <ExternalLink className="h-3 w-3" />
               </button>
             </div>
@@ -560,7 +621,7 @@ function PTCAgentCard({ proposalData, onApprove, onReject, flashContext }: PTCAg
                 </span>
                 {progress.totalSteps > 0 && (
                   <span className="text-xs ml-auto" style={{ color: 'var(--color-text-tertiary)' }}>
-                    {progress.completedSteps}/{progress.totalSteps} steps
+                    {progress.completedSteps}/{progress.totalSteps} {t('chat.ptcAgent.progress.steps')}
                   </span>
                 )}
               </div>
@@ -653,7 +714,7 @@ function PTCAgentCard({ proposalData, onApprove, onReject, flashContext }: PTCAg
             className="text-sm"
             style={{ color: 'var(--color-text-tertiary)' }}
           >
-            {isApproved ? 'Research dispatched' : 'Research declined'}
+            {isApproved ? t('chat.ptcAgent.card.researchDispatched') : t('chat.ptcAgent.card.researchDeclined')}
             {workspace_name && isApproved ? `: ${workspace_name}` : ''}
           </span>
         </button>
@@ -703,7 +764,7 @@ function PTCAgentCard({ proposalData, onApprove, onReject, flashContext }: PTCAg
       <div className="flex items-center gap-2 pb-3">
         <FlaskConical className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent-light)' }} />
         <span className="text-[15px] font-medium" style={{ color: 'var(--color-text-primary)' }}>
-          Start Research
+          {t('chat.ptcAgent.card.startResearch')}
         </span>
         <Loader2
           className="h-3.5 w-3.5 animate-spin ml-auto flex-shrink-0"
@@ -735,7 +796,7 @@ function PTCAgentCard({ proposalData, onApprove, onReject, flashContext }: PTCAg
             onClick={(e: React.MouseEvent) => { e.stopPropagation(); setReportBack((v) => !v); }}
           >
             <span className="text-[13px]" style={{ color: 'var(--color-text-tertiary)' }}>
-              Report back with summary
+              {t('chat.ptcAgent.card.reportBack')}
             </span>
             <div
               className="relative w-8 h-[18px] rounded-full transition-colors"
@@ -760,7 +821,7 @@ function PTCAgentCard({ proposalData, onApprove, onReject, flashContext }: PTCAg
           whileTap={{ scale: 0.98 }}
         >
           <Check className="h-3.5 w-3.5 stroke-[2.5]" />
-          Approve
+          {t('chat.ptcAgent.card.approve')}
         </motion.button>
         <motion.button
           onClick={(e: React.MouseEvent) => { e.stopPropagation(); onReject?.(); }}
@@ -773,7 +834,7 @@ function PTCAgentCard({ proposalData, onApprove, onReject, flashContext }: PTCAg
           whileTap={{ scale: 0.98 }}
         >
           <X className="h-3.5 w-3.5" />
-          Decline
+          {t('chat.ptcAgent.card.decline')}
         </motion.button>
       </div>
     </motion.div>
