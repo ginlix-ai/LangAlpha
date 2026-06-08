@@ -241,7 +241,7 @@ class TestSandboxScraplingFetch:
             "python -c \""
             "import html_to_markdown; "
             "md = html_to_markdown.convert('<h1>Hello</h1><p>World</p>'); "
-            "print(md)\""
+            "print(md.content)\""
         )
         assert r.returncode == 0, f"html-to-markdown failed: {r.stderr}"
         assert "hello" in r.stdout.lower()
