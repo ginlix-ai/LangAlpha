@@ -8,6 +8,11 @@ import { useIsMobile } from '@/hooks/useIsMobile';
 import { createFormatter } from '@/lib/format';
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from '@/components/ui/context-menu';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu';
+import {
+  formatPortfolioMoney,
+  normalizePortfolioCurrency,
+  summarizePortfolioByCurrency,
+} from '../utils/portfolioSummary';
 
 const fmt2 = createFormatter({ minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt1 = createFormatter({ minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -32,6 +37,7 @@ interface PortfolioRow {
   price: number;
   quantity?: number | null;
   average_cost?: number | null;
+  currency?: string | null;
   marketValue?: number;
   unrealizedPlPercent?: number | null;
   isPositive?: boolean;
@@ -169,9 +175,10 @@ interface PortfolioItemProps {
 }
 
 function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStatus, isMobile }: PortfolioItemProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const pos = item.isPositive;
+  const currency = normalizePortfolioCurrency(item.currency);
   const plStr =
     item.unrealizedPlPercent != null
       ? (pos ? '+' : '') + fmt2(Number(item.unrealizedPlPercent)) + '%'
@@ -216,10 +223,10 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStat
       <div className="flex items-center gap-4">
         <div className="text-right">
           <div className="text-sm font-medium dashboard-mono" style={{ color: 'var(--color-text-primary)' }}>
-            {valuesHidden ? '******' : `$${fmt2(Number(item.marketValue || 0))}`}
+            {valuesHidden ? '******' : formatPortfolioMoney(Number(item.marketValue || 0), currency, i18n.language)}
           </div>
           <div className="text-xs dashboard-mono" style={{ color: 'var(--color-text-secondary)' }}>
-            {valuesHidden ? '***' : `@${fmt2(Number(extType && item.previousClose != null ? item.previousClose : item.price))}`}
+            {valuesHidden ? '***' : `@${formatPortfolioMoney(Number(extType && item.previousClose != null ? item.previousClose : item.price), currency, i18n.language)}`}
           </div>
         </div>
 
@@ -350,7 +357,7 @@ function PortfolioWatchlistCard({
   onPortfolioEdit,
   marketStatus,
 }: PortfolioWatchlistCardProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const isMobile = useIsMobile();
   const [activeTab, setActiveTabRaw] = useState<PWTabKey>(() => (localStorage.getItem('portfolio_active_tab') as PWTabKey) || 'watchlist');
   const [valuesHidden, setValuesHiddenRaw] = useState(() => localStorage.getItem('portfolio_values_hidden') === 'true');
@@ -367,15 +374,7 @@ function PortfolioWatchlistCard({
     });
   };
 
-  // Compute portfolio summary
-  const totalValue = portfolioRows.reduce((sum, r) => sum + (r.marketValue || 0), 0);
-  const totalCost = portfolioRows.reduce(
-    (sum, r) => sum + (r.average_cost != null ? r.average_cost * (r.quantity || 0) : 0),
-    0
-  );
-  const totalPl = totalCost > 0 ? totalValue - totalCost : 0;
-  const totalPlPct = totalCost > 0 ? ((totalValue - totalCost) / totalCost) * 100 : 0;
-  const isPlPositive = totalPl >= 0;
+  const portfolioSummaries = summarizePortfolioByCurrency(portfolioRows);
 
   return (
     <div
@@ -470,7 +469,9 @@ function PortfolioWatchlistCard({
                 >
                   <div className="flex items-center justify-between mb-1">
                     <div className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-                      {t('dashboard.portfolioWatchlistCard.netAssetValue')}
+                      {portfolioSummaries.length > 1
+                        ? t('dashboard.portfolioWatchlistCard.netAssetValueByCurrency')
+                        : t('dashboard.portfolioWatchlistCard.netAssetValue')}
                     </div>
                     <button
                       onClick={() => setValuesHidden((h) => !h)}
@@ -483,21 +484,35 @@ function PortfolioWatchlistCard({
                     </button>
                   </div>
                   <div
-                    className="text-2xl font-bold mb-2 dashboard-mono"
+                    className={`${portfolioSummaries.length > 1 ? 'text-xl' : 'text-2xl'} font-bold mb-2 dashboard-mono`}
                     style={{ color: 'var(--color-text-primary)' }}
                   >
-                    {valuesHidden ? '********' : `$${fmt2(totalValue)}`}
+                    {valuesHidden
+                      ? '********'
+                      : portfolioSummaries.map((summary) => (
+                          <div key={summary.currency}>
+                            {formatPortfolioMoney(summary.totalValue, summary.currency, i18n.language)}
+                          </div>
+                        ))}
                   </div>
                   {!valuesHidden && (
-                    <div
-                      className="flex items-center gap-2 text-xs font-medium w-fit px-2 py-1 rounded-full"
-                      style={{
-                        backgroundColor: isPlPositive ? 'var(--color-profit-soft)' : 'var(--color-loss-soft)',
-                        color: isPlPositive ? 'var(--color-profit)' : 'var(--color-loss)',
-                      }}
-                    >
-                      {isPlPositive ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
-                      {isPlPositive ? '+' : '-'}${fmt2(Math.abs(totalPl))} ({fmt1(totalPlPct)}%)
+                    <div className="flex flex-wrap gap-2">
+                      {portfolioSummaries
+                        .filter((summary) => summary.totalCost > 0)
+                        .map((summary) => (
+                          <div
+                            key={summary.currency}
+                            className="flex items-center gap-2 text-xs font-medium w-fit px-2 py-1 rounded-full"
+                            style={{
+                              backgroundColor: summary.isPlPositive ? 'var(--color-profit-soft)' : 'var(--color-loss-soft)',
+                              color: summary.isPlPositive ? 'var(--color-profit)' : 'var(--color-loss)',
+                            }}
+                          >
+                            {summary.isPlPositive ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
+                            {summary.isPlPositive ? '+' : '-'}
+                            {formatPortfolioMoney(Math.abs(summary.totalPl), summary.currency, i18n.language)} ({fmt1(summary.totalPlPct)}%)
+                          </div>
+                        ))}
                     </div>
                   )}
                 </div>
