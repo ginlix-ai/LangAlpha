@@ -211,7 +211,7 @@ class MarketDataProvider:
             user_id=user_id,
         )
 
-    # -- Snapshot interface (batch; no per-symbol routing) --------------------
+    # -- Snapshot interface ---------------------------------------------------
 
     async def get_snapshots(
         self,
@@ -219,22 +219,70 @@ class MarketDataProvider:
         asset_type: str = "stocks",
         user_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Fetch batch snapshots, trying providers in order."""
+        """Fetch batch snapshots with per-symbol market routing and fallback."""
+        pending = [s for s in symbols if str(s).strip()]
+        if not pending:
+            return []
+
+        results_by_symbol: dict[str, dict[str, Any]] = {}
+        extras: list[dict[str, Any]] = []
         last_exc: Exception | None = None
+        tried_any = False
+
         for entry in self.entries:
             fn = getattr(entry.source, "get_snapshots", None)
             if fn is None:
                 continue
+
+            batch = [
+                s
+                for s in pending
+                if "all" in entry.markets or symbol_market(s) in entry.markets
+            ]
+            if not batch:
+                continue
+
+            tried_any = True
             try:
-                return await fn(symbols=symbols, asset_type=asset_type, user_id=user_id)
+                snapshots = await fn(
+                    symbols=batch,
+                    asset_type=asset_type,
+                    user_id=user_id,
+                )
             except Exception as exc:
                 logger.warning(
                     "market_data.snapshot.fallback | source=%s error=%s",
                     entry.name, exc,
                 )
                 last_exc = exc
+                continue
+
+            resolved: set[str] = set()
+            for snap in snapshots or []:
+                symbol = str(snap.get("symbol") or "").upper()
+                if symbol:
+                    results_by_symbol[symbol] = snap
+                    resolved.add(symbol)
+                else:
+                    extras.append(snap)
+
+            if resolved:
+                pending = [s for s in pending if str(s).upper() not in resolved]
+                if not pending:
+                    break
+
+        if results_by_symbol or extras:
+            ordered = [
+                results_by_symbol[str(symbol).upper()]
+                for symbol in symbols
+                if str(symbol).upper() in results_by_symbol
+            ]
+            return ordered + extras
+
         if last_exc:
             raise last_exc
+        if tried_any:
+            return []
         raise RuntimeError("No data source supports get_snapshots")
 
     async def get_market_status(
