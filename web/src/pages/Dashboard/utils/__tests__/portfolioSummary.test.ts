@@ -55,8 +55,8 @@ describe('portfolioSummary', () => {
     expect(normalizePortfolioCurrency('usd')).toBe('USD');
 
     const summaries = summarizePortfolioByCurrency([
-      { marketValue: 20, average_cost: 10, quantity: 1 },
-      { currency: 'bad-code', marketValue: 30, average_cost: 15, quantity: 1 },
+      createPortfolioRow({ currency: undefined, marketValue: 20, average_cost: 10, quantity: 1 }),
+      createPortfolioRow({ currency: 'bad-code', marketValue: 30, average_cost: 15, quantity: 1 }),
     ]);
 
     expect(summaries).toHaveLength(1);
