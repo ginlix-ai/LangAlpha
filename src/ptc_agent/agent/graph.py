@@ -161,6 +161,7 @@ async def build_ptc_graph(
         on_signed_url=on_signed_url,
         user_id=user_id,
         user_data_counts=user_data_counts,
+        tool_summary=getattr(session, "mcp_tool_summary", None),
     )
 
     logger.debug(
@@ -226,6 +227,10 @@ async def build_ptc_graph_with_session(
         vault_secrets=vault_secrets,
         user_id=user_id,
         user_data_counts=user_data_counts,
+        # Session-cached tool summary (precomputed once per session) so the per
+        # turn create_agent never recomputes it — keeps the prompt-cache prefix
+        # byte-stable. None → create_agent computes from the registry.
+        tool_summary=getattr(session, "mcp_tool_summary", None),
     )
 
     logger.debug(

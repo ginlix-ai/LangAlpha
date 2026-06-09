@@ -29,10 +29,25 @@ class Session:
         self.config = config
         self.sandbox: PTCSandbox | None = None
         self.mcp_registry: MCPRegistry | None = None
+        # The built-in registry this session connected/borrowed. ``mcp_registry``
+        # above may be SWAPPED to a per-workspace composite that wraps this one;
+        # cleanup/stop must disconnect the BUILTIN (when owned), never the
+        # composite (which has no live subprocesses to tear down).
+        self._builtin_mcp_registry: MCPRegistry | None = None
         # False means we're borrowing the process-global frozen registry;
         # stop/cleanup must NOT call disconnect_all on a borrowed instance.
         self._owns_mcp_registry: bool = False
         self._initialized = False
+
+        # Per-workspace MCP resolution, cached once per session (resolved by the
+        # WorkspaceManager under its lock, then re-used per turn so create_agent
+        # never re-resolves or re-queries the DB). ``mcp_registry`` may be
+        # swapped to a composite (built-ins + user servers) by the manager;
+        # ``mcp_tool_summary`` is the precomputed prompt summary string;
+        # ``mcp_config_version`` tags which workspace config version produced
+        # the current composite + summary.
+        self.mcp_tool_summary: str | None = None
+        self.mcp_config_version: int | None = None
 
         # agent.md cache with dirty flag (force first read)
         self._agent_md_cache: str | None = None
@@ -101,6 +116,7 @@ class Session:
         else:
             self.mcp_registry = MCPRegistry(self.config)
             self._owns_mcp_registry = True
+        self._builtin_mcp_registry = self.mcp_registry
 
         if sandbox_id:
             # RECONNECT MODE: Run MCP connections and sandbox start in parallel
@@ -210,6 +226,7 @@ class Session:
             self.mcp_registry = MCPRegistry(self.config)
             self._owns_mcp_registry = True
             await self.mcp_registry.connect_all()
+        self._builtin_mcp_registry = self.mcp_registry
         mcp_ms = (time.time() - _t0) * 1000
 
         # Attach registry to sandbox (needed later for sync_sandbox_assets)
@@ -241,10 +258,15 @@ class Session:
             await self.sandbox.cleanup()
             self.sandbox = None
 
-        if self.mcp_registry and self._owns_mcp_registry:
-            await self.mcp_registry.disconnect_all()
+        # Disconnect the BUILTIN registry (never the composite — it has no live
+        # subprocesses). mcp_registry may have been swapped to a composite.
+        if self._builtin_mcp_registry and self._owns_mcp_registry:
+            await self._builtin_mcp_registry.disconnect_all()
         self.mcp_registry = None
+        self._builtin_mcp_registry = None
         self._owns_mcp_registry = False
+        self.mcp_tool_summary = None
+        self.mcp_config_version = None
 
         self._initialized = False
         self._agent_md_dirty = True
@@ -273,8 +295,8 @@ class Session:
             except Exception:
                 pass
 
-        if self.mcp_registry and self._owns_mcp_registry:
-            await self.mcp_registry.disconnect_all()
+        if self._builtin_mcp_registry and self._owns_mcp_registry:
+            await self._builtin_mcp_registry.disconnect_all()
 
         # Mark as uninitialized so the next restart will reconnect.
         # This preserves the fast early-return path in initialize() when the
@@ -283,7 +305,10 @@ class Session:
         self._agent_md_dirty = True
         self.sandbox = None
         self.mcp_registry = None
+        self._builtin_mcp_registry = None
         self._owns_mcp_registry = False
+        self.mcp_tool_summary = None
+        self.mcp_config_version = None
 
         logger.info("Session stopped", conversation_id=self.conversation_id)
 

@@ -199,6 +199,33 @@ class PTCSandbox:
     def _token_file_path(self) -> str:
         return f"{self._work_dir}/_internal/.mcp_tokens.json"
 
+    # ── Effective vs built-in server views ───────────────────────────────
+    #
+    # ``self.config.mcp.servers`` holds the per-workspace EFFECTIVE set the
+    # WorkspaceManager installs at session build: built-ins (minus disables) plus
+    # the workspace's user (``source='workspace'``) servers. Most host-side
+    # operations must see ONLY the built-ins — user stdio servers are fetched by
+    # npx/uvx at call time inside the sandbox, never pre-installed/pre-started on
+    # the host path, and their secrets resolve vault-only (never host os.environ).
+    # A zero-user-server workspace has effective == built-ins, so both views are
+    # the same objects and byte-identical to pre-change behavior (regression #1).
+
+    def _builtin_servers(self) -> list:
+        """Built-in servers only (``source != 'workspace'``) from the effective set."""
+        return [
+            s
+            for s in self.config.mcp.servers
+            if getattr(s, "source", "builtin") != "workspace"
+        ]
+
+    def _user_servers(self) -> list:
+        """User-configured servers (``source == 'workspace'``) from the effective set."""
+        return [
+            s
+            for s in self.config.mcp.servers
+            if getattr(s, "source", "builtin") == "workspace"
+        ]
+
     async def _wait_ready(self) -> None:
         """Wait for sandbox to be ready. Call at start of methods needing sandbox."""
         if self._ready_event is None:
@@ -300,8 +327,10 @@ class PTCSandbox:
         Returns:
             List of MCP package names to install globally
         """
+        # Built-ins only: user-server npx/uvx packages are fetched at call time
+        # inside the sandbox, never pre-installed globally on the host path.
         mcp_packages = []
-        for server in self.config.mcp.servers:
+        for server in self._builtin_servers():
             if not server.enabled:
                 continue
             if server.transport == "stdio" and server.command == "npx":
@@ -342,8 +371,11 @@ class PTCSandbox:
             "PLAYWRIGHT_BROWSERS_PATH": "/usr/local/ms-playwright",
         }
 
-        # MCP server env vars (resolve ${VAR} placeholders from host)
-        for server in self.config.mcp.servers:
+        # MCP server env vars (resolve ${VAR} placeholders from host).
+        # Built-ins ONLY: a user server's env must never be injected into the
+        # sandbox os.environ — its ${vault:NAME} refs resolve vault-only at
+        # call time, so injecting host values here would leak platform creds.
+        for server in self._builtin_servers():
             if not server.enabled:
                 continue
             if hasattr(server, "env") and server.env:
@@ -955,6 +987,35 @@ class PTCSandbox:
                 )
         return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
+    def _compute_user_mcp_config_hash(self) -> str:
+        """Hash user (``source='workspace'``) server CONFIG — never secret values.
+
+        Captures transport/command/args/url and header/env key NAMES so a
+        config-only edit (e.g. new header name, changed args) re-uploads the
+        regenerated ``mcp_client.py`` even when tool schemas are unchanged.
+        Returns "" when there are no user servers so builtin-only workspaces are
+        untouched (regression #1).
+        """
+        user_servers = self._user_servers()
+        if not user_servers:
+            return ""
+        parts: list[str] = []
+        for server in sorted(user_servers, key=lambda s: s.name):
+            payload = {
+                "name": server.name,
+                "enabled": getattr(server, "enabled", True),
+                "transport": server.transport,
+                "command": server.command,
+                "args": list(server.args or []),
+                "url": server.url,
+                # Key NAMES only — values may be ${vault:NAME} refs or literals,
+                # neither of which belongs in a manifest hash.
+                "env_keys": sorted((getattr(server, "env", {}) or {}).keys()),
+                "header_keys": sorted((getattr(server, "headers", {}) or {}).keys()),
+            }
+            parts.append(json.dumps(payload, sort_keys=True))
+        return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
     async def _compute_skills_module(self, skill_roots: list[str]) -> dict[str, Any]:
         """Compute a skills module manifest with content-based SHA-256 hashing.
 
@@ -1066,8 +1127,11 @@ class PTCSandbox:
         config_dir = getattr(self.config, "config_file_dir", None)
 
         # ── Module: mcp_servers ──
+        # Built-ins only: this module ships local ``uv run python`` server files
+        # from the host repo. User servers never ship host-local .py files, so
+        # the mcp_servers hash stays byte-identical for builtin-only workspaces.
         mcp_files: dict[str, str] = {}  # filename → sha256
-        for server in self.config.mcp.servers:
+        for server in self._builtin_servers():
             if not server.enabled:
                 continue
             if server.transport != "stdio" or server.command != "uv":
@@ -1106,6 +1170,14 @@ class PTCSandbox:
             "mcp_servers": mcp_version,
             "tool_schemas": tool_schema_hash,
         }
+        # User-server config hash — GATED on the presence of user servers so a
+        # builtin-only workspace's source_versions dict (and thus tool_modules
+        # version) is byte-identical to pre-change. A config-only edit (transport
+        # /command/args/url/header-NAMES — never values) changes this hash and
+        # so re-uploads the regenerated mcp_client.py via the tool_modules diff.
+        user_mcp_hash = self._compute_user_mcp_config_hash()
+        if user_mcp_hash:
+            source_versions["user_mcp_config"] = user_mcp_hash
         tm_version = _hash_dict(source_versions)
         modules["tool_modules"] = {
             "version": tm_version,
@@ -1204,7 +1276,9 @@ class PTCSandbox:
         files_to_upload: list[tuple[str, str, str]] = []
         expected_files: set[str] = set()
 
-        for server in self.config.mcp.servers:
+        # Built-ins only: only built-in servers ship host-local ``uv run python``
+        # files. User servers run via npx/uvx/http and have nothing to upload here.
+        for server in self._builtin_servers():
             if not server.enabled:
                 continue
             if server.transport == "stdio" and server.command == "uv":
@@ -2136,8 +2210,42 @@ except OSError as e:
         except Exception as e:
             logger.warning(f"Scrapling browser install skipped: {e}")
 
+    async def _upload_mcp_client_module(self) -> None:
+        """Upload the config-only ``mcp_client.py`` (no schema dependency).
+
+        Split out from :meth:`_install_tool_modules` so the client — which the
+        in-sandbox discovery CLI imports — can be uploaded BEFORE any tool
+        schemas exist. The client is a pure function of the effective server
+        configs (transport/command/args/url/header-names), so it is safe to
+        regenerate ahead of discovery.
+        """
+        assert self.runtime is not None
+        work_dir = self._work_dir
+        enabled_servers = [
+            server for server in self.config.mcp.servers if server.enabled
+        ]
+        # Pass the sandbox's real work dir (Lane A handoff): the client embeds
+        # the vault path + mcp_servers path from it. Defaulting would point the
+        # vault/server paths at the wrong directory after a working-dir change.
+        mcp_client_code = self.tool_generator.generate_mcp_client_code(
+            enabled_servers, working_dir=work_dir
+        )
+        mcp_client_path = f"{work_dir}/tools/mcp_client.py"
+        await self._runtime_call(
+            self.runtime.exec,
+            f"mkdir -p {shlex.quote(f'{work_dir}/tools')}",
+            retry_policy=RetryPolicy.SAFE,
+        )
+        await self._runtime_call(
+            self.runtime.upload_file,
+            mcp_client_code.encode("utf-8"),
+            mcp_client_path,
+            retry_policy=RetryPolicy.SAFE,
+        )
+        logger.debug("MCP client module installed", path=mcp_client_path)
+
     async def _install_tool_modules(self) -> None:
-        """Generate and install tool modules from MCP servers."""
+        """Generate and install tool modules + the MCP client from MCP servers."""
         logger.debug("Installing tool modules")
 
         # Get work directory (set by _setup_workspace)
@@ -2146,11 +2254,14 @@ except OSError as e:
         # Collect all files to upload (content generation is CPU-bound, fast)
         uploads: list[tuple[bytes, str, tuple[str, dict[str, str]] | None]] = []
 
-        # 1. MCP client module
+        # 1. MCP client module — config-only, regenerated with the real work dir
+        #    so user-server vault/path references resolve correctly.
         enabled_servers = [
             server for server in self.config.mcp.servers if server.enabled
         ]
-        mcp_client_code = self.tool_generator.generate_mcp_client_code(enabled_servers)
+        mcp_client_code = self.tool_generator.generate_mcp_client_code(
+            enabled_servers, working_dir=work_dir
+        )
         mcp_client_path = f"{work_dir}/tools/mcp_client.py"
         uploads.append(
             (
@@ -2160,35 +2271,64 @@ except OSError as e:
             )
         )
 
+        # Per-server source map (builtin vs untrusted workspace) drives codegen
+        # sanitization + neutral framing for user-server tools.
+        source_by_name = {
+            s.name: getattr(s, "source", "builtin")
+            for s in self.config.mcp.servers
+        }
+
         # 2. Tool modules and documentation
         assert self.mcp_registry is not None
         tools_by_server = self.mcp_registry.get_all_tools()
 
         assert self.runtime is not None
 
-        # Prune stale doc dirs (best-effort)
+        # Prune stale doc dirs AND stale wrapper modules for servers no longer in
+        # the effective set (a disabled built-in, a deleted/edited user server).
+        # The diff-prune runs every sync, so the one-shot _disabled_modules_pruned
+        # guard is moot here; this removes ``tools/{name}.py`` + ``tools/docs/{name}``.
         docs_root = f"{work_dir}/tools/docs"
+        tools_root = f"{work_dir}/tools"
+        stale_paths: list[str] = []
         try:
-            existing = await self.als_directory(docs_root)
-            if existing:
-                stale = [
+            existing_docs = await self.als_directory(docs_root)
+            if existing_docs:
+                stale_paths.extend(
                     entry["path"]
-                    for entry in existing
+                    for entry in existing_docs
                     if entry.get("is_dir") and entry.get("name") not in tools_by_server
-                ]
-                if stale:
-                    rm_cmd = "rm -rf " + " ".join(shlex.quote(p) for p in stale)
-                    await self._runtime_call(
-                        self.runtime.exec,
-                        rm_cmd,
-                        retry_policy=RetryPolicy.SAFE,
-                    )
+                )
         except Exception:
             pass  # docs dir may not exist yet on fresh sandbox
+        try:
+            existing_tools = await self.als_directory(tools_root)
+            if existing_tools:
+                expected_wrappers = {f"{name}.py" for name in tools_by_server}
+                stale_paths.extend(
+                    entry["path"]
+                    for entry in existing_tools
+                    if not entry.get("is_dir")
+                    and entry.get("name", "").endswith(".py")
+                    and entry.get("name") not in expected_wrappers
+                    and entry.get("name") not in ("mcp_client.py", "__init__.py")
+                )
+        except Exception:
+            pass  # tools dir may not exist yet on fresh sandbox
+        if stale_paths:
+            rm_cmd = "rm -rf " + " ".join(shlex.quote(p) for p in stale_paths)
+            await self._runtime_call(
+                self.runtime.exec,
+                rm_cmd,
+                retry_policy=RetryPolicy.SAFE,
+            )
 
         for server_name, tools in tools_by_server.items():
+            source = source_by_name.get(server_name, "builtin")
             # Generate Python module
-            module_code = self.tool_generator.generate_tool_module(server_name, tools)
+            module_code = self.tool_generator.generate_tool_module(
+                server_name, tools, source=source
+            )
             module_path = f"{work_dir}/tools/{server_name}.py"
             uploads.append(
                 (
@@ -2207,7 +2347,9 @@ except OSError as e:
 
             # Generate documentation for each tool
             for tool in tools:
-                doc = self.tool_generator.generate_tool_documentation(tool)
+                doc = self.tool_generator.generate_tool_documentation(
+                    tool, source=source
+                )
                 doc_path = f"{work_dir}/tools/docs/{server_name}/{tool.name}.md"
                 upload_item: tuple[bytes, str, tuple[str, dict[str, str]] | None] = (
                     doc.encode("utf-8"),
@@ -2260,6 +2402,86 @@ except OSError as e:
             tools=tool_count,
         )
 
+    # Bound concurrent discovery so a burst of servers can't exhaust the
+    # sandbox; one hung server still can't starve others (each runs isolated).
+    _DISCOVERY_CONCURRENCY = 4
+    # CLI exec ceiling — the in-sandbox client has its own 30s stdio cold-start
+    # select timeout; give a little headroom for npx/uvx fetch + JSON write.
+    _DISCOVERY_EXEC_TIMEOUT_S = 90
+
+    async def discover_user_mcp_schemas(
+        self, servers: list[Any]
+    ) -> dict[str, dict[str, Any]]:
+        """Discover tool schemas for user MCP servers via the in-sandbox client.
+
+        For each server: run ``mcp_client.py discover <name> <out>`` (file IPC —
+        the CLI writes its result JSON to a temp file, never stdout), read the
+        file back, delete it. Per-server error isolation; one hung/broken server
+        never blocks the others. Returns ``{name: {"status","error","tools"}}``.
+        No vault file is needed — the client substitutes inert placeholders.
+        """
+        await self._wait_ready()
+        assert self.runtime is not None
+        work_dir = self._work_dir
+
+        # Upload a config-current mcp_client.py FIRST (it depends only on config,
+        # not on schemas) so discovery runs against the latest server set.
+        await self._upload_mcp_client_module()
+
+        sem = asyncio.Semaphore(self._DISCOVERY_CONCURRENCY)
+        client_path = f"{work_dir}/tools/mcp_client.py"
+
+        async def _discover_one(server: Any) -> tuple[str, dict[str, Any]]:
+            name = server.name
+            out_path = f"{work_dir}/_internal/.mcp_discover_{abs(hash(name)) % 10**8}.json"
+            async with sem:
+                try:
+                    cmd = (
+                        f"cd {shlex.quote(work_dir)} && python "
+                        f"{shlex.quote(client_path)} discover "
+                        f"{shlex.quote(name)} {shlex.quote(out_path)}"
+                    )
+                    await self._runtime_call(
+                        self.runtime.exec,
+                        cmd,
+                        timeout=self._DISCOVERY_EXEC_TIMEOUT_S,
+                        retry_policy=RetryPolicy.SAFE,
+                        total_timeout=float(self._DISCOVERY_EXEC_TIMEOUT_S + 30),
+                    )
+                    raw = await self.adownload_file_bytes(out_path)
+                    if not raw:
+                        return name, {
+                            "status": "error",
+                            "error": "discovery produced no output",
+                            "tools": [],
+                        }
+                    parsed = json.loads(
+                        raw.decode("utf-8") if isinstance(raw, bytes) else raw
+                    )
+                    return name, {
+                        "status": parsed.get("status", "error"),
+                        "error": parsed.get("error", "") or "",
+                        "tools": parsed.get("tools") or [],
+                    }
+                except Exception as e:  # noqa: BLE001 — isolate one bad server
+                    logger.warning(
+                        "MCP discovery failed for server", server=name, error=str(e)
+                    )
+                    return name, {"status": "error", "error": str(e), "tools": []}
+                finally:
+                    # Best-effort temp-file cleanup; never fail discovery on it.
+                    try:
+                        await self._runtime_call(
+                            self.runtime.exec,
+                            f"rm -f {shlex.quote(out_path)}",
+                            retry_policy=RetryPolicy.SAFE,
+                        )
+                    except Exception:
+                        pass
+
+        pairs = await asyncio.gather(*[_discover_one(s) for s in servers])
+        return dict(pairs)
+
     async def _start_internal_mcp_servers(self) -> None:
         """Start MCP servers as background processes inside sandbox."""
         logger.debug("Starting internal MCP servers")
@@ -2267,7 +2489,9 @@ except OSError as e:
         # Track server sessions for lifecycle management
         self.mcp_server_sessions = {}
 
-        for server in self.config.mcp.servers:
+        # Built-ins only: user stdio servers are spawned at call time by the
+        # in-sandbox mcp_client (npx/uvx fetch then), never pre-started here.
+        for server in self._builtin_servers():
             if not server.enabled:
                 continue
             if server.transport != "stdio":

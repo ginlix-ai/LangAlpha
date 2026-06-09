@@ -237,6 +237,7 @@ class PTCAgent:
         vault_secrets: dict[str, str] | None = None,
         user_id: str | None = None,
         user_data_counts: dict[str, Any] | None = None,
+        tool_summary: str | None = None,
     ) -> Any:
         """Create a deepagent with PTC pattern capabilities.
 
@@ -610,7 +611,13 @@ class PTCAgent:
         if additional_subagents:
             subagents.extend(additional_subagents)
 
-        tool_summary = self._get_tool_summary(mcp_registry)
+        # Prefer the session-cached summary (precomputed once per session in the
+        # WorkspaceManager) so the hot path never recomputes it — that's what
+        # keeps the prompt-cache prefix byte-stable per turn. Fall back to
+        # computing from the registry for callers without a cached summary
+        # (tests, the SessionProvider path).
+        if tool_summary is None:
+            tool_summary = self._get_tool_summary(mcp_registry)
         subagent_summary = format_subagent_summary(subagents)
 
         eviction_dir = (

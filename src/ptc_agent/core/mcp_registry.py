@@ -860,3 +860,141 @@ def clear_global_registry() -> None:
     """Drop the process-global registry reference."""
     global _GLOBAL_REGISTRY
     _GLOBAL_REGISTRY = None
+
+
+# ---------------------------------------------------------------------------
+# Per-workspace composite registry (append-only over the frozen built-ins).
+# ---------------------------------------------------------------------------
+#
+# A workspace's effective MCP set = the process-global built-ins (taken
+# verbatim, never round-tripped through the discovery cache) PLUS the
+# workspace's user-configured servers, whose tool schemas come from the
+# sanitized discovery snapshot. User servers have NO host code path: their
+# tools execute only inside the sandbox, so any host-side ``call_tool`` raises.
+#
+# A zero-user-server workspace short-circuits to the built-in registry object
+# itself (identity), which is what keeps such workspaces byte-identical to the
+# pre-change behavior (manifest hash + prompt summary unchanged).
+
+
+class _SchemaConfig:
+    """Minimal ``CoreConfig``-shaped view exposing the effective ``mcp.servers``.
+
+    Duck-types only the ``.mcp`` attribute consumers read off a registry's
+    ``.config`` (``.mcp.servers`` and ``.mcp.tool_exposure_mode``). Built-in
+    config objects are reused verbatim; only the server list is the merged
+    built-ins + user servers.
+    """
+
+    def __init__(self, builtin_config: CoreConfig, servers: list[MCPServerConfig]) -> None:
+        self._builtin_config = builtin_config
+        self.mcp = builtin_config.mcp.model_copy(update={"servers": servers})
+
+    def __getattr__(self, name: str) -> Any:
+        # Defer every other attribute to the built-in CoreConfig so the composite
+        # remains a faithful stand-in (e.g. ``.filesystem``, ``.sandbox``).
+        return getattr(self._builtin_config, name)
+
+
+class SchemaOnlyRegistry:
+    """Duck-typed ``MCPRegistry`` over built-in connectors + user-server schemas.
+
+    Read-only: built-in tools come straight from the frozen global registry's
+    connectors; user-server tools are wrapped ``MCPToolInfo`` from the sanitized
+    discovery cache. Host-side execution (``call_tool``) of a user server is
+    never permitted — those tools run only inside the sandbox.
+    """
+
+    def __init__(
+        self,
+        builtin_registry: "MCPRegistry",
+        user_servers: list[MCPServerConfig],
+        tool_schemas: dict[str, list[dict]],
+    ) -> None:
+        self._builtin_registry = builtin_registry
+        self._user_names = frozenset(s.name for s in user_servers)
+        # User-server tools, in deterministic per-server order, wrapped as
+        # MCPToolInfo so every downstream reader (codegen, formatter, hash) sees
+        # the same shape as a built-in. Original tool names are preserved;
+        # codegen re-sanitizes them.
+        self._user_tools: dict[str, list[MCPToolInfo]] = {}
+        for server in user_servers:
+            schemas = tool_schemas.get(server.name)
+            if not schemas:
+                # Pending/error server: contributes config (so the prompt can
+                # mention it) but zero tools.
+                continue
+            self._user_tools[server.name] = [
+                MCPToolInfo(
+                    name=schema.get("name", ""),
+                    description=schema.get("description", "") or "",
+                    input_schema=schema.get("input_schema") or {},
+                    server_name=server.name,
+                )
+                for schema in schemas
+            ]
+        # Effective config: built-ins (verbatim) + user servers, so the
+        # formatter sees each user server's description/instruction/source.
+        effective_servers = [*builtin_registry.config.mcp.servers, *user_servers]
+        self.config = _SchemaConfig(builtin_registry.config, effective_servers)
+
+    @property
+    def frozen(self) -> bool:
+        """Always frozen — a schema-only snapshot has no live subprocesses."""
+        return True
+
+    @property
+    def connectors(self) -> dict[str, "MCPServerConnector"]:
+        """Built-in connectors ONLY — user servers have no host connector, ever."""
+        return self._builtin_registry.connectors
+
+    def get_all_tools(self) -> dict[str, list[MCPToolInfo]]:
+        """Built-in tools (verbatim) then user-server tools (append-only)."""
+        tools_by_server: dict[str, list[MCPToolInfo]] = dict(
+            self._builtin_registry.get_all_tools()
+        )
+        tools_by_server.update(self._user_tools)
+        return tools_by_server
+
+    def get_tool_info(self, server_name: str, tool_name: str) -> MCPToolInfo | None:
+        """Look up a tool by server + name across built-ins and user servers."""
+        if server_name in self._user_tools:
+            for tool in self._user_tools[server_name]:
+                if tool.name == tool_name:
+                    return tool
+            return None
+        return self._builtin_registry.get_tool_info(server_name, tool_name)
+
+    async def call_tool(
+        self,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> Any:
+        """Reject host-side execution of user-server tools; delegate built-ins."""
+        if server_name in self._user_names:
+            raise RuntimeError(
+                f"Host-side call_tool is not supported for user MCP server "
+                f"{server_name!r}; user-server tools execute only inside the "
+                f"sandbox."
+            )
+        return await self._builtin_registry.call_tool(server_name, tool_name, arguments)
+
+
+def build_composite_registry(
+    builtin_registry: "MCPRegistry",
+    user_servers: list[MCPServerConfig],
+    tool_schemas: dict[str, list[dict]],
+) -> Any:
+    """Append user-server schemas onto the frozen built-in registry.
+
+    ``user_servers`` are ``source='workspace'``, enabled, in resolver order
+    (built-ins config-order, then user servers alphabetical). ``tool_schemas``
+    maps a server name to its sanitized ``[{name, description, input_schema}]``
+    snapshot; only ``status='ok'`` servers appear. When ``user_servers`` is
+    empty the built-in registry is returned UNCHANGED (identity), keeping
+    zero-user-server workspaces byte-identical downstream.
+    """
+    if not user_servers:
+        return builtin_registry
+    return SchemaOnlyRegistry(builtin_registry, user_servers, tool_schemas)

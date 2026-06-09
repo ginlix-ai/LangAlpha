@@ -117,6 +117,12 @@ class WorkspaceManager:
         # Track last sync time per workspace for cooldown
         self._last_sync_at: Dict[str, float] = {}
 
+        # Strong refs to fire-and-forget background MCP discovery+re-sync tasks
+        # (asyncio holds only weak refs to tasks). Discarded in each task's done
+        # callback. These run OUTSIDE the per-workspace lock — discovery's stdio
+        # cold-start (up to 30s) must never sit on the response path or the lock.
+        self._mcp_discovery_tasks: set[asyncio.Task] = set()
+
         # Cleanup task
         self._cleanup_task: Optional[asyncio.Task] = None
         self._shutdown = False
@@ -283,6 +289,212 @@ class WorkspaceManager:
             )
             return {}
 
+    # ── Per-workspace MCP resolution + composite caching ────────────────
+    #
+    # Resolved once per session (under the slow path, never in the cooldown
+    # window), cached on the Session, and re-used per turn so create_agent never
+    # re-resolves or queries the DB. The version check piggybacks the existing
+    # post-cooldown ``db_get_workspace`` read: when the workspace's
+    # ``mcp_config_version`` differs from the session's applied version we
+    # re-resolve + rebuild the composite, then re-run the existing sync path so
+    # wrappers update. Discovery for new/stale user servers is BACKGROUNDED — it
+    # never runs inline on the turn and never under the per-workspace lock.
+
+    async def _apply_session_mcp(
+        self,
+        workspace_id: str,
+        user_id: str | None,
+        session: Session,
+        *,
+        ws_version: int | None,
+    ) -> Any | None:
+        """Resolve the effective MCP set and stash composite+summary on ``session``.
+
+        ``ws_version`` is the ``mcp_config_version`` already read from the
+        workspaces row (piggyback — no extra read). Returns the ``ResolvedMCP``
+        when the composite was (re)built, ``None`` when the session was already
+        current (callers then skip the discovery kick). Cheap work only —
+        resolve (DB reads) + in-memory composite build; discovery is separate.
+        """
+        sandbox = session.sandbox
+        if sandbox is None:
+            return None
+
+        # Already current: same version AND a composite is installed. Skip the
+        # resolve entirely so an unchanged-config slow-path sync adds ZERO reads.
+        if (
+            session.mcp_config_version is not None
+            and ws_version is not None
+            and session.mcp_config_version == ws_version
+            and session.mcp_tool_summary is not None
+        ):
+            return None
+
+        from src.server.handlers.chat.mcp_config import resolve_mcp_config
+
+        try:
+            resolved = await resolve_mcp_config(
+                self.config, user_id or "", workspace_id
+            )
+        except Exception as e:
+            logger.warning(
+                "[ASSET_SYNC] MCP resolve failed for %s: %s — keeping prior set",
+                workspace_id,
+                e,
+            )
+            return None
+
+        await self._install_session_composite(session, resolved)
+        return resolved
+
+    async def _install_session_composite(
+        self, session: Session, resolved: Any
+    ) -> None:
+        """Build the composite registry + tool summary from ``resolved`` and stash.
+
+        The session's CoreConfig is already a per-workspace deep copy, so we make
+        its ``config.mcp.servers`` the EFFECTIVE set (built-ins + user servers)
+        — this is what the sandbox reads at every per-site audited point. The
+        composite registry (built-ins verbatim + ok-status user schemas) is set
+        on both ``session.mcp_registry`` and ``session.sandbox.mcp_registry`` so
+        codegen + the per-turn prompt read the same object. Zero user servers ⇒
+        the composite IS the built-in registry (identity), byte-identical.
+        """
+        from ptc_agent.core.mcp_registry import build_composite_registry
+        from ptc_agent.agent.prompts.formatter import (
+            build_tool_summary_from_registry,
+        )
+
+        sandbox = session.sandbox
+
+        # Effective server list onto the per-workspace CoreConfig copy.
+        if sandbox is not None and getattr(sandbox, "config", None) is not None:
+            sandbox.config.mcp.servers = list(resolved.servers)
+        session.config.mcp.servers = list(resolved.servers)
+
+        # User servers (source='workspace') + their ok-status cached schemas.
+        user_servers = [
+            s for s in resolved.servers
+            if getattr(s, "source", "builtin") == "workspace"
+        ]
+        tool_schemas: dict[str, list[dict]] = {}
+        if user_servers:
+            from src.server.database.mcp_servers import get_tool_schemas
+
+            rows = await get_tool_schemas(
+                session.conversation_id, resolved.version
+            )
+            for row in rows:
+                if row.get("status") == "ok":
+                    tool_schemas[row["server_name"]] = row.get("tools") or []
+
+        # Always build from the BUILTIN registry, never a prior composite —
+        # session.mcp_registry may already be a composite from an earlier resolve.
+        builtin_registry = session._builtin_mcp_registry or session.mcp_registry
+        composite = build_composite_registry(
+            builtin_registry, user_servers, tool_schemas
+        )
+
+        session.mcp_registry = composite
+        if sandbox is not None:
+            sandbox.mcp_registry = composite
+
+        try:
+            tool_exposure = self.config.mcp.tool_exposure_mode
+        except Exception:
+            tool_exposure = "summary"
+        session.mcp_tool_summary = build_tool_summary_from_registry(
+            composite, mode=tool_exposure
+        )
+        session.mcp_config_version = resolved.version
+
+    def _servers_needing_discovery(
+        self, session: Session, resolved: Any
+    ) -> list[Any]:
+        """User servers in ``resolved`` lacking an ok-status schema in the composite.
+
+        Used to decide whether to kick background discovery. A server with cached
+        tools already appears in the composite; one without (pending/error/new)
+        contributes config but zero tools until discovery completes.
+        """
+        registry = session.mcp_registry
+        get_all = getattr(registry, "get_all_tools", None)
+        present_with_tools: set[str] = set()
+        if callable(get_all):
+            for name, tools in get_all().items():
+                if tools:
+                    present_with_tools.add(name)
+        return [
+            s for s in resolved.servers
+            if getattr(s, "source", "builtin") == "workspace"
+            and s.name not in present_with_tools
+        ]
+
+    def _kick_mcp_discovery(
+        self,
+        workspace_id: str,
+        user_id: str | None,
+        session: Session,
+        servers: list[Any],
+        version: int,
+    ) -> None:
+        """Fire-and-forget discovery + composite rebuild for ``servers`` (background).
+
+        Never awaited on the turn and never under the per-workspace lock: stdio
+        cold-start is up to 30s. On completion the session's composite+summary
+        are rebuilt in this same task (a mid-turn swap is safe — create_agent
+        reads the registry+summary at turn start, so the worst case is the new
+        tools appear one turn later).
+        """
+        if not servers:
+            return
+
+        async def _run() -> None:
+            try:
+                from src.server.services.mcp_discovery import discover_and_cache
+
+                _t_disc = time.time()
+                await discover_and_cache(
+                    workspace_id, session.sandbox, servers, version
+                )
+                logger.info(
+                    "[ASSET_SYNC] workspace_id=%s mcp_discovery=%.0fms servers=%d",
+                    workspace_id,
+                    (time.time() - _t_disc) * 1000,
+                    len(servers),
+                )
+                # Rebuild from the freshly-cached ok rows so this session sees the
+                # new tools without waiting for the next post-cooldown acquire
+                # (rows are keyed by the SAME version, so re-resolve would yield
+                # the same composite otherwise). Only swap if still current.
+                if session.mcp_config_version == version and session.sandbox:
+                    from src.server.handlers.chat.mcp_config import (
+                        resolve_mcp_config,
+                    )
+
+                    resolved = await resolve_mcp_config(
+                        self.config, user_id or "", workspace_id
+                    )
+                    if resolved.version == version:
+                        await self._install_session_composite(session, resolved)
+                        # Re-run sync so the new wrappers land in the sandbox.
+                        await self._sync_sandbox_assets(
+                            workspace_id,
+                            user_id,
+                            session.sandbox,
+                            reusing_sandbox=True,
+                        )
+            except Exception as e:
+                logger.warning(
+                    "[ASSET_SYNC] background MCP discovery failed for %s: %s",
+                    workspace_id,
+                    e,
+                )
+
+        task = asyncio.create_task(_run())
+        self._mcp_discovery_tasks.add(task)
+        task.add_done_callback(self._mcp_discovery_tasks.discard)
+
     async def _sync_sandbox_assets(
         self,
         workspace_id: str,
@@ -421,9 +633,25 @@ class WorkspaceManager:
         )
         new_sandbox_id = getattr(session.sandbox, "sandbox_id", None)
 
+        # Install the per-workspace composite before asset sync so user-server
+        # wrappers are regenerated for the fresh sandbox. ws_version=None forces
+        # a resolve (the session is brand new). Discovery kicked in background.
+        resolved_mcp = await self._apply_session_mcp(
+            workspace_id, user_id, session, ws_version=None
+        )
+
         await self._sync_sandbox_assets(
             workspace_id, user_id, session.sandbox, reusing_sandbox=False
         )
+
+        if resolved_mcp is not None:
+            self._kick_mcp_discovery(
+                workspace_id,
+                user_id,
+                session,
+                self._servers_needing_discovery(session, resolved_mcp),
+                session.mcp_config_version or 0,
+            )
 
         if session.sandbox:
             await self._restore_files(workspace_id, session.sandbox)
@@ -679,6 +907,13 @@ class WorkspaceManager:
                     workspace_id=workspace_id,
                 )
 
+                # Install the per-workspace MCP composite (a brand-new workspace
+                # has zero MCP rows → builtins-only identity, byte-identical) so
+                # session.mcp_registry + summary are cached from creation.
+                await self._apply_session_mcp(
+                    workspace_id, user_id, session, ws_version=0
+                )
+
                 # Sync skills and user data to sandbox in parallel
                 await self._sync_sandbox_assets(
                     workspace_id, user_id, session.sandbox, reusing_sandbox=False
@@ -782,6 +1017,10 @@ class WorkspaceManager:
         needs_deferred_sync = False
         pending_start_wait = False
         workspace_user_id = user_id
+        # mcp_config_version from the post-cooldown workspaces read (piggyback —
+        # no extra query). None when we never reach the slow-path DB read (cooldown
+        # warm hit / still-initializing — both early-return before this point).
+        ws_mcp_version: int | None = None
 
         async with self._observed_lock(
             workspace_id, "workspace.session.acquire", cached_on_entry=_was_cached
@@ -841,6 +1080,12 @@ class WorkspaceManager:
             status = workspace["status"]
             sandbox_id_from_db = workspace.get("sandbox_id")
             workspace_user_id = workspace.get("user_id") or user_id
+            # Piggyback the MCP config version off this existing read.
+            ws_mcp_version = (
+                int(workspace.get("mcp_config_version") or 0)
+                if workspace.get("mcp_config_version") is not None
+                else 0
+            )
             logger.debug(
                 f"Workspace {workspace_id} from DB: status={status}, sandbox_id={sandbox_id_from_db}, user_id={workspace_user_id}"
             )
@@ -1074,6 +1319,7 @@ class WorkspaceManager:
             phase2_owner=phase2_owner,
             phase2_event=phase2_event,
             mark=_mark,
+            ws_mcp_version=ws_mcp_version,
         )
 
         if _session_phases:
@@ -1161,6 +1407,7 @@ class WorkspaceManager:
         phase2_owner: bool,
         phase2_event: Optional[asyncio.Event],
         mark: Callable[[str], None],
+        ws_mcp_version: int | None = None,
     ) -> Session | None:
         """Run the post-lock sync/promote step and return the usable session.
 
@@ -1207,6 +1454,30 @@ class WorkspaceManager:
                 await session.sandbox.ensure_sandbox_ready()
                 mark("sandbox_ready")
 
+                # Resolve + apply the per-workspace MCP composite BEFORE asset
+                # sync so codegen (which reads session.sandbox.mcp_registry) sees
+                # the effective set. Cheap (resolve + in-memory build); the slow
+                # discovery is kicked in the background below. The version check
+                # rides ws_mcp_version (piggybacked from the post-cooldown read),
+                # so an unchanged config adds zero extra DB reads.
+                _t_resolve = time.time()
+                resolved_mcp = await self._apply_session_mcp(
+                    workspace_id,
+                    workspace_user_id,
+                    session,
+                    ws_version=ws_mcp_version,
+                )
+                mcp_changed = resolved_mcp is not None
+                if mcp_changed:
+                    logger.info(
+                        "[ASSET_SYNC] workspace_id=%s mcp_resolve=%.0fms "
+                        "version=%s",
+                        workspace_id,
+                        (time.time() - _t_resolve) * 1000,
+                        session.mcp_config_version,
+                    )
+                    mark("mcp_resolve")
+
                 if needs_deferred_sync:
                     logger.debug(
                         f"Completing deferred sync for lazy-init workspace {workspace_id}"
@@ -1234,6 +1505,32 @@ class WorkspaceManager:
                         )
                         await update_workspace_activity(workspace_id)
                         self._pending_lazy_sync.discard(workspace_id)
+                elif mcp_changed:
+                    # Warm re-sync path normally skips asset sync; a config-version
+                    # delta means wrappers changed, so push them now (off the lock,
+                    # bounded to changed modules by the manifest diff). No file
+                    # restore / promotion — the running session already owns those.
+                    await self._sync_sandbox_assets(
+                        workspace_id,
+                        workspace_user_id,
+                        session.sandbox,
+                        reusing_sandbox=True,
+                    )
+                    mark("mcp_asset_sync")
+
+                # Kick background discovery for user servers still lacking ok
+                # schemas (new/pending/error). Never awaited here and never under
+                # the lock — stdio cold-start is up to 30s. On completion it
+                # rebuilds this session's composite + re-syncs the new wrappers.
+                if resolved_mcp is not None:
+                    needing = self._servers_needing_discovery(session, resolved_mcp)
+                    self._kick_mcp_discovery(
+                        workspace_id,
+                        workspace_user_id,
+                        session,
+                        needing,
+                        session.mcp_config_version or 0,
+                    )
 
                 self._record_sync(workspace_id)
             except SandboxGoneError as e:
@@ -1428,6 +1725,18 @@ class WorkspaceManager:
                 return recovered, True
             mark("session_initialize")
 
+            # Resolve + install the per-workspace composite before asset sync so
+            # codegen uploads user-server wrappers. Cheap; discovery kicked in
+            # the background (fire-and-forget — doesn't hold the lock).
+            ws_version = (
+                int(workspace.get("mcp_config_version") or 0)
+                if workspace.get("mcp_config_version") is not None
+                else 0
+            )
+            resolved_mcp = await self._apply_session_mcp(
+                workspace_id, workspace_user_id, session, ws_version=ws_version
+            )
+
             await self._sync_sandbox_assets(
                 workspace_id,
                 workspace_user_id,
@@ -1435,6 +1744,15 @@ class WorkspaceManager:
                 reusing_sandbox=sandbox_id is not None,
             )
             mark("cold_asset_sync")
+
+            if resolved_mcp is not None:
+                self._kick_mcp_discovery(
+                    workspace_id,
+                    workspace_user_id,
+                    session,
+                    self._servers_needing_discovery(session, resolved_mcp),
+                    session.mcp_config_version or 0,
+                )
 
             migrated = await self._maybe_migrate_sandbox(
                 workspace_id, workspace_user_id, session, workspace
@@ -2041,6 +2359,11 @@ class WorkspaceManager:
             except asyncio.CancelledError:
                 pass
             self._cleanup_task = None
+
+        # Cancel any in-flight background MCP discovery tasks.
+        for task in list(self._mcp_discovery_tasks):
+            task.cancel()
+        self._mcp_discovery_tasks.clear()
 
         # Clear session cache (don't stop workspaces on shutdown)
         self._sessions.clear()

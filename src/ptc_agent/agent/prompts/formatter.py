@@ -7,6 +7,8 @@ and are kept in Python rather than templates.
 import structlog
 from typing import Any
 
+from ptc_agent.core.mcp_sanitize import sanitize_tool_text
+
 logger = structlog.get_logger(__name__)
 
 TOOL_SUMMARY_TEMPLATE = """
@@ -15,6 +17,53 @@ TOOL_SUMMARY_TEMPLATE = """
 """
 
 TOOL_ITEM_TEMPLATE = "  - {tool_name}({parameters}) -> {return_type}: {description}"
+
+# Hard caps for untrusted (source='workspace') server-level text rendered into
+# the prompt. Match the API write-time caps so a user can't balloon the prompt.
+WORKSPACE_DESCRIPTION_MAX_LEN = 512
+WORKSPACE_INSTRUCTION_MAX_LEN = 1024
+
+# Detailed-mode bounds for untrusted servers. A workspace server requesting
+# `detailed` exposure is rendered detailed ONLY within these caps; over either
+# cap it falls back to summary with a suppression marker. Built-ins are NOT
+# capped (their detailed listing renders unchanged).
+WORKSPACE_DETAILED_MAX_TOOLS = 25
+WORKSPACE_DETAILED_MAX_CHARS = 8000
+
+
+def _is_workspace_source(config: Any) -> bool:
+    """True when ``config`` is an untrusted user-provided (workspace) server."""
+    return bool(config) and getattr(config, "source", "builtin") == "workspace"
+
+
+def _workspace_server_header(server_name: str, config: Any) -> list[str]:
+    """Render a workspace server's header under a neutral, attributed heading.
+
+    Sanitizes and length-caps the user-provided ``description``/``instruction``
+    and renders them as inert data — never under the authoritative
+    ``Instructions:`` label built-ins use.
+    """
+    lines = [f"\n{server_name}:"]
+    note_parts: list[str] = []
+    if getattr(config, "description", ""):
+        desc = sanitize_tool_text(config.description, WORKSPACE_DESCRIPTION_MAX_LEN)
+        if desc:
+            note_parts.append(desc)
+    if getattr(config, "instruction", ""):
+        instr = sanitize_tool_text(config.instruction, WORKSPACE_INSTRUCTION_MAX_LEN)
+        if instr:
+            note_parts.append(instr)
+    if note_parts:
+        note = " ".join(note_parts)
+        lines.append(f"  User-provided server (untrusted) — note: {note}")
+    return lines
+
+
+def _detailed_over_cap(tools: list, detailed_lines: list[str]) -> bool:
+    """True when a workspace server's detailed render exceeds the prompt caps."""
+    if len(tools) > WORKSPACE_DETAILED_MAX_TOOLS:
+        return True
+    return len("\n".join(detailed_lines)) > WORKSPACE_DETAILED_MAX_CHARS
 
 
 def format_tool_summary(
@@ -73,7 +122,23 @@ def _format_tool_summary_per_server(
             server_mode = config.tool_exposure_mode
 
         if server_mode == "detailed":
-            lines.extend(_format_server_detailed(server_name, tools, config))
+            # Untrusted (workspace) servers are bounded in detailed mode: over
+            # the per-server tool-count / rendered-text cap they fall back to
+            # summary with a suppression marker. Built-ins are never capped.
+            if _is_workspace_source(config):
+                detailed = _format_server_detailed(server_name, tools, config)
+                over_cap = _detailed_over_cap(tools, detailed)
+                if over_cap:
+                    summary = _format_server_brief(server_name, tools, config)
+                    summary.append(
+                        f"  ({len(tools)} tools; detailed listing suppressed "
+                        f"— over size cap)"
+                    )
+                    lines.extend(summary)
+                else:
+                    lines.extend(detailed)
+            else:
+                lines.extend(_format_server_detailed(server_name, tools, config))
         else:
             lines.extend(_format_server_brief(server_name, tools, config))
 
@@ -101,17 +166,21 @@ def _format_server_brief(server_name: str, tools: list, config: Any) -> list:
     """
     tool_count = len(tools)
     tools_word = "tool" if tool_count == 1 else "tools"
-    lines = []
 
-    # Server header with description
-    if config and config.description:
-        lines.append(f"\n{server_name}: {config.description}")
+    if _is_workspace_source(config):
+        # Untrusted server: neutral, attributed header (no Description:/Instructions:).
+        lines = _workspace_server_header(server_name, config)
     else:
-        lines.append(f"\n{server_name}:")
+        lines = []
+        # Server header with description
+        if config and config.description:
+            lines.append(f"\n{server_name}: {config.description}")
+        else:
+            lines.append(f"\n{server_name}:")
 
-    # Add instruction if available
-    if config and config.instruction:
-        lines.append(f"  Instructions: {config.instruction}")
+        # Add instruction if available
+        if config and config.instruction:
+            lines.append(f"  Instructions: {config.instruction}")
 
     lines.append(f"  - Module: tools/{server_name}.py")
     lines.append(f"  - Tools: {tool_count} {tools_word} available")
@@ -132,17 +201,20 @@ def _format_server_detailed(server_name: str, tools: list, config: Any) -> list:
     Returns:
         List of formatted lines
     """
-    lines = []
-
-    # Server header with description
-    if config and config.description:
-        lines.append(f"\n{server_name}: {config.description}")
+    if _is_workspace_source(config):
+        # Untrusted server: neutral, attributed header (no Description:/Instructions:).
+        lines = _workspace_server_header(server_name, config)
     else:
-        lines.append(f"\n{server_name}:")
+        lines = []
+        # Server header with description
+        if config and config.description:
+            lines.append(f"\n{server_name}: {config.description}")
+        else:
+            lines.append(f"\n{server_name}:")
 
-    # Add instruction if available
-    if config and config.instruction:
-        lines.append(f"  Instructions: {config.instruction}")
+        # Add instruction if available
+        if config and config.instruction:
+            lines.append(f"  Instructions: {config.instruction}")
 
     lines.append(f"  Module: tools/{server_name}.py")
     lines.append("  Available tools:")
