@@ -290,6 +290,7 @@ interface PortfolioNavSummaryProps {
 export function PortfolioNavSummary({ rows, valuesHidden, onToggleHidden }: PortfolioNavSummaryProps) {
   const { t, i18n } = useTranslation();
   const summaries = portfolioSummary(rows);
+  const visibleSummaries = summaries.filter((summary) => summary.totalValue !== 0);
 
   return (
     <div
@@ -301,7 +302,7 @@ export function PortfolioNavSummary({ rows, valuesHidden, onToggleHidden }: Port
     >
       <div className="flex items-center justify-between mb-1">
         <div className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-          {summaries.length > 1 ? t('dashboard.widgets.holdings.navByCurrency') : t('dashboard.widgets.holdings.nav')}
+          {visibleSummaries.length > 1 ? t('dashboard.widgets.holdings.navByCurrency') : t('dashboard.widgets.holdings.nav')}
         </div>
         <button
           type="button"
@@ -320,16 +321,18 @@ export function PortfolioNavSummary({ rows, valuesHidden, onToggleHidden }: Port
         </button>
       </div>
       <div
-        className={`${summaries.length > 1 ? 'text-xl' : 'text-2xl'} font-bold mb-2 dashboard-mono`}
+        className={`${visibleSummaries.length > 1 ? 'text-xl' : 'text-2xl'} font-bold mb-2 dashboard-mono`}
         style={{ color: 'var(--color-text-primary)' }}
       >
         {valuesHidden
           ? '********'
-          : summaries.map((summary) => (
+          : visibleSummaries.length > 0
+            ? visibleSummaries.map((summary) => (
               <div key={summary.currency}>
                 {formatPortfolioMoney(summary.totalValue, summary.currency, i18n.language)}
               </div>
-            ))}
+            ))
+            : '--'}
       </div>
       {!valuesHidden && (
         <div className="flex flex-wrap gap-2">

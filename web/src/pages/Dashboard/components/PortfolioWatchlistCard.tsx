@@ -37,7 +37,7 @@ interface PortfolioRow {
   price: number;
   quantity?: number | null;
   average_cost?: number | null;
-  currency?: string | null;
+  currency: string;
   marketValue?: number;
   unrealizedPlPercent?: number | null;
   isPositive?: boolean;
@@ -374,7 +374,10 @@ function PortfolioWatchlistCard({
     });
   };
 
-  const portfolioSummaries = summarizePortfolioByCurrency(portfolioRows);
+  const portfolioSummaries = React.useMemo(
+    () => summarizePortfolioByCurrency(portfolioRows),
+    [portfolioRows],
+  );
 
   return (
     <div

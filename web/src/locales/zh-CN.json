@@ -885,7 +885,7 @@
       "tabWatch": "自选",
       "tabHoldings": "持仓",
       "netAssetValue": "净资产",
-      "netAssetValueByCurrency": "按币种净资产",
+      "netAssetValueByCurrency": "按币种净资产价值",
       "addSymbol": "添加标的",
       "addTransaction": "添加交易"
     },
