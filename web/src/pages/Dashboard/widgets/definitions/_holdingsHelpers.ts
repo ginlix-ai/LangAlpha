@@ -19,8 +19,11 @@ export interface PortfolioSummary {
 }
 
 export function portfolioSummary(rows: PortfolioRow[]): PortfolioSummary {
-  const totalValue = rows.reduce((s, r) => s + (r.marketValue || 0), 0);
-  const totalCost = rows.reduce(
+  const pricedRows = rows.filter(
+    (r) => r.quoteAvailable !== false && r.marketValue != null,
+  );
+  const totalValue = pricedRows.reduce((s, r) => s + (r.marketValue || 0), 0);
+  const totalCost = pricedRows.reduce(
     (s, r) => s + (r.average_cost != null ? r.average_cost * (r.quantity || 0) : 0),
     0,
   );

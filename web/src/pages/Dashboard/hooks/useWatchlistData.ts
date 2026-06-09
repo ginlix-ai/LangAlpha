@@ -17,6 +17,7 @@ export interface WatchlistRow {
   change: number;
   changePercent: number;
   isPositive: boolean;
+  quoteAvailable?: boolean;
   previousClose: number | null;
   earlyTradingChangePercent: number | null;
   lateTradingChangePercent: number | null;
@@ -72,13 +73,15 @@ export function useWatchlistData() {
         ? items.map((i) => {
           const sym = String(i.symbol || '').trim().toUpperCase();
           const p = bySym[sym] || {} as Partial<StockPrice>;
+          const quoteAvailable = p.quoteAvailable !== false && p.price != null;
           return {
             watchlist_item_id: i.watchlist_item_id,
             symbol: sym,
-            price: p.price ?? 0,
-            change: p.change ?? 0,
-            changePercent: p.changePercent ?? 0,
-            isPositive: p.isPositive ?? true,
+            price: quoteAvailable ? p.price ?? 0 : 0,
+            change: quoteAvailable ? p.change ?? 0 : 0,
+            changePercent: quoteAvailable ? p.changePercent ?? 0 : 0,
+            isPositive: quoteAvailable ? p.isPositive ?? true : true,
+            quoteAvailable,
             previousClose: p.previousClose ?? null,
             earlyTradingChangePercent: p.earlyTradingChangePercent ?? null,
             lateTradingChangePercent: p.lateTradingChangePercent ?? null,

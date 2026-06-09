@@ -95,7 +95,7 @@ function AddWatchlistItemDialog({
       getStockPrices([selectedStock.symbol])
         .then((prices) => {
           const priceData = prices?.[0];
-          if (priceData) {
+          if (priceData && priceData.quoteAvailable !== false) {
             setCurrentPrice(priceData.price);
           } else {
             setCurrentPrice(null);

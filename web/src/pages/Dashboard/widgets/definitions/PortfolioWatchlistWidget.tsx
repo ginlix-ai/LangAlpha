@@ -32,21 +32,23 @@ type PortfolioWatchlistConfig = {
 };
 
 function watchlistRowToQuote(r: WatchlistRow) {
+  const hasQuote = r.quoteAvailable !== false;
   return {
     symbol: r.symbol,
-    price: r.price,
-    change: r.change,
-    changePercent: r.changePercent,
+    price: hasQuote ? r.price : undefined,
+    change: hasQuote ? r.change : undefined,
+    changePercent: hasQuote ? r.changePercent : undefined,
   };
 }
 
 function portfolioRowToQuote(r: PortfolioRow) {
+  const hasQuote = r.quoteAvailable !== false;
   return {
     symbol: r.symbol,
-    price: r.price,
+    price: hasQuote ? r.price : undefined,
     shares: r.quantity ?? undefined,
-    marketValue: r.marketValue,
-    changePercent: r.unrealizedPlPercent ?? undefined,
+    marketValue: hasQuote ? r.marketValue ?? undefined : undefined,
+    changePercent: hasQuote ? r.unrealizedPlPercent ?? undefined : undefined,
   };
 }
 
@@ -126,7 +128,7 @@ function PortfolioWatchlistWidget({
           widget_id: `${instance.id}/${rowId}`,
           label:
             row.symbol +
-            (row.changePercent !== undefined
+            (row.quoteAvailable !== false && row.changePercent !== undefined
               ? ` · ${row.changePercent >= 0 ? '+' : ''}${row.changePercent.toFixed(2)}%`
               : ''),
           description: t('dashboard.widgets.portfolioWatchlist.headerWatchlist'),
@@ -149,7 +151,7 @@ function PortfolioWatchlistWidget({
         widget_id: `${instance.id}/${rowId}`,
         label:
           row.symbol +
-          (row.unrealizedPlPercent != null
+          (row.quoteAvailable !== false && row.unrealizedPlPercent != null
             ? ` · ${row.unrealizedPlPercent >= 0 ? '+' : ''}${row.unrealizedPlPercent.toFixed(2)}%`
             : ''),
         description: t('dashboard.widgets.portfolioWatchlist.headerHoldings'),

@@ -40,8 +40,9 @@ interface WatchlistRowItemProps {
 export function WatchlistRowItem({ item, index, marketStatus, onDelete }: WatchlistRowItemProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const pos = item.isPositive;
-  const pctStr = (pos ? '+' : '') + fmt2(Number(item.changePercent)) + '%';
+  const hasQuote = item.quoteAvailable !== false;
+  const pos = hasQuote ? item.isPositive ?? true : true;
+  const pctStr = hasQuote ? (pos ? '+' : '') + fmt2(Number(item.changePercent)) + '%' : 'N/A';
   const hasId = !!item.watchlist_item_id;
 
   const { extPct, extType } = getExtendedHoursInfo(marketStatus, item, { shortLabels: true });
@@ -77,26 +78,36 @@ export function WatchlistRowItem({ item, index, marketStatus, onDelete }: Watchl
             className="text-sm font-medium dashboard-mono"
             style={{ color: 'var(--color-text-primary)' }}
           >
-            {fmt2(Number(extType && item.previousClose != null ? item.previousClose : item.price))}
+            {hasQuote
+              ? fmt2(Number(extType && item.previousClose != null ? item.previousClose : item.price))
+              : 'N/A'}
           </div>
           <div
             className="text-xs font-medium dashboard-mono"
-            style={{ color: pos ? 'var(--color-profit)' : 'var(--color-loss)' }}
+            style={{
+              color: hasQuote
+                ? pos ? 'var(--color-profit)' : 'var(--color-loss)'
+                : 'var(--color-text-secondary)',
+            }}
           >
-            {(pos ? '+' : '') + fmt2(Number(item.change))}
+            {hasQuote ? (pos ? '+' : '') + fmt2(Number(item.change)) : '—'}
           </div>
         </div>
         <div className="text-right">
           <div
             className="w-16 py-1 rounded-lg text-center text-xs font-bold"
             style={{
-              backgroundColor: pos ? 'var(--color-profit-soft)' : 'var(--color-loss-soft)',
-              color: pos ? 'var(--color-profit)' : 'var(--color-loss)',
+              backgroundColor: hasQuote
+                ? pos ? 'var(--color-profit-soft)' : 'var(--color-loss-soft)'
+                : 'var(--color-bg-subtle)',
+              color: hasQuote
+                ? pos ? 'var(--color-profit)' : 'var(--color-loss)'
+                : 'var(--color-text-secondary)',
             }}
           >
             {pctStr}
           </div>
-          {extType && extPct != null && (
+          {hasQuote && extType && extPct != null && (
             <div
               className="text-[10px] mt-0.5 text-center flex items-center justify-center gap-0.5"
               style={{ color: extColor }}
@@ -146,9 +157,10 @@ export function PortfolioRowItem({
 }: PortfolioRowItemProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const pos = item.isPositive;
+  const hasQuote = item.quoteAvailable !== false;
+  const pos = hasQuote ? item.isPositive ?? true : true;
   const plStr =
-    item.unrealizedPlPercent != null
+    hasQuote && item.unrealizedPlPercent != null
       ? (pos ? '+' : '') + fmt2(Number(item.unrealizedPlPercent)) + '%'
       : '—';
   const hasId = !!item.user_portfolio_id;
@@ -192,25 +204,33 @@ export function PortfolioRowItem({
           >
             {valuesHidden
               ? '******'
-              : `$${fmt2(Number(item.marketValue || 0))}`}
+              : hasQuote && item.marketValue != null
+                ? `$${fmt2(Number(item.marketValue))}`
+                : 'N/A'}
           </div>
           <div className="text-xs dashboard-mono" style={{ color: 'var(--color-text-secondary)' }}>
             {valuesHidden
               ? '***'
-              : `@${fmt2(Number(extType && item.previousClose != null ? item.previousClose : item.price))}`}
+              : hasQuote
+                ? `@${fmt2(Number(extType && item.previousClose != null ? item.previousClose : item.price))}`
+                : '@N/A'}
           </div>
         </div>
         <div className="text-right">
           <div
             className="w-16 py-1 rounded-lg text-center text-xs font-bold"
             style={{
-              backgroundColor: pos ? 'var(--color-profit-soft)' : 'var(--color-loss-soft)',
-              color: pos ? 'var(--color-profit)' : 'var(--color-loss)',
+              backgroundColor: hasQuote
+                ? pos ? 'var(--color-profit-soft)' : 'var(--color-loss-soft)'
+                : 'var(--color-bg-subtle)',
+              color: hasQuote
+                ? pos ? 'var(--color-profit)' : 'var(--color-loss)'
+                : 'var(--color-text-secondary)',
             }}
           >
             {plStr}
           </div>
-          {extType && extPct != null && (
+          {hasQuote && extType && extPct != null && (
             <div
               className="text-[10px] mt-0.5 text-center flex items-center justify-center gap-0.5"
               style={{ color: extColor }}
@@ -285,6 +305,9 @@ interface PortfolioNavSummaryProps {
 export function PortfolioNavSummary({ rows, valuesHidden, onToggleHidden }: PortfolioNavSummaryProps) {
   const { t } = useTranslation();
   const { totalValue, totalCost, totalPl, totalPlPct } = portfolioSummary(rows);
+  const hasPricedRows = rows.some(
+    (r) => r.quoteAvailable !== false && r.marketValue != null,
+  );
   const isPlPositive = totalPl >= 0;
 
   return (
@@ -319,9 +342,9 @@ export function PortfolioNavSummary({ rows, valuesHidden, onToggleHidden }: Port
         className="text-2xl font-bold mb-2 dashboard-mono"
         style={{ color: 'var(--color-text-primary)' }}
       >
-        {valuesHidden ? '********' : `$${fmt2(totalValue)}`}
+        {valuesHidden ? '********' : hasPricedRows ? `$${fmt2(totalValue)}` : 'N/A'}
       </div>
-      {!valuesHidden && totalCost > 0 && (
+      {!valuesHidden && hasPricedRows && totalCost > 0 && (
         <div
           className="flex items-center gap-2 text-xs font-medium w-fit px-2 py-1 rounded-full"
           style={{

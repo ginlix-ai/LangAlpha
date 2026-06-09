@@ -20,6 +20,7 @@ interface WatchlistRow {
   change: number;
   changePercent: number;
   isPositive: boolean;
+  quoteAvailable?: boolean;
   previousClose?: number | null;
   earlyTradingChangePercent?: number | null;
   lateTradingChangePercent?: number | null;
@@ -32,9 +33,10 @@ interface PortfolioRow {
   price: number;
   quantity?: number | null;
   average_cost?: number | null;
-  marketValue?: number;
+  marketValue?: number | null;
   unrealizedPlPercent?: number | null;
   isPositive?: boolean;
+  quoteAvailable?: boolean;
   previousClose?: number | null;
   earlyTradingChangePercent?: number | null;
   lateTradingChangePercent?: number | null;
@@ -55,8 +57,9 @@ interface WatchlistItemProps {
 function WatchlistItem({ item, index, onDelete, marketStatus, isMobile }: WatchlistItemProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const pos = item.isPositive;
-  const pctStr = (pos ? '+' : '') + fmt2(Number(item.changePercent)) + '%';
+  const hasQuote = item.quoteAvailable !== false;
+  const pos = hasQuote ? item.isPositive ?? true : true;
+  const pctStr = hasQuote ? (pos ? '+' : '') + fmt2(Number(item.changePercent)) + '%' : 'N/A';
   const hasId = !!item.watchlist_item_id;
 
   // Extended hours: show when not regular session and data available
@@ -91,10 +94,19 @@ function WatchlistItem({ item, index, onDelete, marketStatus, isMobile }: Watchl
       <div className="flex items-center gap-4">
         <div className="text-right">
           <div className="text-sm font-medium dashboard-mono" style={{ color: 'var(--color-text-primary)' }}>
-            {fmt2(Number(extType && item.previousClose != null ? item.previousClose : item.price))}
+            {hasQuote
+              ? fmt2(Number(extType && item.previousClose != null ? item.previousClose : item.price))
+              : 'N/A'}
           </div>
-          <div className="text-xs font-medium dashboard-mono" style={{ color: pos ? 'var(--color-profit)' : 'var(--color-loss)' }}>
-            {(pos ? '+' : '') + fmt2(Number(item.change))}
+          <div
+            className="text-xs font-medium dashboard-mono"
+            style={{
+              color: hasQuote
+                ? pos ? 'var(--color-profit)' : 'var(--color-loss)'
+                : 'var(--color-text-secondary)',
+            }}
+          >
+            {hasQuote ? (pos ? '+' : '') + fmt2(Number(item.change)) : '—'}
           </div>
         </div>
 
@@ -102,13 +114,17 @@ function WatchlistItem({ item, index, onDelete, marketStatus, isMobile }: Watchl
           <div
             className="w-16 py-1 rounded-lg text-center text-xs font-bold"
             style={{
-              backgroundColor: pos ? 'var(--color-profit-soft)' : 'var(--color-loss-soft)',
-              color: pos ? 'var(--color-profit)' : 'var(--color-loss)',
+              backgroundColor: hasQuote
+                ? pos ? 'var(--color-profit-soft)' : 'var(--color-loss-soft)'
+                : 'var(--color-bg-subtle)',
+              color: hasQuote
+                ? pos ? 'var(--color-profit)' : 'var(--color-loss)'
+                : 'var(--color-text-secondary)',
             }}
           >
             {pctStr}
           </div>
-          {extType && extPct != null && (
+          {hasQuote && extType && extPct != null && (
             <div className="text-[10px] mt-0.5 text-center flex items-center justify-center gap-0.5" style={{ color: extColor }}>
               {extType === 'pre' ? <Sunrise size={10} /> : <Sunset size={10} />}
               {fmt2(Number(item.price))} {extPct >= 0 ? '+' : ''}{fmt2(extPct)}%
@@ -171,9 +187,10 @@ interface PortfolioItemProps {
 function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStatus, isMobile }: PortfolioItemProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const pos = item.isPositive;
+  const hasQuote = item.quoteAvailable !== false;
+  const pos = hasQuote ? item.isPositive ?? true : true;
   const plStr =
-    item.unrealizedPlPercent != null
+    hasQuote && item.unrealizedPlPercent != null
       ? (pos ? '+' : '') + fmt2(Number(item.unrealizedPlPercent)) + '%'
       : '—';
   const hasId = !!item.user_portfolio_id;
@@ -216,10 +233,18 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStat
       <div className="flex items-center gap-4">
         <div className="text-right">
           <div className="text-sm font-medium dashboard-mono" style={{ color: 'var(--color-text-primary)' }}>
-            {valuesHidden ? '******' : `$${fmt2(Number(item.marketValue || 0))}`}
+            {valuesHidden
+              ? '******'
+              : hasQuote && item.marketValue != null
+                ? `$${fmt2(Number(item.marketValue))}`
+                : 'N/A'}
           </div>
           <div className="text-xs dashboard-mono" style={{ color: 'var(--color-text-secondary)' }}>
-            {valuesHidden ? '***' : `@${fmt2(Number(extType && item.previousClose != null ? item.previousClose : item.price))}`}
+            {valuesHidden
+              ? '***'
+              : hasQuote
+                ? `@${fmt2(Number(extType && item.previousClose != null ? item.previousClose : item.price))}`
+                : '@N/A'}
           </div>
         </div>
 
@@ -227,13 +252,17 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStat
           <div
             className="w-16 py-1 rounded-lg text-center text-xs font-bold"
             style={{
-              backgroundColor: pos ? 'var(--color-profit-soft)' : 'var(--color-loss-soft)',
-              color: pos ? 'var(--color-profit)' : 'var(--color-loss)',
+              backgroundColor: hasQuote
+                ? pos ? 'var(--color-profit-soft)' : 'var(--color-loss-soft)'
+                : 'var(--color-bg-subtle)',
+              color: hasQuote
+                ? pos ? 'var(--color-profit)' : 'var(--color-loss)'
+                : 'var(--color-text-secondary)',
             }}
           >
             {plStr}
           </div>
-          {extType && extPct != null && (
+          {hasQuote && extType && extPct != null && (
             <div className="text-[10px] mt-0.5 text-center flex items-center justify-center gap-0.5" style={{ color: extColor }}>
               {extType === 'pre' ? <Sunrise size={10} /> : <Sunset size={10} />}
               {fmt2(Number(item.price))} {extPct >= 0 ? '+' : ''}{fmt2(extPct)}%
@@ -368,8 +397,12 @@ function PortfolioWatchlistCard({
   };
 
   // Compute portfolio summary
-  const totalValue = portfolioRows.reduce((sum, r) => sum + (r.marketValue || 0), 0);
-  const totalCost = portfolioRows.reduce(
+  const pricedRows = portfolioRows.filter(
+    (r) => r.quoteAvailable !== false && r.marketValue != null,
+  );
+  const hasPricedRows = pricedRows.length > 0;
+  const totalValue = pricedRows.reduce((sum, r) => sum + (r.marketValue || 0), 0);
+  const totalCost = pricedRows.reduce(
     (sum, r) => sum + (r.average_cost != null ? r.average_cost * (r.quantity || 0) : 0),
     0
   );
@@ -486,9 +519,9 @@ function PortfolioWatchlistCard({
                     className="text-2xl font-bold mb-2 dashboard-mono"
                     style={{ color: 'var(--color-text-primary)' }}
                   >
-                    {valuesHidden ? '********' : `$${fmt2(totalValue)}`}
+                    {valuesHidden ? '********' : hasPricedRows ? `$${fmt2(totalValue)}` : 'N/A'}
                   </div>
-                  {!valuesHidden && (
+                  {!valuesHidden && hasPricedRows && (
                     <div
                       className="flex items-center gap-2 text-xs font-medium w-fit px-2 py-1 rounded-full"
                       style={{
