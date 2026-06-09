@@ -265,6 +265,34 @@ class TestMarketDataProvider:
         assert global_src.calls[0][1]["symbols"] == ["301189.SZ"]
 
     @pytest.mark.asyncio
+    async def test_get_snapshots_partial_resolution_fallback(self):
+        primary_src = SnapshotSource(
+            "primary",
+            {"AAPL": {"symbol": "AAPL", "price": 190.0}},
+        )
+        fallback_src = SnapshotSource(
+            "fallback",
+            {"MSFT": {"symbol": "MSFT", "price": 420.0}},
+        )
+        provider = MarketDataProvider(
+            [
+                ProviderEntry("primary", primary_src, {"all"}),
+                ProviderEntry("fallback", fallback_src, {"all"}),
+            ]
+        )
+
+        result = await provider.get_snapshots(["AAPL", "MSFT"])
+
+        assert result == [
+            {"symbol": "AAPL", "price": 190.0},
+            {"symbol": "MSFT", "price": 420.0},
+        ]
+        assert len(primary_src.calls) == 1
+        assert len(fallback_src.calls) == 1
+        assert primary_src.calls[0][1]["symbols"] == ["AAPL", "MSFT"]
+        assert fallback_src.calls[0][1]["symbols"] == ["MSFT"]
+
+    @pytest.mark.asyncio
     async def test_get_snapshots_falls_back_when_provider_returns_no_rows(self):
         empty_src = SnapshotSource("primary")
         fallback_src = SnapshotSource(
