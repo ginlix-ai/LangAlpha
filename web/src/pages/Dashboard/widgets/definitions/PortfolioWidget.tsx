@@ -21,6 +21,7 @@ import {
   PortfolioRowItem,
 } from './_holdingsPrimitives';
 import { formatPortfolioNavMarkdownLine, portfolioSummary } from './_holdingsHelpers';
+import { normalizePortfolioCurrency } from '../../utils/portfolioSummary';
 
 type PortfolioConfig = { valuesHidden?: boolean };
 
@@ -32,6 +33,7 @@ function rowToQuote(r: PortfolioRow) {
     shares: r.quantity ?? undefined,
     marketValue: hasQuote ? r.marketValue ?? undefined : undefined,
     changePercent: hasQuote ? r.unrealizedPlPercent ?? undefined : undefined,
+    currency: normalizePortfolioCurrency(r.currency),
   };
 }
 
