@@ -9,20 +9,27 @@ ticker queries (``tt:``) which include related-entity coverage.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from .client import TickerTickClient
 
 logger = logging.getLogger(__name__)
 
+# Tickers flow into TickerTick's query DSL (``tt:<sym>``), so only let clean
+# ticker tokens through — keeps a crafted ``?tickers=`` value from injecting DSL
+# operators (e.g. ``") (or s:cnn"``) into the feed query.
+_TICKER_RE = re.compile(r"^[A-Za-z0-9.\-]{1,15}$")
+
 
 def _build_query(tickers: list[str] | None) -> str:
-    """Map a ticker list to a TickerTick feed query."""
-    if not tickers:
+    """Map a ticker list to a TickerTick feed query (ignoring non-ticker tokens)."""
+    safe = [t for t in tickers or [] if _TICKER_RE.match(t)]
+    if not safe:
         return "T:curated"
-    if len(tickers) == 1:
-        return f"tt:{tickers[0].lower()}"
-    return "(or " + " ".join(f"tt:{t.lower()}" for t in tickers) + ")"
+    if len(safe) == 1:
+        return f"tt:{safe[0].lower()}"
+    return "(or " + " ".join(f"tt:{t.lower()}" for t in safe) + ")"
 
 
 def _normalize_story(raw: dict[str, Any]) -> dict[str, Any]:

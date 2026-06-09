@@ -18,7 +18,13 @@ import httpx
 
 def _convert_timestamps(data: dict[str, Any]) -> dict[str, Any]:
     """Convert each story's millisecond ``time`` to an ISO-8601 UTC string in place."""
+    # TickerTick is an unowned upstream; a 200 with an unexpected body (list,
+    # string, …) shouldn't crash the endpoint — treat it as an empty feed.
+    if not isinstance(data, dict):
+        return {"stories": []}
     for story in data.get("stories", []):
+        if not isinstance(story, dict):
+            continue
         ts = story.get("time")
         if isinstance(ts, (int, float)):
             story["time"] = datetime.fromtimestamp(ts / 1000, timezone.utc).isoformat()
