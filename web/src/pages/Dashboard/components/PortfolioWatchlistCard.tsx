@@ -521,7 +521,7 @@ function PortfolioWatchlistCard({
                   >
                     {valuesHidden ? '********' : hasPricedRows ? `$${fmt2(totalValue)}` : 'N/A'}
                   </div>
-                  {!valuesHidden && hasPricedRows && (
+                  {!valuesHidden && hasPricedRows && totalCost > 0 && (
                     <div
                       className="flex items-center gap-2 text-xs font-medium w-fit px-2 py-1 rounded-full"
                       style={{
