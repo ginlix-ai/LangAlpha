@@ -368,7 +368,7 @@ export function PortfolioNavSummary({ rows, valuesHidden, onToggleHidden }: Port
                   {formatPortfolioMoney(summary.totalValue, summary.currency, i18n.language)}
                 </div>
               ))
-            : 'N/A'}
+            : '--'}
       </div>
       {!valuesHidden && visiblePlSummaries.length > 0 && (
         <div className="flex flex-wrap gap-2">

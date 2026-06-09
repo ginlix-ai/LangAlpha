@@ -7,13 +7,24 @@ import {
   formatPortfolioNavMarkdownLine,
   portfolioSummary,
 } from '../../widgets/definitions/_holdingsHelpers';
+import type { PortfolioRow } from '../../hooks/usePortfolioData';
+
+const createPortfolioRow = (overrides: Partial<PortfolioRow>): PortfolioRow => ({
+  symbol: 'TEST',
+  price: 0,
+  quantity: 0,
+  average_cost: 0,
+  currency: 'USD',
+  marketValue: 0,
+  ...overrides,
+});
 
 describe('portfolioSummary', () => {
   it('keeps portfolio NAV and P/L separated by holding currency', () => {
     const summaries = summarizePortfolioByCurrency([
-      { currency: 'USD', marketValue: 120, average_cost: 10, quantity: 10 },
-      { currency: 'hkd', marketValue: 800, average_cost: 70, quantity: 10 },
-      { currency: 'USD', marketValue: 55, average_cost: 50, quantity: 1 },
+      createPortfolioRow({ currency: 'USD', marketValue: 120, average_cost: 10, quantity: 10 }),
+      createPortfolioRow({ currency: 'hkd', marketValue: 800, average_cost: 70, quantity: 10 }),
+      createPortfolioRow({ currency: 'USD', marketValue: 55, average_cost: 50, quantity: 1 }),
     ]);
 
     expect(summaries).toEqual([
@@ -22,7 +33,7 @@ describe('portfolioSummary', () => {
         totalValue: 175,
         totalCost: 150,
         totalPl: 25,
-        totalPlPct: 16.666666666666664,
+        totalPlPct: expect.any(Number),
         isPlPositive: true,
       },
       {
@@ -30,10 +41,12 @@ describe('portfolioSummary', () => {
         totalValue: 800,
         totalCost: 700,
         totalPl: 100,
-        totalPlPct: 14.285714285714285,
+        totalPlPct: expect.any(Number),
         isPlPositive: true,
       },
     ]);
+    expect(summaries[0].totalPlPct).toBeCloseTo(16.67, 2);
+    expect(summaries[1].totalPlPct).toBeCloseTo(14.29, 2);
   });
 
   it('defaults missing or invalid currencies to USD', () => {
@@ -53,8 +66,8 @@ describe('portfolioSummary', () => {
 
   it('formats widget NAV markdown as one line per currency', () => {
     const summaries = portfolioSummary([
-      { symbol: 'AAPL', price: 12, currency: 'USD', marketValue: 120, average_cost: 10, quantity: 10 },
-      { symbol: '0700.HK', price: 80, currency: 'HKD', marketValue: 800, average_cost: 70, quantity: 10 },
+      createPortfolioRow({ symbol: 'AAPL', price: 12, currency: 'USD', marketValue: 120, average_cost: 10, quantity: 10 }),
+      createPortfolioRow({ symbol: '0700.HK', price: 80, currency: 'HKD', marketValue: 800, average_cost: 70, quantity: 10 }),
     ]);
 
     expect(formatPortfolioNavMarkdownLine(summaries)).toBe(

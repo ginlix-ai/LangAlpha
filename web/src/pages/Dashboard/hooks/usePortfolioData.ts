@@ -16,7 +16,7 @@ export interface PortfolioRow {
   symbol: string;
   quantity?: number | null;
   average_cost?: number | null;
-  currency?: string | null;
+  currency: string;
   notes?: string;
   price: number;
   marketValue?: number | null;
