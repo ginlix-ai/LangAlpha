@@ -8,6 +8,8 @@ from langchain_core.language_models import BaseChatModel
 from langchain_deepseek import ChatDeepSeek
 from langchain_qwq import ChatQwen
 
+from .pricing_utils import get_price_tier
+
 load_dotenv()
 
 
@@ -178,8 +180,6 @@ class ModelConfig:
                     entry[key] = model_info[key]
             # Cost tier (1-5) derived live from canonical providers.json pricing —
             # not stored in models.json, so it auto-syncs when prices change.
-            from .pricing_utils import get_price_tier
-
             price_tier = get_price_tier(model_info.get("model_id", model_name), provider)
             if price_tier is not None:
                 entry["price"] = price_tier
