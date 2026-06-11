@@ -68,6 +68,39 @@ def discovery_should_use_secrets(server) -> bool:
     return False
 
 
+def discovery_affecting_payload(server, *, include_identity: bool = False) -> dict:
+    """Canonical view of the config that changes a server's ``tools/list`` result
+    or its generated client — the single source of truth for both the per-server
+    discovery-cache key and the workspace asset-upload hash, so the two can never
+    silently disagree.
+
+    Includes transport/command/args/url, the EFFECTIVE secret-less-discovery
+    decision, and the FULL env/header maps. The stored env/header/url values are
+    ``${vault:NAME}`` reference strings or non-secret literals (e.g.
+    ``MODE=prod``) — never a resolved secret, which exists only in the sandbox
+    vault file at runtime — so a literal edit (``prod`` -> ``staging``) and a
+    vault-ref retarget (``${vault:OLD}`` -> ``${vault:NEW}``) both correctly
+    churn the hash. ``include_identity`` adds ``name`` + ``enabled`` for the
+    whole-workspace upload hash; the per-server discovery key omits them (it is
+    keyed by name already and reuses its cache across an enable/disable toggle).
+    """
+    env = dict(getattr(server, "env", {}) or {})
+    headers = dict(getattr(server, "headers", {}) or {})
+    payload: dict = {
+        "transport": getattr(server, "transport", None),
+        "command": getattr(server, "command", None),
+        "args": list(getattr(server, "args", []) or []),
+        "url": getattr(server, "url", None),
+        "discovery_uses_secrets": discovery_should_use_secrets(server),
+        "env": {k: env[k] for k in sorted(env)},
+        "headers": {k: headers[k] for k in sorted(headers)},
+    }
+    if include_identity:
+        payload["name"] = getattr(server, "name", None)
+        payload["enabled"] = bool(getattr(server, "enabled", True))
+    return payload
+
+
 def sanitize_tool_name(name: str) -> str | None:
     """Coerce a tool name into a legal, non-keyword Python identifier.
 

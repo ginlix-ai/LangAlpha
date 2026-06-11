@@ -9,13 +9,16 @@ import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import httpx
 
 from ptc_agent.config import AgentConfig
 from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
 from ptc_agent.core.session import Session, SessionManager
+
+if TYPE_CHECKING:
+    from ptc_agent.core.sandbox.ptc_sandbox import PTCSandbox
 
 from src.observability import (
     safe_add,

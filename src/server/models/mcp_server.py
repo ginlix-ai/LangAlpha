@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import socket
 from dataclasses import dataclass, field as dataclass_field
 from typing import Any, Literal, Optional
 from urllib.parse import urlsplit
@@ -139,10 +140,20 @@ def validate_remote_url(url: str) -> str:
     # Literal IP blocklist: anything not globally routable. ``is_global`` covers
     # private/loopback/link-local/reserved/multicast/unspecified AND CGNAT
     # (100.64.0.0/10), which the explicit-category checks missed.
+    candidate = host_l.strip("[]")
     try:
-        ip = ipaddress.ip_address(host_l.strip("[]"))
+        ip = ipaddress.ip_address(candidate)
     except ValueError:
-        ip = None
+        # Non-canonical numeric IPv4 forms that the sandbox resolver
+        # (getaddrinfo / curl) would still treat as an address — decimal-int
+        # (``2130706433``), hex (``0x7f000001``), octal (``0177.0.0.1``), or
+        # short-dotted (``127.1``), all == 127.0.0.1. ``inet_aton`` canonicalizes
+        # exactly those forms; a real hostname raises OSError and falls through
+        # (DNS-rebinding to a private IP is the documented, accepted residual).
+        try:
+            ip = ipaddress.ip_address(socket.inet_aton(candidate))
+        except (OSError, ValueError, UnicodeError):
+            ip = None
     if ip is not None and not ip.is_global:
         raise ValueError(f"url host {host!r} resolves to a disallowed IP range")
     return url

@@ -41,9 +41,8 @@ from ptc_agent.core.sandbox.runtime import (
 
 from ..mcp_registry import MCPRegistry
 from ..mcp_sanitize import (
-    discovery_should_use_secrets,
+    discovery_affecting_payload,
     sanitize_tool_name,
-    vault_refs,
 )
 from ..tool_generator import ToolFunctionGenerator
 
@@ -996,55 +995,23 @@ class PTCSandbox:
     def _compute_user_mcp_config_hash(self) -> str:
         """Hash user (``source='workspace'``) server CONFIG — never secret values.
 
-        Captures transport/command/args/url, header/env key NAMES, and the
-        ``${vault:NAME}`` ref names referenced per key (names only) so a
-        config-only edit — including a vault-ref retarget under the same key
-        (``${vault:OLD}`` → ``${vault:NEW}``) — re-uploads the regenerated
-        ``mcp_client.py`` even when tool schemas are unchanged. Returns "" when
-        there are no user servers so builtin-only workspaces are untouched.
+        Captures transport/command/args/url, the full env/header maps (literal
+        values AND ``${vault:NAME}`` ref strings — the stored values are never
+        resolved secrets), and the effective secret-less-discovery decision, so a
+        config-only edit — a literal ``MODE=prod`` -> ``staging`` change, a new
+        authenticated header, or a vault-ref retarget under the same key — always
+        re-uploads the regenerated ``mcp_client.py``. Shares
+        :func:`discovery_affecting_payload` with the per-server discovery-cache
+        key so the upload hash and the cache key can never disagree. Returns ""
+        when there are no user servers so builtin-only workspaces are untouched.
         """
         user_servers = self._user_servers()
         if not user_servers:
             return ""
 
-        def _vault_refs_by_key(mapping: dict | None) -> dict[str, list[str]]:
-            # Per key: the sorted vault-ref NAMES embedded in its value. Captures
-            # which secret a value resolves without ever hashing literal values.
-            out: dict[str, list[str]] = {}
-            for k, v in (mapping or {}).items():
-                refs = sorted(set(vault_refs(str(v))))
-                if refs:
-                    out[k] = refs
-            return out
-
         parts: list[str] = []
         for server in sorted(user_servers, key=lambda s: s.name):
-            payload = {
-                "name": server.name,
-                "enabled": getattr(server, "enabled", True),
-                "transport": server.transport,
-                "command": server.command,
-                "args": list(server.args or []),
-                "url": server.url,
-                # The EFFECTIVE secret-less-discovery decision changes the
-                # generated client's vault-gating, so it must churn the upload
-                # hash. Using the effective value (not the raw flag) means a
-                # remote server that gains/loses an authenticated header
-                # re-syncs even if the stored flag is untouched.
-                "discovery_uses_secrets": discovery_should_use_secrets(server),
-                # Key NAMES only — literal values never belong in a manifest hash.
-                "env_keys": sorted((getattr(server, "env", {}) or {}).keys()),
-                "header_keys": sorted((getattr(server, "headers", {}) or {}).keys()),
-                # Vault-ref NAMES per key (and in the URL): a retarget to a new
-                # secret under the same key changes which secret the regenerated
-                # client embeds, so it MUST churn the hash. Names only, never
-                # literal secret values.
-                "env_vault_refs": _vault_refs_by_key(getattr(server, "env", {})),
-                "header_vault_refs": _vault_refs_by_key(
-                    getattr(server, "headers", {})
-                ),
-                "url_vault_refs": sorted(set(vault_refs(server.url or ""))),
-            }
+            payload = discovery_affecting_payload(server, include_identity=True)
             parts.append(json.dumps(payload, sort_keys=True))
         return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 

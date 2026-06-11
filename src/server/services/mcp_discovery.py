@@ -15,7 +15,7 @@ from typing import Any
 
 from ptc_agent.config.core import MCPServerConfig
 from ptc_agent.core.mcp_sanitize import (
-    VAULT_REF_RE,
+    discovery_affecting_payload,
     sanitize_tool_name,
     sanitize_tool_text,
 )
@@ -34,39 +34,18 @@ def mcp_discovery_fingerprint(server: MCPServerConfig) -> str:
     """Stable per-server hash of discovery-affecting config — never secret values.
 
     Captures everything that can change a server's ``tools/list`` result:
-    transport, command, args, url, env/header key NAMES + the ``${vault:NAME}``
-    refs each key targets, and the secret-less-discovery decision. It deliberately
-    EXCLUDES ``enabled`` (toggling a server off/on reuses its cached schema —
-    nothing about its tools changed) and the prompt-only fields (description /
-    instruction / tool_exposure_mode).
+    transport, command, args, url, the full env/header maps (literal values AND
+    ``${vault:NAME}`` ref strings — the stored values are never resolved
+    secrets), and the secret-less-discovery decision. It deliberately EXCLUDES
+    ``enabled`` (toggling a server off/on reuses its cached schema) and the
+    prompt-only fields (description / instruction / tool_exposure_mode).
 
     This is the discovery-cache key, keyed off the server's OWN identity, so
     mutating or toggling an UNRELATED server never orphans this one's snapshot.
-    Names only — literal secret values never enter the hash.
+    Shares :func:`discovery_affecting_payload` with the sandbox asset-upload hash
+    so a config change can never invalidate one without the other.
     """
-
-    def _refs_by_key(mapping: dict | None) -> dict[str, list[str]]:
-        out: dict[str, list[str]] = {}
-        for key, value in (mapping or {}).items():
-            refs = sorted(set(VAULT_REF_RE.findall(str(value))))
-            if refs:
-                out[key] = refs
-        return out
-
-    env = getattr(server, "env", {}) or {}
-    headers = getattr(server, "headers", {}) or {}
-    payload = {
-        "transport": getattr(server, "transport", None),
-        "command": getattr(server, "command", None),
-        "args": list(getattr(server, "args", []) or []),
-        "url": getattr(server, "url", None),
-        "discovery_uses_secrets": bool(getattr(server, "discovery_uses_secrets", False)),
-        "env_keys": sorted(env.keys()),
-        "header_keys": sorted(headers.keys()),
-        "env_vault_refs": _refs_by_key(env),
-        "header_vault_refs": _refs_by_key(headers),
-        "url_vault_refs": sorted(set(VAULT_REF_RE.findall(getattr(server, "url", "") or ""))),
-    }
+    payload = discovery_affecting_payload(server, include_identity=False)
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 

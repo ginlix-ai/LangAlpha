@@ -694,6 +694,46 @@ async def _extract_literals_to_vault(
                 allocated[v] = ref
             out[k] = ref
         config[field] = out
+
+    # stdio ``args`` is a list; the common credential shape is a single
+    # ``--flag=VALUE`` token (or ``KEY=VALUE``). Split on the first ``=`` and
+    # vault the value half when the flag or value looks secret, rewriting the arg
+    # to ``--flag=${vault:NAME}`` (the generated client resolves refs in args).
+    # Bare / space-separated arg secrets (``--token VALUE``) are left as-is —
+    # too ambiguous to auto-extract without over-vaulting benign positionals.
+    args = config.get("args")
+    if isinstance(args, list):
+        new_args: list[Any] = []
+        for arg in args:
+            if not isinstance(arg, str) or "=" not in arg:
+                new_args.append(arg)
+                continue
+            flag, _, val = arg.partition("=")
+            if (
+                not val.strip()
+                or VAULT_REF_RE.search(val)
+                or not _looks_like_secret(flag, val)
+            ):
+                new_args.append(arg)
+                continue
+            ref = allocated.get(val)
+            if ref is None:
+                key_hint = flag.lstrip("-") or "arg"
+                secret_name = _vault_secret_name(
+                    server_name, key_hint, used_secret_names
+                )
+                await create_secret_db(
+                    workspace_id,
+                    secret_name,
+                    val,
+                    f"Imported with MCP server {server_name}",
+                )
+                used_secret_names.add(secret_name)
+                created.append(secret_name)
+                ref = f"${{vault:{secret_name}}}"
+                allocated[val] = ref
+            new_args.append(f"{flag}={ref}")
+        config["args"] = new_args
     return created
 
 

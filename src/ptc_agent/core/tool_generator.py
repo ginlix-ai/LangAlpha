@@ -645,6 +645,32 @@ def _build_proc_env(config, server_name="?", *, discovery=False):
     return proc_env
 
 
+def _resolve_cmd_args(config, server_name, *, discovery=False):
+    """Resolve ${{vault:NAME}} refs in a stdio server's args, vault-only.
+
+    Builtin servers pass args through unchanged. Workspace (untrusted) servers
+    resolve refs the same way env/headers do — so a credential moved into args
+    by import resolves at spawn instead of leaking as a literal — with no host
+    os.environ fallback. Missing refs raise (named, never valued) unless in
+    discovery, where they become inert placeholders.
+    """
+    args = list(config.get("args") or [])
+    if config.get("source") != "workspace":
+        return args
+    vault = _load_vault() if (not discovery or config.get("discovery_uses_secrets")) else {{}}
+    missing = []
+    resolved = [
+        _resolve_vault_refs(str(_a), vault, missing=missing, discovery=discovery)
+        for _a in args
+    ]
+    if missing and not discovery:
+        raise RuntimeError(
+            "Missing vault secret(s) for server "
+            + repr(server_name) + ": " + ", ".join(sorted(set(missing)))
+        )
+    return resolved
+
+
 def _resolve_sse(config, server_name, *, discovery=False):
     """Return (url, headers) for an sse/http request.
 
@@ -826,6 +852,15 @@ def _resolve_sse(config, server_name, *, discovery=False):
                 "            proc_env[key] = os.environ[key]\n"
             )
 
+        # stdio command args. Builtin-only stays byte-identical (raw args). With
+        # a workspace server present, resolve ${vault:NAME} refs in args
+        # vault-only (mirrors env/header resolution) so an imported secret can
+        # live in args without leaking as a literal at rest.
+        if has_workspace:
+            cmd_args_expr = "_resolve_cmd_args(config, server_name, discovery=discovery)"
+        else:
+            cmd_args_expr = 'config["args"]'
+
         # SSE/HTTP URL+header resolution. Builtin-only configs keep the legacy
         # inline os.environ URL substitution with no extra headers (byte-stable).
         # With any workspace server present, both paths route through
@@ -944,7 +979,7 @@ def _start_mcp_server(server_name: str{discovery_param}) -> subprocess.Popen:
         raise ValueError(msg)
 
     # Build command
-    cmd = [config["command"]] + config["args"]
+    cmd = [config["command"]] + {cmd_args_expr}
 {proc_env_setup}
     proc = subprocess.Popen(
         cmd,
