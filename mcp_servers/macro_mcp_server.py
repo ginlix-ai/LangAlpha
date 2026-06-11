@@ -24,6 +24,15 @@ from data_client.fmp import get_fmp_client, fmp_lifespan
 mcp = FastMCP("MacroMCP", lifespan=fmp_lifespan)
 
 
+def _mark_truncated_if_provider_cap_reached(result: dict, data: object) -> None:
+    if isinstance(data, list) and len(data) >= 4000:
+        result["truncated"] = True
+        result["note"] = (
+            "Results capped at 4000 records by the FMP provider. "
+            "Narrow the date range to ensure complete data."
+        )
+
+
 @mcp.tool()
 async def get_economic_indicator(
     name: str,
@@ -44,6 +53,10 @@ async def get_economic_indicator(
 
     Returns:
         Raw JSON with date and value for each observation
+
+    Note: this tool is limit-driven (not date-driven). Some economic indicators
+    (GDP, federalFundsRate, nonFarmPayrolls) have sparse historical depth on
+    standard FMP tiers.
     """
     try:
         client = await get_fmp_client()
@@ -94,7 +107,7 @@ async def get_economic_calendar(
             from_date=from_date, to_date=to_date
         )
 
-        return {
+        result = {
             "data_type": "economic_calendar",
             "from_date": from_date,
             "to_date": to_date,
@@ -102,6 +115,9 @@ async def get_economic_calendar(
             "data": data or [],
             "source": "fmp",
         }
+        _mark_truncated_if_provider_cap_reached(result, data)
+
+        return result
 
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
@@ -209,7 +225,7 @@ async def get_earnings_calendar(
             from_date=from_date, to_date=to_date
         )
 
-        return {
+        result = {
             "data_type": "earnings_calendar",
             "from_date": from_date,
             "to_date": to_date,
@@ -217,6 +233,9 @@ async def get_earnings_calendar(
             "data": data or [],
             "source": "fmp",
         }
+        _mark_truncated_if_provider_cap_reached(result, data)
+
+        return result
 
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
