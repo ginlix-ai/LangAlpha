@@ -178,6 +178,16 @@
     "searchProviderDesc": "Search engine the agent uses for web searches.",
     "searchProviderDefault": "Default",
     "searchProviderUpgradeHint": "Choosing a search provider is available on paid plans.",
+    "searchDepth": "Search Depth",
+    "searchDepthDesc": "How thoroughly the agent searches the web. Deeper levels use more credits per search.",
+    "searchDepthDefault": "Default",
+    "searchDepthUpgradeHint": "Deeper search levels are available on higher plans.",
+    "searchDepthLevel": {
+      "ultra_fast": "Ultra Fast",
+      "fast": "Fast",
+      "standard": "Standard",
+      "deep": "Deep"
+    },
     "compactionProfile": "Compaction Profile",
     "compactionProfileDesc": "Bundled preset for compaction trigger and retention. Leave on system default unless you have a reason to tune it.",
     "compactionProfileUseDefault": "Use system default",

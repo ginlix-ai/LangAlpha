@@ -10,19 +10,50 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 // without needing one file per scenario. The getter form keeps the value live
 // across re-renders even though vi.mock is hoisted once per file.
 // ---------------------------------------------------------------------------
-const h = vi.hoisted(() => ({
-  platformMode: false,
-  accessTier: 1 as number,
-  otherPreference: {} as Record<string, unknown>,
-  mutateAsync: vi.fn(async () => ({})),
-  // Stable references rebuilt only between tests (in beforeEach). Settings has
-  // effects keyed on the user / preferences / validModelNames identities; if a
-  // mock returned a fresh object each render, those effects would fire every
-  // render and (for the prefs sync effect) re-set state into a loop.
-  user: null as Record<string, unknown> | null,
-  preferences: null as Record<string, unknown> | null,
-  validModelNames: new Set<string>(),
-}));
+const h = vi.hoisted(() => {
+  // Mirrors the GET /api/v1/models search_providers block: per-option
+  // resolved tiers, ordered depth arrays (only tavily is multi-depth).
+  const searchProviderCatalog = {
+    tavily: {
+      display_name: 'Tavily',
+      min_tier: 1,
+      default_depth: 'standard',
+      depths: [
+        { name: 'ultra_fast', display_name: 'Ultra Fast', min_tier: 0 },
+        { name: 'fast', display_name: 'Fast', min_tier: 0 },
+        { name: 'standard', display_name: 'Standard', min_tier: 0 },
+        { name: 'deep', display_name: 'Deep', min_tier: 2 },
+      ],
+    },
+    serper: {
+      display_name: 'Serper',
+      min_tier: 1,
+      default_depth: 'standard',
+      depths: [{ name: 'standard', display_name: 'Standard', min_tier: 0 }],
+    },
+    bocha: {
+      display_name: 'Bocha',
+      min_tier: 1,
+      default_depth: 'standard',
+      depths: [{ name: 'standard', display_name: 'Standard', min_tier: 0 }],
+    },
+  };
+  return {
+    platformMode: false,
+    accessTier: 1 as number,
+    otherPreference: {} as Record<string, unknown>,
+    mutateAsync: vi.fn(async () => ({})),
+    // Stable references rebuilt only between tests (in beforeEach). Settings has
+    // effects keyed on the user / preferences / validModelNames identities; if a
+    // mock returned a fresh object each render, those effects would fire every
+    // render and (for the prefs sync effect) re-set state into a loop.
+    user: null as Record<string, unknown> | null,
+    preferences: null as Record<string, unknown> | null,
+    validModelNames: new Set<string>(),
+    searchProviderCatalog: searchProviderCatalog as typeof searchProviderCatalog | null,
+    fullCatalog: searchProviderCatalog,
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -73,6 +104,7 @@ vi.mock('@/hooks/useAllModels', () => ({
     // Stable Set ref — the stale-model cleanup effect keys on its identity.
     validModelNames: h.validModelNames,
     compactionProfiles: null,
+    searchProviders: h.searchProviderCatalog,
     isLoading: false,
   }),
 }));
@@ -157,6 +189,7 @@ beforeEach(() => {
   h.accessTier = 1;
   h.otherPreference = {};
   h.validModelNames = new Set<string>();
+  h.searchProviderCatalog = h.fullCatalog;
   h.mutateAsync.mockClear();
   h.mutateAsync.mockResolvedValue({});
 });
@@ -209,6 +242,22 @@ describe('Settings — Web Search Provider', () => {
     expect(
       screen.getByText('Choosing a search provider is available on paid plans.'),
     ).toBeInTheDocument();
+  });
+
+  it('no upgrade hint while the provider catalog is missing/loading', async () => {
+    // A null catalog (models query in flight, or an older server without the
+    // search_providers block) must read as "loading", not "tier-gated".
+    h.platformMode = true;
+    h.accessTier = 0;
+    h.searchProviderCatalog = null;
+
+    setupAndRenderModelTab();
+
+    const select = await screen.findByRole('combobox', { name: 'Web Search Provider' });
+    expect(select).toBeDisabled();
+    expect(
+      screen.queryByText('Choosing a search provider is available on paid plans.'),
+    ).not.toBeInTheDocument();
   });
 
   it('platform mode, access_tier 1: select is enabled and no upgrade hint', async () => {
@@ -287,5 +336,121 @@ describe('Settings — Web Search Provider', () => {
       other_preference: Record<string, unknown>;
     };
     expect('search_provider' in payload.other_preference).toBe(false);
+  });
+});
+
+describe('Settings — Search Depth', () => {
+  function getSearchDepthSelect() {
+    return screen.getByRole('combobox', { name: 'Search Depth' }) as HTMLSelectElement;
+  }
+
+  it('renders the depth select for a multi-depth provider with the ordered manifest levels', async () => {
+    h.otherPreference = { search_provider: 'tavily' };
+
+    setupAndRenderModelTab();
+
+    const select = await waitFor(() => getSearchDepthSelect());
+    const options = Array.from(select.querySelectorAll('option')).map(o => o.textContent);
+    expect(options).toEqual(['Default', 'Ultra Fast', 'Fast', 'Standard', 'Deep']);
+  });
+
+  it('hides the depth select for single-depth providers and when no provider is chosen', async () => {
+    h.otherPreference = { search_provider: 'serper' };
+
+    setupAndRenderModelTab();
+
+    await screen.findByRole('combobox', { name: 'Web Search Provider' });
+    await waitFor(() => {
+      expect(getSearchProviderSelect().value).toBe('serper');
+    });
+    expect(screen.queryByRole('combobox', { name: 'Search Depth' })).not.toBeInTheDocument();
+  });
+
+  it('platform mode: locks only the depth options above the user tier and shows the hint', async () => {
+    h.platformMode = true;
+    h.accessTier = 1; // matches the catalog: some depth levels require a higher tier
+    h.otherPreference = { search_provider: 'tavily' };
+
+    setupAndRenderModelTab();
+
+    const select = await waitFor(() => getSearchDepthSelect());
+    expect(select).toBeEnabled();
+    const byName = (name: string) =>
+      select.querySelector(`option[value="${name}"]`) as HTMLOptionElement;
+    expect(byName('fast').disabled).toBe(false);
+    expect(byName('standard').disabled).toBe(false);
+    expect(byName('deep').disabled).toBe(true);
+    expect(
+      screen.getByText('Deeper search levels are available on higher plans.'),
+    ).toBeInTheDocument();
+  });
+
+  it('loads the saved depth and normalizes a level the provider does not declare', async () => {
+    h.otherPreference = { search_provider: 'tavily', search_depth: 'deep' };
+
+    setupAndRenderModelTab();
+
+    await waitFor(() => {
+      expect(getSearchDepthSelect().value).toBe('deep');
+    });
+  });
+
+  it('normalizes an unknown saved search_depth to Default', async () => {
+    h.otherPreference = { search_provider: 'tavily', search_depth: 'warp9' };
+
+    setupAndRenderModelTab();
+
+    const select = await waitFor(() => getSearchDepthSelect());
+    await waitFor(() => {
+      expect(select).toHaveValue('');
+    });
+  });
+
+  it('changing the depth saves search_depth through updatePreferences', async () => {
+    h.otherPreference = { search_provider: 'tavily' };
+
+    setupAndRenderModelTab();
+
+    const select = await waitFor(() => getSearchDepthSelect());
+    await waitFor(() => expect(select).toHaveValue(''));
+
+    fireEvent.change(select, { target: { value: 'deep' } });
+
+    await waitFor(() => {
+      expect(h.mutateAsync).toHaveBeenCalled();
+    });
+    const payload = h.mutateAsync.mock.calls.at(-1)![0] as {
+      other_preference: Record<string, unknown>;
+    };
+    expect(payload.other_preference).toMatchObject({
+      search_provider: 'tavily',
+      search_depth: 'deep',
+    });
+  });
+
+  it('switching provider resets the depth selection and drops it from the payload', async () => {
+    h.otherPreference = { search_provider: 'tavily', search_depth: 'deep' };
+
+    setupAndRenderModelTab();
+
+    const depthSelect = await waitFor(() => getSearchDepthSelect());
+    await waitFor(() => expect(depthSelect).toHaveValue('deep'));
+
+    fireEvent.change(getSearchProviderSelect(), { target: { value: 'serper' } });
+
+    // Depth select disappears (serper is single-depth)…
+    await waitFor(() => {
+      expect(screen.queryByRole('combobox', { name: 'Search Depth' })).not.toBeInTheDocument();
+    });
+    // …and the save omits search_depth (single-depth provider → gated off),
+    // leaving the stored key untouched for a later switch back.
+    await waitFor(() => {
+      expect(h.mutateAsync).toHaveBeenCalled();
+    });
+    const payload = h.mutateAsync.mock.calls.at(-1)![0] as {
+      other_preference: Record<string, unknown>;
+    };
+    expect(payload.other_preference).toMatchObject({ search_provider: 'serper' });
+    expect('search_depth' in payload.other_preference).toBe(false);
   });
 });

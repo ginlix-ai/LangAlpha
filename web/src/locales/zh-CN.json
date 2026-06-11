@@ -178,6 +178,16 @@
     "searchProviderDesc": "智能体进行网络搜索时使用的搜索引擎。",
     "searchProviderDefault": "默认",
     "searchProviderUpgradeHint": "选择搜索引擎为付费套餐功能。",
+    "searchDepth": "搜索深度",
+    "searchDepthDesc": "智能体搜索网络的深入程度。更深的级别每次搜索消耗更多积分。",
+    "searchDepthDefault": "默认",
+    "searchDepthUpgradeHint": "更深的搜索级别需要更高级的套餐。",
+    "searchDepthLevel": {
+      "ultra_fast": "极速",
+      "fast": "快速",
+      "standard": "标准",
+      "deep": "深度"
+    },
     "compactionProfile": "压缩预设",
     "compactionProfileDesc": "用于控制压缩触发与保留的预设组合。除非有特殊需求，否则建议保持系统默认。",
     "compactionProfileUseDefault": "使用系统默认",

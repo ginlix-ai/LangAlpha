@@ -25,16 +25,6 @@ import { isSupported, setLocaleCookie } from '@/lib/locale';
 import { isPlatformMode } from '@/config/hostMode';
 import './Settings.css';
 
-// Keep in sync with the backend SEARCH_PROVIDER_MIN_TIER (src/config/env.py).
-// Enforcement happens server-side at resolve time; this only drives the UI state.
-const SEARCH_PROVIDER_MIN_TIER = 1;
-
-const SEARCH_PROVIDERS = [
-  { value: 'tavily', label: 'Tavily' },
-  { value: 'serper', label: 'Serper' },
-  { value: 'bocha', label: 'Bocha' },
-];
-
 interface CodexDeviceCode {
   user_code: string;
   verification_url: string;
@@ -78,7 +68,7 @@ function Settings() {
   const updatePrefsMutation = useUpdatePreferences();
   const queryClient = useQueryClient();
   const { theme: _theme, preference, setTheme: setThemePref } = useTheme();
-  const { models: visibleModels, modelAccessMap, systemDefaults: hookSystemDefaults, validModelNames, compactionProfiles, isLoading: isModelsLoading } = useAllModels();
+  const { models: visibleModels, modelAccessMap, systemDefaults: hookSystemDefaults, validModelNames, compactionProfiles, searchProviders, isLoading: isModelsLoading } = useAllModels();
   const { t, i18n } = useTranslation();
 
   const tabParam = searchParams.get('tab') || 'userInfo';
@@ -109,6 +99,7 @@ function Settings() {
   const [fallbackModels, setFallbackModels] = useState<string[]>([]);
   const [compactionProfile, setCompactionProfile] = useState<CompactionProfileName | ''>('');
   const [searchProvider, setSearchProvider] = useState('');
+  const [searchDepth, setSearchDepth] = useState('');
 
   // Custom Models state
   const [customModels, setCustomModels] = useState<CustomModelEntry[]>([]);
@@ -275,9 +266,18 @@ function Settings() {
           : '',
       );
       const rawSearchProvider = otherPref?.search_provider;
-      setSearchProvider(
-        SEARCH_PROVIDERS.some(p => p.value === rawSearchProvider)
-          ? (rawSearchProvider as string)
+      const loadedProvider =
+        typeof rawSearchProvider === 'string' && searchProviders?.[rawSearchProvider]
+          ? rawSearchProvider
+          : '';
+      setSearchProvider(loadedProvider);
+      // Depth levels are provider-scoped: a stored level that the loaded
+      // provider doesn't declare normalizes to Default.
+      const rawSearchDepth = otherPref?.search_depth;
+      const loadedDepths = loadedProvider ? searchProviders?.[loadedProvider]?.depths ?? [] : [];
+      setSearchDepth(
+        typeof rawSearchDepth === 'string' && loadedDepths.some(d => d.name === rawSearchDepth)
+          ? rawSearchDepth
           : '',
       );
       setCodexOAuthStatus(codexStatus || { connected: false });
@@ -287,21 +287,33 @@ function Settings() {
     }
   };
 
-  // Search provider is a paid-tier perk in platform mode; OSS is ungated.
+  // Search provider/depth options are tier-gated per the manifest (min_tier
+  // comes pre-resolved from the API) in platform mode; OSS is ungated.
   // Server enforces this at resolve time — the disabled state is UX only.
-  const canCustomizeSearchProvider =
-    !isPlatformMode || (authUser?.access_tier ?? -1) >= SEARCH_PROVIDER_MIN_TIER;
+  const tierAllows = (minTier: number) =>
+    !isPlatformMode || (authUser?.access_tier ?? -1) >= minTier;
+  const providerOptions = Object.entries(searchProviders ?? {});
+  const canCustomizeSearchProvider = providerOptions.some(([, p]) => tierAllows(p.min_tier));
+  // Depth select renders only for providers declaring more than one level;
+  // options mirror the manifest's ordered array verbatim.
+  const selectedProviderDepths = searchProvider
+    ? searchProviders?.[searchProvider]?.depths ?? []
+    : [];
+  const depthOptions = selectedProviderDepths.length > 1 ? selectedProviderDepths : [];
+  const canCustomizeSearchDepth = depthOptions.some(d => tierAllows(d.min_tier));
 
   // Refs to hold latest model state for the debounced save callback
   const modelStateRef = useRef({
     preferredModel, preferredFlashModel, starredModels, customModels,
     compactionModel, fetchModel, fallbackModels, byokProviders,
     compactionProfile, searchProvider, canCustomizeSearchProvider,
+    searchDepth, canCustomizeSearchDepth,
   });
   modelStateRef.current = {
     preferredModel, preferredFlashModel, starredModels, customModels,
     compactionModel, fetchModel, fallbackModels, byokProviders,
     compactionProfile, searchProvider, canCustomizeSearchProvider,
+    searchDepth, canCustomizeSearchDepth,
   };
 
   const saveModelPrefs = useCallback(async () => {
@@ -338,6 +350,7 @@ function Settings() {
         // so unrelated saves don't re-persist a value the user can't edit and
         // the pref survives for a later re-upgrade.
         ...(s.canCustomizeSearchProvider ? { search_provider: s.searchProvider || null } : {}),
+        ...(s.canCustomizeSearchDepth ? { search_depth: s.searchDepth || null } : {}),
       },
     });
   }, [validModelNames, updatePrefsMutation]);
@@ -1141,21 +1154,59 @@ function Settings() {
                   </p>
                   <Select
                     value={searchProvider}
-                    onChange={(e) => { setSearchProvider(e.target.value); triggerModelSave(); }}
+                    onChange={(e) => {
+                      setSearchProvider(e.target.value);
+                      // Depth levels are provider-scoped — a stale level may
+                      // not exist on the new provider.
+                      setSearchDepth('');
+                      triggerModelSave();
+                    }}
                     disabled={!canCustomizeSearchProvider}
                     aria-label={t('settings.searchProvider', 'Web Search Provider')}
                   >
                     <option value="">{t('settings.searchProviderDefault', 'Default')}</option>
-                    {SEARCH_PROVIDERS.map(p => (
-                      <option key={p.value} value={p.value}>{p.label}</option>
+                    {providerOptions.map(([value, p]) => (
+                      <option key={value} value={value} disabled={!tierAllows(p.min_tier)}>
+                        {p.display_name}
+                      </option>
                     ))}
                   </Select>
-                  {!canCustomizeSearchProvider && (
+                  {providerOptions.length > 0 && !canCustomizeSearchProvider && (
                     <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
                       {t('settings.searchProviderUpgradeHint', 'Choosing a search provider is available on paid plans.')}
                     </p>
                   )}
                 </div>
+
+                {/* Web search depth — only for providers with multiple levels */}
+                {depthOptions.length > 0 && (
+                  <div className="flex flex-col gap-1.5" style={{ marginTop: '16px' }}>
+                    <label className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
+                      {t('settings.searchDepth', 'Search Depth')}
+                    </label>
+                    <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+                      {t('settings.searchDepthDesc', 'How thoroughly the agent searches the web. Deeper levels use more credits per search.')}
+                    </p>
+                    <Select
+                      value={searchDepth}
+                      onChange={(e) => { setSearchDepth(e.target.value); triggerModelSave(); }}
+                      disabled={!canCustomizeSearchDepth}
+                      aria-label={t('settings.searchDepth', 'Search Depth')}
+                    >
+                      <option value="">{t('settings.searchDepthDefault', 'Default')}</option>
+                      {depthOptions.map(d => (
+                        <option key={d.name} value={d.name} disabled={!tierAllows(d.min_tier)}>
+                          {t(`settings.searchDepthLevel.${d.name}`, d.display_name)}
+                        </option>
+                      ))}
+                    </Select>
+                    {depthOptions.some(d => !tierAllows(d.min_tier)) && (
+                      <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+                        {t('settings.searchDepthUpgradeHint', 'Deeper search levels are available on higher plans.')}
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Section 2: Connected Accounts */}
