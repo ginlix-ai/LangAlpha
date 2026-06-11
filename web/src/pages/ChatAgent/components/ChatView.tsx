@@ -2114,6 +2114,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                           handleSendMessage(`/self-improve ${instruction}`);
                         }}
                         onWidgetSendPrompt={handleSendMessage}
+                        onSuggestionClick={(text: string) => handleSendMessage(text)}
                       />
                     </div>
                   </div>

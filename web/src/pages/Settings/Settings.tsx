@@ -534,6 +534,26 @@ function Settings() {
     }
   };
 
+  const handleSuggestionToggle = async () => {
+    const currentOtherPref = (prefsData as any)?.other_preference || {};
+    // Default to true when the key is absent.
+    const currentEnabled = currentOtherPref.suggestion_enabled ?? true;
+    try {
+      await updatePrefsMutation.mutateAsync({
+        other_preference: {
+          ...currentOtherPref,
+          suggestion_enabled: !currentEnabled,
+        },
+      });
+    } catch {
+      toast({
+        variant: 'destructive',
+        title: t('common.error'),
+        description: t('settings.failedToSaveSettings'),
+      });
+    }
+  };
+
   const handleModifyPreferences = async () => {
     try {
       const flashWs = await getFlashWorkspace();
@@ -1394,6 +1414,32 @@ function Settings() {
                   )}
                 </div>
               )}
+
+              {/* Suggestion Buttons Toggle */}
+              <div style={{ borderTop: '1px solid var(--color-border-muted)', paddingTop: '16px' }}>
+                <div className="flex items-center justify-between p-3 rounded-lg" style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}>
+                  <div className="space-y-0.5">
+                    <label className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{t('settings.suggestionButtons')}</label>
+                    <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('settings.suggestionButtonsDesc')}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleSuggestionToggle}
+                    className="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+                    style={{
+                      backgroundColor: ((prefsData as any)?.other_preference?.suggestion_enabled ?? true) ? 'var(--color-accent-primary)' : 'var(--color-bg-elevated)',
+                      borderColor: 'var(--color-border-muted)',
+                    }}
+                  >
+                    <span
+                      className="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
+                      style={{
+                        transform: ((prefsData as any)?.other_preference?.suggestion_enabled ?? true) ? 'translateX(16px)' : 'translateX(0)',
+                      }}
+                    />
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>

@@ -1038,6 +1038,49 @@ async def get_thread_turns(thread_id: str, x_user_id: CurrentUserId):
     return await _get_thread_turns(thread_id, branch_tip_checkpoint_id=branch_tip)
 
 
+@router.get("/{thread_id}/turns/{run_id}/suggestions")
+async def get_turn_suggestions(
+    thread_id: str, run_id: str, x_user_id: CurrentUserId
+):
+    """Get follow-up suggestions for a completed turn.
+
+    Returns suggestions generated after the assistant reply was completed.
+    The suggestions are extracted from the ``sse_events`` JSONB column.
+    """
+    await require_thread_owner(thread_id, x_user_id)
+    from src.server.database.conversation import get_db_connection
+    from psycopg.rows import dict_row
+    import json as _json
+
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT sse_events
+                FROM conversation_responses
+                WHERE conversation_response_id = %s
+                  AND conversation_thread_id = %s
+                """,
+                (run_id, thread_id),
+            )
+            row = await cur.fetchone()
+
+    suggestions: list[str] = []
+    if row and row.get("sse_events"):
+        sse_events = row["sse_events"]
+        # sse_events may be a list or a JSON-string; normalize.
+        if isinstance(sse_events, str):
+            sse_events = _json.loads(sse_events)
+        if isinstance(sse_events, list):
+            for evt in sse_events:
+                if isinstance(evt, dict) and evt.get("event") == "suggestions":
+                    data = evt.get("data") or {}
+                    suggestions = data.get("suggestions") or []
+                    break
+
+    return {"suggestions": suggestions}
+
+
 @router.post("/{thread_id}/retry")
 async def retry_thread(
     thread_id: str,

@@ -2653,6 +2653,9 @@ export function useChatMessages(
     if (awaitingReportBackRef.current) {
       startReportBackWatch();
     }
+
+    // Suggestions are now pushed via Redis as an SSE "suggestions" event
+    // and handled inline in createStreamEventProcessor — no extra HTTP fetch.
   };
 
   /**
@@ -3689,6 +3692,18 @@ export function useChatMessages(
         isStreamingRef.current = false;
         currentMessageRef.current = null;
         if (wasInterruptedRef) wasInterruptedRef.current = true;
+      }
+
+      // Handle suggestions event — pushed via Redis at end of stream
+      if (eventType === 'suggestions' && (event.suggestions as string[])?.length > 0) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantMessageId && m.role === 'assistant'
+              ? { ...m, suggestions: event.suggestions as string[] } as AssistantMessage
+              : m,
+          ),
+        );
+        return;
       }
     };
 

@@ -264,6 +264,8 @@ export interface AssistantMessage {
   steeringDelivered?: boolean;
   isSteering?: boolean;
   error?: boolean | string;
+  /** Follow-up suggestions generated after the reply completes (max 3). */
+  suggestions?: string[];
 }
 
 export type NotificationVariant = 'info' | 'success' | 'warning';

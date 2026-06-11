@@ -35,6 +35,7 @@ import PTCAgentCard from './PTCAgentCard';
 import SecretaryConfirmCard from './SecretaryConfirmCard';
 import SubagentTaskMessageContent from './SubagentTaskMessageContent';
 import TextMessageContent from './TextMessageContent';
+import SuggestionButtons from './SuggestionButtons';
 import InlineWidget from './viewers/InlineWidget';
 import ToolCallMessageContent from './ToolCallMessageContent';
 import { CitationMetadataProvider } from './CitationMetadataContext';
@@ -350,10 +351,11 @@ interface MessageListProps {
   getFeedbackForMessage?: (messageId: string) => FeedbackResult | null;
   onReportWithAgent?: (instruction: string) => void;
   onWidgetSendPrompt?: (text: string) => void;
+  onSuggestionClick?: (text: string) => void;
   flashContext?: { threadId: string; workspaceId: string } | null;
 }
 
-function MessageList({ messages, isLoading, isLoadingHistory, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onApprovePTCAgent, onRejectPTCAgent, onApproveSecretaryAction, onRejectSecretaryAction, onEditMessage, onRegenerate, onRetry, onThumbUp, onThumbDown, getFeedbackForMessage, onReportWithAgent, onWidgetSendPrompt, flashContext }: MessageListProps): React.ReactElement | null {
+function MessageList({ messages, isLoading, isLoadingHistory, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onApprovePTCAgent, onRejectPTCAgent, onApproveSecretaryAction, onRejectSecretaryAction, onEditMessage, onRegenerate, onRetry, onThumbUp, onThumbDown, getFeedbackForMessage, onReportWithAgent, onWidgetSendPrompt, onSuggestionClick, flashContext }: MessageListProps): React.ReactElement | null {
   const isMobile = useIsMobile();
 
   // Empty state - show when no messages exist (hidden in subagent view)
@@ -442,6 +444,7 @@ function MessageList({ messages, isLoading, isLoadingHistory, hideAvatar, compac
             getFeedbackForMessage={getFeedbackForMessage}
             onReportWithAgent={onReportWithAgent}
             onWidgetSendPrompt={onWidgetSendPrompt}
+            onSuggestionClick={onSuggestionClick}
             flashContext={flashContext}
           />
         )
@@ -485,6 +488,7 @@ interface MessageBubbleProps {
   getFeedbackForMessage?: (messageId: string) => FeedbackResult | null;
   onReportWithAgent?: (instruction: string) => void;
   onWidgetSendPrompt?: (text: string) => void;
+  onSuggestionClick?: (text: string) => void;
   isMobile?: boolean;
   flashContext?: { threadId: string; workspaceId: string } | null;
 }
@@ -493,7 +497,7 @@ interface MessageBubbleProps {
  * Wrapped with React.memo — safe because updateMessage() in messageHelpers.ts
  * returns the same object reference for unchanged messages.
  */
-const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onApprovePTCAgent, onRejectPTCAgent, onApproveSecretaryAction, onRejectSecretaryAction, onEditMessage, onRegenerate, onRetry, onThumbUp, onThumbDown, getFeedbackForMessage, onReportWithAgent, onWidgetSendPrompt, isMobile, flashContext }: MessageBubbleProps): React.ReactElement {
+const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onApprovePTCAgent, onRejectPTCAgent, onApproveSecretaryAction, onRejectSecretaryAction, onEditMessage, onRegenerate, onRetry, onThumbUp, onThumbDown, getFeedbackForMessage, onReportWithAgent, onWidgetSendPrompt, onSuggestionClick, isMobile, flashContext }: MessageBubbleProps): React.ReactElement {
   const { user } = useUser();
   const { theme } = useTheme();
   const logo = theme === 'light' ? logoDark : logoLight;
@@ -796,6 +800,14 @@ const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvat
             scoped to the message that attached them. */}
         {hasWidgetSnapshots && (
           <InlineWidgetDeck snapshots={widgetSnapshots!} />
+        )}
+
+        {/* Follow-up suggestion buttons — only for completed assistant messages */}
+        {isAssistant && !(message.isStreaming as boolean) && !(message.error as boolean) && (message.suggestions as string[] | undefined)?.length > 0 && onSuggestionClick && (
+          <SuggestionButtons
+            suggestions={message.suggestions as string[]}
+            onSuggestionClick={onSuggestionClick}
+          />
         )}
         </>
         )}

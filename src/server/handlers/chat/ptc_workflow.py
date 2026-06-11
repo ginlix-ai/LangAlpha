@@ -878,6 +878,46 @@ async def astream_ptc_workflow(
                     sse_events=_sse_events,
                 )
 
+                # Generate follow-up suggestions BEFORE mark_completed so they
+                # are persisted before the SSE stream ends and the frontend
+                # fetches them via the suggestions API.
+                if _sse_events and config and user_id:
+                    try:
+                        from src.server.services.suggestion_service import (
+                            build_suggestion_sse_event,
+                            extract_assistant_text,
+                            generate_suggestions,
+                            push_suggestions_to_redis,
+                        )
+                        from src.server.database.conversation import update_sse_events
+
+                        assistant_text = extract_assistant_text(_sse_events)
+                        suggestions = await generate_suggestions(
+                            user_id=user_id,
+                            agent_config=config,
+                            assistant_text=assistant_text,
+                            call_logger=logger,
+                        )
+                        if suggestions:
+                            sse_event = build_suggestion_sse_event(suggestions)
+                            _sse_events.append(sse_event)
+                            await update_sse_events(run_id, _sse_events)
+                            # Push to Redis so the frontend receives the event
+                            # in the live SSE stream (no extra HTTP round-trip).
+                            await push_suggestions_to_redis(
+                                thread_id, run_id, suggestions,
+                            )
+                            logger.info(
+                                "[PTC_COMPLETE] Suggestions appended: "
+                                f"thread_id={thread_id} count={len(suggestions)}"
+                            )
+                    except Exception:
+                        logger.warning(
+                            "[PTC_COMPLETE] Suggestion generation failed, "
+                            "continuing",
+                            exc_info=True,
+                        )
+
                 await tracker.mark_completed(
                     thread_id=thread_id,
                     metadata={

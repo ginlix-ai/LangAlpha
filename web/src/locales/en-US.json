@@ -58,6 +58,8 @@
     "locale": "Language",
     "voiceInput": "Voice Input",
     "voiceInputDesc": "Enable microphone icon in the chat bar for speech-to-text.",
+    "suggestionButtons": "Follow-up Suggestions",
+    "suggestionButtonsDesc": "Show quick follow-up question buttons after each AI reply.",
     "emailCannotBeChanged": "Email cannot be changed",
     "changeAvatar": "Change Avatar",
     "uploading": "Uploading...",

@@ -58,6 +58,8 @@
     "locale": "语言",
     "voiceInput": "语音输入",
     "voiceInputDesc": "在聊天栏中启用麦克风图标以进行语音转文字。",
+    "suggestionButtons": "追问建议",
+    "suggestionButtonsDesc": "在每次 AI 回复后显示快捷追问按钮。",
     "emailCannotBeChanged": "邮箱不可更改",
     "changeAvatar": "更换头像",
     "uploading": "上传中...",
