@@ -42,7 +42,7 @@ const h = vi.hoisted(() => {
     platformMode: false,
     accessTier: 1 as number,
     otherPreference: {} as Record<string, unknown>,
-    mutateAsync: vi.fn(async () => ({})),
+    mutateAsync: vi.fn(async (_payload: unknown) => ({})),
     // Stable references rebuilt only between tests (in beforeEach). Settings has
     // effects keyed on the user / preferences / validModelNames identities; if a
     // mock returned a fresh object each render, those effects would fire every
