@@ -19,7 +19,8 @@ export interface PortfolioRow {
   currency: string;
   notes?: string;
   price: number;
-  marketValue?: number;
+  marketValue?: number | null;
+  quoteAvailable?: boolean;
   unrealizedPlPercent?: number | null;
   isPositive?: boolean;
   previousClose?: number | null;

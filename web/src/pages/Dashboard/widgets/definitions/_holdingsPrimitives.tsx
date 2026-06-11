@@ -202,7 +202,7 @@ export function PortfolioRowItem({
           <div className="text-xs dashboard-mono" style={{ color: 'var(--color-text-secondary)' }}>
             {valuesHidden
               ? '***'
-              : `@${formatPortfolioMoney(Number(extType && item.previousClose != null ? item.previousClose : item.price), currency, i18n.language)}`}
+              : formatPortfolioMoney(Number(extType && item.previousClose != null ? item.previousClose : item.price), currency, i18n.language)}
           </div>
         </div>
         <div className="text-right">
@@ -336,7 +336,7 @@ export function PortfolioNavSummary({ rows, valuesHidden, onToggleHidden }: Port
       </div>
       {!valuesHidden && (
         <div className="flex flex-wrap gap-2">
-          {summaries
+          {visibleSummaries
             .filter((summary) => summary.totalCost > 0)
             .map((summary) => (
               <div

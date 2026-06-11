@@ -5,6 +5,7 @@ export interface PortfolioSummaryRow {
   average_cost?: number | null;
   quantity?: number | null;
   currency?: unknown;
+  quoteAvailable?: boolean;
 }
 
 export interface CurrencyPortfolioSummary {
@@ -30,14 +31,16 @@ export function normalizePortfolioCurrency(currency: unknown): string {
 export function summarizePortfolioByCurrency(rows: PortfolioSummaryRow[]): CurrencyPortfolioSummary[] {
   const groups = new Map<string, { currency: string; totalValue: number; totalCost: number }>();
 
-  rows.forEach((row) => {
-    const currency = normalizePortfolioCurrency(row.currency);
-    const current = groups.get(currency) ?? { currency, totalValue: 0, totalCost: 0 };
-    const quantity = finiteNumber(row.quantity);
-    current.totalValue += finiteNumber(row.marketValue);
-    current.totalCost += row.average_cost != null ? finiteNumber(row.average_cost) * quantity : 0;
-    groups.set(currency, current);
-  });
+  rows
+    .filter((row) => row.quoteAvailable !== false && row.marketValue != null)
+    .forEach((row) => {
+      const currency = normalizePortfolioCurrency(row.currency);
+      const current = groups.get(currency) ?? { currency, totalValue: 0, totalCost: 0 };
+      const quantity = finiteNumber(row.quantity);
+      current.totalValue += finiteNumber(row.marketValue);
+      current.totalCost += row.average_cost != null ? finiteNumber(row.average_cost) * quantity : 0;
+      groups.set(currency, current);
+    });
 
   return Array.from(groups.values())
     .map((summary) => {

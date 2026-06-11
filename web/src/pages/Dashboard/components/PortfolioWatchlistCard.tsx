@@ -38,7 +38,8 @@ interface PortfolioRow {
   quantity?: number | null;
   average_cost?: number | null;
   currency: string;
-  marketValue?: number;
+  marketValue?: number | null;
+  quoteAvailable?: boolean;
   unrealizedPlPercent?: number | null;
   isPositive?: boolean;
   previousClose?: number | null;
@@ -226,7 +227,7 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStat
             {valuesHidden ? '******' : formatPortfolioMoney(Number(item.marketValue || 0), currency, i18n.language)}
           </div>
           <div className="text-xs dashboard-mono" style={{ color: 'var(--color-text-secondary)' }}>
-            {valuesHidden ? '***' : `@${formatPortfolioMoney(Number(extType && item.previousClose != null ? item.previousClose : item.price), currency, i18n.language)}`}
+            {valuesHidden ? '***' : formatPortfolioMoney(Number(extType && item.previousClose != null ? item.previousClose : item.price), currency, i18n.language)}
           </div>
         </div>
 
@@ -378,6 +379,10 @@ function PortfolioWatchlistCard({
     () => summarizePortfolioByCurrency(portfolioRows),
     [portfolioRows],
   );
+  const visiblePortfolioSummaries = React.useMemo(
+    () => portfolioSummaries.filter((summary) => summary.totalValue !== 0),
+    [portfolioSummaries],
+  );
 
   return (
     <div
@@ -472,7 +477,7 @@ function PortfolioWatchlistCard({
                 >
                   <div className="flex items-center justify-between mb-1">
                     <div className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-                      {portfolioSummaries.length > 1
+                      {visiblePortfolioSummaries.length > 1
                         ? t('dashboard.portfolioWatchlistCard.netAssetValueByCurrency')
                         : t('dashboard.portfolioWatchlistCard.netAssetValue')}
                     </div>
@@ -487,20 +492,22 @@ function PortfolioWatchlistCard({
                     </button>
                   </div>
                   <div
-                    className={`${portfolioSummaries.length > 1 ? 'text-xl' : 'text-2xl'} font-bold mb-2 dashboard-mono`}
+                    className={`${visiblePortfolioSummaries.length > 1 ? 'text-xl' : 'text-2xl'} font-bold mb-2 dashboard-mono`}
                     style={{ color: 'var(--color-text-primary)' }}
                   >
                     {valuesHidden
                       ? '********'
-                      : portfolioSummaries.map((summary) => (
-                          <div key={summary.currency}>
-                            {formatPortfolioMoney(summary.totalValue, summary.currency, i18n.language)}
-                          </div>
-                        ))}
+                      : visiblePortfolioSummaries.length > 0
+                        ? visiblePortfolioSummaries.map((summary) => (
+                            <div key={summary.currency}>
+                              {formatPortfolioMoney(summary.totalValue, summary.currency, i18n.language)}
+                            </div>
+                          ))
+                        : '--'}
                   </div>
                   {!valuesHidden && (
                     <div className="flex flex-wrap gap-2">
-                      {portfolioSummaries
+                      {visiblePortfolioSummaries
                         .filter((summary) => summary.totalCost > 0)
                         .map((summary) => (
                           <div
