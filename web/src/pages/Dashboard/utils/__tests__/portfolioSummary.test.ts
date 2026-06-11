@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  formatPortfolioMoney,
   normalizePortfolioCurrency,
   summarizePortfolioByCurrency,
 } from '../portfolioSummary';
@@ -7,6 +8,7 @@ import {
   formatPortfolioNavMarkdownLine,
   portfolioSummary,
 } from '../../widgets/definitions/_holdingsHelpers';
+import { serializeQuoteRowsToMarkdown } from '../../widgets/framework/snapshotSerializers';
 import type { PortfolioRow } from '../../hooks/usePortfolioData';
 
 const createPortfolioRow = (overrides: Partial<PortfolioRow>): PortfolioRow => ({
@@ -74,6 +76,36 @@ describe('portfolioSummary', () => {
       [
         '**NAV (USD)** USD 120.00 (cost USD 100.00, P/L +USD 20.00 / +20.00%)',
         '**NAV (HKD)** HKD 800.00 (cost HKD 700.00, P/L +HKD 100.00 / +14.29%)',
+      ].join('\n'),
+    );
+  });
+
+  it('excludes unavailable quotes from currency NAV and cost basis', () => {
+    const summaries = summarizePortfolioByCurrency([
+      createPortfolioRow({ symbol: 'AAPL', currency: 'USD', marketValue: 120, average_cost: 10, quantity: 10 }),
+      createPortfolioRow({ symbol: '0700.HK', currency: 'HKD', marketValue: 800, average_cost: 70, quantity: 10 }),
+      createPortfolioRow({ symbol: 'MISSING', currency: 'CNY', marketValue: null, average_cost: 50, quantity: 5, quoteAvailable: false }),
+    ]);
+
+    expect(summaries.map((summary) => summary.currency)).toEqual(['USD', 'HKD']);
+    expect(summaries.find((summary) => summary.currency === 'CNY')).toBeUndefined();
+  });
+
+  it('formats portfolio money with the holding currency', () => {
+    expect(formatPortfolioMoney(120, 'USD', 'en-US')).toBe('$120.00');
+    expect(formatPortfolioMoney(800, 'HKD', 'en-US')).toBe('HK$800.00');
+  });
+
+  it('includes currency in serialized quote markdown rows', () => {
+    expect(
+      serializeQuoteRowsToMarkdown([
+        { symbol: '0700.HK', currency: 'HKD', price: 800, changePercent: 1.2 },
+      ]),
+    ).toBe(
+      [
+        '| symbol | currency | price | change | change% |',
+        '| --- | --- | --- | --- | --- |',
+        '| 0700.HK | HKD | 800.00 |  | 1.20% |',
       ].join('\n'),
     );
   });

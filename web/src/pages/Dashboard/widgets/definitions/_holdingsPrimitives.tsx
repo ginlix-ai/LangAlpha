@@ -179,12 +179,12 @@ export function PortfolioRowItem({
       : 'N/A';
   const displayPrice =
     hasQuote
-      ? `@${formatPortfolioMoney(
+      ? formatPortfolioMoney(
           Number(extType && item.previousClose != null ? item.previousClose : item.price),
           currency,
           i18n.language,
-        )}`
-      : '@N/A';
+        )
+      : 'N/A';
 
   const row = (
     <motion.div

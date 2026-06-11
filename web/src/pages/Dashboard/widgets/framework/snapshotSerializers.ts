@@ -170,7 +170,7 @@ export interface QuoteRow {
   postMarket?: number;
   volume?: number;
   shares?: number;
-  marketValue?: number;
+  marketValue?: number | null;
   currency?: string;
 }
 
@@ -191,7 +191,7 @@ export function serializeQuoteRowToMarkdown(row: QuoteRow): string {
   if (row.postMarket !== undefined) lines.push(`post-market ${formatQuoteAmount(row.postMarket, row.currency)}`);
   if (row.volume !== undefined) lines.push(`vol ${row.volume.toLocaleString()}`);
   if (row.shares !== undefined) lines.push(`shares ${row.shares}`);
-  if (row.marketValue !== undefined) {
+  if (row.marketValue != null) {
     lines.push(row.currency ? `mkt val ${row.currency} ${row.marketValue.toLocaleString()}` : `mkt val $${row.marketValue.toLocaleString()}`);
   }
   return lines.join('\n');
