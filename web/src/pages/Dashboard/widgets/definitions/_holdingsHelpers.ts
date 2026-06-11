@@ -16,6 +16,7 @@ export interface PortfolioSummary {
   totalCost: number;
   totalPl: number;
   totalPlPct: number;
+  hasPricedRows: boolean;
 }
 
 export function portfolioSummary(rows: PortfolioRow[]): PortfolioSummary {
@@ -29,7 +30,7 @@ export function portfolioSummary(rows: PortfolioRow[]): PortfolioSummary {
   );
   const totalPl = totalCost > 0 ? totalValue - totalCost : 0;
   const totalPlPct = totalCost > 0 ? ((totalValue - totalCost) / totalCost) * 100 : 0;
-  return { totalValue, totalCost, totalPl, totalPlPct };
+  return { totalValue, totalCost, totalPl, totalPlPct, hasPricedRows: pricedRows.length > 0 };
 }
 
 /** Render the portfolio summary as the leading markdown line for snapshot

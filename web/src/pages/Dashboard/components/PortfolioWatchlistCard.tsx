@@ -8,6 +8,7 @@ import { useIsMobile } from '@/hooks/useIsMobile';
 import { createFormatter } from '@/lib/format';
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from '@/components/ui/context-menu';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu';
+import { portfolioSummary } from '../widgets/definitions/_holdingsHelpers';
 
 const fmt2 = createFormatter({ minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt1 = createFormatter({ minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -396,19 +397,8 @@ function PortfolioWatchlistCard({
     });
   };
 
-  // Compute portfolio summary
-  const pricedRows = portfolioRows.filter(
-    (r) => r.quoteAvailable !== false && r.marketValue != null,
-  );
-  const hasPricedRows = pricedRows.length > 0;
-  const totalValue = pricedRows.reduce((sum, r) => sum + (r.marketValue || 0), 0);
-  const totalCost = pricedRows.reduce(
-    (sum, r) => sum + (r.average_cost != null ? r.average_cost * (r.quantity || 0) : 0),
-    0
-  );
-  const totalPl = totalCost > 0 ? totalValue - totalCost : 0;
-  const totalPlPct = totalCost > 0 ? ((totalValue - totalCost) / totalCost) * 100 : 0;
-  const isPlPositive = totalPl >= 0;
+  const summary = React.useMemo(() => portfolioSummary(portfolioRows), [portfolioRows]);
+  const isPlPositive = summary.totalPl >= 0;
 
   return (
     <div
@@ -519,9 +509,9 @@ function PortfolioWatchlistCard({
                     className="text-2xl font-bold mb-2 dashboard-mono"
                     style={{ color: 'var(--color-text-primary)' }}
                   >
-                    {valuesHidden ? '********' : hasPricedRows ? `$${fmt2(totalValue)}` : 'N/A'}
+                    {valuesHidden ? '********' : summary.hasPricedRows ? `$${fmt2(summary.totalValue)}` : 'N/A'}
                   </div>
-                  {!valuesHidden && hasPricedRows && totalCost > 0 && (
+                  {!valuesHidden && summary.hasPricedRows && summary.totalCost > 0 && (
                     <div
                       className="flex items-center gap-2 text-xs font-medium w-fit px-2 py-1 rounded-full"
                       style={{
@@ -530,7 +520,7 @@ function PortfolioWatchlistCard({
                       }}
                     >
                       {isPlPositive ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
-                      {isPlPositive ? '+' : '-'}${fmt2(Math.abs(totalPl))} ({fmt1(totalPlPct)}%)
+                      {isPlPositive ? '+' : '-'}${fmt2(Math.abs(summary.totalPl))} ({fmt1(summary.totalPlPct)}%)
                     </div>
                   )}
                 </div>
