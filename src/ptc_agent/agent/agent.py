@@ -461,6 +461,7 @@ class PTCAgent:
             max_search_results=10,
             time_range=None,
             verbose=False,
+            provider=self.config.search_api,
         )
         tools.append(web_search_tool)
         tools.append(web_fetch_tool)

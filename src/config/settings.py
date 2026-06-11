@@ -23,6 +23,7 @@ from src.config.env import (  # noqa: F401
     GINLIX_DATA_WS_URL,
     HOST_MODE,
     LOCAL_DEV_USER_ID,
+    SEARCH_PROVIDER_MIN_TIER,
     SUPABASE_URL,
 )
 

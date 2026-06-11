@@ -4,6 +4,7 @@ Tests the get_web_search_tool factory function's routing logic and
 validation, plus the ToolUsageTracker used by search tool wrappers.
 """
 
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -103,6 +104,135 @@ class TestGetWebSearchToolRouting:
         mock_configure.assert_called_once_with(
             max_results=10, default_time_range="m", verbose=False
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests for the per-user `provider` override
+# ---------------------------------------------------------------------------
+
+
+class TestGetWebSearchToolProviderOverride:
+    """The ``provider`` arg overrides ``SELECTED_SEARCH_ENGINE`` per request.
+
+    A valid engine selects that provider's branch; an unknown string logs a
+    warning and falls back to the deployment default; ``None`` is a no-op so
+    the default engine is used. Provider modules read API keys lazily at call
+    time, so building the tools needs no API keys (the modules are mocked here
+    regardless, to assert which branch ran).
+    """
+
+    def _make_provider_module(self):
+        """Build a mock provider module (configure + web_search).
+
+        Returns ``(mock_configure, mock_module)``; the caller installs the
+        module in sys.modules under the right import path.
+        """
+        mock_configure = MagicMock()
+        mock_web_search = MagicMock()
+        mock_module = MagicMock(configure=mock_configure, web_search=mock_web_search)
+        return mock_configure, mock_module
+
+    def test_provider_serper_selects_serper_branch(self):
+        """provider='serper' (default engine is tavily) routes to serper."""
+        mock_configure, mock_module = self._make_provider_module()
+        mock_tool = MagicMock()
+        with (
+            patch("src.tools.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
+            patch.dict("sys.modules", {"src.tools.search_services.serper": mock_module}),
+            patch("src.tools.search.create_logged_tool", return_value=mock_tool) as mock_create,
+        ):
+            from src.tools.search import get_web_search_tool
+
+            result = get_web_search_tool(max_search_results=5, provider="serper")
+
+        mock_configure.assert_called_once_with(max_results=5, default_time_range=None)
+        # The serper branch tags the tool with SerperSearchTool tracking name.
+        assert mock_create.call_args.kwargs["tracking_name"] == "SerperSearchTool"
+        assert mock_create.call_args.kwargs["name"] == "WebSearch"
+        assert result is mock_tool
+
+    def test_provider_tavily_selects_tavily_branch(self):
+        """provider='tavily' (default engine is serper) routes to tavily."""
+        mock_configure, mock_module = self._make_provider_module()
+        mock_tool = MagicMock()
+        with (
+            patch("src.tools.search.SELECTED_SEARCH_ENGINE", SearchEngine.SERPER.value),
+            patch.dict("sys.modules", {"src.tools.search_services.tavily": mock_module}),
+            patch("src.tools.search.create_logged_tool", return_value=mock_tool) as mock_create,
+        ):
+            from src.tools.search import get_web_search_tool
+
+            result = get_web_search_tool(max_search_results=7, provider="tavily")
+
+        mock_configure.assert_called_once_with(
+            max_results=7, default_time_range=None, verbose=True
+        )
+        assert mock_create.call_args.kwargs["tracking_name"] == "TavilySearchTool"
+        assert result is mock_tool
+
+    def test_provider_bocha_selects_bocha_branch(self):
+        """provider='bocha' (default engine is tavily) routes to bocha."""
+        mock_configure, mock_module = self._make_provider_module()
+        mock_tool = MagicMock()
+        with (
+            patch("src.tools.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
+            patch.dict("sys.modules", {"src.tools.search_services.bocha": mock_module}),
+            patch("src.tools.search.create_logged_tool", return_value=mock_tool) as mock_create,
+        ):
+            from src.tools.search import get_web_search_tool
+
+            result = get_web_search_tool(max_search_results=3, provider="bocha")
+
+        mock_configure.assert_called_once_with(
+            max_results=3, default_time_range=None, verbose=True
+        )
+        assert mock_create.call_args.kwargs["tracking_name"] == "BochaSearchTool"
+        assert result is mock_tool
+
+    def test_invalid_provider_falls_back_to_default_and_warns(self, caplog):
+        """An unknown provider string logs a warning and falls back to the
+        deployment default engine — it must not raise."""
+        mock_configure, mock_module = self._make_provider_module()
+        mock_tool = MagicMock()
+        with (
+            patch("src.tools.search.SELECTED_SEARCH_ENGINE", SearchEngine.SERPER.value),
+            patch.dict("sys.modules", {"src.tools.search_services.serper": mock_module}),
+            patch("src.tools.search.create_logged_tool", return_value=mock_tool) as mock_create,
+            caplog.at_level(logging.WARNING, logger="src.tools.search"),
+        ):
+            from src.tools.search import get_web_search_tool
+
+            result = get_web_search_tool(
+                max_search_results=5, provider="not-a-real-engine"
+            )
+
+        # Fell back to the default (serper) branch.
+        assert mock_create.call_args.kwargs["tracking_name"] == "SerperSearchTool"
+        assert result is mock_tool
+        # And warned about the unknown provider.
+        assert any(
+            "not-a-real-engine" in rec.getMessage() for rec in caplog.records
+        )
+
+    def test_provider_none_uses_default_engine(self):
+        """provider=None behaves exactly as before — the default engine is used
+        with no fallback warning."""
+        mock_configure, mock_module = self._make_provider_module()
+        mock_tool = MagicMock()
+        with (
+            patch("src.tools.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
+            patch.dict("sys.modules", {"src.tools.search_services.tavily": mock_module}),
+            patch("src.tools.search.create_logged_tool", return_value=mock_tool) as mock_create,
+        ):
+            from src.tools.search import get_web_search_tool
+
+            result = get_web_search_tool(max_search_results=5, provider=None)
+
+        mock_configure.assert_called_once_with(
+            max_results=5, default_time_range=None, verbose=True
+        )
+        assert mock_create.call_args.kwargs["tracking_name"] == "TavilySearchTool"
+        assert result is mock_tool
 
 
 # ---------------------------------------------------------------------------

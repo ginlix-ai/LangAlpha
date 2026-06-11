@@ -342,6 +342,55 @@ async def test_update_preferences_user_not_found(client):
     assert resp.status_code == 404
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_value", ["not-an-engine", {"engine": "serper"}, 123])
+async def test_update_preferences_invalid_search_provider_rejected(client, bad_value):
+    """Unknown engine strings and non-string values both get a clean 400."""
+    user = _user()
+    with patch(
+        f"{DB}.db_get_user",
+        new_callable=AsyncMock,
+        return_value=user,
+    ):
+        resp = await client.put(
+            "/api/v1/users/me/preferences",
+            json={"other_preference": {"search_provider": bad_value}},
+        )
+
+    assert resp.status_code == 400
+    assert "search_provider" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["serper", None])
+async def test_update_preferences_search_provider_valid_or_none_accepted(client, value):
+    """A valid engine is accepted; None (key deletion) passes validation."""
+    user = _user()
+    prefs = _prefs()
+    with (
+        patch(
+            f"{DB}.db_get_user",
+            new_callable=AsyncMock,
+            return_value=user,
+        ),
+        patch(
+            f"{DB}.upsert_user_preferences",
+            new_callable=AsyncMock,
+            return_value=prefs,
+        ),
+        patch(
+            f"{DB}.maybe_complete_onboarding",
+            new_callable=AsyncMock,
+        ),
+    ):
+        resp = await client.put(
+            "/api/v1/users/me/preferences",
+            json={"other_preference": {"search_provider": value}},
+        )
+
+    assert resp.status_code == 200
+
+
 # ---------------------------------------------------------------------------
 # DELETE /api/v1/users/me/preferences
 # ---------------------------------------------------------------------------

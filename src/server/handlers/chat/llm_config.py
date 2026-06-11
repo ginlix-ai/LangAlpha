@@ -840,6 +840,37 @@ async def resolve_llm_config(
         _cow()
         config.llm.fallback = user_fallback
 
+    # Per-user search provider (selection only). Platform mode gates it to paid
+    # tiers; this resolve-time check is the enforcement point, so a stale pref
+    # from a downgraded plan is ignored at consumption. ChatAuthResult.access_tier
+    # is -1 for BYOK/OAuth users, so the true tier is resolved here (Redis-cached).
+    pref_search_provider = model_pref.get("search_provider")
+    if pref_search_provider:
+        from src.config.tools import SearchEngine
+
+        if not isinstance(pref_search_provider, str) or pref_search_provider not in {
+            e.value for e in SearchEngine
+        }:
+            logger.warning(
+                f"[CHAT] Ignoring unknown search_provider preference: {pref_search_provider!r}"
+            )
+        else:
+            from src.config.settings import HOST_MODE, SEARCH_PROVIDER_MIN_TIER
+
+            allowed = HOST_MODE != "platform"
+            if not allowed:
+                from src.server.dependencies.usage_limits import _fetch_platform_tier
+
+                allowed = await _fetch_platform_tier(user_id) >= SEARCH_PROVIDER_MIN_TIER
+            if allowed:
+                _cow()
+                config.search_api = pref_search_provider
+                logger.debug(f"[CHAT] Using search_provider: {pref_search_provider}")
+            else:
+                logger.debug(
+                    f"[CHAT] search_provider pref ignored (tier below {SEARCH_PROVIDER_MIN_TIER})"
+                )
+
     # Compaction profile: a named preset (aggressive/moderate/extended/relaxed)
     # that bundles token_threshold, truncate_args_trigger_messages, and
     # keep_messages. Unknown/missing values fall through to the YAML-configured

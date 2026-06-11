@@ -428,6 +428,18 @@ async def update_preferences(
                 cp_for_validation = (existing or {}).get("other_preference", {}).get("custom_providers") or []
             _validate_custom_models(custom_models, cp_for_validation)
 
+    # Validate search_provider if present (None = key deletion, allowed)
+    if other_pref and other_pref.get("search_provider") is not None:
+        from src.config.tools import SearchEngine
+
+        valid_engines = {e.value for e in SearchEngine}
+        sp = other_pref["search_provider"]
+        if not isinstance(sp, str) or sp not in valid_engines:
+            raise HTTPException(
+                status_code=400,
+                detail=f"search_provider must be one of {sorted(valid_engines)}",
+            )
+
     preferences = await upsert_user_preferences(
         user_id=user_id,
         risk_preference=risk_pref,

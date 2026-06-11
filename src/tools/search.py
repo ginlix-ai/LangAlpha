@@ -11,6 +11,7 @@ def get_web_search_tool(
     max_search_results: int,
     time_range: Optional[str] = None,
     verbose: bool = True,
+    provider: Optional[str] = None,
 ):
     """Get web search tool with verbosity and time range control.
 
@@ -22,8 +23,17 @@ def get_web_search_tool(
         verbose: Control verbosity of search results.
             True (default): Include images in results.
             False: Exclude images (lightweight for planning).
+        provider: Search engine override (per-user preference). Falls back to
+            the deployment default (SELECTED_SEARCH_ENGINE) when unset or invalid.
     """
-    if SELECTED_SEARCH_ENGINE == SearchEngine.SERPER.value:
+    engine = provider or SELECTED_SEARCH_ENGINE
+    if engine != SELECTED_SEARCH_ENGINE and engine not in {e.value for e in SearchEngine}:
+        logger.warning(
+            "Unknown search provider %r; falling back to default %r", engine, SELECTED_SEARCH_ENGINE
+        )
+        engine = SELECTED_SEARCH_ENGINE
+
+    if engine == SearchEngine.SERPER.value:
         from src.tools.search_services.serper import configure as configure_serper
         from src.tools.search_services.serper import web_search as serper_web_search
 
@@ -33,7 +43,7 @@ def get_web_search_tool(
         )
         return create_logged_tool(serper_web_search, name="WebSearch", tracking_name="SerperSearchTool")
 
-    elif SELECTED_SEARCH_ENGINE == SearchEngine.TAVILY.value:
+    elif engine == SearchEngine.TAVILY.value:
         from src.tools.search_services.tavily import configure as configure_tavily
         from src.tools.search_services.tavily import web_search as tavily_web_search
 
@@ -44,7 +54,7 @@ def get_web_search_tool(
         )
         return create_logged_tool(tavily_web_search, name="WebSearch", tracking_name="TavilySearchTool")
 
-    elif SELECTED_SEARCH_ENGINE == SearchEngine.BOCHA.value:
+    elif engine == SearchEngine.BOCHA.value:
         from src.tools.search_services.bocha import configure as configure_bocha
         from src.tools.search_services.bocha import web_search as bocha_web_search
 
@@ -57,7 +67,7 @@ def get_web_search_tool(
 
     else:
         raise ValueError(
-            f"Unsupported search engine: {SELECTED_SEARCH_ENGINE}. "
+            f"Unsupported search engine: {engine}. "
             f"Supported engines: {[e.value for e in SearchEngine]}"
         )
 
