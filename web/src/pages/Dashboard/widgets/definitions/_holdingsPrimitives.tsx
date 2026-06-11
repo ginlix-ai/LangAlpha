@@ -156,10 +156,17 @@ export function PortfolioRowItem({
     item.unrealizedPlPercent != null
       ? (pos ? '+' : '') + fmt2(Number(item.unrealizedPlPercent)) + '%'
       : '—';
-  const hasId = !!item.user_portfolio_id;
-
   const { extPct, extType } = getExtendedHoursInfo(marketStatus, item, { shortLabels: true });
   const extColor = extType === 'pre' ? '#fbbf24' : '#3b82f6';
+  const displayMarketValue = item.marketValue != null
+    ? formatPortfolioMoney(item.marketValue, currency, i18n.language)
+    : '--';
+  const displayPrice = extType && item.previousClose != null
+    ? formatPortfolioMoney(item.previousClose, currency, i18n.language)
+    : item.price != null
+      ? formatPortfolioMoney(item.price, currency, i18n.language)
+      : '--';
+  const hasId = !!item.user_portfolio_id;
 
   const row = (
     <motion.div
@@ -197,12 +204,12 @@ export function PortfolioRowItem({
           >
             {valuesHidden
               ? '******'
-              : formatPortfolioMoney(Number(item.marketValue || 0), currency, i18n.language)}
+              : displayMarketValue}
           </div>
           <div className="text-xs dashboard-mono" style={{ color: 'var(--color-text-secondary)' }}>
             {valuesHidden
               ? '***'
-              : formatPortfolioMoney(Number(extType && item.previousClose != null ? item.previousClose : item.price), currency, i18n.language)}
+              : displayPrice}
           </div>
         </div>
         <div className="text-right">
@@ -215,7 +222,7 @@ export function PortfolioRowItem({
           >
             {plStr}
           </div>
-          {extType && extPct != null && (
+          {extType && extPct != null && item.price != null && (
             <div
               className="text-[10px] mt-0.5 text-center flex items-center justify-center gap-0.5"
               style={{ color: extColor }}

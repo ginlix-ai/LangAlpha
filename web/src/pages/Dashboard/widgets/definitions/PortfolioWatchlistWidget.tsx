@@ -44,7 +44,7 @@ function watchlistRowToQuote(r: WatchlistRow) {
 function portfolioRowToQuote(r: PortfolioRow) {
   return {
     symbol: r.symbol,
-    price: r.price,
+    price: r.price ?? undefined,
     shares: r.quantity ?? undefined,
     marketValue: r.marketValue,
     currency: normalizePortfolioCurrency(r.currency),

@@ -34,7 +34,7 @@ interface WatchlistRow {
 interface PortfolioRow {
   user_portfolio_id?: string | number;
   symbol: string;
-  price: number;
+  price: number | null;
   quantity?: number | null;
   average_cost?: number | null;
   currency: string;
@@ -184,11 +184,18 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStat
     item.unrealizedPlPercent != null
       ? (pos ? '+' : '') + fmt2(Number(item.unrealizedPlPercent)) + '%'
       : '—';
-  const hasId = !!item.user_portfolio_id;
-
   // Extended hours
   const { extPct, extType, extPrice: _extPrice2 } = getExtendedHoursInfo(marketStatus, item, { shortLabels: true });
   const extColor = extType === 'pre' ? '#fbbf24' : '#3b82f6';
+  const displayMarketValue = item.marketValue != null
+    ? formatPortfolioMoney(item.marketValue, currency, i18n.language)
+    : '--';
+  const displayPrice = extType && item.previousClose != null
+    ? formatPortfolioMoney(item.previousClose, currency, i18n.language)
+    : item.price != null
+      ? formatPortfolioMoney(item.price, currency, i18n.language)
+      : '--';
+  const hasId = !!item.user_portfolio_id;
 
   const rowContent = (
     <motion.div
@@ -224,10 +231,10 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStat
       <div className="flex items-center gap-4">
         <div className="text-right">
           <div className="text-sm font-medium dashboard-mono" style={{ color: 'var(--color-text-primary)' }}>
-            {valuesHidden ? '******' : formatPortfolioMoney(Number(item.marketValue || 0), currency, i18n.language)}
+            {valuesHidden ? '******' : displayMarketValue}
           </div>
           <div className="text-xs dashboard-mono" style={{ color: 'var(--color-text-secondary)' }}>
-            {valuesHidden ? '***' : formatPortfolioMoney(Number(extType && item.previousClose != null ? item.previousClose : item.price), currency, i18n.language)}
+            {valuesHidden ? '***' : displayPrice}
           </div>
         </div>
 
@@ -241,7 +248,7 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStat
           >
             {plStr}
           </div>
-          {extType && extPct != null && (
+          {extType && extPct != null && item.price != null && (
             <div className="text-[10px] mt-0.5 text-center flex items-center justify-center gap-0.5" style={{ color: extColor }}>
               {extType === 'pre' ? <Sunrise size={10} /> : <Sunset size={10} />}
               {fmt2(Number(item.price))} {extPct >= 0 ? '+' : ''}{fmt2(extPct)}%
