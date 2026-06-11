@@ -9,7 +9,9 @@ name: Claude Code Review
 # - Fork PRs run on `pull_request_target`, which executes in the BASE-repo
 #   context so the Claude OAuth token is available. The broken OIDC exchange
 #   is bypassed by passing the run-scoped GITHUB_TOKEN, so fork reviews post
-#   as github-actions[bot]. We deliberately do NOT check out the PR head:
+#   as github-actions[bot]. allowed_non_write_users lifts the action's actor
+#   write-permission gate, which read-only fork authors would otherwise fail.
+#   We deliberately do NOT check out the PR head:
 #   the review reads the diff via `gh`, and CLAUDE.md comes from the trusted
 #   base branch. Fork PRs additionally get a minimal read + `gh pr comment`
 #   allowlist (see ALLOWLIST_FORK) so a prompt-injected diff can't reach
@@ -67,6 +69,12 @@ jobs:
           # for this event (claude-code-action#713). Same-repo runs leave it
           # empty so the OIDC path mints the claude[bot] app token.
           github_token: ${{ github.event_name == 'pull_request_target' && secrets.GITHUB_TOKEN || '' }}
+          # Fork contributors only have read access, and the action hard-fails
+          # any non-write actor. The bypass only takes effect when github_token
+          # is provided, i.e. exactly the fork path; same-repo runs keep the
+          # write-permission gate. Safe because fork runs never check out the
+          # PR head and are confined to ALLOWLIST_FORK (read + gh pr comment).
+          allowed_non_write_users: ${{ github.event_name == 'pull_request_target' && '*' || '' }}
           allowed_bots: 'claude[bot]'
           prompt: |
             REPO: ${{ github.repository }}
