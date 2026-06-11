@@ -1751,7 +1751,11 @@ class BackgroundTaskManager:
                     task.tool_usage = {}
                     claimed.append((task, records, tool_usage))
         else:
+            # Registry gone (thread teardown) — tasks still carry their claim,
+            # so the same ownership gate applies without the lock.
             for task in tasks:
+                if task.collector_response_id != response_id:
+                    continue
                 if not (task.per_call_records or task.tool_usage):
                     continue
                 records = task.per_call_records

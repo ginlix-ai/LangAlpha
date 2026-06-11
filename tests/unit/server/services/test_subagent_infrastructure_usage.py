@@ -48,7 +48,11 @@ async def test_persists_infra_usage_with_empty_per_call_records():
     """A task with only tool_usage (no token records) is still persisted, and
     its tool usage is forwarded to the usage service for infra billing."""
     btm = _make_btm()
-    task = _make_task(per_call_records=[], tool_usage={"TavilySearchTool:deep": 2})
+    task = _make_task(
+        per_call_records=[],
+        tool_usage={"TavilySearchTool:deep": 2},
+        collector_response_id="resp-1",
+    )
 
     fake_service = MagicMock()
     fake_service.track_llm_usage = AsyncMock()
@@ -77,7 +81,11 @@ async def test_no_tool_batch_when_tool_usage_empty():
     """When a task has token records but no tool usage, the infra batch call
     is skipped (no spurious empty infrastructure rows)."""
     btm = _make_btm()
-    task = _make_task(per_call_records=[{"dummy": "record"}], tool_usage={})
+    task = _make_task(
+        per_call_records=[{"dummy": "record"}],
+        tool_usage={},
+        collector_response_id="resp-1",
+    )
 
     fake_service = MagicMock()
     fake_service.track_llm_usage = AsyncMock()
@@ -102,7 +110,7 @@ async def test_no_tool_batch_when_tool_usage_empty():
 async def test_task_with_no_records_and_no_tool_usage_skipped():
     """A task with neither token records nor tool usage produces no row."""
     btm = _make_btm()
-    task = _make_task(per_call_records=[], tool_usage={})
+    task = _make_task(per_call_records=[], tool_usage={}, collector_response_id="resp-1")
 
     fake_service = MagicMock()
     fake_service.track_llm_usage = AsyncMock()
@@ -244,3 +252,35 @@ async def test_no_double_persist_across_two_collectors():
     owner_service.persist_usage.assert_awaited_once()
     assert task.tool_usage == {}
     assert task.per_call_records == []
+
+
+@pytest.mark.asyncio
+async def test_no_registry_fallback_gates_on_ownership():
+    """When the registry is gone (thread teardown), the fallback path applies
+    the same ownership gate — a stale collector must not claim usage owned by
+    another response."""
+    btm = _make_btm()
+    task = _make_task(
+        per_call_records=[{"run": 1}],
+        tool_usage={"TavilySearchTool:deep": 1},
+        collector_response_id="resp-2",
+    )
+
+    fake_service = MagicMock()
+    fake_service.track_llm_usage = AsyncMock()
+    fake_service.record_tool_usage_batch = MagicMock()
+    fake_service.persist_usage = AsyncMock()
+    fake_service._token_usage = None
+
+    with patch(f"{USAGE_MODULE}.UsagePersistenceService", return_value=fake_service):
+        await btm._persist_subagent_usage(
+            response_id="resp-1",
+            tasks=[task],
+            thread_id="thread-1",
+            workspace_id="ws-1",
+            user_id="user-1",
+        )
+
+    fake_service.persist_usage.assert_not_awaited()
+    # Usage preserved for the actual owner.
+    assert task.tool_usage == {"TavilySearchTool:deep": 1}
