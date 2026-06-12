@@ -16,6 +16,7 @@ import './App.css';
 const SetupWizard = React.lazy(() => import('./pages/Setup/SetupWizard'));
 const PrivacyPolicy = React.lazy(() => import('./pages/Legal/PrivacyPolicy'));
 const Legal = React.lazy(() => import('./pages/Legal/Legal'));
+const RobinhoodCallback = React.lazy(() => import('./pages/OAuth/RobinhoodCallback'));
 
 // In platform mode, `/` is served externally (marketing landing via nginx) and
 // the SPA owns `/app` for the login/entry screen. In OSS mode, the SPA owns `/`
@@ -146,6 +147,7 @@ function App() {
         <Route path="/" element={appEntryElement} />
       )}
       <Route path="/callback" element={<AuthCallback />} />
+      <Route path="/oauth/robinhood/callback" element={<React.Suspense fallback={null}><RobinhoodCallback /></React.Suspense>} />
       <Route path="/s/:shareToken" element={<SharedChatView />} />
       <Route path="/privacy" element={
         <Suspense fallback={

@@ -22,9 +22,10 @@ export const queryKeys = {
     models: () => [...queryKeys.platform.all, 'models'],
   },
   oauth: {
-    all:    ['oauth'],
-    codex:  () => [...queryKeys.oauth.all, 'codex'],
-    claude: () => [...queryKeys.oauth.all, 'claude'],
+    all:        ['oauth'],
+    codex:      () => [...queryKeys.oauth.all, 'codex'],
+    claude:     () => [...queryKeys.oauth.all, 'claude'],
+    robinhood:  () => [...queryKeys.oauth.all, 'robinhood'],
   },
   workspaces: {
     all:    ['workspaces'],

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { User, LogOut, Trash2, MessageSquareText, Sun, Moon, Monitor, Link2, Unlink, ExternalLink, Shield, ClipboardCopy, Search, Pin, Settings2 } from 'lucide-react';
+import BrokerageTab from './BrokerageTab';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
@@ -683,6 +684,17 @@ function Settings() {
           >
             {t('settings.model')}
           </button>
+          <button
+            type="button"
+            onClick={() => handleTabChange('brokerage')}
+            className="px-4 py-2 text-sm font-medium whitespace-nowrap flex-shrink-0"
+            style={{
+              color: activeTab === 'brokerage' ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
+              borderBottom: activeTab === 'brokerage' ? '2px solid var(--color-accent-primary)' : '2px solid transparent',
+            }}
+          >
+            {t('settings.brokerage', 'Brokerage')}
+          </button>
         </div>
 
         <div className="settings-content">
@@ -996,6 +1008,10 @@ function Settings() {
                 </div>
               </div>
             </div>
+          )}
+
+          {!isLoading && activeTab === 'brokerage' && (
+            <BrokerageTab />
           )}
 
           {!isLoading && activeTab === 'model' && (
