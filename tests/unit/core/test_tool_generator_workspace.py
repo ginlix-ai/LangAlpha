@@ -605,3 +605,56 @@ class TestParamNameInjection:
         ast.parse(module)
         # Key emitted via repr (single-quoted), value references the identifier.
         assert "'sym': sym," in module
+
+
+class TestParamTypeInjection:
+    """A hostile schema `type` can't terminate the generated docstring."""
+
+    def _tool(self, hostile_type):
+        from ptc_agent.core.mcp_registry import MCPToolInfo
+
+        return MCPToolInfo(
+            name="probe",
+            description="probe",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "sym": {"type": hostile_type, "description": "a param"},
+                },
+                "required": ["sym"],
+            },
+            server_name="user_srv",
+        )
+
+    def test_hostile_param_type_does_not_break_docstring(self):
+        hostile = '"""x", __import__("os").system("touch /tmp/pwned") #'
+        gen = ToolFunctionGenerator()
+        module = gen.generate_tool_module(
+            "user_srv", [self._tool(hostile)], source="workspace"
+        )
+        tree = ast.parse(module)  # must parse — the breakout is inert
+        assert not any(
+            isinstance(n, ast.Name) and n.id == "__import__"
+            for n in ast.walk(tree)
+        )
+
+    def test_non_str_param_type_coerced(self):
+        # An unhashable `type` must neither crash codegen nor inject quotes.
+        gen = ToolFunctionGenerator()
+        module = gen.generate_tool_module(
+            "user_srv", [self._tool({"evil": '"""'})], source="workspace"
+        )
+        ast.parse(module)
+        # The closed type_map falls back to Any in the signature.
+        assert "def probe(sym: Any)" in module
+
+    def test_hostile_param_type_sanitized_in_docs(self):
+        hostile = '"""x"""'
+        gen = ToolFunctionGenerator()
+        doc = gen.generate_tool_documentation(self._tool(hostile), source="workspace")
+        assert '"""' not in doc
+
+    def test_builtin_param_type_byte_stable(self):
+        gen = ToolFunctionGenerator()
+        module = gen.generate_tool_module("srv", [self._tool("string")])
+        assert "sym (string) (required): a param" in module
