@@ -88,6 +88,16 @@ describe('portfolioSummary', () => {
     expect(formatPortfolioNavMarkdownLine(summaries)).toBe('**NAV (USD)** USD 150.00');
   });
 
+  it('formats negative P/L in NAV markdown with negative signs', () => {
+    const summaries = portfolioSummary([
+      createPortfolioRow({ symbol: 'LOSS', price: 8, currency: 'USD', marketValue: 80, average_cost: 10, quantity: 10 }),
+    ]);
+
+    expect(formatPortfolioNavMarkdownLine(summaries)).toBe(
+      '**NAV (USD)** USD 80.00 (cost USD 100.00, P/L -USD 20.00 / -20.00%)',
+    );
+  });
+
   it('omits zero-value summaries from NAV markdown', () => {
     const summaries = portfolioSummary([
       createPortfolioRow({ symbol: 'EMPTY', price: 0, currency: 'USD', marketValue: 0, average_cost: 0, quantity: 0 }),
