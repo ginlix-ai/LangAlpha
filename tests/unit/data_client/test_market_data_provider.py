@@ -295,6 +295,34 @@ class TestMarketDataProvider:
         assert fallback_src.calls[0][1]["symbols"] == ["MSFT"]
 
     @pytest.mark.asyncio
+    async def test_get_snapshots_extra_from_wrong_market_does_not_resolve_pending(self, caplog):
+        us_src = SnapshotSource(
+            "ginlix",
+            {"AAPL": {"symbol": "AAPL", "price": 190.0}},
+            extra_rows=[{"symbol": "300059.SZ", "price": 0.0}],
+        )
+        cn_src = SnapshotSource(
+            "cn",
+            {"300059.SZ": {"symbol": "300059.SZ", "price": 42.0}},
+        )
+        provider = MarketDataProvider(
+            [
+                ProviderEntry("ginlix", us_src, {"us"}),
+                ProviderEntry("cn", cn_src, {"cn"}),
+            ]
+        )
+
+        result = await provider.get_snapshots(["AAPL", "300059.SZ"])
+
+        assert result == [
+            {"symbol": "AAPL", "price": 190.0},
+            {"symbol": "300059.SZ", "price": 42.0},
+        ]
+        assert us_src.calls[0][1]["symbols"] == ["AAPL"]
+        assert cn_src.calls[0][1]["symbols"] == ["300059.SZ"]
+        assert "market_data.snapshot.drop_unrequested" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_get_snapshots_falls_back_when_provider_returns_no_rows(self):
         empty_src = SnapshotSource("primary")
         fallback_src = SnapshotSource(

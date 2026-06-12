@@ -256,12 +256,19 @@ class MarketDataProvider:
                 last_exc = exc
                 continue
 
+            requested = {str(s).strip().upper() for s in batch}
             resolved: set[str] = set()
             for snap in snapshots or []:
-                symbol = str(snap.get("symbol") or "").upper()
-                if symbol:
+                symbol = str(snap.get("symbol") or "").strip().upper()
+                if symbol in requested:
                     results_by_symbol[symbol] = snap
                     resolved.add(symbol)
+                elif symbol:
+                    logger.warning(
+                        "market_data.snapshot.drop_unrequested | source=%s symbol=%s",
+                        entry.name,
+                        symbol,
+                    )
                 else:
                     logger.warning(
                         "market_data.snapshot.drop_unkeyed | source=%s item=%s",
