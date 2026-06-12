@@ -225,14 +225,14 @@ class MarketDataProvider:
             return []
 
         results_by_symbol: dict[str, dict[str, Any]] = {}
-        extras: list[dict[str, Any]] = []
         last_exc: Exception | None = None
-        tried_any = False
+        supports_snapshots = False
 
         for entry in self.entries:
             fn = getattr(entry.source, "get_snapshots", None)
             if fn is None:
                 continue
+            supports_snapshots = True
 
             batch = [
                 s
@@ -242,7 +242,6 @@ class MarketDataProvider:
             if not batch:
                 continue
 
-            tried_any = True
             try:
                 snapshots = await fn(
                     symbols=batch,
@@ -264,24 +263,27 @@ class MarketDataProvider:
                     results_by_symbol[symbol] = snap
                     resolved.add(symbol)
                 else:
-                    extras.append(snap)
+                    logger.warning(
+                        "market_data.snapshot.drop_unkeyed | source=%s item=%s",
+                        entry.name,
+                        snap,
+                    )
 
             if resolved:
                 pending = [s for s in pending if str(s).upper() not in resolved]
                 if not pending:
                     break
 
-        if results_by_symbol or extras:
-            ordered = [
+        if results_by_symbol:
+            return [
                 results_by_symbol[str(symbol).upper()]
                 for symbol in symbols
                 if str(symbol).upper() in results_by_symbol
             ]
-            return ordered + extras
 
         if last_exc:
             raise last_exc
-        if tried_any:
+        if supports_snapshots:
             return []
         raise RuntimeError("No data source supports get_snapshots")
 
