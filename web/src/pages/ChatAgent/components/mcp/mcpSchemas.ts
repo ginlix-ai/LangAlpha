@@ -122,7 +122,10 @@ const secretMapSchema = (kind: 'env' | 'header') =>
  */
 export function validateRemoteUrl(raw: string): string | null {
   if (!raw) return 'url is required for sse/http transports';
-  if (raw.includes('${vault:') || BARE_ENV_RE.test(raw)) {
+  // Brace forms only (`${vault:NAME}`, `${VAR}`, unclosed `${`): bare `$word`
+  // is a legitimate URL convention (OData `/$batch`, `?$filter=`) and is inert
+  // downstream. Mirrors validate_remote_url in models/mcp_server.py.
+  if (raw.includes('${')) {
     return 'url must not contain secrets or placeholders; put credentials in headers';
   }
 

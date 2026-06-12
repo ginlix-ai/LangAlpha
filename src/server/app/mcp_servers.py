@@ -44,6 +44,7 @@ from src.server.database.mcp_servers import (
 )
 from src.server.database.vault_secrets import (
     create_secret as create_secret_db,
+    delete_secret as delete_secret_db,
     get_workspace_secret_names,
 )
 from src.server.database.workspace import get_workspace as db_get_workspace
@@ -593,6 +594,9 @@ async def import_servers(
         try:
             server = McpServerInput(**config)
         except ValidationError as e:
+            await _rollback_import_secrets(
+                workspace_id, made, allocated=allocated, used_secret_names=used_secret_names
+            )
             results.append(
                 {**base, "status": "invalid", "error": _format_validation_error(e)}
             )
@@ -603,9 +607,15 @@ async def import_servers(
                 workspace_id, server.name, config=server.to_config_blob()
             )
         except ValueError as e:
+            await _rollback_import_secrets(
+                workspace_id, made, allocated=allocated, used_secret_names=used_secret_names
+            )
             results.append({**base, "status": "error", "error": str(e)})
             continue
         if row is None:
+            await _rollback_import_secrets(
+                workspace_id, made, allocated=allocated, used_secret_names=used_secret_names
+            )
             results.append({**base, "status": "exists"})
             continue
 
@@ -652,6 +662,36 @@ def _vault_secret_name(server_name: str, key: str, used: set[str]) -> str:
     return name
 
 
+async def _rollback_import_secrets(
+    workspace_id: str,
+    names: list[str],
+    *,
+    allocated: dict[str, str],
+    used_secret_names: set[str],
+) -> None:
+    """Best-effort removal of vault secrets created for a server whose import failed.
+
+    Also unwinds the cross-server dedupe bookkeeping so a later server in the
+    same import can't reuse a ref that points at a deleted secret.
+    """
+    if not names:
+        return
+    refs = {f"${{vault:{n}}}" for n in names}
+    for literal in [k for k, v in allocated.items() if v in refs]:
+        del allocated[literal]
+    for n in names:
+        used_secret_names.discard(n)
+        try:
+            await delete_secret_db(workspace_id, n)
+        except Exception:
+            logger.warning(
+                "[mcp] failed to roll back imported secret %s for workspace %s",
+                n,
+                workspace_id,
+                exc_info=True,
+            )
+
+
 async def _extract_literals_to_vault(
     workspace_id: str,
     server_name: str,
@@ -664,9 +704,35 @@ async def _extract_literals_to_vault(
 
     Existing ``${vault:NAME}`` refs and benign config literals are left alone.
     Returns the names of any vault secrets created. May raise ``ValueError`` if
-    the vault secret cap is reached.
+    the vault secret cap is reached — secrets already created for THIS server
+    are rolled back first, so a cap hit never strands orphans.
     """
     created: list[str] = []
+    try:
+        return await _extract_literals_inner(
+            workspace_id,
+            server_name,
+            config,
+            allocated=allocated,
+            used_secret_names=used_secret_names,
+            created=created,
+        )
+    except Exception:
+        await _rollback_import_secrets(
+            workspace_id, created, allocated=allocated, used_secret_names=used_secret_names
+        )
+        raise
+
+
+async def _extract_literals_inner(
+    workspace_id: str,
+    server_name: str,
+    config: dict[str, Any],
+    *,
+    allocated: dict[str, str],
+    used_secret_names: set[str],
+    created: list[str],
+) -> list[str]:
     for field in ("env", "headers"):
         mapping = config.get(field)
         if not isinstance(mapping, dict):

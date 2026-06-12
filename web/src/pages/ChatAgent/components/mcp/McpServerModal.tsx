@@ -181,10 +181,22 @@ export function McpServerModal({
   const deferredPayload = useDeferredValue(payload);
   const validation = useMemo(() => validateMcpServer(deferredPayload), [deferredPayload]);
 
+  // `kvsToMap` silently drops blank-key rows, so the Zod schema never sees
+  // them — guard on the raw KV state or a legacy refs-only hydration (blank
+  // keys, `${vault:NAME}` values) would silently erase entries on save.
+  function blankKeyErrors(): Array<{ path: string; message: string }> {
+    const rows = transport === 'stdio' ? env : headers;
+    const path = transport === 'stdio' ? 'env' : 'headers';
+    return rows.some((kv) => !kv.key.trim() && kv.value.trim())
+      ? [{ path, message: 'Key is required — entries without a key are not saved' }]
+      : [];
+  }
+
   async function handleSubmit() {
     const result = validateMcpServer(buildPayload());
-    if (!result.ok) {
-      setErrors(result.errors);
+    const blanks = blankKeyErrors();
+    if (!result.ok || blanks.length > 0) {
+      setErrors([...(result.ok ? [] : result.errors), ...blanks]);
       return;
     }
     setErrors([]);

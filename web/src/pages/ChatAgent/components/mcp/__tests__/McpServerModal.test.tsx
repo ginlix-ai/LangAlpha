@@ -211,23 +211,31 @@ describe('McpServerModal — edit-mode env/header hydration (data-loss guard)', 
     );
   });
 
-  it('falls back to refs-only hydration (blank keys) when the maps are absent (older backend)', async () => {
+  it('blocks save on refs-only hydration (blank keys) until the user re-labels them', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
-    // No `env`/`headers` maps — only the legacy refs. Keys come back blank, so
-    // kvsToMap drops them; this is the documented older-backend degradation.
+    // No `env`/`headers` maps — only the legacy refs. Keys come back blank, and
+    // kvsToMap silently drops blank-key rows — so save must REFUSE rather than
+    // erase the entries.
     const legacy = { ...editingStdio, env: undefined, headers: undefined };
     render(<McpServerModal {...baseProps} initial={legacy} onSubmit={onSubmit} />);
 
-    // Refs-only hydration seeds a BLANK key (it can't recover the real key name),
-    // so the real keys from the map are NOT present.
+    // Refs-only hydration seeds a BLANK key (it can't recover the real key name).
     expect(screen.queryByDisplayValue('API_TOKEN')).not.toBeInTheDocument();
     expect(screen.queryByDisplayValue('REGION')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    expect(await screen.findByText(/key is required/i)).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    // Re-labeling the blank key clears the guard; the entry survives the save.
+    fireEvent.change(screen.getByPlaceholderText('ENV_VAR'), {
+      target: { value: 'API_TOKEN' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    // Blank-key row drops → env empties (the legacy data-loss we now avoid when
-    // the backend returns the maps).
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ env: {} }));
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ env: { API_TOKEN: '${vault:API_TOKEN}' } }),
+    );
   });
 });
 

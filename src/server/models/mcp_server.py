@@ -132,7 +132,11 @@ def validate_remote_url(url: str) -> str:
     """Enforce the SSRF-hardening URL policy for sse/http servers (plan §6)."""
     if not isinstance(url, str) or not url:
         raise ValueError("url is required for sse/http transports")
-    if "${vault:" in url or _BARE_ENV_RE.search(url):
+    # Brace forms only (`${vault:NAME}`, `${VAR}`, unclosed `${`): bare `$word`
+    # is a legitimate URL convention (OData `/$batch`, `?$filter=`) and is inert
+    # downstream — workspace URLs resolve `${vault:...}` refs exclusively, never
+    # host env vars.
+    if "${" in url:
         raise ValueError("url must not contain secrets or placeholders; put credentials in headers")
 
     parts = urlsplit(url)

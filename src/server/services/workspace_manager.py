@@ -1099,6 +1099,11 @@ class WorkspaceManager:
         wrappers — then the standard proactive-apply path does the work.
         No-op (beyond a warm acquire) when no session is live.
         """
+        # Deliberately lock-free: racing a concurrent _apply_session_mcp (which
+        # reads this field under the workspace lock) costs at most one redundant
+        # re-resolve — never a missed one, since the proactive apply below
+        # re-enters the locked path. Don't add a lock here; it would put this
+        # background refresh in contention with the hot chat path.
         session = self._sessions.get(workspace_id)
         if session is not None:
             session.mcp_config_version = None

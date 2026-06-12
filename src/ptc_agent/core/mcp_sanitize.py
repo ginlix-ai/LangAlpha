@@ -148,14 +148,13 @@ def sanitize_tool_text(text: str | None, max_len: int = DEFAULT_TOOL_TEXT_MAX_LE
     cleaned = "".join(
         ch for ch in text if ch in ("\t", "\n") or (ord(ch) >= 32 and ord(ch) != 127)
     )
-    # Neutralize any triple-quote sequence so it can't close the docstring.
-    cleaned = cleaned.replace('"""', '\\"\\"\\"').replace("'''", "\\'\\'\\'")
-    # Collapse lone backslashes that could escape the closing quote / form
-    # invalid escape sequences when the string is embedded verbatim.
+    # Double real backslashes FIRST (so a trailing `\` can't eat the closing
+    # quotes), THEN neutralize triple-quote runs. This order needs no undo step:
+    # the lone backslashes the neutralization inserts are meant to stay single.
+    # (Doing it the other way required un-doubling, which also wrongly
+    # un-doubled pre-existing `\"` sequences in the input.)
     cleaned = cleaned.replace("\\", "\\\\")
-    # The replace above double-escaped the quote-escapes we just inserted; undo
-    # that one level so the quote neutralization stays a single backslash.
-    cleaned = cleaned.replace('\\\\"', '\\"').replace("\\\\'", "\\'")
+    cleaned = cleaned.replace('"""', '\\"\\"\\"').replace("'''", "\\'\\'\\'")
     if len(cleaned) > max_len:
         cleaned = cleaned[:max_len] + "…(truncated)"
     return cleaned
