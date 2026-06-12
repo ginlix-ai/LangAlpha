@@ -28,11 +28,14 @@ export function portfolioSummary(rows: PortfolioRow[]): PortfolioSummary[] {
 /** Render the portfolio summary as the leading markdown line for snapshot
  *  exporters. Multi-currency portfolios get one NAV line per currency. */
 export function formatPortfolioNavMarkdownLine(summaries: PortfolioSummary[]): string {
-  return summaries.map((summary) => {
+  return summaries
+    .filter((summary) => summary.totalValue !== 0)
+    .map((summary) => {
     if (summary.totalCost <= 0) {
       return `**NAV (${summary.currency})** ${formatPortfolioMoneyCode(summary.totalValue, summary.currency)}`;
     }
     const sign = summary.totalPl >= 0 ? '+' : '-';
     return `**NAV (${summary.currency})** ${formatPortfolioMoneyCode(summary.totalValue, summary.currency)} (cost ${formatPortfolioMoneyCode(summary.totalCost, summary.currency)}, P/L ${sign}${formatPortfolioMoneyCode(Math.abs(summary.totalPl), summary.currency)} / ${sign}${fmtPct(Math.abs(summary.totalPlPct))}%)`;
-  }).join('\n');
+  })
+    .join('\n');
 }

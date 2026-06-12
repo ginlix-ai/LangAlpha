@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -296,8 +297,11 @@ interface PortfolioNavSummaryProps {
 
 export function PortfolioNavSummary({ rows, valuesHidden, onToggleHidden }: PortfolioNavSummaryProps) {
   const { t, i18n } = useTranslation();
-  const summaries = portfolioSummary(rows);
-  const visibleSummaries = summaries.filter((summary) => summary.totalValue !== 0);
+  const summaries = useMemo(() => portfolioSummary(rows), [rows]);
+  const visibleSummaries = useMemo(
+    () => summaries.filter((summary) => summary.totalValue !== 0),
+    [summaries],
+  );
 
   return (
     <div

@@ -80,6 +80,22 @@ describe('portfolioSummary', () => {
     );
   });
 
+  it('keeps zero-cost holdings visible in NAV markdown', () => {
+    const summaries = portfolioSummary([
+      createPortfolioRow({ symbol: 'BONUS', price: 15, currency: 'USD', marketValue: 150, average_cost: 0, quantity: 10 }),
+    ]);
+
+    expect(formatPortfolioNavMarkdownLine(summaries)).toBe('**NAV (USD)** USD 150.00');
+  });
+
+  it('omits zero-value summaries from NAV markdown', () => {
+    const summaries = portfolioSummary([
+      createPortfolioRow({ symbol: 'EMPTY', price: 0, currency: 'USD', marketValue: 0, average_cost: 0, quantity: 0 }),
+    ]);
+
+    expect(formatPortfolioNavMarkdownLine(summaries)).toBe('');
+  });
+
   it('excludes unavailable quotes from currency NAV and cost basis', () => {
     const summaries = summarizePortfolioByCurrency([
       createPortfolioRow({ symbol: 'AAPL', currency: 'USD', marketValue: 120, average_cost: 10, quantity: 10 }),
