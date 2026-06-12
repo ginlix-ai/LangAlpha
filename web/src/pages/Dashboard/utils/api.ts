@@ -532,6 +532,40 @@ export async function disconnectClaudeOAuth(): Promise<Record<string, unknown>> 
   return data;
 }
 
+// --- Robinhood OAuth (PKCE Authorization Code Flow via MCP dynamic client registration) ---
+
+/**
+ * Initiate Robinhood OAuth — registers a dynamic client, returns { authorize_url }.
+ * POST /api/v1/oauth/robinhood/initiate
+ */
+export async function initiateRobinhoodOAuth(): Promise<Record<string, unknown>> {
+  const { data } = await api.post('/api/v1/oauth/robinhood/initiate');
+  return data;
+}
+
+/**
+ * Check Robinhood OAuth connection status.
+ * GET /api/v1/oauth/robinhood/status
+ * Returns { connected, account_id, email, plan_type }
+ */
+export async function getRobinhoodOAuthStatus(): Promise<{ connected: boolean; account_id: string | null; email: string | null; plan_type: string | null }> {
+  try {
+    const { data } = await api.get('/api/v1/oauth/robinhood/status');
+    return data;
+  } catch {
+    return { connected: false, account_id: null, email: null, plan_type: null };
+  }
+}
+
+/**
+ * Disconnect Robinhood OAuth — delete stored tokens.
+ * DELETE /api/v1/oauth/robinhood
+ */
+export async function disconnectRobinhoodOAuth(): Promise<Record<string, unknown>> {
+  const { data } = await api.delete('/api/v1/oauth/robinhood');
+  return data;
+}
+
 // --- News feed ---
 
 /**
