@@ -390,6 +390,10 @@ function PortfolioWatchlistCard({
     () => portfolioSummaries.filter((summary) => summary.totalValue !== 0),
     [portfolioSummaries],
   );
+  const visiblePortfolioPlSummaries = React.useMemo(
+    () => visiblePortfolioSummaries.filter((summary) => summary.totalCost > 0),
+    [visiblePortfolioSummaries],
+  );
 
   return (
     <div
@@ -512,11 +516,9 @@ function PortfolioWatchlistCard({
                           ))
                         : '--'}
                   </div>
-                  {!valuesHidden && (
+                  {!valuesHidden && visiblePortfolioPlSummaries.length > 0 && (
                     <div className="flex flex-wrap gap-2">
-                      {visiblePortfolioSummaries
-                        .filter((summary) => summary.totalCost > 0)
-                        .map((summary) => (
+                      {visiblePortfolioPlSummaries.map((summary) => (
                           <div
                             key={summary.currency}
                             className="flex items-center gap-2 text-xs font-medium w-fit px-2 py-1 rounded-full"
@@ -529,7 +531,7 @@ function PortfolioWatchlistCard({
                             {summary.isPlPositive ? '+' : '-'}
                             {formatPortfolioMoney(Math.abs(summary.totalPl), summary.currency, i18n.language)} ({fmt1(summary.totalPlPct)}%)
                           </div>
-                        ))}
+                      ))}
                     </div>
                   )}
                 </div>
