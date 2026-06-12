@@ -220,6 +220,9 @@ class MarketDataProvider:
         user_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Fetch batch snapshots with per-symbol market routing and fallback."""
+        def normalize_symbol(value: Any) -> str:
+            return str(value).strip().upper()
+
         pending = [s for s in symbols if str(s).strip()]
         if not pending:
             return []
@@ -256,10 +259,10 @@ class MarketDataProvider:
                 last_exc = exc
                 continue
 
-            requested = {str(s).strip().upper() for s in batch}
+            requested = {normalize_symbol(s) for s in batch}
             resolved: set[str] = set()
             for snap in snapshots or []:
-                symbol = str(snap.get("symbol") or "").strip().upper()
+                symbol = normalize_symbol(snap.get("symbol") or "")
                 if symbol in requested:
                     results_by_symbol[symbol] = snap
                     resolved.add(symbol)
@@ -277,15 +280,15 @@ class MarketDataProvider:
                     )
 
             if resolved:
-                pending = [s for s in pending if str(s).upper() not in resolved]
+                pending = [s for s in pending if normalize_symbol(s) not in resolved]
                 if not pending:
                     break
 
         if results_by_symbol:
             return [
-                results_by_symbol[str(symbol).upper()]
+                results_by_symbol[normalize_symbol(symbol)]
                 for symbol in symbols
-                if str(symbol).upper() in results_by_symbol
+                if normalize_symbol(symbol) in results_by_symbol
             ]
 
         if last_exc:

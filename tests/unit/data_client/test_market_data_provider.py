@@ -52,7 +52,9 @@ class SnapshotSource(FakeSource):
         fail: bool = False,
     ):
         super().__init__(name, fail=fail)
-        self.snapshots = {k.upper(): v for k, v in (snapshots or {}).items()}
+        self.snapshots = {
+            str(k).strip().upper(): v for k, v in (snapshots or {}).items()
+        }
         self.extra_rows = extra_rows or []
 
     async def get_snapshots(self, **kwargs):
@@ -60,9 +62,9 @@ class SnapshotSource(FakeSource):
         if self.fail:
             raise RuntimeError(f"{self.name} snapshots error")
         return [
-            self.snapshots[s.upper()]
+            self.snapshots[str(s).strip().upper()]
             for s in kwargs.get("symbols", [])
-            if s.upper() in self.snapshots
+            if str(s).strip().upper() in self.snapshots
         ] + list(self.extra_rows)
 
 
@@ -293,6 +295,32 @@ class TestMarketDataProvider:
         assert len(fallback_src.calls) == 1
         assert primary_src.calls[0][1]["symbols"] == ["AAPL", "MSFT"]
         assert fallback_src.calls[0][1]["symbols"] == ["MSFT"]
+
+    @pytest.mark.asyncio
+    async def test_get_snapshots_normalizes_whitespace_padded_input_symbols(self):
+        primary_src = SnapshotSource(
+            "primary",
+            {"AAPL": {"symbol": "AAPL", "price": 190.0}},
+        )
+        fallback_src = SnapshotSource(
+            "fallback",
+            {"MSFT": {"symbol": "MSFT", "price": 420.0}},
+        )
+        provider = MarketDataProvider(
+            [
+                ProviderEntry("primary", primary_src, {"all"}),
+                ProviderEntry("fallback", fallback_src, {"all"}),
+            ]
+        )
+
+        result = await provider.get_snapshots(["  AAPL  ", " MSFT "])
+
+        assert result == [
+            {"symbol": "AAPL", "price": 190.0},
+            {"symbol": "MSFT", "price": 420.0},
+        ]
+        assert primary_src.calls[0][1]["symbols"] == ["  AAPL  ", " MSFT "]
+        assert fallback_src.calls[0][1]["symbols"] == [" MSFT "]
 
     @pytest.mark.asyncio
     async def test_get_snapshots_extra_from_wrong_market_does_not_resolve_pending(self, caplog):
