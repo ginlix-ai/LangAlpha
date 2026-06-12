@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { Maximize2, Minimize2, ExternalLink, Download, FileDown, Code } from 'lucide-react';
+import { Maximize2, Minimize2, ExternalLink, Download, FileDown, Code, Link2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import './HtmlActionBar.css';
 
@@ -8,6 +8,8 @@ interface HtmlActionBarProps {
   onDownload: () => void;
   onExportPdf: () => void;
   onCopySource: () => void;
+  /** Copy a shareable link to this report. Omit to hide the link button. */
+  onCopyLink?: () => void;
   /** Toggle fullscreen. Omit to hide the expand/exit button. */
   onFullscreen?: () => void;
   isFullscreen?: boolean;
@@ -22,6 +24,7 @@ export default function HtmlActionBar({
   onDownload,
   onExportPdf,
   onCopySource,
+  onCopyLink,
   onFullscreen,
   isFullscreen = false,
   variant = 'toolbar',
@@ -31,6 +34,17 @@ export default function HtmlActionBar({
 
   return (
     <div className={cn('html-action-bar', variant === 'overlay' && 'html-action-bar-overlay', className)}>
+      {onCopyLink && (
+        <button
+          type="button"
+          className="html-action-btn"
+          onClick={onCopyLink}
+          title={t('filePanel.copyShareLink')}
+          aria-label={t('filePanel.copyShareLink')}
+        >
+          <Link2 className="h-4 w-4" />
+        </button>
+      )}
       {onFullscreen && (
         <button
           type="button"

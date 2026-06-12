@@ -19,6 +19,7 @@ import {
 } from '../ChatAgent/hooks/utils/historyEventHandlers';
 import { getSharedThread, replaySharedThread, getSharedFiles, readSharedFile, downloadSharedFileAs } from './api';
 import type { SharedThreadMetadata, SharedFileEntry, SSEEvent } from './api';
+import { buildSharedServeUrl } from '../ChatAgent/components/viewers/html/wsfilesUrl';
 
 // Message record type compatible with historyEventHandlers
 type MessageRecord = Record<string, unknown>;
@@ -326,12 +327,18 @@ export default function SharedChatView() {
     }
   }, [canBrowseFiles, showFilePanel, files.length, shareToken]);
 
-  // Build API adapter for FilePanel — wraps public endpoints
+  // Build API adapter for FilePanel — wraps public endpoints. buildServedUrl
+  // points the HTML preview iframe at the public serve URL (no workspace UUID).
   const fileApiAdapter = useMemo(() => ({
     readFile: (path: string) => readSharedFile(shareToken!, path),
+    // HTML files read their full source here; the public read endpoint caps at
+    // its own line limit, and the preview renders via the served URL regardless.
+    readFileFull: (path: string) => readSharedFile(shareToken!, path),
     downloadFile: (path: string) => downloadSharedFileAs(shareToken!, path, 'blob'),
     downloadFileAsArrayBuffer: (path: string) => downloadSharedFileAs(shareToken!, path, 'arraybuffer'),
     triggerDownload: (path: string) => downloadSharedFileAs(shareToken!, path, 'download'),
+    buildServedUrl: (path: string, opts?: { injectTheme?: boolean }) =>
+      buildSharedServeUrl(shareToken!, path, opts),
   }), [shareToken]);
 
   // Image downloader for WorkspaceProvider — enables inline image rendering in markdown
@@ -355,6 +362,17 @@ export default function SharedChatView() {
       setFilesLoading(false);
     }
   }, [canBrowseFiles, files.length, shareToken]);
+
+  // Deep link: `?file=<path>` opens that report directly once metadata + file
+  // permission are known. One-shot — the share-link target from §1.3b.
+  const fileDeepLinkConsumedRef = useRef(false);
+  useEffect(() => {
+    if (fileDeepLinkConsumedRef.current || !metadata || !canBrowseFiles) return;
+    const fileParam = new URLSearchParams(window.location.search).get('file');
+    if (!fileParam) return;
+    fileDeepLinkConsumedRef.current = true;
+    handleOpenFile(fileParam);
+  }, [metadata, canBrowseFiles, handleOpenFile]);
 
   // Drag-to-resize file panel (matches ChatView)
   const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {

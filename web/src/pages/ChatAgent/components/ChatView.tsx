@@ -10,7 +10,8 @@ import { usePreferences } from '@/hooks/usePreferences';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { updateCurrentUser } from '../../Dashboard/utils/api';
-import { softInterruptWorkflow, getWorkspace, summarizeThread, offloadThread, getPreviewUrl } from '../utils/api';
+import { softInterruptWorkflow, getWorkspace, summarizeThread, offloadThread, getPreviewUrl, getThreadShareStatus, updateThreadSharing } from '../utils/api';
+import { toast } from '@/components/ui/use-toast';
 import { mergeWarmingDisplay } from '../utils/warmWorkspace';
 import { useChatMessages } from '../hooks/useChatMessages';
 import { saveChatSession, getChatSession, clearChatSession } from '../hooks/utils/chatSessionRestore';
@@ -721,6 +722,35 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   currentThreadIdRef.current = currentThreadId;
   // Keep resolvedThreadIdRef in sync with the resolved thread ID from useChatMessages
   resolvedThreadIdRef.current = currentThreadId || threadId;
+
+  // Copy a shareable link to an HTML report. Enables thread sharing (with file
+  // browsing) on first use, then copies `${origin}/s/{token}?file=<path>`.
+  const handleCopyShareLink = useCallback(async (filePath: string) => {
+    const tid = currentThreadIdRef.current;
+    if (!tid) return;
+    try {
+      let status = threadIsShared ? await getThreadShareStatus(tid) : null;
+      if (!status?.is_shared || !status?.share_token) {
+        status = await updateThreadSharing(tid, {
+          is_shared: true,
+          permissions: { ...(status?.permissions || {}), allow_files: true },
+        });
+      } else if (!status.permissions?.allow_files) {
+        status = await updateThreadSharing(tid, {
+          is_shared: true,
+          permissions: { ...status.permissions, allow_files: true },
+        });
+      }
+      const token = status?.share_token;
+      if (!token) throw new Error('No share token');
+      const url = `${window.location.origin}/s/${token}?file=${encodeURIComponent(filePath)}`;
+      await navigator.clipboard.writeText(url);
+      toast({ description: t('filePanel.shareLinkCopied') });
+    } catch (e) {
+      console.error('[ChatView] Copy share link failed:', e);
+      toast({ description: t('filePanel.shareLinkFailed'), variant: 'destructive' });
+    }
+  }, [threadIsShared, t]);
 
   // Save chat session on unmount for cross-tab restoration (workspace + thread only).
   // Only the active view saves — evicted hidden views must not overwrite (R1).
@@ -2518,6 +2548,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                   }}
                   readOnly={isFlashMode}
                   singleFileMode={isFlashMode && !!filePanelWorkspaceId}
+                  onCopyShareLink={isFlashMode ? null : handleCopyShareLink}
                 />
                 </WorkspaceProvider>
               </Suspense>
@@ -2577,6 +2608,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                       }}
                       readOnly={isFlashMode}
                       singleFileMode={isFlashMode && !!filePanelWorkspaceId}
+                      onCopyShareLink={isFlashMode ? null : handleCopyShareLink}
                     />
                     </WorkspaceProvider>
                   ) : rightPanelType === 'detail' && (detailToolCall || detailPlanData) ? (

@@ -9,6 +9,7 @@ Endpoints:
 - GET /api/v1/public/shared/{share_token}/replay    — SSE conversation replay
 - GET /api/v1/public/shared/{share_token}/files     — File listing (requires allow_files)
 - GET /api/v1/public/shared/{share_token}/files/read     — Read file content (requires allow_files)
+- GET /api/v1/public/shared/{share_token}/files/serve/{path} — Serve file inline with sandboxed CSP (requires allow_files)
 - GET /api/v1/public/shared/{share_token}/files/download — Download raw file (requires allow_download)
 """
 
@@ -18,8 +19,8 @@ import logging
 import mimetypes
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, HTTPException, Path, Query
+from fastapi.responses import Response, StreamingResponse
 
 from src.observability import observe_replay_stream
 from src.server.utils.http_headers import content_disposition
@@ -30,12 +31,15 @@ from src.server.database.conversation import (
     get_queries_for_thread,
     get_responses_for_thread,
 )
+from src.server.database.workspace import get_workspace as db_get_workspace
 from src.server.app.workspace_files import (
+    _get_work_dir,
     _is_always_hidden_path,
     _is_hidden_path,
     _is_system_path,
     _normalize_requested_path,
     _is_binary,
+    serve_workspace_file,
     DEFAULT_READ_LIMIT_LINES,
 )
 
@@ -222,7 +226,7 @@ async def list_shared_files(
     # For public access, we prefer DB to avoid starting sandboxes
     file_tree = await FilePersistenceService.get_file_tree(workspace_id)
 
-    normalized_path = _normalize_requested_path(path)
+    normalized_path = _normalize_requested_path(path, _get_work_dir())
     if normalized_path:
         file_tree = [
             f for f in file_tree
@@ -282,7 +286,7 @@ async def read_shared_file(
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
 
-    normalized_path = _normalize_requested_path(path)
+    normalized_path = _normalize_requested_path(path, _get_work_dir())
     if not normalized_path:
         raise HTTPException(status_code=400, detail="File path is required")
 
@@ -377,7 +381,7 @@ async def download_shared_file(
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
 
-    normalized_path = _normalize_requested_path(path)
+    normalized_path = _normalize_requested_path(path, _get_work_dir())
     if not normalized_path:
         raise HTTPException(status_code=400, detail="File path is required")
 
@@ -448,3 +452,30 @@ async def download_shared_file(
             logger.debug(f"Sandbox not available for shared file download in workspace {workspace_id}")
 
     raise HTTPException(status_code=404, detail="File not found")
+
+
+@router.get("/shared/{share_token}/files/serve/{path:path}")
+async def serve_shared_file(
+    share_token: str,
+    path: str = Path(..., description="File path within the shared workspace."),
+    inject: str | None = Query(None, description="Set to 'theme' to splice theme-sync into HTML."),
+) -> Response:
+    """Serve a shared workspace file inline with a sandboxed CSP. Requires allow_files.
+
+    Path-style so a served document's relative subresources (``charts/x.png``)
+    resolve under the same token prefix. Reuses the workspace file-serving core
+    (MIME / traversal / redaction / DB-fallback / theme injection); the
+    workspace UUID is resolved server-side and never appears in the URL.
+    """
+    thread, workspace_id = await _get_shared_workspace_id(share_token, require_files=True)
+
+    workspace = await db_get_workspace(workspace_id)
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    return await serve_workspace_file(
+        workspace_id,
+        path,
+        inject_theme=(inject == "theme"),
+        workspace=workspace,
+    )

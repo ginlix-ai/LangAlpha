@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
 
 import { useHtmlActions } from '../useHtmlActions';
-import { buildWsfilesUrl } from '../wsfilesUrl';
+import { buildWsfilesUrl, buildSharedServeUrl } from '../wsfilesUrl';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -39,6 +39,27 @@ describe('buildWsfilesUrl', () => {
       '/api/v1/wsfiles/ws-1/results/report.html?inject=theme',
     );
     expect(buildWsfilesUrl('ws-1', 'results/report.html')).not.toContain('inject=theme');
+  });
+});
+
+describe('buildSharedServeUrl', () => {
+  it('builds a token-prefixed serve URL with slashes preserved (no workspace UUID)', () => {
+    expect(buildSharedServeUrl('tok-1', 'results/report.html')).toBe(
+      '/api/v1/public/shared/tok-1/files/serve/results/report.html',
+    );
+  });
+
+  it('encodes path segments but keeps slashes', () => {
+    expect(buildSharedServeUrl('tok-1', 'results/my report.html')).toBe(
+      '/api/v1/public/shared/tok-1/files/serve/results/my%20report.html',
+    );
+  });
+
+  it('appends ?inject=theme only when requested', () => {
+    expect(buildSharedServeUrl('tok-1', 'results/report.html', { injectTheme: true })).toBe(
+      '/api/v1/public/shared/tok-1/files/serve/results/report.html?inject=theme',
+    );
+    expect(buildSharedServeUrl('tok-1', 'results/report.html')).not.toContain('inject=theme');
   });
 });
 
@@ -194,5 +215,20 @@ describe('useHtmlActions — file mode', () => {
     );
     result.current.copySource();
     expect(writeText).toHaveBeenCalledWith('<p>source</p>');
+  });
+
+  it('uses the servedUrl override (share page) for open-in-new-tab', () => {
+    const served = '/api/v1/public/shared/tok-1/files/serve/results/report.html';
+    const { result } = renderHook(() =>
+      useHtmlActions({
+        mode: 'file',
+        workspaceId: '',
+        filePath: 'results/report.html',
+        content: '<p>x</p>',
+        servedUrl: served,
+      }),
+    );
+    result.current.openInNewTab();
+    expect(open).toHaveBeenCalledWith(served, '_blank', 'noopener,noreferrer');
   });
 });

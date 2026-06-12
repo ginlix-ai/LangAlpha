@@ -24,6 +24,8 @@ interface FileVariant extends BaseProps {
   variant: 'file';
   workspaceId: string;
   filePath: string;
+  /** Override the served iframe src (e.g. public share serve URL). Defaults to wsfiles. */
+  servedUrl?: string;
 }
 
 type HtmlFullscreenModalProps = WidgetVariant | FileVariant;
@@ -41,7 +43,7 @@ export default function HtmlFullscreenModal(props: HtmlFullscreenModalProps) {
 
   const servedUrl =
     props.variant === 'file'
-      ? buildWsfilesUrl(props.workspaceId, props.filePath, { injectTheme: true })
+      ? props.servedUrl ?? buildWsfilesUrl(props.workspaceId, props.filePath, { injectTheme: true })
       : null;
 
   return (

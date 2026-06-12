@@ -77,6 +77,9 @@ interface ApiAdapter {
   downloadFile?: (path: string) => Promise<string>;
   downloadFileAsArrayBuffer?: (path: string) => Promise<ArrayBuffer>;
   triggerDownload?: (path: string) => Promise<void>;
+  /** Override the served URL for HTML preview (e.g. the public share serve URL,
+   *  used on /s/:shareToken where the workspace UUID isn't available). */
+  buildServedUrl?: (path: string, opts?: { injectTheme?: boolean }) => string;
 }
 
 interface BackupResult {
@@ -598,6 +601,9 @@ interface FilePanelProps {
    * when FilePanel is embedded inside a tabbed wrapper that owns the close button. */
   hideClose?: boolean;
   onSwitchToMemoTab?: (() => void) | null;
+  /** Copy a shareable link to an HTML report (authenticated app only). Enables
+   *  sharing if needed, then copies `${origin}/s/{token}?file=<path>`. */
+  onCopyShareLink?: ((filePath: string) => void) | null;
 }
 
 function FilePanel({
@@ -620,6 +626,7 @@ function FilePanel({
   onToggleSystemFiles = null,
   hideClose = false,
   onSwitchToMemoTab = null,
+  onCopyShareLink = null,
 }: FilePanelProps): React.ReactElement {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
@@ -1768,6 +1775,8 @@ function FilePanel({
                     fileName={fileName}
                     workspaceId={workspaceId}
                     filePath={selectedFile}
+                    servedUrlOverride={apiAdapter?.buildServedUrl?.(selectedFile, { injectTheme: true })}
+                    onCopyShareLink={onCopyShareLink ?? undefined}
                     onTriggerDownload={() => triggerDownloadFn(workspaceId, selectedFile).catch((err: unknown) => console.error('[FilePanel] Download failed:', err))}
                   />
                 </DocumentErrorBoundary>

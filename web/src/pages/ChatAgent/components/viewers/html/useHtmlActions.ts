@@ -20,6 +20,9 @@ interface FileModeOptions {
   content: string;
   /** Server-side download of the original bytes. */
   triggerDownload?: (workspaceId: string, filePath: string) => Promise<void>;
+  /** Override the served URL (e.g. the public share serve URL). Byte-faithful
+   *  — no ?inject=theme — so open/print match the original. Defaults to wsfiles. */
+  servedUrl?: string;
 }
 
 export type UseHtmlActionsOptions = WidgetModeOptions | FileModeOptions;
@@ -53,7 +56,8 @@ export function useHtmlActions(opts: UseHtmlActionsOptions): HtmlActions {
       // Revoke once the new tab has had a chance to load.
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } else {
-      window.open(buildWsfilesUrl(opts.workspaceId, opts.filePath), '_blank', 'noopener,noreferrer');
+      const url = opts.servedUrl ?? buildWsfilesUrl(opts.workspaceId, opts.filePath);
+      window.open(url, '_blank', 'noopener,noreferrer');
     }
   }, [opts]);
 
@@ -95,7 +99,8 @@ export function useHtmlActions(opts: UseHtmlActionsOptions): HtmlActions {
       }
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } else {
-      const win = window.open(buildWsfilesUrl(opts.workspaceId, opts.filePath), '_blank', 'noopener,noreferrer');
+      const url = opts.servedUrl ?? buildWsfilesUrl(opts.workspaceId, opts.filePath);
+      const win = window.open(url, '_blank', 'noopener,noreferrer');
       // Opaque cross-origin tab: auto-print is usually blocked — fall back to a hint.
       try {
         if (!win) throw new Error('popup blocked');

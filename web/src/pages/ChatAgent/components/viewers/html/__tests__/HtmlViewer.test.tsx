@@ -89,4 +89,23 @@ describe('HtmlViewer', () => {
       '/api/v1/wsfiles/ws-1/results/report.html?inject=theme',
     );
   });
+
+  it('points the preview iframe at the servedUrlOverride on the share page', () => {
+    const servedUrlOverride =
+      '/api/v1/public/shared/tok-1/files/serve/results/report.html?inject=theme';
+    render(<HtmlViewer {...defaultProps} servedUrlOverride={servedUrlOverride} />);
+    expect(getPreviewIframe().getAttribute('src')).toBe(servedUrlOverride);
+  });
+
+  it('hides the copy-link action by default', () => {
+    render(<HtmlViewer {...defaultProps} />);
+    expect(screen.queryByLabelText('filePanel.copyShareLink')).not.toBeInTheDocument();
+  });
+
+  it('invokes onCopyShareLink with the file path when the link button is clicked', () => {
+    const onCopyShareLink = vi.fn();
+    render(<HtmlViewer {...defaultProps} onCopyShareLink={onCopyShareLink} />);
+    fireEvent.click(screen.getByLabelText('filePanel.copyShareLink'));
+    expect(onCopyShareLink).toHaveBeenCalledWith('results/report.html');
+  });
 });

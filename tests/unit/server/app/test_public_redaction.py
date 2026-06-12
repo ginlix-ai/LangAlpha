@@ -34,6 +34,7 @@ _THREAD_BY_TOKEN = "src.server.app.public.get_thread_by_share_token"
 _DB_GET_WS = "src.server.database.workspace.get_workspace"
 _FILE_SVC = "src.server.services.persistence.file.FilePersistenceService.get_file_content"
 _NORM_PATH = "src.server.app.public._normalize_requested_path"
+_WORK_DIR = "src.server.app.public._get_work_dir"
 _GET_REDACTOR = "src.server.app.public.get_redactor"
 
 
@@ -109,6 +110,7 @@ class TestReadSharedFileRedaction:
         with (
             patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
             patch(_DB_GET_WS, AsyncMock(return_value=_make_workspace())),
+            patch(_WORK_DIR, return_value="/home/workspace"),
             patch(_NORM_PATH, return_value="data/test.txt"),
             patch(_FILE_SVC, AsyncMock(return_value=_make_file_record(content))),
             patch(_GET_REDACTOR, return_value=mock_redactor),
@@ -133,6 +135,7 @@ class TestReadSharedFileRedaction:
         with (
             patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
             patch(_DB_GET_WS, AsyncMock(return_value=_make_workspace())),
+            patch(_WORK_DIR, return_value="/home/workspace"),
             patch(_NORM_PATH, return_value="data/clean.txt"),
             patch(_FILE_SVC, AsyncMock(return_value=_make_file_record(content))),
             patch(_GET_REDACTOR, return_value=empty_redactor),
@@ -165,6 +168,7 @@ class TestDownloadSharedFileRedaction:
         with (
             patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
             patch(_DB_GET_WS, AsyncMock(return_value=_make_workspace())),
+            patch(_WORK_DIR, return_value="/home/workspace"),
             patch(_NORM_PATH, return_value="config.txt"),
             patch(_FILE_SVC, AsyncMock(return_value=file_record)),
             patch(_GET_REDACTOR, return_value=mock_redactor),
@@ -193,6 +197,7 @@ class TestDownloadSharedFileRedaction:
         with (
             patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
             patch(_DB_GET_WS, AsyncMock(return_value=_make_workspace())),
+            patch(_WORK_DIR, return_value="/home/workspace"),
             patch(_NORM_PATH, return_value="chart.png"),
             patch(_FILE_SVC, AsyncMock(return_value=file_record)),
             patch(_GET_REDACTOR, return_value=mock_redactor),
@@ -205,3 +210,131 @@ class TestDownloadSharedFileRedaction:
         assert resp.status_code == 200
         # Binary should NOT be redacted
         assert _SECRET_VALUE.encode() in resp.content
+
+
+# ---------------------------------------------------------------------------
+# TestServeSharedFile — GET /shared/{token}/files/serve/{path}
+# ---------------------------------------------------------------------------
+
+# serve_workspace_file resolves bytes / work dir / vault secrets from the
+# workspace_files module, while the share endpoint resolves the thread and
+# workspace from the public module. We patch each at its source.
+_PUBLIC_DB_GET_WS = "src.server.app.public.db_get_workspace"
+_WS_DB_GET_WS = "src.server.app.workspace_files.db_get_workspace"
+_WS_WORK_DIR = "src.server.app.workspace_files._get_work_dir"
+_WS_FP = "src.server.app.workspace_files.FilePersistenceService"
+_WS_VAULT = "src.server.app.workspace_files.get_vault_secrets_for_redaction"
+
+
+def _serve_text_record(text, mime="text/html"):
+    return {
+        "file_name": "report.html",
+        "content_text": text,
+        "content_binary": None,
+        "is_binary": False,
+        "mime_type": mime,
+    }
+
+
+def _serve_binary_record(data, mime="image/png"):
+    return {
+        "file_name": "chart.png",
+        "content_text": None,
+        "content_binary": data,
+        "is_binary": True,
+        "mime_type": mime,
+    }
+
+
+class TestServeSharedFile:
+    """Path-style inline file serving over a share token."""
+
+    async def test_unknown_token_returns_404(self, public_client):
+        with patch(_THREAD_BY_TOKEN, AsyncMock(return_value=None)):
+            resp = await public_client.get(
+                f"/api/v1/public/shared/{_SHARE_TOKEN}/files/serve/results/report.html"
+            )
+        assert resp.status_code == 404
+
+    async def test_files_not_permitted_returns_403(self, public_client):
+        thread = _make_thread(share_permissions={"allow_files": False})
+        with patch(_THREAD_BY_TOKEN, AsyncMock(return_value=thread)):
+            resp = await public_client.get(
+                f"/api/v1/public/shared/{_SHARE_TOKEN}/files/serve/results/report.html"
+            )
+        # Mirrors the existing files/read permission behavior (403 not granted).
+        assert resp.status_code == 403
+
+    async def test_serves_html_with_csp_and_mime(self, public_client):
+        html = "<html><head></head><body>shared report</body></html>"
+        with (
+            patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
+            patch(_PUBLIC_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))),
+            patch(_WS_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))),
+            patch(_WS_WORK_DIR, return_value="/home/workspace"),
+            patch(_WS_VAULT, AsyncMock(return_value={})),
+            patch(f"{_WS_FP}.get_file_content", AsyncMock(return_value=_serve_text_record(html))),
+        ):
+            resp = await public_client.get(
+                f"/api/v1/public/shared/{_SHARE_TOKEN}/files/serve/results/report.html"
+            )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "text/html; charset=utf-8"
+        assert resp.headers["content-security-policy"] == "sandbox allow-scripts"
+        assert b"shared report" in resp.content
+        # The workspace UUID must never leak into the response headers.
+        for value in resp.headers.values():
+            assert _WORKSPACE_ID not in value
+
+    async def test_relative_subresource_resolves_under_token_prefix(self, public_client):
+        # A relative `charts/x.png` reference from results/report.html resolves to
+        # .../serve/results/charts/x.png; the endpoint serves it like any other path.
+        png = b"\x89PNG\r\n\x1a\nchart-bytes"
+        with (
+            patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
+            patch(_PUBLIC_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))),
+            patch(_WS_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))),
+            patch(_WS_WORK_DIR, return_value="/home/workspace"),
+            patch(_WS_VAULT, AsyncMock(return_value={})),
+            patch(
+                f"{_WS_FP}.get_file_content",
+                AsyncMock(return_value=_serve_binary_record(png)),
+            ) as mock_content,
+        ):
+            resp = await public_client.get(
+                f"/api/v1/public/shared/{_SHARE_TOKEN}/files/serve/results/charts/x.png"
+            )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/png"
+        assert resp.content == png
+        mock_content.assert_awaited_once_with(_WORKSPACE_ID, "results/charts/x.png")
+
+    async def test_inject_theme_passthrough(self, public_client):
+        html = "<html><head><title>r</title></head><body>x</body></html>"
+        with (
+            patch(_THREAD_BY_TOKEN, AsyncMock(return_value=_make_thread())),
+            patch(_PUBLIC_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))),
+            patch(_WS_DB_GET_WS, AsyncMock(return_value=_make_workspace(status="stopped"))),
+            patch(_WS_WORK_DIR, return_value="/home/workspace"),
+            patch(_WS_VAULT, AsyncMock(return_value={})),
+            patch(f"{_WS_FP}.get_file_content", AsyncMock(return_value=_serve_text_record(html))),
+        ):
+            with_theme = await public_client.get(
+                f"/api/v1/public/shared/{_SHARE_TOKEN}/files/serve/results/report.html",
+                params={"inject": "theme"},
+            )
+            plain = await public_client.get(
+                f"/api/v1/public/shared/{_SHARE_TOKEN}/files/serve/results/report.html"
+            )
+        assert b"widget:themeUpdate" in with_theme.content
+        # No inject param → byte-faithful, no theme script.
+        assert b"widget:themeUpdate" not in plain.content
+        assert plain.content == html.encode()
+
+    async def test_revoked_share_returns_404(self, public_client):
+        # Toggling sharing off deletes the share-token row → lookup returns None.
+        with patch(_THREAD_BY_TOKEN, AsyncMock(return_value=None)):
+            resp = await public_client.get(
+                "/api/v1/public/shared/revoked-token/files/serve/results/report.html"
+            )
+        assert resp.status_code == 404

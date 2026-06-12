@@ -40,6 +40,8 @@ interface RightPanelProps {
   singleFileMode?: boolean;
   /** Initial tab — callers can deep-link into the Memory tab once it stabilizes. */
   initialTab?: RightPanelTab;
+  /** Copy a shareable link to an HTML report (authenticated app only). */
+  onCopyShareLink?: ((filePath: string) => void) | null;
 }
 
 export default function RightPanel({
@@ -65,6 +67,7 @@ export default function RightPanel({
   readOnly,
   singleFileMode,
   initialTab = 'files',
+  onCopyShareLink,
 }: RightPanelProps): React.ReactElement {
   const { t } = useTranslation();
   const [tab, setTab] = useState<RightPanelTab>(initialTab);
@@ -138,6 +141,7 @@ export default function RightPanel({
               singleFileMode={singleFileMode}
               hideClose
               onSwitchToMemoTab={() => setTab('memo')}
+              onCopyShareLink={onCopyShareLink}
             />
           )}
           {tab === 'memory' && (

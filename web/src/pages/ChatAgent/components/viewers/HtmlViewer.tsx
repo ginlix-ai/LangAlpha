@@ -17,6 +17,12 @@ interface HtmlViewerProps {
   filePath: string;
   /** Download the server's original bytes for this file. */
   onTriggerDownload: () => void;
+  /** Override the served URL (e.g. the public share serve URL). When set, the
+   *  preview iframe and HTML actions point here instead of the wsfiles route. */
+  servedUrlOverride?: string;
+  /** Copy a shareable link to this report (authenticated app only). When set,
+   *  a link button appears in the toolbar. */
+  onCopyShareLink?: (filePath: string) => void;
 }
 
 export default function HtmlViewer({
@@ -25,6 +31,8 @@ export default function HtmlViewer({
   workspaceId,
   filePath,
   onTriggerDownload,
+  servedUrlOverride,
+  onCopyShareLink,
 }: HtmlViewerProps) {
   const { t } = useTranslation();
   const [mode, setMode] = useState<'preview' | 'source'>('preview');
@@ -34,8 +42,14 @@ export default function HtmlViewer({
   const { pushTheme } = useHtmlSandbox({ iframeRef, autoHeight: false });
 
   const servedUrl = useMemo(
-    () => buildWsfilesUrl(workspaceId, filePath, { injectTheme: true }),
-    [workspaceId, filePath],
+    () => servedUrlOverride ?? buildWsfilesUrl(workspaceId, filePath, { injectTheme: true }),
+    [servedUrlOverride, workspaceId, filePath],
+  );
+
+  // Byte-faithful served URL (no ?inject=theme) for open-in-new-tab / PDF.
+  const servedUrlPlain = useMemo(
+    () => (servedUrlOverride ? servedUrlOverride.split('?')[0] : undefined),
+    [servedUrlOverride],
   );
 
   const actions = useHtmlActions({
@@ -44,6 +58,7 @@ export default function HtmlViewer({
     filePath,
     content,
     triggerDownload: () => Promise.resolve(onTriggerDownload()),
+    servedUrl: servedUrlPlain,
   });
 
   const isLight =
@@ -73,6 +88,7 @@ export default function HtmlViewer({
           onDownload={actions.downloadHtml}
           onExportPdf={actions.exportPdf}
           onCopySource={actions.copySource}
+          onCopyLink={onCopyShareLink ? () => onCopyShareLink(filePath) : undefined}
         />
       </div>
       {mode === 'preview' ? (
@@ -105,6 +121,7 @@ export default function HtmlViewer({
           title={fileName}
           workspaceId={workspaceId}
           filePath={filePath}
+          servedUrl={servedUrlOverride}
           actions={actions}
         />
       )}
