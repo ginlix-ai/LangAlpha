@@ -227,7 +227,7 @@ describe('Settings — Web Search Provider', () => {
     expect(options).toEqual(['Default', 'Tavily', 'Serper', 'Bocha']);
 
     expect(
-      screen.queryByText('Choosing a search provider is available on paid plans.'),
+      screen.queryByText('Some search providers are available on higher plans.'),
     ).not.toBeInTheDocument();
   });
 
@@ -240,7 +240,7 @@ describe('Settings — Web Search Provider', () => {
     const select = await screen.findByRole('combobox', { name: 'Web Search Provider' });
     expect(select).toBeDisabled();
     expect(
-      screen.getByText('Choosing a search provider is available on paid plans.'),
+      screen.getByText('Some search providers are available on higher plans.'),
     ).toBeInTheDocument();
   });
 
@@ -256,7 +256,7 @@ describe('Settings — Web Search Provider', () => {
     const select = await screen.findByRole('combobox', { name: 'Web Search Provider' });
     expect(select).toBeDisabled();
     expect(
-      screen.queryByText('Choosing a search provider is available on paid plans.'),
+      screen.queryByText('Some search providers are available on higher plans.'),
     ).not.toBeInTheDocument();
   });
 
@@ -269,8 +269,29 @@ describe('Settings — Web Search Provider', () => {
     const select = await screen.findByRole('combobox', { name: 'Web Search Provider' });
     expect(select).toBeEnabled();
     expect(
-      screen.queryByText('Choosing a search provider is available on paid plans.'),
+      screen.queryByText('Some search providers are available on higher plans.'),
     ).not.toBeInTheDocument();
+  });
+
+  it('shows the upgrade hint when only some providers are gated', async () => {
+    // Select stays enabled (an accessible option exists) but the hint still
+    // explains why the higher-tier option is disabled.
+    h.platformMode = true;
+    h.accessTier = 1;
+    h.searchProviderCatalog = {
+      ...h.fullCatalog,
+      serper: { ...h.fullCatalog.serper, min_tier: 2 },
+    };
+
+    setupAndRenderModelTab();
+
+    const select = await screen.findByRole('combobox', { name: 'Web Search Provider' });
+    expect(select).toBeEnabled();
+    expect(
+      screen.getByText('Some search providers are available on higher plans.'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Serper' })).toBeDisabled();
+    expect(screen.getByRole('option', { name: 'Tavily' })).toBeEnabled();
   });
 
   it('loads the saved value from other_preference.search_provider', async () => {

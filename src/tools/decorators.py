@@ -87,6 +87,12 @@ def start_tool_tracking() -> ToolUsageTracker:
     return tracker
 
 
+def set_tool_tracker(tracker: Optional[ToolUsageTracker]) -> None:
+    """Install a specific tracker for the current context (e.g. a per-task
+    tracker inside a background subagent's asyncio.Task)."""
+    _tool_usage_context.set(tracker)
+
+
 def get_tool_tracker() -> Optional[ToolUsageTracker]:
     """
     Get the current tool usage tracker from ContextVar.

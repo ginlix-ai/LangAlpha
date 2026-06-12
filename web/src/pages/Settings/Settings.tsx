@@ -1171,9 +1171,9 @@ function Settings() {
                       </option>
                     ))}
                   </Select>
-                  {providerOptions.length > 0 && !canCustomizeSearchProvider && (
+                  {providerOptions.some(([, p]) => !tierAllows(p.min_tier)) && (
                     <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
-                      {t('settings.searchProviderUpgradeHint', 'Choosing a search provider is available on paid plans.')}
+                      {t('settings.searchProviderUpgradeHint', 'Some search providers are available on higher plans.')}
                     </p>
                   )}
                 </div>

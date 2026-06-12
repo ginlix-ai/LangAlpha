@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from ptc_agent.agent.middleware.background_subagent.event_capture import (
         SubagentEventCaptureMiddleware,
     )
+    from src.tools.decorators import ToolUsageTracker
 
 # This ContextVar propagates tool_call_id to subagent tool calls, used by
 # SubagentEventCaptureMiddleware to track which background task a tool call
@@ -90,7 +91,7 @@ def _truncate_description(description: str, max_sentences: int = 2) -> str:
 def _merge_subagent_usage(
     task: BackgroundTask,
     tracker: "PerCallTokenTracker",
-    tool_tracker: Any,
+    tool_tracker: "ToolUsageTracker",
 ) -> None:
     """Merge this run's token + tool usage into any unpersisted usage on the task.
 
@@ -116,13 +117,13 @@ async def _run_background_task(
 
     Shared by both the new-spawn and resume paths.
     """
-    from src.tools.decorators import ToolUsageTracker, _tool_usage_context
+    from src.tools.decorators import ToolUsageTracker, set_tool_tracker
 
     tool_tracker = ToolUsageTracker()
 
     async def run_handler() -> ToolMessage | Command:
         current_background_token_tracker.set(tracker)
-        _tool_usage_context.set(tool_tracker)
+        set_tool_tracker(tool_tracker)
         return await handler(request)
 
     handler_task: asyncio.Task[ToolMessage | Command] = asyncio.create_task(
