@@ -251,7 +251,7 @@ function PortfolioItem({ item, index, onEdit, onDelete, valuesHidden, marketStat
           {extType && extPct != null && item.price != null && (
             <div className="text-[10px] mt-0.5 text-center flex items-center justify-center gap-0.5" style={{ color: extColor }}>
               {extType === 'pre' ? <Sunrise size={10} /> : <Sunset size={10} />}
-              {fmt2(Number(item.price))} {extPct >= 0 ? '+' : ''}{fmt2(extPct)}%
+              {formatPortfolioMoney(item.price, currency, i18n.language)} {extPct >= 0 ? '+' : ''}{fmt2(extPct)}%
             </div>
           )}
         </div>

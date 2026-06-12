@@ -424,8 +424,7 @@ export async function getStockPrices(symbols: string[]): Promise<StockPrice[]> {
       return [];
     });
   } catch (e: unknown) {
-    const err = e as { message?: string };
-    console.error('[API] getStockPrices failed:', err?.message);
+    console.error('[API] getStockPrices failed:', e instanceof Error ? e.message : String(e));
     return [];
   }
 }

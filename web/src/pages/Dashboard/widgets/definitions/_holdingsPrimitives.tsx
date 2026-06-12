@@ -229,7 +229,7 @@ export function PortfolioRowItem({
               style={{ color: extColor }}
             >
               {extType === 'pre' ? <Sunrise size={10} /> : <Sunset size={10} />}
-              {fmt2(Number(item.price))} {extPct >= 0 ? '+' : ''}
+              {formatPortfolioMoney(item.price, currency, i18n.language)} {extPct >= 0 ? '+' : ''}
               {fmt2(extPct)}%
             </div>
           )}
