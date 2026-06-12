@@ -105,6 +105,24 @@ def _validate_secret_value(value: str, *, kind: str, key: str) -> None:
         )
 
 
+def _validate_args(args: list[str]) -> None:
+    """Args may EMBED ``${vault:NAME}`` refs (import writes ``--flag=${vault:NAME}``)
+    but, like env/headers, must not carry host-env placeholders — they would
+    reach the subprocess as unresolved literals."""
+    for i, arg in enumerate(args):
+        remainder = VAULT_REF_RE.sub("", arg)
+        if "${vault:" in remainder:
+            raise ValueError(
+                f"args[{i}] contains a malformed vault reference; "
+                "use the exact form ${vault:NAME}"
+            )
+        if _BARE_ENV_RE.search(remainder):
+            raise ValueError(
+                f"args[{i}] looks like a host-env placeholder; "
+                "use ${vault:NAME} for secrets or a plain literal value"
+            )
+
+
 # ---------------------------------------------------------------------------
 # URL policy
 # ---------------------------------------------------------------------------
@@ -215,6 +233,7 @@ class McpServerInput(BaseModel):
                     f"{sorted(ALLOWED_COMMANDS)}"
                 )
             _validate_secret_map(self.env, kind="env", key_re=ENV_KEY_RE)
+            _validate_args(self.args)
         else:  # sse / http
             if not self.url:
                 raise ValueError(f"{self.transport} transport requires a url")
@@ -444,8 +463,10 @@ class ToolSummary(BaseModel):
 class EffectiveServer(BaseModel):
     """One row in the effective per-workspace MCP list.
 
-    ``env_refs`` / ``header_refs`` carry ONLY the vault names referenced by the
-    config — literal env/header values are never echoed.
+    ``env``/``headers`` echo the stored reference maps for workspace-origin
+    servers (``${vault:NAME}`` ref strings or owner-supplied literals — never
+    resolved secrets) so the edit form can round-trip them; built-ins keep them
+    empty. ``env_refs``/``header_refs`` carry just the vault names for display.
     """
 
     name: str
@@ -461,6 +482,8 @@ class EffectiveServer(BaseModel):
     missing_secrets: list[str] = Field(default_factory=list)
     env_refs: list[str] = Field(default_factory=list)
     header_refs: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory=dict)
     description: str = ""
     instruction: str = ""
     tool_exposure_mode: str = "summary"

@@ -2465,8 +2465,10 @@ except OSError as e:
             out_path = f"{work_dir}/_internal/.mcp_discover_{uuid.uuid4().hex}.json"
             async with sem:
                 try:
+                    # python3, not python: the no-snapshot fallback image never
+                    # gets the /usr/bin/python alias the snapshot build adds.
                     cmd = (
-                        f"cd {shlex.quote(work_dir)} && python "
+                        f"cd {shlex.quote(work_dir)} && python3 "
                         f"{shlex.quote(client_path)} discover "
                         f"{shlex.quote(name)} {shlex.quote(out_path)}"
                     )

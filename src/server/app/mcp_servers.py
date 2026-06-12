@@ -206,6 +206,10 @@ def _effective_server(
         missing_secrets=missing_secrets or [],
         env_refs=env_refs or [],
         header_refs=header_refs or [],
+        # Echo the stored reference maps (refs/literals, never resolved
+        # secrets) so the edit form round-trips them; built-ins stay empty.
+        env=dict(srv.env or {}) if origin == "workspace" else {},
+        headers=dict(srv.headers or {}) if origin == "workspace" else {},
         description=srv.description or "",
         instruction=srv.instruction or "",
         tool_exposure_mode=srv.tool_exposure_mode or "summary",
@@ -232,9 +236,11 @@ async def list_servers(workspace_id: str, user_id: CurrentUserId) -> EffectiveSe
             max_servers=MAX_MCP_SERVERS_PER_WORKSPACE, config_version=0,
         )
 
-    resolved = await resolve_mcp_config(base_config, user_id, workspace_id)
-    secret_names = await get_workspace_secret_names(workspace_id)
-    schema_rows = await get_tool_schemas(workspace_id)
+    resolved, secret_names, schema_rows = await asyncio.gather(
+        resolve_mcp_config(base_config, user_id, workspace_id),
+        get_workspace_secret_names(workspace_id),
+        get_tool_schemas(workspace_id),
+    )
     schema_by_name = {r["server_name"]: r for r in schema_rows}
 
     servers: list[EffectiveServer] = []

@@ -983,6 +983,8 @@ class SchemaOnlyRegistry:
 
     def get_tool_info(self, server_name: str, tool_name: str) -> MCPToolInfo | None:
         """Look up a tool by server + name across built-ins and user servers."""
+        if server_name in self._disabled_builtin_names:
+            return None
         if server_name in self._user_tools:
             for tool in self._user_tools[server_name]:
                 if tool.name == tool_name:
@@ -997,6 +999,10 @@ class SchemaOnlyRegistry:
         arguments: dict[str, Any],
     ) -> Any:
         """Reject host-side execution of user-server tools; delegate built-ins."""
+        if server_name in self._disabled_builtin_names:
+            raise RuntimeError(
+                f"Built-in MCP server {server_name!r} is disabled for this workspace."
+            )
         if server_name in self._user_names:
             raise RuntimeError(
                 f"Host-side call_tool is not supported for user MCP server "

@@ -72,6 +72,9 @@ async def resolve_mcp_config(
 ) -> ResolvedMCP:
     """Resolve the effective MCP server set for ``workspace_id``.
 
+    ``user_id`` is unused today — kept to mirror ``resolve_llm_config`` and for
+    future per-user authorization checks at this chokepoint.
+
     Built-ins come from ``base_config.mcp.servers`` (enabled ones, config
     order); a ``(source='builtin', enabled=false)`` row removes a built-in by
     name; ``source='workspace'`` enabled rows are appended alphabetically. A
