@@ -201,6 +201,27 @@ def _format_tool_summary_per_server(
     return f"{summary}{note}"
 
 
+def _server_header_lines(server_name: str, config: Any) -> list:
+    """Header lines for one server: neutral attributed framing for untrusted
+    workspace servers, the authoritative description/Instructions: path for
+    built-ins."""
+    if _is_workspace_source(config):
+        # Untrusted server: neutral, attributed header (no Description:/Instructions:).
+        return _workspace_server_header(server_name, config)
+
+    lines = []
+    # Server header with description
+    if config and config.description:
+        lines.append(f"\n{server_name}: {config.description}")
+    else:
+        lines.append(f"\n{server_name}:")
+
+    # Add instruction if available
+    if config and config.instruction:
+        lines.append(f"  Instructions: {config.instruction}")
+    return lines
+
+
 def _format_server_brief(server_name: str, tools: list, config: Any) -> list:
     """Format a single server in brief/summary mode.
 
@@ -215,21 +236,7 @@ def _format_server_brief(server_name: str, tools: list, config: Any) -> list:
     tool_count = len(tools)
     tools_word = "tool" if tool_count == 1 else "tools"
 
-    if _is_workspace_source(config):
-        # Untrusted server: neutral, attributed header (no Description:/Instructions:).
-        lines = _workspace_server_header(server_name, config)
-    else:
-        lines = []
-        # Server header with description
-        if config and config.description:
-            lines.append(f"\n{server_name}: {config.description}")
-        else:
-            lines.append(f"\n{server_name}:")
-
-        # Add instruction if available
-        if config and config.instruction:
-            lines.append(f"  Instructions: {config.instruction}")
-
+    lines = _server_header_lines(server_name, config)
     lines.append(f"  - Module: tools/{server_name}.py")
     lines.append(f"  - Tools: {tool_count} {tools_word} available")
     lines.append(f"  - Import: from tools.{server_name} import <tool_name>")
@@ -249,21 +256,7 @@ def _format_server_detailed(server_name: str, tools: list, config: Any) -> list:
     Returns:
         List of formatted lines
     """
-    if _is_workspace_source(config):
-        # Untrusted server: neutral, attributed header (no Description:/Instructions:).
-        lines = _workspace_server_header(server_name, config)
-    else:
-        lines = []
-        # Server header with description
-        if config and config.description:
-            lines.append(f"\n{server_name}: {config.description}")
-        else:
-            lines.append(f"\n{server_name}:")
-
-        # Add instruction if available
-        if config and config.instruction:
-            lines.append(f"  Instructions: {config.instruction}")
-
+    lines = _server_header_lines(server_name, config)
     lines.append(f"  Module: tools/{server_name}.py")
     lines.append("  Available tools:")
 
