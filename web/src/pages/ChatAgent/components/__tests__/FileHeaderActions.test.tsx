@@ -35,7 +35,11 @@ vi.mock('@/components/ui/dropdown-menu', () => ({
   DropdownMenuItem: ({ children, onSelect, ...props }: any) => (
     <button onClick={onSelect} {...props}>{children}</button>
   ),
+  DropdownMenuLabel: ({ children }: any) => <div>{children}</div>,
   DropdownMenuSeparator: () => <hr />,
+  DropdownMenuSub: ({ children }: any) => <div>{children}</div>,
+  DropdownMenuSubTrigger: ({ children }: any) => <div>{children}</div>,
+  DropdownMenuSubContent: ({ children }: any) => <div>{children}</div>,
 }));
 
 // --- Default props helper ---
@@ -258,7 +262,29 @@ describe('FileHeaderActions', () => {
         filePath: 'results/report.html',
         servedUrl: '/api/v1/public/shared/tok-1/files/serve/results/report.html',
         printHint: 'filePanel.pdfPrintHint',
+        scale: 1,
+        pageNumbers: false,
       });
+    });
+  });
+
+  it('passes the chosen PDF options (scale, page numbers) to the export', async () => {
+    exportServedPdfMock.mockClear();
+    render(
+      <FileHeaderActions
+        {...defaultProps}
+        selectedFile="results/report.html"
+        fileMime="text/html"
+      />,
+    );
+    expect(screen.getByText('filePanel.pdfOptions')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('filePanel.pdfPageNumbers'));
+    fireEvent.click(screen.getByText('80%'));
+    fireEvent.click(screen.getByText('filePanel.saveAsPdf'));
+    await waitFor(() => {
+      expect(exportServedPdfMock).toHaveBeenCalledWith(
+        expect.objectContaining({ scale: 0.8, pageNumbers: true }),
+      );
     });
   });
 

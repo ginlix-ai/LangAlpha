@@ -1,9 +1,22 @@
 import React, { useRef, useState } from 'react';
-import { Download, FileDown, Pencil, Save, X, Undo2, Redo2, FileDiff, FileText, Check, Clipboard } from 'lucide-react';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, DropdownMenuItem } from '@/components/ui/dropdown-menu';
+import { Download, FileDown, Pencil, Save, Settings2, X, Undo2, Redo2, FileDiff, FileText, Check, Clipboard } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
+} from '@/components/ui/dropdown-menu';
 import { toast } from '@/components/ui/use-toast';
 import { useTranslation } from 'react-i18next';
+import { cn } from '@/lib/utils';
 import { exportServedPdf } from './viewers/html/useHtmlActions';
+
+const PDF_SCALE_CHOICES = [0.8, 1, 1.25];
 
 // --- File type detection helpers ---
 
@@ -86,6 +99,8 @@ function FileHeaderActions({
   const [copied, setCopied] = useState(false);
   // Server PDF renders take seconds; ignore re-entry while one is in flight.
   const pdfInFlight = useRef(false);
+  const [pdfScale, setPdfScale] = useState(1);
+  const [pdfPageNumbers, setPdfPageNumbers] = useState(false);
 
   const handleExportHtmlPdf = async () => {
     if (!selectedFile || pdfInFlight.current) return;
@@ -96,6 +111,8 @@ function FileHeaderActions({
         filePath: selectedFile,
         servedUrl: htmlServedUrl,
         printHint: t('filePanel.pdfPrintHint'),
+        scale: pdfScale,
+        pageNumbers: pdfPageNumbers,
       });
     } finally {
       pdfInFlight.current = false;
@@ -196,6 +213,8 @@ function FileHeaderActions({
     if (isHtml) {
       // HTML file: this menu owns Download + Save-as-PDF; the HtmlViewer
       // toolbar keeps only view actions (link/fullscreen/new tab).
+      // PDF options toggle component state via preventDefault so the menu
+      // stays open while the user composes the export.
       return (
         <>
           <DropdownMenuItem onSelect={() => triggerDownloadFn(workspaceId, selectedFile).catch((err: unknown) => console.error('[FileHeaderActions] Download failed:', err))}>
@@ -206,6 +225,37 @@ function FileHeaderActions({
             <FileDown className="h-3.5 w-3.5" />
             {t('filePanel.saveAsPdf')}
           </DropdownMenuItem>
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <Settings2 className="h-3.5 w-3.5" />
+              {t('filePanel.pdfOptions')}
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
+                  setPdfPageNumbers((v) => !v);
+                }}
+              >
+                <Check className={cn('h-3.5 w-3.5', !pdfPageNumbers && 'invisible')} />
+                {t('filePanel.pdfPageNumbers')}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>{t('filePanel.pdfScale')}</DropdownMenuLabel>
+              {PDF_SCALE_CHOICES.map((scale) => (
+                <DropdownMenuItem
+                  key={scale}
+                  onSelect={(e) => {
+                    e.preventDefault();
+                    setPdfScale(scale);
+                  }}
+                >
+                  <Check className={cn('h-3.5 w-3.5', pdfScale !== scale && 'invisible')} />
+                  {Math.round(scale * 100)}%
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
         </>
       );
     }

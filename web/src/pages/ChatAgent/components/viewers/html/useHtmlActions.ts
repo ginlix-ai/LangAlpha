@@ -1,7 +1,7 @@
 import { useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/components/ui/use-toast';
-import { buildWsfilesUrl } from './wsfilesUrl';
+import { buildWsfilesUrl, pdfQuery } from './wsfilesUrl';
 
 interface WidgetModeOptions {
   mode: 'widget';
@@ -51,6 +51,10 @@ export interface ExportServedPdfOptions {
   servedUrl?: string;
   /** Toast text shown when the print-dialog fallback can't auto-print. */
   printHint: string;
+  /** Render scale (server clamps to 0.5–2). 1 = default, omitted from the URL. */
+  scale?: number;
+  /** Draw an 'N / total' footer in the page margin. */
+  pageNumbers?: boolean;
 }
 
 /**
@@ -64,11 +68,17 @@ export async function exportServedPdf({
   filePath,
   servedUrl,
   printHint,
+  scale,
+  pageNumbers,
 }: ExportServedPdfOptions): Promise<void> {
   const servedHtmlUrl = servedUrl ?? buildWsfilesUrl(workspaceId, filePath);
   const pdfUrl = servedUrl
-    ? appendQueryParam(servedUrl, 'format=pdf')
-    : buildWsfilesUrl(workspaceId, filePath, { format: 'pdf' });
+    ? appendQueryParam(servedUrl, pdfQuery(scale, pageNumbers))
+    : buildWsfilesUrl(workspaceId, filePath, {
+        format: 'pdf',
+        pdfScale: scale,
+        pdfPageNumbers: pageNumbers,
+      });
 
   const printFallback = () => {
     // Keep the handle (no noopener) so we can drive print on the new tab.

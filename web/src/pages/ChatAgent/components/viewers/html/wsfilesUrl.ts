@@ -16,13 +16,30 @@ function encodePathSegments(filePath: string): string {
     .join('/');
 }
 
+export interface ServeUrlOptions {
+  injectTheme?: boolean;
+  format?: 'pdf';
+  /** PDF only: render scale (server clamps to 0.5–2). Omitted from the URL at 1. */
+  pdfScale?: number;
+  /** PDF only: draw an 'N / total' footer in the page margin. */
+  pdfPageNumbers?: boolean;
+}
+
+/** The ?format=pdf query string, with the optional render knobs appended. */
+export function pdfQuery(scale?: number, pageNumbers?: boolean): string {
+  let q = 'format=pdf';
+  if (scale != null && scale !== 1) q += `&scale=${scale}`;
+  if (pageNumbers) q += '&page_numbers=true';
+  return q;
+}
+
 export function buildWsfilesUrl(
   workspaceId: string,
   filePath: string,
-  { injectTheme = false, format }: { injectTheme?: boolean; format?: 'pdf' } = {},
+  { injectTheme = false, format, pdfScale, pdfPageNumbers }: ServeUrlOptions = {},
 ): string {
   const url = `${API_BASE}/api/v1/wsfiles/${encodeURIComponent(workspaceId)}/${encodePathSegments(filePath)}`;
-  if (format === 'pdf') return `${url}?format=pdf`;
+  if (format === 'pdf') return `${url}?${pdfQuery(pdfScale, pdfPageNumbers)}`;
   return injectTheme ? `${url}?inject=theme` : url;
 }
 
@@ -36,9 +53,9 @@ export function buildWsfilesUrl(
 export function buildSharedServeUrl(
   shareToken: string,
   filePath: string,
-  { injectTheme = false, format }: { injectTheme?: boolean; format?: 'pdf' } = {},
+  { injectTheme = false, format, pdfScale, pdfPageNumbers }: ServeUrlOptions = {},
 ): string {
   const url = `${API_BASE}/api/v1/public/shared/${encodeURIComponent(shareToken)}/files/serve/${encodePathSegments(filePath)}`;
-  if (format === 'pdf') return `${url}?format=pdf`;
+  if (format === 'pdf') return `${url}?${pdfQuery(pdfScale, pdfPageNumbers)}`;
   return injectTheme ? `${url}?inject=theme` : url;
 }

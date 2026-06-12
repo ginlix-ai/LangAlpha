@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
 
-import { useHtmlActions } from '../useHtmlActions';
+import { useHtmlActions, exportServedPdf } from '../useHtmlActions';
 import { buildWsfilesUrl, buildSharedServeUrl } from '../wsfilesUrl';
 
 vi.mock('react-i18next', () => ({
@@ -47,6 +47,19 @@ describe('buildWsfilesUrl', () => {
     );
     expect(
       buildWsfilesUrl('ws-1', 'results/report.html', { format: 'pdf', injectTheme: true }),
+    ).toBe('/api/v1/wsfiles/ws-1/results/report.html?format=pdf');
+  });
+
+  it('appends the PDF knobs, omitting scale at the default 1', () => {
+    expect(
+      buildWsfilesUrl('ws-1', 'results/report.html', {
+        format: 'pdf',
+        pdfScale: 0.8,
+        pdfPageNumbers: true,
+      }),
+    ).toBe('/api/v1/wsfiles/ws-1/results/report.html?format=pdf&scale=0.8&page_numbers=true');
+    expect(
+      buildWsfilesUrl('ws-1', 'results/report.html', { format: 'pdf', pdfScale: 1 }),
     ).toBe('/api/v1/wsfiles/ws-1/results/report.html?format=pdf');
   });
 });
@@ -246,6 +259,21 @@ describe('useHtmlActions — file mode', () => {
     );
     await result.current.exportPdf();
     expect(fetchMock).toHaveBeenCalledWith(`${served}?format=pdf`);
+    expect(lastAnchor?.download).toBe('report.pdf');
+  });
+
+  it('exportServedPdf composes the PDF knobs onto the servedUrl override', async () => {
+    fetchMock.mockResolvedValue(pdfResponse(true));
+    const served = '/api/v1/public/shared/tok-1/files/serve/results/report.html';
+    await exportServedPdf({
+      workspaceId: '',
+      filePath: 'results/report.html',
+      servedUrl: served,
+      printHint: 'hint',
+      scale: 0.8,
+      pageNumbers: true,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(`${served}?format=pdf&scale=0.8&page_numbers=true`);
     expect(lastAnchor?.download).toBe('report.pdf');
   });
 
