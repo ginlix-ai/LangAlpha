@@ -192,7 +192,7 @@ export function serializeQuoteRowToMarkdown(row: QuoteRow): string {
   if (row.volume !== undefined) lines.push(`vol ${row.volume.toLocaleString()}`);
   if (row.shares !== undefined) lines.push(`shares ${row.shares}`);
   if (row.marketValue != null) {
-    lines.push(row.currency ? `mkt val ${row.currency} ${row.marketValue.toLocaleString()}` : `mkt val $${row.marketValue.toLocaleString()}`);
+    lines.push(`mkt val ${formatQuoteAmount(row.marketValue, row.currency)}`);
   }
   return lines.join('\n');
 }

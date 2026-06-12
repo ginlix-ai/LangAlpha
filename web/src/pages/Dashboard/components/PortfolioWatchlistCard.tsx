@@ -38,7 +38,7 @@ interface PortfolioRow {
   price: number;
   quantity?: number | null;
   average_cost?: number | null;
-  currency?: string | null;
+  currency: string;
   marketValue?: number | null;
   unrealizedPlPercent?: number | null;
   isPositive?: boolean;

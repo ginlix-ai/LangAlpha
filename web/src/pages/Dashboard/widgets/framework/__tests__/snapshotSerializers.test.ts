@@ -123,12 +123,16 @@ describe('quote row serializers', () => {
       change: 0.76,
       changePercent: 0.42,
       preMarket: 182.1,
+      marketValue: 1234.5,
+      shares: 10,
       volume: 38000000,
     });
     expect(out).toContain('**AAPL**');
     expect(out).toContain('$182.31');
     expect(out).toContain('+0.76 (+0.42%)');
     expect(out).toContain('pre-market $182.10');
+    expect(out).toContain('shares 10');
+    expect(out).toContain('mkt val $1234.50');
     expect(out).toContain('vol 38,000,000');
   });
 
