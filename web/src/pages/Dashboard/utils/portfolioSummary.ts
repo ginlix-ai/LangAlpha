@@ -4,7 +4,7 @@ export interface PortfolioSummaryRow {
   marketValue?: number | null;
   average_cost?: number | null;
   quantity?: number | null;
-  currency?: unknown;
+  currency?: string | null | undefined;
   quoteAvailable?: boolean;
 }
 
