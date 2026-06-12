@@ -419,8 +419,7 @@ export async function getStockPrices(symbols: string[]): Promise<StockPrice[]> {
       return { symbol: sym, price: 0, change: 0, changePercent: 0, isPositive: true, quoteAvailable: false };
     });
   } catch (e: unknown) {
-    const err = e as { message?: string };
-    console.error('[API] getStockPrices failed:', err?.message);
+    console.error('[API] getStockPrices failed:', e instanceof Error ? e.message : String(e));
     return list.map((sym: string) => ({ symbol: sym, price: 0, change: 0, changePercent: 0, isPositive: true, quoteAvailable: false }));
   }
 }
