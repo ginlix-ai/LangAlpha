@@ -58,7 +58,12 @@ def get_web_search_tool(
             to the provider's default_depth when unset or not offered.
     """
     engine = provider or SELECTED_SEARCH_ENGINE
-    if engine != SELECTED_SEARCH_ENGINE and engine not in get_search_providers():
+    # User overrides degrade gracefully — including a manifest entry with no
+    # builder yet (e.g. a deployment-edited manifest ahead of the module).
+    # A bad deployment default still fails fast below.
+    if engine != SELECTED_SEARCH_ENGINE and (
+        engine not in get_search_providers() or engine not in _PROVIDER_BUILDERS
+    ):
         logger.warning(
             "Unknown search provider %r; falling back to default %r", engine, SELECTED_SEARCH_ENGINE
         )

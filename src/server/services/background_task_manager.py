@@ -1777,6 +1777,10 @@ class BackgroundTaskManager:
                 if tool_usage:
                     usage_service.record_tool_usage_batch(tool_usage)
 
+                # track_llm_usage([]) initializes _token_usage to a zeroed
+                # dict, so tool-only tasks still get stamped; None only on its
+                # internal cost-calculation error path, where skipping is the
+                # documented is_byok fallback contract.
                 if usage_service._token_usage is not None:
                     usage_service._token_usage["task_id"] = task.task_id
                     usage_service._token_usage["agent_id"] = task.agent_id

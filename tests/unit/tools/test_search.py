@@ -227,6 +227,29 @@ class TestGetWebSearchToolProviderOverride:
             "not-a-real-engine" in rec.getMessage() for rec in caplog.records
         )
 
+    def test_manifest_provider_without_builder_falls_back(self, caplog):
+        """A provider present in the manifest but missing from
+        _PROVIDER_BUILDERS (deployment-edited manifest ahead of the module)
+        degrades to the default engine instead of raising per request."""
+        mock_build, mock_module = _make_provider_module()
+        mock_tool = MagicMock()
+        builders = {"serper": __import__("src.tools.search", fromlist=["x"])._build_serper}
+        with (
+            patch("src.tools.search.SELECTED_SEARCH_ENGINE", SearchEngine.SERPER.value),
+            patch("src.tools.search._PROVIDER_BUILDERS", builders),
+            patch.dict("sys.modules", {"src.tools.search_services.serper": mock_module}),
+            patch("src.tools.search.create_logged_tool", return_value=mock_tool) as mock_create,
+            caplog.at_level(logging.WARNING, logger="src.tools.search"),
+        ):
+            from src.tools.search import get_web_search_tool
+
+            # "tavily" is in the manifest, but not in the patched builders.
+            result = get_web_search_tool(max_search_results=5, provider="tavily")
+
+        assert mock_create.call_args.kwargs["tracking_name"] == "SerperSearchTool"
+        assert result is mock_tool
+        assert any("tavily" in rec.getMessage() for rec in caplog.records)
+
     def test_provider_none_uses_default_engine(self):
         """provider=None behaves exactly as before — the default engine is used
         with no fallback warning."""
