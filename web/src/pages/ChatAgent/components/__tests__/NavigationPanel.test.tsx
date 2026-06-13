@@ -13,7 +13,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom';
-import NavigationPanel, { resetNavPanelExpansion } from '../NavigationPanel';
+import NavigationPanel, { resetNavPanelExpansion, forgetNavPanelExpansion } from '../NavigationPanel';
 
 // `t()` identity mock — we don't depend on bundled English copy here, but
 // the component reads i18n keys for some labels and we want the fallback
@@ -280,7 +280,7 @@ describe('NavigationPanel — workspace drag-reorder affordances', () => {
 });
 
 describe('NavigationPanel — expansion survives remounts', () => {
-  function renderOrderPanel(currentWorkspaceId: string) {
+  function renderOrderPanel(currentWorkspaceId: string, expandWorkspace: (wsId: string) => void = vi.fn()) {
     return render(
       <NavigationPanel
         workspaces={[
@@ -295,7 +295,7 @@ describe('NavigationPanel — expansion survives remounts', () => {
         currentThreadId={null}
         agents={[]}
         activeAgentId={null}
-        expandWorkspace={vi.fn()}
+        expandWorkspace={expandWorkspace}
         onSelectAgent={vi.fn()}
         onRemoveAgent={vi.fn()}
         onNavigateThread={vi.fn()}
@@ -318,5 +318,24 @@ describe('NavigationPanel — expansion survives remounts', () => {
     first.unmount();
     renderOrderPanel('ws-a');
     expect(screen.getByText('Thread B1')).toBeInTheDocument();
+  });
+
+  it('does not re-expand a forgotten (deleted) workspace on remount', async () => {
+    resetNavPanelExpansion();
+    const user = userEvent.setup();
+    const first = renderOrderPanel('ws-a');
+
+    // Open ws-b, then forget it as the delete path does.
+    await user.click(screen.getByText('Workspace B'));
+    expect(screen.getByText('Thread B1')).toBeInTheDocument();
+    forgetNavPanelExpansion('ws-b');
+
+    // On remount the mount-effect must not re-expand ws-b (no spurious 404) and
+    // its folder stays collapsed.
+    first.unmount();
+    const expandSpy = vi.fn();
+    renderOrderPanel('ws-a', expandSpy);
+    expect(screen.queryByText('Thread B1')).toBeNull();
+    expect(expandSpy).not.toHaveBeenCalledWith('ws-b');
   });
 });

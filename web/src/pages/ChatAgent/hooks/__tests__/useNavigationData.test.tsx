@@ -647,4 +647,27 @@ describe('useNavigationData — thread paging', () => {
     expect(entry()?.threads.map((t) => t.thread_id)).toEqual(['t-3', 't-1', 't-2', 't-old-1', 't-old-2']);
     expect(mockGetWorkspaceThreads).toHaveBeenLastCalledWith('ws-1', 10, 3);
   });
+
+  it('loadMoreThreads is single-flight per workspace under a rapid double-tap', async () => {
+    mockGetWorkspaceThreads.mockImplementation((_wsId: string, _limit: number, offset: number) =>
+      Promise.resolve(offset === 0
+        ? { threads: threads('t-3', 't-1', 't-2'), total: 5 }
+        : { threads: threads('t-old-1', 't-old-2'), total: 5 }),
+    );
+    const { entry, result } = setup();
+    await waitFor(() => expect(entry()?.threads.length).toBe(3));
+
+    // Both taps fire before the first resolves. The offset is snapshotted before
+    // the await, so without the guard both would fetch the same offset-3 page.
+    await act(async () => {
+      await Promise.all([
+        result.current.loadMoreThreads('ws-1'),
+        result.current.loadMoreThreads('ws-1'),
+      ]);
+    });
+
+    const offset3Calls = mockGetWorkspaceThreads.mock.calls.filter(([, , offset]) => offset === 3);
+    expect(offset3Calls.length).toBe(1);
+    await waitFor(() => expect(entry()?.threads.length).toBe(5));
+  });
 });
