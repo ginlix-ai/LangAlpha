@@ -292,25 +292,27 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     // within the same QueryClient lifetime.
     queryKey: ['onboarding', 'hasStocks', userId],
     queryFn: async () => {
+      // listPortfolio is independent of the watchlists result — start it in
+      // parallel so a user with no watchlists (the common new-user case)
+      // resolves in one round-trip instead of listWatchlists → listPortfolio in
+      // series. .catch keeps it a settled boolean so an early listWatchlists
+      // rejection can't leave it floating unhandled.
+      const portfolioProbe = listPortfolio()
+        .then((r) => ((r as { holdings?: unknown[] }).holdings?.length ?? 0) > 0)
+        .catch(() => false);
       const { watchlists } = (await listWatchlists()) as {
         watchlists?: Array<{ watchlist_id: string }>;
       };
-      // One parallel burst instead of a serial walk: total latency is two
-      // round-trips regardless of watchlist count.
-      const probes = [
-        ...(watchlists ?? []).map(async (wl) => {
-          const { items } = (await listWatchlistItems(wl.watchlist_id)) as { items?: unknown[] };
-          return (items?.length ?? 0) > 0;
-        }),
-        (async () => {
-          const { holdings } = (await listPortfolio()) as { holdings?: unknown[] };
-          return (holdings?.length ?? 0) > 0;
-        })(),
-      ];
+      // Item probes fire the moment listWatchlists resolves, in parallel with
+      // the still-in-flight portfolio probe.
+      const itemProbes = (watchlists ?? []).map(async (wl) => {
+        const { items } = (await listWatchlistItems(wl.watchlist_id)) as { items?: unknown[] };
+        return (items?.length ?? 0) > 0;
+      });
       // allSettled: one failed watchlist probe must not mask stocks another
       // probe found — the result is one-way and gets stamped, so a transient
       // error returning false would stick the task incomplete for the session.
-      const results = await Promise.allSettled(probes);
+      const results = await Promise.allSettled([portfolioProbe, ...itemProbes]);
       return results.some((r) => r.status === 'fulfilled' && r.value);
     },
     enabled: userId != null && !isLoading && prefs.gettingStartedDismissedAt === null && !stocksStamped,
