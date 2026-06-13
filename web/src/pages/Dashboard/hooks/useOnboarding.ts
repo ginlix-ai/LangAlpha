@@ -34,12 +34,23 @@ export function isPersonalizationSnoozed(): boolean {
     }
 }
 
+const PERSONALIZATION_SNOOZE_EVENT = 'langalpha:personalization-snoozed';
+
 export function snoozePersonalization(): void {
     try {
         localStorage.setItem(PERSONALIZATION_SNOOZE_KEY, String(Date.now()));
     } catch (e) {
         console.warn('[Dashboard] Could not persist personalization snooze', e);
     }
+    // Same-tab listeners (the onboarding provider) re-read the snooze state —
+    // a localStorage write alone doesn't re-render other components.
+    window.dispatchEvent(new Event(PERSONALIZATION_SNOOZE_EVENT));
+}
+
+/** Subscribe to same-tab snooze changes (for useSyncExternalStore). */
+export function subscribePersonalizationSnooze(callback: () => void): () => void {
+    window.addEventListener(PERSONALIZATION_SNOOZE_EVENT, callback);
+    return () => window.removeEventListener(PERSONALIZATION_SNOOZE_EVENT, callback);
 }
 
 /** @deprecated Use isPersonalizationSnoozed instead */

@@ -2000,5 +2000,133 @@
       "startConversation": "Start a conversation by typing a message below",
       "defaultPlaceholder": "What would you like to know?"
     }
+  },
+  "onboarding": {
+    "badge": "Quick tour",
+    "back": "Back",
+    "next": "Continue",
+    "done": "Start exploring",
+    "step": "Step {{n}}",
+    "intros": {
+      "chat": {
+        "steps": {
+          "modes": {
+            "title": "Two modes: Flash and PTC",
+            "body": "The agent works in two modes: Flash for everyday coordination and quick questions, and PTC for deep analysis that produces real deliverables. The next steps show what each one is best at."
+          },
+          "workspace": {
+            "title": "Meet workspaces",
+            "body": "Every workspace is a project desk: the conversations about one task live there together, sharing the same files, data, and results — completely separate from other workspaces. The built-in Flash workspace collects all your quick questions; every workspace you create yourself runs PTC."
+          },
+          "flash": {
+            "title": "Flash — your personal assistant",
+            "body": "Flash keeps the whole desk running: just say what you need, and it creates and manages workspaces for you, dispatches heavy tasks to a PTC workspace to run, and manages your automations. It also handles quick questions — a stock price, a news lookup, a fast fact-check — in seconds. Every Flash thread is collected in the first workspace card, so past sessions are always easy to find."
+          },
+          "ptc": {
+            "title": "PTC — where the real work happens",
+            "body": "PTC workspaces host our most capable agent. Every thread inside shares the same files, data, and prior work, so research compounds. It processes large datasets, coordinates teams of subagents — something Flash can't do — and produces any deliverable: Excel models, Word docs, PDFs, dashboards."
+          },
+          "create": {
+            "title": "Give real tasks a PTC workspace",
+            "body": "If it involves data work or ends in a deliverable, don't leave it in Flash. Hit \"New workspace\", name it after the task — the agent boots a dedicated sandbox and brings its full capability to it."
+          }
+        }
+      },
+      "thread": {
+        "steps": {
+          "filePanel": {
+            "title": "Every artifact lands in the file panel",
+            "body": "Word docs, Excel models, PDFs, charts — whatever the agent produces is saved to the workspace. Open the folder icon up top to browse, preview, and download."
+          },
+          "memory": {
+            "title": "The agent remembers how you work",
+            "body": "The agent keeps long-term memory across threads: your preferences, conventions, and conclusions worth reusing. Say \"remember this\" and it persists."
+          },
+          "memo": {
+            "title": "Ground it with your memos",
+            "body": "Upload PDFs, notes, or spreadsheets as memos. The agent reads them on demand — your private research becomes part of its context."
+          }
+        }
+      },
+      "dashboard": {
+        "steps": {
+          "overview": {
+            "title": "Your market homepage",
+            "body": "Watchlist, portfolio, news, and live charts in one place — a real-time overview that's ready before you ask anything."
+          },
+          "customize": {
+            "title": "Make it yours",
+            "body": "Switch to Custom mode to add, remove, resize, and rearrange widgets. Build the exact monitor you want to wake up to."
+          },
+          "attach": {
+            "title": "Clip any widget into chat",
+            "body": "See something worth digging into? Hit the paperclip on a row to attach it to chat as context — the agent picks up exactly what you're looking at."
+          }
+        }
+      }
+    },
+    "gettingStarted": {
+      "title": "Get started",
+      "dismiss": "Hide guide",
+      "tasks": {
+        "dashboard": {
+          "title": "Explore the dashboard",
+          "desc": "Watchlist, portfolio, news, and live widgets in one place."
+        },
+        "market": {
+          "title": "Check live markets",
+          "desc": "Real-time charts with streaming market data."
+        },
+        "stocks": {
+          "title": "Share your watchlist & portfolio",
+          "desc": "A short chat — tell the agent the tickers you watch and hold."
+        },
+        "preferences": {
+          "title": "Share your investing preferences",
+          "desc": "Set your risk tolerance, investing style, and how you want answers framed."
+        },
+        "createWorkspace": {
+          "title": "Create your first workspace",
+          "desc": "Spin up a dedicated PTC workspace — the agent gets a full sandbox for real research."
+        },
+        "firstChat": {
+          "title": "Run your first analysis",
+          "desc": "Open a chat and ask about any ticker, sector, or filing."
+        },
+        "models": {
+          "title": "Visit the model configuration",
+          "desc": "Choose default models and connect providers in Settings."
+        },
+        "integrations": {
+          "title": "Use LangAlpha on other platforms",
+          "desc": "Reach the agent from Slack, email, and more via platform integrations."
+        }
+      },
+      "interview": {
+        "title": "A quick chat to personalize your experience",
+        "body": "We'll open a chat where the agent asks a few questions about your portfolio, watchlist, risk tolerance, and investment preferences — so its answers fit you. You can change any of it later in Settings, or simply ask the agent to update it.",
+        "cancel": "Not now",
+        "confirm": "Start the chat"
+      }
+    },
+    "announce": {
+      "dashCustom": {
+        "modalTitle": "Customizable dashboard",
+        "modalBody": "Switch your dashboard to Custom mode to rearrange, resize, and add widgets — then attach any of them to chat."
+      }
+    },
+    "whatsNew": {
+      "title": "What's new",
+      "subtitle": "A few updates since you were last here.",
+      "gotIt": "Got it"
+    },
+    "settings": {
+      "sectionTitle": "Tips & guides",
+      "description": "Re-show the page tips and the getting-started guide.",
+      "replayGuides": "Show tips again",
+      "replayDone": "Page tips and the getting-started guide will show again.",
+      "reset": "Reset onboarding",
+      "resetDone": "Onboarding reset — tips and the guide start fresh."
+    }
   }
 }

@@ -23,6 +23,7 @@ import type { CompactionProfileName } from '@/hooks/useAllModels';
 import { useDebouncedSave } from '@/hooks/useDebouncedSave';
 import { isSupported, setLocaleCookie } from '@/lib/locale';
 import { isPlatformMode } from '@/config/hostMode';
+import { useOnboarding } from '@/pages/Onboarding';
 import './Settings.css';
 
 interface CodexDeviceCode {
@@ -70,6 +71,7 @@ function Settings() {
   const { theme: _theme, preference, setTheme: setThemePref } = useTheme();
   const { models: visibleModels, modelAccessMap, systemDefaults: hookSystemDefaults, validModelNames, compactionProfiles, searchProviders, isLoading: isModelsLoading } = useAllModels();
   const { t, i18n } = useTranslation();
+  const { replayGuides, resetOnboarding } = useOnboarding();
 
   const tabParam = searchParams.get('tab') || 'userInfo';
   const [activeTab, setActiveTab] = useState(tabParam);
@@ -919,6 +921,46 @@ function Settings() {
               <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
                 {t('settings.preferencesDesc')}
               </p>
+
+              <div
+                className="rounded-md px-4 py-4"
+                style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>
+                      {t('onboarding.settings.sectionTitle')}
+                    </p>
+                    <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)' }}>
+                      {t('onboarding.settings.description')}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resetOnboarding();
+                      toast({ description: t('onboarding.settings.resetDone') });
+                    }}
+                    className="shrink-0 rounded text-xs font-medium transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                    style={{ color: 'var(--color-text-tertiary)' }}
+                  >
+                    {t('onboarding.settings.reset')}
+                  </button>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      replayGuides();
+                      toast({ description: t('onboarding.settings.replayDone') });
+                    }}
+                    className="px-3 py-1.5 rounded-md text-xs font-medium transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                    style={{ border: '1px solid var(--color-border-muted)', color: 'var(--color-text-secondary)' }}
+                  >
+                    {t('onboarding.settings.replayGuides')}
+                  </button>
+                </div>
+              </div>
 
               {preferences && (preferences.risk_preference || preferences.investment_preference || preferences.agent_preference) ? (
                 <div className="space-y-4">

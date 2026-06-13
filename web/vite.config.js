@@ -15,6 +15,10 @@ export default defineConfig({
   },
   build: {
     rollupOptions: {
+      // Explicit single entry: dev-only harness pages (e.g. intro-preview.html)
+      // must never ship in the production build, even if a future Vite version
+      // or multi-page config change starts picking up root .html files.
+      input: path.resolve(__dirname, 'index.html'),
       output: {
         manualChunks: {
           'vendor-react': ['react', 'react-dom', 'react-router-dom'],

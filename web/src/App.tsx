@@ -11,6 +11,7 @@ import { useIsMobile } from './hooks/useIsMobile';
 import { useSetupGate } from './hooks/useSetupGate';
 import { isPlatformMode } from './config/hostMode';
 import { OAUTH_BROADCAST_CHANNEL, type OAuthPopupMessage } from './lib/oauthPopup';
+import { OnboardingProvider, OnboardingHostGate } from './pages/Onboarding';
 import './App.css';
 
 const SetupWizard = React.lazy(() => import('./pages/Setup/SetupWizard'));
@@ -114,13 +115,16 @@ function AuthenticatedShell() {
   }
 
   return (
-    <div className="app-layout">
-      {!isMobile && <Sidebar />}
-      {isMobile && !hideTabBar && <BottomTabBar />}
-      <main className={`app-main${hideTabBar ? ' app-main--no-tab' : ''}`}>
-        <Main />
-      </main>
-    </div>
+    <OnboardingProvider>
+      <div className="app-layout">
+        {!isMobile && <Sidebar />}
+        {isMobile && !hideTabBar && <BottomTabBar />}
+        <main className={`app-main${hideTabBar ? ' app-main--no-tab' : ''}`}>
+          <Main />
+        </main>
+      </div>
+      <OnboardingHostGate />
+    </OnboardingProvider>
   );
 }
 

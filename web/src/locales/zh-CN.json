@@ -73,15 +73,15 @@
     "timezone": "时区",
     "selectTimezone": "选择时区...",
     "selectLocale": "选择语言...",
-    "preferencesDesc": "偏好设置通过与智能体对话来管理。点击下方按钮进行更新。",
+    "preferencesDesc": "偏好设置通过与 Agent 对话来管理。点击下方按钮进行更新。",
     "noPreferencesYet": "暂无偏好设置。点击下方按钮进行设置。",
     "riskTolerance": "风险偏好",
     "investmentStyle": "投资风格",
-    "agentSettings": "智能体设置",
+    "agentSettings": "Agent 设置",
     "resetPreferences": "重置偏好",
-    "resetConfirmMsg": "这将清除您所有的偏好设置（风险偏好、投资风格、智能体设置）。您可以随时通过智能体重新设置。确定吗？",
+    "resetConfirmMsg": "这将清除您所有的偏好设置（风险偏好、投资风格、Agent 设置）。您可以随时通过 Agent 重新设置。确定吗？",
     "resetting": "重置中...",
-    "modifyWithAgent": "通过智能体修改",
+    "modifyWithAgent": "通过 Agent 修改",
     "completeProfile": "完善个人资料",
     "completeProfileDesc": "通过简短对话设置您的股票、风险偏好和其他偏好。",
     "startOnboarding": "开始设置",
@@ -175,11 +175,11 @@
     "starredModelsDesc": "标星的模型会显示在聊天输入框中方便快速切换",
     "addModels": "添加",
     "searchProvider": "网络搜索引擎",
-    "searchProviderDesc": "智能体进行网络搜索时使用的搜索引擎。",
+    "searchProviderDesc": "Agent 进行网络搜索时使用的搜索引擎。",
     "searchProviderDefault": "默认",
     "searchProviderUpgradeHint": "部分搜索引擎需要更高级的套餐。",
     "searchDepth": "搜索深度",
-    "searchDepthDesc": "智能体搜索网络的深入程度。更深的级别每次搜索消耗更多积分。",
+    "searchDepthDesc": "Agent 搜索网络的深入程度。更深的级别每次搜索消耗更多积分。",
     "searchDepthDefault": "默认",
     "searchDepthUpgradeHint": "更深的搜索级别需要更高级的套餐。",
     "searchDepthLevel": {
@@ -284,7 +284,7 @@
         "contextUnavailableHint": "该小组件尚未注册上下文导出器。",
         "addRowToContext": "把这一行加入上下文",
         "addRowToContextTitle": "把此条目加入聊天上下文",
-        "contextUnsupportedTradingView": "无法添加：该内容由 TradingView 提供，智能体无法访问。"
+        "contextUnsupportedTradingView": "无法添加：该内容由 TradingView 提供，Agent 无法访问。"
       },
       "addDialog": {
         "eyebrow": "小组件库",
@@ -317,7 +317,7 @@
           "intelligenceBlurb": "AI 生成的简报与精选新闻流。",
           "personalLabel": "个人持仓",
           "personalBlurb": "您的投资组合、自选股与持仓。",
-          "agentLabel": "智能体",
+          "agentLabel": "Agent",
           "agentBlurb": "从仪表板启动一次研究会话。",
           "workspaceLabel": "工作区",
           "workspaceBlurb": "进入往期对话或工作区。"
@@ -369,10 +369,10 @@
           }
         },
         "agentDesk": {
-          "name": "智能体工作台",
-          "tag": "智能体主导",
-          "description": "智能体的工作面板。全宽提问控制台坐镇顶部——先把问题摆上桌，再往下读今日 AI 简报。工作区、近期对话、自动化与您的持仓一并陈列。",
-          "bestFor": "与智能体并肩工作——阅读、提问、运行自动化、跨工作区切换。",
+          "name": "Agent 工作台",
+          "tag": "Agent 主导",
+          "description": "Agent 的工作面板。全宽提问控制台坐镇顶部——先把问题摆上桌，再往下读今日 AI 简报。工作区、近期对话、自动化与您的持仓一并陈列。",
+          "bestFor": "与 Agent 并肩工作——阅读、提问、运行自动化、跨工作区切换。",
           "pills": {
             "aiBrief": "AI 简报",
             "askConsole": "提问控制台",
@@ -1092,9 +1092,9 @@
     "runningStatus": "运行中",
     "initializing": "初始化中",
     "worker": "工作者",
-    "agentNotFound": "未找到智能体",
+    "agentNotFound": "未找到 Agent",
     "planFeedbackHint": "输入您的反馈意见来修改计划，然后发送。",
-    "interruptedHint": "智能体已中断。请随时提供新的指令。",
+    "interruptedHint": "Agent 已中断。请随时提供新的指令。",
     "errorUpstreamHeadline": "模型提供商返回错误",
     "errorUpstreamHeadlineStatus": "模型提供商返回错误 ({{status}})",
     "errorInternalHeadline": "服务内部出错",
@@ -1110,7 +1110,7 @@
     "loadingHistory": "加载历史记录...",
     "workspaceFiles": "工作区文件",
     "workspaceSettings": "工作区设置",
-    "agents": "智能体",
+    "agents": "Agent",
     "questionStarted": "问题已开始",
     "questionDeclined": "问题已跳过",
     "startQuestion": "开始提问",
@@ -1128,7 +1128,7 @@
     "offloading": "正在转存上下文...",
     "placeholderDefault": "输入 / 调用技能，@ 引用文件",
     "placeholderPendingRejection": "说说希望怎么调整...",
-    "placeholderInterrupted": "输入新指令继续引导智能体...",
+    "placeholderInterrupted": "输入新指令继续引导 Agent...",
     "placeholderLoading": "可以继续输入，消息会排队发送...",
     "placeholderSubagentsRunning": "工作者仍在运行，可输入消息或点击工作者单独指令",
     "slashCommand": {
@@ -1196,7 +1196,7 @@
     "addLineToContext": "添加 L{{line}} 到上下文",
     "addNLinesToContext": "添加 {{count}} 行到上下文",
     "openFile": "打开文件",
-    "fromAgentResponse": "来自智能体回复",
+    "fromAgentResponse": "来自 Agent 回复",
     "addToMemo": "添加到备忘录",
     "syncWithMemo": "同步到备忘录",
     "memoAdding": "正在将 \"{{name}}\" 添加到备忘录",
@@ -1308,7 +1308,7 @@
     "loadingList": "正在加载记忆…",
     "emptyUser": "暂无用户记忆。",
     "emptyWorkspace": "暂无工作区记忆。",
-    "emptyHint": "当有值得记住的内容时，智能体会创建 memory.md。",
+    "emptyHint": "当有值得记住的内容时，Agent 会创建 memory.md。",
     "loadError": "记忆加载失败",
     "readError": "记忆文件读取失败",
     "notFound": "记忆 “{{key}}” 已不存在，已显示全部条目。",
@@ -1316,7 +1316,7 @@
   },
   "memoPanel": {
     "title": "备忘文档",
-    "description": "上传研究备忘、原始资料或参考文件。按用户归档，在任一工作区智能体都可读取。",
+    "description": "上传研究备忘、原始资料或参考文件。按用户归档，在任一工作区 Agent 都可读取。",
     "uploadButton": "上传",
     "uploadHint": "支持 Markdown、TXT、CSV、JSON、PDF · 单文件不超过 5 MB",
     "dragOverlayText": "松开鼠标以上传文件",
@@ -1403,13 +1403,13 @@
     "cronExpression": "Cron 表达式",
     "cronHelp": "5字段 cron: 分钟 小时 日 月 星期",
     "runAt": "运行时间",
-    "agentMode": "智能体模式",
+    "agentMode": "Agent 模式",
     "flash": "快速",
     "ptcSandbox": "PTC（沙箱）",
     "selectWorkspace": "选择工作区...",
     "workspaceRequired": "PTC 模式需要选择工作区。",
     "instruction": "指令",
-    "instructionPlaceholder": "智能体应该做什么？",
+    "instructionPlaceholder": "Agent 应该做什么？",
     "threadStrategy": "对话策略",
     "newThreadEachRun": "每次新建对话",
     "continueExisting": "继续现有对话",
@@ -1581,7 +1581,7 @@
     "next": "下次：{{time}}",
     "instruction": "指令",
     "configuration": "配置",
-    "agentMode": "智能体模式",
+    "agentMode": "Agent 模式",
     "triggerType": "触发类型",
     "trigger": "触发条件",
     "retrigger": "重复触发",
@@ -1979,6 +1979,134 @@
       "noWorkspacePrompt": "未选择工作区。请在输入框中选择一个。",
       "startConversation": "在下方输入消息开始对话",
       "defaultPlaceholder": "你想了解什么？"
+    }
+  },
+  "onboarding": {
+    "badge": "页面导览",
+    "back": "上一步",
+    "next": "继续",
+    "done": "开始探索",
+    "step": "第 {{n}} 步",
+    "intros": {
+      "chat": {
+        "steps": {
+          "modes": {
+            "title": "两种模式：Flash 与 PTC",
+            "body": "Agent 以两种模式工作：Flash 负责日常协调与快速问答；PTC 负责深度分析，产出真正的交付物。接下来分别介绍两者的分工。"
+          },
+          "workspace": {
+            "title": "认识工作区",
+            "body": "每一个工作区都是一个项目空间：围绕同一任务的对话都集中在这里，共享文件、数据和成果；不同工作区之间完全独立，互不干扰。其中 Flash 工作区由平台统一管理，汇集所有快速问答；你自己创建的每个工作区都运行 PTC。"
+          },
+          "flash": {
+            "title": "Flash：你的个人助理",
+            "body": "Flash 负责统筹日常：你只管提出需求，它会替你创建和管理工作区、将复杂任务分派到 PTC 工作区执行、管理自动化。快速问答也交给它——查股价、看新闻、快速核实信息，几秒内给出答案。所有 Flash 对话统一归入第一张工作区卡片，方便查找历史会话。"
+          },
+          "ptc": {
+            "title": "PTC：完整的分析工作区",
+            "body": "PTC 工作区运行能力最强的 Agent。同一工作区内的所有对话共享文件、数据与已有成果，分析可以持续积累。它能处理大规模数据，并行调度多个子 Agent 完成 Flash 无法胜任的复杂任务，还能生成各类交付物：Excel 模型、Word 文档、PDF、仪表盘。"
+          },
+          "create": {
+            "title": "为正式任务创建 PTC 工作区",
+            "body": "涉及数据处理或需要产出交付物的任务，建议交给 PTC 工作区完成，而不是全部留在 Flash。点击“新建工作区”并按任务命名，Agent 会启动专属沙盒，以完整能力执行。"
+          }
+        }
+      },
+      "thread": {
+        "steps": {
+          "filePanel": {
+            "title": "文件统一保存在文件面板",
+            "body": "Word 文档、Excel 模型、PDF、图表等 Agent 生成的文件都会保存在工作区中。点击顶部的文件夹图标，即可浏览、预览和下载。"
+          },
+          "memory": {
+            "title": "Agent 会记住你的偏好",
+            "body": "Agent 具备跨对话的长期记忆，可以保存你的偏好、惯例和值得复用的结论。对它说“记住这个”，相关内容便会长期保留。"
+          },
+          "memo": {
+            "title": "上传备忘录，补充分析资料",
+            "body": "可以将 PDF、笔记或表格上传为备忘录。Agent 会在需要时读取，把你的私有资料纳入分析上下文。"
+          }
+        }
+      },
+      "dashboard": {
+        "steps": {
+          "overview": {
+            "title": "行情总览",
+            "body": "自选股、投资组合、新闻与实时图表集中呈现，打开页面即可掌握市场概况。"
+          },
+          "customize": {
+            "title": "自定义布局",
+            "body": "切换到自定义模式后，可以添加、删除、调整和排列小组件，搭建符合自己需求的监控面板。"
+          },
+          "attach": {
+            "title": "将组件内容附加到对话",
+            "body": "看到值得深入分析的内容时，点击该行的回形针图标，即可将其作为上下文附加到对话，Agent 会基于这一内容继续分析。"
+          }
+        }
+      }
+    },
+    "gettingStarted": {
+      "title": "快速上手",
+      "dismiss": "隐藏引导",
+      "tasks": {
+        "dashboard": {
+          "title": "探索仪表盘",
+          "desc": "自选股、组合、新闻与实时组件一站集齐。"
+        },
+        "market": {
+          "title": "查看实时行情",
+          "desc": "实时数据流驱动的行情图表。"
+        },
+        "stocks": {
+          "title": "告诉 Agent 你的自选股与持仓",
+          "desc": "与 Agent 简单聊聊你关注和持有的股票。"
+        },
+        "preferences": {
+          "title": "设置投资偏好",
+          "desc": "设定风险承受度、投资风格与回答方式。"
+        },
+        "createWorkspace": {
+          "title": "创建第一个工作区",
+          "desc": "新建一个专属 PTC 工作区，Agent 将在完整沙盒中执行正式分析任务。"
+        },
+        "firstChat": {
+          "title": "开始第一次分析",
+          "desc": "打开对话，询问任意股票、行业或财报。"
+        },
+        "models": {
+          "title": "查看模型配置",
+          "desc": "在设置的模型页选择默认模型并连接服务商。"
+        },
+        "integrations": {
+          "title": "在其他平台使用 LangAlpha",
+          "desc": "通过平台集成，在 Slack、邮件等平台使用 LangAlpha。"
+        }
+      },
+      "interview": {
+        "title": "聊几句，让 Agent 更懂你",
+        "body": "即将打开一段对话，Agent 会简单了解你的持仓、自选股、风险承受度与投资偏好，让之后的回答更贴合你的情况。这些信息可在设置中修改，也可以直接让它更新。",
+        "cancel": "暂不",
+        "confirm": "开始对话"
+      }
+    },
+    "announce": {
+      "dashCustom": {
+        "modalTitle": "可自定义的仪表盘",
+        "modalBody": "将仪表盘切换到自定义模式，即可重新排列、调整大小并添加小组件，还能将它们附加到对话中。"
+      }
+    },
+    "whatsNew": {
+      "title": "新功能",
+      "subtitle": "你上次访问以来的一些更新。",
+      "gotIt": "知道了"
+    },
+    "settings": {
+      "sectionTitle": "提示与引导",
+      "description": "重新显示页面提示和快速上手指南。",
+      "replayGuides": "再次显示提示",
+      "replayDone": "页面提示与快速上手指南将重新显示。",
+      "reset": "重置新手引导",
+      "resetDone": "新手引导已重置，提示与指南将重新开始。"
     }
   }
 }
