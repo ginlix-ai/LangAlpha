@@ -117,7 +117,7 @@ export function useDashboardPrefs() {
         }
       }
       const accepted = writeDashboardPrefs(next, {
-        // undefined = cold (writer refuses); null = warm w/ empty siblings.
+        // undefined = cold (writer refuses); null = warm, no saved prefs yet.
         fallbackOther: preferences === null
           ? undefined
           : ((preferences as { other_preference?: Record<string, unknown> }).other_preference ?? null),
@@ -147,8 +147,8 @@ export function useDashboardPrefs() {
   const update = useCallback(
     (patch: Partial<DashboardPrefs> | ((prev: DashboardPrefs) => DashboardPrefs), opts?: { immediate?: boolean }) => {
       // Cold-cache gate: drop edits before the initial GET resolves so we
-      // don't construct a payload from `{}` and clobber server-side
-      // sibling other_preference keys (theme, locale, etc.).
+      // don't build `next` from `{}` and overwrite the user's saved dashboard
+      // (the server replaces the dashboard key wholesale).
       if (isLoading) return;
       setLocal((prev) => {
         const next = typeof patch === 'function' ? patch(prev) : { ...prev, ...patch };

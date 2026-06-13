@@ -35,18 +35,18 @@ export default function DashboardRouter() {
 
   const onModeChange = useCallback(
     (next: 'classic' | 'custom') => {
-      // Cold-cache gate: refuse the toggle until prefs load so we don't PUT
-      // `{ other_preference: { dashboard: {...} } }` and clobber sibling
-      // server-side keys (theme, locale). The toggle is disabled in the UI
-      // while isLoading, so this branch is defense-in-depth.
+      // Cold-cache gate: refuse the toggle until prefs load so we don't build
+      // the dashboard payload from nothing and overwrite the user's saved
+      // layout (the server replaces the dashboard key wholesale). The toggle
+      // is disabled in the UI while isLoading, so this is defense-in-depth.
       if (isLoading) return;
       // Replay-aware: re-read the freshest cache so a cross-tab edit (or
       // pending debounce in this tab) that already updated the dashboard
       // sub-object isn't replaced with the render-time snapshot. Without
       // this, `firstFlipToCustom` could mis-trigger the morning-brief seed
       // because `parsed` (render-time) saw an empty widget list while the
-      // cache already has widgets. The writer also reads cache for sibling
-      // preservation; this read is for the dashboard sub-object only.
+      // cache already has widgets. (Siblings aren't in the payload at all —
+      // the server-side merge preserves them.)
       const fresh = queryClient.getQueryData<UserPreferences>(queryKeys.user.preferences());
       const freshOther = (fresh?.other_preference as Record<string, unknown> | undefined) ?? rawOther;
       const freshDashboardRaw = (freshOther?.dashboard as unknown) ?? null;
@@ -63,7 +63,7 @@ export default function DashboardRouter() {
         history: baseDashboard.history,
       };
       writeDashboardPrefs(dashboard, {
-        // undefined = cold (writer refuses); null = warm w/ empty siblings.
+        // undefined = cold (writer refuses); null = warm, no saved prefs yet.
         fallbackOther: preferences === null
           ? undefined
           : ((rawOther as Record<string, unknown> | undefined) ?? null),
