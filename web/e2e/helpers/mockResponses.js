@@ -17,6 +17,27 @@ export const defaultResponses = {
     theme: 'dark',
     locale: 'en-US',
     timezone: 'America/New_York',
+    // Onboarding state of a fully-caught-up returning user, so the welcome
+    // guides added in #264 (page-intro modals + getting-started card) never
+    // pop over the UI under test and intercept clicks. Without this, every
+    // page intro is eligible (empty pageIntrosSeen) and its [role="dialog"]
+    // overlay blocks Playwright clicks -> 30s timeouts. Page-intro ids come
+    // from src/pages/Onboarding/registry/pageIntros.ts -- add new ids here
+    // when intros are added. lastSeenReleaseVersion stays null because
+    // unseenReleases() returns [] for null (no What's-New backlog); firstRunAt
+    // is stamped so the provider treats this as an established user.
+    // Tests that exercise onboarding (e.g. the personalization banner) override
+    // the relevant fields locally.
+    other_preference: {
+      onboarding: {
+        version: 1,
+        pageIntrosSeen: { chat: 1, thread: 1, dashboard: 1 },
+        gettingStartedDoneAt: {},
+        gettingStartedDismissedAt: 1,
+        lastSeenReleaseVersion: null,
+        firstRunAt: 1,
+      },
+    },
   },
   'GET /workspaces': { workspaces: [], total: 0, limit: 20, offset: 0 },
   'POST /workspaces/flash': {
