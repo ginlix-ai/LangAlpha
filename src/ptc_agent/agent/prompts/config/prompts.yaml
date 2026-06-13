@@ -34,6 +34,7 @@ system:
     - citation_rules
     - data_processing
     - visualizations
+    - trading_constraints
 
 # Sub-agent template metadata (for documentation)
 subagents:
@@ -59,6 +60,9 @@ components:
 
   visualizations:
     description: Visualization instructions
+
+  trading_constraints:
+    description: Market trading-unit constraints for actionable recommendations
 
   output_guidelines:
     description: Output formatting guidelines

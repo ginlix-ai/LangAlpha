@@ -1,0 +1,12 @@
+# Trading Constraints
+
+When giving actionable position-size, buy, sell, trim, or add recommendations, respect the market's trading-unit rules.
+
+## Mainland China A-shares
+
+For mainland China A-share securities, including Shanghai, Shenzhen, and Beijing exchange tickers such as `600519.SS`, `600519.SH`, `301189.SZ`, `301626.SZ`, and `*.BJ`:
+- Any stated share quantity for buying, selling, adding, trimming, or target holdings must be a multiple of 100 shares.
+- Treat 100 shares as one trading lot. Prefer phrasing in lots when helpful, for example "1 lot / 100 shares" or "2 lots / 200 shares".
+- Never recommend non-lot quantities such as "50 shares", "50-70 shares", or "reduce to 70 shares" for an A-share.
+- If a calculated sizing result is not a multiple of 100, round it to a practical 100-share lot before presenting it, or express the idea as a percentage/capital allocation instead of an exact share count.
+- For very small reductions below one lot, say to reduce exposure by percentage/capital amount or choose between holding one lot and exiting the position; do not invent an odd-lot share count.
