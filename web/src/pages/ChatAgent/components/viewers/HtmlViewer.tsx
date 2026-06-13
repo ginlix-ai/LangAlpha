@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useTheme } from '@/contexts/ThemeContext';
 import SyntaxHighlighter, { oneDark, oneLight } from '../SyntaxHighlighter';
 import { useHtmlSandbox } from './html/useHtmlSandbox';
 import { useHtmlActions } from './html/useHtmlActions';
@@ -36,6 +37,7 @@ export default function HtmlViewer({
   onCopyShareLink,
 }: HtmlViewerProps) {
   const { t } = useTranslation();
+  const { theme } = useTheme();
   const [mode, setMode] = useState<'preview' | 'source'>('preview');
   const [fullscreen, setFullscreen] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -68,9 +70,7 @@ export default function HtmlViewer({
     !servedUrlOverride,
   );
 
-  const isLight =
-    typeof window !== 'undefined' &&
-    document.documentElement.getAttribute('data-theme') === 'light';
+  const isLight = theme === 'light';
 
   return (
     <div className="html-viewer">

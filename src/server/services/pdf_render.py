@@ -273,18 +273,53 @@ _playwright_cm = None
 _browser_lock = asyncio.Lock()
 
 
+async def _reset_browser() -> None:
+    """Drop the cached browser + playwright driver, swallowing teardown errors.
+
+    Called while holding ``_browser_lock`` after a dead handle is detected so
+    the next launch starts clean.
+    """
+    global _browser, _playwright_cm
+    browser, cm = _browser, _playwright_cm
+    _browser = None
+    _playwright_cm = None
+    if browser is not None:
+        try:
+            await browser.close()
+        except Exception:
+            pass
+    if cm is not None:
+        try:
+            await cm.stop()
+        except Exception:
+            pass
+
+
+def _browser_alive(browser) -> bool:
+    """True if a cached browser handle is still connected to live Chromium."""
+    try:
+        return browser.is_connected()
+    except Exception:
+        return False
+
+
 async def _get_browser():
     """Return the singleton headless Chromium, launching it once.
 
+    A cached browser that has crashed or disconnected is discarded and
+    relaunched so a dead handle can't wedge every render until restart.
     Raises ``PdfRenderUnavailable`` if Playwright or the Chromium binary is
     missing — both are optional and only required to serve ``?format=pdf``.
     """
     global _browser, _playwright_cm
-    if _browser is not None:
+    if _browser is not None and _browser_alive(_browser):
         return _browser
     async with _browser_lock:
-        if _browser is not None:
+        if _browser is not None and _browser_alive(_browser):
             return _browser
+        # Tear down a dead handle (and its playwright driver) before relaunch.
+        if _browser is not None:
+            await _reset_browser()
         try:
             from playwright.async_api import Error as PlaywrightError
             from playwright.async_api import async_playwright
@@ -329,8 +364,12 @@ async def render_workspace_pdf(
     browser = await _get_browser()
 
     async with _RENDER_SEMAPHORE:
-        context = await browser.new_context(viewport=_PRINT_VIEWPORT)
+        context = None
         try:
+            # new_context / new_page / route / emulate_media can all raise a
+            # PlaywrightError (e.g. the browser died after _get_browser); keep
+            # them inside the mapped try so none escapes as a raw 500.
+            context = await browser.new_context(viewport=_PRINT_VIEWPORT)
 
             async def _route_handler(route, request):
                 if _is_request_allowed(request.url, workspace_serve_prefix):
@@ -387,13 +426,16 @@ async def render_workspace_pdf(
                     )
                 return await page.pdf(**pdf_kwargs)
 
-            try:
-                return await asyncio.wait_for(_render(), timeout=_RENDER_TIMEOUT_MS / 1000)
-            except (asyncio.TimeoutError, PlaywrightTimeoutError) as exc:
-                raise PdfRenderTimeout("PDF rendering timed out") from exc
-            except PdfRenderError:
-                raise
-            except PlaywrightError as exc:
-                raise PdfRenderError(f"PDF rendering failed: {exc}") from exc
+            return await asyncio.wait_for(_render(), timeout=_RENDER_TIMEOUT_MS / 1000)
+        except (asyncio.TimeoutError, PlaywrightTimeoutError) as exc:
+            raise PdfRenderTimeout("PDF rendering timed out") from exc
+        except PdfRenderError:
+            raise
+        except PlaywrightError as exc:
+            raise PdfRenderError(f"PDF rendering failed: {exc}") from exc
         finally:
-            await context.close()
+            if context is not None:
+                try:
+                    await context.close()
+                except Exception:
+                    pass

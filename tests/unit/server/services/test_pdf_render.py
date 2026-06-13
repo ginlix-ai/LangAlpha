@@ -1,14 +1,22 @@
 """Unit tests for the server-side PDF renderer's browser-free logic.
 
 Exercises ``_is_request_allowed`` and ``_viewport_from_page_size`` directly
-(pure functions) — the parts of ``pdf_render`` that run without Chromium. CI
-has no browser binary, so the render path itself is covered by mocking in the
-route tests.
+(pure functions) — the parts of ``pdf_render`` that run without Chromium. The
+browser-singleton liveness recovery and the new_context error-taxonomy mapping
+are exercised with fake browser/context objects (no real Chromium); the full
+render path itself is covered by mocking in the route tests.
 """
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from playwright.async_api import Error as PlaywrightError
+
+from src.server.services import pdf_render
 from src.server.services.pdf_render import (
+    PdfRenderError,
     _footer_template,
     _is_request_allowed,
     _viewport_from_page_size,
@@ -166,3 +174,105 @@ def test_footer_page_numbers_only():
     assert "LangAlpha" not in footer
     assert "2026-06-12" not in footer
     assert 'class="pageNumber"' in footer
+
+
+# --- Browser singleton liveness recovery (Finding 1a) ----------------------
+
+
+@pytest.fixture
+def _isolated_browser_globals():
+    """Save/restore the module's browser singleton globals around a test."""
+    saved = (pdf_render._browser, pdf_render._playwright_cm)
+    pdf_render._browser = None
+    pdf_render._playwright_cm = None
+    try:
+        yield
+    finally:
+        pdf_render._browser, pdf_render._playwright_cm = saved
+
+
+def _fake_launch_patch(launched):
+    """Patch ``async_playwright`` so each launch yields the next fake browser."""
+    cm = MagicMock()
+    cm.start = AsyncMock()
+    cm.stop = AsyncMock()
+    pw = cm.start.return_value
+    pw.chromium.launch = AsyncMock(side_effect=list(launched))
+    return patch("playwright.async_api.async_playwright", return_value=cm), cm
+
+
+@pytest.mark.asyncio
+async def test_get_browser_relaunches_after_disconnect(_isolated_browser_globals):
+    dead = MagicMock()
+    dead.is_connected.return_value = True
+    dead.close = AsyncMock()
+    fresh = MagicMock()
+    fresh.is_connected.return_value = True
+
+    launch_patch, cm = _fake_launch_patch([dead, fresh])
+    with launch_patch:
+        first = await pdf_render._get_browser()
+        assert first is dead
+        # Cached handle is reused while connected.
+        assert await pdf_render._get_browser() is dead
+
+        # Chromium crashes: the cached handle now reports disconnected.
+        dead.is_connected.return_value = False
+        second = await pdf_render._get_browser()
+
+    assert second is fresh
+    dead.close.assert_awaited_once()  # dead handle torn down
+    cm.stop.assert_awaited_once()  # its playwright driver stopped too
+    assert pdf_render._browser is fresh
+
+
+@pytest.mark.asyncio
+async def test_get_browser_reuses_live_handle(_isolated_browser_globals):
+    live = MagicMock()
+    live.is_connected.return_value = True
+
+    launch_patch, _ = _fake_launch_patch([live])
+    with launch_patch:
+        assert await pdf_render._get_browser() is live
+        assert await pdf_render._get_browser() is live
+        # A single launch backs every call while the handle stays connected.
+        assert pdf_render._browser is live
+
+
+# --- new_context error taxonomy (Finding 1b) -------------------------------
+
+
+@pytest.mark.asyncio
+async def test_new_context_playwright_error_maps_to_taxonomy(_isolated_browser_globals):
+    # A live browser whose new_context fails (e.g. it died right after the
+    # liveness check) must surface as PdfRenderError, not a raw PlaywrightError.
+    browser = MagicMock()
+    browser.is_connected.return_value = True
+    browser.new_context = AsyncMock(side_effect=PlaywrightError("target closed"))
+    pdf_render._browser = browser
+
+    with pytest.raises(PdfRenderError):
+        await pdf_render.render_workspace_pdf(
+            "http://127.0.0.1:8000/api/v1/wsfiles/ws-abc-0001/results/report.html",
+            workspace_serve_prefix=_PREFIX,
+        )
+
+
+@pytest.mark.asyncio
+async def test_new_page_playwright_error_maps_to_taxonomy(_isolated_browser_globals):
+    # PlaywrightError from page setup (after the context opens) must also map to
+    # the taxonomy, and the opened context must still be closed.
+    context = MagicMock()
+    context.new_page = AsyncMock(side_effect=PlaywrightError("page crashed"))
+    context.close = AsyncMock()
+    browser = MagicMock()
+    browser.is_connected.return_value = True
+    browser.new_context = AsyncMock(return_value=context)
+    pdf_render._browser = browser
+
+    with pytest.raises(PdfRenderError):
+        await pdf_render.render_workspace_pdf(
+            "http://127.0.0.1:8000/api/v1/wsfiles/ws-abc-0001/results/report.html",
+            workspace_serve_prefix=_PREFIX,
+        )
+    context.close.assert_awaited_once()
