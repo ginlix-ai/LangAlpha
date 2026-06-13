@@ -21,6 +21,7 @@ from src.server.utils.content_normalizer import (
     normalize_text_content,
     is_thinking_status_signal,
 )
+from src.llms.content_utils import extract_reasoning_summary_index
 from src.utils.tracking import ExecutionTracker
 from src.config.settings import (
     get_workflow_timeout,
@@ -1329,25 +1330,11 @@ class WorkflowStreamHandler:
     def _extract_reasoning_summary_index(content: Any) -> Optional[int]:
         """Extract the summary_text item index from reasoning content.
 
-        During streaming, OpenAI Response API sends reasoning chunks where each
-        summary_text item has an 'index' field (0, 1, 2...) identifying which
-        reasoning "thought step" it belongs to. When this index changes (e.g., 0→1),
-        a new reasoning thought has started and we need to emit a separator.
-
-        Note: The top-level reasoning dict also has an 'index' field, but that's
-        the position in the content array (always 0) — NOT the thought step index.
+        Thin delegate to ``content_utils.extract_reasoning_summary_index`` —
+        the shared implementation is reused by the subagent token forwarder so
+        both streaming paths separate reasoning sections identically.
         """
-        items = [content] if isinstance(content, dict) else (content if isinstance(content, list) else [])
-        for item in items:
-            if not isinstance(item, dict) or item.get("type") != "reasoning":
-                continue
-            # Extract index from summary_text items (the thought step index)
-            summary = item.get("summary")
-            if isinstance(summary, list):
-                for s in summary:
-                    if isinstance(s, dict) and "index" in s:
-                        return s["index"]
-        return None
+        return extract_reasoning_summary_index(content)
 
     def _format_reasoning_signal(
         self,
