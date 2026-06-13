@@ -323,6 +323,21 @@ class TestMarketDataProvider:
         assert fallback_src.calls[0][1]["symbols"] == [" MSFT "]
 
     @pytest.mark.asyncio
+    async def test_get_snapshots_routes_whitespace_padded_suffix_symbols(self):
+        cn_src = SnapshotSource(
+            "cn",
+            {"301189.SZ": {"symbol": "301189.SZ", "price": 42.0}},
+        )
+        provider = MarketDataProvider(
+            [ProviderEntry("cn", cn_src, {"cn"})]
+        )
+
+        result = await provider.get_snapshots([" 301189.SZ "])
+
+        assert result == [{"symbol": "301189.SZ", "price": 42.0}]
+        assert cn_src.calls[0][1]["symbols"] == [" 301189.SZ "]
+
+    @pytest.mark.asyncio
     async def test_get_snapshots_extra_from_wrong_market_does_not_resolve_pending(self, caplog):
         us_src = SnapshotSource(
             "ginlix",

@@ -240,7 +240,8 @@ class MarketDataProvider:
             batch = [
                 s
                 for s in pending
-                if "all" in entry.markets or symbol_market(s) in entry.markets
+                if "all" in entry.markets
+                or symbol_market(normalize_symbol(s)) in entry.markets
             ]
             if not batch:
                 continue
