@@ -41,7 +41,7 @@ These constraints apply throughout all DCF model building. Review before startin
 - Test formulas immediately after creation
 
 **Formula Recalculation:**
-- Run `python skills/xlsx/scripts/recalc.py model.xlsx 30` before delivery
+- Run `python .agents/skills/xlsx/scripts/recalc.py model.xlsx 30` before delivery
 - Fix ALL errors until status is "success"
 - Zero formula errors required (#REF!, #DIV/0!, #VALUE!, etc.)
 
@@ -718,9 +718,9 @@ In addition, be aware of these errors:
 
 ## Excel File Creation
 
-For all Excel formatting, number formats, and color standards, follow the guidelines in `skills/xlsx/SKILL.md`.
+For all Excel formatting, number formats, and color standards, follow the guidelines in `.agents/skills/xlsx/SKILL.md`.
 
-After generating Excel, run recalculation: `python skills/xlsx/scripts/recalc.py model.xlsx 30`
+After generating Excel, run recalculation: `python .agents/skills/xlsx/scripts/recalc.py model.xlsx 30`
 
 ## Quality Rubric
 
@@ -759,21 +759,21 @@ Create **two sheets**:
 After creating or modifying the Excel model, run recalculation:
 
 ```bash
-python skills/xlsx/scripts/recalc.py [path_to_excel_file] [timeout_seconds]
+python .agents/skills/xlsx/scripts/recalc.py [path_to_excel_file] [timeout_seconds]
 ```
 
 Example:
 ```bash
-python skills/xlsx/scripts/recalc.py $WORK_DIR/work/{task}/AAPL_DCF_Model.xlsx 30
+python .agents/skills/xlsx/scripts/recalc.py $WORK_DIR/work/{task}/AAPL_DCF_Model.xlsx 30
 ```
 
-**Fix all errors** and re-run until status is "success" before delivering the model. See `skills/xlsx/SKILL.md` for output format and error handling details.
+**Fix all errors** and re-run until status is "success" before delivering the model. See `.agents/skills/xlsx/SKILL.md` for output format and error handling details.
 
 ### Formatting Standards
 
-For all Excel formatting, number formats, and color standards, follow the guidelines in `skills/xlsx/SKILL.md`.
+For all Excel formatting, number formats, and color standards, follow the guidelines in `.agents/skills/xlsx/SKILL.md`.
 
-After generating Excel, run recalculation: `python skills/xlsx/scripts/recalc.py model.xlsx 30`
+After generating Excel, run recalculation: `python .agents/skills/xlsx/scripts/recalc.py model.xlsx 30`
 
 ### DCF Sheet Detailed Structure
 
@@ -1091,7 +1091,7 @@ This approach centralizes scenario logic, making the model easier to audit and m
    - Cell comments on ALL hardcoded inputs
    - Professional borders around major sections
 
-2. **Recalculate formulas**: Run `python skills/xlsx/scripts/recalc.py model.xlsx 30`
+2. **Recalculate formulas**: Run `python .agents/skills/xlsx/scripts/recalc.py model.xlsx 30`
 
 3. **Check output**:
    - If `status` is `"success"` → Continue to step 4
@@ -1119,7 +1119,7 @@ This approach centralizes scenario logic, making the model easier to audit and m
 Before delivering DCF model:
 
 **Required:**
-- Run `python skills/xlsx/scripts/recalc.py model.xlsx 30` until status is "success" (zero formula errors)
+- Run `python .agents/skills/xlsx/scripts/recalc.py model.xlsx 30` until status is "success" (zero formula errors)
 - Two sheets: DCF (with sensitivity at bottom), WACC
 - Font colors: Blue=inputs, Black=formulas, Green=sheet links
 - Cell comments on ALL hardcoded inputs
