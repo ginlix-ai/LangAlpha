@@ -13,7 +13,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { QueryClientProvider } from '@tanstack/react-query';
-import { createTestQueryClient } from '../../../../test/utils';
+import { createTestQueryClient } from '@/test/utils';
 import {
   useNavigationData,
   applyStableOrder,
@@ -137,6 +137,21 @@ describe('useNavigationData — stable thread ordering', () => {
     const { idsFor } = setup();
 
     await waitFor(() => expect(idsFor('ws-1')).toEqual(['t-3', 't-1', 't-2']));
+  });
+
+  it('refetches the current workspace when the thread page size pref changes', async () => {
+    // Regression: the threads query key must carry threadPageSize. The queryFn
+    // fetches `threadPageSize` rows, so a key that ignored it would replay the
+    // cached page instead of fetching the newly-requested size.
+    const { idsFor } = setup();
+    await waitFor(() => expect(idsFor('ws-1')).toEqual(['t-3', 't-1', 't-2']));
+    expect(mockGetWorkspaceThreads).toHaveBeenCalledWith('ws-1', 10, 0);
+
+    await act(async () => {
+      setNavPrefs({ threadPageSize: 20 });
+    });
+
+    await waitFor(() => expect(mockGetWorkspaceThreads).toHaveBeenCalledWith('ws-1', 20, 0));
   });
 
   it('refetch with reshuffled updated_at keeps the frozen order', async () => {
