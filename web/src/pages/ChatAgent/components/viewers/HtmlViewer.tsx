@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import SyntaxHighlighter, { oneDark, oneLight } from '../SyntaxHighlighter';
 import { useHtmlSandbox } from './html/useHtmlSandbox';
 import { useHtmlActions } from './html/useHtmlActions';
+import { useDirectLinkGuard } from './html/useDirectLinkGuard';
 import HtmlActionBar from './html/HtmlActionBar';
 import HtmlFullscreenModal from './html/HtmlFullscreenModal';
 import { buildWsfilesUrl } from './html/wsfilesUrl';
@@ -60,6 +61,13 @@ export default function HtmlViewer({
     servedUrl: servedUrlPlain,
   });
 
+  // Owner view (no servedUrl override) opens the raw, non-revocable wsfiles URL
+  // — confirm before exposing it. The public share serve URL is revocable.
+  const { request: openInNewTab, dialog: directLinkDialog } = useDirectLinkGuard(
+    actions.openInNewTab,
+    !servedUrlOverride,
+  );
+
   const isLight =
     typeof window !== 'undefined' &&
     document.documentElement.getAttribute('data-theme') === 'light';
@@ -84,7 +92,7 @@ export default function HtmlViewer({
         {/* Download/Save-as-PDF live in the file panel header's download menu. */}
         <HtmlActionBar
           onFullscreen={() => setFullscreen(true)}
-          onOpenInNewTab={actions.openInNewTab}
+          onOpenInNewTab={openInNewTab}
           onCopyLink={onCopyShareLink ? () => onCopyShareLink(filePath) : undefined}
         />
       </div>
@@ -122,6 +130,7 @@ export default function HtmlViewer({
           actions={actions}
         />
       )}
+      {directLinkDialog}
     </div>
   );
 }

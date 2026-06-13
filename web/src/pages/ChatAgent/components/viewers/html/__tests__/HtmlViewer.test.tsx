@@ -91,6 +91,46 @@ describe('HtmlViewer', () => {
     expect(getPreviewIframe().getAttribute('src')).toBe(servedUrlOverride);
   });
 
+  it('warns before opening the private wsfiles link, then opens on confirm (owner view)', () => {
+    const open = vi.fn();
+    vi.stubGlobal('open', open);
+    try {
+      render(<HtmlViewer {...defaultProps} />);
+      fireEvent.click(screen.getByLabelText('filePanel.openInNewTab'));
+      // No tab opened yet — the warning dialog is shown first.
+      expect(open).not.toHaveBeenCalled();
+      expect(screen.getByText('filePanel.privateLinkWarning')).toBeInTheDocument();
+      // Confirm → opens the byte-faithful wsfiles URL (no ?inject=theme).
+      fireEvent.click(screen.getByText('filePanel.openInNewTab'));
+      expect(open).toHaveBeenCalledWith(
+        '/api/v1/wsfiles/ws-1/results/report.html',
+        '_blank',
+        'noopener,noreferrer',
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('opens directly without a warning on the share page (revocable served URL)', () => {
+    const open = vi.fn();
+    vi.stubGlobal('open', open);
+    try {
+      const servedUrlOverride =
+        '/api/v1/public/shared/tok-1/files/serve/results/report.html?inject=theme';
+      render(<HtmlViewer {...defaultProps} servedUrlOverride={servedUrlOverride} />);
+      fireEvent.click(screen.getByLabelText('filePanel.openInNewTab'));
+      expect(open).toHaveBeenCalledWith(
+        '/api/v1/public/shared/tok-1/files/serve/results/report.html',
+        '_blank',
+        'noopener,noreferrer',
+      );
+      expect(screen.queryByText('filePanel.privateLinkWarning')).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('hides the copy-link action by default', () => {
     render(<HtmlViewer {...defaultProps} />);
     expect(screen.queryByLabelText('filePanel.copyShareLink')).not.toBeInTheDocument();

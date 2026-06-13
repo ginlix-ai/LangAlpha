@@ -2,6 +2,7 @@ import { useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { useHtmlSandbox } from './useHtmlSandbox';
+import { useDirectLinkGuard } from './useDirectLinkGuard';
 import HtmlActionBar from './HtmlActionBar';
 import type { HtmlActions } from './useHtmlActions';
 import { buildWsfilesUrl } from './wsfilesUrl';
@@ -46,7 +47,15 @@ export default function HtmlFullscreenModal(props: HtmlFullscreenModalProps) {
       ? props.servedUrl ?? buildWsfilesUrl(props.workspaceId, props.filePath, { injectTheme: true })
       : null;
 
+  // Owner-served files open the raw, non-revocable wsfiles URL — confirm first.
+  // Widgets (blob) and public share serve URLs are exempt.
+  const { request: openInNewTab, dialog: directLinkDialog } = useDirectLinkGuard(
+    actions.openInNewTab,
+    props.variant === 'file' && !props.servedUrl,
+  );
+
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         variant="centered"
@@ -60,7 +69,7 @@ export default function HtmlFullscreenModal(props: HtmlFullscreenModalProps) {
             {/* No exit-fullscreen button here — the dialog's own close (×) is
                 the canonical close, so a second one would overlap it. */}
             <HtmlActionBar
-              onOpenInNewTab={actions.openInNewTab}
+              onOpenInNewTab={openInNewTab}
               onDownload={actions.downloadHtml}
               onExportPdf={actions.exportPdf}
             />
@@ -86,5 +95,7 @@ export default function HtmlFullscreenModal(props: HtmlFullscreenModalProps) {
         </div>
       </DialogContent>
     </Dialog>
+    {directLinkDialog}
+    </>
   );
 }

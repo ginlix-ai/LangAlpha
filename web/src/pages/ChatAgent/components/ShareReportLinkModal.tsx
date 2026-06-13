@@ -113,7 +113,6 @@ function ShareReportLinkModal({
             icon={<Globe className="h-5 w-5" />}
             title={t('filePanel.shareableLinkOption')}
             desc={t('filePanel.shareableLinkDesc')}
-            badge={t('filePanel.recommended')}
             busy={busy === 'shareable'}
             disabled={!!busy}
             onClick={() => run('shareable', onCopyShareable)}
