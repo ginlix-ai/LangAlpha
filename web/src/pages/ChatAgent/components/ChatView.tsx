@@ -1229,7 +1229,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     const raw = params.get('file');
     if (!raw) return;
     fileDeepLinkConsumedRef.current = true;
-    handleOpenFileFromChat(decodeURIComponent(raw));
+    // URLSearchParams.get already percent-decodes; a second decodeURIComponent
+    // would throw on a literal '%' in the filename (e.g. 100%25_report.html).
+    handleOpenFileFromChat(raw);
     params.delete('file');
     const search = params.toString();
     navigate(

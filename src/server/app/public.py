@@ -598,7 +598,7 @@ async def serve_shared_file(
     reachability. So serving (and PDF export) need only ``allow_files``.
     """
     try:
-        thread, workspace_id = await _get_shared_workspace_id(share_token, require_files=True)
+        _, workspace_id = await _get_shared_workspace_id(share_token, require_files=True)
 
         workspace = await db_get_workspace(workspace_id)
         if not workspace:

@@ -32,5 +32,7 @@
   min-height: 0;
   width: 100%;
   border: none;
-  background: #ffffff;
+  /* Theme-aware fallback shown before the themed report paints — a hardcoded
+     white flashed against the dark surface during load. */
+  background: var(--color-bg-page);
 }

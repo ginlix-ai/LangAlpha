@@ -81,8 +81,15 @@ def test_recursive_format_pdf_subresource_blocked():
     # A rendered document must not re-invoke the renderer via a subresource.
     assert not _is_request_allowed(_PREFIX + "results/report.html?format=pdf", _PREFIX)
     assert not _is_request_allowed(_PREFIX + "results/report.html?x=1&format=pdf", _PREFIX)
+    # Percent-encoded forms the serve endpoint decodes back to `pdf` are caught
+    # too — a substring match on the raw query would have let these through.
+    assert not _is_request_allowed(_PREFIX + "results/report.html?format=%70df", _PREFIX)
+    assert not _is_request_allowed(_PREFIX + "results/report.html?format=PDF", _PREFIX)
+    assert not _is_request_allowed(_PREFIX + "results/report.html?x=1&format=%70df", _PREFIX)
     # Other query strings on workspace assets remain allowed.
     assert _is_request_allowed(_PREFIX + "results/report.html?v=2", _PREFIX)
+    # A value that merely contains "pdf" is not the pdf format and stays allowed.
+    assert _is_request_allowed(_PREFIX + "results/report.html?format=pdfx", _PREFIX)
 
 
 def test_websocket_targets_blocked():

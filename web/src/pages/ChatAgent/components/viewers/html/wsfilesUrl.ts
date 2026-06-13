@@ -6,7 +6,9 @@
  * reference to `.../wsfiles/{ws}/results/charts/x.png` with no extra machinery.
  * Built off the same base as the axios client (api/client.ts).
  */
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
+// Strip any trailing slash so a base like `https://host/` doesn't produce a
+// double slash (`//api/v1/...`) once the `/api/v1/...` path is appended.
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
 
 function encodePathSegments(filePath: string): string {
   return filePath

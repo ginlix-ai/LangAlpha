@@ -17,7 +17,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -60,10 +60,16 @@ def _is_request_allowed(url: str, workspace_serve_prefix: str) -> bool:
     host is an exact match in the https CDN allowlist. Exact host equality (not
     suffix) blocks lookalikes like ``unpkg.com.evil.io``. A workspace-prefix URL
     carrying ``format=pdf`` is rejected so a rendered document cannot embed a
-    subresource that recursively re-invokes the renderer.
+    subresource that recursively re-invokes the renderer — the query is parsed
+    (not substring-matched) so percent-encoded forms like ``format=%70df`` that
+    the serve endpoint decodes back to ``pdf`` are caught too.
     """
     if url.startswith(workspace_serve_prefix):
-        return "format=pdf" not in (urlparse(url).query or "")
+        query = urlparse(url).query or ""
+        for key, value in parse_qsl(query, keep_blank_values=True):
+            if key.lower() == "format" and value.lower() == "pdf":
+                return False
+        return True
     parsed = urlparse(url)
     if parsed.scheme != "https":
         return False
