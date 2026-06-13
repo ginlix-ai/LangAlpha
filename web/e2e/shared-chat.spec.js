@@ -188,7 +188,7 @@ test.describe('SharedChat page', () => {
     await configureSSE({
       method: 'GET',
       path: `/api/v1/public/shared/${TOKEN}/files`,
-      json: { path: '.', files: [{ name: 'analysis.py', type: 'file' }], source: 'workspace' },
+      json: { path: '.', files: ['analysis.py'], source: 'workspace' },
       status: 200,
     });
 
