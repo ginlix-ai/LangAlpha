@@ -16,7 +16,7 @@ from psycopg.types.json import Json
 from psycopg_pool import AsyncConnectionPool
 
 from src.config.settings import get_conversation_pool_max
-from src.server.utils.pg_sanitize import SafeJson, strip_pg_nul_str
+from src.server.utils.pg_sanitize import SafeJson, normalize_uuid, strip_pg_nul_str
 
 logger = logging.getLogger(__name__)
 
@@ -1690,6 +1690,14 @@ async def get_thread_by_id(conversation_thread_id: str) -> Optional[Dict[str, An
 
 async def get_thread_owner_id(thread_id: str) -> Optional[str]:
     """Return the user_id that owns the thread's workspace, or None if not found."""
+    # Normalize before querying: postgres' uuid type rejects forms uuid.UUID()
+    # accepts (e.g. urn:uuid:...), so binding the raw value risks
+    # InvalidTextRepresentation (22P02) → 500. A non-UUID thread_id (e.g. a
+    # file/dir name from the SPA tree) can't match the column; treat it as
+    # not-found so require_thread_owner returns a clean 404.
+    thread_id = normalize_uuid(thread_id)
+    if thread_id is None:
+        return None
     try:
         async with get_db_connection() as conn:
             async with conn.cursor() as cur:

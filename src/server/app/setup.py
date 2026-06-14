@@ -44,6 +44,7 @@ from src.config.settings import (
 from src.observability import init_otel, init_otel_runtime, shutdown_otel_runtime
 from src.server.services.background_task_manager import BackgroundTaskManager
 from src.server.services.background_registry_store import BackgroundRegistryStore
+from src.server.utils.api import find_malformed_route_ids  # TEMP (malformed-id-diag)
 
 # Phase 1: install fork-safe class-level instrumentor patches BEFORE FastAPI(...)
 # is constructed. FastAPIInstrumentor patches the FastAPI class — must run
@@ -607,8 +608,66 @@ class RequestIDMiddleware:
         await self.app(scope, receive, send_wrapper)
 
 
+class MalformedIdDiagnosticMiddleware:
+    """TEMP (malformed-id-diag): log non-UUID workspace/thread ids with their Referer.
+
+    Pairs with the ``db_get_workspace`` UUID guard. When a file/dir name from the
+    SPA file tree reaches a workspace_id/thread_id slot the request now 404s
+    cleanly; this records the bad value, route, and Referer/User-Agent so the
+    next real prod occurrence names the SPA page that built it. Remove (with
+    ``find_malformed_route_ids``) once the frontend writer is identified.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("method") != "OPTIONS":
+            try:
+                findings = find_malformed_route_ids(
+                    scope.get("path", ""), scope.get("query_string", b"")
+                )
+                if findings:
+                    headers = {
+                        k.decode("latin-1").lower(): v.decode("latin-1")
+                        for k, v in scope.get("headers", [])
+                    }
+                    # %r on every user-controlled field so repr() escapes any
+                    # embedded CR/LF (the ASGI path is percent-decoded, so a
+                    # %0a in the URL would otherwise forge a log line); length
+                    # caps bound the log volume an attacker can spam.
+                    path = scope.get("path", "")
+                    referer = headers.get("referer", "")[:256]
+                    user_id = headers.get("x-user-id", "")[:128]
+                    ua = headers.get("user-agent", "")[:256]
+                    for slot, value in findings:
+                        logger.warning(
+                            "[malformed-id-diag] %s=%r path=%r "
+                            "referer=%r user_id=%r ua=%r",
+                            slot,
+                            value[:256],
+                            path,
+                            referer,
+                            user_id,
+                            ua,
+                        )
+            except Exception:  # noqa: BLE001 — diagnostics must never break a request
+                pass
+        await self.app(scope, receive, send)
+
+
 # Register GZip compression middleware (compresses JSON responses >= 1KB)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# TEMP (malformed-id-diag): log malformed workspace/thread ids + Referer so the next
+# real prod occurrence names the SPA route that built the bad request.
+# To remove (once the frontend writer is identified): delete this call, the
+# MalformedIdDiagnosticMiddleware class above, the setup.py import of
+# find_malformed_route_ids, then find_malformed_route_ids + its module
+# constants in src/server/utils/api.py and the test file
+# tests/unit/server/utils/test_malformed_route_ids.py. Every site is tagged
+# `malformed-id-diag` — `grep -rn malformed-id-diag src tests` lists them all.
+app.add_middleware(MalformedIdDiagnosticMiddleware)
 
 # Register request ID middleware (will be executed after CORS)
 # Note: In FastAPI, middleware is executed in reverse order (last added = first executed)

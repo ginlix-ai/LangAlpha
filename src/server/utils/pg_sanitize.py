@@ -12,6 +12,7 @@ replacement for `psycopg.types.json.Json` when binding JSONB.
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any
 
 from psycopg.types.json import Json
@@ -22,6 +23,22 @@ def strip_pg_nul_str(value: str | None) -> str | None:
     if not value or "\x00" not in value:
         return value
     return value.replace("\x00", "")
+
+
+def normalize_uuid(value: object) -> str | None:
+    """Canonical UUID string for binding to a Postgres ``uuid`` column, or None.
+
+    Postgres' ``uuid`` type rejects forms that Python's ``uuid.UUID`` accepts
+    (notably the ``urn:uuid:`` prefix), so binding the raw input risks
+    ``InvalidTextRepresentation`` (22P02), which API handlers surface as a 500.
+    Re-stringifying the parsed value yields the canonical 36-char hyphenated form
+    Postgres always accepts; a value that isn't a UUID returns None so callers
+    can short-circuit to "not found".
+    """
+    try:
+        return str(uuid.UUID(str(value)))
+    except (ValueError, TypeError):
+        return None
 
 
 def _safe_dumps(value: Any) -> str:

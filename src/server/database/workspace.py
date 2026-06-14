@@ -14,6 +14,7 @@ from psycopg.rows import dict_row
 
 from src.server.database.conversation import get_db_connection
 from src.server.services.workspace_status_pubsub import publish_status_change
+from src.server.utils.pg_sanitize import normalize_uuid
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +163,14 @@ async def get_workspace(
     Returns:
         Workspace record as dict, or None if not found
     """
+    # Normalize before querying: postgres' uuid type rejects some forms that
+    # uuid.UUID() accepts (e.g. urn:uuid:...), so binding the raw value risks
+    # InvalidTextRepresentation (22P02) → 500. A non-UUID id (e.g. a memory-file
+    # key from the SPA tree) can never match the pk, so treat it as not-found.
+    workspace_id = normalize_uuid(workspace_id)
+    if workspace_id is None:
+        return None
+
     try:
         async def _execute(cur):
             await cur.execute(

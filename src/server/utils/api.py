@@ -9,7 +9,9 @@ import hmac
 import inspect
 import logging
 import os
+import re
 from typing import Annotated, Callable, Optional, TypeVar
+from urllib.parse import parse_qs, unquote
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -143,3 +145,53 @@ def raise_not_found(resource: str, resource_id: Optional[str] = None) -> None:
     """
     detail = f"{resource} not found"
     raise HTTPException(status_code=404, detail=detail)
+
+
+# TEMP diagnostic (malformed-id-diag): a file/dir name from the SPA file tree sometimes
+# lands in a workspace_id or thread_id slot (e.g. /workspaces/<file>.md,
+# /threads/results), which the backend now short-circuits to a clean 404. This
+# pure helper lets MalformedIdDiagnosticMiddleware log such ids + Referer so the
+# next real prod occurrence names the SPA route. Remove with the middleware once
+# the frontend writer is identified.
+_ROUTE_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
+)
+# Literal (non-UUID) path segments that are valid endpoints, not ids.
+_ROUTE_ID_ALLOWLIST = frozenset({"messages", "flash", "reorder"})
+_WS_PATH_RE = re.compile(r"^/api/v1/workspaces/([^/]+)")
+_THREAD_PATH_RE = re.compile(r"^/api/v1/threads/([^/]+)")
+
+
+def find_malformed_route_ids(
+    path: str, query_string: bytes = b""
+) -> list[tuple[str, str]]:
+    """Return (slot, value) pairs where a workspace/thread id isn't a UUID.
+
+    Inspects the workspaces/threads path segment and the ``workspace_id`` query
+    param; allowlisted literal segments (messages/flash/reorder) are ignored.
+    """
+    findings: list[tuple[str, str]] = []
+
+    def _flag(slot: str, value: str) -> None:
+        if (
+            value
+            and value not in _ROUTE_ID_ALLOWLIST
+            and not _ROUTE_UUID_RE.match(value)
+        ):
+            findings.append((slot, value))
+
+    ws = _WS_PATH_RE.match(path)
+    if ws:
+        _flag("workspace_path_id", unquote(ws.group(1)))
+    th = _THREAD_PATH_RE.match(path)
+    if th:
+        _flag("thread_path_id", unquote(th.group(1)))
+    if query_string:
+        try:
+            params = parse_qs(query_string.decode("latin-1"))
+        except (UnicodeDecodeError, ValueError):
+            params = {}
+        for value in params.get("workspace_id", []):
+            _flag("workspace_id_param", value)
+
+    return findings
