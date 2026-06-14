@@ -20,6 +20,7 @@ import type {
   AgentAnnotationsData,
 } from './agentAnnotationsPrimitive';
 import type {
+  EventAnnotation,
   FibRetracementAnnotation,
   MarkerAnnotation,
   PriceLineAnnotation,
@@ -40,6 +41,9 @@ export const DEFAULT_RECT_COLOR = '#4F8AD6';
 export const DEFAULT_VLINE_COLOR = '#4F8AD6';
 export const DEFAULT_TEXT_COLOR = '#4F8AD6';
 export const DEFAULT_FIB_COLOR = '#C99A4E';
+// News/event badges read as editorial callouts — a warm amber that stands
+// apart from the slate-blue technical accents on both chart backgrounds.
+export const DEFAULT_EVENT_COLOR = '#D8893B';
 
 /** Standard Fibonacci retracement ratios. */
 export const FIB_RATIOS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1] as const;
@@ -115,6 +119,9 @@ export function isText(a: StoredAnnotation): a is TextAnnotation {
 export function isFib(a: StoredAnnotation): a is FibRetracementAnnotation {
   return a.type === 'fib_retracement';
 }
+export function isEvent(a: StoredAnnotation): a is EventAnnotation {
+  return a.type === 'event';
+}
 
 /**
  * Two-point line data for a trendline, snapped to bars when possible.
@@ -160,10 +167,16 @@ export function resolveTrendlineData(
  * Build the canvas-primitive data (rectangles, vertical lines, text, fib
  * levels) for a set of annotations. Items whose times can't be resolved are
  * skipped.
+ *
+ * ``event`` annotations are interactive DOM badges on the live chart
+ * (``AgentEventOverlay``), so they're omitted here by default. The inline chat
+ * mini-chart has no DOM overlay, so it passes ``eventsAsText: true`` to render
+ * the event title as a non-interactive canvas chip instead.
  */
 export function buildPrimitiveData(
   annotations: StoredAnnotation[],
   chartData: ChartDataPoint[] | null,
+  opts?: { eventsAsText?: boolean },
 ): AgentAnnotationsData {
   const rects: RectItem[] = [];
   const vlines: VLineItem[] = [];
@@ -217,6 +230,17 @@ export function buildPrimitiveData(
         levels,
         color: ann.color ?? DEFAULT_FIB_COLOR,
       });
+    } else if (isEvent(ann) && opts?.eventsAsText) {
+      // Inline chat card only: no DOM overlay there, so surface the event
+      // title as a canvas chip. The live chart renders an interactive badge.
+      const t = resolveBarTime(chartData, ann.time);
+      if (t == null) continue;
+      texts.push({
+        time: t,
+        price: ann.price,
+        text: ann.title,
+        color: ann.color ?? DEFAULT_EVENT_COLOR,
+      });
     } else if (isTrendline(ann) && ann.label) {
       // The line itself is drawn natively (addLineSeries); only its label
       // becomes a chip, anchored at the chronologically-later endpoint so it
@@ -238,6 +262,43 @@ export function buildPrimitiveData(
   }
 
   return { rects, vlines, texts, fibs };
+}
+
+/** A news/event annotation resolved to a drawable bar time (unix seconds). */
+export interface EventItem {
+  id: string;
+  time: number;
+  price: number;
+  title: string;
+  detail: string;
+  color: string;
+}
+
+/**
+ * Resolve ``event`` annotations to (bar-time, price) anchors for the
+ * interactive DOM overlay. Items whose time can't be resolved are skipped.
+ * Sorted by time so overlapping badges stack deterministically.
+ */
+export function buildEvents(
+  annotations: StoredAnnotation[],
+  chartData: ChartDataPoint[] | null,
+): EventItem[] {
+  const out: EventItem[] = [];
+  for (const ann of annotations) {
+    if (!isEvent(ann)) continue;
+    const t = resolveBarTime(chartData, ann.time);
+    if (t == null) continue;
+    out.push({
+      id: ann.annotation_id,
+      time: t,
+      price: ann.price,
+      title: ann.title,
+      detail: ann.detail,
+      color: ann.color ?? DEFAULT_EVENT_COLOR,
+    });
+  }
+  out.sort((a, b) => a.time - b.time);
+  return out;
 }
 
 /** Build LWC series markers for marker annotations, sorted by time. */

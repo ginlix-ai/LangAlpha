@@ -34,6 +34,7 @@ import { TradingViewAttribution } from '@/pages/Dashboard/widgets/framework/Trad
 import { useChartAnnotations } from '../hooks/useChartAnnotations';
 import { useChartOverlays } from '../hooks/useChartOverlays';
 import { useAgentAnnotations } from '../hooks/useAgentAnnotations';
+import { AgentEventOverlay } from './AgentEventOverlay';
 import { chartAnnotationStore, makeChartId, useAnnotationsForView, useDisplayCleared } from '../stores/chartAnnotationStore';
 import { SlidersHorizontal, Settings2, Maximize2, Minimize2, ChevronDown, Plus, Minus, RotateCcw, Menu, X } from 'lucide-react';
 
@@ -1911,6 +1912,18 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
                 containerWidth={chartContainerRef.current?.clientWidth}
                 containerHeight={chartContainerRef.current?.clientHeight}
               />
+              {chartMode === 'custom' && (
+                <AgentEventOverlay
+                  chartRef={chartRef}
+                  seriesRef={candlestickSeriesRef}
+                  chartData={chartDataForHooks as any}
+                  theme={theme as 'light' | 'dark'}
+                  visible={!agentAnnotationsCleared}
+                  workspaceId={workspaceId ?? null}
+                  symbol={symbol}
+                  timeframe={interval}
+                />
+              )}
               {scrollLoading && (
                 <div className="chart-scroll-loading">
                   <div className="chart-scroll-loading-spinner" />

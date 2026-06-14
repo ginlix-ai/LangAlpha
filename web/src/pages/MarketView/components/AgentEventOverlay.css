@@ -1,0 +1,127 @@
+/* Interactive news-event badges layered over the live chart.
+   The overlay itself is click-through; only the badges capture pointer events,
+   so chart pan/zoom keeps working everywhere between them. */
+
+.agent-event-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 16; /* above the candle canvas, below the crosshair tooltip (20) */
+}
+
+/* Small dot pinned to the exact (time, price) anchor. */
+.agent-event-anchor {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 2px var(--color-bg-base, rgba(0, 0, 0, 0.6));
+  pointer-events: none;
+}
+
+/* The always-visible title badge. Floats above its anchor by default. */
+.agent-event-badge {
+  position: absolute;
+  transform: translate(-50%, calc(-100% - 9px));
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 200px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border-muted);
+  background: var(--color-bg-elevated);
+  box-shadow: var(--shadow-card);
+  color: var(--color-text-primary);
+  font: 600 11px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.3;
+  white-space: nowrap;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: border-color 0.12s ease, transform 0.12s ease;
+}
+
+/* When there's no room above, flip the badge below the anchor. */
+.agent-event-badge--below {
+  transform: translate(-50%, 9px);
+}
+
+.agent-event-badge:hover,
+.agent-event-badge[data-state='open'] {
+  border-color: var(--color-accent-primary);
+}
+
+.agent-event-badge:focus-visible {
+  outline: 2px solid var(--color-accent-primary);
+  outline-offset: 1px;
+}
+
+/* Downward caret pointing at the anchor (upward when flipped below). */
+.agent-event-badge::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -4px;
+  width: 7px;
+  height: 7px;
+  background: var(--color-bg-elevated);
+  border-right: 1px solid var(--color-border-muted);
+  border-bottom: 1px solid var(--color-border-muted);
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.agent-event-badge--below::after {
+  bottom: auto;
+  top: -4px;
+  border-right: none;
+  border-bottom: none;
+  border-left: 1px solid var(--color-border-muted);
+  border-top: 1px solid var(--color-border-muted);
+}
+
+.agent-event-badge-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.agent-event-badge-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Detail popover (portaled to body, inherits the theme tokens). */
+.agent-event-pop.agent-event-pop {
+  width: 280px;
+  max-width: calc(100vw - 24px);
+  padding: 12px 14px;
+}
+
+.agent-event-pop-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 7px;
+}
+
+.agent-event-pop-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.agent-event-pop-title {
+  font: 700 13px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: var(--color-text-primary);
+}
+
+.agent-event-pop-detail {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+}

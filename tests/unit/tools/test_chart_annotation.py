@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from src.tools.chart_annotation.schemas import (
     DrawChartAnnotationArgs,
+    EventAnnotation,
     FibRetracementAnnotation,
     ManageChartAnnotationsArgs,
     MarkerAnnotation,
@@ -215,6 +216,33 @@ class TestAnnotationSchemas:
                 },
             )
 
+    def test_event_variant_roundtrip(self):
+        args = DrawChartAnnotationArgs(
+            symbol="NVDA",
+            annotation={
+                "type": "event",
+                "time": "2024-11-14T00:00:00Z",
+                "price": 205.0,
+                "title": "Q3 earnings beat",
+                "detail": "Beat EPS by $0.15 and raised full-year guidance ~5%.",
+            },
+        )
+        assert isinstance(args.annotation, EventAnnotation)
+        assert args.annotation.title == "Q3 earnings beat"
+        assert args.annotation.color is None  # default
+
+    def test_event_requires_title_and_detail(self):
+        with pytest.raises(ValidationError):
+            DrawChartAnnotationArgs(
+                symbol="NVDA",
+                annotation={
+                    "type": "event",
+                    "time": "2024-11-14T00:00:00Z",
+                    "price": 205.0,
+                    "title": "Earnings",  # missing detail
+                },
+            )
+
     def test_fib_retracement_variant_roundtrip(self):
         args = DrawChartAnnotationArgs(
             symbol="NVDA",
@@ -281,6 +309,7 @@ class TestAnnotationSchemas:
             "vertical_line",
             "rectangle",
             "text",
+            "event",
             "fib_retracement",
         }
 
@@ -467,6 +496,34 @@ class TestDrawChartAnnotation:
 
         assert _drawn(result)["type"] == "text"
         assert _drawn(result)["text"] == "Breakout"
+        writer.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_event_happy_path(self, fake_db):
+        writer = MagicMock()
+        with patch("langgraph.config.get_stream_writer", return_value=writer):
+            result = await draw_chart_annotation.ainvoke(
+                _tool_call(
+                    "draw_chart_annotation",
+                    {
+                        "symbol": "NVDA",
+                        "annotation": {
+                            "type": "event",
+                            "time": "2024-11-14T00:00:00Z",
+                            "price": 205.0,
+                            "title": "Q3 earnings beat",
+                            "detail": "Beat EPS and raised guidance.",
+                        },
+                    },
+                ),
+                config=_config(),
+            )
+
+        assert "Q3 earnings beat" in result.content
+        drawn = _drawn(result)
+        assert drawn["type"] == "event"
+        assert drawn["title"] == "Q3 earnings beat"
+        assert drawn["detail"] == "Beat EPS and raised guidance."
         writer.assert_called_once()
 
     @pytest.mark.asyncio

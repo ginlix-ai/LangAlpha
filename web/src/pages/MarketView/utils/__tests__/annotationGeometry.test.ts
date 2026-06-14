@@ -4,10 +4,13 @@ import type { ChartDataPoint } from '@/types/market';
 
 import type { StoredAnnotation } from '../../stores/chartAnnotationStore';
 import {
+  DEFAULT_EVENT_COLOR,
   FIB_RATIOS,
+  buildEvents,
   buildMarkers,
   buildPrimitiveData,
   dashForStyle,
+  isEvent,
   resolveBarTime,
   resolveTrendlineData,
   snapToNearestBar,
@@ -158,6 +161,40 @@ describe('buildPrimitiveData', () => {
     expect(data.texts[0].color).toBe('#22c55e');
   });
 
+  it('omits event annotations from primitive data by default (DOM overlay owns them)', () => {
+    const anns: StoredAnnotation[] = [
+      {
+        annotation_id: 'e1',
+        symbol: 'NVDA',
+        type: 'event',
+        time: '2024-11-14T00:00:00Z',
+        price: 205,
+        title: 'Earnings',
+        detail: 'Beat and raised.',
+      },
+    ];
+    expect(buildPrimitiveData(anns, CHART).texts).toHaveLength(0);
+  });
+
+  it('renders the event title as a canvas chip when eventsAsText is set (inline card)', () => {
+    const anns: StoredAnnotation[] = [
+      {
+        annotation_id: 'e1',
+        symbol: 'NVDA',
+        type: 'event',
+        time: '2024-11-14T00:00:00Z',
+        price: 205,
+        title: 'Earnings',
+        detail: 'Beat and raised.',
+        color: '#abcdef',
+      },
+    ];
+    const data = buildPrimitiveData(anns, CHART, { eventsAsText: true });
+    expect(data.texts).toHaveLength(1);
+    expect(data.texts[0].text).toBe('Earnings'); // title, not detail
+    expect(data.texts[0].color).toBe('#abcdef');
+  });
+
   it('omits the trendline chip when the line has no label', () => {
     const anns: StoredAnnotation[] = [
       {
@@ -169,6 +206,77 @@ describe('buildPrimitiveData', () => {
       },
     ];
     expect(buildPrimitiveData(anns, CHART).texts).toHaveLength(0);
+  });
+});
+
+describe('buildEvents', () => {
+  it('resolves events to snapped bar times, sorted, with default color', () => {
+    const anns: StoredAnnotation[] = [
+      {
+        annotation_id: 'e2',
+        symbol: 'NVDA',
+        type: 'event',
+        time: '2024-12-20T00:00:00Z',
+        price: 202,
+        title: 'Later',
+        detail: 'd2',
+      },
+      {
+        annotation_id: 'e1',
+        symbol: 'NVDA',
+        type: 'event',
+        time: '2024-11-13T06:00:00Z', // snaps to the 11-14 bar
+        price: 112,
+        title: 'Earlier',
+        detail: 'd1',
+        color: '#123456',
+      },
+      // non-event annotations are ignored
+      { annotation_id: 'p1', symbol: 'NVDA', type: 'price_line', price: 200 },
+    ];
+    const events = buildEvents(anns, CHART);
+    expect(events).toHaveLength(2);
+    // sorted ascending by resolved time
+    expect(events[0].title).toBe('Earlier');
+    expect(events[0].time).toBe(T('2024-11-14T00:00:00Z'));
+    expect(events[0].color).toBe('#123456');
+    // default color applied when omitted
+    expect(events[1].title).toBe('Later');
+    expect(events[1].color).toBe(DEFAULT_EVENT_COLOR);
+  });
+
+  it('skips events whose time cannot be parsed', () => {
+    const anns: StoredAnnotation[] = [
+      {
+        annotation_id: 'e1',
+        symbol: 'NVDA',
+        type: 'event',
+        time: 'not-a-date',
+        price: 100,
+        title: 'Bad',
+        detail: 'd',
+      },
+    ];
+    // resolveBarTime returns null only when toUnixSeconds fails AND no chart
+    // data; with chart data a bad ISO yields null seconds → skipped.
+    expect(buildEvents(anns, null)).toHaveLength(0);
+  });
+
+  it('isEvent narrows the event type', () => {
+    expect(
+      isEvent({
+        annotation_id: 'e1',
+        symbol: 'NVDA',
+        type: 'event',
+        time: '2024-11-14T00:00:00Z',
+        price: 1,
+        title: 't',
+        detail: 'd',
+      }),
+    ).toBe(true);
+    expect(isEvent({ annotation_id: 'p1', symbol: 'NVDA', type: 'price_line', price: 1 })).toBe(
+      false,
+    );
   });
 });
 

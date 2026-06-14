@@ -244,7 +244,9 @@ export function InlineChartAnnotationCard({
       prim.setTheme(
         document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark',
       );
-      prim.setData(buildPrimitiveData(annotations, data));
+      // The inline card has no interactive overlay, so event titles render as
+      // canvas chips here (the detail is only reachable on the live chart).
+      prim.setData(buildPrimitiveData(annotations, data, { eventsAsText: true }));
 
       chart.timeScale().fitContent();
       setStatus('ready');

@@ -32,6 +32,7 @@ export type AnnotationType =
   | 'vertical_line'
   | 'rectangle'
   | 'text'
+  | 'event'
   | 'fib_retracement';
 
 export interface TimePricePoint {
@@ -106,6 +107,19 @@ export interface FibRetracementAnnotation extends BaseAnnotation {
   color?: string | null;
 }
 
+export interface EventAnnotation extends BaseAnnotation {
+  type: 'event';
+  /** ISO8601 datetime anchoring the badge horizontally. */
+  time: string;
+  /** Price (y-axis value) anchoring the badge vertically. */
+  price: number;
+  /** Short headline shown on the always-visible badge. */
+  title: string;
+  /** A few sentences revealed on hover/click. */
+  detail: string;
+  color?: string | null;
+}
+
 export type StoredAnnotation =
   | PriceLineAnnotation
   | TrendlineAnnotation
@@ -113,6 +127,7 @@ export type StoredAnnotation =
   | VerticalLineAnnotation
   | RectangleAnnotation
   | TextAnnotation
+  | EventAnnotation
   | FibRetracementAnnotation;
 
 /** One server-side chart instance, as returned by the list endpoint. */
@@ -341,6 +356,7 @@ const KNOWN_ANNOTATION_TYPES: ReadonlySet<string> = new Set<AnnotationType>([
   'vertical_line',
   'rectangle',
   'text',
+  'event',
   'fib_retracement',
 ]);
 

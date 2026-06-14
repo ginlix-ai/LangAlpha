@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 _MAX_TIME_LEN = 40   # ISO8601 with timezone comfortably fits
 _MAX_LABEL_LEN = 200
 _MAX_COLOR_LEN = 64  # #rrggbb, rgba(...), or CSS name
+_MAX_DETAIL_LEN = 600  # a few sentences of event context, revealed on hover/click
 
 # Intervals the market-data API (and the inline chart card) can fetch. The
 # chart instance is identified by SYMBOL:timeframe, so this is also the set of
@@ -157,6 +158,44 @@ class TextAnnotation(BaseModel):
     )
 
 
+class EventAnnotation(BaseModel):
+    """News/event callout anchored at a (time, price) point.
+
+    Renders an always-visible title badge on the chart; the longer ``detail``
+    is revealed on hover (desktop) or tap (mobile). Use for earnings, M&A,
+    analyst actions, product launches, or any significant news tied to a bar
+    that warrants more than a one-line label.
+    """
+
+    type: Literal["event"]
+    time: str = Field(
+        max_length=_MAX_TIME_LEN,
+        description="ISO8601 datetime of the event, aligned to a bar (e.g. '2024-11-14T00:00:00Z')",
+    )
+    price: float = Field(
+        description=(
+            "Price (y-axis value) the badge anchors to — usually the bar's "
+            "close or the level the news affected"
+        ),
+    )
+    title: str = Field(
+        max_length=_MAX_LABEL_LEN,
+        description="Short headline shown on the badge, e.g. 'Q3 earnings beat'",
+    )
+    detail: str = Field(
+        max_length=_MAX_DETAIL_LEN,
+        description=(
+            "A few sentences shown on hover/click — the context behind the "
+            "event (what happened and why it matters)"
+        ),
+    )
+    color: str | None = Field(
+        default=None,
+        max_length=_MAX_COLOR_LEN,
+        description="CSS color for the badge accent. Default: theme-aware.",
+    )
+
+
 class FibRetracementAnnotation(BaseModel):
     """Fibonacci retracement between a swing high and a swing low.
 
@@ -189,6 +228,7 @@ Annotation = Annotated[
         VerticalLineAnnotation,
         RectangleAnnotation,
         TextAnnotation,
+        EventAnnotation,
         FibRetracementAnnotation,
     ],
     Field(discriminator="type"),
@@ -215,7 +255,7 @@ class DrawChartAnnotationArgs(BaseModel):
         description=(
             "Annotation payload. The 'type' field discriminates the variant: "
             "'price_line', 'trendline', 'marker', 'vertical_line', "
-            "'rectangle', 'text', or 'fib_retracement'."
+            "'rectangle', 'text', 'event', or 'fib_retracement'."
         )
     )
 

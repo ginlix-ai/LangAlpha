@@ -140,6 +140,24 @@ Use for a callout that isn't tied to a marker or level. Anchored at a
 }
 ```
 
+### `event` — news/event badge with detail
+
+Use when a callout needs more than a one-line label: an earnings report, an
+acquisition, an analyst upgrade, a product launch. Anchored at a `(time,
+price)` point, it shows a short `title` badge on the chart; the `detail` (a
+few sentences) is revealed on hover (desktop) or tap (mobile). Prefer this
+over `marker`/`text` when you want to explain *why* the event matters.
+
+```json
+{
+  "type": "event",
+  "time": "2024-11-14T00:00:00Z",
+  "price": 205.0,
+  "title": "Q3 earnings beat",
+  "detail": "Reported EPS of $1.40 vs $1.25 consensus and raised full-year guidance ~5%. Shares gapped up the next session on the print and the brighter outlook."
+}
+```
+
 ### `fib_retracement` — Fibonacci levels
 
 Use to map retracement targets of a move. Pass the two ends of the swing

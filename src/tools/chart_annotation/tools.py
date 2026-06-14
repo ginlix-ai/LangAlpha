@@ -90,6 +90,8 @@ def _summarize(stored: dict[str, Any]) -> str:
         )
     elif kind == "text":
         base = f"Added text at ({stored.get('time')}, ${stored.get('price')})"
+    elif kind == "event":
+        base = f"Marked event '{stored.get('title')}' at {stored.get('time')} (${stored.get('price')})"
     elif kind == "fib_retracement":
         p1 = stored.get("point1", {})
         p2 = stored.get("point2", {})
@@ -171,6 +173,10 @@ async def draw_chart_annotation(
       corners). Use for supply/demand zones or consolidation ranges.
     - ``text``: a free-floating text label anchored at (time, price).
       Use for a callout that isn't tied to a marker or level.
+    - ``event``: a news/event badge anchored at (time, price) with a short
+      ``title`` and a few-sentence ``detail`` revealed on hover/click. Use
+      when a callout needs more context than a one-line label (e.g. an
+      earnings report, an acquisition, an analyst action).
     - ``fib_retracement``: Fibonacci levels between a swing high and low
       (two anchors). Use to map retracement targets of a move.
 
