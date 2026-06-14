@@ -55,6 +55,11 @@ import {
   handleHistorySteeringDelivered,
   isSubagentHistoryEvent,
 } from './utils/historyEventHandlers';
+// Chart-annotation live bridge: writes agent-drawn annotations into the
+// shared MarketView store so the desktop MarketView chat panel (which uses
+// this engine for both flash and PTC) renders them live. Harmless on the
+// standalone /chat page — the store simply has no chart consumer there.
+import { applyAnnotationArtifact } from '../../MarketView/stores/chartAnnotationStore';
 
 // --- Internal types for useChatMessages ---
 
@@ -3374,6 +3379,8 @@ export function useChatMessages(
             setMessages: setMessagesForHandlers,
             eventId: event._eventId as number,
           });
+        } else if (artifactType === 'chart_annotation') {
+          applyAnnotationArtifact(artifactType, (event.payload || {}) as Record<string, unknown>);
         } else if (artifactType === 'file_operation' && onFileArtifact) {
           onFileArtifact(event);
         } else if (artifactType === 'preview_url' && onPreviewUrl) {

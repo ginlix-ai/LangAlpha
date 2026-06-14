@@ -57,9 +57,19 @@ function snapToNearestBar(chartData: ChartDataPoint[], dateStr: string): number 
   return chartData[lo].time;
 }
 
+type OverlayMarker = {
+  time: Time;
+  position: 'aboveBar' | 'belowBar' | 'inBar';
+  shape: 'arrowUp' | 'arrowDown' | 'circle' | 'square';
+  color: string;
+  text?: string;
+};
+
 /**
  * Manages series markers on the candlestick series.
- * Combines earnings surprises and analyst grade changes into markers.
+ * Combines earnings surprises, analyst grade changes, and caller-supplied
+ * agent markers into a single ``setMarkers`` call (LWC replaces the full
+ * list each call, so all sources must merge here).
  */
 export function useChartOverlays(
   candlestickSeriesRef: RefObject<ISeriesApi<'Candlestick'> | null>,
@@ -67,7 +77,8 @@ export function useChartOverlays(
   earningsData: EarningsEntry[] | null,
   overlayData: OverlayData | null,
   overlayVisibility: OverlayVisibility | null,
-  symbol: string | null
+  symbol: string | null,
+  extraMarkers: OverlayMarker[] = []
 ): void {
   useEffect(() => {
     const series = candlestickSeriesRef.current;
@@ -78,7 +89,7 @@ export function useChartOverlays(
       return;
     }
 
-    const markers: Array<{ time: Time; position: 'aboveBar' | 'belowBar'; shape: 'arrowUp' | 'arrowDown'; color: string; text: string }> = [];
+    const markers: OverlayMarker[] = [];
 
     // Earnings markers
     if (overlayVisibility?.earnings && earningsData && Array.isArray(earningsData)) {
@@ -121,6 +132,11 @@ export function useChartOverlays(
       });
     }
 
+    // Merge caller-supplied agent markers
+    if (extraMarkers && extraMarkers.length > 0) {
+      markers.push(...extraMarkers);
+    }
+
     // Sort markers by time (required by lightweight-charts)
     markers.sort((a, b) => (a.time as number) - (b.time as number));
 
@@ -135,5 +151,5 @@ export function useChartOverlays(
         try { series.setMarkers([]); } catch (_) { /* already cleaned */ }
       }
     };
-  }, [candlestickSeriesRef, chartData, earningsData, overlayData, overlayVisibility, symbol]);
+  }, [candlestickSeriesRef, chartData, earningsData, overlayData, overlayVisibility, symbol, extraMarkers]);
 }

@@ -23,6 +23,7 @@ import {
 } from './charts/InlineArtifactCards';
 import { InlineAutomationCard } from './charts/InlineAutomationCards';
 import { InlinePreviewCard } from './charts/InlinePreviewCard';
+import { InlineChartAnnotationCard } from './charts/InlineChartAnnotationCard';
 import { extractFilePaths, FileMentionCards } from './FileCard';
 import { normalizeFileRefs } from '../utils/normalizeFileRefs';
 import { useUser } from '@/hooks/useUser';
@@ -143,6 +144,7 @@ const INLINE_ARTIFACT_MAP: Record<string, React.ComponentType<{ artifact: Record
   automations: InlineAutomationCard,
   preview_url: InlinePreviewCard,
   web_search: InlineWebSearchCard,
+  chart_annotation: InlineChartAnnotationCard,
 };
 
 /* --- Attachment helpers --- */
@@ -1384,7 +1386,39 @@ const MessageContentSegments = memo(function MessageContentSegments({ segments, 
       // Flush trailing activity items
       flushActivity();
 
-      return { blocks, nextExpiry: computedNextExpiry };
+      // Collapse chart-annotation previews to one card per chart instance.
+      // Every draw_chart_annotation call returns the FULL cumulative annotation
+      // set for its (workspace, chart_id) instance — chart_id = SYMBOL:timeframe
+      // — so each card is a complete snapshot and earlier cards are strict
+      // subsets of the last. Rendering all of them stacks near-duplicate charts
+      // (one per tool call); keep only the latest card per instance. Distinct
+      // timeframes (e.g. AAPL:1day vs AAPL:1hour) are separate charts and each
+      // keeps its own latest card.
+      const chartKeyOf = (b: RenderBlock): string | null => {
+        if (b.type !== 'compact_artifact') return null;
+        const artifact = ((b as CompactArtifactRenderBlock).proc.toolCallResult as Record<string, unknown> | undefined)
+          ?.artifact as Record<string, unknown> | undefined;
+        if (artifact?.type !== 'chart_annotation') return null;
+        const ws = (artifact.workspace_id as string) ?? '';
+        const chartId =
+          (artifact.chart_id as string) ??
+          `${String(artifact.symbol ?? '').toUpperCase()}:${(artifact.timeframe as string) ?? '1day'}`;
+        return `${ws}|${chartId}`;
+      };
+      const lastChartIdxByKey = new Map<string, number>();
+      blocks.forEach((b, i) => {
+        const key = chartKeyOf(b);
+        if (key !== null) lastChartIdxByKey.set(key, i);
+      });
+      const dedupedBlocks =
+        lastChartIdxByKey.size === 0
+          ? blocks
+          : blocks.filter((b, i) => {
+              const key = chartKeyOf(b);
+              return key === null || lastChartIdxByKey.get(key) === i;
+            });
+
+      return { blocks: dedupedBlocks, nextExpiry: computedNextExpiry };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- tick is a semantic dep: forces recomputation when timer fires for live→completed transitions
     }, [groupedSegments, tick, reasoningProcesses, toolCallProcesses, isStreaming, isSubagentView, textOnly]);
 

@@ -95,6 +95,12 @@ interface LocationState {
    * the bus state powers the visual chips and any follow-up the user types.
    */
   widgetSnapshots?: WidgetContextSnapshot[];
+  /**
+   * Skill names to preload as hidden skills (chart-annotation forwarding from
+   * MarketView). Merged into `additionalContext` as `{type:'skills',name}` on
+   * the auto-fire send so hidden skills stay active on the PTC side.
+   */
+  skills?: string[];
   [key: string]: unknown;
 }
 
@@ -1818,30 +1824,50 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
 
     // Handle regular message flow
     if (location.state?.initialMessage && !initialMessageSentRef.current) {
+      // Merge state.skills (names) into additionalContext as skill entries,
+      // so hidden skills preloaded upstream (e.g. chart-annotation from
+      // MarketView) stay active on the PTC side.
+      const mergeSkills = (
+        context: Record<string, unknown>[] | null | undefined,
+        skills: unknown,
+      ): Record<string, unknown>[] | null => {
+        const base = Array.isArray(context) ? [...context] : [];
+        if (Array.isArray(skills)) {
+          for (const name of skills) {
+            if (typeof name !== 'string' || !name) continue;
+            if (base.some((c) => c?.type === 'skills' && c?.name === name)) continue;
+            base.push({ type: 'skills', name });
+          }
+        }
+        return base.length > 0 ? base : null;
+      };
+
       // For new threads (__default__), send immediately without waiting for history
       // For existing threads, wait for history to finish loading
       if (threadId === '__default__') {
         // New thread - send immediately
         initialMessageSentRef.current = true;
         // Capture state values before clearing (navigate may update location ref)
-        const { initialMessage, planMode, additionalContext, attachmentMeta, model, reasoningEffort, widgetSnapshots } = location.state;
+        const { initialMessage, planMode, additionalContext, attachmentMeta, model, reasoningEffort, widgetSnapshots, skills } = location.state;
+        const mergedContext = mergeSkills(additionalContext, skills);
         // Clear navigation state to prevent re-sending on re-renders
         navigate(location.pathname, { replace: true, state: {} });
         // Small delay to ensure component is fully mounted
         setTimeout(() => {
-          handleSendMessage(initialMessage, planMode || false, additionalContext || null, attachmentMeta || null, { model, reasoningEffort, widgetSnapshots });
+          handleSendMessage(initialMessage, planMode || false, mergedContext, attachmentMeta || null, { model, reasoningEffort, widgetSnapshots });
         }, 100);
       } else if (!isLoadingHistory && !isLoading) {
         // Existing thread - wait for history to load, then send
         // This ensures we don't send duplicate messages
         initialMessageSentRef.current = true;
         // Capture state values before clearing (navigate may update location ref)
-        const { initialMessage, planMode, additionalContext, attachmentMeta, model, reasoningEffort, widgetSnapshots } = location.state;
+        const { initialMessage, planMode, additionalContext, attachmentMeta, model, reasoningEffort, widgetSnapshots, skills } = location.state;
+        const mergedContext = mergeSkills(additionalContext, skills);
         // Clear navigation state to prevent re-sending on re-renders
         navigate(location.pathname, { replace: true, state: {} });
         // Small delay to ensure component is fully mounted
         setTimeout(() => {
-          handleSendMessage(initialMessage, planMode || false, additionalContext || null, attachmentMeta || null, { model, reasoningEffort, widgetSnapshots });
+          handleSendMessage(initialMessage, planMode || false, mergedContext, attachmentMeta || null, { model, reasoningEffort, widgetSnapshots });
         }, 100);
       }
     }

@@ -197,6 +197,12 @@
   border-color: var(--color-accent-primary);
 }
 
+/* "Clear annotations" toolbar button — a chart-tool-btn that carries an icon
+   plus a label, shown in the tools row only while agent annotations are drawn. */
+.chart-tool-btn.chart-clear-annotations-btn {
+  gap: 4px;
+}
+
 /* Light chart visible in Light mode: fills parent flex column */
 .light-chart-visible {
   flex: 1;

@@ -2089,7 +2089,8 @@
       "ptcDisabledReason": "Create a workspace in /chat to use PTC mode",
       "noWorkspacePrompt": "No workspace selected. Pick one in the chat input.",
       "startConversation": "Start a conversation by typing a message below",
-      "defaultPlaceholder": "What would you like to know?"
+      "defaultPlaceholder": "What would you like to know?",
+      "returnToChat": "Return to Chat"
     }
   },
   "onboarding": {

@@ -33,7 +33,9 @@ import TradingViewWidget from './TradingViewWidget';
 import { TradingViewAttribution } from '@/pages/Dashboard/widgets/framework/TradingViewAttribution';
 import { useChartAnnotations } from '../hooks/useChartAnnotations';
 import { useChartOverlays } from '../hooks/useChartOverlays';
-import { SlidersHorizontal, Settings2, Maximize2, Minimize2, ChevronDown, Plus, Minus, RotateCcw, Menu } from 'lucide-react';
+import { useAgentAnnotations } from '../hooks/useAgentAnnotations';
+import { chartAnnotationStore, makeChartId, useAnnotationsForView, useDisplayCleared } from '../stores/chartAnnotationStore';
+import { SlidersHorizontal, Settings2, Maximize2, Minimize2, ChevronDown, Plus, Minus, RotateCcw, Menu, X } from 'lucide-react';
 
 import { loadPref, savePref } from '../utils/prefs';
 import type { SnapshotData } from '@/types/market';
@@ -75,6 +77,8 @@ interface OverlayVisibility {
 interface MarketChartProps {
   symbol: string;
   interval?: string;
+  /** Active workspace — scopes which agent-drawn chart instance is shown. */
+  workspaceId?: string | null;
   onIntervalChange?: (interval: string) => void;
   onCapture?: () => void;
   onStockMeta?: (meta: unknown) => void;
@@ -100,6 +104,7 @@ export interface MarketChartHandle {
 const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>(({
   symbol,
   interval = '1day',
+  workspaceId,
   onIntervalChange,
   onCapture: _onCapture,
   onStockMeta,
@@ -253,8 +258,27 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
   const priceTargetsForAnnotations = overlayVisibility.priceTargets ? (overlayData?.priceTargets as any) : null;
   useChartAnnotations(candlestickSeriesRef, stockMeta, quoteData, priceTargetsForAnnotations, annotationsVisible, symbol);
 
-  // --- Series markers via hook ---
-  useChartOverlays(candlestickSeriesRef, chartDataForHooks as any, earningsData as any, overlayData as any, overlayVisibility as any, symbol);
+  // --- Agent-sourced annotations: price_line, trendline, marker (derived) ---
+  // Subscribe to the store directly too: `hasAgentAnnotations` drives the
+  // first-class Clear button, and `agentAnnotationsCleared` suppresses the
+  // drawing (data stays in the store) until the user re-opens the artifact.
+  const agentAnnotations = useAnnotationsForView(workspaceId ?? null, symbol, interval);
+  const hasAgentAnnotations = agentAnnotations.length > 0;
+  const agentAnnotationsCleared = useDisplayCleared(workspaceId ?? null, symbol, interval);
+  const agentMarkers = useAgentAnnotations(
+    chartRef,
+    candlestickSeriesRef,
+    symbol,
+    chartMode,
+    chartDataForHooks as any,
+    workspaceId ?? null,
+    interval,
+    !agentAnnotationsCleared,
+    theme,
+  );
+
+  // --- Series markers via hook (earnings + grades + agent markers) ---
+  useChartOverlays(candlestickSeriesRef, chartDataForHooks as any, earningsData as any, overlayData as any, overlayVisibility as any, symbol, agentMarkers);
 
   // --- Live tick updates from WS (1s and 1min intervals, custom/Light mode only) ---
   useEffect(() => {
@@ -1540,6 +1564,11 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     setAnnotationsVisible((prev) => !prev);
   }, []);
 
+  const handleClearAgentAnnotations = useCallback(() => {
+    if (!workspaceId || !symbol) return;
+    chartAnnotationStore.clearDisplay(workspaceId, makeChartId(symbol, interval));
+  }, [workspaceId, symbol, interval]);
+
   const handleToggleOverlay = useCallback((key: string) => {
     setOverlayVisibility((prev) => ({ ...prev, [key]: !prev[key] }));
   }, []);
@@ -1761,6 +1790,20 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
         <div className="chart-tools-right">
           {!isTV && (
             <>
+              {/* Clear annotations — first-class, shown only while agent
+                  annotations are drawn. Clears them from the chart (data stays
+                  in the store; re-open the chat artifact to restore). */}
+              {hasAgentAnnotations && !agentAnnotationsCleared && (
+                <button
+                  type="button"
+                  className="chart-tool-btn chart-clear-annotations-btn"
+                  onClick={handleClearAgentAnnotations}
+                  title="Clear annotations from the chart (kept in chat — click the artifact to restore)"
+                >
+                  <X size={14} />
+                  Clear
+                </button>
+              )}
               {/* Tools dropdown — wide only */}
               <div className="toolbar-dropdown toolbar--wide-only" ref={toolsDropdownRef}>
                 <button

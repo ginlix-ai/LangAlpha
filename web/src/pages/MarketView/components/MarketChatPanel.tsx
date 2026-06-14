@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { RefreshCw } from 'lucide-react';
+import { ArrowLeft, RefreshCw } from 'lucide-react';
 import { queryKeys } from '@/lib/queryKeys';
 import { ErrorBanner } from '@/components/ui/error-banner';
 import LogoLoading from '@/components/ui/logo-loading';
@@ -10,6 +10,7 @@ import ChatInput from '@/components/ui/chat-input';
 import { useNarrowContainer } from '@/hooks/useNarrowContainer';
 import MessageList from '../../ChatAgent/components/MessageList';
 import { SubagentTelemetryContext } from '../../ChatAgent/components/SubagentTelemetryContext';
+import { ChartSurfaceContext } from '../../ChatAgent/contexts/ChartSurfaceContext';
 import { WorkspaceProvider } from '../../ChatAgent/contexts/WorkspaceContext';
 import { useChatMessages } from '../../ChatAgent/hooks/useChatMessages';
 import { getFlashWorkspace } from '../../ChatAgent/utils/api';
@@ -23,7 +24,12 @@ import type { PreviewData } from '../../ChatAgent/hooks/utils/types';
 import MarketChatHistoryButton from './MarketChatHistoryButton';
 import MarketDetailDialog, { type DialogPayload } from './MarketDetailDialog';
 import { getMarketThreadId, setMarketThreadId, clearMarketThreadId } from '../utils/threadPersistence';
+import { normalizeTimeframe } from '../stores/chartAnnotationStore';
 import './MarketPanel.css';
+
+// MarketView always has the live chart beside the chat, so inline
+// chart-annotation previews collapse to a confirmation chip here.
+const CHART_PRESENT = { chartPresent: true } as const;
 
 interface Workspace {
   workspace_id: string;
@@ -41,6 +47,8 @@ interface AttachmentItem {
 
 interface MarketChatPanelProps {
   symbol: string;
+  /** Current chart interval — tells the agent which timeframe to annotate. */
+  interval: string;
   mode: 'fast' | 'ptc';
   onModeChange: (mode: 'fast' | 'ptc') => void;
   workspaces: Workspace[];
@@ -57,6 +65,8 @@ interface MarketChatPanelProps {
   onShuffleQueries: () => void;
   onNavigateSubagent?: (threadId: string, taskId: string) => void;
   placeholder?: string;
+  /** When set (navigated from chat context), shows a "Return to Chat" chip in the header. */
+  onReturnToChat?: () => void;
 }
 
 /**
@@ -187,6 +197,7 @@ interface ChatBodyProps extends MarketChatPanelProps {
 function ChatBody(props: ChatBodyProps): React.ReactElement {
   const {
     symbol,
+    interval,
     mode,
     onModeChange,
     ptcWorkspaces,
@@ -203,6 +214,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     onShuffleQueries,
     onNavigateSubagent,
     placeholder,
+    onReturnToChat,
     activeWorkspaceId,
     initialThreadId,
     onSelectThread,
@@ -295,7 +307,21 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
       _slashCommands: unknown[] = [],
       modelOptions: { model?: string | null; reasoningEffort?: string | null; fastMode?: boolean | null } = {},
     ) => {
-      const contexts: Record<string, unknown>[] = [];
+      // Always activate the chart-annotation skill so the agent can draw on
+      // the live chart from turn 1, and tell it which ticker + timeframe "the
+      // chart" is (chart_id = SYMBOL:timeframe — drawing on the wrong timeframe
+      // won't show on the view the user is looking at).
+      const sym = symbol ? symbol.toUpperCase() : '';
+      const tf = normalizeTimeframe(interval);
+      const contexts: Record<string, unknown>[] = [
+        {
+          type: 'skills',
+          name: 'chart-annotation',
+          instruction: sym
+            ? `The user is viewing the ${sym} chart on the ${tf} timeframe in MarketView. When they ask to annotate or draw on "the chart", pass symbol="${sym}" and timeframe="${tf}" unless they name another ticker or interval.`
+            : undefined,
+        },
+      ];
       const metaItems: Record<string, unknown>[] = [];
 
       if (chartImage) {
@@ -327,7 +353,7 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
       handleSendMessage(message, planMode, additionalContext, attachmentMeta, modelOptions);
       onClearChartImage();
     },
-    [chartImage, chartImageDesc, handleSendMessage, onClearChartImage],
+    [symbol, interval, chartImage, chartImageDesc, handleSendMessage, onClearChartImage],
   );
 
   // Track whether the user is currently parked near the bottom of the
@@ -387,12 +413,15 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
 
   return (
     <div className="market-panel">
-      {/* Header — session title (left) doubles as history dropdown trigger */}
+      {/* Header — session title (left) doubles as history dropdown trigger.
+          When navigated from chat, a compact "Return to Chat" chip sits at the
+          right so it never overlaps the message input. */}
       <div
         style={{
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'flex-start',
+          justifyContent: 'space-between',
+          gap: 8,
           padding: '6px 12px',
           borderBottom: '1px solid var(--color-border-muted)',
           flexShrink: 0,
@@ -405,6 +434,38 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
           onSelectThread={onSelectThread}
           onStartNewChat={onStartNewChat}
         />
+        {onReturnToChat && (
+          <button
+            type="button"
+            onClick={onReturnToChat}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 5,
+              flexShrink: 0,
+              padding: '4px 10px',
+              background: 'var(--color-accent-soft)',
+              border: '1px solid var(--color-accent-overlay)',
+              borderRadius: 8,
+              color: 'var(--color-accent-light)',
+              fontSize: 12,
+              fontWeight: 500,
+              cursor: 'pointer',
+              transition: 'background 0.15s, border-color 0.15s',
+            }}
+            onMouseEnter={(e: React.MouseEvent<HTMLButtonElement>) => {
+              e.currentTarget.style.background = 'var(--color-accent-overlay)';
+              e.currentTarget.style.borderColor = 'var(--color-accent-primary)';
+            }}
+            onMouseLeave={(e: React.MouseEvent<HTMLButtonElement>) => {
+              e.currentTarget.style.background = 'var(--color-accent-soft)';
+              e.currentTarget.style.borderColor = 'var(--color-accent-overlay)';
+            }}
+          >
+            <ArrowLeft style={{ width: 13, height: 13 }} />
+            {t('marketView.chatPanel.returnToChat')}
+          </button>
+        )}
       </div>
 
       {/* Messages */}
@@ -426,17 +487,19 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
           </div>
         ) : (
           <div style={{ padding: '16px 24px', maxWidth: '100%' }}>
-            <SubagentTelemetryContext.Provider value={resolveSubagentTelemetry}>
-              <MessageList
-                messages={messages as never[]}
-                isLoading={isLoading}
-                isLoadingHistory={isLoadingHistory}
-                hideAvatar={isNarrowChat}
-                onOpenSubagentTask={handleOpenSubagentTask}
-                onToolCallDetailClick={handleToolCallDetailClick}
-                onWidgetSendPrompt={(text: string) => handleSendMessage(text, false, null, null, {})}
-              />
-            </SubagentTelemetryContext.Provider>
+            <ChartSurfaceContext.Provider value={CHART_PRESENT}>
+              <SubagentTelemetryContext.Provider value={resolveSubagentTelemetry}>
+                <MessageList
+                  messages={messages as never[]}
+                  isLoading={isLoading}
+                  isLoadingHistory={isLoadingHistory}
+                  hideAvatar={isNarrowChat}
+                  onOpenSubagentTask={handleOpenSubagentTask}
+                  onToolCallDetailClick={handleToolCallDetailClick}
+                  onWidgetSendPrompt={(text: string) => handleSendMessage(text, false, null, null, {})}
+                />
+              </SubagentTelemetryContext.Provider>
+            </ChartSurfaceContext.Provider>
             {messageError && (
               <div style={{ margin: '8px 0' }}>
                 <ErrorBanner error={messageError} />

@@ -12,6 +12,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { buildRateLimitError, type StructuredError } from '@/utils/rateLimitError';
 import { sendFlashChatMessage } from '../utils/api';
+import { applyAnnotationArtifact } from '../stores/chartAnnotationStore';
 
 // --- Local message types (simplified subset of ChatAgent types) ---
 
@@ -474,6 +475,12 @@ export function useMarketChat(): UseMarketChatReturn {
               assistantMessageId,
               toolCalls,
             });
+          } else if (eventType === 'artifact') {
+            // Chart annotation artifact: update the shared store.
+            applyAnnotationArtifact(
+              event.artifact_type as string | undefined,
+              (event.payload as Record<string, unknown>) || {},
+            );
           } else if (eventType === 'tool_call_result') {
             const toolCallId = event.tool_call_id as string;
             if (toolCallId) {

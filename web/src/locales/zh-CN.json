@@ -2069,7 +2069,8 @@
       "ptcDisabledReason": "在 /chat 中创建工作区以使用 PTC 模式",
       "noWorkspacePrompt": "未选择工作区。请在输入框中选择一个。",
       "startConversation": "在下方输入消息开始对话",
-      "defaultPlaceholder": "你想了解什么？"
+      "defaultPlaceholder": "你想了解什么？",
+      "returnToChat": "返回对话"
     }
   },
   "onboarding": {

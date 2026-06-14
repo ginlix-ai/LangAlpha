@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from src.tools.automation import AUTOMATION_TOOLS
+from src.tools.chart_annotation import CHART_ANNOTATION_TOOLS
 from src.tools.onboarding import ONBOARDING_TOOLS
 from src.tools.user_profile import USER_PROFILE_TOOLS
 
@@ -92,6 +93,21 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
         tools=ONBOARDING_TOOLS,
         skill_md_path="skills/onboarding/SKILL.md",
         exposure="hidden",
+    ),
+    "chart-annotation": SkillDefinition(
+        name="chart-annotation",
+        description=(
+            "Draw price lines, trendlines, zones, and event markers on a stock's "
+            "price chart. Annotations render live on the MarketView chart and as a "
+            "clickable preview card in any other chat."
+        ),
+        tools=CHART_ANNOTATION_TOOLS,
+        skill_md_path="skills/chart-annotation/SKILL.md",
+        # Discoverable in both modes so the agent can self-load it whenever the
+        # user asks to annotate — including from the standalone chat page, where
+        # the result renders as a preview card. MarketView also injects it
+        # proactively (with the active symbol) for turn-1 availability.
+        exposure="both",
     ),
     "secretary": SkillDefinition(
         name="secretary",

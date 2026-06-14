@@ -14,7 +14,6 @@ import { useMarketChat } from './hooks/useMarketChat';
 import { getWorkspaces } from '../ChatAgent/utils/api';
 import { attachmentsToContexts } from '../ChatAgent/utils/fileUpload';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft } from 'lucide-react';
 import CompanyOverviewPanel from './components/CompanyOverviewPanel';
 import { MobileBottomSheet } from '../../components/ui/mobile-bottom-sheet';
 import { MobileFabChat } from '../../components/ui/mobile-fab-chat';
@@ -24,6 +23,11 @@ import { loadPref, savePref } from './utils/prefs';
 import { useIsMobile } from '@/hooks/useIsMobile';
 
 import { useStockData } from './hooks/useStockData';
+import {
+  useChartAnnotationSync,
+  getOrFetchFlashWorkspaceId,
+} from './hooks/useChartAnnotationSync';
+import { normalizeTimeframe } from './stores/chartAnnotationStore';
 
 interface SearchResult {
   name?: string;
@@ -186,14 +190,39 @@ function MarketViewInner() {
   // chat lives in MarketChatPanel which drives its own useChatMessages.
   const { isLoading, handleSendMessage: handleFastModeSend } = useMarketChat();
 
+  // Resolve the user's flash workspace id once so we can scope chart
+  // annotations to the workspace the chat is actually running in.
+  const [flashWorkspaceId, setFlashWorkspaceId] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getOrFetchFlashWorkspaceId().then((id) => {
+      if (!cancelled) setFlashWorkspaceId(id);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // The chart shows the agent-drawn instance for whichever workspace the chat
+  // panel is using — flash workspace in Fast mode, the selected one in PTC.
+  // Annotations are keyed by (workspace_id, chart_id), so this single id scopes
+  // both the persistence sync and the live chart selection.
+  const activeWorkspaceId = mode === 'fast' ? flashWorkspaceId : selectedWorkspaceId;
+  useChartAnnotationSync(activeWorkspaceId, selectedStock);
+
   // Chat return path — captured from URL when navigating from chat DetailPanel
   const [chatReturnPath, setChatReturnPath] = useState<string | null>(null);
 
-  // Handle URL parameters (symbol + returnTo from chat context). Preserve `?thread`
-  // so MarketChatPanel can pick it up to resume the right conversation.
+  // Handle URL parameters (symbol + returnTo from chat context, and ws + mode
+  // when expanding a chart-annotation preview from ChatAgent). Preserve
+  // `?thread` so MarketChatPanel can pick it up to resume the right
+  // conversation in the same workspace.
   useEffect(() => {
     const symbolParam = searchParams.get('symbol');
     const returnToParam = searchParams.get('returnTo');
+    const wsParam = searchParams.get('ws');
+    const modeParam = searchParams.get('mode');
+    const tfParam = searchParams.get('tf');
     if (symbolParam) {
       const symbol = symbolParam.trim().toUpperCase();
       if (symbol && symbol !== selectedStock) {
@@ -202,14 +231,30 @@ function MarketViewInner() {
         setChartMeta(null);
       }
     }
+    // Land on the timeframe the expanded card was drawn for, so its annotations
+    // (keyed by symbol:timeframe) show immediately.
+    if (tfParam) {
+      setSelectedInterval(tfParam);
+    }
+    // Apply workspace before mode so MarketChatPanel resolves the right
+    // (ptc) workspace when it mounts the forwarded thread.
+    if (wsParam) {
+      setSelectedWorkspaceId(wsParam);
+    }
+    if (modeParam === 'ptc' || modeParam === 'fast') {
+      setMode(modeParam);
+    }
     if (returnToParam) {
       setChatReturnPath(returnToParam);
     }
-    if (symbolParam || returnToParam) {
+    if (symbolParam || returnToParam || wsParam || modeParam || tfParam) {
       setSearchParams((prev) => {
         const next = new URLSearchParams(prev);
         next.delete('symbol');
         next.delete('returnTo');
+        next.delete('ws');
+        next.delete('mode');
+        next.delete('tf');
         return next;
       }, { replace: true });
     }
@@ -326,8 +371,23 @@ function MarketViewInner() {
   }, [selectedStock, selectedInterval, stockInfo, selectedStockDisplay, overviewData, displayPrice]);
 
   const handleSendMessage = useCallback(async (message: string, planMode: boolean, attachments: AttachmentItem[] = [], _slashCommands: string[] = [], { model, reasoningEffort }: { model?: string; reasoningEffort?: string } = {}) => {
-    // Build additional_context from chart image + file attachments
-    const contexts = [];
+    // Build additional_context from chart image + file attachments.
+    // Always preload the chart-annotation skill so the drawing tools are
+    // available from turn 1 (the agent can also self-load it elsewhere, but
+    // injecting here guarantees turn-1 availability on the chart surface).
+    // Tell it which ticker + timeframe "the chart" is so it edits the instance
+    // the user is actually viewing (chart_id = SYMBOL:timeframe).
+    const sym = (selectedStock || '').toUpperCase();
+    const tf = normalizeTimeframe(selectedInterval);
+    const contexts: unknown[] = [
+      {
+        type: 'skills',
+        name: 'chart-annotation',
+        instruction: sym
+          ? `The user is viewing the ${sym} chart on the ${tf} timeframe in MarketView. When they ask to annotate or draw on "the chart", pass symbol="${sym}" and timeframe="${tf}" unless they name another ticker or interval.`
+          : undefined,
+      },
+    ];
     if (chartImage) {
       contexts.push({ type: 'image', data: chartImage, description: chartImageDesc || undefined });
     }
@@ -381,6 +441,9 @@ function MarketViewInner() {
             initialMessage: message,
             planMode: planMode || false,
             additionalContext: imageContext,
+            // PTC side needs the same skill activated so the chart tools
+            // are available without the LLM having to call LoadSkill.
+            skills: ['chart-annotation'],
             ...(attachmentMeta ? { attachmentMeta } : {}),
             ...(model ? { model } : {}),
             ...(reasoningEffort ? { reasoningEffort } : {}),
@@ -397,7 +460,7 @@ function MarketViewInner() {
     }
     setChartImage(null);
     setChartImageDesc(null);
-  }, [handleFastModeSend, navigate, toast, chartImage, chartImageDesc, mode, selectedWorkspaceId]);
+  }, [handleFastModeSend, navigate, toast, chartImage, chartImageDesc, mode, selectedWorkspaceId, selectedStock, selectedInterval]);
 
   const handleSidebarSymbolClick = useCallback((symbol: string) => {
     setSelectedStock(symbol);
@@ -478,6 +541,7 @@ function MarketViewInner() {
               ref={chartRef}
               symbol={selectedStock}
               interval={selectedInterval}
+              workspaceId={activeWorkspaceId}
               onIntervalChange={handleIntervalChange}
               onCapture={handleCaptureChart}
               onStockMeta={handleStockMeta as any}
@@ -606,6 +670,7 @@ function MarketViewInner() {
                   ref={chartRef}
                   symbol={selectedStock}
                   interval={selectedInterval}
+                  workspaceId={activeWorkspaceId}
                   onIntervalChange={handleIntervalChange}
                   onCapture={handleCaptureChart}
                   onStockMeta={handleStockMeta as any}
@@ -632,6 +697,7 @@ function MarketViewInner() {
               <div className="market-right-panel-inner">
                 <MarketChatPanel
                   symbol={selectedStock}
+                  interval={selectedInterval}
                   mode={mode}
                   onModeChange={setMode}
                   workspaces={workspaces}
@@ -648,47 +714,11 @@ function MarketViewInner() {
                   onShuffleQueries={handleShuffleQueries}
                   onNavigateSubagent={(tid, taskId) => navigate(`/chat/t/${tid}/${taskId}`)}
                   placeholder="What would you like to know?"
+                  onReturnToChat={chatReturnPath ? () => navigate(chatReturnPath) : undefined}
                 />
               </div>
             </div>
           </div>
-          {/* Floating "Return to Chat" card — shown when navigated from chat context */}
-          {chatReturnPath && (
-            <button
-              onClick={() => navigate(chatReturnPath)}
-              style={{
-                position: 'fixed',
-                bottom: 24,
-                right: 416,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                padding: '10px 16px',
-                background: 'var(--color-accent-soft)',
-                border: '1px solid var(--color-accent-overlay)',
-                borderRadius: 10,
-                color: 'var(--color-accent-light)',
-                fontSize: 13,
-                fontWeight: 500,
-                cursor: 'pointer',
-                backdropFilter: 'blur(12px)',
-                boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
-                transition: 'background 0.15s, border-color 0.15s',
-                zIndex: 50,
-              }}
-              onMouseEnter={(e: React.MouseEvent<HTMLButtonElement>) => {
-                e.currentTarget.style.background = 'var(--color-accent-overlay)';
-                e.currentTarget.style.borderColor = 'var(--color-accent-primary)';
-              }}
-              onMouseLeave={(e: React.MouseEvent<HTMLButtonElement>) => {
-                e.currentTarget.style.background = 'var(--color-accent-soft)';
-                e.currentTarget.style.borderColor = 'var(--color-accent-overlay)';
-              }}
-            >
-              <ArrowLeft style={{ width: 14, height: 14 }} />
-              Return to Chat
-            </button>
-          )}
         </>
       )}
     </div>

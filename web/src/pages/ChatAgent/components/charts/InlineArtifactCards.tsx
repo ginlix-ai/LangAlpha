@@ -26,6 +26,7 @@ export const INLINE_ARTIFACT_TOOLS = new Set([
   'create_automation',
   'GetPreviewUrl',
   'WebSearch',
+  'draw_chart_annotation',
 ]);
 
 // ─── Helpers ────────────────────────────────────────────────────────

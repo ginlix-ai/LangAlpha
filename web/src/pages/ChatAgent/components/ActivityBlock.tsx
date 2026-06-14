@@ -29,6 +29,7 @@ import {
 } from './charts/InlineArtifactCards';
 import { InlineAutomationCard } from './charts/InlineAutomationCards';
 import { InlinePreviewCard } from './charts/InlinePreviewCard';
+import { InlineChartAnnotationCard } from './charts/InlineChartAnnotationCard';
 import { useTranslation } from 'react-i18next';
 import './ActivityBlock.css';
 
@@ -66,6 +67,7 @@ const INLINE_ARTIFACT_MAP: Record<string, React.ComponentType<{ artifact: Record
   automations: InlineAutomationCard,
   preview_url: InlinePreviewCard,
   web_search: InlineWebSearchCard,
+  chart_annotation: InlineChartAnnotationCard,
 };
 
 /** Spring config matching radix-accordion feel */
