@@ -4,7 +4,10 @@
  */
 
 import { normalizeAction } from './eventUtils';
+import { provenanceRecordKey } from './streamEventHandlers';
 import type { MessageRecord, SetMessages, ToolCallRecord, ToolCallResultRecord, TodoPayload, HtmlWidgetData } from './types';
+import type { ProvenanceEvent } from '@/types/sse';
+import type { ProvenanceRecord } from '@/types/chat';
 
 let _steeringIdCounter = 0;
 
@@ -537,6 +540,56 @@ export function handleHistoryToolCallResult({ assistantMessageId, toolCallId, re
         toolCallProcesses,
         subagentTasks,
       };
+    })
+  );
+
+  return true;
+}
+
+/**
+ * Handles provenance events in history replay. Re-attaches the accessed-data
+ * record to the assistant message resolved from the replay `turn_index` (the
+ * caller maps `turn_index` → `assistantMessageId`). Keyed by
+ * `provenanceRecordKey` so multiple web_search URLs sharing one `tool_call_id`
+ * are all kept on reload.
+ */
+export function handleHistoryProvenance({ assistantMessageId, event, setMessages }: {
+  assistantMessageId: string;
+  event: ProvenanceEvent;
+  setMessages: SetMessages;
+}): boolean {
+  if (!event || !event.record_id) {
+    return false;
+  }
+
+  const record: ProvenanceRecord = {
+    record_id: event.record_id,
+    agent: event.agent,
+    timestamp: event.timestamp,
+    source_type: event.source_type,
+    identifier: event.identifier,
+    title: event.title,
+    detail: event.detail,
+    provider: event.provider,
+    tool_call_id: event.tool_call_id,
+    args_fingerprint: event.args_fingerprint,
+    args: event.args,
+    result_sha256: event.result_sha256,
+    result_size: event.result_size,
+    result_snippet: event.result_snippet,
+  };
+  const key = provenanceRecordKey(record);
+
+  setMessages((prev: MessageRecord[]) =>
+    prev.map((msg: MessageRecord) => {
+      if (msg.id !== assistantMessageId) return msg;
+
+      const provenanceRecords = {
+        ...((msg.provenanceRecords as Record<string, ProvenanceRecord>) || {}),
+        [key]: record,
+      };
+
+      return { ...msg, provenanceRecords };
     })
   );
 

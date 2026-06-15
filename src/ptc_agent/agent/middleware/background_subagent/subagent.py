@@ -38,7 +38,10 @@ logger = structlog.get_logger(__name__)
 # etc. payloads) is dropped to keep the per-task buffer focused on
 # telemetry and to close protocol-injection vectors against the frontend's
 # subagent SSE handler.
-_ALLOWED_CUSTOM_EVENT_TYPES = frozenset({"context_window"})
+# ``provenance`` is forwarded so a subagent's data-access records (web/file/
+# MCP sources) reach the main turn; ``forward_custom`` stamps them with the
+# ``task:{task_id}`` agent_id for correct subagent attribution.
+_ALLOWED_CUSTOM_EVENT_TYPES = frozenset({"context_window", "provenance"})
 
 
 class _SubagentTokenForwarder:

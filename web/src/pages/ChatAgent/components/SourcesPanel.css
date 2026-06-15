@@ -1,0 +1,68 @@
+/* Sources panel — provenance card deck.
+ *
+ * Mirrors the widget-context deck's fan/collapse motion (`.widget-deck-*` in
+ * chat-input.css) one-for-one — same easing curve, same durations — so a
+ * provenance stack expands identically to the chat-input snapshot deck. The
+ * per-card top/transform/opacity are set inline (they depend on index + fan
+ * state); these rules supply only the transitions and the entrance animation. */
+.source-deck-stack {
+  position: relative;
+  transition: height 260ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.source-deck-card {
+  transition:
+    transform 260ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 260ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 120ms cubic-bezier(0.16, 1, 0.3, 1);
+  animation: sourceDeckCardIn 280ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes sourceDeckCardIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.96);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .source-deck-stack,
+  .source-deck-card {
+    transition: none;
+    animation: none;
+  }
+}
+
+/* Detail dialog — staggered reveal of the fingerprint sections. Radix handles
+ * the container zoom; this fades each section in sequence so the evidence reads
+ * top-to-bottom (spec card → arguments → snippet).
+ *
+ * Opacity only — deliberately NO transform. The sections live inside the
+ * dialog's `max-h-[60vh] overflow-y-auto` body; a `translateY` entrance briefly
+ * extends the body's scrollHeight past that cap, flashing a vertical scrollbar
+ * that snaps the inner column ~15px narrower then back. Opacity never touches
+ * layout, so the reveal can't trigger that resize. */
+.source-detail-body > * {
+  animation: sourceDetailIn 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.source-detail-body > *:nth-child(1) {
+  animation-delay: 30ms;
+}
+.source-detail-body > *:nth-child(2) {
+  animation-delay: 90ms;
+}
+.source-detail-body > *:nth-child(3) {
+  animation-delay: 150ms;
+}
+
+@keyframes sourceDetailIn {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .source-detail-body > * {
+    animation: none;
+  }
+}

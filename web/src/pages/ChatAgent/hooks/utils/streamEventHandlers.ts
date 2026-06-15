@@ -5,6 +5,24 @@
 
 import { normalizeAction } from './eventUtils';
 import type { MessageRecord, SetMessages, ToolCallRecord, ToolCallResultRecord, TodoPayload, HtmlWidgetData } from './types';
+import type { ProvenanceEvent } from '@/types/sse';
+import type { ProvenanceRecord } from '@/types/chat';
+
+/**
+ * Builds the immutable `provenanceRecords` key for a provenance record.
+ *
+ * web_search emits multiple records that share one `tool_call_id` (one per
+ * result URL), so the key prefixes the tool_call_id with `source_type` +
+ * `identifier` to keep every distinct source — grouping by tool_call_id while
+ * never dropping a sibling URL.
+ */
+export function provenanceRecordKey(record: {
+  tool_call_id?: string;
+  source_type: string;
+  identifier: string;
+}): string {
+  return `${record.tool_call_id || ''}:${record.source_type}:${record.identifier}`;
+}
 
 /** Callback to update a subagent card by task ID. */
 type UpdateSubagentCard = (taskId: string, patch: Record<string, unknown>) => void;
@@ -503,6 +521,64 @@ export function handleToolCallResult({ assistantMessageId, toolCallId, result, r
   if (currentToolCallIdRef.current === toolCallId) {
     currentToolCallIdRef.current = null;
   }
+
+  return true;
+}
+
+/**
+ * Handles provenance events during streaming.
+ *
+ * Accumulates the accessed-data record onto the assistant message's
+ * `provenanceRecords` map. The provenance event is flat (fields top-level on
+ * the event), mirroring the live `tool_call_result` reader. Records are keyed
+ * by `provenanceRecordKey` so multiple web_search URLs sharing one
+ * `tool_call_id` never collide.
+ *
+ * @param {Object} params - Handler parameters
+ * @param {string} params.assistantMessageId - ID of the assistant message being updated
+ * @param {Object} params.event - The flat provenance event
+ * @param {Function} params.setMessages - State setter for messages
+ * @returns {boolean} True if event was handled
+ */
+export function handleProvenance({ assistantMessageId, event, setMessages }: {
+  assistantMessageId: string;
+  event: ProvenanceEvent;
+  setMessages: SetMessages;
+}): boolean {
+  if (!event || !event.record_id) {
+    return false;
+  }
+
+  const record: ProvenanceRecord = {
+    record_id: event.record_id,
+    agent: event.agent,
+    timestamp: event.timestamp,
+    source_type: event.source_type,
+    identifier: event.identifier,
+    title: event.title,
+    detail: event.detail,
+    provider: event.provider,
+    tool_call_id: event.tool_call_id,
+    args_fingerprint: event.args_fingerprint,
+    args: event.args,
+    result_sha256: event.result_sha256,
+    result_size: event.result_size,
+    result_snippet: event.result_snippet,
+  };
+  const key = provenanceRecordKey(record);
+
+  setMessages((prev: MessageRecord[]) =>
+    prev.map((msg: MessageRecord) => {
+      if (msg.id !== assistantMessageId) return msg;
+
+      const provenanceRecords = {
+        ...((msg.provenanceRecords as Record<string, ProvenanceRecord>) || {}),
+        [key]: record,
+      };
+
+      return { ...msg, provenanceRecords };
+    })
+  );
 
   return true;
 }

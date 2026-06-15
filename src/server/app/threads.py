@@ -50,6 +50,7 @@ from src.server.database.conversation import (
     delete_feedback,
     get_replay_thread_data,
 )
+from src.server.database.provenance import get_provenance_for_thread
 from psycopg_pool import PoolTimeout
 from src.server.dependencies.usage_limits import ChatRateLimited
 
@@ -1297,3 +1298,69 @@ async def remove_feedback(
     except Exception as e:
         logger.exception(f"Error deleting feedback for thread {thread_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete feedback")
+
+
+# =============================================================================
+# DATA PROVENANCE
+# =============================================================================
+
+
+@router.get("/{thread_id}/provenance")
+async def get_provenance(thread_id: str, x_user_id: CurrentUserId):
+    """Return the external data the agent accessed in a thread, grouped by turn.
+
+    The aggregated shape (per-turn sources + a by_source_type count summary) is
+    the structured input a post-hoc verification agent consumes.
+    """
+    try:
+        await require_thread_owner(thread_id, x_user_id)
+        rows = await get_provenance_for_thread(thread_id)
+
+        turns: dict[int, dict] = {}
+        by_source_type: dict[str, int] = {}
+        for row in rows:
+            turn_index = row["turn_index"]
+            turn = turns.get(turn_index)
+            if turn is None:
+                turn = {
+                    "turn_index": turn_index,
+                    "conversation_response_id": str(row["conversation_response_id"]),
+                    "sources": [],
+                }
+                turns[turn_index] = turn
+
+            source_timestamp = row.get("source_timestamp")
+            source = {
+                # `record_id` matches the SSE/replay provenance record field so a
+                # consumer can map streamed records to this REST shape directly.
+                "record_id": str(row["provenance_record_id"]),
+                "source_type": row["source_type"],
+                "identifier": row.get("identifier"),
+                "title": row.get("title"),
+                "tool_call_id": row.get("tool_call_id"),
+                "args_fingerprint": row.get("args_fingerprint"),
+                "args": row.get("args"),
+                "result_sha256": row.get("result_sha256"),
+                "result_size": row.get("result_size"),
+                "result_snippet": row.get("result_snippet"),
+                "agent": row.get("agent"),
+                "provider": row.get("provider"),
+                "timestamp": (
+                    source_timestamp.isoformat() if source_timestamp else None
+                ),
+            }
+            turn["sources"].append(source)
+
+            source_type = row["source_type"]
+            by_source_type[source_type] = by_source_type.get(source_type, 0) + 1
+
+        return {
+            "thread_id": thread_id,
+            "turns": [turns[i] for i in sorted(turns)],
+            "by_source_type": by_source_type,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error getting provenance for thread {thread_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get provenance")

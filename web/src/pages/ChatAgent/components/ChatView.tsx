@@ -18,6 +18,7 @@ import { mergeWarmingDisplay } from '../utils/warmWorkspace';
 import { useChatMessages } from '../hooks/useChatMessages';
 import { saveChatSession, getChatSession, clearChatSession } from '../hooks/utils/chatSessionRestore';
 import type { PreviewData } from '../hooks/utils/types';
+import type { ProvenanceRecord } from '@/types/chat';
 import { clampPanelWidth as clampPanelWidthUtil } from '@/lib/panelUtils';
 import { useCardState } from '../hooks/useCardState';
 import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
@@ -330,6 +331,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const [filePanelTargetMemoryKey, setFilePanelTargetMemoryKey] = useState<string | null>(null);
   const [filePanelTargetMemoryTier, setFilePanelTargetMemoryTier] = useState<MemoryTier | null>(null);
   const [filePanelTargetMemoKey, setFilePanelTargetMemoKey] = useState<string | null>(null);
+  // Message id whose provenance the Sources tab shows. Stays set while the
+  // Sources tab is open so the tab chrome persists; cleared on panel close.
+  const [filePanelTargetSources, setFilePanelTargetSources] = useState<string | null>(null);
   // Stable handlers — these land in useEffect deps in MemoryPanel/MemoPanel/
   // FilePanel. Inline arrows would create a new identity on every ChatView
   // render, re-triggering those effects on every streaming chunk (the
@@ -1203,6 +1207,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     setFilePanelTargetMemoryKey(r.targetMemoryKey);
     setFilePanelTargetMemoryTier(r.targetMemoryTier);
     setFilePanelTargetMemoKey(r.targetMemoKey);
+    setFilePanelTargetSources(null);
     if (r.clearWorkspaceId) {
       setFilePanelWorkspaceId(null);
     } else if (r.setWorkspaceId) {
@@ -1218,6 +1223,54 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // file-panel handoffs) that still use the older name. Pure identity — the
   // unified router does the path-aware classification on every call.
   const handleOpenFileFromChat = handleOpenAgentArtifactFromChat;
+
+  // Opens the Sources tab for a turn. Clears the sibling file/memory/memo
+  // targets first (so RightPanel's snap-back precedence converges on Sources)
+  // and pins the message id; the panel resolves live records from `messages`.
+  const handleOpenSourcesFromChat = useCallback((messageId: string) => {
+    setFilePanelTargetFile(null);
+    setFilePanelTargetDir(null);
+    setFilePanelTargetMemoryKey(null);
+    setFilePanelTargetMemoryTier(null);
+    setFilePanelTargetMemoKey(null);
+    setFilePanelTargetSources(messageId);
+
+    setRightPanelWidth(clampPanelWidth(850));
+    setRightPanelType('file');
+    pushPanelHistory();
+  }, [clampPanelWidth, pushPanelHistory]);
+
+  // Live provenance for the targeted turn — resolved from `messages` so the
+  // Sources panel updates as records stream in (live) or replay re-delivers
+  // them (reload). Recomputes on every `messages` change while the tab is open.
+  const sourcesRecords = useMemo<Record<string, ProvenanceRecord> | undefined>(() => {
+    if (!filePanelTargetSources) return undefined;
+    const msg = messages.find((m) => (m as { id?: string }).id === filePanelTargetSources);
+    return (msg as { provenanceRecords?: Record<string, ProvenanceRecord> } | undefined)?.provenanceRecords;
+  }, [filePanelTargetSources, messages]);
+
+  // Thread-wide provenance: every turn's records merged in chronological order.
+  // The Sources panel dedups across turns (first occurrence wins) and offers a
+  // "This turn / All sources" switch when this set is larger than the turn's.
+  // Gated on an open Sources tab so we don't merge on every unrelated render.
+  const allSourcesRecords = useMemo<Record<string, ProvenanceRecord> | undefined>(() => {
+    if (!filePanelTargetSources) return undefined;
+    const merged: Record<string, ProvenanceRecord> = {};
+    for (const m of messages) {
+      const recs = (m as { provenanceRecords?: Record<string, ProvenanceRecord> }).provenanceRecords;
+      if (recs) Object.assign(merged, recs);
+    }
+    return merged;
+  }, [filePanelTargetSources, messages]);
+
+  // Drop the Sources target whenever the right panel is closed or switches to a
+  // non-file view (detail/preview), so a later file/memory click doesn't reopen
+  // the Sources tab. The many close call sites all funnel through rightPanelType.
+  useEffect(() => {
+    if (rightPanelType !== 'file' && filePanelTargetSources != null) {
+      setFilePanelTargetSources(null);
+    }
+  }, [rightPanelType, filePanelTargetSources]);
 
   // One-shot ?file= deep link: opens the file panel targeting that file. Gated
   // on isActive so only the visible ChatView consumes it (ChatAgent keeps cached
@@ -2298,6 +2351,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                         isLoadingHistory={isLoadingHistory}
                         hideAvatar={isNarrowChat}
                         onOpenFile={handleOpenFileFromChat}
+                        onOpenSources={handleOpenSourcesFromChat}
                         onOpenDir={handleOpenDirFromChat}
                         onToolCallDetailClick={handleToolCallDetailClick}
                         onOpenSubagentTask={handleOpenSubagentTask}
@@ -2579,6 +2633,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                   onTargetMemoryHandled={handleTargetMemoryHandled}
                   targetMemoKey={filePanelTargetMemoKey}
                   onTargetMemoHandled={handleTargetMemoHandled}
+                  targetSources={filePanelTargetSources}
+                  sourcesRecords={sourcesRecords}
+                  allSourcesRecords={allSourcesRecords}
                   onOpenFile={handleOpenFileFromChat}
                   files={workspaceFiles}
                   filesLoading={filesLoading}
@@ -2639,6 +2696,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                       onTargetMemoryHandled={handleTargetMemoryHandled}
                       targetMemoKey={filePanelTargetMemoKey}
                       onTargetMemoHandled={handleTargetMemoHandled}
+                      targetSources={filePanelTargetSources}
+                      sourcesRecords={sourcesRecords}
+                      allSourcesRecords={allSourcesRecords}
                       onOpenFile={handleOpenFileFromChat}
                       files={workspaceFiles}
                       filesLoading={filesLoading}

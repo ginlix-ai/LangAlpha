@@ -4,12 +4,14 @@ import { useTranslation } from 'react-i18next';
 import { AnimatedTabs } from '@/components/ui/animated-tabs';
 import type { ContextPayload } from './FilePanel';
 import type { MemoryTier } from '../utils/agentPaths';
+import type { ProvenanceRecord } from '@/types/chat';
 
 const FilePanel = React.lazy(() => import('./FilePanel'));
 const MemoryPanel = React.lazy(() => import('./MemoryPanel'));
 const MemoPanel = React.lazy(() => import('./MemoPanel'));
+const SourcesPanel = React.lazy(() => import('./SourcesPanel'));
 
-export type RightPanelTab = 'files' | 'memory' | 'memo';
+export type RightPanelTab = 'files' | 'memory' | 'memo' | 'sources';
 
 interface RightPanelProps {
   workspaceId: string;
@@ -25,6 +27,13 @@ interface RightPanelProps {
   /** Memo entry to pre-select when the Memo tab opens. */
   targetMemoKey?: string | null;
   onTargetMemoHandled?: () => void;
+  /** Message id whose provenance to show; when set, snaps to the Sources tab. */
+  targetSources?: string | null;
+  /** Live provenance records for the targeted message (keyed by record id). */
+  sourcesRecords?: Record<string, ProvenanceRecord>;
+  /** Provenance records merged across every turn in the thread (keyed by record
+   * id). Powers the Sources panel's "All sources" scope. */
+  allSourcesRecords?: Record<string, ProvenanceRecord>;
   /** Routes a clicked file/memory/memo path through ChatView's path-aware
    * router. Lets in-panel markdown links (e.g., a sibling memory entry
    * referenced from memory.md) jump to the right tab + entry. */
@@ -56,6 +65,9 @@ export default function RightPanel({
   onTargetMemoryHandled,
   targetMemoKey,
   onTargetMemoHandled,
+  targetSources,
+  sourcesRecords,
+  allSourcesRecords,
   onOpenFile,
   files,
   filesLoading,
@@ -73,23 +85,39 @@ export default function RightPanel({
   const [tab, setTab] = useState<RightPanelTab>(initialTab);
 
   const tabs = useMemo<{ id: RightPanelTab; label: string }[]>(
-    () => [
-      { id: 'files', label: t('rightPanel.tabs.files') },
-      { id: 'memory', label: t('rightPanel.tabs.memory') },
-      { id: 'memo', label: t('rightPanel.tabs.memo') },
-    ],
-    [t],
+    () => {
+      const base: { id: RightPanelTab; label: string }[] = [
+        { id: 'files', label: t('rightPanel.tabs.files') },
+        { id: 'memory', label: t('rightPanel.tabs.memory') },
+        { id: 'memo', label: t('rightPanel.tabs.memo') },
+      ];
+      // The Sources tab is per-turn — only surface it when a turn's provenance
+      // is being shown, so the chrome stays unchanged for file/memory/memo flows.
+      if (targetSources != null) {
+        base.push({ id: 'sources', label: t('rightPanel.tabs.sources') });
+      }
+      return base;
+    },
+    [t, targetSources],
   );
 
-  // Snap-back precedence: memory > memo > file. The parent (ChatView) clears
-  // sibling targets before setting one, so in steady state only one branch
-  // fires; this effect is the second line of defense if multiple are set
+  // Snap-back precedence: sources > memory > memo > file. The parent (ChatView)
+  // clears sibling targets before setting one, so in steady state only one
+  // branch fires; this effect is the second line of defense if multiple are set
   // in the same render.
   React.useEffect(() => {
-    if (targetMemoryKey != null) setTab('memory');
+    if (targetSources != null) setTab('sources');
+    else if (targetMemoryKey != null) setTab('memory');
     else if (targetMemoKey != null) setTab('memo');
     else if (targetFile || targetDirectory) setTab('files');
-  }, [targetMemoryKey, targetMemoKey, targetFile, targetDirectory]);
+  }, [targetSources, targetMemoryKey, targetMemoKey, targetFile, targetDirectory]);
+
+  // The 'sources' tab only exists in `tabs` while targetSources is set. If it
+  // clears while Sources is open, `tab` would point at a tab no longer in the
+  // array (no active highlight + empty body); fall back so it always resolves.
+  React.useEffect(() => {
+    if (tab === 'sources' && targetSources == null) setTab('files');
+  }, [tab, targetSources]);
 
   return (
     <div
@@ -157,6 +185,13 @@ export default function RightPanel({
             <MemoPanel
               targetKey={targetMemoKey ?? null}
               onTargetHandled={onTargetMemoHandled}
+              onOpenFile={onOpenFile}
+            />
+          )}
+          {tab === 'sources' && (
+            <SourcesPanel
+              provenanceRecords={sourcesRecords}
+              allRecords={allSourcesRecords}
               onOpenFile={onOpenFile}
             />
           )}

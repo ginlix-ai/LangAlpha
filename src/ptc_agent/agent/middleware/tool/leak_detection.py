@@ -93,6 +93,17 @@ class LeakDetectionMiddleware(AgentMiddleware):
                 names=[name for name, _ in self._secrets],
             )
 
+    def redact(self, content: str | None) -> str | None:
+        """Public secret-scrub for non-content surfaces (e.g. provenance snippets).
+
+        Provenance fingerprints the raw tool result/artifact, which never passes
+        through ``_scan`` (that only touches ToolMessage.content), so the same
+        redaction is applied to snippets before they are persisted or streamed.
+        """
+        if not isinstance(content, str) or not content:
+            return content
+        return self._scan(content)
+
     def _scan(self, content: str) -> str:
         for name, value in self._secrets:
             if value in content:

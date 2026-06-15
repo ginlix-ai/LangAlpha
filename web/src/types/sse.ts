@@ -9,6 +9,7 @@ export type SSEEventType =
   | 'tool_call_result'
   | 'tool_call_chunks'
   | 'artifact'
+  | 'provenance'
   | 'user_message'
   | 'workflow_status'
   | 'thread_created'
@@ -93,6 +94,44 @@ export interface ArtifactEvent extends BaseSSEEvent {
   artifact_type: string;
   artifact_id?: string;
   payload?: unknown;
+}
+
+export type ProvenanceSourceType =
+  | 'web_search'
+  | 'web_fetch'
+  | 'file_read'
+  | 'memo_read'
+  | 'memory_read'
+  | 'sec_filing'
+  | 'market_data'
+  | 'mcp_tool';
+
+export interface ProvenanceEvent extends BaseSSEEvent {
+  event: 'provenance';
+  record_id: string;
+  /** Originating agent: "main" or "task:{id}". Resolved by the streaming
+   *  handler from the LangGraph namespace, so subagent records are attributed. */
+  agent?: string;
+  timestamp: string;
+  source_type: ProvenanceSourceType;
+  identifier: string;
+  title?: string;
+  /** Data-kind slug within this source type (e.g. "company_overview",
+   *  "daily_prices"); i18n-mapped by the Sources panel. */
+  detail?: string;
+  provider?: string;
+  tool_call_id?: string;
+  args_fingerprint?: Record<string, unknown>;
+  /** Tool-call arguments with secrets already redacted server-side. Redacted
+   *  values are the literal string "[redacted]". May be absent/empty. */
+  args?: Record<string, unknown>;
+  result_sha256?: string;
+  result_size?: number;
+  result_snippet?: string;
+  /** Replay envelope: added by GET /threads/{id}/messages/replay so the
+   *  frontend can re-attach records to the right turn after reload. */
+  turn_index?: number;
+  response_id?: string;
 }
 
 export interface TodoUpdatePayload {
@@ -201,6 +240,7 @@ export type SSEEvent =
   | ToolCallResultEvent
   | ToolCallChunksEvent
   | ArtifactEvent
+  | ProvenanceEvent
   | WorkflowStatusEvent
   | ThreadCreatedEvent
   | ErrorEvent

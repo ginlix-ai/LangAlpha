@@ -32,6 +32,7 @@ import {
   handleToolCallChunks,
   handleTodoUpdate,
   handleHtmlWidget,
+  handleProvenance,
   isSubagentEvent,
   handleSubagentMessageChunk,
   handleSubagentToolCallChunks,
@@ -49,6 +50,7 @@ import {
   handleHistoryToolCallResult,
   handleHistoryTodoUpdate,
   handleHistoryHtmlWidget,
+  handleHistoryProvenance,
   handleHistorySteeringDelivered,
   isSubagentHistoryEvent,
 } from './utils/historyEventHandlers';
@@ -846,6 +848,30 @@ export function useChatMessages(
             assistantMessagesByPair,
             pairStateByPair,
             refs: { newMessagesStartIndexRef, historyMessagesRef },
+            setMessages: setMessagesForHandlers,
+          });
+          return;
+        }
+
+        // Handle provenance events from history replay. Re-attach the
+        // accessed-data record to the turn's assistant message via the replay
+        // `turn_index` envelope. Placed BEFORE the isSubagent block so
+        // subagent-emitted records (agent="task:...") still re-attach to the
+        // main turn's message on reload, mirroring the live dispatch.
+        if (eventType === 'provenance' && hasPairIndex) {
+          const pairIndex = event.turn_index!;
+          currentActivePairIndex = pairIndex;
+          currentActivePairState = pairStateByPair.get(pairIndex);
+
+          const currentAssistantMessageId = assistantMessagesByPair.get(pairIndex);
+          if (!currentAssistantMessageId) {
+            console.warn('[History] Received provenance for unknown turn_index:', pairIndex);
+            return;
+          }
+
+          handleHistoryProvenance({
+            assistantMessageId: currentAssistantMessageId,
+            event: event as unknown as import('@/types/sse').ProvenanceEvent,
             setMessages: setMessagesForHandlers,
           });
           return;
@@ -2905,6 +2931,20 @@ export function useChatMessages(
           insertNotification,
           t,
           offloadBatch: offloadBatchRef,
+        });
+        return;
+      }
+
+      // Handle provenance events BEFORE the isSubagent filter so subagent-emitted
+      // accessed-data records still attach to the main turn's assistant message
+      // (with their `agent="task:..."` attribution preserved on the record).
+      // The event is flat — fields top-level on `event` — matching the live
+      // tool_call_result reader.
+      if (eventType === 'provenance') {
+        handleProvenance({
+          assistantMessageId,
+          event: event as unknown as import('@/types/sse').ProvenanceEvent,
+          setMessages: setMessagesForHandlers,
         });
         return;
       }

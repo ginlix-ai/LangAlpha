@@ -1203,6 +1203,52 @@
       "permissionDenied": "Microphone permission denied",
       "serviceError": "Speech recognition service error"
     },
+    "sources": {
+      "title": "Sources",
+      "pill_one": "Sources ({{count}})",
+      "pill_other": "Sources ({{count}})",
+      "empty": "No sources for this turn",
+      "groups": {
+        "web_search": "Web search",
+        "web_fetch": "Web pages",
+        "file_read": "Files",
+        "memo_read": "Memos",
+        "memory_read": "Memory",
+        "sec_filing": "SEC filings",
+        "market_data": "Market data",
+        "mcp_tool": "Financial data tools"
+      },
+      "fingerprint": {
+        "checksum": "Checksum",
+        "size": "Size",
+        "snippet": "Snippet",
+        "agent": "Agent",
+        "timestamp": "Accessed",
+        "provider": "Provider",
+        "arguments": "Arguments"
+      },
+      "subagent": "Subagent",
+      "unknownSource": "Unknown source",
+      "workspaceRoot": "Workspace root",
+      "viewDetails": "View details",
+      "expand": "Expand",
+      "actions": {
+        "openLink": "Open link",
+        "openFile": "Open file"
+      },
+      "emptyThread": "No sources in this thread",
+      "scope": {
+        "turn": "Current turn",
+        "thread": "All sources"
+      },
+      "sourceCount": "{{count}} sources",
+      "kind": {
+        "company_overview": "Company overview",
+        "daily_prices": "Daily prices",
+        "options_chain": "Options chain",
+        "market_index": "Market index"
+      }
+    },
     "a11y": {
       "toolCallCompleted": "completed",
       "toolCallFailed": "failed"
@@ -1339,7 +1385,8 @@
     "tabs": {
       "files": "Files",
       "memory": "Memory",
-      "memo": "Memo"
+      "memo": "Memo",
+      "sources": "Sources"
     },
     "close": "Close panel"
   },

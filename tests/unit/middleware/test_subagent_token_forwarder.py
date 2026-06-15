@@ -666,6 +666,39 @@ async def test_forward_custom_appends_context_window_event() -> None:
 
 
 @pytest.mark.asyncio
+async def test_forward_custom_appends_provenance_event() -> None:
+    """A ``custom``-mode dict with ``type=provenance`` lands as a captured
+    record stamped with the ``task:{task_id}`` agent_id, so a subagent's
+    data-access sources reach the main turn with subagent attribution."""
+    registry = BackgroundTaskRegistry()
+    task = await _register(registry, task_id_override="sub42")
+    fwd = _SubagentTokenForwarder(registry, task.tool_call_id, "task:sub42")
+
+    await fwd.forward_custom(
+        {
+            "type": "provenance",
+            "record_id": "rec-1",
+            "source_type": "web_fetch",
+            "identifier": "https://example.com",
+            "result_sha256": "deadbeef",
+            "result_size": 123,
+            "agent": None,  # middleware leaves it None; forwarder stamps it
+        }
+    )
+
+    records = task._test_records
+    assert len(records) == 1
+    rec = records[0]
+    assert rec["event"] == "provenance"
+    data = rec["data"]
+    assert data["agent"] == "task:sub42"
+    assert data["source_type"] == "web_fetch"
+    assert data["identifier"] == "https://example.com"
+    assert data["result_sha256"] == "deadbeef"
+    assert "type" not in data
+
+
+@pytest.mark.asyncio
 async def test_forward_custom_ignores_non_dict() -> None:
     """Non-dict custom payloads (e.g. legacy strings) are dropped silently."""
     registry = BackgroundTaskRegistry()

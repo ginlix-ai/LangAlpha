@@ -936,6 +936,8 @@ This module manages MCP server processes and provides tool calling functionality
 It supports both stdio (subprocess) and SSE (HTTP) transports.
 """
 
+import datetime
+import hashlib
 import json
 import os
 import select
@@ -958,6 +960,102 @@ _sse_sessions: dict[str, bool] = {{}}  # server_name -> initialized
 # MCP server configurations
 _SERVER_CONFIGS = {servers_dict}
 {vault_block}
+
+def _trace_mcp_call(server: str, tool: str, args: Any, result: Any) -> None:
+    """Append one JSONL provenance line for an MCP call (best-effort, never raises).
+
+    No-op unless MCP_TRACE_FILE is set. The fingerprint (sha256/size/snippet) is
+    computed in-sandbox and must reproduce the host-side fingerprint_result
+    contract byte-for-byte.
+    """
+    try:
+        trace_file = os.environ.get("MCP_TRACE_FILE")
+        if not trace_file:
+            return
+        try:
+            if isinstance(result, (dict, list)):
+                canonical = json.dumps(
+                    result, sort_keys=True, default=str, ensure_ascii=False
+                )
+            else:
+                canonical = str(result)
+        except Exception:
+            try:
+                canonical = str(result)
+            except Exception:
+                canonical = ""
+        encoded = canonical.encode("utf-8")
+        entry = {{
+            "server": server,
+            "tool": tool,
+            "args": args if isinstance(args, dict) else {{}},
+            "result_sha256": hashlib.sha256(encoded).hexdigest(),
+            "result_size": len(encoded),
+            # 500 must stay == _SNIPPET_MAX_CHARS in agent/provenance/types.py
+            # (host + sandbox snippets must match byte-for-byte for dedup).
+            "result_snippet": canonical[:500],
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }}
+        os.makedirs(os.path.dirname(trace_file), exist_ok=True)
+        with open(trace_file, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, default=str, ensure_ascii=False) + "\\n")
+            fh.flush()
+    except Exception:
+        # Tracing must never break the agent's code.
+        pass
+
+
+def _is_error_result(envelope: Any, value: Any) -> bool:
+    """True when an MCP tools/call result is an error rather than data.
+
+    Honors the MCP ``isError`` flag (any spec-compliant server, including remote
+    HTTP MCP) and our servers' ``{{"error": ...}}`` return convention. Provenance
+    records only data the agent actually received, so error results are returned
+    to the caller unchanged but never traced. A falsy ``error`` field (e.g.
+    ``error: null`` on a success payload) is NOT treated as an error.
+    """
+    if isinstance(envelope, dict) and envelope.get("isError") is True:
+        return True
+    return isinstance(value, dict) and bool(value.get("error"))
+
+
+def _unwrap_mcp_content(envelope: Any) -> Any:
+    """Unwrap a single text content block to parsed JSON / text; else passthrough."""
+    if (isinstance(envelope, dict) and
+        isinstance(envelope.get("content"), list)):
+
+        content_blocks = envelope["content"]
+
+        if (len(content_blocks) == 1 and
+            isinstance(content_blocks[0], dict) and
+            content_blocks[0].get("type") == "text"):
+
+            unwrapped = content_blocks[0].get("text", "")
+
+            if unwrapped.startswith(("{{", "[")):
+                try:
+                    return json.loads(unwrapped)
+                except json.JSONDecodeError:
+                    return unwrapped
+
+            return unwrapped
+
+    return envelope
+
+
+def _finalize_mcp_result(
+    server_name: str, tool_name: str, arguments: dict[str, Any], envelope: Any
+) -> Any:
+    """Unwrap an MCP result and trace it iff it carries real data.
+
+    Shared by both transports — the single place that sees the raw envelope (so
+    the ``isError`` flag survives) and decides whether the call is recordable.
+    """
+    value = _unwrap_mcp_content(envelope)
+    if not _is_error_result(envelope, value):
+        _trace_mcp_call(server_name, tool_name, arguments, value)
+    return value
+
 
 def _get_next_message_id() -> int:
     """Get next message ID for JSON-RPC requests."""
@@ -1157,30 +1255,9 @@ def _call_mcp_tool_sse(server_name: str, tool_name: str, arguments: dict[str, An
 
         # Return result
         if "result" in result:
-            result_data = result["result"]
-
-            # Unwrap MCP content format
-            if (isinstance(result_data, dict) and
-                "content" in result_data and
-                isinstance(result_data.get("content"), list)):
-
-                content_blocks = result_data["content"]
-
-                if (len(content_blocks) == 1 and
-                    isinstance(content_blocks[0], dict) and
-                    content_blocks[0].get("type") == "text"):
-
-                    unwrapped = content_blocks[0].get("text", "")
-
-                    if unwrapped.startswith(("{{", "[")):
-                        try:
-                            return json.loads(unwrapped)
-                        except json.JSONDecodeError:
-                            return unwrapped
-
-                    return unwrapped
-
-            return result_data
+            return _finalize_mcp_result(
+                server_name, tool_name, arguments, result["result"]
+            )
         else:
             raise RuntimeError("MCP SSE response missing result field")
 
@@ -1281,30 +1358,9 @@ def _call_mcp_tool_stdio(server_name: str, tool_name: str, arguments: dict[str, 
 
             # Return result
             if "result" in response:
-                result = response["result"]
-
-                # Unwrap MCP content format for easier agent consumption
-                if (isinstance(result, dict) and
-                    "content" in result and
-                    isinstance(result.get("content"), list)):
-
-                    content_blocks = result["content"]
-
-                    if (len(content_blocks) == 1 and
-                        isinstance(content_blocks[0], dict) and
-                        content_blocks[0].get("type") == "text"):
-
-                        unwrapped = content_blocks[0].get("text", "")
-
-                        if unwrapped.startswith(("{{", "[")):
-                            try:
-                                return json.loads(unwrapped)
-                            except json.JSONDecodeError:
-                                return unwrapped
-
-                        return unwrapped
-
-                return result
+                return _finalize_mcp_result(
+                    server_name, tool_name, arguments, response["result"]
+                )
             else:
                 error_msg = "MCP response missing result field"
                 print(f"ERROR: {{error_msg}}", file=sys.stderr)  # noqa: T201
@@ -1348,10 +1404,12 @@ def _call_mcp_tool(server_name: str, tool_name: str, arguments: dict[str, Any]) 
 
     transport = config.get("transport", "stdio")
 
+    # Tracing happens in the transport via _finalize_mcp_result, where the raw
+    # envelope (incl. the MCP isError flag) is still visible — so failed calls
+    # and error payloads are returned to the agent but never recorded as sources.
     if transport in ("sse", "http"):
         return _call_mcp_tool_sse(server_name, tool_name, arguments)
-    else:
-        return _call_mcp_tool_stdio(server_name, tool_name, arguments)
+    return _call_mcp_tool_stdio(server_name, tool_name, arguments)
 
 
 def cleanup_mcp_servers():

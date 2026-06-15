@@ -1,51 +1,10 @@
-import React, { useState } from 'react';
+import React from 'react';
 import * as HoverCard from '@radix-ui/react-hover-card';
 import { useCitationMetadata } from './CitationMetadataContext';
+import { Favicon } from './Favicon';
 import './CitationBubble.css';
 
 type MarkdownComponentProps = Record<string, any>;
-
-function Monogram({ letter, size = 14 }: { letter: string; size?: number }): React.ReactElement {
-  return (
-    <span
-      style={{
-        width: size,
-        height: size,
-        borderRadius: size / 2,
-        background: 'var(--color-bg-surface)',
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: size * 0.65,
-        fontWeight: 600,
-        color: 'var(--color-text-secondary)',
-        flexShrink: 0,
-        textTransform: 'uppercase',
-      }}
-    >
-      {letter}
-    </span>
-  );
-}
-
-function Favicon({ domain, size = 14 }: { domain: string; size?: number }): React.ReactElement {
-  const [failed, setFailed] = useState(false);
-
-  if (failed) {
-    return <Monogram letter={domain.charAt(0)} size={size} />;
-  }
-
-  return (
-    <img
-      src={`https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=32`}
-      alt=""
-      width={size}
-      height={size}
-      style={{ borderRadius: size > 14 ? 3 : 2, flexShrink: 0 }}
-      onError={() => setFailed(true)}
-    />
-  );
-}
 
 function CitationBubble({ node: _node, label, href, ...props }: MarkdownComponentProps): React.ReactElement {
   const meta = useCitationMetadata(href || '');

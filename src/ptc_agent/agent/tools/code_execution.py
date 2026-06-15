@@ -43,11 +43,11 @@ def create_execute_code_tool(backend: SandboxBackend, mcp_registry: Any, thread_
         Configured execute_code tool function
     """
 
-    @tool("ExecuteCode")
+    @tool("ExecuteCode", response_format="content_and_artifact")
     async def execute_code(
         code: str,
         description: str | None = None,
-    ) -> str:
+    ) -> tuple[str, dict[str, Any]]:
         """Execute Python code directly.
 
         Use for: disposable one-shots — quick MCP calls, small transforms, sanity checks.
@@ -59,25 +59,30 @@ def create_execute_code_tool(backend: SandboxBackend, mcp_registry: Any, thread_
             description: Brief description (5-10 words, active voice)
 
         Returns:
-            SUCCESS with stdout/files, or ERROR with stderr
+            SUCCESS with stdout/files, or ERROR with stderr. The artifact carries
+            ``mcp_trace`` (provenance for MCP calls made in-sandbox) and never
+            enters the LLM context.
 
         Paths: Use RELATIVE paths (results/, data/). Never /results/ or /workspace/.
         """
         if not backend:
-            return "ERROR: Sandbox not initialized"
+            return "ERROR: Sandbox not initialized", {"mcp_trace": []}
 
         if _code_touches_memory(code):
             logger.info(
                 "Blocked execute_code referencing memory path",
                 code_length=len(code),
             )
-            return _MEMORY_ROUTE_ERROR
+            return _MEMORY_ROUTE_ERROR, {"mcp_trace": []}
 
         try:
             logger.info("Executing code in sandbox", code_length=len(code), thread_id=thread_id)
 
             # Execute code in sandbox (thread_id from closure for thread-scoped storage)
             result = await backend.aexecute_code(code, thread_id=thread_id or None)
+
+            mcp_trace = list(getattr(result, "mcp_trace", []) or [])
+            artifact = {"mcp_trace": mcp_trace}
 
             if result.success:
                 # Format success response
@@ -100,7 +105,7 @@ def create_execute_code_tool(backend: SandboxBackend, mcp_registry: Any, thread_
                     "Code executed successfully",
                     stdout_length=len(result.stdout),
                 )
-                return response
+                return response, artifact
             # Format error response
             # Python tracebacks often go to stdout in some environments
             # Show stderr if available, otherwise show stdout
@@ -112,10 +117,10 @@ def create_execute_code_tool(backend: SandboxBackend, mcp_registry: Any, thread_
                 stdout_length=len(result.stdout),
             )
 
-            return f"ERROR\n{error_output}"
+            return f"ERROR\n{error_output}", artifact
 
         except Exception as e:
             logger.error("Code execution exception", error=str(e), exc_info=True)
-            return f"ERROR: {e!s}"
+            return f"ERROR: {e!s}", {"mcp_trace": []}
 
     return execute_code
