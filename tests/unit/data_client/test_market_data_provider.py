@@ -40,6 +40,34 @@ class FakeSource:
         self.closed = True
 
 
+class SnapshotSource(FakeSource):
+    """Fake source that returns configured snapshots for requested symbols."""
+
+    def __init__(
+        self,
+        name: str,
+        snapshots: dict[str, dict] | None = None,
+        *,
+        extra_rows: list[dict] | None = None,
+        fail: bool = False,
+    ):
+        super().__init__(name, fail=fail)
+        self.snapshots = {
+            str(k).strip().upper(): v for k, v in (snapshots or {}).items()
+        }
+        self.extra_rows = extra_rows or []
+
+    async def get_snapshots(self, **kwargs):
+        self.calls.append(("get_snapshots", kwargs))
+        if self.fail:
+            raise RuntimeError(f"{self.name} snapshots error")
+        return [
+            self.snapshots[str(s).strip().upper()]
+            for s in kwargs.get("symbols", [])
+            if str(s).strip().upper() in self.snapshots
+        ] + list(self.extra_rows)
+
+
 # ---------------------------------------------------------------------------
 # symbol_market tests
 # ---------------------------------------------------------------------------
@@ -216,6 +244,199 @@ class TestMarketDataProvider:
         await provider.get_intraday(symbol="AAPL", interval="1min")
         assert len(asia_src.calls) == 2  # unchanged
         assert len(global_src.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_get_snapshots_routes_each_symbol_by_market(self):
+        us_src = SnapshotSource(
+            "ginlix",
+            {"AAPL": {"symbol": "AAPL", "price": 190.0}},
+        )
+        global_src = SnapshotSource(
+            "fmp",
+            {"301189.SZ": {"symbol": "301189.SZ", "price": 42.0}},
+        )
+        provider = MarketDataProvider(
+            [
+                ProviderEntry("ginlix", us_src, {"us"}),
+                ProviderEntry("fmp", global_src, {"all"}),
+            ]
+        )
+
+        result = await provider.get_snapshots(["AAPL", "301189.SZ"])
+
+        assert [r["symbol"] for r in result] == ["AAPL", "301189.SZ"]
+        assert us_src.calls[0][1]["symbols"] == ["AAPL"]
+        assert global_src.calls[0][1]["symbols"] == ["301189.SZ"]
+
+    @pytest.mark.asyncio
+    async def test_get_snapshots_partial_resolution_fallback(self):
+        primary_src = SnapshotSource(
+            "primary",
+            {"AAPL": {"symbol": "AAPL", "price": 190.0}},
+        )
+        fallback_src = SnapshotSource(
+            "fallback",
+            {"MSFT": {"symbol": "MSFT", "price": 420.0}},
+        )
+        provider = MarketDataProvider(
+            [
+                ProviderEntry("primary", primary_src, {"all"}),
+                ProviderEntry("fallback", fallback_src, {"all"}),
+            ]
+        )
+
+        result = await provider.get_snapshots(["AAPL", "MSFT"])
+
+        assert result == [
+            {"symbol": "AAPL", "price": 190.0},
+            {"symbol": "MSFT", "price": 420.0},
+        ]
+        assert len(primary_src.calls) == 1
+        assert len(fallback_src.calls) == 1
+        assert primary_src.calls[0][1]["symbols"] == ["AAPL", "MSFT"]
+        assert fallback_src.calls[0][1]["symbols"] == ["MSFT"]
+
+    @pytest.mark.asyncio
+    async def test_get_snapshots_normalizes_whitespace_padded_input_symbols(self):
+        primary_src = SnapshotSource(
+            "primary",
+            {"AAPL": {"symbol": "AAPL", "price": 190.0}},
+        )
+        fallback_src = SnapshotSource(
+            "fallback",
+            {"MSFT": {"symbol": "MSFT", "price": 420.0}},
+        )
+        provider = MarketDataProvider(
+            [
+                ProviderEntry("primary", primary_src, {"all"}),
+                ProviderEntry("fallback", fallback_src, {"all"}),
+            ]
+        )
+
+        result = await provider.get_snapshots(["  AAPL  ", " MSFT "])
+
+        assert result == [
+            {"symbol": "AAPL", "price": 190.0},
+            {"symbol": "MSFT", "price": 420.0},
+        ]
+        assert primary_src.calls[0][1]["symbols"] == ["  AAPL  ", " MSFT "]
+        assert fallback_src.calls[0][1]["symbols"] == [" MSFT "]
+
+    @pytest.mark.asyncio
+    async def test_get_snapshots_routes_whitespace_padded_suffix_symbols(self):
+        cn_src = SnapshotSource(
+            "cn",
+            {"301189.SZ": {"symbol": "301189.SZ", "price": 42.0}},
+        )
+        provider = MarketDataProvider(
+            [ProviderEntry("cn", cn_src, {"cn"})]
+        )
+
+        result = await provider.get_snapshots([" 301189.SZ "])
+
+        assert result == [{"symbol": "301189.SZ", "price": 42.0}]
+        assert cn_src.calls[0][1]["symbols"] == [" 301189.SZ "]
+
+    @pytest.mark.asyncio
+    async def test_get_snapshots_extra_from_wrong_market_does_not_resolve_pending(self, caplog):
+        us_src = SnapshotSource(
+            "ginlix",
+            {"AAPL": {"symbol": "AAPL", "price": 190.0}},
+            extra_rows=[{"symbol": "300059.SZ", "price": 0.0}],
+        )
+        cn_src = SnapshotSource(
+            "cn",
+            {"300059.SZ": {"symbol": "300059.SZ", "price": 42.0}},
+        )
+        provider = MarketDataProvider(
+            [
+                ProviderEntry("ginlix", us_src, {"us"}),
+                ProviderEntry("cn", cn_src, {"cn"}),
+            ]
+        )
+
+        result = await provider.get_snapshots(["AAPL", "300059.SZ"])
+
+        assert result == [
+            {"symbol": "AAPL", "price": 190.0},
+            {"symbol": "300059.SZ", "price": 42.0},
+        ]
+        assert us_src.calls[0][1]["symbols"] == ["AAPL"]
+        assert cn_src.calls[0][1]["symbols"] == ["300059.SZ"]
+        assert "market_data.snapshot.drop_unrequested" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_get_snapshots_falls_back_when_provider_returns_no_rows(self):
+        empty_src = SnapshotSource("primary")
+        fallback_src = SnapshotSource(
+            "fallback",
+            {"301189.SZ": {"symbol": "301189.SZ", "price": 42.0}},
+        )
+        provider = MarketDataProvider(
+            [
+                ProviderEntry("primary", empty_src, {"all"}),
+                ProviderEntry("fallback", fallback_src, {"all"}),
+            ]
+        )
+
+        result = await provider.get_snapshots(["301189.SZ"])
+
+        assert result == [{"symbol": "301189.SZ", "price": 42.0}]
+        assert empty_src.calls[0][1]["symbols"] == ["301189.SZ"]
+        assert fallback_src.calls[0][1]["symbols"] == ["301189.SZ"]
+
+    @pytest.mark.asyncio
+    async def test_get_snapshots_drops_symbol_less_rows_and_keeps_symbol_pending(self, caplog):
+        bad_src = SnapshotSource(
+            "bad",
+            extra_rows=[{"price": 999.0}],
+        )
+        fallback_src = SnapshotSource(
+            "fallback",
+            {"AAPL": {"symbol": "AAPL", "price": 190.0}},
+        )
+        provider = MarketDataProvider(
+            [
+                ProviderEntry("bad", bad_src, {"all"}),
+                ProviderEntry("fallback", fallback_src, {"all"}),
+            ]
+        )
+
+        result = await provider.get_snapshots(["AAPL"])
+
+        assert result == [{"symbol": "AAPL", "price": 190.0}]
+        assert bad_src.calls[0][1]["symbols"] == ["AAPL"]
+        assert fallback_src.calls[0][1]["symbols"] == ["AAPL"]
+        assert "market_data.snapshot.drop_unkeyed" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_get_snapshots_returns_partial_results_when_other_symbols_have_no_matching_market(self):
+        us_src = SnapshotSource(
+            "ginlix",
+            {"AAPL": {"symbol": "AAPL", "price": 190.0}},
+        )
+        provider = MarketDataProvider(
+            [ProviderEntry("ginlix", us_src, {"us"})]
+        )
+
+        result = await provider.get_snapshots(["AAPL", "XYZ.ZZ"])
+
+        assert result == [{"symbol": "AAPL", "price": 190.0}]
+        assert us_src.calls[0][1]["symbols"] == ["AAPL"]
+
+    @pytest.mark.asyncio
+    async def test_get_snapshots_all_provider_errors_raise_last_exception(self):
+        src1 = SnapshotSource("a", fail=True)
+        src2 = SnapshotSource("b", fail=True)
+        provider = MarketDataProvider(
+            [
+                ProviderEntry("a", src1, {"all"}),
+                ProviderEntry("b", src2, {"all"}),
+            ]
+        )
+
+        with pytest.raises(RuntimeError, match="b snapshots error"):
+            await provider.get_snapshots(["AAPL"])
 
 
 # ---------------------------------------------------------------------------
