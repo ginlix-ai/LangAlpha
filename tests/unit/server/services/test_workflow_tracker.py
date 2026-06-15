@@ -58,7 +58,6 @@ async def _call_get_workflow_status(status: WorkflowStatus, bg_status: str) -> d
     bg_manager.get_workflow_status = AsyncMock(return_value={
         "status": bg_status,
         "active_tasks": [],
-        "soft_interrupted": False,
     })
 
     cache = MagicMock()
@@ -247,23 +246,6 @@ class TestMarkTransitions:
         assert "metadata" not in persisted
 
     @pytest.mark.asyncio
-    async def test_mark_soft_interrupted_sets_ttl(self):
-        tracker, mock_cache = _make_tracker(enabled=True)
-        thread_id = str(uuid.uuid4())
-
-        result = await tracker.mark_soft_interrupted(thread_id)
-
-        assert result is True
-        call_args = mock_cache.set.call_args
-        persisted = call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs.get("value")
-        assert persisted["status"] == "soft_interrupted"
-        ttl = call_args.kwargs.get("ttl") or (
-            call_args.args[2] if len(call_args.args) > 2 else None
-        )
-        # Distinct from INTERRUPTED (which uses ttl=None) — bounded TTL.
-        assert ttl == get_redis_ttl_workflow_status()
-
-    @pytest.mark.asyncio
     async def test_all_methods_disabled(self):
         tracker, _ = _make_tracker(enabled=False)
         tid = "t-1"
@@ -272,7 +254,6 @@ class TestMarkTransitions:
         assert await tracker.mark_interrupted(tid) is False
         assert await tracker.mark_cancelled(tid) is False
         assert await tracker.mark_failed(tid, error="x") is False
-        assert await tracker.mark_soft_interrupted(tid) is False
 
 
 # ---------------------------------------------------------------------------

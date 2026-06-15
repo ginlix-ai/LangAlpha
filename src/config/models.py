@@ -75,8 +75,9 @@ class BackgroundExecutionConfig(BaseModel):
     wait_for_persistence_timeout: float = Field(
         default=30.0, description="Max seconds callers block waiting for persistence completion"
     )
-    soft_interrupt_wait_timeout: float = Field(
-        default=30.0, description="Max seconds to wait for soft-interrupted workflow to finish"
+    stop_drain_timeout: float = Field(
+        default=1.5,
+        description="Max seconds to drain killed-subagent events before the stop teardown sentinel",
     )
     max_workflow_retries: int = Field(
         default=3, description="Max transient-error retry count for workflow execution"

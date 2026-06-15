@@ -901,21 +901,36 @@ class BackgroundTaskRegistry:
             for ns in stale_ns:
                 del self._ns_uuid_to_tool_call_id[ns]
 
-    def clear(self) -> None:
-        """Clear all tasks and results from the registry.
-
-        Note: This does NOT cancel running tasks. Call cancel_all() first
-        if you want to stop running tasks.
-
-        This method is intentionally synchronous and does not acquire the async lock
-        because it is called by the orchestrator after wait_for_all() completes,
-        when no concurrent modifications are possible.
-        """
+    def _clear_unlocked(self) -> None:
+        """Drop all task/result/lookup state. Caller owns concurrency control."""
         self._tasks.clear()
         self._task_id_to_tool_call_id.clear()
         self._ns_uuid_to_tool_call_id.clear()
         self._results.clear()
         logger.debug("Cleared background task registry")
+
+    def clear(self) -> None:
+        """Clear all tasks and results from the registry (synchronous).
+
+        Note: This does NOT cancel running tasks. Call cancel_all() first
+        if you want to stop running tasks.
+
+        Intentionally lock-free: called by the orchestrator after
+        wait_for_all() completes, when no concurrent modifications are
+        possible. For the stop teardown path — which CAN race concurrent
+        registry reads — use ``clear_locked`` instead.
+        """
+        self._clear_unlocked()
+
+    async def clear_locked(self) -> None:
+        """Lock-held variant of ``clear`` for the stop teardown path.
+
+        The single-owner teardown wipes the registry while a concurrent drain
+        / collector may still be reading it, so this acquires the registry lock
+        the orchestrator path can safely skip.
+        """
+        async with self._lock:
+            self._clear_unlocked()
 
     def has_pending_tasks(self) -> bool:
         """Return True if any tasks are still pending (synchronous)."""

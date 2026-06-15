@@ -383,6 +383,18 @@ class WorkflowStreamHandler:
         # instead of message_chunk.
         self._compaction_windows: set[tuple] = set()
 
+        # ---- Stop reconciliation state (decision T3-A) -------------------
+        # Open artifacts whose last-emitted status was not terminal. Keyed by
+        # artifact_id → the last artifact event payload. Closed out on stop.
+        self._open_artifacts: dict[str, dict] = {}
+        # Per-message id of the most recent open assistant message that has not
+        # yet emitted a finish_reason — used to synthesize a "stopped" close.
+        # Maps agent → message_id of the in-flight message.
+        self._open_message_ids: dict[str, str] = {}
+        # Idempotency guard: once stop reconciliation has run, re-entry / a
+        # second stop must not append synthetic closes again.
+        self._stop_finalized: bool = False
+
     async def stream_workflow(
         self,
         graph: Any,
@@ -607,6 +619,7 @@ class WorkflowStreamHandler:
                                 f"[ARTIFACT_CUSTOM] Emitting {artifact_type} artifact "
                                 f"(agent={agent_name}, status={artifact_event.get('status')})"
                             )
+                            self._track_artifact_state(artifact_event)
                             yield self._format_sse_event("artifact", artifact_event)
                     continue
 
@@ -630,6 +643,7 @@ class WorkflowStreamHandler:
                                         # Enrich event with agent if not already present
                                         if "agent" not in event_payload or not event_payload["agent"]:
                                             event_payload["agent"] = agent_name
+                                        self._track_artifact_state(event_payload)
                                         yield self._format_sse_event("artifact", event_payload)
                     continue
 
@@ -1220,6 +1234,8 @@ class WorkflowStreamHandler:
                         )
 
             event_stream_message["finish_reason"] = finish_reason
+            # Message reached a terminal finish — no longer an open structure.
+            self._open_message_ids.pop(agent_name, None)
         else:
             # Log when response_metadata exists but no finish reason is found
             # This helps debug cases where completion signals might be missing
@@ -1302,7 +1318,31 @@ class WorkflowStreamHandler:
                 if has_content:
                     if is_chunk and event_stream_message.get("content"):
                         self._streamed_content_ids.add(message_id)
+                    # Track an open assistant message (content but no terminal
+                    # finish_reason) so a stop can synthesize its close.
+                    if (
+                        event_stream_message.get("content")
+                        and not event_stream_message.get("finish_reason")
+                        and content_type != "reasoning_signal"
+                    ):
+                        self._open_message_ids[agent_name] = message_id
                     yield self._format_sse_event(chunk_event_type, event_stream_message)
+
+    def _track_artifact_state(self, artifact_event: dict) -> None:
+        """Track open/closed artifact state for stop reconciliation.
+
+        An artifact is "open" until it emits a terminal status. Keyed by
+        artifact_id so a later terminal status closes the same entry.
+        """
+        artifact_id = artifact_event.get("artifact_id")
+        if not artifact_id:
+            return
+        status = (artifact_event.get("status") or "").lower()
+        terminal = {"completed", "complete", "error", "failed", "cancelled", "stopped"}
+        if status in terminal:
+            self._open_artifacts.pop(artifact_id, None)
+        else:
+            self._open_artifacts[artifact_id] = copy.deepcopy(artifact_event)
 
     def _filter_tool_calls(self, tool_calls: list) -> list:
         """Remove tool calls with empty names or already-seen IDs."""
@@ -1501,6 +1541,84 @@ class WorkflowStreamHandler:
         """Return merged SSE events for persistence."""
         events = self._stream_event_accumulator.get_events()
         return events or None
+
+    def finalize_stopped_events(self) -> Optional[List[Dict[str, Any]]]:
+        """Close all open streaming structures at a user-stop point (decision T3-A).
+
+        A mid-step stop leaves the persisted ``sse_events`` with open blocks: a
+        reasoning block stuck "thinking", a tool call frozen mid-arguments, an
+        artifact mid-progress, a message without a finish_reason. Append
+        synthetic close events so replay renders the partial fragment marked
+        "stopped" instead of a live-looking zombie.
+
+        Idempotent: a per-handler ``_stop_finalized`` marker makes a second call
+        (double-stop / handler re-entry) a no-op. Returns the reconciled merged
+        events (same shape as ``get_sse_events``).
+        """
+        if self._stop_finalized:
+            return self.get_sse_events()
+        self._stop_finalized = True
+
+        try:
+            # 1. Close every open reasoning block.
+            for agent_name in list(self.reasoning_active):
+                msg_id = self._open_message_ids.get(agent_name) or f"{agent_name}:stopped"
+                self._format_reasoning_signal(agent_name, msg_id, "complete")
+            self.reasoning_active.clear()
+
+            # 2. Close any in-flight tool-call streaming state with a terminal
+            #    "stopped" close. Cover both Response API and Anthropic states.
+            #    An agent uses one LLM format per call, but a mid-turn provider
+            #    fallback can leave state in both dicts — dedup by agent so the
+            #    stop emits exactly one tool-call close per agent, not two.
+            closed_tool_agents: set = set()
+            for state_key in list(self.function_call_state.keys()) + list(
+                self.anthropic_tool_call_state.keys()
+            ):
+                agent_name = state_key[0]
+                if agent_name in closed_tool_agents:
+                    continue
+                closed_tool_agents.add(agent_name)
+                self._format_sse_event(
+                    "tool_call_chunks",
+                    {
+                        "thread_id": self.thread_id,
+                        "agent": agent_name,
+                        "id": self._open_message_ids.get(agent_name)
+                        or f"{agent_name}:stopped",
+                        "role": "assistant",
+                        "finish_reason": "stopped",
+                    },
+                )
+            self.function_call_state.clear()
+            self.anthropic_tool_call_state.clear()
+
+            # 3. Close any open artifacts with a terminal "stopped" status.
+            for artifact_id, artifact_event in list(self._open_artifacts.items()):
+                closed = copy.deepcopy(artifact_event)
+                closed["status"] = "stopped"
+                self._format_sse_event("artifact", closed)
+            self._open_artifacts.clear()
+
+            # 4. Close every open assistant message with finish_reason "stopped".
+            for agent_name, msg_id in list(self._open_message_ids.items()):
+                self._format_sse_event(
+                    "message_chunk",
+                    {
+                        "thread_id": self.thread_id,
+                        "agent": agent_name,
+                        "id": msg_id,
+                        "role": "assistant",
+                        "finish_reason": "stopped",
+                    },
+                )
+            self._open_message_ids.clear()
+        except Exception as e:
+            logger.warning(
+                f"[WorkflowStreamHandler] finalize_stopped_events failed: {e}"
+            )
+
+        return self.get_sse_events()
 
     _DEFAULT_TOKEN_THRESHOLD = 120000
 

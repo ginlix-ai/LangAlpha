@@ -233,11 +233,16 @@ export function handleTextContent({ assistantMessageId, content, finishReason, r
       // Message is requesting tool calls, don't mark as complete yet
       return false; // Let tool_calls handler process this
     } else if (!content) {
-      // Metadata chunk with finish_reason but no content
+      // Metadata chunk with finish_reason but no content. A "stopped" reason
+      // (synthetic from a user stop, live or replayed) also stamps the message
+      // so the per-message "⏹ Stopped" chip renders, and clears any in-flight
+      // tool-call chunks so the "generating (~N chars)…" preparing row stops
+      // shimmering (the partial tool call never completed and is discarded).
+      const isStopped = finishReason === 'stopped';
       setMessages((prev: MessageRecord[]) =>
         prev.map((msg: MessageRecord) =>
           msg.id === assistantMessageId
-            ? { ...msg, isStreaming: false }
+            ? { ...msg, isStreaming: false, ...(isStopped ? { stopped: true, pendingToolCallChunks: {} } : {}) }
             : msg
         )
       );

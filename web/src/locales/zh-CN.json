@@ -1112,7 +1112,8 @@
     "worker": "工作者",
     "agentNotFound": "未找到 Agent",
     "planFeedbackHint": "输入您的反馈意见来修改计划，然后发送。",
-    "interruptedHint": "Agent 已中断。请随时提供新的指令。",
+    "stoppedChip": "⏹ 已停止",
+    "stopFailed": "无法停止本次运行，它可能仍在运行。",
     "errorUpstreamHeadline": "模型提供商返回错误",
     "errorUpstreamHeadlineStatus": "模型提供商返回错误 ({{status}})",
     "errorInternalHeadline": "服务内部出错",
@@ -1146,7 +1147,7 @@
     "offloading": "正在转存上下文...",
     "placeholderDefault": "输入 / 调用技能，@ 引用文件",
     "placeholderPendingRejection": "说说希望怎么调整...",
-    "placeholderInterrupted": "输入新指令继续引导 Agent...",
+    "placeholderInterrupted": "已停止，发送消息即可继续",
     "placeholderLoading": "可以继续输入，消息会排队发送...",
     "placeholderSubagentsRunning": "工作者仍在运行，可输入消息或点击工作者单独指令",
     "slashCommand": {

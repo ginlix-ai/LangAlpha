@@ -10,7 +10,8 @@ import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { useUser } from '@/hooks/useUser';
-import { sendChatMessageStream, replayThreadHistory, getWorkflowStatus, reconnectToWorkflowStream, sendHitlResponse, streamSubagentTaskEvents, fetchThreadTurns, submitFeedback, removeFeedback, getThreadFeedback, watchThread } from '../utils/api';
+import { sendChatMessageStream, replayThreadHistory, getWorkflowStatus, reconnectToWorkflowStream, sendHitlResponse, streamSubagentTaskEvents, fetchThreadTurns, submitFeedback, removeFeedback, getThreadFeedback, watchThread, cancelWorkflow } from '../utils/api';
+import { toast } from '@/components/ui/use-toast';
 import { buildRateLimitError, isUpstreamHint, type StructuredError } from '@/utils/rateLimitError';
 import { getStoredThreadId, setStoredThreadId } from './utils/threadStorage';
 import { countToolCalls } from '../utils/subagentMetrics';
@@ -556,6 +557,14 @@ export function useChatMessages(
   const currentReasoningIdRef = useRef<string | null>(null);
   const currentToolCallIdRef = useRef<string | null>(null);
   const steeringAtOrderRef = useRef<number | null>(null); // Shared across streams for steering rollback
+  // AbortController for the active main-agent stream. stopWorkflow() aborts it so
+  // the client-side reader stops immediately (instant stop) — the matching POST
+  // /cancel tears down the backend run. Null when no main stream is in flight.
+  const mainStreamAbortRef = useRef<AbortController | null>(null);
+  // Guards finalizeStreamingMessage / stopWorkflow so a double-click stop (or
+  // handler re-entry) doesn't append duplicate synthetic close events. Cleared
+  // on the next send.
+  const wasStoppedRef = useRef(false);
 
   // Refs for history loading state
   const historyLoadingRef = useRef(false);
@@ -1975,6 +1984,12 @@ export function useChatMessages(
     setIsLoading(true);
     setIsReconnecting(true);
     isStreamingRef.current = true;
+    // Fresh stream: clear any stale stop flag from a PRIOR turn (e.g. user
+    // hard-stopped thread A, then switched to live thread B). Without this the
+    // stop-during-reconnect guards below (result.aborted || wasStoppedRef) would
+    // bail this legitimate reconnect and leave isLoading stuck. Matches the reset
+    // every other stream entry point does (handleSendMessage, resume, steering).
+    wasStoppedRef.current = false;
 
     // Create assistant message placeholder for reconnection
     const assistantMessageId = `assistant-reconnect-${Date.now()}`;
@@ -2092,6 +2107,14 @@ export function useChatMessages(
     const wasInterruptedRef = { current: false };
     const processEvent = createStreamEventProcessor(assistantMessageId, refs, getTaskIdFromEvent, wasInterruptedRef);
 
+    // Register the reconnect reader on mainStreamAbortRef so a user stop aborts
+    // it. Without this, stopWorkflow's abort is a no-op during a reconnect: the
+    // reader keeps consuming SSE + mutating messages and the finally below
+    // re-runs cleanup (re-toggling isLoading / re-opening report-back) after the
+    // stop already tore everything down.
+    const abortController = new AbortController();
+    mainStreamAbortRef.current = abortController;
+
     try {
       // Replay buffered events first — this processes artifact{task,spawned} events
       // which create subagent cards with the correct description/type. Per-task streams
@@ -2101,7 +2124,12 @@ export function useChatMessages(
         currentRunIdRef.current,
         lastEventIdRef.current as number | null,
         processEvent,
+        abortController.signal,
       );
+      // User stop aborted the reader — stopWorkflow owns teardown; bail.
+      if (result?.aborted || wasStoppedRef.current) {
+        return;
+      }
       if (result?.disconnected) {
         throw new Error('Reconnection stream disconnected');
       }
@@ -2151,6 +2179,11 @@ export function useChatMessages(
         }
       }
     } catch (err: unknown) {
+      // User stop aborted the reader — stopWorkflow owns teardown; bail before
+      // surfacing this as a reconnect error.
+      if ((err as Error)?.name === 'AbortError' || wasStoppedRef.current) {
+        return;
+      }
       // 404/410 = workflow no longer available, not a real error
       const status = (err as Error).message?.match(/status:\s*(\d+)/)?.[1];
       if (status === '404' || status === '410') {
@@ -2162,8 +2195,12 @@ export function useChatMessages(
     } finally {
       setIsReconnecting(false);
 
-      // Clean up empty reconnect messages (no content segments = nothing was streamed)
+      // Clean up empty reconnect messages (no content segments = nothing was
+      // streamed). Skip on a user stop: finalizeStreamingMessage just stamped
+      // this bubble `stopped: true` (with the "⏹ Stopped" chip) but left it
+      // content-empty, so removing it here would erase the stop marker.
       setMessages((prev) => {
+        if (wasStoppedRef.current) return prev;
         const msg = prev.find((m) => m.id === assistantMessageId);
         if (msg && msg.role === 'assistant' && (!(msg as AssistantMessage).contentSegments || (msg as AssistantMessage).contentSegments.length === 0) && !msg.content) {
           return prev.filter((m) => m.id !== assistantMessageId);
@@ -2171,8 +2208,14 @@ export function useChatMessages(
         return prev;
       });
 
-      if (!wasInterruptedRef.current) {
+      // Skip cleanup on a user stop — stopWorkflow already cleared isLoading /
+      // hasActiveSubagents and ran finalize; re-running it here would re-toggle
+      // loading and re-open the report-back watch after the stop.
+      if (!wasInterruptedRef.current && !wasStoppedRef.current) {
         cleanupAfterStreamEnd(assistantMessageId);
+      }
+      if (mainStreamAbortRef.current === abortController) {
+        mainStreamAbortRef.current = null;
       }
     }
   };
@@ -2598,6 +2641,181 @@ export function useChatMessages(
     // Open watch connection for report-back if a PTC agent was dispatched with report_back enabled
     if (awaitingReportBackRef.current) {
       startReportBackWatch();
+    }
+  };
+
+  /**
+   * Synthesizes terminal events for a stopped turn and dispatches them through
+   * the EXISTING handler pipeline so the open streaming structures close the
+   * same way a server-driven terminal event would (no hand-rolled state
+   * surgery). Aborting the reader means no server terminal event arrives, so
+   * without this the open blocks would render "thinking"/half-streamed forever.
+   *
+   * Closes, for the main message: the open reasoning block (synthetic
+   * `reasoning_signal: 'complete'` via handleReasoningSignal) and the message
+   * itself (synthetic `finish_reason: 'stopped'` via the handleTextContent
+   * finishReason branch). Also stamps a `stopped` flag for the per-message chip.
+   * Then closes every active subagent card's open reasoning + marks its last
+   * streaming message complete.
+   *
+   * Idempotent: guarded by wasStoppedRef so a double-stop (or re-entry) is a
+   * no-op and synthetic closes can't append twice.
+   */
+  const finalizeStreamingMessage = (assistantMessageId: string) => {
+    if (wasStoppedRef.current) return;
+    wasStoppedRef.current = true;
+
+    const refs = {
+      contentOrderCounterRef,
+      currentReasoningIdRef,
+      currentToolCallIdRef,
+      steeringAtOrderRef,
+      subagentStateRefs: subagentStateRefsRef.current,
+    };
+
+    // Close the main message's open reasoning block (no-op if none open).
+    handleReasoningSignal({
+      assistantMessageId,
+      signalContent: 'complete',
+      refs,
+      setMessages: setMessagesForHandlers,
+    });
+
+    // Drive the message to a terminal "stopped" state through the same
+    // finishReason branch the server stream uses. This flips isStreaming off
+    // for any open tool-call/artifact rendering that keyed off isStreaming.
+    handleTextContent({
+      assistantMessageId,
+      content: '',
+      finishReason: 'stopped',
+      refs,
+      setMessages: setMessagesForHandlers,
+    });
+
+    // Stamp the stopped flag so the per-message "⏹ Stopped" chip renders, force
+    // isStreaming off (defensive: covers any branch that left it on), and fold
+    // any still-in-progress tool rows. Always-live tools (TaskOutput/WebFetch)
+    // render their spinner off `isInProgress` regardless of `isStreaming`, so
+    // without this they'd spin forever after the stop. Mirrors the steering
+    // finalize.
+    setMessages((prev) =>
+      updateMessage(prev, assistantMessageId, (msg) => {
+        const aMsg = msg as AssistantMessage;
+        const tp: typeof aMsg.toolCallProcesses = {};
+        for (const [id, val] of Object.entries(aMsg.toolCallProcesses || {})) {
+          tp[id] = val.isInProgress ? { ...val, isInProgress: false, isComplete: true } : val;
+        }
+        return { ...aMsg, isStreaming: false, stopped: true, toolCallProcesses: tp };
+      }),
+    );
+
+    // Finalize each active subagent card: close its open reasoning block and
+    // mark its last streaming message complete. Per-task state lives in
+    // subagentStateRefsRef, separate from the main message refs.
+    const activeShortIds = new Set(subagentStreamsRef.current.keys());
+    for (const shortId of activeShortIds) {
+      const agentId = `task:${shortId}`;
+      const taskRefs = subagentStateRefsRef.current[agentId];
+      if (!taskRefs) continue;
+      // Close an open subagent reasoning block.
+      if (taskRefs.currentReasoningIdRef.current) {
+        const reasoningId = taskRefs.currentReasoningIdRef.current;
+        const msgs = [...taskRefs.messages];
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          const rp = (msgs[i].reasoningProcesses as Record<string, Record<string, unknown>>) || {};
+          if (rp[reasoningId]) {
+            const next = { ...rp };
+            next[reasoningId] = {
+              ...next[reasoningId],
+              isReasoning: false,
+              reasoningComplete: true,
+              reasoningTitle: null,
+              _completedAt: Date.now(),
+            };
+            msgs[i] = { ...msgs[i], reasoningProcesses: next };
+            break;
+          }
+        }
+        taskRefs.messages = msgs;
+        taskRefs.currentReasoningIdRef.current = null;
+      }
+      // Mark the subagent's last streaming message complete + stopped, clear any
+      // in-flight tool-call chunks so its preparing row stops shimmering, and
+      // fold still-in-progress tool rows (same finalize as the main message).
+      const msgs = [...taskRefs.messages];
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role === 'assistant' && msgs[i].isStreaming) {
+          const tcp = (msgs[i].toolCallProcesses as Record<string, Record<string, unknown>>) || {};
+          const tp: Record<string, Record<string, unknown>> = {};
+          for (const [id, val] of Object.entries(tcp)) {
+            tp[id] = val.isInProgress ? { ...val, isInProgress: false, isComplete: true } : val;
+          }
+          msgs[i] = { ...msgs[i], isStreaming: false, stopped: true, pendingToolCallChunks: {}, toolCallProcesses: tp };
+          break;
+        }
+      }
+      taskRefs.messages = msgs;
+      if (updateSubagentCard) {
+        updateSubagentCard(agentId, { messages: taskRefs.messages, status: 'completed', isActive: false });
+      }
+    }
+  };
+
+  /**
+   * Hard stop: terminates the current turn immediately while preserving state.
+   * (a) aborts the main reader (stop feels instant); (b) finalizes the open
+   * message to a stopped state + clears loading + active-subagent flag;
+   * (c) aborts per-task subagent streams + the report-back watch; (d) fires
+   * POST /cancel with one retry, then an error toast on failure so a diverged
+   * UI/backend state is visible. Double-stop is a no-op (wasStoppedRef guard).
+   */
+  const stopWorkflow = async () => {
+    const tid = threadIdRef.current;
+    if (wasStoppedRef.current) return; // double-click stop is idempotent
+
+    // (a) Abort the main reader NOW so the stop feels instant. The aborted
+    // stream resolves with { aborted: true } and the send finally skips
+    // cleanup (it checks wasStoppedRef), so we own the teardown here.
+    mainStreamAbortRef.current?.abort();
+    mainStreamAbortRef.current = null;
+
+    // (b) Finalize the open message (closes reasoning/tool/artifact + stopped
+    // chip) and clear loading + the active-subagent indicator. finalizeStreaming-
+    // Message sets wasStoppedRef, so this whole block runs at most once.
+    const finalId = currentMessageRef.current;
+    if (finalId) {
+      finalizeStreamingMessage(finalId);
+    } else {
+      wasStoppedRef.current = true;
+    }
+    setIsLoading(false);
+    setHasActiveSubagents(false);
+    // Stopping mid-bringup or mid-compaction must clear these too — otherwise a
+    // stuck "starting sandbox" / "compacting" indicator outlives the stop.
+    // cleanupAfterStreamEnd resets them, but the stop path skips that cleanup.
+    setWorkspaceStarting(false);
+    setIsCompacting(false);
+    isStreamingRef.current = false;
+    currentMessageRef.current = null;
+
+    // (c) Abort per-task subagent streams + the report-back watch so no
+    // background work lingers on the client after the stop.
+    closeAllSubagentStreams();
+    stopReportBackWatch();
+    awaitingReportBackRef.current = false;
+
+    // (d) Tell the backend to hard-cancel: one retry, then a visible error
+    // toast so a failed cancel doesn't silently diverge UI from backend.
+    if (tid && tid !== '__default__') {
+      try {
+        await cancelWorkflow(tid);
+      } catch {
+        try {
+          await cancelWorkflow(tid);
+        } catch {
+          toast({ description: t('chat.stopFailed'), variant: 'destructive' });
+        }
+      }
     }
   };
 
@@ -3617,6 +3835,10 @@ export function useChatMessages(
     let demotedProcessor: ((event: SSEEvent) => void) | null = null;
     let demotedAssistantId: string | null = null;
     const demotedInterruptedRef = { current: false };
+    // Controller for the steering POST. If this POST is demoted to a fresh
+    // turn it becomes the active main stream, so we register it on
+    // mainStreamAbortRef in demoteToNewTurn — stopWorkflow can then abort it.
+    const steeringAbort = new AbortController();
     // Stash the Content-Location run_id but DO NOT commit it to
     // currentRunIdRef until we've seen evidence that this POST actually
     // started a new workflow (i.e., demoteToNewTurn fires). Committing
@@ -3649,6 +3871,10 @@ export function useChatMessages(
       currentMessageRef.current = newAssistantId;
       isStreamingRef.current = true;
       setIsLoading(true);
+      // This demoted POST is now the active main turn; clear the stopped guard
+      // and register its controller so stopWorkflow can abort it.
+      wasStoppedRef.current = false;
+      mainStreamAbortRef.current = steeringAbort;
       const refs = {
         contentOrderCounterRef,
         currentReasoningIdRef,
@@ -3720,7 +3946,15 @@ export function useChatMessages(
         (runId) => {
           pendingRunIdFromHeader = runId;
         },
+        steeringAbort.signal,
       );
+      if (mainStreamAbortRef.current === steeringAbort) {
+        mainStreamAbortRef.current = null;
+      }
+      // User hit stop on the demoted turn: stopWorkflow owns the teardown.
+      if (wasStoppedRef.current) {
+        return;
+      }
       if (demotedToNewTurn) {
         const finalId = currentMessageRef.current || demotedAssistantId;
         if (finalId) {
@@ -3736,6 +3970,12 @@ export function useChatMessages(
         }
       }
     } catch (err: unknown) {
+      if (mainStreamAbortRef.current === steeringAbort) {
+        mainStreamAbortRef.current = null;
+      }
+      if ((err as Error)?.name === 'AbortError' || wasStoppedRef.current) {
+        return;
+      }
       console.error('Error sending steering:', err);
       if (demotedToNewTurn && demotedAssistantId) {
         // Demoted path: the failure belongs to the new turn's assistant, not the steering badge.
@@ -3842,6 +4082,8 @@ export function useChatMessages(
     setMessageError(null);
     setHasActiveSubagents(false);
     completedTaskIdsRef.current.clear();
+    // Clear the stopped guard so a fresh send can finalize again on stop.
+    wasStoppedRef.current = false;
     // Mark streaming as in progress to prevent history loading during streaming
     isStreamingRef.current = true;
 
@@ -3855,6 +4097,9 @@ export function useChatMessages(
     // it. Prevents a stale run_id from biasing a reconnect into an older
     // ``workflow:stream:{tid}:{rid}`` key.
     currentRunIdRef.current = null;
+    // Fresh AbortController so stopWorkflow can abort this stream's reader.
+    const abortController = new AbortController();
+    mainStreamAbortRef.current = abortController;
 
     const assistantMessage = createAssistantMessage(assistantMessageId);
 
@@ -3899,13 +4144,26 @@ export function useChatMessages(
         reasoningEffort || null,
         fastMode || null,
         platform,
-        // Latch run_id from Content-Location BEFORE the first SSE body byte —
-        // closes the reconnect race window if the stream drops between our
-        // pre-POST clear (line ~3916) and the new turn's first metadata event.
-        (runId) => {
+        // Latch run_id AND the server-assigned thread_id from Content-Location
+        // BEFORE the first SSE body byte. run_id closes the reconnect race
+        // window; the thread_id latch lets an early stop on a brand-new thread
+        // ('__default__' until the first event) still hard-cancel the backend
+        // run instead of skipping cancel. The first event still drives the
+        // route/storage update (see the thread_id branch in processEvent).
+        (runId, resolvedThreadId) => {
           currentRunIdRef.current = runId;
+          if (resolvedThreadId && resolvedThreadId !== '__default__') {
+            threadIdRef.current = resolvedThreadId;
+          }
         },
+        abortController.signal,
       );
+
+      // The user hit stop: stopWorkflow already finalized the message and ran
+      // teardown. Skip reconnect/cleanup so we don't double-fire.
+      if (result?.aborted || wasStoppedRef.current) {
+        return;
+      }
 
       if (result?.disconnected) {
         console.log('[Send] Stream disconnected, attempting reconnect');
@@ -3925,6 +4183,12 @@ export function useChatMessages(
         );
       }
     } catch (err: unknown) {
+          // An aborted stream (user hit stop) is intentional, not a failure.
+          // streamFetch normally swallows AbortError and returns { aborted },
+          // but guard here too so a stop never surfaces an error banner.
+          if ((err as Error)?.name === 'AbortError' || wasStoppedRef.current) {
+            return;
+          }
           // Handle rate limit (429) — show limit message and remove optimistic assistant message
           const errObj = err as Record<string, unknown>;
           if (errObj.status === 429) {
@@ -3975,7 +4239,13 @@ export function useChatMessages(
             }
           }
         } finally {
-          if (!wasDisconnected && !wasInterruptedRef.current) {
+          // Skip cleanup on a user stop — stopWorkflow owns the teardown and a
+          // second cleanup here would re-toggle loading/subagent state. Also
+          // clear the abort ref so a later stop can't abort a finished stream.
+          if (mainStreamAbortRef.current === abortController) {
+            mainStreamAbortRef.current = null;
+          }
+          if (!wasDisconnected && !wasInterruptedRef.current && !wasStoppedRef.current) {
             // Mark message as complete (use live ref in case steering_delivered switched it)
             const finalId = currentMessageRef.current || assistantMessageId;
             setMessages((prev) =>
@@ -4015,7 +4285,11 @@ export function useChatMessages(
 
     setIsLoading(true);
     setMessageError(null);
+    wasStoppedRef.current = false;
     isStreamingRef.current = true;
+    // Fresh AbortController so stopWorkflow can abort this resumed stream.
+    const abortController = new AbortController();
+    mainStreamAbortRef.current = abortController;
 
     // Prepare refs for event handlers — use persistent subagent state
     const refs = {
@@ -4044,13 +4318,19 @@ export function useChatMessages(
         agentMode,
         // Latch the fresh run_id from response headers before the first SSE
         // body byte. Without this, an early disconnect (between the pre-POST
-        // clear at line ~4063 and the metadata frame) would let
-        // attemptReconnectAfterDisconnect fall back to the prior
-        // SOFT_INTERRUPTED TaskInfo and silently hang.
+        // clear above and the metadata frame) would let
+        // attemptReconnectAfterDisconnect fall back to the prior run's
+        // TaskInfo and silently hang.
         (runId) => {
           currentRunIdRef.current = runId;
         },
+        abortController.signal,
       );
+
+      // User hit stop: stopWorkflow already finalized + tore down.
+      if (result?.aborted || wasStoppedRef.current) {
+        return;
+      }
 
       if (result?.disconnected) {
         console.log('[HITL] Stream disconnected, attempting reconnect');
@@ -4070,6 +4350,9 @@ export function useChatMessages(
         );
       }
     } catch (err: unknown) {
+      if ((err as Error)?.name === 'AbortError' || wasStoppedRef.current) {
+        return;
+      }
       console.error('[HITL] Error resuming workflow:', err);
       setMessageError((err as Error).message || 'Failed to resume workflow');
       setMessages((prev) =>
@@ -4081,7 +4364,10 @@ export function useChatMessages(
         }))
       );
     } finally {
-      if (!wasDisconnected && !wasInterruptedRef.current) {
+      if (mainStreamAbortRef.current === abortController) {
+        mainStreamAbortRef.current = null;
+      }
+      if (!wasDisconnected && !wasInterruptedRef.current && !wasStoppedRef.current) {
         const finalId = currentMessageRef.current || assistantMessageId;
         cleanupAfterStreamEnd(finalId);
       }
@@ -4335,6 +4621,7 @@ export function useChatMessages(
     setMessageError(null);
     setHasActiveSubagents(false);
     completedTaskIdsRef.current.clear();
+    wasStoppedRef.current = false;
     isStreamingRef.current = true;
 
     // Truncate messages and add new user message (if editing) + assistant placeholder
@@ -4345,6 +4632,9 @@ export function useChatMessages(
     // Edit/regenerate opens a fresh backend run; clear the prior run_id so
     // the new metadata frame becomes the source of truth.
     currentRunIdRef.current = null;
+    // Fresh AbortController so stopWorkflow can abort this stream's reader.
+    const abortController = new AbortController();
+    mainStreamAbortRef.current = abortController;
 
     const assistantMessage = createAssistantMessage(assistantMessageId);
     const userMessage = message ? createUserMessage(message) : null;
@@ -4403,7 +4693,13 @@ export function useChatMessages(
         (runId) => {
           currentRunIdRef.current = runId;
         },
+        abortController.signal,
       );
+
+      // User hit stop: stopWorkflow already finalized + tore down.
+      if (result?.aborted || wasStoppedRef.current) {
+        return;
+      }
 
       if (result?.disconnected) {
         wasDisconnected = true;
@@ -4419,6 +4715,9 @@ export function useChatMessages(
         }))
       );
     } catch (err: unknown) {
+      if ((err as Error)?.name === 'AbortError' || wasStoppedRef.current) {
+        return;
+      }
       console.error('[streamFromCheckpoint] Error:', err);
       setMessageError((err as Error).message || 'Failed to process request');
       setMessages((prev) =>
@@ -4430,7 +4729,10 @@ export function useChatMessages(
         }))
       );
     } finally {
-      if (!wasDisconnected && !wasInterruptedRef.current) {
+      if (mainStreamAbortRef.current === abortController) {
+        mainStreamAbortRef.current = null;
+      }
+      if (!wasDisconnected && !wasInterruptedRef.current && !wasStoppedRef.current) {
         const finalId = currentMessageRef.current || assistantMessageId;
         setMessages((prev) =>
           updateMessage(prev,finalId, (msg) => ({
@@ -4614,6 +4916,7 @@ export function useChatMessages(
     returnedSteering,
     clearReturnedSteering: () => setReturnedSteering(null),
     handleSendMessage,
+    stopWorkflow,
     pendingInterrupt,
     pendingRejection,
     handleApproveInterrupt,

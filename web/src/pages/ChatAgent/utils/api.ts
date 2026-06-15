@@ -285,13 +285,42 @@ export function parseRunIdFromContentLocation(
   }
 }
 
+/**
+ * Parse the `{tid}` path segment out of a backend `Content-Location` header
+ * value such as `/api/v1/threads/{tid}/messages/stream?run_id={uuid}`.
+ * Lets a new-thread send latch the server-assigned thread id from the response
+ * headers — before the first SSE event — so an early stop can still cancel it.
+ * Returns `null` when the value is missing or doesn't match the expected shape.
+ */
+export function parseThreadIdFromContentLocation(
+  contentLocation: string | null | undefined,
+): string | null {
+  if (!contentLocation) return null;
+  const match = contentLocation.match(/\/threads\/([^/?]+)\//);
+  const tid = match?.[1];
+  return tid && tid.length > 0 ? decodeURIComponent(tid) : null;
+}
+
 async function streamFetch(
   url: string,
   opts: RequestInit,
   onEvent: (event: Record<string, unknown>) => void,
   onHeaders?: (contentLocation: string | null) => void,
-): Promise<{ disconnected: boolean; contentLocation: string | null }> {
-  const res = await fetch(`${baseURL}${url}`, opts);
+): Promise<{ disconnected: boolean; aborted: boolean; contentLocation: string | null }> {
+  let res: Response;
+  try {
+    res = await fetch(`${baseURL}${url}`, opts);
+  } catch (error: unknown) {
+    // An AbortController.abort() during the initial fetch (e.g. the user hit
+    // stop before the response headers arrived) surfaces as AbortError (a
+    // DOMException, which is not always an Error instance — match on name).
+    // Treat it as an intentional stop rather than a network failure so callers
+    // don't show an error toast or run double cleanup.
+    if ((error as { name?: string })?.name === 'AbortError') {
+      return { disconnected: false, aborted: true, contentLocation: null };
+    }
+    throw error;
+  }
   // Snapshot Content-Location before body errors so callers can recover the
   // canonical reconnect URL (carries ?run_id=…) even when a 4xx aborts later.
   const contentLocation = res.headers.get('Content-Location');
@@ -371,6 +400,7 @@ async function streamFetch(
   };
 
   let disconnected = false;
+  let aborted = false;
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -383,15 +413,21 @@ async function streamFetch(
     // Process any remaining buffer
     buffer.split('\n').forEach(processLine);
   } catch (error: unknown) {
-    // Handle incomplete chunked encoding or other stream errors
-    if (error instanceof Error && error.name === 'TypeError' && error.message.includes('network')) {
+    // An AbortController.abort() on the reader (the user hit stop) surfaces as
+    // AbortError (a DOMException — match on name, not instanceof Error). This
+    // is an INTENTIONAL stop, not a failure — return an aborted marker so
+    // callers skip reconnect/error-toast/double-cleanup.
+    if ((error as { name?: string })?.name === 'AbortError') {
+      aborted = true;
+    } else if (error instanceof Error && error.name === 'TypeError' && error.message.includes('network')) {
+      // Handle incomplete chunked encoding or other stream errors
       console.warn('[api] Stream interrupted (network error):', error.message);
       disconnected = true;
     } else {
       throw error;
     }
   }
-  return { disconnected, contentLocation };
+  return { disconnected, aborted, contentLocation };
 }
 
 export async function replayThreadHistory(threadId: string, onEvent: (event: Record<string, unknown>) => void = () => {}) {
@@ -417,7 +453,8 @@ export async function sendChatMessageStream(
   reasoningEffort: string | null = null,
   fastMode: boolean | null = null,
   platform: string | null = null,
-  onRunIdResolved: ((runId: string) => void) | null = null,
+  onRunIdResolved: ((runId: string, threadId: string | null) => void) | null = null,
+  signal: AbortSignal | null = null,
 ) {
   // For checkpoint replay (regenerate/retry), send empty messages
   const messages = checkpointId && !message
@@ -460,15 +497,29 @@ export async function sendChatMessageStream(
         ...authHeaders,
       },
       body: JSON.stringify(body),
+      ...(signal ? { signal } : {}),
     },
     onEvent,
     onRunIdResolved
       ? (contentLocation) => {
           const runId = parseRunIdFromContentLocation(contentLocation);
-          if (runId) onRunIdResolved(runId);
+          if (runId) onRunIdResolved(runId, parseThreadIdFromContentLocation(contentLocation));
         }
       : undefined,
   );
+}
+
+/**
+ * Hard-cancel the workflow for a thread (stops the main agent AND kills all
+ * subagents immediately, flushing the checkpoint so the next message resumes
+ * from the last committed step).
+ * @param {string} threadId - The thread ID to cancel
+ * @returns {Promise<Object>} Response data
+ */
+export async function cancelWorkflow(threadId: string) {
+  if (!threadId) throw new Error('Thread ID is required');
+  const { data } = await api.post(`/api/v1/threads/${threadId}/cancel`);
+  return data;
 }
 
 /**
@@ -554,12 +605,14 @@ export function watchThread(
  * @param {string|null} runId - The specific run to target; null = latest
  * @param {number|null} lastEventId - Last received event ID for deduplication
  * @param {Function} onEvent - Callback for each SSE event
+ * @param {AbortSignal|null} signal - Abort the reader on a user stop
  */
 export async function reconnectToWorkflowStream(
   threadId: string,
   runId: string | null = null,
   lastEventId: number | null = null,
-  onEvent: (event: Record<string, unknown>) => void = () => {}
+  onEvent: (event: Record<string, unknown>) => void = () => {},
+  signal: AbortSignal | null = null
 ) {
   if (!threadId) throw new Error('Thread ID is required');
   const params = new URLSearchParams();
@@ -570,7 +623,7 @@ export async function reconnectToWorkflowStream(
   const authHeaders = await getAuthHeaders();
   return await streamFetch(
     `/api/v1/threads/${threadId}/messages/stream${queryParam}`,
-    { method: 'GET', headers: { ...authHeaders } },
+    { method: 'GET', headers: { ...authHeaders }, ...(signal ? { signal } : {}) },
     onEvent
   );
 }
@@ -625,17 +678,6 @@ export async function sendSubagentMessage(threadId: string, taskId: string, cont
     `/api/v1/threads/${threadId}/tasks/${taskId}/messages`,
     { content }
   );
-  return data;
-}
-
-/**
- * Soft-interrupt the workflow for a thread (pauses main agent, keeps subagents running)
- * @param {string} threadId - The thread ID to interrupt
- * @returns {Promise<Object>} Response data
- */
-export async function softInterruptWorkflow(threadId: string) {
-  if (!threadId) throw new Error('Thread ID is required');
-  const { data } = await api.post(`/api/v1/threads/${threadId}/interrupt`);
   return data;
 }
 
@@ -730,7 +772,8 @@ export async function sendHitlResponse(
   planMode: boolean = false,
   modelOptions: { model?: string; reasoningEffort?: string; fastMode?: boolean } = {},
   agentMode: string = 'ptc',
-  onRunIdResolved: ((runId: string) => void) | null = null,
+  onRunIdResolved: ((runId: string, threadId: string | null) => void) | null = null,
+  signal: AbortSignal | null = null,
 ) {
   const body: Record<string, unknown> = {
     workspace_id: workspaceId,
@@ -753,12 +796,13 @@ export async function sendHitlResponse(
         ...authHeaders,
       },
       body: JSON.stringify(body),
+      ...(signal ? { signal } : {}),
     },
     onEvent,
     onRunIdResolved
       ? (contentLocation) => {
           const runId = parseRunIdFromContentLocation(contentLocation);
-          if (runId) onRunIdResolved(runId);
+          if (runId) onRunIdResolved(runId, parseThreadIdFromContentLocation(contentLocation));
         }
       : undefined,
   );

@@ -264,6 +264,9 @@ export interface AssistantMessage {
   steeringDelivered?: boolean;
   isSteering?: boolean;
   error?: boolean | string;
+  // Set when the user hard-stopped this turn (live finalize or history replay
+  // of a stopped turn). Drives the per-message "⏹ Stopped" chip.
+  stopped?: boolean;
 }
 
 export type NotificationVariant = 'info' | 'success' | 'warning';

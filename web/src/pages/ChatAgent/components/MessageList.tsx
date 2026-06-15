@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bot, User, FileText, ImageIcon, Pencil, RefreshCw, RotateCcw, Copy, Check, Info, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { Bot, User, FileText, ImageIcon, Pencil, RefreshCw, RotateCcw, Copy, Check, Info, ThumbsUp, ThumbsDown, StopCircle } from 'lucide-react';
 import { type WidgetContextPreviewShape } from '@/pages/Dashboard/widgets/framework/WidgetContextPreview';
 import { WidgetContextDeck } from '@/pages/Dashboard/widgets/framework/WidgetContextDeck';
 import { useIsMobile } from '@/hooks/useIsMobile';
@@ -494,6 +494,7 @@ interface MessageBubbleProps {
  * returns the same object reference for unchanged messages.
  */
 const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onApprovePTCAgent, onRejectPTCAgent, onApproveSecretaryAction, onRejectSecretaryAction, onEditMessage, onRegenerate, onRetry, onThumbUp, onThumbDown, getFeedbackForMessage, onReportWithAgent, onWidgetSendPrompt, isMobile, flashContext }: MessageBubbleProps): React.ReactElement {
+  const { t } = useTranslation();
   const { user } = useUser();
   const { theme } = useTheme();
   const logo = theme === 'light' ? logoDark : logoLight;
@@ -781,6 +782,18 @@ const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvat
             return <LissajousLoading className={`${hasContent ? "mt-2" : "mt-0"} ${isMobile ? 'w-5 h-5' : 'w-6 h-6'} text-neutral-500 dark:text-neutral-400`} />;
           })()}
         </div>
+
+        {/* Per-message "⏹ Stopped" chip — the turn was hard-stopped by the
+            user (live finalize or replay of a stopped turn). */}
+        {isAssistant && (message.stopped as boolean) && (
+          <div
+            className="inline-flex items-center gap-1 self-start px-2 py-0.5 rounded text-xs"
+            style={{ backgroundColor: 'var(--color-loss-soft)', color: 'var(--color-loss)' }}
+          >
+            <StopCircle className="h-3 w-3 flex-shrink-0" />
+            <span>{t('chat.stoppedChip')}</span>
+          </div>
+        )}
 
         {/* Attachment preview cards -- standalone below the bubble */}
         {hasAttachments && (

@@ -380,8 +380,8 @@ def get_wait_for_persistence_timeout() -> float:
     return get_infrastructure_config().background_execution.wait_for_persistence_timeout
 
 
-def get_soft_interrupt_wait_timeout() -> float:
-    return get_infrastructure_config().background_execution.soft_interrupt_wait_timeout
+def get_stop_drain_timeout() -> float:
+    return get_infrastructure_config().background_execution.stop_drain_timeout
 
 
 def get_max_workflow_retries() -> int:

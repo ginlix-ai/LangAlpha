@@ -394,7 +394,6 @@ test.describe('Chat View -- SSE Streaming', () => {
   test('approve plan resumes workflow', async ({ page }) => {
     await mockAPI(page, {
       ...chatViewOverrides(),
-      'POST /threads/th-1/interrupt': { success: true },
     });
 
     // Replay with interrupt
@@ -433,12 +432,12 @@ test.describe('Chat View -- SSE Streaming', () => {
     await expect(page.getByText('Plan Approved')).toBeVisible({ timeout: 10000 });
   });
 
-  test('stop button interrupts streaming', async ({ page }) => {
-    let interruptCalled = false;
+  test('stop button cancels streaming', async ({ page }) => {
+    let cancelCalled = false;
     await mockAPI(page, {
       ...chatViewOverrides(),
-      'POST /threads/*/interrupt': (route) => {
-        interruptCalled = true;
+      'POST /threads/*/cancel': (route) => {
+        cancelCalled = true;
         return route.fulfill({
           status: 200,
           contentType: 'application/json',
@@ -474,10 +473,12 @@ test.describe('Chat View -- SSE Streaming', () => {
     await expect(page.getByText('Starting analysis...')).toBeVisible({ timeout: 10000 });
     await page.locator('button[title="Stop"]').click();
 
-    // Verify the interrupt was sent (via page.route capture)
-    // Wait for the button to change to "Stopping..." (deterministic signal that the click handler ran)
-    await expect(page.locator('button[title="Stopping..."]')).toBeVisible({ timeout: 5000 });
-    expect(interruptCalled).toBe(true);
+    // stopWorkflow optimistically clears loading so the stop feels instant, which
+    // immediately swaps the Stop button back to Send (the transient "Stopping..."
+    // title is never observable). Assert that swap as the deterministic signal the
+    // handler ran, then confirm the cancel POST fired.
+    await expect(page.locator('button[aria-label="Send message"]')).toBeVisible({ timeout: 5000 });
+    await expect.poll(() => cancelCalled, { timeout: 5000 }).toBe(true);
   });
 
   test('403 on thread shows access denied', async ({ page }) => {

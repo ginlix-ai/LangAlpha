@@ -53,7 +53,9 @@ class BackgroundRegistryStore:
                 return 0
 
         cancelled = await registry.cancel_all(force=force)
-        registry.clear()
+        # Lock-held clear: the stop teardown can race a concurrent drain /
+        # collector still reading the registry.
+        await registry.clear_locked()
 
         async with self._lock:
             self._registries.pop(thread_id, None)
