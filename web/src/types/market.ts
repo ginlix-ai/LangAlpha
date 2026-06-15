@@ -52,7 +52,7 @@ export interface SnapshotBatchResponse {
 
 export interface StockPrice {
   symbol: string;
-  price: number;
+  price: number | null;
   change: number;
   changePercent: number;
   isPositive: boolean;

@@ -16,9 +16,11 @@ export interface PortfolioRow {
   symbol: string;
   quantity?: number | null;
   average_cost?: number | null;
+  currency: string;
   notes?: string;
-  price: number;
-  marketValue?: number;
+  price: number | null;
+  marketValue?: number | null;
+  quoteAvailable?: boolean;
   unrealizedPlPercent?: number | null;
   isPositive?: boolean;
   previousClose?: number | null;
@@ -73,7 +75,7 @@ export function usePortfolioData() {
   const { data = { rows: [], hasRealHoldings: false }, isLoading: loading, refetch: fetchPortfolio } = useQuery<PortfolioQueryData>({
     queryKey: ['portfolioData'],
     queryFn: async (): Promise<PortfolioQueryData> => {
-      const { holdings } = await getPortfolio() as { holdings?: Array<{ user_portfolio_id: string; symbol: string; quantity?: number; average_cost?: number | null; notes?: string; [key: string]: unknown }> };
+      const { holdings } = await getPortfolio() as { holdings?: Array<{ user_portfolio_id: string; symbol: string; quantity?: number; average_cost?: number | null; currency?: string | null; notes?: string; [key: string]: unknown }> };
       const symbols = holdings?.length
         ? holdings.map((h) => String(h.symbol || '').trim().toUpperCase())
         : [];
@@ -83,25 +85,28 @@ export function usePortfolioData() {
       if (holdings?.length) {
         const combined: PortfolioRow[] = holdings.map((h) => {
           const sym = String(h.symbol || '').trim().toUpperCase();
-          const p = bySym[sym] || {} as Partial<StockPrice>;
+          const quote = bySym[sym];
           const q = Number(h.quantity || 0);
           const ac = h.average_cost != null ? Number(h.average_cost) : null;
-          const price = p.price ?? 0;
-          const marketValue = q * price;
-          const plPct = ac != null && ac > 0 ? ((price - ac) / ac) * 100 : null;
+          const price = quote?.price ?? null;
+          const quoteAvailable = price != null;
+          const marketValue = quoteAvailable ? q * price : null;
+          const plPct = quoteAvailable && ac != null && ac > 0 ? ((price - ac) / ac) * 100 : null;
           return {
             user_portfolio_id: h.user_portfolio_id,
             symbol: sym,
             quantity: q,
             average_cost: ac,
+            currency: h.currency ?? 'USD',
             notes: h.notes ?? '',
             price,
             marketValue,
+            quoteAvailable,
             unrealizedPlPercent: plPct,
             isPositive: plPct == null ? true : plPct >= 0,
-            previousClose: p.previousClose ?? null,
-            earlyTradingChangePercent: p.earlyTradingChangePercent ?? null,
-            lateTradingChangePercent: p.lateTradingChangePercent ?? null,
+            previousClose: quote?.previousClose ?? null,
+            earlyTradingChangePercent: quote?.earlyTradingChangePercent ?? null,
+            lateTradingChangePercent: quote?.lateTradingChangePercent ?? null,
           };
         });
         return { rows: combined, hasRealHoldings: true };

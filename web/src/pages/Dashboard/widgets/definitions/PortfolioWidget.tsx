@@ -21,15 +21,17 @@ import {
   PortfolioRowItem,
 } from './_holdingsPrimitives';
 import { formatPortfolioNavMarkdownLine, portfolioSummary } from './_holdingsHelpers';
+import { normalizePortfolioCurrency } from '../../utils/portfolioSummary';
 
 type PortfolioConfig = { valuesHidden?: boolean };
 
 function rowToQuote(r: PortfolioRow) {
   return {
     symbol: r.symbol,
-    price: r.price,
+    price: r.price ?? undefined,
     shares: r.quantity ?? undefined,
     marketValue: r.marketValue,
+    currency: normalizePortfolioCurrency(r.currency),
     changePercent: r.unrealizedPlPercent ?? undefined,
   };
 }

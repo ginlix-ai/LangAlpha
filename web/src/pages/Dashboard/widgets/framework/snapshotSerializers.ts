@@ -170,35 +170,46 @@ export interface QuoteRow {
   postMarket?: number;
   volume?: number;
   shares?: number;
-  marketValue?: number;
+  marketValue?: number | null;
+  currency?: string;
+}
+
+function formatQuoteAmount(value: number, currency?: string): string {
+  return currency ? `${currency} ${value.toFixed(2)}` : `$${value.toFixed(2)}`;
 }
 
 export function serializeQuoteRowToMarkdown(row: QuoteRow): string {
   const lines: string[] = [`**${row.symbol}**`];
   const bits: string[] = [];
-  if (row.price !== undefined) bits.push(`$${row.price.toFixed(2)}`);
+  if (row.price !== undefined) bits.push(formatQuoteAmount(row.price, row.currency));
   if (row.change !== undefined && row.changePercent !== undefined) {
     const sign = row.change >= 0 ? '+' : '';
     bits.push(`${sign}${row.change.toFixed(2)} (${sign}${row.changePercent.toFixed(2)}%)`);
   }
   if (bits.length) lines.push(bits.join(' '));
-  if (row.preMarket !== undefined) lines.push(`pre-market $${row.preMarket.toFixed(2)}`);
-  if (row.postMarket !== undefined) lines.push(`post-market $${row.postMarket.toFixed(2)}`);
+  if (row.preMarket !== undefined) lines.push(`pre-market ${formatQuoteAmount(row.preMarket, row.currency)}`);
+  if (row.postMarket !== undefined) lines.push(`post-market ${formatQuoteAmount(row.postMarket, row.currency)}`);
   if (row.volume !== undefined) lines.push(`vol ${row.volume.toLocaleString()}`);
   if (row.shares !== undefined) lines.push(`shares ${row.shares}`);
-  if (row.marketValue !== undefined) lines.push(`mkt val $${row.marketValue.toLocaleString()}`);
+  if (row.marketValue != null) {
+    lines.push(`mkt val ${formatQuoteAmount(row.marketValue, row.currency)}`);
+  }
   return lines.join('\n');
 }
 
 export function serializeQuoteRowsToMarkdown(rows: QuoteRow[]): string {
   if (!rows.length) return '_no symbols_';
   const includeVol = rows.some((r) => r.volume !== undefined);
-  const headers = ['symbol', 'price', 'change', 'change%'];
+  const includeCurrency = rows.some((r) => r.currency !== undefined);
+  const headers = ['symbol'];
+  if (includeCurrency) headers.push('currency');
+  headers.push('price', 'change', 'change%');
   if (includeVol) headers.push('volume');
   const lines: string[] = [`| ${headers.join(' | ')} |`, `| ${headers.map(() => '---').join(' | ')} |`];
   rows.forEach((r) => {
     const cells = [
       r.symbol,
+      ...(includeCurrency ? [r.currency ?? ''] : []),
       r.price !== undefined ? r.price.toFixed(2) : '',
       r.change !== undefined ? r.change.toFixed(2) : '',
       r.changePercent !== undefined ? `${r.changePercent.toFixed(2)}%` : '',

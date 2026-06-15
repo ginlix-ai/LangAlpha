@@ -23,6 +23,7 @@ import {
   WatchlistRowItem,
 } from './_holdingsPrimitives';
 import { formatPortfolioNavMarkdownLine, portfolioSummary } from './_holdingsHelpers';
+import { normalizePortfolioCurrency } from '../../utils/portfolioSummary';
 
 type PWTabKey = 'watchlist' | 'portfolio';
 
@@ -43,9 +44,10 @@ function watchlistRowToQuote(r: WatchlistRow) {
 function portfolioRowToQuote(r: PortfolioRow) {
   return {
     symbol: r.symbol,
-    price: r.price,
+    price: r.price ?? undefined,
     shares: r.quantity ?? undefined,
     marketValue: r.marketValue,
+    currency: normalizePortfolioCurrency(r.currency),
     changePercent: r.unrealizedPlPercent ?? undefined,
   };
 }

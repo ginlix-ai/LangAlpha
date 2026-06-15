@@ -37,7 +37,7 @@ interface IndexData {
 
 interface StockPrice {
   symbol: string;
-  price: number;
+  price: number | null;
   change: number;
   changePercent: number;
   isPositive: boolean;
@@ -398,12 +398,12 @@ export async function getStockPrices(symbols: string[]): Promise<StockPrice[]> {
       ? Object.fromEntries(snapList.map((s: SnapshotEntry) => [String(s.symbol).toUpperCase(), s]))
       : {};
 
-    return list.map((sym: string) => {
+    return list.flatMap((sym: string) => {
       const snap = snapMap[sym];
       if (snap && snap.price != null) {
         const change = snap.change ?? 0;
         const changePct = snap.change_percent ?? 0;
-        return {
+        return [{
           symbol: sym,
           price: Math.round(snap.price * 100) / 100,
           change: Math.round(change * 100) / 100,
@@ -412,12 +412,13 @@ export async function getStockPrices(symbols: string[]): Promise<StockPrice[]> {
           previousClose: snap.previous_close ?? null,
           earlyTradingChangePercent: snap.early_trading_change_percent ?? null,
           lateTradingChangePercent: snap.late_trading_change_percent ?? null,
-        };
+        }];
       }
-      return { symbol: sym, price: 0, change: 0, changePercent: 0, isPositive: true };
+      return [];
     });
-  } catch {
-    return list.map((sym: string) => ({ symbol: sym, price: 0, change: 0, changePercent: 0, isPositive: true }));
+  } catch (e: unknown) {
+    console.error('[API] getStockPrices failed:', e instanceof Error ? e.message : String(e));
+    return [];
   }
 }
 

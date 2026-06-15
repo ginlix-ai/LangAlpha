@@ -463,6 +463,7 @@
         "sharesHidden": "*** shares",
         "shares": "{{n}} shares",
         "nav": "Net Asset Value",
+        "navByCurrency": "Net Asset Value by Currency",
         "showValues": "Show values",
         "hideValues": "Hide values",
         "delete": "Delete",
@@ -921,6 +922,7 @@
       "tabWatch": "Watch",
       "tabHoldings": "Holdings",
       "netAssetValue": "Net Asset Value",
+      "netAssetValueByCurrency": "Net Asset Value by Currency",
       "addSymbol": "Add Symbol",
       "addTransaction": "Add Transaction"
     },
