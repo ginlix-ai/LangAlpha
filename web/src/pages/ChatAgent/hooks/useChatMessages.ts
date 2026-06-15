@@ -2195,8 +2195,12 @@ export function useChatMessages(
     } finally {
       setIsReconnecting(false);
 
-      // Clean up empty reconnect messages (no content segments = nothing was streamed)
+      // Clean up empty reconnect messages (no content segments = nothing was
+      // streamed). Skip on a user stop: finalizeStreamingMessage just stamped
+      // this bubble `stopped: true` (with the "⏹ Stopped" chip) but left it
+      // content-empty, so removing it here would erase the stop marker.
       setMessages((prev) => {
+        if (wasStoppedRef.current) return prev;
         const msg = prev.find((m) => m.id === assistantMessageId);
         if (msg && msg.role === 'assistant' && (!(msg as AssistantMessage).contentSegments || (msg as AssistantMessage).contentSegments.length === 0) && !msg.content) {
           return prev.filter((m) => m.id !== assistantMessageId);
@@ -2688,14 +2692,21 @@ export function useChatMessages(
       setMessages: setMessagesForHandlers,
     });
 
-    // Stamp the stopped flag so the per-message "⏹ Stopped" chip renders, and
-    // force isStreaming off (defensive: covers any branch that left it on).
+    // Stamp the stopped flag so the per-message "⏹ Stopped" chip renders, force
+    // isStreaming off (defensive: covers any branch that left it on), and fold
+    // any still-in-progress tool rows. Always-live tools (TaskOutput/WebFetch)
+    // render their spinner off `isInProgress` regardless of `isStreaming`, so
+    // without this they'd spin forever after the stop. Mirrors the steering
+    // finalize.
     setMessages((prev) =>
-      updateMessage(prev, assistantMessageId, (msg) => ({
-        ...msg,
-        isStreaming: false,
-        stopped: true,
-      })),
+      updateMessage(prev, assistantMessageId, (msg) => {
+        const aMsg = msg as AssistantMessage;
+        const tp: typeof aMsg.toolCallProcesses = {};
+        for (const [id, val] of Object.entries(aMsg.toolCallProcesses || {})) {
+          tp[id] = val.isInProgress ? { ...val, isInProgress: false, isComplete: true } : val;
+        }
+        return { ...aMsg, isStreaming: false, stopped: true, toolCallProcesses: tp };
+      }),
     );
 
     // Finalize each active subagent card: close its open reasoning block and
@@ -2728,13 +2739,18 @@ export function useChatMessages(
         taskRefs.messages = msgs;
         taskRefs.currentReasoningIdRef.current = null;
       }
-      // Mark the subagent's last streaming message complete + stopped, and
-      // clear any in-flight tool-call chunks so its preparing row stops
-      // shimmering (same finalize as the main message).
+      // Mark the subagent's last streaming message complete + stopped, clear any
+      // in-flight tool-call chunks so its preparing row stops shimmering, and
+      // fold still-in-progress tool rows (same finalize as the main message).
       const msgs = [...taskRefs.messages];
       for (let i = msgs.length - 1; i >= 0; i--) {
         if (msgs[i].role === 'assistant' && msgs[i].isStreaming) {
-          msgs[i] = { ...msgs[i], isStreaming: false, stopped: true, pendingToolCallChunks: {} };
+          const tcp = (msgs[i].toolCallProcesses as Record<string, Record<string, unknown>>) || {};
+          const tp: Record<string, Record<string, unknown>> = {};
+          for (const [id, val] of Object.entries(tcp)) {
+            tp[id] = val.isInProgress ? { ...val, isInProgress: false, isComplete: true } : val;
+          }
+          msgs[i] = { ...msgs[i], isStreaming: false, stopped: true, pendingToolCallChunks: {}, toolCallProcesses: tp };
           break;
         }
       }
@@ -2774,6 +2790,11 @@ export function useChatMessages(
     }
     setIsLoading(false);
     setHasActiveSubagents(false);
+    // Stopping mid-bringup or mid-compaction must clear these too — otherwise a
+    // stuck "starting sandbox" / "compacting" indicator outlives the stop.
+    // cleanupAfterStreamEnd resets them, but the stop path skips that cleanup.
+    setWorkspaceStarting(false);
+    setIsCompacting(false);
     isStreamingRef.current = false;
     currentMessageRef.current = null;
 
@@ -4123,11 +4144,17 @@ export function useChatMessages(
         reasoningEffort || null,
         fastMode || null,
         platform,
-        // Latch run_id from Content-Location BEFORE the first SSE body byte —
-        // closes the reconnect race window if the stream drops between our
-        // pre-POST clear (line ~3916) and the new turn's first metadata event.
-        (runId) => {
+        // Latch run_id AND the server-assigned thread_id from Content-Location
+        // BEFORE the first SSE body byte. run_id closes the reconnect race
+        // window; the thread_id latch lets an early stop on a brand-new thread
+        // ('__default__' until the first event) still hard-cancel the backend
+        // run instead of skipping cancel. The first event still drives the
+        // route/storage update (see the thread_id branch in processEvent).
+        (runId, resolvedThreadId) => {
           currentRunIdRef.current = runId;
+          if (resolvedThreadId && resolvedThreadId !== '__default__') {
+            threadIdRef.current = resolvedThreadId;
+          }
         },
         abortController.signal,
       );

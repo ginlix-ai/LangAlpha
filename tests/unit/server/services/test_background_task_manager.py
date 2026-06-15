@@ -163,6 +163,40 @@ class TestCancelWorkflowForceCancelsInner:
         assert result is True
         mock_inner.cancel.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_system_cancel_does_not_downgrade_user_stop(self):
+        """A later system cancel (user_initiated=False) must NOT clear a
+        user_stop already set by the user's HTTP /cancel. Otherwise a graceful
+        shutdown racing the stop teardown (before status flips off RUNNING)
+        would mislabel the turn as system-cancelled."""
+        btm = _make_btm()
+        task_info = _make_task_info(status=TaskStatus.RUNNING)
+        btm.tasks[("thread-1", "run-1")] = task_info
+
+        # User presses Stop.
+        assert await btm.cancel_workflow("thread-1", user_initiated=True) is True
+        assert task_info.user_stop is True
+
+        # Graceful shutdown fires a system cancel on the same still-RUNNING task.
+        assert await btm.cancel_workflow(
+            "thread-1", "run-1", user_initiated=False
+        ) is True
+        assert task_info.user_stop is True  # not downgraded
+
+    @pytest.mark.asyncio
+    async def test_system_only_cancel_leaves_user_stop_false(self):
+        """A system-only cancel (no preceding user stop) keeps user_stop False
+        so it persists cancelled_by_user=False."""
+        btm = _make_btm()
+        task_info = _make_task_info(status=TaskStatus.RUNNING)
+        btm.tasks[("thread-1", "run-1")] = task_info
+
+        assert await btm.cancel_workflow(
+            "thread-1", "run-1", user_initiated=False
+        ) is True
+        assert task_info.explicit_cancel is True
+        assert task_info.user_stop is False
+
 
 # ---------------------------------------------------------------------------
 # cancel_stale_workflow — COMPLETED (no-op)

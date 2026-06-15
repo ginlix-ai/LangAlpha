@@ -237,7 +237,9 @@ describe('ChatAgent API utilities', () => {
       );
 
       expect(onRunIdResolved).toHaveBeenCalledTimes(1);
-      expect(onRunIdResolved).toHaveBeenCalledWith('abc-123');
+      // Now also carries the server-assigned thread_id parsed from the same
+      // Content-Location path, so an early stop can hard-cancel the run.
+      expect(onRunIdResolved).toHaveBeenCalledWith('abc-123', 't-1');
       // The run_id MUST be latched before any body byte is read.
       expect(callOrder[0]).toBe('run-id:abc-123');
     });

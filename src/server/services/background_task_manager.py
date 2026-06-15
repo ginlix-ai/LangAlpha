@@ -607,6 +607,12 @@ class BackgroundTaskManager:
                 if task_info:
                     task_info.inner_task = inner_task
 
+            # A stop that landed before inner_task was published set cancel_event
+            # but couldn't cancel the not-yet-created task; honor it now so a long
+            # first step doesn't run to its next event boundary uncancelled.
+            if cancel_event.is_set() and not inner_task.done():
+                inner_task.cancel()
+
             await inner_task
 
             await self._mark_completed(thread_id, run_id)
@@ -1919,7 +1925,11 @@ class BackgroundTaskManager:
 
             task_info.cancel_event.set()
             task_info.explicit_cancel = True
-            task_info.user_stop = user_initiated
+            # Only ever raise user_stop; never let a later system cancel
+            # (user_initiated=False, e.g. graceful shutdown) downgrade a turn the
+            # user explicitly stopped — that would mislabel it as system-cancelled.
+            if user_initiated:
+                task_info.user_stop = True
             if task_info.inner_task and not task_info.inner_task.done():
                 task_info.inner_task.cancel()
             logger.debug(
@@ -1962,28 +1972,37 @@ class BackgroundTaskManager:
                     "status": "not_found",
                     "thread_id": thread_id,
                 }
+            # Snapshot under the lock, then release it BEFORE the registry/Redis
+            # lookup below. Holding task_lock across that await would let a slow
+            # registry path block /cancel from acquiring the lock to signal a stop.
+            status = task_info.status.value
+            run_id = task_info.run_id
+            created_at = task_info.created_at
+            started_at = task_info.started_at
+            completed_at = task_info.completed_at
+            active_connections = task_info.active_connections
 
-            active_tasks: list[str] = []
-            try:
-                from src.server.services.background_registry_store import BackgroundRegistryStore
-                registry = await BackgroundRegistryStore.get_instance().get_registry(thread_id)
-                if registry:
-                    for task in await registry.get_all_tasks():
-                        if task.is_pending:
-                            active_tasks.append(task.task_id)
-            except Exception:
-                pass
+        active_tasks: list[str] = []
+        try:
+            from src.server.services.background_registry_store import BackgroundRegistryStore
+            registry = await BackgroundRegistryStore.get_instance().get_registry(thread_id)
+            if registry:
+                for task in await registry.get_all_tasks():
+                    if task.is_pending:
+                        active_tasks.append(task.task_id)
+        except Exception:
+            pass
 
-            return {
-                "status": task_info.status.value,
-                "thread_id": thread_id,
-                "run_id": task_info.run_id,
-                "active_tasks": active_tasks,
-                "created_at": task_info.created_at.isoformat() if task_info.created_at else None,
-                "started_at": task_info.started_at.isoformat() if task_info.started_at else None,
-                "completed_at": task_info.completed_at.isoformat() if task_info.completed_at else None,
-                "active_connections": task_info.active_connections,
-            }
+        return {
+            "status": status,
+            "thread_id": thread_id,
+            "run_id": run_id,
+            "active_tasks": active_tasks,
+            "created_at": created_at.isoformat() if created_at else None,
+            "started_at": started_at.isoformat() if started_at else None,
+            "completed_at": completed_at.isoformat() if completed_at else None,
+            "active_connections": active_connections,
+        }
 
     async def wait_for_admission(
         self,

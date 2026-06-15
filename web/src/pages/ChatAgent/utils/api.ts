@@ -285,6 +285,22 @@ export function parseRunIdFromContentLocation(
   }
 }
 
+/**
+ * Parse the `{tid}` path segment out of a backend `Content-Location` header
+ * value such as `/api/v1/threads/{tid}/messages/stream?run_id={uuid}`.
+ * Lets a new-thread send latch the server-assigned thread id from the response
+ * headers — before the first SSE event — so an early stop can still cancel it.
+ * Returns `null` when the value is missing or doesn't match the expected shape.
+ */
+export function parseThreadIdFromContentLocation(
+  contentLocation: string | null | undefined,
+): string | null {
+  if (!contentLocation) return null;
+  const match = contentLocation.match(/\/threads\/([^/?]+)\//);
+  const tid = match?.[1];
+  return tid && tid.length > 0 ? decodeURIComponent(tid) : null;
+}
+
 async function streamFetch(
   url: string,
   opts: RequestInit,
@@ -437,7 +453,7 @@ export async function sendChatMessageStream(
   reasoningEffort: string | null = null,
   fastMode: boolean | null = null,
   platform: string | null = null,
-  onRunIdResolved: ((runId: string) => void) | null = null,
+  onRunIdResolved: ((runId: string, threadId: string | null) => void) | null = null,
   signal: AbortSignal | null = null,
 ) {
   // For checkpoint replay (regenerate/retry), send empty messages
@@ -487,7 +503,7 @@ export async function sendChatMessageStream(
     onRunIdResolved
       ? (contentLocation) => {
           const runId = parseRunIdFromContentLocation(contentLocation);
-          if (runId) onRunIdResolved(runId);
+          if (runId) onRunIdResolved(runId, parseThreadIdFromContentLocation(contentLocation));
         }
       : undefined,
   );
@@ -756,7 +772,7 @@ export async function sendHitlResponse(
   planMode: boolean = false,
   modelOptions: { model?: string; reasoningEffort?: string; fastMode?: boolean } = {},
   agentMode: string = 'ptc',
-  onRunIdResolved: ((runId: string) => void) | null = null,
+  onRunIdResolved: ((runId: string, threadId: string | null) => void) | null = null,
   signal: AbortSignal | null = null,
 ) {
   const body: Record<string, unknown> = {
@@ -786,7 +802,7 @@ export async function sendHitlResponse(
     onRunIdResolved
       ? (contentLocation) => {
           const runId = parseRunIdFromContentLocation(contentLocation);
-          if (runId) onRunIdResolved(runId);
+          if (runId) onRunIdResolved(runId, parseThreadIdFromContentLocation(contentLocation));
         }
       : undefined,
   );

@@ -29,7 +29,7 @@ vi.mock('@/lib/supabase', () => ({ supabase: null }));
 
 import { api } from '@/api/client';
 import * as apiModule from '../api';
-import { cancelWorkflow, sendChatMessageStream } from '../api';
+import { cancelWorkflow, sendChatMessageStream, parseThreadIdFromContentLocation } from '../api';
 
 const mockPost = api.post as Mock;
 
@@ -122,5 +122,30 @@ describe('sendChatMessageStream — AbortError handling', () => {
     await expect(
       sendChatMessageStream('hi', 'ws-1', 't-1', [], false, () => {}),
     ).rejects.toThrow('kaboom');
+  });
+});
+
+describe('parseThreadIdFromContentLocation', () => {
+  it('extracts the thread id from a Content-Location stream URL', () => {
+    expect(
+      parseThreadIdFromContentLocation(
+        '/api/v1/threads/abc-123/messages/stream?run_id=run-9',
+      ),
+    ).toBe('abc-123');
+  });
+
+  it('decodes percent-encoded ids and ignores the query string', () => {
+    expect(
+      parseThreadIdFromContentLocation(
+        '/api/v1/threads/t%2F1/messages/stream?run_id=r',
+      ),
+    ).toBe('t/1');
+  });
+
+  it('returns null for missing / malformed values', () => {
+    expect(parseThreadIdFromContentLocation(null)).toBeNull();
+    expect(parseThreadIdFromContentLocation(undefined)).toBeNull();
+    expect(parseThreadIdFromContentLocation('')).toBeNull();
+    expect(parseThreadIdFromContentLocation('/api/v1/threads/messages')).toBeNull();
   });
 });

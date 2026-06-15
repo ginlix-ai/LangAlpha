@@ -199,6 +199,51 @@ describe('useChatMessages — stopWorkflow (hard stop)', () => {
     await act(async () => { await send.catch(() => undefined); });
   });
 
+  it('folds an in-progress tool-call process on stop (no row left spinning)', async () => {
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-stop', 'th-stop'));
+
+    const hang = deferred<{ disconnected: boolean; aborted: boolean }>();
+    mockSendStream.mockImplementation(async (...args: unknown[]) => {
+      const onEvent = args[5] as OnEvent;
+      onEvent({ event: 'metadata', thread_id: 'th-stop', run_id: 'run-1' });
+      // A started tool call with no result yet → toolCallProcesses entry with
+      // isInProgress:true. Always-live tools (TaskOutput/WebFetch) render their
+      // spinner off this flag regardless of isStreaming, so it must be folded.
+      onEvent({
+        event: 'tool_calls',
+        tool_calls: [{ id: 'tc-1', name: 'TaskOutput', args: '{}' }],
+        _eventId: 1,
+      });
+      return hang.promise;
+    });
+
+    let send: Promise<unknown> = Promise.resolve();
+    await act(async () => {
+      send = result.current.handleSendMessage('check on the subagent', false);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.isLoading).toBe(true));
+
+    // Before stop: the process is in progress.
+    const before = result.current.messages.find((m) => m.role === 'assistant') as AssistantMessage;
+    const beforeProc = before.toolCallProcesses['tc-1'];
+    expect(beforeProc?.isInProgress).toBe(true);
+
+    await act(async () => {
+      await result.current.stopWorkflow();
+    });
+
+    // After stop: folded to complete so it stops spinning.
+    const after = result.current.messages.find((m) => m.role === 'assistant') as AssistantMessage;
+    const afterProc = after.toolCallProcesses['tc-1'];
+    expect(afterProc?.isInProgress).toBe(false);
+    expect(afterProc?.isComplete).toBe(true);
+
+    hang.resolve({ disconnected: false, aborted: true });
+    await act(async () => { await send.catch(() => undefined); });
+  });
+
   it('double-click stop is idempotent (one cancel, no duplicate synthetic events)', async () => {
     const { result } = renderHookWithProviders(() => useChatMessages('ws-stop', 'th-stop'));
     const { hang, send } = await startHangingSendWithReasoning(result);
