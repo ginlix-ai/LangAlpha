@@ -77,7 +77,7 @@ function deferred<T>(): Deferred<T> {
 /** Find the open reasoning process across the assistant message. */
 function findReasoning(msg: AssistantMessage | undefined) {
   if (!msg) return null;
-  const procs = (msg.reasoningProcesses as Record<string, Record<string, unknown>>) || {};
+  const procs = (msg.reasoningProcesses as unknown as Record<string, Record<string, unknown>>) || {};
   const keys = Object.keys(procs);
   return keys.length ? procs[keys[keys.length - 1]] : null;
 }
