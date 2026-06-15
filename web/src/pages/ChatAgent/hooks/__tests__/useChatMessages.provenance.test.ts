@@ -75,6 +75,7 @@ function provenanceEvent(over: Record<string, unknown>): Record<string, unknown>
     source_type: 'web_search',
     identifier: SEARCH_URL_A,
     title: 'Alpha',
+    detail: 'company_overview',
     provider: 'tavily',
     tool_call_id: SEARCH_TOOL_CALL_ID,
     result_sha256: 'a'.repeat(64),
@@ -170,6 +171,8 @@ describe('useChatMessages — provenance dispatch (live + history)', () => {
     expect(alpha.result_sha256).toBe('a'.repeat(64));
     expect(alpha.result_size).toBe(123);
     expect(alpha.result_snippet).toBe('snippet alpha');
+    // detail (data-kind slug) round-trips through the shared event→record mapper.
+    expect(alpha.detail).toBe('company_overview');
     // Captured tool-call args (secrets pre-redacted) survive the live path.
     expect(alpha.args).toEqual({ symbol: 'AAPL', period: '1y', api_key: '[redacted]' });
   });
