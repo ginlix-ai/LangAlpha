@@ -82,7 +82,14 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
         if task_id is not None:
             task = await registry.get_by_task_id(task_id)
             if not task:
-                return f"Task-{task_id} not found"
+                # The registry is wiped on a user stop, so a resumed turn that
+                # follows its own pseudo-result instruction and re-asks for a
+                # killed subagent lands here. Tell the agent it was cancelled
+                # rather than implying it never existed.
+                return (
+                    f"Task-{task_id} was cancelled by a user stop (no result "
+                    f"was produced). It is not running and cannot be resumed."
+                )
 
             # Sync completion status from asyncio task
             _sync_task_completion(task)
@@ -129,7 +136,10 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
                     f"**{task.display_id}** ({task.subagent_type}) completed:\n\n"
                     f"{_format_result(result)}"
                 )
-            return f"Task-{task_id} not found"
+            return (
+                f"Task-{task_id} was cancelled by a user stop (no result "
+                f"was produced). It is not running and cannot be resumed."
+            )
 
         # --- All tasks ---
 

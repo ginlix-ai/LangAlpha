@@ -5,7 +5,7 @@ Manages workflow execution state in Redis to support background execution
 and reconnection after client disconnect.
 
 Key Features:
-- Track workflow status (active/completed/cancelled/failed/soft_interrupted)
+- Track workflow status (active/completed/cancelled/failed)
 - TTL-based cleanup of completed workflows
 - Graceful degradation if Redis unavailable
 - Retry count tracking for transient error handling (max 3 retries)
@@ -29,7 +29,6 @@ class WorkflowStatus(str, Enum):
     INTERRUPTED = "interrupted"
     CANCELLED = "cancelled"
     FAILED = "failed"
-    SOFT_INTERRUPTED = "soft_interrupted"
     UNKNOWN = "unknown"
 
 
@@ -42,7 +41,6 @@ TERMINAL_STATUSES: frozenset[WorkflowStatus] = frozenset({
     WorkflowStatus.COMPLETED,
     WorkflowStatus.CANCELLED,
     WorkflowStatus.FAILED,
-    WorkflowStatus.SOFT_INTERRUPTED,
 })
 
 
@@ -325,35 +323,6 @@ class WorkflowTracker:
         if success:
             logger.info(
                 f"[WorkflowTracker] Marked workflow as failed: {thread_id}"
-            )
-
-        return success
-
-    async def mark_soft_interrupted(
-        self,
-        thread_id: str,
-        run_id: Optional[str] = None,
-    ) -> bool:
-        """Mark workflow as soft-interrupted (main agent paused, subagents can still complete).
-
-        Distinct from INTERRUPTED (HITL pause, indefinite TTL): SOFT_INTERRUPTED
-        is a terminal-for-the-turn state with bounded TTL.
-        """
-        if not self.enabled:
-            return False
-
-        success = await self._update_status_with_metadata(
-            thread_id=thread_id,
-            new_status=WorkflowStatus.SOFT_INTERRUPTED,
-            timestamp_field="soft_interrupted_at",
-            metadata=None,
-            ttl=get_redis_ttl_workflow_status(),
-            run_id=run_id,
-        )
-
-        if success:
-            logger.info(
-                f"[WorkflowTracker] Marked workflow as soft-interrupted: {thread_id}"
             )
 
         return success

@@ -90,7 +90,7 @@ background_execution:
   shutdown_timeout: 50                  # Max seconds for graceful shutdown of running workflows
   checkpoint_flush_timeout: 10          # Timeout for checkpoint state reads/writes
   wait_for_persistence_timeout: 30      # Max seconds callers block waiting for persistence
-  soft_interrupt_wait_timeout: 30       # Max seconds to wait for soft-interrupted workflow to finish
+  stop_drain_timeout: 1.5               # Max seconds to drain killed-subagent events before teardown sentinel
   max_workflow_retries: 3               # Max transient-error retry count
   merged_chunk_max_bytes: 16384         # Max bytes for merged SSE event chunks (16 KB)
 

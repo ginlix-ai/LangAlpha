@@ -38,7 +38,7 @@ from src.config.settings import (
     get_checkpoint_flush_timeout,
     get_sse_drain_timeout,
     get_wait_for_persistence_timeout,
-    get_soft_interrupt_wait_timeout,
+    get_stop_drain_timeout,
     get_subagent_collector_timeout,
     get_subagent_orphan_collector_timeout,
 )
@@ -161,7 +161,6 @@ class TaskStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
-    SOFT_INTERRUPTED = "soft_interrupted"
 
 
 @dataclass
@@ -180,10 +179,12 @@ class TaskInfo:
     error: Optional[str] = None
 
     explicit_cancel: bool = False
+    # True only when the user pressed Stop (HTTP /cancel). System cancels
+    # (graceful shutdown, stale-sandbox recovery) set ``explicit_cancel`` for
+    # the flush+teardown gate but leave this False so they are NOT persisted as
+    # user-cancelled "Stopped" turns. See ``_mark_cancelled``.
+    user_stop: bool = False
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
-
-    soft_interrupt_event: asyncio.Event = field(default_factory=asyncio.Event)
-    soft_interrupted: bool = False
 
     final_result: Optional[Any] = None
 
@@ -196,10 +197,6 @@ class TaskInfo:
     persistence_complete: asyncio.Event = field(default_factory=asyncio.Event)
 
     graph: Optional[Any] = None
-
-
-class SoftInterruptError(Exception):
-    """Internal control-flow exception for user ESC soft-interrupt."""
 
 
 # Type alias for the key used throughout the manager.
@@ -239,6 +236,11 @@ class BackgroundTaskManager:
 
         self.cleanup_task: Optional[asyncio.Task] = None
 
+        # Per-thread set of live orphan-collector tasks. Tracked so the stop
+        # teardown can cancel any collector that would otherwise mutate the
+        # persisted response after the user has stopped the turn.
+        self._orphan_collectors: Dict[str, set[asyncio.Task]] = {}
+
     @classmethod
     def get_instance(cls) -> 'BackgroundTaskManager':
         if cls._instance is None:
@@ -273,7 +275,7 @@ class BackgroundTaskManager:
         ignoring their own pre-registered placeholder.
         """
         best: Optional[TaskInfo] = None
-        live = (TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.SOFT_INTERRUPTED)
+        live = (TaskStatus.QUEUED, TaskStatus.RUNNING)
         for (tid, rid), info in self.tasks.items():
             if tid != thread_id or info.status not in live:
                 continue
@@ -286,7 +288,7 @@ class BackgroundTaskManager:
     async def has_active_tasks_for_workspace(self, workspace_id: str) -> bool:
         """Check if any active tasks exist for a workspace."""
         async with self.task_lock:
-            active = (TaskStatus.RUNNING, TaskStatus.QUEUED, TaskStatus.SOFT_INTERRUPTED)
+            active = (TaskStatus.RUNNING, TaskStatus.QUEUED)
             for info in self.tasks.values():
                 if (
                     info.metadata.get("workspace_id") == workspace_id
@@ -340,7 +342,9 @@ class BackgroundTaskManager:
         )
 
         for (thread_id, run_id), _info in running_tasks:
-            await self.cancel_workflow(thread_id, run_id)
+            # System shutdown, NOT a user stop: flush + kill subagents, but do
+            # not persist the interrupted turn as a user-cancelled "Stopped".
+            await self.cancel_workflow(thread_id, run_id, user_initiated=False)
 
         try:
             async with asyncio.timeout(timeout):
@@ -403,7 +407,6 @@ class BackgroundTaskManager:
                     TaskStatus.COMPLETED,
                     TaskStatus.FAILED,
                     TaskStatus.CANCELLED,
-                    TaskStatus.SOFT_INTERRUPTED,
                 ]:
                     if info.completed_at and info.completed_at < completed_threshold:
                         to_remove.append(key)
@@ -518,7 +521,6 @@ class BackgroundTaskManager:
                         self._run_workflow(
                             thread_id, run_id, workflow_generator,
                             cancel_event=existing.cancel_event,
-                            soft_interrupt_event=existing.soft_interrupt_event,
                         )
                     )
                     existing.status = TaskStatus.RUNNING
@@ -556,7 +558,6 @@ class BackgroundTaskManager:
                 self._run_workflow(
                     thread_id, run_id, workflow_generator,
                     cancel_event=task_info.cancel_event,
-                    soft_interrupt_event=task_info.soft_interrupt_event,
                 )
             )
             task_info.status = TaskStatus.RUNNING
@@ -577,13 +578,15 @@ class BackgroundTaskManager:
         run_id: str,
         workflow_generator: Any,
         cancel_event: asyncio.Event,
-        soft_interrupt_event: asyncio.Event,
     ):
-        """Drive the workflow generator with cooperative cancellation.
+        """Drive the workflow generator with cooperative + forced cancellation.
 
-        Lifecycle is driven solely by ``cancel_event`` / ``soft_interrupt_event``;
-        no SSE consumer holds a reference to this task post-Streams cutover,
-        so disconnect cannot cascade and the inner task is awaited directly.
+        Lifecycle is driven solely by ``cancel_event``; no SSE consumer holds a
+        reference to this task post-Streams cutover, so disconnect cannot
+        cascade and the inner task is awaited directly. A user stop force-cancels
+        only ``inner_task`` (see ``cancel_workflow``), so the ``CancelledError``
+        handler below runs in a non-cancelled context and can ``await`` the
+        single-owner teardown.
         """
         key = (thread_id, run_id)
         try:
@@ -593,11 +596,6 @@ class BackgroundTaskManager:
                         with suppress(Exception):
                             await wf_gen.aclose()
                         raise asyncio.CancelledError("Explicitly cancelled by user")
-
-                    if soft_interrupt_event and soft_interrupt_event.is_set():
-                        with suppress(Exception):
-                            await wf_gen.aclose()
-                        raise SoftInterruptError("Soft-interrupted by user")
 
                     if self.enable_storage:
                         await self._buffer_event_redis(thread_id, run_id, event)
@@ -613,13 +611,57 @@ class BackgroundTaskManager:
 
             await self._mark_completed(thread_id, run_id)
 
-        except SoftInterruptError:
-            await self._flush_checkpoint(thread_id, run_id)
-            await self._mark_soft_interrupted(thread_id, run_id)
-            return
-
+        # =====================================================================
+        # Single-owner stop teardown (decision 1A). On a user stop only
+        # ``inner_task`` is force-cancelled, so this handler runs uncancelled
+        # and owns the entire deterministic sequence:
+        #
+        #   except asyncio.CancelledError (consume_workflow):
+        #     1. _flush_checkpoint(thread_id)        # if explicit_cancel
+        #     2. drain killed-subagent events        # bounded (~stop_drain_timeout)
+        #     3. cancel orphan collector tasks       # no post-stop mutation
+        #     4. cancel_and_clear(force=True)        # kill subagents, wipe registry
+        #     5. _mark_cancelled(thread_id)          # persist merged sse_events + SSE sentinel
+        #     6. raise
+        #
+        # Drain MUST run before cancel_and_clear wipes the registry, and
+        # cancel_and_clear must run before _mark_cancelled so the merged
+        # subagent events are in place before persistence reads them.
+        # =====================================================================
         except asyncio.CancelledError:
-            await self._mark_cancelled(thread_id, run_id)
+            async with self.task_lock:
+                ti = self.tasks.get(key)
+                explicit = bool(ti.explicit_cancel) if ti else False
+
+            try:
+                if explicit:
+                    # 1. Flush the LangGraph checkpoint so the next message
+                    #    resumes from the last committed boundary. Gated on
+                    #    explicit_cancel (set by the user stop, graceful
+                    #    shutdown, and stale-sandbox recovery — all of which
+                    #    cancel the INNER task, leaving this handler live to
+                    #    flush). Abandoned-task cleanup cancels the OUTER task
+                    #    with the flag unset and skips this. Best-effort: a
+                    #    flush failure must not block persistence (step 5).
+                    with suppress(Exception):
+                        await asyncio.shield(self._flush_checkpoint(thread_id, run_id))
+
+                    # 2-4. Drain killed-subagent events, cancel orphan
+                    #      collectors, then kill subagents + wipe the registry.
+                    #      Merged events are stashed on metadata so
+                    #      _mark_cancelled persists them.
+                    with suppress(Exception):
+                        await asyncio.shield(
+                            self._teardown_subagents_on_stop(thread_id, run_id)
+                        )
+            finally:
+                # 5. Persist the cancellation. In a ``finally`` + ``shield`` so a
+                #    SECOND cancel (graceful shutdown force-cancelling the OUTER
+                #    task at its timeout, or abandoned cleanup) lands DURING
+                #    teardown can't skip or tear a mid-write: burst-slot release,
+                #    tracker status, and registry cleanup always run to
+                #    completion rather than leaving half-state.
+                await asyncio.shield(self._mark_cancelled(thread_id, run_id))
             raise
 
         except Exception as e:
@@ -630,7 +672,11 @@ class BackgroundTaskManager:
             await self._mark_failed(thread_id, run_id, str(e))
 
     async def _flush_checkpoint(self, thread_id: str, run_id: str) -> None:
-        """Force a checkpoint write for the current thread state on ESC."""
+        """Force a checkpoint write for the current thread state on user stop.
+
+        Persists state up to the last completed step so the next message
+        resumes from it. The in-flight step is discarded and re-run on resume.
+        """
         async with self.task_lock:
             task_info = self.tasks.get((thread_id, run_id))
             graph = task_info.graph if task_info else None
@@ -662,6 +708,101 @@ class BackgroundTaskManager:
             logger.warning(
                 f"[BackgroundTaskManager] Failed to flush checkpoint for {thread_id}: {e}"
             )
+
+    def _track_orphan_collector(self, thread_id: str, task: asyncio.Task) -> None:
+        """Register a live orphan-collector task for stop-time cancellation."""
+        bucket = self._orphan_collectors.setdefault(thread_id, set())
+        bucket.add(task)
+        task.add_done_callback(lambda t: bucket.discard(t))
+
+    async def _teardown_subagents_on_stop(self, thread_id: str, run_id: str) -> None:
+        """Single-owner subagent teardown on a user stop.
+
+        Order (decision 1A): drain killed-subagent events (bounded) → cancel
+        orphan collectors → cancel_and_clear(force) → stash merged events on
+        metadata for _mark_cancelled to persist. Drain MUST precede
+        cancel_and_clear so the registry still holds the captured events.
+        """
+        from src.server.services.background_registry_store import BackgroundRegistryStore
+
+        registry_store = BackgroundRegistryStore.get_instance()
+        registry = await registry_store.get_registry(thread_id)
+
+        # --- 2. Drain killed-subagent events (best-effort, hard timeout) ---
+        merged_subagent_events: list[dict] = []
+        if registry is not None:
+            try:
+                tasks = await registry.get_all_tasks()
+            except Exception:
+                tasks = []
+            try:
+                merged_subagent_events = await asyncio.wait_for(
+                    self._drain_killed_subagent_events(thread_id, tasks),
+                    timeout=get_stop_drain_timeout(),
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"[StopTeardown] Subagent drain exceeded "
+                    f"{get_stop_drain_timeout()}s for thread_id={thread_id}; "
+                    "proceeding without drained events"
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"[StopTeardown] Subagent drain failed for "
+                    f"thread_id={thread_id}: {exc}"
+                )
+
+        # --- 3. Cancel orphan collectors so they can't mutate the response ---
+        collectors = list(self._orphan_collectors.get(thread_id, set()))
+        for collector in collectors:
+            if not collector.done():
+                collector.cancel()
+        if collectors:
+            with suppress(Exception):
+                await asyncio.gather(*collectors, return_exceptions=True)
+        self._orphan_collectors.pop(thread_id, None)
+
+        # --- 4. Kill subagents + wipe the registry ---
+        with suppress(Exception):
+            await registry_store.cancel_and_clear(thread_id, force=True)
+
+        # Stash merged events for _mark_cancelled to fold into persisted sse_events.
+        if merged_subagent_events:
+            async with self.task_lock:
+                ti = self.tasks.get((thread_id, run_id))
+                if ti is not None:
+                    ti.metadata["_stop_subagent_events"] = merged_subagent_events
+
+    async def _drain_killed_subagent_events(
+        self, thread_id: str, tasks: list
+    ) -> list[dict]:
+        """Synchronously read each task's already-captured events (non-blocking).
+
+        Reads the in-memory tail + Redis spill and marks each killed subagent
+        "stopped". No wait loop — never starts new work.
+        """
+        merged: list[dict] = []
+        for task in tasks:
+            if getattr(task, "captured_event_count", 0) <= 0:
+                continue
+            async for record in iter_subagent_events_full(thread_id, task):
+                enriched = _record_to_persist_event(record, thread_id)
+                merged.append(enriched)
+            # Mark the killed subagent's stream "stopped" for replay.
+            agent_id = f"task:{getattr(task, 'task_id', '')}"
+            merged.append(
+                {
+                    "event": "message_chunk",
+                    "data": {
+                        "thread_id": thread_id,
+                        "agent": agent_id,
+                        "id": f"{agent_id}:stopped",
+                        "role": "assistant",
+                        "finish_reason": "stopped",
+                    },
+                }
+            )
+        return merged
 
     async def _buffer_event_redis(self, thread_id: str, run_id: str, event: str):
         """Append a workflow event to the per-run Redis Stream."""
@@ -836,7 +977,7 @@ class BackgroundTaskManager:
                     f"[SubagentCollector] Spawning orphan collector for "
                     f"{len(orphaned_tasks)} timed-out task(s), thread_id={thread_id}"
                 )
-                asyncio.create_task(
+                orphan_task = asyncio.create_task(
                     self._collect_orphaned_subagent_results(
                         thread_id=thread_id,
                         response_id=response_id,
@@ -850,6 +991,7 @@ class BackgroundTaskManager:
                     ),
                     name=f"subagent-orphan-collector-{thread_id}",
                 )
+                self._track_orphan_collector(thread_id, orphan_task)
 
             collected_tasks = [t for t in tasks if t not in pending.values()]
             await self._persist_subagent_usage(
@@ -1287,8 +1429,8 @@ class BackgroundTaskManager:
         """Wait until _mark_completed has finished persisting for the given turn.
 
         Captures the ``persistence_complete`` event reference under the lock
-        so a concurrent ``wait_for_soft_interrupted`` deletion of the entry
-        doesn't make us drop a still-pending wait on the floor.
+        so a concurrent admission deletion of the entry doesn't make us drop a
+        still-pending wait on the floor.
         """
         if timeout is None:
             timeout = get_wait_for_persistence_timeout()
@@ -1395,272 +1537,6 @@ class BackgroundTaskManager:
         task_info.persistence_complete.set()
         async with self.task_lock:
             self._release_terminal_refs(thread_id, run_id)
-
-    async def _mark_soft_interrupted(self, thread_id: str, run_id: str) -> None:
-        """Mark workflow as soft-interrupted (ESC)."""
-        key = (thread_id, run_id)
-        async with self.task_lock:
-            task_info = self.tasks.get(key)
-            if not task_info:
-                return
-
-            task_info.status = TaskStatus.SOFT_INTERRUPTED
-            task_info.completed_at = datetime.now()
-            metadata = task_info.metadata
-
-        logger.info(f"[BackgroundTaskManager] Marked as soft-interrupted: {key}")
-
-        workspace_id = metadata.get("workspace_id")
-        user_id = metadata.get("user_id")
-
-        if workspace_id and user_id:
-            try:
-                from src.server.services.persistence.conversation import ConversationPersistenceService
-
-                persistence_service = metadata.get("persistence_service")
-                if persistence_service is None:
-                    persistence_service = ConversationPersistenceService.get_instance(
-                        thread_id, run_id,
-                        workspace_id=workspace_id, user_id=user_id,
-                    )
-                persistence_service._on_pair_persisted = (
-                    lambda: self.clear_event_buffer(thread_id, run_id)
-                )
-
-                _, per_call_records = get_token_usage_from_callback(
-                    metadata, "interrupt", thread_id
-                )
-                tool_usage = get_tool_usage_from_handler(
-                    metadata, "interrupt", thread_id
-                )
-                sse_events = get_sse_events_from_handler(
-                    metadata, "interrupt", thread_id
-                )
-                execution_time = calculate_execution_time(metadata)
-
-                persist_metadata = {
-                    "msg_type": metadata.get("msg_type"),
-                    "stock_code": metadata.get("stock_code"),
-                    "agent_llm_preset": metadata.get("agent_llm_preset", "default"),
-                    "deepthinking": metadata.get("deepthinking", False),
-                    "is_byok": metadata.get("is_byok", False),
-                    "soft_interrupted": True,
-                }
-
-                response_id = await persistence_service.persist_interrupt(
-                    interrupt_reason="soft_interrupt",
-                    execution_time=execution_time,
-                    metadata=persist_metadata,
-                    per_call_records=per_call_records,
-                    tool_usage=tool_usage,
-                    sse_events=sse_events,
-                )
-                logger.info(f"[WorkflowPersistence] Soft interrupt persisted for {key}")
-
-                from src.server.services.background_registry_store import BackgroundRegistryStore
-                bg_store = BackgroundRegistryStore.get_instance()
-                bg_registry = await bg_store.get_registry(thread_id)
-
-                if bg_registry and bg_registry.has_pending_tasks():
-                    logger.info(
-                        f"[WorkflowPersistence] {bg_registry.pending_count} subagents still running, "
-                        f"spawning result collector for {key}"
-                    )
-                    asyncio.create_task(
-                        self._collect_subagent_results_after_interrupt(
-                            thread_id=thread_id,
-                            response_id=response_id,
-                            original_chunks=sse_events or [],
-                            bg_registry=bg_registry,
-                            workspace_id=workspace_id,
-                            user_id=user_id,
-                            timeout=get_subagent_collector_timeout(),
-                            is_byok=metadata.get("is_byok", False),
-                        ),
-                        name=f"subagent-collector-{thread_id}-{run_id}",
-                    )
-            except Exception as persist_error:
-                logger.error(
-                    f"[WorkflowPersistence] Failed to persist soft interrupt for {key}: {persist_error}",
-                    exc_info=True,
-                )
-
-        if user_id:
-            await release_burst_slot(user_id)
-
-        try:
-            tracker = WorkflowTracker.get_instance()
-            await tracker.mark_soft_interrupted(thread_id, run_id=run_id)
-        except Exception as tracker_err:
-            logger.warning(
-                f"[BackgroundTaskManager] tracker.mark_soft_interrupted failed for {key}: {tracker_err}"
-            )
-
-        task_info.persistence_complete.set()
-        async with self.task_lock:
-            self._release_terminal_refs(thread_id, run_id)
-
-    async def _collect_subagent_results_after_interrupt(
-        self,
-        thread_id: str,
-        response_id: str,
-        original_chunks: list[dict[str, Any]],
-        bg_registry: Any,
-        workspace_id: str,
-        user_id: str,
-        timeout: float | None = None,
-        is_byok: bool = False,
-    ) -> None:
-        if timeout is None:
-            timeout = get_subagent_collector_timeout()
-
-        try:
-            # Same identity-safe claim as _mark_completed: hold the registry
-            # lock and filter by spawned_run_id so concurrent collectors can't
-            # double-claim and prior-turn subagents can't leak into this turn.
-            async with bg_registry._lock:
-                all_tasks = []
-                for t in bg_registry._tasks.values():
-                    if t.collector_response_id:
-                        continue
-                    if t.spawned_run_id is not None and t.spawned_run_id != response_id:
-                        continue
-                    t.collector_response_id = response_id
-                    all_tasks.append(t)
-
-            for task in all_tasks:
-                if not task.completed and task.asyncio_task and task.asyncio_task.done():
-                    task.completed = True
-                    try:
-                        task.result = task.asyncio_task.result()
-                    except Exception as e:
-                        task.error = str(e)
-                        task.result = {"success": False, "error": str(e)}
-
-            subagent_agent_ids = {f"task:{t.task_id}" for t in all_tasks}
-
-            logger.info(
-                f"[SubagentCollector] Starting incremental collection for "
-                f"thread_id={thread_id}, total_tasks={len(all_tasks)}, "
-                f"pending={bg_registry.pending_count}"
-            )
-
-            main_chunks = [
-                c for c in original_chunks
-                if c.get("data", {}).get("agent", "") not in subagent_agent_ids
-            ]
-
-            all_subagent_events: list[dict] = []
-
-            for task in all_tasks:
-                if task.completed and task.captured_event_count > 0:
-                    async for record in iter_subagent_events_full(thread_id, task):
-                        enriched = _record_to_persist_event(record, thread_id)
-                        all_subagent_events.append(enriched)
-
-            pending = {
-                t.asyncio_task: t for t in all_tasks
-                if t.is_pending and t.asyncio_task
-            }
-
-            if all_subagent_events:
-                await self._persist_collected_events(
-                    main_chunks, all_subagent_events, response_id,
-                    thread_id, workspace_id, user_id,
-                )
-
-            if not pending:
-                if not all_subagent_events:
-                    logger.info(
-                        f"[SubagentCollector] No subagent events captured "
-                        f"for thread_id={thread_id}"
-                    )
-                await self._persist_subagent_usage(
-                    response_id, all_tasks, thread_id, workspace_id, user_id,
-                    is_byok=is_byok,
-                )
-                await self._await_drain_and_cleanup_tasks(all_tasks, thread_id)
-                return
-
-            deadline = time.time() + timeout
-
-            while pending:
-                remaining_timeout = deadline - time.time()
-                if remaining_timeout <= 0:
-                    logger.warning(
-                        f"[SubagentCollector] Timeout for thread_id={thread_id}, "
-                        f"{len(pending)} tasks still pending"
-                    )
-                    break
-
-                done, _ = await asyncio.wait(
-                    pending.keys(),
-                    timeout=remaining_timeout,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-
-                if not done:
-                    break
-
-                for asyncio_task in done:
-                    task = pending.pop(asyncio_task)
-
-                    async with bg_registry._lock:
-                        task.completed = True
-                        try:
-                            task.result = asyncio_task.result()
-                        except Exception as e:
-                            task.error = str(e)
-                            task.result = {"success": False, "error": str(e)}
-
-                    if task.captured_event_count > 0:
-                        async for record in iter_subagent_events_full(thread_id, task):
-                            enriched = _record_to_persist_event(record, thread_id)
-                            all_subagent_events.append(enriched)
-
-                    logger.info(
-                        f"[SubagentCollector] {task.display_id} completed, "
-                        f"persisting {len(all_subagent_events)} total events"
-                    )
-
-                if all_subagent_events:
-                    await self._persist_collected_events(
-                        main_chunks, all_subagent_events, response_id,
-                        thread_id, workspace_id, user_id,
-                    )
-
-            if pending:
-                orphaned_tasks = list(pending.values())
-                logger.info(
-                    f"[SubagentCollector] Spawning orphan collector for "
-                    f"{len(orphaned_tasks)} timed-out task(s), thread_id={thread_id}"
-                )
-                asyncio.create_task(
-                    self._collect_orphaned_subagent_results(
-                        thread_id=thread_id,
-                        response_id=response_id,
-                        main_chunks=main_chunks,
-                        prior_subagent_events=list(all_subagent_events),
-                        tasks=orphaned_tasks,
-                        workspace_id=workspace_id,
-                        user_id=user_id,
-                        is_byok=is_byok,
-                    ),
-                    name=f"subagent-orphan-collector-{thread_id}",
-                )
-
-            collected_tasks = [t for t in all_tasks if t not in pending.values()]
-            await self._persist_subagent_usage(
-                response_id, collected_tasks, thread_id, workspace_id, user_id,
-                is_byok=is_byok,
-            )
-            await self._await_drain_and_cleanup_tasks(collected_tasks, thread_id)
-
-        except Exception as e:
-            logger.error(
-                f"[SubagentCollector] Failed for thread_id={thread_id}: {e}",
-                exc_info=True,
-            )
 
     async def _persist_collected_events(
         self,
@@ -1820,10 +1696,13 @@ class BackgroundTaskManager:
             task_info.status = TaskStatus.CANCELLED
             task_info.completed_at = datetime.now()
             metadata = task_info.metadata
-            # Only user-driven cancels set explicit_cancel; system force-cancels
-            # (shutdown timeout, abandoned-task cleanup) reach here via task.cancel()
-            # with the flag unset and must not be persisted as user actions.
-            cancelled_by_user = bool(task_info.explicit_cancel)
+            # Persist as a user action ONLY for a user-pressed Stop. Both user
+            # stops and system cancels (graceful shutdown via cancel_workflow,
+            # stale-sandbox recovery via cancel_stale_workflow) set
+            # ``explicit_cancel``, so keying off that would mislabel a pod-roll
+            # or workspace eviction as a user "Stopped" turn. ``user_stop`` is
+            # set only by the HTTP /cancel path.
+            cancelled_by_user = bool(task_info.user_stop)
 
         logger.debug(f"[BackgroundTaskManager] Marked as cancelled: {key}")
 
@@ -1850,9 +1729,32 @@ class BackgroundTaskManager:
                 tool_usage = get_tool_usage_from_handler(
                     metadata, "cancellation", thread_id
                 )
-                sse_events = get_sse_events_from_handler(
-                    metadata, "cancellation", thread_id
-                )
+                # Reconcile the transcript at the stop point: close any open
+                # reasoning / tool-call / artifact / message structures so replay
+                # doesn't render zombies. Only for user-driven stops; system
+                # cancels (shutdown/abandoned) leave the raw events untouched.
+                handler = metadata.get("handler")
+                if cancelled_by_user and handler is not None and hasattr(
+                    handler, "finalize_stopped_events"
+                ):
+                    try:
+                        sse_events = handler.finalize_stopped_events()
+                    except Exception as recon_err:
+                        logger.warning(
+                            f"[WorkflowPersistence] finalize_stopped_events failed "
+                            f"for {key}: {recon_err}"
+                        )
+                        sse_events = get_sse_events_from_handler(
+                            metadata, "cancellation", thread_id
+                        )
+                else:
+                    sse_events = get_sse_events_from_handler(
+                        metadata, "cancellation", thread_id
+                    )
+                # Fold in killed-subagent events drained during teardown.
+                stop_subagent_events = metadata.get("_stop_subagent_events")
+                if stop_subagent_events:
+                    sse_events = (sse_events or []) + stop_subagent_events
                 execution_time = calculate_execution_time(metadata)
 
                 persist_metadata = {
@@ -1975,12 +1877,24 @@ class BackgroundTaskManager:
             )
 
     async def cancel_workflow(
-        self, thread_id: str, run_id: Optional[str] = None
+        self, thread_id: str, run_id: Optional[str] = None,
+        *, user_initiated: bool = True,
     ) -> bool:
-        """Cancel a running workflow.
+        """Cancel a running workflow immediately.
+
+        ``user_initiated`` distinguishes a user pressing Stop (HTTP /cancel,
+        the default) from a system-driven cancel (graceful shutdown). Only
+        user stops are persisted as cancelled-by-user "Stopped" turns.
 
         ``run_id`` may be omitted — falls back to the most recent active
         run on the thread.
+
+        Sets the cooperative cancel flag AND force-cancels the in-flight
+        ``inner_task`` so a long LLM/tool/sandbox step is interrupted now
+        rather than at the next event boundary. Only ``inner_task`` is
+        cancelled (mirroring ``cancel_stale_workflow``), so the outer task's
+        ``except asyncio.CancelledError`` teardown runs uncancelled and can
+        flush + persist. Does NOT block the HTTP response on exit.
         """
         async with self.task_lock:
             if run_id is not None:
@@ -2005,6 +1919,9 @@ class BackgroundTaskManager:
 
             task_info.cancel_event.set()
             task_info.explicit_cancel = True
+            task_info.user_stop = user_initiated
+            if task_info.inner_task and not task_info.inner_task.done():
+                task_info.inner_task.cancel()
             logger.debug(
                 f"[BackgroundTaskManager] Cancellation signaled: "
                 f"thread_id={thread_id} run_id={task_info.run_id}"
@@ -2036,71 +1953,6 @@ class BackgroundTaskManager:
                 )
         return True
 
-    async def soft_interrupt_workflow(self, thread_id: str) -> Dict[str, Any]:
-        """Soft interrupt the latest running workflow on the given thread."""
-        async with self.task_lock:
-            task_info = self._find_active_for_thread(thread_id)
-            if not task_info:
-                logger.warning(
-                    f"[BackgroundTaskManager] Cannot soft interrupt {thread_id}: "
-                    f"workflow not found"
-                )
-                return {
-                    "status": "not_found",
-                    "thread_id": thread_id,
-                    "can_resume": False,
-                    "background_tasks": [],
-                    "active_subagents": [],
-                    "completed_subagents": [],
-                }
-
-            active_tasks: list[str] = []
-            completed_tasks: list[str] = []
-            try:
-                from src.server.services.background_registry_store import BackgroundRegistryStore
-                registry = await BackgroundRegistryStore.get_instance().get_registry(thread_id)
-                if registry:
-                    for task in await registry.get_all_tasks():
-                        if task.is_pending:
-                            active_tasks.append(task.task_id)
-                        else:
-                            completed_tasks.append(task.task_id)
-            except Exception:
-                pass
-
-            if task_info.status not in [TaskStatus.QUEUED, TaskStatus.RUNNING]:
-                logger.info(
-                    f"[BackgroundTaskManager] Cannot soft interrupt {thread_id}: "
-                    f"status={task_info.status}"
-                )
-                return {
-                    "status": task_info.status.value,
-                    "thread_id": thread_id,
-                    "run_id": task_info.run_id,
-                    "can_resume": False,
-                    "background_tasks": active_tasks,
-                    "active_subagents": active_tasks,
-                    "completed_subagents": completed_tasks,
-                }
-
-            task_info.soft_interrupt_event.set()
-            task_info.soft_interrupted = True
-            logger.info(
-                f"[BackgroundTaskManager] Soft interrupt signaled: "
-                f"thread_id={thread_id} run_id={task_info.run_id}, "
-                f"active_subagents={active_tasks}"
-            )
-
-            return {
-                "status": "soft_interrupted",
-                "thread_id": thread_id,
-                "run_id": task_info.run_id,
-                "can_resume": True,
-                "background_tasks": active_tasks,
-                "active_subagents": active_tasks,
-                "completed_subagents": completed_tasks,
-            }
-
     async def get_workflow_status(self, thread_id: str) -> Dict[str, Any]:
         """Get detailed status for the latest run on a thread."""
         async with self.task_lock:
@@ -2126,7 +1978,6 @@ class BackgroundTaskManager:
                 "status": task_info.status.value,
                 "thread_id": thread_id,
                 "run_id": task_info.run_id,
-                "soft_interrupted": task_info.soft_interrupted,
                 "active_tasks": active_tasks,
                 "created_at": task_info.created_at.isoformat() if task_info.created_at else None,
                 "started_at": task_info.started_at.isoformat() if task_info.started_at else None,
@@ -2134,83 +1985,66 @@ class BackgroundTaskManager:
                 "active_connections": task_info.active_connections,
             }
 
-    async def wait_for_soft_interrupted(
+    async def wait_for_admission(
         self,
         thread_id: str,
-        timeout: float | None = None,
         exclude_run_id: Optional[str] = None,
-    ) -> bool:
-        """Wait for the latest active workflow on the thread to settle.
+    ) -> str:
+        """Decide whether a new turn can start on ``thread_id``.
 
-        Called before starting a new workflow on the same ``thread_id`` to
-        ensure clean continuation after an ESC interrupt. Per-thread (not
-        per-run) because callers are deciding whether a new run is admissible.
+        Returns one of:
+        - ``"fresh"``  — no active task (or a cancelled one finished winding
+          down within the wait): start a new turn.
+        - ``"running"`` — a turn is genuinely running: the caller should steer
+          it (or 409 if steering fails).
+        - ``"stopping"`` — a turn was explicitly cancelled and is still tearing
+          down past the wait: 409 "stopping, retry" (never start a second
+          writer while ``_flush_checkpoint`` may still be writing this thread).
 
         ``exclude_run_id`` lets dispatched callers ignore their own
         pre-registered placeholder while checking for OTHER active runs.
         """
-        if timeout is None:
-            timeout = get_soft_interrupt_wait_timeout()
         async with self.task_lock:
             task_info = self._find_active_for_thread(
                 thread_id, exclude_run_id=exclude_run_id
             )
             if not task_info:
-                return True
-
-            if task_info.status not in [
-                TaskStatus.QUEUED, TaskStatus.RUNNING,
-                TaskStatus.SOFT_INTERRUPTED,
-            ]:
-                return True
-
-            if not task_info.soft_interrupted and task_info.status != TaskStatus.SOFT_INTERRUPTED:
-                timeout = min(timeout, 5.0)
-
+                return "fresh"
+            if task_info.status not in (TaskStatus.QUEUED, TaskStatus.RUNNING):
+                return "fresh"
+            explicit = bool(task_info.explicit_cancel)
             task = task_info.task
             key = (task_info.thread_id, task_info.run_id)
 
-        if not task:
-            return True
+        if not explicit:
+            # Genuinely running — caller routes to steering.
+            return "running"
 
+        if task is None:
+            return "fresh"
+
+        # Explicitly cancelled and winding down. NEVER bare-await the task: it
+        # ends via ``raise CancelledError``, and a bare await would re-raise
+        # that into this (new) request handler. ``asyncio.wait`` swallows the
+        # task's exception so the caller is unaffected.
+        timeout = get_checkpoint_flush_timeout() + 2.0
         logger.info(
-            f"[BackgroundTaskManager] Waiting for soft-interrupted workflow "
-            f"{key} to complete (timeout={timeout}s)"
+            f"[BackgroundTaskManager] Waiting for stopping workflow {key} "
+            f"to finish teardown (timeout={timeout}s)"
         )
-
-        try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
-
+        done, _ = await asyncio.wait({task}, timeout=timeout)
+        if done:
             async with self.task_lock:
-                task_info = self.tasks.get(key)
-                if task_info and task_info.status in (
-                    TaskStatus.SOFT_INTERRUPTED, TaskStatus.COMPLETED,
-                ):
-                    logger.info(
-                        f"[BackgroundTaskManager] Cleaning up {task_info.status.value} "
-                        f"task {key}"
-                    )
+                ti = self.tasks.get(key)
+                if ti and ti.status in (TaskStatus.CANCELLED, TaskStatus.COMPLETED):
                     del self.tasks[key]
+            return "fresh"
 
-            logger.info(
-                f"[BackgroundTaskManager] Previous workflow {key} "
-                f"completed, ready for new request"
-            )
-            return True
-        except asyncio.TimeoutError:
-            logger.warning(
-                f"[BackgroundTaskManager] Timeout waiting for soft-interrupted "
-                f"workflow {key} after {timeout}s"
-            )
-            return False
-        except asyncio.CancelledError:
-            return True
-        except Exception as e:
-            logger.warning(
-                f"[BackgroundTaskManager] Error waiting for soft-interrupted "
-                f"workflow {key}: {e}"
-            )
-            return True
+        logger.warning(
+            f"[BackgroundTaskManager] Stopping workflow {key} still tearing "
+            f"down after {timeout}s; rejecting new turn with 409"
+        )
+        return "stopping"
 
     async def get_stats(self) -> Dict[str, Any]:
         async with self.task_lock:

@@ -265,35 +265,34 @@ async def astream_ptc_workflow(
         # =====================================================================
         # Early steering routing
         # =====================================================================
-        # If a workflow is already running (or soft-interrupted) for this
-        # thread, route this POST through the steering queue *before* any DB
-        # write. ``persist_query_start`` uses ``ON CONFLICT (thread_id,
-        # turn_index) DO UPDATE`` and the persistence singleton's cached
-        # ``_turn_index_cache`` is shared across concurrent POSTs on the same
-        # thread, so a second persist_query_start here would overwrite the
-        # currently-running turn's original query content with the steering
-        # text. Detecting steering here keeps ``conversation_queries`` clean
-        # and lets ``backfill_steering_queries`` write the canonical
-        # ``type='steering'`` row after the workflow completes.
+        # If a workflow is already running for this thread, route this POST
+        # through the steering queue *before* any DB write. ``persist_query_start``
+        # uses ``ON CONFLICT (thread_id, turn_index) DO UPDATE`` and the
+        # persistence singleton's cached ``_turn_index_cache`` is shared across
+        # concurrent POSTs on the same thread, so a second persist_query_start
+        # here would overwrite the currently-running turn's original query
+        # content with the steering text. Detecting steering here keeps
+        # ``conversation_queries`` clean and lets ``backfill_steering_queries``
+        # write the canonical ``type='steering'`` row after the workflow completes.
         workspace_manager = WorkspaceManager.get_instance()
         needs_startup = not workspace_manager.has_ready_session(workspace_id)
         # When the workspace was evicted/restarted, any in-BTM TaskInfo for
-        # this thread holds a stale sandbox reference. ``wait_or_steer``
-        # would block up to ~5s waiting on that zombie before timing out —
-        # cancel it first so steering routes against live state only.
+        # this thread holds a stale sandbox reference — cancel it first so
+        # admission/steering routes against live state only.
         if needs_startup:
             await manager.cancel_stale_workflow(thread_id)
         # Dispatched flow owns the BTM placeholder ``threads.py`` already
         # reserved for it under the same ``(thread_id, run_id)`` key.
         # We still must guarantee at most one in-flight LangGraph ``astream``
-        # per ``thread_id`` (the checkpointer is thread-keyed), so wait for
-        # any OTHER active run on the thread to settle. ``exclude_run_id``
-        # skips our own placeholder.
+        # per ``thread_id`` (the checkpointer is thread-keyed), so admit only
+        # when no OTHER run is active on the thread. ``exclude_run_id`` skips
+        # our own placeholder; a running or still-stopping peer means 409
+        # (dispatched flows can't steer).
         if dispatched:
-            settled = await manager.wait_for_soft_interrupted(
+            state = await manager.wait_for_admission(
                 thread_id, exclude_run_id=run_id
             )
-            if not settled:
+            if state != "fresh":
                 raise HTTPException(
                     status_code=409,
                     detail=(

@@ -59,9 +59,16 @@ def extract_state_values(checkpoint_tuple) -> dict:
 
 async def cancel_workflow(thread_id: str) -> dict:
     """
-    Explicitly cancel a workflow execution.
+    Explicitly cancel a workflow execution (user stop).
 
-    Sets cancellation flag that the streaming generator will check.
+    Signal-only: sets the cancel flag, marks status, and force-cancels the
+    in-flight task via ``manager.cancel_workflow`` (which interrupts the
+    current step immediately). The subagent kill + registry wipe is owned by
+    the single-owner teardown in ``BackgroundTaskManager`` when the
+    ``CancelledError`` lands — this handler only runs ``cancel_and_clear`` as a
+    safety net when no active task exists (e.g. an orphaned registry left by a
+    crash), so the deterministic teardown sequence (flush → drain → clear →
+    persist) isn't raced.
 
     Args:
         thread_id: Thread ID to cancel
@@ -98,18 +105,21 @@ async def cancel_workflow(thread_id: str) -> dict:
                 f"Could not cancel background task for {thread_id} "
                 "(may be already completed or not found)"
             )
+            # Safety net: no active task owns the teardown, so wipe any
+            # orphaned registry left behind (e.g. after a crash). When a task
+            # IS active, its except-handler teardown owns cancel_and_clear and
+            # we must NOT race it here.
+            from src.server.services.background_registry_store import (
+                BackgroundRegistryStore,
+            )
+
+            registry_store = BackgroundRegistryStore.get_instance()
+            await registry_store.cancel_and_clear(thread_id, force=True)
 
         if not success:
             logger.warning(
                 f"Failed to set cancel flag for {thread_id} (Redis may be unavailable)"
             )
-
-        from src.server.services.background_registry_store import (
-            BackgroundRegistryStore,
-        )
-
-        registry_store = BackgroundRegistryStore.get_instance()
-        await registry_store.cancel_and_clear(thread_id, force=True)
 
         logger.info(f"Workflow cancelled: {thread_id}")
 
@@ -123,37 +133,6 @@ async def cancel_workflow(thread_id: str) -> dict:
         logger.exception(f"Error cancelling workflow {thread_id}: {e}")
         raise HTTPException(
             status_code=500, detail=f"Failed to cancel workflow: {str(e)}"
-        )
-
-
-async def soft_interrupt_workflow(thread_id: str) -> dict:
-    """
-    Soft interrupt a workflow - pause main agent, keep subagents running.
-
-    Args:
-        thread_id: Thread ID to soft interrupt
-
-    Returns:
-        Status including whether workflow can be resumed and active subagents
-    """
-    try:
-        from src.server.services.background_task_manager import BackgroundTaskManager
-
-        manager = BackgroundTaskManager.get_instance()
-
-        result = await manager.soft_interrupt_workflow(thread_id)
-
-        logger.info(
-            f"Workflow soft interrupted: {thread_id}, "
-            f"background_tasks={result.get('background_tasks', [])}"
-        )
-
-        return result
-
-    except Exception as e:
-        logger.exception(f"Error soft interrupting workflow {thread_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to soft interrupt workflow: {str(e)}"
         )
 
 
@@ -224,7 +203,6 @@ async def get_workflow_status(thread_id: str) -> dict:
 
         # Get subagent info from background task manager
         active_tasks = []
-        soft_interrupted = False
         run_id = None
 
         try:
@@ -236,7 +214,6 @@ async def get_workflow_status(thread_id: str) -> dict:
             bg_status = await manager.get_workflow_status(thread_id)
             if bg_status.get("status") != "not_found":
                 active_tasks = bg_status.get("active_tasks", [])
-                soft_interrupted = bg_status.get("soft_interrupted", False)
                 run_id = bg_status.get("run_id")
             elif can_reconnect:
                 # Redis says active/disconnected but BackgroundTaskManager has no
@@ -293,7 +270,6 @@ async def get_workflow_status(thread_id: str) -> dict:
             "user_id": user_id,
             "progress": checkpoint_info,
             "active_tasks": active_tasks,
-            "soft_interrupted": soft_interrupted,
             "is_shared": is_shared,
             "pending_report_back": pending_report_back,
         }

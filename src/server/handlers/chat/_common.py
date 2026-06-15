@@ -624,22 +624,37 @@ async def wait_or_steer(
     user_input: str,
     user_id: str,
 ) -> tuple[bool, str | None]:
-    """Wait for a soft-interrupted workflow, or steer the running workflow.
+    """Admit a new turn, or steer the genuinely-running one.
 
     Returns ``(ready, steering_event)`` where ``ready=True`` means the caller
     should proceed with a new workflow.  If ``ready=False`` and
     ``steering_event`` is not None, the caller should yield that SSE string
     and return.  If neither succeeds, raises HTTP 409.
+
+    Admission states (see ``BackgroundTaskManager.wait_for_admission``):
+    - ``"fresh"``    → start a new turn ``(True, None)``.
+    - ``"stopping"`` → an explicitly-cancelled turn is still tearing down;
+      409 "stopping, retry" (never start a second checkpoint writer).
+    - ``"running"``  → steer immediately (no wait); 409 only if steering fails.
     """
     # Deferred to avoid circular import: steering imports _common at
     # module level, so _common must not import steering at module level.
     from src.server.handlers.chat.steering import steer_thread
 
-    ready_for_new_request = await manager.wait_for_soft_interrupted(thread_id)
-    if ready_for_new_request:
+    state = await manager.wait_for_admission(thread_id)
+    if state == "fresh":
         return True, None
 
-    # Try to steer the running workflow
+    if state == "stopping":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Workflow {thread_id} is stopping. "
+                "Wait a moment, then retry your message."
+            ),
+        )
+
+    # state == "running" → steer the running workflow immediately.
     result = await steer_thread(thread_id, user_input, user_id)
     if result:
         event_data = json.dumps(
