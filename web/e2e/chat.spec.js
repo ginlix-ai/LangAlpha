@@ -473,9 +473,11 @@ test.describe('Chat View -- SSE Streaming', () => {
     await expect(page.getByText('Starting analysis...')).toBeVisible({ timeout: 10000 });
     await page.locator('button[title="Stop"]').click();
 
-    // Wait for the button to change to "Stopping..." (deterministic signal that
-    // the click handler ran), then confirm the cancel POST was sent.
-    await expect(page.locator('button[title="Stopping..."]')).toBeVisible({ timeout: 5000 });
+    // stopWorkflow optimistically clears loading so the stop feels instant, which
+    // immediately swaps the Stop button back to Send (the transient "Stopping..."
+    // title is never observable). Assert that swap as the deterministic signal the
+    // handler ran, then confirm the cancel POST fired.
+    await expect(page.locator('button[aria-label="Send message"]')).toBeVisible({ timeout: 5000 });
     await expect.poll(() => cancelCalled, { timeout: 5000 }).toBe(true);
   });
 
