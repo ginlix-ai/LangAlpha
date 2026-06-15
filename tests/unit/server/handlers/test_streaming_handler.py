@@ -917,6 +917,28 @@ class TestFinalizeStoppedEvents:
         )
         assert not handler.anthropic_tool_call_state
 
+    def test_same_agent_in_both_tool_states_closes_once(self):
+        """A mid-turn provider fallback can leave the same agent in both the
+        Response-API and Anthropic tool-call dicts; the stop must emit exactly
+        one tool-call close for that agent, not two."""
+        handler = self._handler()
+        handler.function_call_state[("agent", 0)] = {"name": "execute_code", "id": "c1"}
+        handler.anthropic_tool_call_state[("agent", 1)] = {"name": "execute_code", "id": "c2"}
+        handler._open_message_ids["agent"] = "msg-tool"
+
+        out = handler.finalize_stopped_events()
+
+        tool_closes = [
+            e
+            for e in out
+            if e["event"] == "tool_call_chunks"
+            and e["data"].get("agent") == "agent"
+            and e["data"].get("finish_reason") == "stopped"
+        ]
+        assert len(tool_closes) == 1
+        assert not handler.function_call_state
+        assert not handler.anthropic_tool_call_state
+
     def test_mid_artifact_gets_stopped_status(self):
         handler = self._handler()
         # Simulate an in-progress artifact.

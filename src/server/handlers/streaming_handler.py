@@ -1568,10 +1568,17 @@ class WorkflowStreamHandler:
 
             # 2. Close any in-flight tool-call streaming state with a terminal
             #    "stopped" close. Cover both Response API and Anthropic states.
+            #    An agent uses one LLM format per call, but a mid-turn provider
+            #    fallback can leave state in both dicts — dedup by agent so the
+            #    stop emits exactly one tool-call close per agent, not two.
+            closed_tool_agents: set = set()
             for state_key in list(self.function_call_state.keys()) + list(
                 self.anthropic_tool_call_state.keys()
             ):
                 agent_name = state_key[0]
+                if agent_name in closed_tool_agents:
+                    continue
+                closed_tool_agents.add(agent_name)
                 self._format_sse_event(
                     "tool_call_chunks",
                     {

@@ -20,7 +20,7 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta
-from typing import Dict, Any, AsyncIterator, Optional, Callable, Coroutine
+from typing import Dict, Any, AsyncIterator, Literal, Optional, Callable, Coroutine
 from enum import Enum
 from dataclasses import dataclass, field
 from contextlib import suppress
@@ -640,6 +640,12 @@ class BackgroundTaskManager:
                 explicit = bool(ti.explicit_cancel) if ti else False
 
             try:
+                # NB: suppress(Exception) below catches flush/teardown FAILURES
+                # only — NOT CancelledError (a BaseException). A second external
+                # cancel landing mid-teardown still propagates to `finally`; the
+                # asyncio.shield wrappers, not suppress, are what let these awaits
+                # finish across that re-cancel. Don't drop a shield assuming
+                # suppress already covers the cancellation case.
                 if explicit:
                     # 1. Flush the LangGraph checkpoint so the next message
                     #    resumes from the last committed boundary. Gated on
@@ -2008,7 +2014,7 @@ class BackgroundTaskManager:
         self,
         thread_id: str,
         exclude_run_id: Optional[str] = None,
-    ) -> str:
+    ) -> Literal["fresh", "running", "stopping"]:
         """Decide whether a new turn can start on ``thread_id``.
 
         Returns one of:
