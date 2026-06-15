@@ -25,12 +25,13 @@ import { formatPortfolioNavMarkdownLine, portfolioSummary } from './_holdingsHel
 type PortfolioConfig = { valuesHidden?: boolean };
 
 function rowToQuote(r: PortfolioRow) {
+  const hasQuote = r.quoteAvailable !== false;
   return {
     symbol: r.symbol,
-    price: r.price,
+    price: hasQuote ? r.price : undefined,
     shares: r.quantity ?? undefined,
-    marketValue: r.marketValue,
-    changePercent: r.unrealizedPlPercent ?? undefined,
+    marketValue: hasQuote ? r.marketValue ?? undefined : undefined,
+    changePercent: hasQuote ? r.unrealizedPlPercent ?? undefined : undefined,
   };
 }
 
@@ -68,7 +69,7 @@ function PortfolioWidget({ instance, updateConfig }: WidgetRenderProps<Portfolio
         widget_id: `${instance.id}/${rowId}`,
         label:
           row.symbol +
-          (row.unrealizedPlPercent != null
+          (row.quoteAvailable !== false && row.unrealizedPlPercent != null
             ? ` · ${row.unrealizedPlPercent >= 0 ? '+' : ''}${row.unrealizedPlPercent.toFixed(2)}%`
             : ''),
         description: t('dashboard.widgets.portfolio.title'),

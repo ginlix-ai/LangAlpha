@@ -56,6 +56,7 @@ export interface StockPrice {
   change: number;
   changePercent: number;
   isPositive: boolean;
+  quoteAvailable?: boolean;
   previousClose?: number | null;
   earlyTradingChangePercent?: number | null;
   lateTradingChangePercent?: number | null;

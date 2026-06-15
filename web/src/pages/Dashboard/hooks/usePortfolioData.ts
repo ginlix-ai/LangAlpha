@@ -18,9 +18,10 @@ export interface PortfolioRow {
   average_cost?: number | null;
   notes?: string;
   price: number;
-  marketValue?: number;
+  marketValue?: number | null;
   unrealizedPlPercent?: number | null;
   isPositive?: boolean;
+  quoteAvailable?: boolean;
   previousClose?: number | null;
   earlyTradingChangePercent?: number | null;
   lateTradingChangePercent?: number | null;
@@ -86,9 +87,10 @@ export function usePortfolioData() {
           const p = bySym[sym] || {} as Partial<StockPrice>;
           const q = Number(h.quantity || 0);
           const ac = h.average_cost != null ? Number(h.average_cost) : null;
-          const price = p.price ?? 0;
-          const marketValue = q * price;
-          const plPct = ac != null && ac > 0 ? ((price - ac) / ac) * 100 : null;
+          const quoteAvailable = p.quoteAvailable !== false && p.price != null;
+          const price = quoteAvailable ? p.price ?? 0 : 0;
+          const marketValue = quoteAvailable ? q * price : null;
+          const plPct = quoteAvailable && ac != null && ac > 0 ? ((price - ac) / ac) * 100 : null;
           return {
             user_portfolio_id: h.user_portfolio_id,
             symbol: sym,
@@ -98,7 +100,8 @@ export function usePortfolioData() {
             price,
             marketValue,
             unrealizedPlPercent: plPct,
-            isPositive: plPct == null ? true : plPct >= 0,
+            isPositive: quoteAvailable && plPct != null ? plPct >= 0 : true,
+            quoteAvailable,
             previousClose: p.previousClose ?? null,
             earlyTradingChangePercent: p.earlyTradingChangePercent ?? null,
             lateTradingChangePercent: p.lateTradingChangePercent ?? null,

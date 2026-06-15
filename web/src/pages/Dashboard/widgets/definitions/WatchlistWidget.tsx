@@ -30,9 +30,9 @@ function WatchlistWidget({ instance }: WidgetRenderProps<WatchlistConfig>) {
     full: () => {
       const rows = watchlist.rows.map((r) => ({
         symbol: r.symbol,
-        price: r.price,
-        change: r.change,
-        changePercent: r.changePercent,
+        price: r.quoteAvailable !== false ? r.price : undefined,
+        change: r.quoteAvailable !== false ? r.change : undefined,
+        changePercent: r.quoteAvailable !== false ? r.changePercent : undefined,
       }));
       const body = serializeQuoteRowsToMarkdown(rows);
       const text = wrapWidgetContext('watchlist.list', { count: rows.length }, body);
@@ -57,16 +57,20 @@ function WatchlistWidget({ instance }: WidgetRenderProps<WatchlistConfig>) {
       // hours info would need marketStatus + getExtendedHoursInfo here.
       const cleaned = {
         symbol: row.symbol,
-        price: row.price,
-        change: row.change,
-        changePercent: row.changePercent,
+        price: row.quoteAvailable !== false ? row.price : undefined,
+        change: row.quoteAvailable !== false ? row.change : undefined,
+        changePercent: row.quoteAvailable !== false ? row.changePercent : undefined,
       };
       const body = serializeQuoteRowToMarkdown(cleaned);
       const text = wrapWidgetContext('watchlist.list/row', { symbol: row.symbol }, body);
       return {
         widget_type: 'watchlist.list/row',
         widget_id: `${instance.id}/${rowId}`,
-        label: row.symbol + (row.changePercent !== undefined ? ` · ${row.changePercent >= 0 ? '+' : ''}${row.changePercent.toFixed(2)}%` : ''),
+        label:
+          row.symbol +
+          (row.quoteAvailable !== false && row.changePercent !== undefined
+            ? ` · ${row.changePercent >= 0 ? '+' : ''}${row.changePercent.toFixed(2)}%`
+            : ''),
         description: t('dashboard.widgets.watchlist.title'),
         captured_at: new Date().toISOString(),
         text,
