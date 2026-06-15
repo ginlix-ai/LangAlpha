@@ -43,7 +43,6 @@ module_log_levels:
 
   # Application modules (hierarchical - parent loggers affect all children)
   src.tools: INFO
-  src.infoflow: INFO
   src.deep_research: INFO
 
 # CORS Settings

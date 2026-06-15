@@ -327,5 +327,5 @@ web_fetch:
 embedding:
   model: embedding-small # Options: embedding-small, embedding-large (see src/llms/llm_config.json)
   batch_size: 100 # Number of texts to embed in a single batch
-  enable_auto_embedding: true # Auto-generate embeddings for new infoflow results
+  enable_auto_embedding: true
   hybrid_search_alpha: 0.5 # Balance between semantic (0.0) and keyword search (1.0)

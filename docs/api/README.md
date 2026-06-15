@@ -33,7 +33,6 @@ docs/api/
 ├── 70-market-data/              # Market data (intraday, daily, snapshots, search)
 ├── 72-news/                     # News feed & articles
 ├── 74-calendar/                 # Economic & earnings calendar
-├── 76-infoflow/                 # InfoFlow content feed
 ├── 78-insights/                 # AI market insights
 ├── 79-sec-proxy/                # SEC EDGAR document proxy
 ├── 80-cache/                    # Cache management
@@ -158,7 +157,6 @@ User identification is handled via:
 | Market Data | Intraday, daily, snapshots, search, overview | `/api/v1/market-data` |
 | News | News feed & articles | `/api/v1/news` |
 | Calendar | Economic & earnings calendar | `/api/v1/calendar` |
-| InfoFlow | InfoFlow content feed | `/api/v1/infoflow` |
 | Insights | AI market insights | `/api/v1/insights` |
 | SEC Proxy | SEC EDGAR document proxy | `/api/v1/sec-proxy` |
 | Cache | Cache stats & management | `/api/v1/cache` |

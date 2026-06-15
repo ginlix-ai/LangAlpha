@@ -33,15 +33,6 @@
   background: var(--color-border-muted);
 }
 
-/* Hide scrollbar for Popular cards horizontal scroll */
-.popular-scroll-hide::-webkit-scrollbar {
-  display: none;
-}
-.popular-scroll-hide {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-
 /* === Monospace utility for financial data === */
 .dashboard-mono {
   font-family: 'JetBrains Mono', 'Menlo', monospace;
@@ -67,15 +58,6 @@
 }
 .dashboard-table-row:hover {
   background-color: var(--color-bg-hover);
-}
-
-/* === Popular item lift === */
-.dashboard-popular-item {
-  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease;
-}
-.dashboard-popular-item:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
 }
 
 /* === Source badge (publisher initial in colored square) === */

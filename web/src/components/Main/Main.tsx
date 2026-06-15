@@ -8,7 +8,6 @@ import { ContextOverflowPill } from '@/components/ui/ContextOverflowPill';
 const Dashboard = React.lazy(() => import('../../pages/Dashboard/DashboardRouter'));
 const ChatAgent = React.lazy(() => import('../../pages/ChatAgent/ChatAgent'));
 const MarketView = React.lazy(() => import('../../pages/MarketView/MarketView'));
-const DetailPage = React.lazy(() => import('../../pages/Detail/DetailPage'));
 const NewsDetailPage = React.lazy(() => import('../../pages/Detail/NewsDetailPage'));
 const Automations = React.lazy(() => import('../../pages/Automations/Automations'));
 const Settings = React.lazy(() => import('../../pages/Settings/Settings'));
@@ -32,7 +31,6 @@ function Main() {
         <Route path="/automations" element={<Automations />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/news/:id" element={<NewsDetailPage />} />
-        <Route path="/detail/:indexNumber" element={<DetailPage />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </Suspense>

@@ -76,7 +76,7 @@ function FileHeaderActions({
   selectedFile,
   isEditing,
   workspaceId,
-  fileContent,
+  fileContent: _fileContent,
   fileMime,
   canEdit,
   onStartEdit,

@@ -316,7 +316,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const chatInputRef = useRef<ChatInputHandle>(null);
   const location = useLocation();
   const navigate = useNavigate();
-  const { preferences } = usePreferences();
+  usePreferences();
   const queryClient = useQueryClient();
   const initialMessageSentRef = useRef(false);
   // Guards one-shot consumption of the ?file= deep link (report share / copy link).

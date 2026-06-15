@@ -91,14 +91,6 @@ interface EarningsResponse {
   count: number;
 }
 
-interface InfoFlowResponse {
-  results: Record<string, unknown>[];
-  total: number;
-  limit: number;
-  offset: number;
-  has_more: boolean;
-}
-
 // --- Market data (see docs/ptc-agent-api/market data) ---
 
 /** Index symbols: normalized (GSPC, IXIC, DJI, RUT). Index.yml / Index Batch.yml use these. */
@@ -589,40 +581,6 @@ export async function getInsightDetail(marketInsightId: string): Promise<Record<
 export async function generatePersonalizedInsight(): Promise<Record<string, unknown>> {
   const { data } = await api.post('/api/v1/insights/generate');
   return data;
-}
-
-// --- InfoFlow (content feed — kept for PopularCard) ---
-
-/**
- * Fetch InfoFlow results filtered by category.
- * GET /api/v1/infoflow/results?category={cat}&limit={limit}&offset={offset}
- */
-export async function getInfoFlowResults(category: string, limit: number = 10, offset: number = 0): Promise<InfoFlowResponse> {
-  try {
-    const params: Record<string, string | number> = { limit, offset };
-    if (category) params.category = category;
-    const { data } = await api.get('/api/v1/infoflow/results', { params });
-    return data || { results: [], total: 0, limit, offset, has_more: false };
-  } catch (e: unknown) {
-    const err = e as { message?: string };
-    console.error('[API] getInfoFlowResults failed:', err?.message);
-    return { results: [], total: 0, limit, offset, has_more: false };
-  }
-}
-
-/**
- * Fetch InfoFlow result detail by indexNumber.
- * GET /api/v1/infoflow/results/{indexNumber}
- */
-export async function getInfoFlowDetail(indexNumber: string): Promise<Record<string, unknown> | null> {
-  try {
-    const { data } = await api.get(`/api/v1/infoflow/results/${encodeURIComponent(indexNumber)}`);
-    return data;
-  } catch (e: unknown) {
-    const err = e as { message?: string };
-    console.error('[API] getInfoFlowDetail failed:', err?.message);
-    return null;
-  }
 }
 
 // --- Earnings Calendar ---

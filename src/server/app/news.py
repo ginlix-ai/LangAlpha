@@ -1,4 +1,4 @@
-"""News feed endpoint — replaces the infoflow proxy for news sections."""
+"""News feed endpoint (general + ticker-filtered sections)."""
 
 from __future__ import annotations
 

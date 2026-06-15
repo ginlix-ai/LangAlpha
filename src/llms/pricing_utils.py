@@ -649,7 +649,6 @@ def get_output_cost(tokens: int, pricing: Dict[str, Any], input_tokens: int = 0)
 
         # Determine the tier index based on input tokens
         tier_index = 0
-        previous_max = 0
 
         for idx, tier in enumerate(output_tiers):
             max_tokens = tier.get('max_tokens')
@@ -662,8 +661,6 @@ def get_output_cost(tokens: int, pricing: Dict[str, Any], input_tokens: int = 0)
                 # Input falls in this tier
                 tier_index = idx
                 break
-
-            previous_max = max_tokens
 
         # Use the rate from the determined tier
         output_rate = output_tiers[tier_index].get('rate', 0)

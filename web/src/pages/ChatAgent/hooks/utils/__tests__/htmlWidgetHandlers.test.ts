@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import type { MessageRecord, SetMessages } from '../types';
 import { handleHtmlWidget } from '../streamEventHandlers';
 import { handleHistoryHtmlWidget } from '../historyEventHandlers';
@@ -73,7 +73,6 @@ describe('handleHtmlWidget (streaming)', () => {
 
   it('returns false when artifactType is not html_widget', () => {
     const refs = makeStreamRefs();
-    const initial = [makeAssistantMessage(assistantMessageId)];
     let called = false;
     const setMessages: SetMessages = () => { called = true; };
 

@@ -714,7 +714,6 @@ from src.server.app.market_data import router as market_data_router
 from src.server.app.users import router as users_router
 from src.server.app.watchlist import router as watchlist_router
 from src.server.app.portfolio import router as portfolio_router
-from src.server.app.infoflow import router as infoflow_router
 from src.server.app.news import router as news_router
 from src.server.app.calendar import router as calendar_router
 from src.server.app.sec_proxy import router as sec_proxy_router
@@ -769,9 +768,6 @@ app.include_router(
 app.include_router(
     portfolio_router
 )  # /api/v1/users/me/portfolio/* - Portfolio management
-app.include_router(
-    infoflow_router
-)  # /api/v1/infoflow/* - InfoFlow content feed (kept for PopularCard)
 app.include_router(news_router)  # /api/v1/news - News feed (general + ticker-filtered)
 app.include_router(calendar_router)  # /api/v1/calendar/* - Economic & earnings calendars
 app.include_router(sec_proxy_router)  # /api/v1/sec-proxy/* - SEC EDGAR document proxy

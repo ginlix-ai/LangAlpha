@@ -1112,10 +1112,10 @@ async def _sync_provenance_for_response(
     Imported lazily to avoid a circular import (provenance imports this module).
     Best-effort — the helper itself never raises.
     """
-    # context_window events (emitted per model call) re-enter this path with no
-    # provenance in the delta. Skip the extract + delete-then-insert when there's
-    # no provenance entry: nothing to (re)write, and within a turn events only
-    # accumulate, so "none now" means "none ever" for this response.
+    # Most persists carry no provenance (a turn with no external data access, or
+    # a non-provenance event drain). Skip the extract + delete-then-insert when
+    # there's no provenance entry: nothing to (re)write, and within a turn events
+    # only accumulate, so "none now" means "none ever" for this response.
     if not _sse_has_provenance(sse_events):
         return
 
@@ -1437,6 +1437,49 @@ async def update_sse_events(
 
     except Exception as e:
         logger.error(f"Error updating sse_events: {e}")
+        raise
+
+
+async def append_sse_event(
+    conversation_thread_id: str,
+    event: Dict[str, Any],
+    conn=None,
+) -> bool:
+    """Atomically append one SSE event to the thread's latest response blob.
+
+    A server-side ``sse_events || event`` JSONB concat scoped to the most-recent
+    response (by turn_index). Avoids reading the whole blob into Python and
+    rewriting it, and is race-free against concurrent appenders (the
+    read-modify-write it replaces is not). Returns True when a row was updated,
+    False when the thread has no response row yet.
+    """
+    sql = """
+        UPDATE conversation_responses
+        SET sse_events = COALESCE(sse_events, '[]'::jsonb) || %s::jsonb
+        WHERE conversation_response_id = (
+            SELECT conversation_response_id
+            FROM conversation_responses
+            WHERE conversation_thread_id = %s
+            ORDER BY turn_index DESC
+            LIMIT 1
+        )
+    """
+    params = (SafeJson([event]), conversation_thread_id)
+    try:
+        if conn:
+            async with conn.cursor() as cur:
+                await cur.execute(sql, params)
+                updated = cur.rowcount > 0
+        else:
+            async with get_db_connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(sql, params)
+                    updated = cur.rowcount > 0
+
+        return updated
+
+    except Exception as e:
+        logger.error(f"Error appending sse_event: {e}")
         raise
 
 

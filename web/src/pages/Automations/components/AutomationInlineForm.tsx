@@ -63,7 +63,7 @@ interface TickerAutocompleteProps {
 }
 
 function TickerAutocomplete({ value, onChange, placeholder = 'AAPL, SPX...' }: TickerAutocompleteProps) {
-  const { t } = useTranslation();
+  useTranslation();
   const [query, setQuery] = useState(value);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [showDropdown, setShowDropdown] = useState(false);

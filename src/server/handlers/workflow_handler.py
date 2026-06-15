@@ -724,26 +724,14 @@ async def trigger_offload(thread_id: str) -> dict:
 
 
 async def _persist_context_window_event(thread_id: str, data: dict) -> None:
-    """Append a context_window SSE event to the last response's sse_events for replay.
+    """Append a context_window SSE event to the latest response's sse_events for replay.
 
-    Best-effort: logs warnings on failure but never raises.
+    Best-effort: logs warnings on failure but never raises. Uses a server-side
+    JSONB append so we never read or rewrite the whole sse_events blob per model
+    call (the old read-modify-write also clobbered concurrent appends).
     """
     try:
-        from src.server.database.conversation import (
-            get_responses_for_thread,
-            update_sse_events,
-        )
-
-        responses, _ = await get_responses_for_thread(thread_id)
-        if not responses:
-            logger.debug(
-                f"No responses found for thread {thread_id}, skipping context_window persist"
-            )
-            return
-
-        last_response = responses[-1]
-        resp_id = str(last_response["conversation_response_id"])
-        existing_events = last_response.get("sse_events") or []
+        from src.server.database.conversation import append_sse_event
 
         cw_event = {
             "event": "context_window",
@@ -753,8 +741,12 @@ async def _persist_context_window_event(thread_id: str, data: dict) -> None:
                 **data,
             },
         }
-        existing_events.append(cw_event)
-        await update_sse_events(resp_id, existing_events)
+        updated = await append_sse_event(thread_id, cw_event)
+        if not updated:
+            logger.debug(
+                f"No responses found for thread {thread_id}, skipping context_window persist"
+            )
+            return
 
         logger.debug(
             f"Persisted context_window event ({data.get('action')}) "

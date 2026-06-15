@@ -62,67 +62,6 @@ function makeMockSSEStream(): {
   const pending: Array<(h: SSEStreamHandle) => void> = [];
   const handles: SSEStreamHandle[] = [];
 
-  function makeHandle(signal?: AbortSignal): SSEStreamHandle {
-    const encoder = new TextEncoder();
-    let pushChunk: ((c: Uint8Array | null) => void) | null = null;
-    let waiting: Promise<Uint8Array | null> = new Promise((resolve) => {
-      pushChunk = resolve;
-    });
-
-    let aborted = false;
-    if (signal) {
-      const onAbort = () => {
-        aborted = true;
-        // Resolve any pending read so the consumer's loop exits.
-        if (pushChunk) {
-          pushChunk(null);
-          waiting = new Promise((resolve) => {
-            pushChunk = resolve;
-          });
-        }
-      };
-      if (signal.aborted) onAbort();
-      else signal.addEventListener('abort', onAbort);
-    }
-
-    const stream = new ReadableStream<Uint8Array>({
-      async pull(controller) {
-        const chunk = await waiting;
-        waiting = new Promise((resolve) => {
-          pushChunk = resolve;
-        });
-        if (chunk === null) {
-          controller.close();
-          return;
-        }
-        controller.enqueue(chunk);
-      },
-    });
-
-    void stream; // attached below via Response
-
-    return {
-      push: async (chunk: string) => {
-        if (pushChunk) {
-          const fn = pushChunk;
-          pushChunk = null;
-          fn(encoder.encode(chunk));
-          // Yield so the consumer can drain.
-          await Promise.resolve();
-        }
-      },
-      close: async () => {
-        if (pushChunk) {
-          const fn = pushChunk;
-          pushChunk = null;
-          fn(null);
-          await Promise.resolve();
-        }
-      },
-      aborted: () => aborted,
-    };
-  }
-
   const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
     // Re-create per call so consecutive fetches don't share state.
     const encoder = new TextEncoder();

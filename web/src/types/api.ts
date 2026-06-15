@@ -205,16 +205,6 @@ export interface NewsResponse {
   next_cursor: string | null;
 }
 
-// --- InfoFlow ---
-
-export interface InfoFlowResponse {
-  results: unknown[];
-  total: number;
-  limit: number;
-  offset: number;
-  has_more: boolean;
-}
-
 // --- Earnings ---
 
 export interface EarningsEntry {

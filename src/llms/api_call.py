@@ -88,9 +88,6 @@ async def make_api_call(
 
     messages = create_messages(system_prompt, user_prompt)
 
-    # Get model name for logging
-    model_name = getattr(llm, 'model_name', 'unknown')
-
     # Use tracing_context to disable LangSmith tracing if requested
     with tracing_context(enabled=not disable_tracing):
         # Case 1: No schema requested, return raw content
@@ -249,6 +246,6 @@ async def parse_structured_output(llm: object, text: str, schema_class: Optional
         try:
             data = json.loads(content)
             return schema_class(**data)
-        except:
+        except Exception:
             raise e
     
