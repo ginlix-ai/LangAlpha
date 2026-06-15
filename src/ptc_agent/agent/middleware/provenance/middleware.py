@@ -82,6 +82,18 @@ _MARKET_DATA_KINDS = {
     "get_market_indices": "market_index",
 }
 
+# Market-data tools that all share _extract_market_data. Superset of
+# _MARKET_DATA_KINDS — also covers the symbol-less ones (screen/movers/sector).
+_MARKET_DATA_TOOLS = (
+    "get_stock_daily_prices",
+    "get_company_overview",
+    "get_market_indices",
+    "get_sector_performance",
+    "screen_stocks",
+    "get_options_chain",
+    "get_market_movers",
+)
+
 # Host-side bounds on the in-sandbox MCP trace (LLM-authored, untrusted): the
 # generated client is supposed to self-limit, but it's code the agent controls,
 # so re-clamp here so a poisoned/huge trace can't amplify into DB/SSE/render.
@@ -208,17 +220,8 @@ class ProvenanceMiddleware(AgentMiddleware):
             # consumed) and Grep (content matched) are.
             "Grep": self._extract_file_read,
             "ExecuteCode": self._extract_execute_code,
+            **dict.fromkeys(_MARKET_DATA_TOOLS, self._extract_market_data),
         }
-        for name in (
-            "get_stock_daily_prices",
-            "get_company_overview",
-            "get_market_indices",
-            "get_sector_performance",
-            "screen_stocks",
-            "get_options_chain",
-            "get_market_movers",
-        ):
-            self._extractors[name] = self._extract_market_data
 
     async def awrap_tool_call(
         self,
