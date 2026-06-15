@@ -350,10 +350,14 @@ export function handleHistoryTextContent({ assistantMessageId, content, finishRe
     );
     return true;
   } else if (finishReason) {
+    // A stopped turn persists a synthetic finish_reason:"stopped" — stamp the
+    // message so the per-message "⏹ Stopped" chip renders on reload, matching
+    // the live finalize. Any other finish_reason just closes the message.
+    const isStopped = finishReason === 'stopped';
     setMessages((prev: MessageRecord[]) =>
       prev.map((msg: MessageRecord) =>
         msg.id === assistantMessageId
-          ? { ...msg, isStreaming: false }
+          ? { ...msg, isStreaming: false, ...(isStopped ? { stopped: true } : {}) }
           : msg
       )
     );

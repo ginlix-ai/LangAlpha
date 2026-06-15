@@ -1112,7 +1112,8 @@
     "worker": "Worker",
     "agentNotFound": "Agent not found",
     "planFeedbackHint": "Type your feedback to revise the plan, then send.",
-    "interruptedHint": "Agent interrupted. Feel free to provide new instructions.",
+    "stoppedChip": "⏹ Stopped",
+    "stopFailed": "Couldn't stop the run — it may still be running.",
     "errorUpstreamHeadline": "The model provider returned an error",
     "errorUpstreamHeadlineStatus": "The model provider returned an error ({{status}})",
     "errorInternalHeadline": "Something went wrong on our end",
@@ -1146,7 +1147,7 @@
     "offloading": "Offloading context...",
     "placeholderDefault": "Type / for skills, @ for files",
     "placeholderPendingRejection": "Describe how to revise the plan...",
-    "placeholderInterrupted": "Send new instructions to the agent...",
+    "placeholderInterrupted": "Stopped — send a message to continue",
     "placeholderLoading": "Type a follow-up to steer the agent...",
     "placeholderSubagentsRunning": "Workers still running. Send a message or click a worker to instruct it.",
     "slashCommand": {

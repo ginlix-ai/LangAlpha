@@ -1,7 +1,7 @@
 import React, { Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, FolderOpen, StopCircle, ScrollText, CheckCircle2, Circle, Loader2, TextSelect, Minus, PanelLeftOpen, Menu, Info, Pin, PinOff } from 'lucide-react';
+import { ArrowLeft, FolderOpen, ScrollText, CheckCircle2, Circle, Loader2, TextSelect, Minus, PanelLeftOpen, Menu, Info, Pin, PinOff } from 'lucide-react';
 import { HoverCard, HoverCardTrigger, HoverCardContent } from '@/components/ui/hover-card';
 import { useIsMobile, getIsMobileSnapshot } from '@/hooks/useIsMobile';
 import { useNarrowContainer } from '@/hooks/useNarrowContainer';
@@ -10,7 +10,7 @@ import { usePreferences } from '@/hooks/usePreferences';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { updateCurrentUser } from '../../Dashboard/utils/api';
-import { softInterruptWorkflow, getWorkspace, summarizeThread, offloadThread, getPreviewUrl, getThreadShareStatus, updateThreadSharing } from '../utils/api';
+import { getWorkspace, summarizeThread, offloadThread, getPreviewUrl, getThreadShareStatus, updateThreadSharing } from '../utils/api';
 import { buildSharedServeUrl, buildWsfilesUrl } from './viewers/html/wsfilesUrl';
 import ShareReportLinkModal from './ShareReportLinkModal';
 import { toast } from '@/components/ui/use-toast';
@@ -427,8 +427,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const [showSystemFiles, setShowSystemFiles] = useState(
     () => localStorage.getItem('filePanel.showSystemFiles') === 'true'
   );
-  // Track whether the agent was soft-interrupted
-  const [wasInterrupted, setWasInterrupted] = useState(false);
+  // Track whether the user hard-stopped the current turn (drives the
+  // "⏹ Stopped" marker + placeholder). Cleared on the next send.
+  const [wasStopped, setWasStopped] = useState(false);
   // Track intentional back navigation (skip session save on unmount)
   const intentionalExitRef = useRef(false);
   // Ref mirrors isActive prop for use in unmount cleanup closures (R1)
@@ -662,6 +663,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     returnedSteering,
     clearReturnedSteering,
     handleSendMessage,
+    stopWorkflow,
     pendingInterrupt,
     pendingRejection,
     handleApproveInterrupt,
@@ -704,12 +706,12 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
 
   const chatPlaceholder = useMemo(() => {
     if (pendingRejection) return t('chat.placeholderPendingRejection');
-    if (wasInterrupted && !isLoading && !pendingInterrupt && !pendingRejection)
+    if (wasStopped && !isLoading && !pendingInterrupt && !pendingRejection)
       return t('chat.placeholderInterrupted');
     if (isLoading) return t('chat.placeholderLoading');
     if (hasActiveSubagents) return t('chat.placeholderSubagentsRunning');
     return t('chat.placeholderDefault');
-  }, [pendingRejection, wasInterrupted, isLoading, pendingInterrupt, hasActiveSubagents, t]);
+  }, [pendingRejection, wasStopped, isLoading, pendingInterrupt, hasActiveSubagents, t]);
 
   // Restore steering text to input when agent finishes without consuming it
   useEffect(() => {
@@ -817,17 +819,14 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     }
   }, [workspaceId]);
 
-  // Soft-interrupt handler: pauses main agent while keeping subagents running
-  const handleSoftInterrupt = useCallback(async () => {
-    const tid = currentThreadId || threadId;
-    if (!tid || tid === '__default__') return;
-    try {
-      await softInterruptWorkflow(tid);
-      setWasInterrupted(true);
-    } catch (e) {
-      console.warn('[ChatView] Failed to soft-interrupt workflow:', e);
-    }
-  }, [currentThreadId, threadId]);
+  // Hard-stop handler: terminates the current turn immediately (main agent +
+  // all subagents) while preserving state. The hook's stopWorkflow aborts the
+  // client reader, finalizes the open message, and POSTs /cancel; we flip the
+  // "⏹ Stopped" marker here.
+  const handleStop = useCallback(() => {
+    setWasStopped(true);
+    void stopWorkflow();
+  }, [stopWorkflow]);
 
   // Wrapper: converts ChatInput's (message, planMode, attachments, slashCommands) into
   // handleSendMessage(message, planMode, additionalContext, attachmentMeta)
@@ -949,7 +948,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     const wasLoading = prevLoadingRef.current;
     prevLoadingRef.current = isLoading;
     if (isLoading && !wasLoading) {
-      setWasInterrupted(false);
+      setWasStopped(false);
     }
     if (!isLoading && wasLoading) {
       refreshFiles();
@@ -2412,18 +2411,11 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                         <span>{t('chat.planFeedbackHint')}</span>
                       </div>
                     )}
-                    {wasInterrupted && !isLoading && !pendingInterrupt && !pendingRejection && (
-                      <div
-                        className="flex items-center gap-2 px-3 py-2 rounded-md text-sm"
-                        style={{ backgroundColor: 'var(--color-loss-soft)', color: 'var(--color-text-tertiary)' }}
-                      >
-                        <StopCircle className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-loss)' }} />
-                        <span>{t('chat.interruptedHint')}</span>
-                      </div>
-                    )}
                     {messageError && !isLoading && (
                       <ErrorBanner error={messageError} />
                     )}
+                    {/* Tail mode: main turn finished but a dispatched subagent is
+                        still running in the backend. Independent of stop. */}
                     {hasActiveSubagents && !isLoading && (
                       <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground">
                         <span className="relative flex h-2 w-2">
@@ -2476,7 +2468,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                       ref={chatInputRef}
                       onSend={handleSendWithAttachments}
                       disabled={isLoadingHistory || !workspaceId || !!pendingInterrupt}
-                      onStop={handleSoftInterrupt}
+                      onStop={handleStop}
                       isLoading={isLoading}
                       placeholder={chatPlaceholder}
                       files={workspaceFiles}
