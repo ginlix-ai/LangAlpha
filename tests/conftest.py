@@ -46,6 +46,15 @@ def mock_connection(mock_cursor):
         yield mock_cursor
 
     conn.cursor = _cursor_cm
+
+    # Real async-CM for conn.transaction() (savepoint/nested-txn paths). A plain
+    # AsyncMock would auto-supply __aexit__ that returns truthy and SWALLOWS
+    # exceptions, hiding rollback-on-error behavior; this one re-raises.
+    @asynccontextmanager
+    async def _transaction_cm(*args, **kwargs):
+        yield mock_cursor
+
+    conn.transaction = _transaction_cm
     conn.execute = AsyncMock()
     return conn
 
