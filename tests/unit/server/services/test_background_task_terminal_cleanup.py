@@ -199,27 +199,8 @@ class TestMarkCancelledReleases:
         assert info.persistence_complete.is_set()
         assert info.graph is None
         # Wiring: tracker.mark_cancelled called from the canonical site so
-        # stale-cancel reaper / soft-interrupt-abort paths also update Redis.
+        # the stale-cancel reaper path also updates Redis.
         mock_tracker.mark_cancelled.assert_awaited_once_with("t-1", run_id="r-1")
-
-
-class TestMarkSoftInterruptedReleases:
-
-    @pytest.mark.asyncio
-    async def test_mark_soft_interrupted_releases_and_signals(self):
-        btm = _make_btm()
-        info = _make_info()
-        info.metadata["workspace_id"] = None  # Skip persistence body
-        btm.tasks[("t-1", "r-1")] = info
-
-        tracker_patch, mock_tracker = _patch_tracker()
-        with patch("src.server.services.background_task_manager.release_burst_slot", new=AsyncMock()), \
-             tracker_patch:
-            await btm._mark_soft_interrupted("t-1", "r-1")
-
-        assert info.persistence_complete.is_set()
-        assert info.graph is None
-        mock_tracker.mark_soft_interrupted.assert_awaited_once_with("t-1", run_id="r-1")
 
 
 # ---------------------------------------------------------------------------

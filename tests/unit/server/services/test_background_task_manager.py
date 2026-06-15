@@ -3,10 +3,13 @@ Tests for BackgroundTaskManager.cancel_stale_workflow and consume_workflow event
 
 Covers:
 - cancel_stale_workflow no-ops for missing or completed tasks
-- cancel_stale_workflow cancels RUNNING and SOFT_INTERRUPTED tasks
+- cancel_stale_workflow cancels RUNNING tasks
 - cancel_stale_workflow handles timeout when task won't exit
 - _run_workflow uses closure-captured events (not re-acquired from lock)
 - Outer-task .cancel() propagates into inner consume_workflow (post-shield-removal)
+- user cancel_workflow force-cancels inner_task + flushes checkpoint on explicit_cancel
+- single-owner stop teardown ordering (drain before cancel_and_clear)
+- wait_for_admission: fresh / running / stopping decisions
 """
 
 import asyncio
@@ -115,35 +118,50 @@ class TestCancelStaleWorkflowRunning:
 
 
 # ---------------------------------------------------------------------------
-# cancel_stale_workflow — SOFT_INTERRUPTED
+# cancel_workflow — user stop force-cancels inner_task (immediacy)
 # ---------------------------------------------------------------------------
 
-class TestCancelStaleWorkflowSoftInterrupted:
+class TestCancelWorkflowForceCancelsInner:
 
     @pytest.mark.asyncio
-    async def test_cancel_stale_workflow_soft_interrupted(self):
-        """cancel_stale_workflow handles SOFT_INTERRUPTED the same as RUNNING."""
+    async def test_user_cancel_force_cancels_inner_task(self):
+        """cancel_workflow force-cancels a not-done inner_task immediately."""
         btm = _make_btm()
 
         mock_inner = MagicMock(spec=asyncio.Task)
         mock_inner.done.return_value = False
         mock_inner.cancel = MagicMock()
 
-        outer_future = asyncio.get_event_loop().create_future()
-        outer_future.set_result(None)
-
         task_info = _make_task_info(
-            status=TaskStatus.SOFT_INTERRUPTED,
-            task=outer_future,
-            inner_task=mock_inner,
+            status=TaskStatus.RUNNING, inner_task=mock_inner
         )
         btm.tasks[("thread-1", "run-1")] = task_info
 
-        result = await btm.cancel_stale_workflow("thread-1")
+        result = await btm.cancel_workflow("thread-1")
 
         assert result is True
         assert task_info.cancel_event.is_set()
+        assert task_info.explicit_cancel is True
         mock_inner.cancel.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_user_cancel_skips_done_inner_task(self):
+        """A done inner_task is not re-cancelled."""
+        btm = _make_btm()
+
+        mock_inner = MagicMock(spec=asyncio.Task)
+        mock_inner.done.return_value = True
+        mock_inner.cancel = MagicMock()
+
+        task_info = _make_task_info(
+            status=TaskStatus.RUNNING, inner_task=mock_inner
+        )
+        btm.tasks[("thread-1", "run-1")] = task_info
+
+        result = await btm.cancel_workflow("thread-1")
+
+        assert result is True
+        mock_inner.cancel.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -304,19 +322,18 @@ class TestConsumeWorkflowUsesClosureEvents:
                 yield f"event-{i}"
 
         cancel_event = asyncio.Event()
-        soft_interrupt_event = asyncio.Event()
 
         # Pre-register a RUNNING task so _run_workflow can find it
         task_info = _make_task_info(thread_id="thread-closure", status=TaskStatus.RUNNING)
         btm.tasks[("thread-closure", "run-1")] = task_info
 
-        # Patch _mark_completed, _mark_cancelled, _mark_failed, _mark_soft_interrupted
-        # so they don't try to do real persistence work
+        # Patch _mark_completed, _mark_cancelled, _mark_failed so they don't
+        # try to do real persistence work
         with patch.object(btm, "_mark_completed", new_callable=AsyncMock) as mock_mark_completed, \
              patch.object(btm, "_mark_cancelled", new_callable=AsyncMock) as mock_mark_cancelled, \
              patch.object(btm, "_mark_failed", new_callable=AsyncMock), \
-             patch.object(btm, "_mark_soft_interrupted", new_callable=AsyncMock), \
-             patch.object(btm, "_flush_checkpoint", new_callable=AsyncMock):
+             patch.object(btm, "_flush_checkpoint", new_callable=AsyncMock), \
+             patch.object(btm, "_teardown_subagents_on_stop", new_callable=AsyncMock):
 
             # Schedule setting the cancel_event after a brief delay
             async def set_cancel_after_delay():
@@ -333,7 +350,6 @@ class TestConsumeWorkflowUsesClosureEvents:
                     run_id="run-1",
                     workflow_generator=fake_workflow(),
                     cancel_event=cancel_event,
-                    soft_interrupt_event=soft_interrupt_event,
                 )
 
             await cancel_task
@@ -381,7 +397,6 @@ class TestOuterTaskCancelPropagatesToInner:
                 generator_closed.set()
 
         cancel_event = asyncio.Event()
-        soft_interrupt_event = asyncio.Event()
 
         task_info = _make_task_info(
             thread_id="thread-outer", run_id="run-outer", status=TaskStatus.RUNNING
@@ -391,8 +406,8 @@ class TestOuterTaskCancelPropagatesToInner:
         with patch.object(btm, "_mark_completed", new_callable=AsyncMock), \
              patch.object(btm, "_mark_cancelled", new_callable=AsyncMock) as mock_mark_cancelled, \
              patch.object(btm, "_mark_failed", new_callable=AsyncMock), \
-             patch.object(btm, "_mark_soft_interrupted", new_callable=AsyncMock), \
-             patch.object(btm, "_flush_checkpoint", new_callable=AsyncMock):
+             patch.object(btm, "_flush_checkpoint", new_callable=AsyncMock), \
+             patch.object(btm, "_teardown_subagents_on_stop", new_callable=AsyncMock):
 
             outer_task = asyncio.create_task(
                 btm._run_workflow(
@@ -400,7 +415,6 @@ class TestOuterTaskCancelPropagatesToInner:
                     run_id="run-outer",
                     workflow_generator=fake_workflow(),
                     cancel_event=cancel_event,
-                    soft_interrupt_event=soft_interrupt_event,
                 )
             )
 
@@ -433,12 +447,15 @@ class TestOuterTaskCancelPropagatesToInner:
 # ---------------------------------------------------------------------------
 
 class TestMarkCancelledUserLabeling:
-    """``cancelled_by_user`` must reflect ``task_info.explicit_cancel``.
+    """``cancelled_by_user`` must reflect ``task_info.user_stop``, NOT
+    ``explicit_cancel``.
 
-    User cancels (cancel_workflow / cancel_stale_workflow) set explicit_cancel.
-    System force-cancels (shutdown timeout, abandoned-task cleanup) reach
-    _mark_cancelled via task.cancel() with the flag unset and must persist
-    cancelled_by_user=False so analytics don't attribute them to the user.
+    A user pressing Stop (HTTP /cancel) sets both explicit_cancel AND user_stop.
+    System cancels — graceful shutdown (cancel_workflow with user_initiated=
+    False) and stale-sandbox recovery (cancel_stale_workflow) — also set
+    explicit_cancel (to gate flush+teardown) but leave user_stop False, so they
+    must persist cancelled_by_user=False. Keying off explicit_cancel would
+    mislabel a pod-roll or workspace eviction as a user "Stopped" turn.
     """
 
     async def _run_mark_cancelled(self, btm, task_info):
@@ -466,11 +483,12 @@ class TestMarkCancelledUserLabeling:
         return persistence_service.persist_cancelled.await_args.kwargs["metadata"]
 
     @pytest.mark.asyncio
-    async def test_system_cancel_persists_not_user(self):
-        """explicit_cancel unset (force-cancel) → cancelled_by_user=False."""
+    async def test_abandoned_cancel_persists_not_user(self):
+        """Bare force-cancel (abandoned cleanup): neither flag → not user."""
         btm = _make_btm()
         task_info = _make_task_info(thread_id="thread-sys", run_id="run-sys")
         assert task_info.explicit_cancel is False
+        assert task_info.user_stop is False
 
         persist_metadata = await self._run_mark_cancelled(btm, task_info)
 
@@ -478,11 +496,349 @@ class TestMarkCancelledUserLabeling:
 
     @pytest.mark.asyncio
     async def test_user_cancel_persists_user(self):
-        """explicit_cancel set (cancel_workflow) → cancelled_by_user=True."""
+        """user_stop set (HTTP /cancel) → cancelled_by_user=True."""
         btm = _make_btm()
         task_info = _make_task_info(thread_id="thread-usr", run_id="run-usr")
         task_info.explicit_cancel = True
+        task_info.user_stop = True
 
         persist_metadata = await self._run_mark_cancelled(btm, task_info)
 
         assert persist_metadata["cancelled_by_user"] is True
+
+    @pytest.mark.asyncio
+    async def test_system_cancel_with_explicit_flag_not_user(self):
+        """REGRESSION (C1): graceful shutdown / stale-sandbox recovery set
+        explicit_cancel (to flush+teardown) but user_stop=False, so the
+        interrupted turn must NOT be persisted as a user-cancelled Stop. A
+        pod-roll or workspace eviction mid-stream previously wrote fake
+        "Stopped" turns into chat history."""
+        btm = _make_btm()
+        task_info = _make_task_info(thread_id="thread-shutdown", run_id="run-sd")
+        task_info.explicit_cancel = True   # shutdown/stale set this...
+        assert task_info.user_stop is False  # ...but NOT user_stop
+
+        persist_metadata = await self._run_mark_cancelled(btm, task_info)
+
+        assert persist_metadata["cancelled_by_user"] is False
+
+
+# ---------------------------------------------------------------------------
+# _run_workflow stop path: flush + teardown gated on explicit_cancel
+# ---------------------------------------------------------------------------
+
+class TestStopPathFlushGating:
+    """The except-CancelledError handler flushes the checkpoint and tears down
+    subagents ONLY when the cancel was user-initiated (explicit_cancel)."""
+
+    async def _drive_stop(self, btm, *, explicit: bool):
+        async def fake_workflow():
+            for i in range(1000):
+                await asyncio.sleep(0.01)
+                yield f"event-{i}"
+
+        cancel_event = asyncio.Event()
+        task_info = _make_task_info(
+            thread_id="t-stop", run_id="r-stop", status=TaskStatus.RUNNING
+        )
+        task_info.explicit_cancel = explicit
+        btm.tasks[("t-stop", "r-stop")] = task_info
+
+        with patch.object(btm, "_mark_completed", new_callable=AsyncMock), \
+             patch.object(btm, "_mark_cancelled", new_callable=AsyncMock), \
+             patch.object(btm, "_mark_failed", new_callable=AsyncMock), \
+             patch.object(btm, "_flush_checkpoint", new_callable=AsyncMock) as flush, \
+             patch.object(btm, "_teardown_subagents_on_stop", new_callable=AsyncMock) as teardown:
+
+            outer = asyncio.create_task(
+                btm._run_workflow(
+                    thread_id="t-stop",
+                    run_id="r-stop",
+                    workflow_generator=fake_workflow(),
+                    cancel_event=cancel_event,
+                )
+            )
+            await asyncio.sleep(0.05)
+            inner = task_info.inner_task
+            inner.cancel()
+            with suppress(asyncio.CancelledError):
+                await outer
+        return flush, teardown
+
+    @pytest.mark.asyncio
+    async def test_explicit_cancel_flushes_and_tears_down(self):
+        btm = _make_btm()
+        flush, teardown = await self._drive_stop(btm, explicit=True)
+        flush.assert_awaited_once_with("t-stop", "r-stop")
+        teardown.assert_awaited_once_with("t-stop", "r-stop")
+
+    @pytest.mark.asyncio
+    async def test_system_cancel_does_not_flush_or_teardown(self):
+        btm = _make_btm()
+        flush, teardown = await self._drive_stop(btm, explicit=False)
+        flush.assert_not_awaited()
+        teardown.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_flush_failure_still_marks_cancelled(self):
+        """A raising _flush_checkpoint must not prevent _mark_cancelled."""
+        btm = _make_btm()
+
+        async def fake_workflow():
+            for i in range(1000):
+                await asyncio.sleep(0.01)
+                yield f"event-{i}"
+
+        cancel_event = asyncio.Event()
+        task_info = _make_task_info(
+            thread_id="t-flushfail", run_id="r-flushfail", status=TaskStatus.RUNNING
+        )
+        task_info.explicit_cancel = True
+        btm.tasks[("t-flushfail", "r-flushfail")] = task_info
+
+        with patch.object(btm, "_mark_completed", new_callable=AsyncMock), \
+             patch.object(btm, "_mark_cancelled", new_callable=AsyncMock) as mark, \
+             patch.object(btm, "_mark_failed", new_callable=AsyncMock), \
+             patch.object(btm, "_flush_checkpoint", new_callable=AsyncMock,
+                          side_effect=RuntimeError("flush boom")), \
+             patch.object(btm, "_teardown_subagents_on_stop", new_callable=AsyncMock):
+
+            outer = asyncio.create_task(
+                btm._run_workflow(
+                    thread_id="t-flushfail",
+                    run_id="r-flushfail",
+                    workflow_generator=fake_workflow(),
+                    cancel_event=cancel_event,
+                )
+            )
+            await asyncio.sleep(0.05)
+            task_info.inner_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await outer
+
+        mark.assert_awaited_once_with("t-flushfail", "r-flushfail")
+
+    @pytest.mark.asyncio
+    async def test_recancel_during_teardown_still_marks_cancelled(self):
+        """REGRESSION (C2): a second CancelledError landing in teardown (e.g.
+        graceful shutdown force-cancelling the OUTER task while the single-owner
+        teardown is mid-flight) must NOT skip _mark_cancelled. The finally +
+        asyncio.shield guarantee persistence/burst-slot release/registry cleanup
+        run rather than leaving half-state."""
+        btm = _make_btm()
+
+        async def fake_workflow():
+            for i in range(1000):
+                await asyncio.sleep(0.01)
+                yield f"event-{i}"
+
+        cancel_event = asyncio.Event()
+        task_info = _make_task_info(
+            thread_id="t-recancel", run_id="r-recancel", status=TaskStatus.RUNNING
+        )
+        task_info.explicit_cancel = True
+        btm.tasks[("t-recancel", "r-recancel")] = task_info
+
+        with patch.object(btm, "_mark_completed", new_callable=AsyncMock), \
+             patch.object(btm, "_mark_cancelled", new_callable=AsyncMock) as mark, \
+             patch.object(btm, "_mark_failed", new_callable=AsyncMock), \
+             patch.object(btm, "_flush_checkpoint", new_callable=AsyncMock), \
+             patch.object(btm, "_teardown_subagents_on_stop", new_callable=AsyncMock,
+                          side_effect=asyncio.CancelledError()):
+
+            outer = asyncio.create_task(
+                btm._run_workflow(
+                    thread_id="t-recancel",
+                    run_id="r-recancel",
+                    workflow_generator=fake_workflow(),
+                    cancel_event=cancel_event,
+                )
+            )
+            await asyncio.sleep(0.05)
+            task_info.inner_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await outer
+
+        # Even though teardown raised CancelledError, persistence still ran.
+        mark.assert_awaited_once_with("t-recancel", "r-recancel")
+
+
+# ---------------------------------------------------------------------------
+# Single-owner teardown ordering (decision 1A): drain BEFORE cancel_and_clear
+# ---------------------------------------------------------------------------
+
+class TestStopTeardownOrdering:
+
+    @pytest.mark.asyncio
+    async def test_drain_runs_before_cancel_and_clear(self):
+        """_teardown_subagents_on_stop drains killed-subagent events and stashes
+        them on metadata, and the drain happens BEFORE cancel_and_clear wipes
+        the registry."""
+        btm = _make_btm()
+
+        order: list[str] = []
+
+        task_info = _make_task_info(
+            thread_id="t-order", run_id="r-order", status=TaskStatus.RUNNING
+        )
+        btm.tasks[("t-order", "r-order")] = task_info
+
+        fake_registry = MagicMock()
+        fake_registry.get_all_tasks = AsyncMock(return_value=["task-a"])
+
+        async def fake_drain(thread_id, tasks):
+            order.append("drain")
+            return [{"event": "message_chunk", "data": {"agent": "task:x"}}]
+
+        fake_store = MagicMock()
+        fake_store.get_registry = AsyncMock(return_value=fake_registry)
+
+        async def fake_cancel_and_clear(thread_id, *, force):
+            order.append("cancel_and_clear")
+            return 1
+
+        fake_store.cancel_and_clear = AsyncMock(side_effect=fake_cancel_and_clear)
+
+        with patch(
+            "src.server.services.background_registry_store.BackgroundRegistryStore.get_instance",
+            return_value=fake_store,
+        ), patch.object(btm, "_drain_killed_subagent_events", side_effect=fake_drain):
+            await btm._teardown_subagents_on_stop("t-order", "r-order")
+
+        assert order == ["drain", "cancel_and_clear"]
+        stashed = task_info.metadata.get("_stop_subagent_events")
+        assert stashed and stashed[0]["data"]["agent"] == "task:x"
+
+    @pytest.mark.asyncio
+    async def test_drain_timeout_proceeds_without_events(self):
+        """A drain that exceeds stop_drain_timeout doesn't block teardown."""
+        btm = _make_btm()
+
+        task_info = _make_task_info(
+            thread_id="t-tmo", run_id="r-tmo", status=TaskStatus.RUNNING
+        )
+        btm.tasks[("t-tmo", "r-tmo")] = task_info
+
+        fake_registry = MagicMock()
+        fake_registry.get_all_tasks = AsyncMock(return_value=["task-a"])
+
+        async def slow_drain(thread_id, tasks):
+            await asyncio.sleep(5)
+            return [{"event": "x"}]
+
+        fake_store = MagicMock()
+        fake_store.get_registry = AsyncMock(return_value=fake_registry)
+        fake_store.cancel_and_clear = AsyncMock(return_value=1)
+
+        with patch(
+            "src.server.services.background_registry_store.BackgroundRegistryStore.get_instance",
+            return_value=fake_store,
+        ), patch.object(btm, "_drain_killed_subagent_events", side_effect=slow_drain), \
+           patch(
+               "src.server.services.background_task_manager.get_stop_drain_timeout",
+               return_value=0.05,
+           ):
+            await btm._teardown_subagents_on_stop("t-tmo", "r-tmo")
+
+        # No drained events stashed, but cancel_and_clear still ran.
+        assert "_stop_subagent_events" not in task_info.metadata
+        fake_store.cancel_and_clear.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_orphan_collectors_cancelled_on_stop(self):
+        """Tracked orphan collectors are cancelled during teardown so they
+        can't mutate the response after the stop."""
+        btm = _make_btm()
+
+        task_info = _make_task_info(
+            thread_id="t-orph", run_id="r-orph", status=TaskStatus.RUNNING
+        )
+        btm.tasks[("t-orph", "r-orph")] = task_info
+
+        started = asyncio.Event()
+
+        async def long_collector():
+            started.set()
+            await asyncio.sleep(100)
+
+        collector = asyncio.create_task(long_collector())
+        btm._track_orphan_collector("t-orph", collector)
+        await started.wait()
+
+        fake_store = MagicMock()
+        fake_store.get_registry = AsyncMock(return_value=None)
+        fake_store.cancel_and_clear = AsyncMock(return_value=0)
+
+        with patch(
+            "src.server.services.background_registry_store.BackgroundRegistryStore.get_instance",
+            return_value=fake_store,
+        ):
+            await btm._teardown_subagents_on_stop("t-orph", "r-orph")
+
+        assert collector.cancelled()
+        assert "t-orph" not in btm._orphan_collectors
+
+
+# ---------------------------------------------------------------------------
+# wait_for_admission decisions (decision 2A)
+# ---------------------------------------------------------------------------
+
+class TestWaitForAdmission:
+
+    @pytest.mark.asyncio
+    async def test_no_active_task_is_fresh(self):
+        btm = _make_btm()
+        assert await btm.wait_for_admission("t-none") == "fresh"
+
+    @pytest.mark.asyncio
+    async def test_running_task_is_running(self):
+        btm = _make_btm()
+        ti = _make_task_info(thread_id="t-run", status=TaskStatus.RUNNING)
+        btm.tasks[("t-run", ti.run_id)] = ti
+        assert await btm.wait_for_admission("t-run") == "running"
+
+    @pytest.mark.asyncio
+    async def test_cancelled_completing_within_wait_is_fresh(self):
+        """An explicitly-cancelled task that finishes winding down within the
+        wait → fresh turn, and no CancelledError reaches the caller."""
+        btm = _make_btm()
+
+        async def dies():
+            raise asyncio.CancelledError()
+
+        task = asyncio.ensure_future(dies())
+        with suppress(asyncio.CancelledError):
+            await asyncio.sleep(0)  # let it schedule
+        ti = _make_task_info(thread_id="t-stop", status=TaskStatus.RUNNING, task=task)
+        ti.explicit_cancel = True
+        btm.tasks[("t-stop", ti.run_id)] = ti
+
+        # Caller is unaffected by the task's CancelledError.
+        state = await btm.wait_for_admission("t-stop")
+        assert state == "fresh"
+        # Terminal-marked task evicted so a fresh turn proceeds.
+
+    @pytest.mark.asyncio
+    async def test_cancelled_still_winding_down_is_stopping(self):
+        """An explicitly-cancelled task still tearing down past the wait → 409
+        'stopping'."""
+        btm = _make_btm()
+
+        never = asyncio.get_event_loop().create_future()
+        ti = _make_task_info(thread_id="t-slow", status=TaskStatus.RUNNING, task=never)
+        ti.explicit_cancel = True
+        btm.tasks[("t-slow", ti.run_id)] = ti
+
+        with patch(
+            "src.server.services.background_task_manager.get_checkpoint_flush_timeout",
+            return_value=0.01,
+        ):
+            state = await btm.wait_for_admission("t-slow")
+        assert state == "stopping"
+
+    @pytest.mark.asyncio
+    async def test_terminal_task_is_fresh(self):
+        btm = _make_btm()
+        ti = _make_task_info(thread_id="t-done", status=TaskStatus.COMPLETED)
+        btm.tasks[("t-done", ti.run_id)] = ti
+        assert await btm.wait_for_admission("t-done") == "fresh"

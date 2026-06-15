@@ -861,3 +861,133 @@ class TestCompactionChunkRouting:
         # Simulate the error-signal discard path
         handler._compaction_windows.discard(ns)
         assert ns not in handler._compaction_windows
+
+
+# ---------------------------------------------------------------------------
+# Stop-point reconciliation (decision 1b / T3-A): finalize_stopped_events
+# ---------------------------------------------------------------------------
+
+
+class TestFinalizeStoppedEvents:
+    """A user stop must close every open streaming structure so replay shows
+    partial fragments marked 'stopped' instead of live-looking zombies."""
+
+    def _handler(self, thread_id="t-stop"):
+        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+
+        return WorkflowStreamHandler(thread_id=thread_id, run_id="r-stop")
+
+    def _events(self, handler):
+        return handler.get_sse_events() or []
+
+    def test_mid_reasoning_gets_reasoning_complete(self):
+        handler = self._handler()
+        # Simulate an open reasoning block on the main agent.
+        handler.reasoning_active.add("agent")
+        handler._open_message_ids["agent"] = "msg-1"
+
+        out = handler.finalize_stopped_events()
+
+        # A reasoning_signal:"complete" was appended for the open block.
+        assert any(
+            e["event"] in ("message_chunk", "compaction_chunk")
+            and e["data"].get("content_type") == "reasoning_signal"
+            and e["data"].get("content") == "complete"
+            for e in out
+        )
+        # Reasoning state cleared.
+        assert not handler.reasoning_active
+
+    def test_mid_tool_args_gets_terminal_close(self):
+        handler = self._handler()
+        # Simulate an in-flight Anthropic tool-call stream.
+        handler.anthropic_tool_call_state[("agent", 0)] = {
+            "name": "execute_code",
+            "id": "call-1",
+            "args_accumulated": '{"code": "import pa',
+        }
+        handler._open_message_ids["agent"] = "msg-tool"
+
+        out = handler.finalize_stopped_events()
+
+        assert any(
+            e["event"] == "tool_call_chunks"
+            and e["data"].get("finish_reason") == "stopped"
+            for e in out
+        )
+        assert not handler.anthropic_tool_call_state
+
+    def test_mid_artifact_gets_stopped_status(self):
+        handler = self._handler()
+        # Simulate an in-progress artifact.
+        handler._open_artifacts["art-1"] = {
+            "artifact_type": "chart",
+            "artifact_id": "art-1",
+            "agent": "agent",
+            "status": "in_progress",
+            "payload": {},
+        }
+
+        out = handler.finalize_stopped_events()
+
+        assert any(
+            e["event"] == "artifact"
+            and e["data"].get("artifact_id") == "art-1"
+            and e["data"].get("status") == "stopped"
+            for e in out
+        )
+        assert not handler._open_artifacts
+
+    def test_open_message_gets_finish_reason_stopped(self):
+        handler = self._handler()
+        handler._open_message_ids["agent"] = "msg-open"
+
+        out = handler.finalize_stopped_events()
+
+        assert any(
+            e["event"] == "message_chunk"
+            and e["data"].get("id") == "msg-open"
+            and e["data"].get("finish_reason") == "stopped"
+            for e in out
+        )
+        assert not handler._open_message_ids
+
+    def test_clean_boundary_appends_no_synthetic_events(self):
+        """Negative case: nothing open ⇒ no synthetic close events."""
+        handler = self._handler()
+        # A clean, already-closed message with a terminal finish_reason.
+        handler._format_sse_event(
+            "message_chunk",
+            {
+                "thread_id": "t-stop",
+                "agent": "agent",
+                "id": "msg-done",
+                "role": "assistant",
+                "content": "done.",
+                "finish_reason": "stop",
+            },
+        )
+        before = self._events(handler)
+
+        out = handler.finalize_stopped_events()
+
+        # No new events were appended.
+        assert len(out) == len(before)
+        assert not any(
+            e["data"].get("finish_reason") == "stopped" for e in out
+        )
+
+    def test_idempotent_double_stop_no_duplicate_closes(self):
+        """The stop-finalized marker prevents duplicate synthetic closes on a
+        second stop / handler re-entry."""
+        handler = self._handler()
+        handler.reasoning_active.add("agent")
+        handler._open_message_ids["agent"] = "msg-1"
+
+        first = handler.finalize_stopped_events()
+        first_len = len(first)
+
+        second = handler.finalize_stopped_events()
+
+        assert len(second) == first_len
+        assert handler._stop_finalized is True

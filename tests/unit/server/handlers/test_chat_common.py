@@ -782,28 +782,31 @@ class TestBuildGraphConfig:
 
 class TestWaitOrSteer:
     @pytest.mark.asyncio
-    async def test_ready_returns_true(self):
+    async def test_fresh_returns_true(self):
         from src.server.handlers.chat._common import wait_or_steer
 
         manager = AsyncMock()
-        manager.wait_for_soft_interrupted = AsyncMock(return_value=True)
+        manager.wait_for_admission = AsyncMock(return_value="fresh")
 
         ready, event = await wait_or_steer(manager, "t-1", "hello", "u-1")
         assert ready is True
         assert event is None
 
     @pytest.mark.asyncio
-    async def test_steered_returns_false_with_event(self):
+    async def test_running_steers_immediately_with_no_wait(self):
+        """CRITICAL regression: a genuinely-running turn is steered immediately
+        — admission returns "running" and steer_thread is called without any
+        wait on the running task."""
         from src.server.handlers.chat._common import wait_or_steer
 
         manager = AsyncMock()
-        manager.wait_for_soft_interrupted = AsyncMock(return_value=False)
+        manager.wait_for_admission = AsyncMock(return_value="running")
 
         with patch(
             "src.server.handlers.chat.steering.steer_thread",
             new_callable=AsyncMock,
             return_value={"position": 1},
-        ):
+        ) as mock_steer:
             ready, event = await wait_or_steer(
                 manager, "t-1", "hello", "u-1"
             )
@@ -812,15 +815,41 @@ class TestWaitOrSteer:
         assert event is not None
         assert "steering_accepted" in event
         assert '"position": 1' in event
+        mock_steer.assert_awaited_once()
+        # No wait helper exists anymore — admission decided immediately.
+        manager.wait_for_admission.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_raises_409_when_queue_fails(self):
+    async def test_stopping_raises_409_without_steering(self):
+        """An explicitly-cancelled turn still winding down → 409 'stopping',
+        never steered (a second checkpoint writer would corrupt state)."""
         from fastapi import HTTPException
 
         from src.server.handlers.chat._common import wait_or_steer
 
         manager = AsyncMock()
-        manager.wait_for_soft_interrupted = AsyncMock(return_value=False)
+        manager.wait_for_admission = AsyncMock(return_value="stopping")
+
+        with (
+            patch(
+                "src.server.handlers.chat.steering.steer_thread",
+                new_callable=AsyncMock,
+            ) as mock_steer,
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            await wait_or_steer(manager, "t-1", "hello", "u-1")
+
+        assert exc_info.value.status_code == 409
+        mock_steer.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_raises_409_when_steering_fails(self):
+        from fastapi import HTTPException
+
+        from src.server.handlers.chat._common import wait_or_steer
+
+        manager = AsyncMock()
+        manager.wait_for_admission = AsyncMock(return_value="running")
 
         with (
             patch(
