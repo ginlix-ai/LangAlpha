@@ -559,7 +559,8 @@ export async function reconnectToWorkflowStream(
   threadId: string,
   runId: string | null = null,
   lastEventId: number | null = null,
-  onEvent: (event: Record<string, unknown>) => void = () => {}
+  onEvent: (event: Record<string, unknown>) => void = () => {},
+  abortSignal: AbortSignal | null = null,
 ) {
   if (!threadId) throw new Error('Thread ID is required');
   const params = new URLSearchParams();
@@ -570,7 +571,7 @@ export async function reconnectToWorkflowStream(
   const authHeaders = await getAuthHeaders();
   return await streamFetch(
     `/api/v1/threads/${threadId}/messages/stream${queryParam}`,
-    { method: 'GET', headers: { ...authHeaders } },
+    { method: 'GET', headers: { ...authHeaders }, signal: abortSignal ?? undefined },
     onEvent
   );
 }
