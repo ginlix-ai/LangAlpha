@@ -2839,7 +2839,11 @@ export function useChatMessages(
     if (tid && tid !== '__default__') {
       try {
         await cancelWorkflow(tid, stoppedRunId);
-      } catch {
+      } catch (firstErr) {
+        // Log the first failure — when both attempts fail the toast only
+        // reflects the second, so a degraded-network first error would
+        // otherwise vanish from diagnostics.
+        console.warn('[stopWorkflow] cancel failed, retrying once:', firstErr);
         try {
           await cancelWorkflow(tid, stoppedRunId);
         } catch {

@@ -838,6 +838,11 @@ class BackgroundTaskManager:
         if collectors:
             with suppress(Exception):
                 await asyncio.gather(*collectors, return_exceptions=True)
+        # This explicit drain runs only on the explicit_cancel paths (user stop
+        # / graceful shutdown / stale-sandbox recovery — the only callers of
+        # this method). On non-explicit cancels (abandoned-task cleanup, which
+        # cancels the OUTER task with the flag unset) collectors are left to the
+        # per-task done-callback (`_discard`) to drain — no leak, different owner.
         self._orphan_collectors.pop(thread_id, None)
 
         # --- 4. Kill subagents + wipe the registry ---

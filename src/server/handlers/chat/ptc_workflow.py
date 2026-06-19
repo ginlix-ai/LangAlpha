@@ -293,13 +293,13 @@ async def astream_ptc_workflow(
                 thread_id, exclude_run_id=run_id
             )
             if state != "fresh":
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"Workflow {thread_id} is still running; dispatched "
-                        "follow-up could not be admitted."
-                    ),
+                detail = (
+                    f"Workflow {thread_id} is stopping; retry shortly."
+                    if state == "stopping"
+                    else f"Workflow {thread_id} is still running; dispatched "
+                    "follow-up could not be admitted."
                 )
+                raise HTTPException(status_code=409, detail=detail)
             ready, steering_event = True, None
         else:
             ready, steering_event = await wait_or_steer(
