@@ -45,7 +45,7 @@ from ..mcp_sanitize import (
     is_user_server,
     sanitize_tool_name,
 )
-from ..tool_generator import ToolFunctionGenerator
+from ..tool_generator import MCP_CLIENT_CODEGEN_VERSION, ToolFunctionGenerator
 
 logger = structlog.get_logger(__name__)
 
@@ -77,6 +77,7 @@ class ExecutionResult:
     execution_id: str
     code_hash: str
     charts: list[ChartData] = field(default_factory=list)
+    mcp_trace: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -868,6 +869,7 @@ class PTCSandbox:
             f"{work_dir}/results",
             f"{work_dir}/data",
             f"{work_dir}/.system/code",
+            f"{work_dir}/.system/trace",
             f"{work_dir}/work",
             f"{work_dir}/.agents/threads",
             f"{work_dir}/.agents/skills",
@@ -888,6 +890,19 @@ class PTCSandbox:
                 logger.warning(f"Error creating directory {directory}: {e}")
 
         await asyncio.gather(*[create_directory(d) for d in directories])
+
+        # Sweep orphaned MCP trace files from a prior/reused session
+        # (best-effort). Normal cleanup is per-execution in _collect_mcp_trace;
+        # this bounds leakage when a run dies before its trace is collected.
+        try:
+            assert self.runtime is not None
+            await self._runtime_call(
+                self.runtime.exec,
+                f"rm -f {shlex.quote(f'{work_dir}/.system/trace')}/*.jsonl",
+                retry_policy=RetryPolicy.SAFE,
+            )
+        except Exception as e:
+            logger.debug(f"MCP trace dir sweep skipped: {e}")
 
     async def _upload_internal_packages(self) -> None:
         """Upload internal Python packages for sandbox execution.
@@ -1161,6 +1176,11 @@ class PTCSandbox:
         source_versions = {
             "mcp_servers": mcp_version,
             "tool_schemas": tool_schema_hash,
+            # Generated-client output version. Folded in unconditionally so a
+            # codegen bump (e.g. new _trace_mcp_call template) changes tm_version
+            # for EVERY workspace and re-uploads the regenerated mcp_client.py on
+            # the next sync — the manifest otherwise hashes only generation inputs.
+            "client_codegen": MCP_CLIENT_CODEGEN_VERSION,
         }
         # User-server config hash — GATED on the presence of user servers so a
         # builtin-only workspace's source_versions dict (and thus tool_modules
@@ -2660,6 +2680,44 @@ except OSError as e:
             logger.warning(f"Failed to install {package}: {e}")
             return False
 
+    async def _collect_mcp_trace(self, trace_path: str) -> list[dict]:
+        """Read + parse the per-execution MCP trace JSONL, then best-effort delete it.
+
+        Returns one dict per valid JSON line; malformed lines are skipped so a
+        partial write (e.g. after a crash) never breaks result assembly. Never
+        raises — tracing is provenance-only and must not affect execution.
+        """
+        records: list[dict] = []
+        try:
+            content = await self.aread_file_text(trace_path)
+        except Exception as e:
+            logger.debug("Failed to read MCP trace file", path=trace_path, error=str(e))
+            content = None
+        if content:
+            for line in content.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(entry, dict):
+                    records.append(entry)
+        try:
+            # Delete via the same raw absolute trace_path the read above used.
+            # trace_path is already rooted at the live work_dir; normalize_path
+            # would re-prepend work_dir when it isn't under allowed_directories,
+            # so the rm would miss and leak the file (read uses the raw path).
+            await self._runtime_call(
+                self.runtime.exec,
+                f"rm -f {shlex.quote(trace_path)}",
+                retry_policy=RetryPolicy.SAFE,
+            )
+        except Exception as e:
+            logger.debug("Failed to clean up MCP trace file", path=trace_path, error=str(e))
+        return records
+
     async def execute(
         self,
         code: str,
@@ -2668,6 +2726,7 @@ except OSError as e:
         auto_install: bool = True,
         max_retries: int = 2,
         thread_id: str | None = None,
+        _carry_mcp_trace: list[dict] | None = None,
     ) -> ExecutionResult:
         """Execute Python code in the sandbox with optional auto-install for missing dependencies.
 
@@ -2677,6 +2736,9 @@ except OSError as e:
             auto_install: Whether to automatically install missing packages on ImportError (default: True)
             max_retries: Maximum number of retries after auto-installing packages (default: 2)
             thread_id: Optional thread ID (first 8 chars) for thread-scoped code storage
+            _carry_mcp_trace: MCP trace accumulated from prior auto-install
+                attempts, prepended to this attempt's trace so provenance from
+                a failed-then-retried run isn't lost (internal).
 
         Returns:
             ExecutionResult with execution details
@@ -2705,6 +2767,15 @@ except OSError as e:
         )
         # finally — guarantees end() runs on asyncio.CancelledError too
         # (it's a BaseException so the except-clauses below would skip it).
+        # Set before the try so the crash path can still read any trace lines
+        # flushed before the failure (durability).
+        trace_path: str | None = None
+        # True once _collect_mcp_trace has run (it reads AND deletes the file).
+        # The finally block only cleans up when this stayed False — i.e. an
+        # asyncio.CancelledError unwound the turn before either the success or
+        # crash path collected, which would otherwise orphan the JSONL.
+        trace_collected = False
+        carry_trace = list(_carry_mcp_trace or [])
         try:
             # Write code to thread dir or fallback to code/
             if thread_id:
@@ -2744,6 +2815,13 @@ except OSError as e:
             internal_dir = f"{work_dir}/_internal"
             exec_env = {"PYTHONPATH": f"{work_dir}:{internal_dir}/src:{internal_dir}"}
 
+            # Per-execution MCP provenance trace file. A unique id (uuid suffix)
+            # keeps the file unique across concurrent executions on a shared
+            # sandbox (parallel subagents). The generated mcp_client creates the
+            # parent dir lazily; we read + delete it after the run.
+            trace_path = f"{work_dir}/.system/trace/{execution_id}_{uuid.uuid4().hex}.jsonl"
+            exec_env["MCP_TRACE_FILE"] = trace_path
+
             # Use code_run() for native artifact support (captures matplotlib charts)
             result = await self._runtime_call(
                 self.runtime.code_run,
@@ -2779,6 +2857,13 @@ except OSError as e:
 
             duration = time.time() - start_time
 
+            # Collect MCP provenance trace written in-sandbox (best-effort),
+            # prepending any trace carried over from prior retry attempts so a
+            # failed-then-retried run keeps the pre-failure sources (dedup is
+            # handled downstream by the extractor).
+            mcp_trace = [*carry_trace, *await self._collect_mcp_trace(trace_path)]
+            trace_collected = True
+
             execution_result = ExecutionResult(
                 success=success,
                 stdout=stdout,
@@ -2789,6 +2874,7 @@ except OSError as e:
                 execution_id=execution_id,
                 code_hash=code_hash,
                 charts=charts,
+                mcp_trace=mcp_trace,
             )
 
             # Auto-install missing packages and retry if enabled
@@ -2806,13 +2892,15 @@ except OSError as e:
                     for package in missing_packages:
                         await self._install_package(package)
 
-                    # Retry execution with decremented retry count
+                    # Retry execution with decremented retry count, carrying this
+                    # attempt's trace forward so its provenance survives the retry.
                     return await self.execute(
                         code=code,
                         timeout=timeout,
                         auto_install=auto_install,
                         max_retries=max_retries - 1,
                         thread_id=thread_id,
+                        _carry_mcp_trace=mcp_trace,
                     )
 
             logger.info(
@@ -2861,6 +2949,13 @@ except OSError as e:
                 {"success": "false", "kind": "code"},
             )
 
+            # Recover any MCP trace lines flushed before the crash (durability),
+            # plus any trace carried over from prior retry attempts.
+            crash_mcp_trace: list[dict] = list(carry_trace)
+            if trace_path:
+                crash_mcp_trace.extend(await self._collect_mcp_trace(trace_path))
+                trace_collected = True
+
             return ExecutionResult(
                 success=False,
                 stdout="",
@@ -2871,9 +2966,37 @@ except OSError as e:
                 execution_id=execution_id,
                 code_hash=code_hash,
                 charts=[],
+                mcp_trace=crash_mcp_trace,
             )
         finally:
             _exec_span.end()
+            # asyncio.CancelledError (BaseException) skips the except above, so a
+            # disconnect/cancel after MCP_TRACE_FILE was set would leave the JSONL
+            # behind. Delete it here when neither path collected. shield() so the
+            # rm still runs even though this await is itself unwinding a cancel.
+            if (
+                trace_path is not None
+                and not trace_collected
+                and self.runtime is not None
+            ):
+                try:
+                    await asyncio.shield(
+                        self._runtime_call(
+                            self.runtime.exec,
+                            f"rm -f {shlex.quote(trace_path)}",
+                            retry_policy=RetryPolicy.SAFE,
+                        )
+                    )
+                except asyncio.CancelledError:
+                    # Propagate the cancel we're unwinding; the shielded rm above
+                    # has already been dispatched and runs to completion detached.
+                    raise
+                except Exception as e:
+                    logger.debug(
+                        "Failed to clean up MCP trace file on cancel",
+                        path=trace_path,
+                        error=str(e),
+                    )
 
     @property
     def proxy_domain(self) -> str | None:

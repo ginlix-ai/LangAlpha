@@ -56,6 +56,11 @@ from .todo_operations import (
     TodoWriteMiddleware,
 )
 
+# Provenance middleware (data-access tracing → provenance SSE events)
+from .provenance import (
+    ProvenanceMiddleware,
+)
+
 # Compaction middleware
 from .compaction import (
     CompactionMiddleware,
@@ -145,6 +150,8 @@ __all__ = [
     "FileOperationState",
     # Todo operations
     "TodoWriteMiddleware",
+    # Provenance
+    "ProvenanceMiddleware",
     # Compaction
     "CompactionMiddleware",
     "DEFAULT_SUMMARY_PROMPT",

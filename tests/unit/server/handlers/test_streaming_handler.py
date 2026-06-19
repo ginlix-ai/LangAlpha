@@ -564,6 +564,110 @@ class TestTaskArtifactEvent:
 
 
 # ---------------------------------------------------------------------------
+# WorkflowStreamHandler — provenance custom-event dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestProvenanceEvent:
+    """Tests the provenance branch of the custom-event dispatch.
+
+    The middleware emits a flat ``{"type": "provenance", ...}`` custom event
+    with ``agent=None``; the handler strips ``type``, resolves ``agent`` from
+    the LangGraph namespace, and re-emits a flat ``provenance`` SSE event whose
+    fields land at the top level (matching the frontend's ProvenanceEvent).
+    """
+
+    def _make_handler(self, background_registry=None):
+        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+
+        return WorkflowStreamHandler(
+            thread_id="t-provenance",
+            run_id="r-test",
+            background_registry=background_registry,
+        )
+
+    def _dispatch(self, handler, event_data, agent_from_stream):
+        """Drive the REAL provenance transform used by the dispatch branch."""
+        prov_data = handler._resolve_provenance_event(event_data, agent_from_stream)
+        raw = handler._format_sse_event("provenance", prov_data)
+        event_line = raw.split("\n")[1]
+        parsed = json.loads(raw.split("data: ", 1)[1].rstrip("\n"))
+        return event_line, parsed
+
+    def test_provenance_event_is_flat_with_resolved_main_agent(self):
+        """Fields land at the top level; agent resolves to main with no namespace."""
+        handler = self._make_handler()
+        event_data = {
+            "type": "provenance",
+            "record_id": "rec-001",
+            "source_type": "web_search",
+            "identifier": "https://example.com/article",
+            "title": "Example Article",
+            "provider": "tavily",
+            "tool_call_id": "tc-001",
+            "args_fingerprint": {"query": "example"},
+            "result_sha256": "abc123",
+            "result_size": 4096,
+            "result_snippet": "snippet text",
+            "timestamp": "2024-01-01T00:00:00Z",
+            "agent": None,
+        }
+        event_line, parsed = self._dispatch(handler, event_data, agent_from_stream=())
+
+        assert event_line == "event: provenance"
+        # type becomes the event name, not a payload field
+        assert "type" not in parsed
+        # main agent (empty namespace) is pinned to "main", honoring the
+        # "main" | "task:{id}" contract (not the _extract_agent_name fallback).
+        assert parsed["agent"] == "main"
+        # all middleware fields pass through flat
+        assert parsed["record_id"] == "rec-001"
+        assert parsed["source_type"] == "web_search"
+        assert parsed["identifier"] == "https://example.com/article"
+        assert parsed["title"] == "Example Article"
+        assert parsed["provider"] == "tavily"
+        assert parsed["tool_call_id"] == "tc-001"
+        assert parsed["args_fingerprint"] == {"query": "example"}
+        assert parsed["result_sha256"] == "abc123"
+        assert parsed["result_size"] == 4096
+        assert parsed["result_snippet"] == "snippet text"
+        assert parsed["timestamp"] == "2024-01-01T00:00:00Z"
+        # no nested data envelope
+        assert "data" not in parsed
+
+    def test_provenance_event_resolves_subagent_attribution(self):
+        """A registered subagent namespace yields task:{id} attribution."""
+        from src.ptc_agent.agent.middleware.background_subagent.registry import (
+            BackgroundTaskRegistry,
+        )
+
+        registry = BackgroundTaskRegistry(thread_id="t-provenance")
+        task = MagicMock()
+        task.task_id = "sub42"
+        registry._tasks["tc-sub"] = task
+        registry._ns_uuid_to_tool_call_id["ns-uuid-1"] = "tc-sub"
+
+        handler = self._make_handler(background_registry=registry)
+        event_data = {
+            "type": "provenance",
+            "record_id": "rec-002",
+            "source_type": "file_read",
+            "identifier": "work/notes.md",
+            "timestamp": "2024-01-01T00:00:00Z",
+            "agent": None,
+        }
+        # namespace last element matches the registered uuid
+        event_line, parsed = self._dispatch(
+            handler, event_data, agent_from_stream=("tools:ns-uuid-1",)
+        )
+
+        assert event_line == "event: provenance"
+        assert parsed["agent"] == "task:sub42"
+        assert parsed["source_type"] == "file_read"
+        assert parsed["identifier"] == "work/notes.md"
+
+
+# ---------------------------------------------------------------------------
 # WorkflowStreamHandler — event_counter integration
 # ---------------------------------------------------------------------------
 

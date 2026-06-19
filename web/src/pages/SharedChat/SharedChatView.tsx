@@ -253,6 +253,13 @@ export default function SharedChatView() {
             return;
           }
 
+          // provenance — DELIBERATELY NOT replayed in public shared chats.
+          // Provenance records carry result snippets, checksums, and identifiers
+          // (incl. private file/memo/memory paths) of data the owner's agent
+          // accessed. Replaying them here would leak that into a public share.
+          // Sources are owner-only by design; do not add a `provenance` branch
+          // without a redaction story for the public surface.
+
           // interrupt — show plan approval as already-resolved
           if (eventType === 'interrupt' && hasPairIndex) {
             const pairIndex = event.turn_index as number;

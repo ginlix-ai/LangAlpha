@@ -250,7 +250,28 @@ class TestManifestRegression:
         manifest = await sandbox._compute_sandbox_manifest()
         source_versions = manifest["modules"]["tool_modules"]["source_versions"]
         assert "user_mcp_config" not in source_versions
-        assert set(source_versions.keys()) == {"mcp_servers", "tool_schemas"}
+        # client_codegen is folded in unconditionally (forces re-upload on a
+        # codegen bump); user_mcp_config stays gated on user-server presence.
+        assert set(source_versions.keys()) == {
+            "mcp_servers",
+            "tool_schemas",
+            "client_codegen",
+        }
+
+    @pytest.mark.asyncio
+    async def test_manifest_tool_modules_carries_codegen_version(self):
+        """tool_modules.source_versions pins MCP_CLIENT_CODEGEN_VERSION, so a
+        generator-only change (invisible to the input hashes) re-uploads the
+        regenerated mcp_client.py to existing sandboxes on the next sync."""
+        from ptc_agent.core.tool_generator import MCP_CLIENT_CODEGEN_VERSION
+
+        config = _make_config(servers=[_builtin("yfinance")])
+        sandbox = _make_sandbox(config)
+        sandbox.mcp_registry = MagicMock()
+        sandbox.mcp_registry.get_all_tools = MagicMock(return_value={})
+        manifest = await sandbox._compute_sandbox_manifest()
+        source_versions = manifest["modules"]["tool_modules"]["source_versions"]
+        assert source_versions["client_codegen"] == MCP_CLIENT_CODEGEN_VERSION
 
     @pytest.mark.asyncio
     async def test_manifest_tool_modules_includes_user_key_with_user_server(self):

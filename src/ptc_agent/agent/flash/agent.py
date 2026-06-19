@@ -21,6 +21,8 @@ from ptc_agent.agent.middleware import (
     resolve_compaction_client,
     SkillsMiddleware,
     AskUserMiddleware,
+    LeakDetectionMiddleware,
+    ProvenanceMiddleware,
 )
 from ptc_agent.agent.middleware.runtime_context import RuntimeContextMiddleware
 from ptc_agent.agent.prompts import format_current_time, get_loader
@@ -204,11 +206,24 @@ class FlashAgent:
         # Build system prompt (time + profile injected by RuntimeContextMiddleware)
         system_prompt = self._build_system_prompt(tools)
 
+        # Leak detector wired into provenance so web/market/SEC snippets are
+        # scrubbed before they're emitted/persisted, mirroring the main agent.
+        # Flash has no MCP/vault secret surface today, so this is effectively a
+        # no-op now; wiring it keeps the two modes consistent and active the
+        # moment Flash ever gains a secret source.
+        leak_detection = LeakDetectionMiddleware(
+            mcp_servers=None,
+            vault_secrets=None,
+        )
+
         # Minimal shared middleware stack
         shared_middleware: list[Any] = [
             ToolArgumentParsingMiddleware(),
             ToolErrorHandlingMiddleware(),
+            leak_detection,
             ToolResultNormalizationMiddleware(),
+            # Traces web/market/SEC reads (filesystem/MCP extractors no-op here).
+            ProvenanceMiddleware(redactor=leak_detection.redact),
         ]
 
         # Add dynamic skill loader middleware (Flash mode: inline SKILL.md)

@@ -1151,7 +1151,7 @@
     "placeholderSubagentsRunning": "工作者仍在运行，可输入消息或点击工作者单独指令",
     "slashCommand": {
       "subagentName": "subagent",
-      "subagentDesc": "使用子代理完成此任务",
+      "subagentDesc": "使用子 Agent 完成此任务",
       "compactName": "compact",
       "compactDesc": "压缩对话上下文以释放 token 空间",
       "offloadDesc": "将大型工具参数转存至沙箱文件系统",
@@ -1171,7 +1171,7 @@
       "sector-overviewDesc": "行业全景报告：市场规模、竞争格局、公司概览、估值背景",
       "competitive-analysisDesc": "竞争格局分析：市场定位、评分卡、护城河评估、份额趋势",
       "initiating-coverageDesc": "全面研究启动：公司研究、财务模型、估值、图表、30-50 页报告",
-      "report-issueDesc": "报告问题并提出改进建议以提升代理能力"
+      "report-issueDesc": "报告问题并提出改进建议以提升 Agent 能力"
     },
     "compactedNotification": "上下文已压缩 · {{from}} 条消息 → 摘要",
     "viewSummary": "查看摘要",
@@ -1202,6 +1202,52 @@
       "listening": "正在倾听... (打字可中断)",
       "permissionDenied": "麦克风权限被拒绝",
       "serviceError": "语音识别服务错误"
+    },
+    "sources": {
+      "title": "数据来源",
+      "pill_one": "数据来源 ({{count}})",
+      "pill_other": "数据来源 ({{count}})",
+      "empty": "本轮没有数据来源",
+      "groups": {
+        "web_search": "网页搜索",
+        "web_fetch": "网页",
+        "file_read": "文件",
+        "memo_read": "备忘录",
+        "memory_read": "记忆",
+        "sec_filing": "SEC 文件",
+        "market_data": "市场数据",
+        "mcp_tool": "金融数据工具"
+      },
+      "fingerprint": {
+        "checksum": "校验值",
+        "size": "大小",
+        "snippet": "片段",
+        "agent": "Agent",
+        "timestamp": "访问时间",
+        "provider": "提供方",
+        "arguments": "参数"
+      },
+      "subagent": "子 Agent",
+      "unknownSource": "未知来源",
+      "workspaceRoot": "工作区根目录",
+      "viewDetails": "查看详情",
+      "expand": "展开",
+      "actions": {
+        "openLink": "打开链接",
+        "openFile": "打开文件"
+      },
+      "emptyThread": "本会话没有数据来源",
+      "scope": {
+        "turn": "当前轮次",
+        "thread": "全部"
+      },
+      "sourceCount": "{{count}} 个来源",
+      "kind": {
+        "company_overview": "公司概况",
+        "daily_prices": "每日价格",
+        "options_chain": "期权链",
+        "market_index": "市场指数"
+      }
     },
     "a11y": {
       "toolCallCompleted": "已完成",
@@ -1338,7 +1384,8 @@
     "tabs": {
       "files": "文件",
       "memory": "记忆",
-      "memo": "备忘录"
+      "memo": "备忘录",
+      "sources": "数据来源"
     },
     "close": "关闭面板"
   },
@@ -1639,12 +1686,12 @@
     "status": "状态",
     "planDetails": "计划详情",
     "noPlanDescription": "暂无计划描述。",
-    "subagentTask": "子代理任务",
+    "subagentTask": "子 Agent 任务",
     "instructions": "指令",
     "result": "结果",
-    "subagentStillRunning": "子代理运行中...",
+    "subagentStillRunning": "子 Agent 运行中...",
     "noResultAvailable": "暂无结果",
-    "goToSubagentTab": "前往子代理标签",
+    "goToSubagentTab": "前往子 Agent 标签",
     "noResultContent": "无结果内容",
     "input": "输入",
     "output": "输出",
@@ -1769,7 +1816,7 @@
       "editing": "编辑中...",
       "runningCommand": "执行命令...",
       "executing": "执行中...",
-      "waitingForSubagent": "等待子代理...",
+      "waitingForSubagent": "等待子 Agent...",
       "fetchingTaskOutput": "获取任务输出...",
       "checkingAutomations": "检查自动化...",
       "creatingName": "创建 {{name}}...",
@@ -1838,9 +1885,9 @@
     "primaryDescription": "用于深度研究",
     "flashModel": "快速模型",
     "flashDescription": "用于快速问答",
-    "explainerTitle": "两种代理模式",
-    "explainerDeep": "PTC 模式（主要）：完整代理，带有沙盒环境，支持代码执行、图表和数据分析。由您的主模型驱动。",
-    "explainerFlash": "Flash 模式：轻量代理，无需沙盒即可快速回答。由您的快速模型驱动。",
+    "explainerTitle": "两种 Agent 模式",
+    "explainerDeep": "PTC 模式（主要）：完整 Agent，带有沙盒环境，支持代码执行、图表和数据分析。由您的主模型驱动。",
+    "explainerFlash": "Flash 模式：轻量 Agent，无需沙盒即可快速回答。由您的快速模型驱动。",
     "doneTitle": "准备就绪！",
     "doneSummary": "您的 AI 研究助手已配置完成，随时可用。",
     "goToDashboard": "前往控制台",

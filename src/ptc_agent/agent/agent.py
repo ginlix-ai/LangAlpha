@@ -41,6 +41,7 @@ from ptc_agent.agent.middleware import (
     ToolResultNormalizationMiddleware,
     FileOperationMiddleware,
     TodoWriteMiddleware,
+    ProvenanceMiddleware,
     SkillsMiddleware,
     CompactionMiddleware,
     resolve_compaction_client,
@@ -485,6 +486,10 @@ class PTCAgent:
         # --- Build shared middleware (for both main agent and subagents) ---
         shared_middleware: list[Any] = []
 
+        leak_detection = LeakDetectionMiddleware(
+            mcp_servers=self.config.mcp.servers,
+            vault_secrets=vault_secrets,
+        )
         shared_middleware.extend(
             [
                 ToolArgumentParsingMiddleware(),
@@ -493,10 +498,7 @@ class PTCAgent:
                 ),
                 CodeValidationMiddleware(),
                 ToolErrorHandlingMiddleware(),
-                LeakDetectionMiddleware(
-                    mcp_servers=self.config.mcp.servers,
-                    vault_secrets=vault_secrets,
-                ),
+                leak_detection,
                 ToolResultNormalizationMiddleware(),
             ]
         )
@@ -507,6 +509,10 @@ class PTCAgent:
                 work_dir=self.config.filesystem.working_directory,
             )
         )
+        # Shared placement gives subagents provenance coverage too. The leak
+        # detector's redactor scrubs secrets from snippets the content-only scan
+        # never sees (provenance fingerprints the raw result/artifact).
+        shared_middleware.append(ProvenanceMiddleware(redactor=leak_detection.redact))
         shared_middleware.append(TodoWriteMiddleware())
 
         # Add multimodal middleware for read_file image/PDF support (when enabled)

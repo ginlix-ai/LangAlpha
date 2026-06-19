@@ -148,6 +148,23 @@ function normalizePath(rawPath: string): string {
 }
 
 /**
+ * Workspace-relative display form of an agent file path — the same normalization
+ * the path router applies (unwraps `file:///`, strips the sandbox root
+ * `/home/(workspace|daytona)/`, leading `/` and `./`, query/fragment), so a file
+ * shown in the UI reads the same way it routes when clicked. The bare sandbox
+ * root collapses to an empty string; the caller picks a label for that case.
+ */
+export function workspaceRelativePath(rawPath: string): string {
+  const p = normalizePath(rawPath);
+  // normalizePath strips the root only when it has a trailing slash; a bare root
+  // ("/home/workspace") would otherwise survive as "home/workspace".
+  for (const prefix of SANDBOX_ROOT_PREFIXES) {
+    if (`${p}/` === prefix) return '';
+  }
+  return p;
+}
+
+/**
  * Classify an agent file path into its semantic domain.
  *
  * Bare names like `memory.md` or `memo.md` (no prefix) fall to `kind: 'file'`

@@ -4,7 +4,10 @@
  */
 
 import { normalizeAction } from './eventUtils';
+import { provenanceEventToRecord, provenanceRecordKey } from './streamEventHandlers';
 import type { MessageRecord, SetMessages, ToolCallRecord, ToolCallResultRecord, TodoPayload, HtmlWidgetData } from './types';
+import type { ProvenanceEvent } from '@/types/sse';
+import type { ProvenanceRecord } from '@/types/chat';
 
 let _steeringIdCounter = 0;
 
@@ -537,6 +540,41 @@ export function handleHistoryToolCallResult({ assistantMessageId, toolCallId, re
         toolCallProcesses,
         subagentTasks,
       };
+    })
+  );
+
+  return true;
+}
+
+/**
+ * Handles provenance events in history replay. Re-attaches the accessed-data
+ * record to the assistant message resolved from the replay `turn_index` (the
+ * caller maps `turn_index` → `assistantMessageId`). Keyed by
+ * `provenanceRecordKey` so multiple web_search URLs sharing one `tool_call_id`
+ * are all kept on reload.
+ */
+export function handleHistoryProvenance({ assistantMessageId, event, setMessages }: {
+  assistantMessageId: string;
+  event: ProvenanceEvent;
+  setMessages: SetMessages;
+}): boolean {
+  if (!event || !event.record_id) {
+    return false;
+  }
+
+  const record = provenanceEventToRecord(event);
+  const key = provenanceRecordKey(record);
+
+  setMessages((prev: MessageRecord[]) =>
+    prev.map((msg: MessageRecord) => {
+      if (msg.id !== assistantMessageId) return msg;
+
+      const provenanceRecords = {
+        ...((msg.provenanceRecords as Record<string, ProvenanceRecord>) || {}),
+        [key]: record,
+      };
+
+      return { ...msg, provenanceRecords };
     })
   );
 

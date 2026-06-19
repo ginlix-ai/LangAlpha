@@ -26,6 +26,9 @@ vi.mock('../MemoryPanel', () => ({
 vi.mock('../MemoPanel', () => ({
   default: () => <div data-testid="memo-panel">memo</div>,
 }));
+vi.mock('../SourcesPanel', () => ({
+  default: () => <div data-testid="sources-panel">sources</div>,
+}));
 
 vi.mock('@/components/ui/animated-tabs', () => ({
   AnimatedTabs: ({ tabs, value, onChange }: {
@@ -137,6 +140,48 @@ describe('RightPanel snap-back precedence', () => {
     );
     await waitFor(() => {
       expect(screen.getByTestId('tabs').getAttribute('data-active')).toBe('memo');
+    });
+  });
+
+  it('snaps to Sources when targetSources is set and shows the Sources tab', async () => {
+    renderWithProviders(
+      <RightPanel
+        {...baseProps}
+        initialTab="files"
+        targetSources="msg-1"
+        sourcesRecords={{}}
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('tabs').getAttribute('data-active')).toBe('sources');
+    });
+    // The Sources tab only appears when a turn's provenance is being shown.
+    expect(screen.getByRole('button', { name: 'rightPanel.tabs.sources' })).toBeInTheDocument();
+    // Body is lazy-loaded — wait for the SourcesPanel stub to resolve.
+    expect(await screen.findByTestId('sources-panel')).toBeInTheDocument();
+  });
+
+  it('hides the Sources tab when no targetSources is set', async () => {
+    renderWithProviders(<RightPanel {...baseProps} initialTab="files" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('tabs')).toBeInTheDocument();
+    });
+    expect(screen.queryByRole('button', { name: 'rightPanel.tabs.sources' })).not.toBeInTheDocument();
+  });
+
+  it('honors precedence (sources > memory) when both are set', async () => {
+    renderWithProviders(
+      <RightPanel
+        {...baseProps}
+        initialTab="files"
+        targetSources="msg-1"
+        sourcesRecords={{}}
+        targetMemoryKey="risk-preferences.md"
+        targetMemoryTier="user"
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('tabs').getAttribute('data-active')).toBe('sources');
     });
   });
 });

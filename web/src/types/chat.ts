@@ -1,6 +1,12 @@
 /** Chat message types, content segments, and process records */
 
-import type { Attachment, ToolCallData, ToolCallResultData, TodoItem } from './sse';
+import type {
+  Attachment,
+  ToolCallData,
+  ToolCallResultData,
+  TodoItem,
+  ProvenanceSourceType,
+} from './sse';
 
 // --- Content Segments (discriminated union) ---
 
@@ -130,6 +136,60 @@ export interface ToolCallProcess {
   _createdAt?: number;
 }
 
+export interface ProvenanceRecord {
+  record_id: string;
+  /** Originating agent: "main" or "task:{id}". */
+  agent?: string;
+  timestamp: string;
+  source_type: ProvenanceSourceType;
+  identifier: string;
+  title?: string;
+  /** Data-kind slug within this source type (e.g. "company_overview"); the
+   *  Sources panel i18n-maps it to label each access in the hover breakdown. */
+  detail?: string;
+  provider?: string;
+  tool_call_id?: string;
+  args_fingerprint?: Record<string, unknown>;
+  /** Tool-call arguments with secrets already redacted server-side. Redacted
+   *  values are the literal string "[redacted]". May be absent/empty. */
+  args?: Record<string, unknown>;
+  result_sha256?: string;
+  result_size?: number;
+  result_snippet?: string;
+}
+
+/**
+ * Live-UI dedup key for a provenance record: `(source_type, identifier)`.
+ *
+ * NOTE: the DB provenance endpoint dedups on `(source_type, identifier,
+ * result_sha256)`. The live UI intentionally omits `result_sha256` because not
+ * every record path carries a sha during streaming — so the same identifier
+ * collapses to one row here even when the DB would keep distinct shas. This
+ * divergence is intentional; do not try to make them identical.
+ */
+export function provenanceDisplayKey(
+  record: Pick<ProvenanceRecord, 'source_type' | 'identifier'> & {
+    source_type?: ProvenanceRecord['source_type'];
+    identifier?: string;
+  },
+): string {
+  return `${record.source_type ?? ''} ${record.identifier ?? ''}`;
+}
+
+/**
+ * Count of distinct provenance sources by {@link provenanceDisplayKey}. The
+ * single source of truth shared by the Sources pill and the Sources panel so
+ * the displayed count and grouped rows can never silently diverge.
+ */
+export function countDedupedSources(
+  records?: Record<string, Pick<ProvenanceRecord, 'source_type' | 'identifier'>> | null,
+): number {
+  if (!records) return 0;
+  const seen = new Set<string>();
+  for (const r of Object.values(records)) seen.add(provenanceDisplayKey(r));
+  return seen.size;
+}
+
 export interface TodoListProcess {
   todos: TodoItem[];
   total: number;
@@ -249,6 +309,7 @@ export interface AssistantMessage {
   contentSegments: ContentSegment[];
   reasoningProcesses: Record<string, ReasoningProcess>;
   toolCallProcesses: Record<string, ToolCallProcess>;
+  provenanceRecords?: Record<string, ProvenanceRecord>;
   todoListProcesses?: Record<string, TodoListProcess>;
   subagentTasks?: Record<string, SubagentTask>;
   pendingToolCallChunks?: Record<string, PendingToolCallChunk>;

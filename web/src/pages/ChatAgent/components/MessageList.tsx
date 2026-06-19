@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bot, User, FileText, ImageIcon, Pencil, RefreshCw, RotateCcw, Copy, Check, Info, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { Bot, User, FileText, FileSearch, ImageIcon, Pencil, RefreshCw, RotateCcw, Copy, Check, Info, ThumbsUp, ThumbsDown } from 'lucide-react';
 import { type WidgetContextPreviewShape } from '@/pages/Dashboard/widgets/framework/WidgetContextPreview';
 import { WidgetContextDeck } from '@/pages/Dashboard/widgets/framework/WidgetContextDeck';
 import { useIsMobile } from '@/hooks/useIsMobile';
@@ -38,6 +38,7 @@ import TextMessageContent from './TextMessageContent';
 import InlineWidget from './viewers/InlineWidget';
 import ToolCallMessageContent from './ToolCallMessageContent';
 import { CitationMetadataProvider } from './CitationMetadataContext';
+import { countDedupedSources, type ProvenanceRecord } from '@/types/chat';
 
 import { TextShimmer } from '@/components/ui/text-shimmer';
 
@@ -327,6 +328,7 @@ interface MessageListProps {
   allowFiles?: boolean;
   onOpenSubagentTask?: (info: SubagentInfo) => void;
   onOpenFile?: (filePath: string, workspaceId?: string) => void;
+  onOpenSources?: (messageId: string) => void;
   onOpenDir?: (dirPath: string) => void;
   onToolCallDetailClick?: (proc: ToolCallProcessRecord) => void;
   onApprovePlan?: () => void;
@@ -353,7 +355,7 @@ interface MessageListProps {
   flashContext?: { threadId: string; workspaceId: string } | null;
 }
 
-function MessageList({ messages, isLoading, isLoadingHistory, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onApprovePTCAgent, onRejectPTCAgent, onApproveSecretaryAction, onRejectSecretaryAction, onEditMessage, onRegenerate, onRetry, onThumbUp, onThumbDown, getFeedbackForMessage, onReportWithAgent, onWidgetSendPrompt, flashContext }: MessageListProps): React.ReactElement | null {
+function MessageList({ messages, isLoading, isLoadingHistory, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, onOpenSubagentTask, onOpenFile, onOpenSources, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onApprovePTCAgent, onRejectPTCAgent, onApproveSecretaryAction, onRejectSecretaryAction, onEditMessage, onRegenerate, onRetry, onThumbUp, onThumbDown, getFeedbackForMessage, onReportWithAgent, onWidgetSendPrompt, flashContext }: MessageListProps): React.ReactElement | null {
   const isMobile = useIsMobile();
 
   // Empty state - show when no messages exist (hidden in subagent view)
@@ -419,6 +421,7 @@ function MessageList({ messages, isLoading, isLoadingHistory, hideAvatar, compac
             isMobile={isMobile}
             onOpenSubagentTask={onOpenSubagentTask}
             onOpenFile={onOpenFile}
+            onOpenSources={onOpenSources}
             onOpenDir={onOpenDir}
             onToolCallDetailClick={onToolCallDetailClick}
             onApprovePlan={onApprovePlan}
@@ -462,6 +465,7 @@ interface MessageBubbleProps {
   allowFiles?: boolean;
   onOpenSubagentTask?: (info: SubagentInfo) => void;
   onOpenFile?: (filePath: string, workspaceId?: string) => void;
+  onOpenSources?: (messageId: string) => void;
   onOpenDir?: (dirPath: string) => void;
   onToolCallDetailClick?: (proc: ToolCallProcessRecord) => void;
   onApprovePlan?: () => void;
@@ -493,7 +497,8 @@ interface MessageBubbleProps {
  * Wrapped with React.memo — safe because updateMessage() in messageHelpers.ts
  * returns the same object reference for unchanged messages.
  */
-const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, onOpenSubagentTask, onOpenFile, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onApprovePTCAgent, onRejectPTCAgent, onApproveSecretaryAction, onRejectSecretaryAction, onEditMessage, onRegenerate, onRetry, onThumbUp, onThumbDown, getFeedbackForMessage, onReportWithAgent, onWidgetSendPrompt, isMobile, flashContext }: MessageBubbleProps): React.ReactElement {
+const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvatar, compactToolCalls, isSubagentView, readOnly, allowFiles, onOpenSubagentTask, onOpenFile, onOpenSources, onOpenDir, onToolCallDetailClick, onApprovePlan, onRejectPlan, onPlanDetailClick, onAnswerQuestion, onSkipQuestion, onApproveCreateWorkspace, onRejectCreateWorkspace, onApproveStartQuestion, onRejectStartQuestion, onApprovePTCAgent, onRejectPTCAgent, onApproveSecretaryAction, onRejectSecretaryAction, onEditMessage, onRegenerate, onRetry, onThumbUp, onThumbDown, getFeedbackForMessage, onReportWithAgent, onWidgetSendPrompt, isMobile, flashContext }: MessageBubbleProps): React.ReactElement {
+  const { t } = useTranslation();
   const { user } = useUser();
   const { theme } = useTheme();
   const logo = theme === 'light' ? logoDark : logoLight;
@@ -550,6 +555,16 @@ const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvat
   // ~32px layout jump on sibling messages when streaming ends.
   const canShowActions = !isSubagentView && !readOnly;
   const showActions = canShowActions && !(message.isStreaming as boolean) && !isLoading;
+
+  // Provenance count for the Sources pill, deduped by (source_type, identifier)
+  // — the same URL fetched twice in one turn counts once. The pill lives in its
+  // own always-visible row (not the hover-gated footer), so it shows mid-stream.
+  // Shares countDedupedSources with SourcesPanel so the pill and panel counts
+  // can never silently diverge.
+  const sourceCount = useMemo(() => {
+    if (!isAssistant || isSubagentView) return 0;
+    return countDedupedSources(message.provenanceRecords as Record<string, ProvenanceRecord> | undefined);
+  }, [message.provenanceRecords, isAssistant, isSubagentView]);
 
   const resizeTextarea = () => {
     const el = editTextareaRef.current;
@@ -781,6 +796,27 @@ const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvat
             return <LissajousLoading className={`${hasContent ? "mt-2" : "mt-0"} ${isMobile ? 'w-5 h-5' : 'w-6 h-6'} text-neutral-500 dark:text-neutral-400`} />;
           })()}
         </div>
+
+        {/* Sources pill -- always-visible row (not the hover-gated footer below,
+            which is hidden during streaming). Surfaces the turn's tracked data
+            provenance; clicking opens the Sources tab in the right panel. */}
+        {isAssistant && !isSubagentView && sourceCount > 0 && (
+          <div className="flex justify-start mt-1">
+            <button
+              type="button"
+              onClick={() => onOpenSources?.(message.id as string)}
+              className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors"
+              style={{
+                backgroundColor: 'var(--color-bg-elevated)',
+                color: 'var(--color-text-secondary)',
+              }}
+              title={t('chat.sources.title')}
+            >
+              <FileSearch className="h-3.5 w-3.5" />
+              {t('chat.sources.pill', { count: sourceCount })}
+            </button>
+          </div>
+        )}
 
         {/* Attachment preview cards -- standalone below the bubble */}
         {hasAttachments && (

@@ -171,6 +171,7 @@ The streaming endpoints emit Server-Sent Events. Key event types:
 - `message_chunk` / `reasoning_content` / `reasoning_signal` — text + reasoning streaming
 - `tool_calls` / `tool_call_chunks` / `tool_call_result` — tool execution
 - `artifact` — file operations and outputs
+- `provenance` — record of external data the agent accessed (one per source). Flat payload: `record_id`, `source_type`, `identifier`, `title?`, `provider?`, `tool_call_id?`, `args_fingerprint?`, `result_sha256?`, `result_size?`, `result_snippet?`, `timestamp`, plus `agent` (`main`/`task:{id}`, resolved server-side from the LangGraph namespace)
 - `user_message` — echo of user input (including mid-turn steering)
 - `workflow_status` / `thread_created` — lifecycle signals
 - `steering_delivered` / `task_steering_accepted` — steering acknowledgements

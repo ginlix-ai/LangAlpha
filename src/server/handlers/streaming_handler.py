@@ -565,6 +565,18 @@ class WorkflowStreamHandler:
                             yield self._format_sse_event("context_window", cw_data)
                             continue
 
+                        # Handle provenance records (data the agent accessed).
+                        # The middleware emits agent=None on purpose; resolve it
+                        # here from the LangGraph namespace so subagent records
+                        # get task:{id} attribution. All other fields pass
+                        # through flat to match the frontend's ProvenanceEvent.
+                        if event_type == "provenance":
+                            prov_data = self._resolve_provenance_event(
+                                event_data, agent_from_stream
+                            )
+                            yield self._format_sse_event("provenance", prov_data)
+                            continue
+
                         # Handle steering delivery signal
                         if event_type == "steering_delivered":
                             yield self._format_sse_event("steering_delivered", {
@@ -795,6 +807,27 @@ class WorkflowStreamHandler:
                 "finish_reason": "interrupt",
             },
         )
+
+    def _resolve_provenance_event(
+        self, event_data: dict, namespace_tuple: tuple
+    ) -> dict:
+        """Strip the internal ``type`` and resolve agent attribution.
+
+        Subagent records resolve to ``task:{id}`` from the namespace. The main
+        agent streams with an empty namespace (and the event carries no
+        ``langgraph_node``), so it is pinned to ``"main"`` rather than the
+        ``_extract_agent_name`` fallback, honoring the contract that ``agent`` is
+        ``"main"`` | ``"task:{id}"``.
+        """
+        if namespace_tuple:
+            agent = self._extract_agent_name(namespace_tuple, event_data)
+        else:
+            agent = "main"
+        prov_data = {
+            key: value for key, value in event_data.items() if key != "type"
+        }
+        prov_data["agent"] = agent
+        return prov_data
 
     def _extract_agent_name(self, namespace_tuple: tuple, message_metadata: dict) -> str:
         """Return the agent identifier, resolving to unified subagent identity when possible.
