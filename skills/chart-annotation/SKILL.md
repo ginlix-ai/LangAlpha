@@ -1,6 +1,6 @@
 ---
 name: chart-annotation
-description: Annotate a stock's price chart with price lines, trendlines, zones, and event markers. Drawings appear live on the MarketView chart and as a clickable preview card in any other chat.
+description: Draw price lines, trendlines, zones, and event markers directly on a stock's price chart — reach for it whenever you'd otherwise describe a level, pattern, or event in prose. Renders live on MarketView and as a clickable preview card in any other chat.
 ---
 
 # Chart Annotation Skill
@@ -13,16 +13,33 @@ describing it in prose. Reach for this skill whenever you would otherwise
 say "look at the level around 205" or "notice the downtrend from October to
 December".
 
-You do **not** need the user to be on the MarketView page. If they are, the
-drawing appears on their live chart immediately. If they are in any other
-chat, the same drawing renders as a clickable preview card that expands into
-MarketView — so annotate freely whenever it helps, then mention the user can
-click it to open the full chart.
+**MarketView** is the app's live, TradingView-style price chart page (pan,
+zoom, switch timeframes). You do **not** need the user to be on it to
+annotate. If they are, the drawing appears on their live chart immediately. If
+they are in any other chat, the same drawing renders as a clickable preview
+card that expands into MarketView — so annotate freely whenever it helps, then
+mention the user can click it to open the full chart.
 
 This skill provides two tools:
 
 - `draw_chart_annotation` — add a single annotation to a chart.
 - `manage_chart_annotations` — list, remove, or clear annotations.
+
+## Interactive chart vs. a Python chart (deliverable)
+
+There are two ways to show price information visually — pick by what the user
+needs:
+
+- **This skill (interactive).** Annotations land on the live, pannable
+  MarketView chart (or a preview card that opens it). Best when the user just
+  wants to *see and explore* a level, pattern, or event themselves — quick,
+  in-the-moment, nothing to hand off.
+- **A Python chart (deliverable).** A static image you render with code and
+  embed in a report or document. Best when the output is a *deliverable* the
+  user keeps, shares, or exports — a research note, PDF, or deck.
+
+The two aren't exclusive: draw on the live chart for a quick look, render a
+Python chart when it belongs in a written artifact, or do both.
 
 ## Charts are identified by `SYMBOL:timeframe`
 
@@ -40,6 +57,12 @@ Always pass the ticker the user is discussing. `timeframe` defaults to
 `5min`, `15min`, `30min`, `1hour`, `4hour`, `1day`). Annotations are scoped to
 that one chart instance — a line drawn on `NVDA:1day` does **not** appear on
 `NVDA:1hour`.
+
+**Time format (any annotation with a `time` field).** Pass ISO 8601 datetimes
+(e.g. `2024-11-14T00:00:00Z`) aligned to a bar on the chart — for daily bars,
+midnight UTC of that day is safest. A time that doesn't land on a bar still
+renders but may look offset. Applies to `trendline`, `marker`, `vertical_line`,
+`text`, `event`, and `fib_retracement`.
 
 ---
 
@@ -66,9 +89,6 @@ stop, an analyst price target, a 52-week high.
 
 Use to connect two `(time, price)` points on the chart: channel tops,
 pattern boundaries, connecting highs/lows across dates.
-
-`time` must be an ISO 8601 datetime aligned to a bar on the chart (daily
-bars: midnight UTC of that day is safest).
 
 ```json
 {
@@ -205,11 +225,9 @@ manage_chart_annotations(symbol="NVDA", action="clear_all")
   ("Resistance 205", "Entry", not "Strong resistance level we should
   watch"). Put the reasoning in the chat message, not the label.
 - **One annotation per tool call.** If you want three levels, call
-  `draw_chart_annotation` three times. Each call is cheap.
-- **Bar alignment matters for trendline/marker.** If the time doesn't
-  match a bar on the chart (e.g. you pass a minute-resolution time on a
-  daily chart), the drawing still renders but may look offset.
+  `draw_chart_annotation` three times.
 - **Clean up stale work.** If you drew provisional levels and the
   conversation moved on, offer to `clear_all` before drawing a fresh set.
-- **Provenance is visible.** Agent-drawn items render with a subtle
-  dashed style so the user can tell them apart from their own drawings.
+- **No need to flag your drawings.** Agent-drawn items render with a subtle
+  dashed style, so the user can already tell them apart from their own — you
+  don't have to call out which annotations you added.
