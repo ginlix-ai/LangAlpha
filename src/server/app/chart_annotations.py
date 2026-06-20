@@ -69,15 +69,18 @@ async def _ensure_owner(workspace_id: str, user_id: str) -> None:
 async def list_chart_annotations(
     workspace_id: str,
     x_user_id: CurrentUserId,
-    symbol: str = Query(..., description="Ticker symbol (case-insensitive)"),
+    symbol: str = Query(..., max_length=32, description="Ticker symbol (case-insensitive)"),
     timeframe: str | None = Query(
-        None, description="Chart interval; omit to return every timeframe for the symbol"
+        None,
+        max_length=16,
+        description="Chart interval; omit to return every timeframe for the symbol",
     ),
 ):
     """List chart instances for a workspace + symbol (optionally one timeframe)."""
     await _ensure_owner(workspace_id, x_user_id)
     sym = _normalize_symbol(symbol)
-    charts = await list_charts(workspace_id, sym, timeframe)
+    tf = timeframe.strip() if timeframe is not None else None
+    charts = await list_charts(workspace_id, sym, tf)
     return ChartAnnotationListResponse(
         workspace_id=workspace_id,
         charts=[ChartInstance(**c) for c in charts],
@@ -91,8 +94,8 @@ async def list_chart_annotations(
 async def clear_chart_annotations(
     workspace_id: str,
     x_user_id: CurrentUserId,
-    symbol: str = Query(..., description="Ticker symbol (case-insensitive)"),
-    timeframe: str = Query("1day", description="Chart interval"),
+    symbol: str = Query(..., max_length=32, description="Ticker symbol (case-insensitive)"),
+    timeframe: str = Query("1day", max_length=16, description="Chart interval"),
 ):
     """Delete every annotation on one chart instance (workspace + symbol + timeframe)."""
     await _ensure_owner(workspace_id, x_user_id)

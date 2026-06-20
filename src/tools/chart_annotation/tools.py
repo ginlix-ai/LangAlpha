@@ -306,7 +306,15 @@ async def manage_chart_annotations(
     if action == "list":
         if ids:
             return "Error: 'list' action does not accept 'ids'.", {}
-        items = await list_annotations(workspace_id, chart_id)
+        try:
+            items = await list_annotations(workspace_id, chart_id)
+        except Exception as exc:
+            logger.exception("[chart_annotation] list failed")
+            return (
+                f"Could not list annotations (persistence unavailable): {exc}. "
+                "Please try again in a moment.",
+                {},
+            )
         return (
             f"{len(items)} annotation(s) on {chart_id}.",
             {"chart_id": chart_id, "symbol": symbol_upper, "timeframe": timeframe, "annotations": items},
@@ -321,7 +329,15 @@ async def manage_chart_annotations(
                 "action='clear_all' to wipe the whole chart.",
                 {},
             )
-        removed = await remove_annotations(workspace_id, chart_id, ids)
+        try:
+            removed = await remove_annotations(workspace_id, chart_id, ids)
+        except Exception as exc:
+            logger.exception("[chart_annotation] remove failed")
+            return (
+                f"Could not remove annotations (persistence unavailable): {exc}. "
+                "Nothing was deleted. Please try again in a moment.",
+                {},
+            )
         _emit(
             _get_writer(),
             artifact_type="chart_annotation",
@@ -340,7 +356,15 @@ async def manage_chart_annotations(
                 "Use action='remove' with a specific id list for partial deletion.",
                 {},
             )
-        cleared = await clear_chart(workspace_id, chart_id)
+        try:
+            cleared = await clear_chart(workspace_id, chart_id)
+        except Exception as exc:
+            logger.exception("[chart_annotation] clear failed")
+            return (
+                f"Could not clear annotations (persistence unavailable): {exc}. "
+                "Nothing was deleted. Please try again in a moment.",
+                {},
+            )
         _emit(
             _get_writer(),
             artifact_type="chart_annotation",
