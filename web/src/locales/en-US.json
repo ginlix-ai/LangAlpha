@@ -1233,6 +1233,7 @@
       "workspaceRoot": "Workspace root",
       "viewDetails": "View details",
       "expand": "Expand",
+      "collapse": "Collapse",
       "actions": {
         "openLink": "Open link",
         "openFile": "Open file"
@@ -1243,6 +1244,8 @@
         "thread": "All sources"
       },
       "sourceCount": "{{count}} sources",
+      "resultCount": "{{count}} results",
+      "pageCount": "{{count}} pages",
       "kind": {
         "company_overview": "Company overview",
         "daily_prices": "Daily prices",

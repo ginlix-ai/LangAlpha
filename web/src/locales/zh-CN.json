@@ -1233,6 +1233,7 @@
       "workspaceRoot": "工作区根目录",
       "viewDetails": "查看详情",
       "expand": "展开",
+      "collapse": "折叠",
       "actions": {
         "openLink": "打开链接",
         "openFile": "打开文件"
@@ -1243,6 +1244,8 @@
         "thread": "全部"
       },
       "sourceCount": "{{count}} 个来源",
+      "resultCount": "{{count}} 条结果",
+      "pageCount": "{{count}} 个页面",
       "kind": {
         "company_overview": "公司概况",
         "daily_prices": "每日价格",

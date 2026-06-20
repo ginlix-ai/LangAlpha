@@ -559,8 +559,9 @@ const MessageBubble = memo(function MessageBubble({ message, isLoading, hideAvat
   // Provenance count for the Sources pill, deduped by (source_type, identifier)
   // — the same URL fetched twice in one turn counts once. The pill lives in its
   // own always-visible row (not the hover-gated footer), so it shows mid-stream.
-  // Shares countDedupedSources with SourcesPanel so the pill and panel counts
-  // can never silently diverge.
+  // This counts distinct sources (every result URL), so it intentionally runs
+  // ahead of the panel's visible row count: the panel groups a whole web search
+  // into one deck, but the pill still reports how many pages were actually read.
   const sourceCount = useMemo(() => {
     if (!isAssistant || isSubagentView) return 0;
     return countDedupedSources(message.provenanceRecords as Record<string, ProvenanceRecord> | undefined);

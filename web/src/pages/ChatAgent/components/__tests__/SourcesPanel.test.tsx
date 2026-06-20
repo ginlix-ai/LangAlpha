@@ -6,7 +6,7 @@
  * action inside that dialog.
  */
 import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import SourcesPanel from '../SourcesPanel';
 import type { ProvenanceRecord } from '@/types/chat';
@@ -64,10 +64,8 @@ describe('SourcesPanel', () => {
     expect(mcp).toBeInTheDocument();
 
     // Per-group count badge: web_search → 2, mcp_tool → 1.
-    const webGroup = webSearch.closest('div')!.parentElement!;
-    expect(within(webGroup).getByText('2')).toBeInTheDocument();
-    const mcpGroup = mcp.closest('div')!.parentElement!;
-    expect(within(mcpGroup).getByText('1')).toBeInTheDocument();
+    expect(screen.getByTestId('group-count-web_search')).toHaveTextContent('2');
+    expect(screen.getByTestId('group-count-mcp_tool')).toHaveTextContent('1');
   });
 
   it('stacks a ticker into a deck that fans on click, each access opening its own detail', () => {
@@ -80,9 +78,7 @@ describe('SourcesPanel', () => {
     render(<SourcesPanel provenanceRecords={records} />);
 
     // Group count is by ticker (1 row), not by access.
-    const market = screen.getByText('Market data');
-    const marketGroup = market.closest('div')!.parentElement!;
-    expect(within(marketGroup).getByText('1')).toBeInTheDocument();
+    expect(screen.getByTestId('group-count-market_data')).toHaveTextContent('1');
 
     // Collapsed deck: one stack, not fanned, front card summarizes the count.
     const stack = screen.getByTestId('source-stack');
@@ -338,5 +334,213 @@ describe('SourcesPanel', () => {
     render(<SourcesPanel provenanceRecords={records} />);
     expect(screen.getByText('Custom Future Source')).toBeInTheDocument();
     expect(screen.queryByText('custom_future_source')).not.toBeInTheDocument();
+  });
+
+  it('groups one web search (shared tool_call_id) into a single deck labeled by the query', () => {
+    // A real search emits one record per result, all sharing the tool_call_id.
+    const records = asMap([
+      rec({ record_id: 'r1', source_type: 'web_search', tool_call_id: 'call-1', identifier: 'https://alpha.test/a', title: 'Result A', args: { query: 'spacex funding 2024' }, result_sha256: 'a'.repeat(20) }),
+      rec({ record_id: 'r2', source_type: 'web_search', tool_call_id: 'call-1', identifier: 'https://beta.test/b', title: 'Result B', args: { query: 'spacex funding 2024' }, result_sha256: 'b'.repeat(20) }),
+      rec({ record_id: 'r3', source_type: 'web_search', tool_call_id: 'call-1', identifier: 'https://gamma.test/c', title: 'Result C', args: { query: 'spacex funding 2024' }, result_sha256: 'c'.repeat(20) }),
+    ]);
+    render(<SourcesPanel provenanceRecords={records} />);
+
+    // One row for the whole search, not three.
+    expect(screen.getByTestId('group-count-web_search')).toHaveTextContent('1');
+
+    // Collapsed deck: labeled by the query, summarizing the result count.
+    const stack = screen.getByTestId('source-stack');
+    expect(stack).toHaveAttribute('data-fanned', 'false');
+    expect(screen.getByText('spacex funding 2024')).toBeInTheDocument();
+    expect(screen.getByText('3 results')).toBeInTheDocument();
+    // Collapsed, only the query + count show. The peek cards behind the front
+    // render blank, so individual result titles are absent from the DOM entirely
+    // (not merely aria-hidden) — otherwise they bleed out below the front card as
+    // a garbled "tail".
+    expect(screen.queryByText('Result A')).not.toBeInTheDocument();
+    expect(screen.queryByText('Result B')).not.toBeInTheDocument();
+    expect(screen.queryByText('Result C')).not.toBeInTheDocument();
+  });
+
+  it('fans a web-search deck into a card per result, each opening its own detail', () => {
+    const records = asMap([
+      rec({ record_id: 'r1', source_type: 'web_search', tool_call_id: 'call-1', identifier: 'https://alpha.test/a', title: 'Result A', args: { query: 'q' }, result_sha256: 'a'.repeat(20), result_snippet: 'snippet A' }),
+      rec({ record_id: 'r2', source_type: 'web_search', tool_call_id: 'call-1', identifier: 'https://beta.test/b', title: 'Result B', args: { query: 'q' }, result_sha256: 'b'.repeat(20) }),
+    ]);
+    render(<SourcesPanel provenanceRecords={records} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /q — Expand/ }));
+    expect(screen.getByTestId('source-stack')).toHaveAttribute('data-fanned', 'true');
+
+    // Each result is now its own card (per-result title + domain subtitle).
+    expect(screen.getByRole('button', { name: /Result A — View details/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Result B — View details/ })).toBeInTheDocument();
+    expect(screen.getByText('alpha.test')).toBeInTheDocument();
+    expect(screen.getByText('beta.test')).toBeInTheDocument();
+
+    // A result card opens its own fingerprint detail.
+    fireEvent.click(screen.getByRole('button', { name: /Result A — View details/ }));
+    expect(screen.getByText('snippet A')).toBeInTheDocument();
+  });
+
+  it('stacks web_fetch pages from the same domain into a domain deck', () => {
+    // Real web_fetch records carry no title — identifier is the URL.
+    const records = asMap([
+      rec({ record_id: 'r1', source_type: 'web_fetch', identifier: 'https://sec.gov/a', args: { url: 'https://sec.gov/a', prompt: 'filings detail' }, result_sha256: 'a'.repeat(20) }),
+      rec({ record_id: 'r2', source_type: 'web_fetch', identifier: 'https://sec.gov/b', args: { url: 'https://sec.gov/b', prompt: 'debut coverage' }, result_sha256: 'b'.repeat(20) }),
+      rec({ record_id: 'r3', source_type: 'web_fetch', identifier: 'https://other.test/x', args: { url: 'https://other.test/x' }, result_sha256: 'c'.repeat(20) }),
+    ]);
+    render(<SourcesPanel provenanceRecords={records} />);
+
+    // Two rows under "Web pages": one sec.gov deck + one lone other.test page.
+    expect(screen.getByTestId('group-count-web_fetch')).toHaveTextContent('2');
+
+    // Only the repeated domain stacks; it's labeled by the domain + page count.
+    expect(screen.getAllByTestId('source-stack')).toHaveLength(1);
+    expect(screen.getByText('sec.gov')).toBeInTheDocument();
+    expect(screen.getByText('2 pages')).toBeInTheDocument();
+
+    // Fanned: each card is a page path on that domain (the domain is the front),
+    // and still surfaces its args (e.g. the fetch prompt) as a subtitle.
+    fireEvent.click(screen.getByRole('button', { name: /sec\.gov — Expand/ }));
+    expect(screen.getByRole('button', { name: /\/a — View details/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /\/b — View details/ })).toBeInTheDocument();
+    expect(screen.getByText('prompt: filings detail')).toBeInTheDocument();
+    expect(screen.getByText('prompt: debut coverage')).toBeInTheDocument();
+    // The redundant url arg is omitted — the path title already conveys it.
+    expect(screen.queryByText(/url: https/)).not.toBeInTheDocument();
+  });
+
+  it('renders a single-result web search as a flat result card (the page, not the query)', () => {
+    const records = asMap([
+      rec({ record_id: 'r1', source_type: 'web_search', tool_call_id: 'call-1', identifier: 'https://alpha.test/a', title: 'Lone Result', args: { query: 'q' }, result_sha256: 'a'.repeat(20) }),
+    ]);
+    render(<SourcesPanel provenanceRecords={records} />);
+    expect(screen.queryByTestId('source-stack')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Lone Result — View details/ })).toBeInTheDocument();
+  });
+
+  it('keeps two separate searches as two decks', () => {
+    const records = asMap([
+      rec({ record_id: 'r1', source_type: 'web_search', tool_call_id: 'call-1', identifier: 'https://a.test/1', title: 'A1', args: { query: 'first' }, result_sha256: '1'.repeat(20) }),
+      rec({ record_id: 'r2', source_type: 'web_search', tool_call_id: 'call-1', identifier: 'https://a.test/2', title: 'A2', args: { query: 'first' }, result_sha256: '2'.repeat(20) }),
+      rec({ record_id: 'r3', source_type: 'web_search', tool_call_id: 'call-2', identifier: 'https://b.test/1', title: 'B1', args: { query: 'second' }, result_sha256: '3'.repeat(20) }),
+      rec({ record_id: 'r4', source_type: 'web_search', tool_call_id: 'call-2', identifier: 'https://b.test/2', title: 'B2', args: { query: 'second' }, result_sha256: '4'.repeat(20) }),
+    ]);
+    render(<SourcesPanel provenanceRecords={records} />);
+    // One row per query (header badge), two decks.
+    expect(screen.getByTestId('group-count-web_search')).toHaveTextContent('2');
+    expect(screen.getAllByTestId('source-stack')).toHaveLength(2);
+    expect(screen.getByText('first')).toBeInTheDocument();
+    expect(screen.getByText('second')).toBeInTheDocument();
+  });
+
+  it('caps the collapsed stack to a few peek cards but reports the true count', () => {
+    const results = Array.from({ length: 9 }, (_, i) =>
+      rec({ record_id: `r${i}`, source_type: 'web_search', tool_call_id: 'c1', identifier: `https://x.test/${i}`, title: `R${i}`, args: { query: 'many' }, result_sha256: String(i).repeat(20) }),
+    );
+    render(<SourcesPanel provenanceRecords={asMap(results)} />);
+
+    const stack = screen.getByTestId('source-stack');
+    // Collapsed: front + a capped number of peek cards (MAX_PEEK_LAYERS = 2),
+    // not all nine — so the stack never grows arbitrarily deep.
+    expect(stack.querySelectorAll('.source-deck-card')).toHaveLength(3);
+    // ...but the front card still reports the true count.
+    expect(screen.getByText('9 results')).toBeInTheDocument();
+
+    // Fanned, every result is rendered.
+    fireEvent.click(screen.getByRole('button', { name: /many — Expand/ }));
+    expect(stack.querySelectorAll('.source-deck-card')).toHaveLength(9);
+  });
+
+  it('folds and unfolds a whole category via its header arrow, independently', () => {
+    const records = asMap([
+      rec({ record_id: 'r1', source_type: 'web_search', tool_call_id: 'c1', identifier: 'https://a.test/1', title: 'Alpha Result', args: { query: 'q' }, result_sha256: '1'.repeat(20) }),
+      rec({ record_id: 'r2', source_type: 'mcp_tool', identifier: 'srv:get_x', title: 'Tool X' }),
+    ]);
+    render(<SourcesPanel provenanceRecords={records} />);
+
+    // Both categories start expanded with their rows visible.
+    const header = screen.getByRole('button', { name: /Web search/ });
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Alpha Result')).toBeInTheDocument();
+
+    // Folding web search hides only its rows; the count badge stays so a folded
+    // category still shows its size, and other categories are untouched.
+    fireEvent.click(header);
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Alpha Result')).not.toBeInTheDocument();
+    expect(screen.getByTestId('group-count-web_search')).toHaveTextContent('1');
+    expect(screen.getByText('Tool X')).toBeInTheDocument();
+
+    // Unfolding restores its rows.
+    fireEvent.click(header);
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Alpha Result')).toBeInTheDocument();
+  });
+
+  it('clears a fanned deck when its category is folded, so it returns collapsed', () => {
+    const records = asMap([
+      rec({ record_id: 'r1', source_type: 'web_search', tool_call_id: 'c1', identifier: 'https://a.test/1', title: 'R1', args: { query: 'q' }, result_sha256: '1'.repeat(20) }),
+      rec({ record_id: 'r2', source_type: 'web_search', tool_call_id: 'c1', identifier: 'https://a.test/2', title: 'R2', args: { query: 'q' }, result_sha256: '2'.repeat(20) }),
+    ]);
+    render(<SourcesPanel provenanceRecords={records} />);
+
+    // Fan the deck open.
+    fireEvent.click(screen.getByRole('button', { name: /q — Expand/ }));
+    expect(screen.getByTestId('source-stack')).toHaveAttribute('data-fanned', 'true');
+
+    // Folding the category unmounts the deck entirely...
+    const header = screen.getByRole('button', { name: /Web search/ });
+    fireEvent.click(header);
+    expect(screen.queryByTestId('source-stack')).not.toBeInTheDocument();
+
+    // ...and unfolding brings it back COLLAPSED, not still-fanned (the fan state
+    // is dropped on fold so it can't linger open behind a collapsed header).
+    fireEvent.click(header);
+    expect(screen.getByTestId('source-stack')).toHaveAttribute('data-fanned', 'false');
+    expect(screen.getByText('2 results')).toBeInTheDocument();
+  });
+
+  it('keeps two different URLs with identical content as separate cards in a domain deck', () => {
+    // Two distinct pages on one site return byte-identical content (same sha) —
+    // e.g. both redirect to the same block/login page. A list deck dedups by URL,
+    // so both stay and the page count is not undercounted (entity decks, which
+    // share an identifier, still collapse by content hash).
+    const records = asMap([
+      rec({ record_id: 'r1', source_type: 'web_fetch', identifier: 'https://site.test/a', args: { url: 'https://site.test/a' }, result_sha256: 'same'.repeat(5) }),
+      rec({ record_id: 'r2', source_type: 'web_fetch', identifier: 'https://site.test/b', args: { url: 'https://site.test/b' }, result_sha256: 'same'.repeat(5) }),
+    ]);
+    render(<SourcesPanel provenanceRecords={records} />);
+
+    // Both pages survive: a 2-card deck, not a single collapsed card.
+    expect(screen.getByText('2 pages')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /site\.test — Expand/ }));
+    expect(screen.getByRole('button', { name: /\/a — View details/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /\/b — View details/ })).toBeInTheDocument();
+  });
+
+  it('renders a web_fetch with an unparseable URL as a flat leaf row without crashing', () => {
+    const records = asMap([
+      rec({ record_id: 'r1', source_type: 'web_fetch', identifier: 'not a url', args: { url: 'not a url' } }),
+    ]);
+    render(<SourcesPanel provenanceRecords={records} />);
+    // No domain to group under → a single leaf row labeled by the raw identifier.
+    expect(screen.queryByTestId('source-stack')).not.toBeInTheDocument();
+    expect(screen.getByText('not a url')).toBeInTheDocument();
+  });
+
+  it('does not merge web searches that lack both a tool_call_id and a query', () => {
+    const records = asMap([
+      rec({ record_id: 'r1', source_type: 'web_search', identifier: 'https://x.test/1', title: 'X1' }),
+      rec({ record_id: 'r2', source_type: 'web_search', identifier: 'https://y.test/2', title: 'X2' }),
+    ]);
+    render(<SourcesPanel provenanceRecords={records} />);
+    // With no shared grouping key, each falls back to its identifier → two
+    // distinct leaf rows, not one deck mislabeled by an arbitrary query.
+    expect(screen.getByTestId('group-count-web_search')).toHaveTextContent('2');
+    expect(screen.queryByTestId('source-stack')).not.toBeInTheDocument();
+    expect(screen.getByText('X1')).toBeInTheDocument();
+    expect(screen.getByText('X2')).toBeInTheDocument();
   });
 });
