@@ -46,12 +46,14 @@ const GROUP_ORDER: ProvenanceSourceType[] = [
   'memory_read',
 ];
 
-/** Deck geometry — kept in step with the widget-context deck so a provenance
- *  stack fans out with the same spacing/peek as the chat-input snapshot deck. */
+/** Deck geometry — spacing/fan motion kept in step with the widget-context deck
+ *  (the chat-input snapshot deck). MAX_PEEK_LAYERS is intentionally shallower
+ *  here: provenance decks can hold many results, so a collapsed deck only hints
+ *  "there's more behind" with a couple of peek cards rather than a deep stack. */
 const CARD_HEIGHT = 52;
 const CARD_GAP = 6;
 const PEEK_STEP = 6;
-const MAX_PEEK_LAYERS = 4;
+const MAX_PEEK_LAYERS = 2;
 
 /** Shared card chrome (visuals only — positioning/height is set per use). Every
  *  card is filled with `--color-bg-card` so a leaf card and the front of a
@@ -120,6 +122,19 @@ function domainFromUrl(url: string): string {
   }
 }
 
+/** pathname + query of a URL — the part after the origin, used to label a page
+ *  within a domain deck (the domain is already the deck label). '' for a bare
+ *  origin or an unparseable URL, so callers can fall back to the full URL. */
+function urlPath(url: string): string {
+  try {
+    const u = new URL(url);
+    const p = u.pathname + u.search;
+    return p === '/' ? '' : p;
+  } catch {
+    return '';
+  }
+}
+
 function shortSha(sha?: string): string {
   if (!sha) return '';
   return sha.length > 12 ? sha.slice(0, 12) : sha;
@@ -157,19 +172,25 @@ function humanizeType(type: string): string {
 const REDACTED = '[redacted]';
 
 /**
- * One-line render of ALL captured args as `key: value` pairs joined by ` · `,
- * shown verbatim (no curation) so every card surfaces exactly what the tool was
- * called with. Redaction sentinels pass through as-is (the whole subtitle is
- * already muted). Empty/null values are dropped. Returns null when there is
- * nothing to show.
+ * One-line render of the captured args as `key: value` pairs joined by ` · `,
+ * shown verbatim (no curation) so every card surfaces what the tool was called
+ * with. Redaction sentinels pass through as-is (the whole subtitle is already
+ * muted). Empty/null values are dropped. `omit` skips keys already conveyed
+ * elsewhere (e.g. a domain deck's `url`, since the card title is the path).
+ * Returns null when there is nothing to show.
  */
-function argsSummary(a?: Record<string, unknown> | null): string | null {
+function argsSummary(a?: Record<string, unknown> | null, omit?: Set<string>): string | null {
   if (!a) return null;
   const parts = Object.entries(a)
-    .filter(([, v]) => v !== undefined && v !== null && v !== '')
+    .filter(([k, v]) => v !== undefined && v !== null && v !== '' && !omit?.has(k))
     .map(([k, v]) => `${k}: ${argValueText(v)}`);
   return parts.length ? parts.join(' · ') : null;
 }
+
+/** Arg keys already shown by a URL-derived card title (the page path, or the
+ *  full URL on a lone web_fetch), so they're dropped from the subtitle rather
+ *  than repeating the URL. */
+const URL_REDUNDANT_ARGS = new Set(['url']);
 
 /** Compact display for an args value: redaction sentinel verbatim, strings as
  *  themselves, everything else JSON-stringified. */
@@ -212,21 +233,50 @@ interface SourceGroup {
   rows: SourceRowData[];
 }
 
+/** The search query captured on a web_search record (its `args.query`), if any. */
+function queryText(record: ProvenanceRecord): string {
+  const q = record.args?.query;
+  return typeof q === 'string' ? q : '';
+}
+
+/**
+ * Row-grouping key. Two source types collapse beyond plain identifier dedup:
+ *  - `web_search`: results from one query share a `tool_call_id`, so a whole
+ *    search (20 links) becomes one row labeled by the query.
+ *  - `web_fetch`: pages from the same origin collapse into one row labeled by
+ *    the domain, so reading several pages off one site doesn't spread into a
+ *    wall of rows. A lone page from a domain stays a single (leaf) row.
+ * Both fall back to the `(source_type, identifier)` dedup when there's nothing
+ * to group under (no tool_call_id/query; an unparseable URL). Note this
+ * intentionally diverges from the Sources pill's {@link countDedupedSources}:
+ * the pill still counts distinct URLs (how many pages were read), while the
+ * panel groups them by search / by site.
+ */
+function rowKey(record: ProvenanceRecord): string {
+  if (record.source_type === 'web_search') {
+    const search = record.tool_call_id || queryText(record) || record.identifier;
+    return `web_search:${search}`;
+  }
+  if (record.source_type === 'web_fetch') {
+    const domain = domainFromUrl(record.identifier);
+    if (domain) return `web_fetch@${domain}`;
+  }
+  return provenanceDisplayKey(record);
+}
+
 /**
  * Group records by `source_type` in {@link GROUP_ORDER}, then collapse to one
- * row per {@link provenanceDisplayKey} (e.g. one row per ticker). Records that
- * share a key are NOT dropped — they're collected on the row so it can become a
- * deck of the distinct data products behind it. Unrecognized types are appended
- * so nothing is silently dropped.
+ * row per {@link rowKey} (one row per ticker; one row per web search). Records
+ * that share a key are NOT dropped — they're collected on the row so it can
+ * become a deck of the distinct accesses/results behind it. Unrecognized types
+ * are appended so nothing is silently dropped.
  */
 function buildGroups(records?: Record<string, ProvenanceRecord>): SourceGroup[] {
   const all = Object.values(records || {});
   const byType = new Map<ProvenanceSourceType, SourceRowData[]>();
   const rowByKey = new Map<string, SourceRowData>();
   for (const record of all) {
-    // Shares provenanceDisplayKey with the Sources pill's countDedupedSources
-    // so the panel's row count matches the pill's number.
-    const dedupKey = provenanceDisplayKey(record);
+    const dedupKey = rowKey(record);
     const existing = rowByKey.get(dedupKey);
     if (existing) {
       existing.records.push(record);
@@ -260,16 +310,27 @@ function kindLabel(t: TFunction, slug?: string): string {
   return t(`chat.sources.kind.${slug}`, { defaultValue: humanizeType(slug) });
 }
 
-/** Distinct records by content hash (so identical re-fetches collapse but
- *  different data products / periods stay), preserving arrival order. Falls
- *  back to the data-kind when a record carries no sha; records that share an
- *  identifier with neither a hash nor a kind are indistinguishable, so they
- *  collapse to one rather than padding the deck with look-alikes. */
-function distinctByContent(records: ProvenanceRecord[]): ProvenanceRecord[] {
+/** Distinct records, preserving arrival order. `byIdentifier` picks what
+ *  "distinct" means for the deck's shape:
+ *   - List decks (web_search/web_fetch) — each card is a distinct URL, so key on
+ *     `identifier`. Two different URLs that happen to return byte-identical
+ *     content (block/paywall/redirect pages share a hash) stay separate cards
+ *     rather than one silently swallowing the other; a true re-fetch of the same
+ *     URL still collapses.
+ *   - Entity decks (a shared identifier, e.g. a ticker read several ways) — key
+ *     on content hash so the same data product collapses but different
+ *     products/periods stay; fall back to data-kind, then identifier, so a
+ *     hash-less, kind-less pair collapses rather than padding with look-alikes. */
+function distinctByContent(
+  records: ProvenanceRecord[],
+  byIdentifier = false,
+): ProvenanceRecord[] {
   const seen = new Set<string>();
   const out: ProvenanceRecord[] = [];
   for (const r of records) {
-    const k = r.result_sha256 || r.detail || '';
+    const k = byIdentifier
+      ? r.identifier || r.result_sha256 || r.detail || ''
+      : r.result_sha256 || r.detail || r.identifier || '';
     if (seen.has(k)) continue;
     seen.add(k);
     out.push(r);
@@ -313,6 +374,23 @@ export default function SourcesPanel({
   const [selected, setSelected] = useState<ProvenanceRecord | null>(null);
   // Only one deck fans at a time (matches the widget deck's single-deck model).
   const [fannedKey, setFannedKey] = useState<string | null>(null);
+  // Per-category fold: a source-type in this set has its whole group collapsed
+  // to just its header, so a noisy category can be tucked away entirely.
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<ProvenanceSourceType>>(
+    () => new Set(),
+  );
+
+  const toggleGroup = (type: ProvenanceSourceType) => {
+    // Folding unmounts the group's rows; drop any fanned deck so it can't linger
+    // open behind a collapsed header.
+    setFannedKey(null);
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(type)) next.delete(type);
+      else next.add(type);
+      return next;
+    });
+  };
 
   const turnCount = useMemo(() => countDedupedSources(provenanceRecords), [provenanceRecords]);
   const threadCount = useMemo(() => countDedupedSources(allRecords), [allRecords]);
@@ -363,9 +441,21 @@ export default function SourcesPanel({
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
         {groups.map((group) => {
           const groupLabel = t(`chat.sources.groups.${group.type}`, { defaultValue: humanizeType(group.type) });
+          const collapsed = collapsedGroups.has(group.type);
           return (
             <div key={group.type} className="mb-4">
-              <div className="mb-1.5 flex items-center gap-2 px-1">
+              <button
+                type="button"
+                onClick={() => toggleGroup(group.type)}
+                aria-expanded={!collapsed}
+                aria-label={`${groupLabel} — ${t(collapsed ? 'chat.sources.expand' : 'chat.sources.collapse')}`}
+                className="mb-1.5 flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left outline-none transition-colors hover:bg-[var(--color-bg-subtle)] focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+              >
+                {collapsed ? (
+                  <ChevronRight className="h-3.5 w-3.5 flex-shrink-0" style={TERTIARY} />
+                ) : (
+                  <ChevronDown className="h-3.5 w-3.5 flex-shrink-0" style={TERTIARY} />
+                )}
                 <span
                   className="text-xs font-semibold uppercase tracking-wide"
                   style={TERTIARY}
@@ -373,24 +463,27 @@ export default function SourcesPanel({
                   {groupLabel}
                 </span>
                 <span
+                  data-testid={`group-count-${group.type}`}
                   className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium"
                   style={{ backgroundColor: 'var(--color-border-muted)', color: 'var(--color-text-tertiary)' }}
                 >
                   {group.rows.length}
                 </span>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                {group.rows.map((row) => (
-                  <SourceRow
-                    key={row.key}
-                    row={row}
-                    fanned={fannedKey === row.key}
-                    onToggleFan={() => setFannedKey((k) => (k === row.key ? null : row.key))}
-                    onCollapse={() => setFannedKey((k) => (k === row.key ? null : k))}
-                    onOpenRecord={setSelected}
-                  />
-                ))}
-              </div>
+              </button>
+              {!collapsed && (
+                <div className="flex flex-col gap-1.5">
+                  {group.rows.map((row) => (
+                    <SourceRow
+                      key={row.key}
+                      row={row}
+                      fanned={fannedKey === row.key}
+                      onToggleFan={() => setFannedKey((k) => (k === row.key ? null : row.key))}
+                      onCollapse={() => setFannedKey((k) => (k === row.key ? null : k))}
+                      onOpenRecord={setSelected}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           );
         })}
@@ -475,14 +568,18 @@ function SourceRow({
 }): React.ReactElement {
   const { t } = useTranslation();
   const { record, records } = row;
-  const distinct = distinctByContent(records);
+  const isWebSearch = record.source_type === 'web_search';
+  const isWebFetch = record.source_type === 'web_fetch';
+  // List decks dedup by URL; entity decks dedup by content hash (see distinctByContent).
+  const distinct = distinctByContent(records, isWebSearch || isWebFetch);
   const title = recordTitle(t, record);
 
   if (distinct.length <= 1) {
     const kind = kindLabel(t, record.detail);
-    // Always surface the full captured args (not a curated subset). Fall back to
-    // the data-kind, then the identifier, only when there are no args to show.
-    let subtitle = argsSummary(record.args) ?? '';
+    // Surface the captured args (not a curated subset). For a lone web_fetch the
+    // title is already the full URL, so drop the redundant `url` arg. Fall back
+    // to the data-kind, then the identifier, only when there are no args to show.
+    let subtitle = argsSummary(record.args, isWebFetch ? URL_REDUNDANT_ARGS : undefined) ?? '';
     if (!subtitle) {
       if (kind) subtitle = kind;
       // For file rows the title already encodes the (normalized) identifier, so
@@ -513,10 +610,22 @@ function SourceRow({
     );
   }
 
+  // Three deck shapes, by how the row was grouped (see rowKey):
+  //  - 'query' (web_search): labeled by the query; each card is a result page.
+  //  - 'domain' (web_fetch): labeled by the site; each card is a page on it.
+  //  - 'entity' (default, e.g. a ticker): labeled by the entity; cards share it.
+  const variant = isWebSearch ? 'query' : isWebFetch ? 'domain' : 'entity';
+  const frontLabel = isWebSearch
+    ? queryText(record) || t('chat.sources.groups.web_search')
+    : isWebFetch
+      ? domainFromUrl(record.identifier) || title
+      : title;
+
   return (
     <SourceDeck
       records={distinct}
-      ticker={title}
+      frontLabel={frontLabel}
+      variant={variant}
       fanned={fanned}
       onToggleFan={onToggleFan}
       onCollapse={onCollapse}
@@ -526,34 +635,61 @@ function SourceRow({
 }
 
 /**
- * A deck of cards — one per distinct access of a single source (e.g. a ticker
- * read via company overview + daily prices + options chain). Collapsed, the
- * cards peek behind the front one and the front shows the access count; clicking
- * fans them out (the widget-context deck's exact motion) and each card then
- * opens its own detail dialog. Clicking outside, or pressing Escape, collapses.
+ * A deck of cards behind one front card. Three shapes, set by `variant`:
+ *  - `entity`: one source read several ways (e.g. a ticker via company overview
+ *    + daily prices + options chain). Every card shares `frontLabel` (the
+ *    entity); cards differ by their data-kind/args subtitle.
+ *  - `query`: one web search's many results. The front is labeled by the query;
+ *    each card keeps its own result title and shows its domain.
+ *  - `domain`: pages fetched from one site. The front is labeled by the domain;
+ *    each card shows its page path (the domain is already on the front).
+ *
+ * Collapsed, the cards peek behind the front one and the front shows the count;
+ * clicking fans them out (the widget-context deck's exact motion) and each card
+ * then opens its own detail dialog. Clicking outside, or pressing Escape,
+ * collapses.
  */
 function SourceDeck({
   records,
-  ticker,
+  frontLabel,
+  variant,
   fanned,
   onToggleFan,
   onCollapse,
   onOpenRecord,
 }: {
   records: ProvenanceRecord[];
-  ticker: string;
+  frontLabel: string;
+  variant: 'entity' | 'query' | 'domain';
   fanned: boolean;
   onToggleFan: () => void;
   onCollapse: () => void;
   onOpenRecord: (record: ProvenanceRecord) => void;
 }): React.ReactElement {
   const { t } = useTranslation();
+  // A "list" deck (query/domain) labels each card by its own page; an entity
+  // deck shares the front label across cards and subtitles by data-kind.
+  const isEntity = variant === 'entity';
   const rootRef = useRef<HTMLDivElement | null>(null);
   const n = records.length;
   const peekLayers = Math.min(n - 1, MAX_PEEK_LAYERS);
   const stackHeight = fanned
     ? n * (CARD_HEIGHT + CARD_GAP) - CARD_GAP
     : CARD_HEIGHT + peekLayers * PEEK_STEP;
+  // Collapsed, only render the front + a capped number of peek cards so a big
+  // deck doesn't stack arbitrarily deep (the true count stays on the front
+  // badge). Fanned, render every card. Capping the rendered set — not just the
+  // stack height — keeps the deepest peek card flush with the stack's bottom.
+  const visible = fanned ? records : records.slice(0, peekLayers + 1);
+  // The collapsed front card's count noun tracks the grouping (sources /
+  // results / pages). It's deck-level — depends only on variant — so compute
+  // it once here rather than per card in the map below.
+  const countKey =
+    variant === 'query'
+      ? 'chat.sources.resultCount'
+      : variant === 'domain'
+        ? 'chat.sources.pageCount'
+        : 'chat.sources.sourceCount';
 
   // Outside-click / Escape collapse while fanned, deferred one frame so the
   // click that fanned the deck can't immediately re-collapse it. Clicks inside
@@ -594,24 +730,42 @@ function SourceDeck({
       data-fanned={fanned}
       style={{ height: stackHeight }}
     >
-      {records.map((r, i) => {
+      {visible.map((r, i) => {
         const top = fanned ? i * (CARD_HEIGHT + CARD_GAP) : 0;
         const peekY = fanned ? 0 : i * PEEK_STEP;
         const peekScale = fanned ? 1 : Math.max(1 - i * 0.03, 0.85);
         const peekOpacity = fanned ? 1 : i === 0 ? 1 : Math.max(0.85 - (i - 1) * 0.2, 0.25);
         const interactive = fanned || i === 0;
         const isTop = i === 0;
+        const collapsedFront = !fanned && isTop;
         const kind = kindLabel(t, r.detail);
-        // Always show the full captured args; fall back to the data-kind.
-        const cardLabel = argsSummary(r.args) ?? kind;
+        // Per-card title: entity cards share the front label; query cards show
+        // the result's own page title; domain cards show the page path (the
+        // domain is already on the front).
+        const cardTitle =
+          variant === 'query'
+            ? recordTitle(t, r)
+            : variant === 'domain'
+              ? urlPath(r.identifier) || recordTitle(t, r)
+              : frontLabel;
+        // Per-card subtitle (fanned): entity → full args / data-kind; query →
+        // the result's domain; domain → the args (minus the redundant `url`), so
+        // a page's fetch prompt still shows even though the path is the title.
+        const cardLabel =
+          variant === 'query'
+            ? domainFromUrl(r.identifier)
+            : variant === 'domain'
+              ? (argsSummary(r.args, URL_REDUNDANT_ARGS) ?? '')
+              : (argsSummary(r.args) ?? kind);
 
-        // Collapsed, the front card summarizes the deck ("N sources"); fanned,
-        // every card shows its full args (or data-kind when it has none).
-        const subtitle = !fanned && isTop ? t('chat.sources.sourceCount', { count: n }) : cardLabel;
-        const ariaLabel =
-          !fanned && isTop
-            ? `${ticker} — ${t('chat.sources.expand')}`
-            : `${ticker}${kind ? ` · ${kind}` : ''} — ${t('chat.sources.viewDetails')}`;
+        // Collapsed, the front card summarizes the deck (count noun via
+        // countKey above); fanned, each card shows its own label.
+        const subtitle = collapsedFront ? t(countKey, { count: n }) : cardLabel;
+        const ariaLabel = collapsedFront
+          ? `${frontLabel} — ${t('chat.sources.expand')}`
+          : !isEntity
+            ? `${cardTitle} — ${t('chat.sources.viewDetails')}`
+            : `${frontLabel}${kind ? ` · ${kind}` : ''} — ${t('chat.sources.viewDetails')}`;
         const trailing =
           !fanned && isTop ? (
             <span className="inline-flex flex-shrink-0 items-center gap-1">
@@ -655,13 +809,19 @@ function SourceDeck({
                   : 'none',
             }}
           >
-            <SourceCardBody
-              record={r}
-              title={ticker}
-              subtitle={subtitle}
-              subagent={isSubagentRecord(r.agent)}
-              trailing={trailing}
-            />
+            {/* Collapsed peek cards (behind the front) render as blank card
+                surfaces — showing their content would bleed favicons/titles out
+                below the front card as a garbled "tail". Only the front card (or
+                every card once fanned) shows its body. */}
+            {interactive && (
+              <SourceCardBody
+                record={r}
+                title={collapsedFront ? frontLabel : cardTitle}
+                subtitle={subtitle}
+                subagent={isSubagentRecord(r.agent)}
+                trailing={trailing}
+              />
+            )}
           </button>
         );
       })}
