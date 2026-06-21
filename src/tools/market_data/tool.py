@@ -19,6 +19,7 @@ from .implementations import (
     fetch_stock_daily_prices,
     fetch_stock_screener,
 )
+from .adanos_sentiment import fetch_adanos_market_sentiment
 
 
 @tool(response_format="content_and_artifact")
@@ -386,4 +387,43 @@ async def get_market_movers(
         get_market_movers("losers")
     """
     content, artifact = await fetch_market_movers(direction, config=config)
+    return content, artifact
+
+
+@tool(response_format="content_and_artifact")
+async def get_adanos_market_sentiment(
+    symbol: Optional[str] = None,
+    sources: Optional[List[str]] = None,
+    days: int = 7,
+    end_date: Optional[str] = None,
+    mode: str = "stock",
+) -> Tuple[str, Dict[str, Any]]:
+    """
+    Get optional Adanos Market Sentiment API data for US equities.
+
+    Adanos combines Reddit, X / FinTwit, financial news, and Polymarket signals.
+    Use this as external sentiment context alongside prices, fundamentals, SEC
+    filings, and news — not as a standalone trading recommendation.
+
+    Args:
+        symbol: US stock ticker such as "AAPL" or "TSLA". Required for stock mode.
+        sources: Optional subset of ["reddit", "x", "news", "polymarket"].
+        days: Lookback window in days. Defaults to 7.
+        end_date: Optional YYYY-MM-DD end date. Defaults to today.
+        mode: "stock" for per-ticker sentiment, or "market" for broad market sentiment.
+
+    Returns:
+        Markdown summary plus an artifact containing raw per-source API payloads.
+
+    Requirements:
+        Set ADANOS_API_KEY in the environment. ADANOS_API_BASE_URL can override
+        the default https://api.adanos.org endpoint for self-hosted testing.
+    """
+    content, artifact = await fetch_adanos_market_sentiment(
+        symbol=symbol,
+        sources=sources,
+        days=days,
+        end_date=end_date,
+        mode=mode,
+    )
     return content, artifact
