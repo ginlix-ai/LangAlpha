@@ -18,8 +18,8 @@ dependencies = [
     "langchain-anthropic>=1.0.0",
     "langchain_google_genai>=2.0.0",
     "langchain-deepseek>=0.1.4",
-    # LangGraph
-    "langgraph>=0.3.5",
+    # LangGraph (1.2+ for DeltaChannel incremental checkpoints)
+    "langgraph>=1.2.0",
     "langgraph-checkpoint-postgres>=2.0.0",
     # Other dependencies
     "python-dotenv>=1.0.1",
@@ -64,7 +64,7 @@ dependencies = [
     "edgartools>=5.7.2",
     "langsmith-fetch>=0.3.1",
     "structlog",
-    "deepagents>=0.5.3",
+    "deepagents>=0.6.4",
     "daytona-sdk>=0.130.0",
     "boto3>=1.42.28",
     "tavily-python>=0.7.18",

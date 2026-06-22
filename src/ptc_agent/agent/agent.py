@@ -21,6 +21,7 @@ from ptc_agent.agent.backends import (
     StoreBackend,
 )
 from ptc_agent.agent.middleware import SubAgentMiddleware
+from deepagents.graph import DeepAgentState
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 
@@ -748,6 +749,10 @@ class PTCAgent:
             system_prompt=system_prompt,
             tools=tools,
             middleware=deepagent_middleware,
+            # DeepAgentState annotates `messages` with DeltaChannel so the
+            # Postgres checkpointer stores incremental diffs (O(N)) instead of a
+            # full snapshot per step (O(N^2)) — matters for long analysis sessions.
+            state_schema=DeepAgentState,
             checkpointer=checkpointer,
             store=store,
         ).with_config({"recursion_limit": 2000})
