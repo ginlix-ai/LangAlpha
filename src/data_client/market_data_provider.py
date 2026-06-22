@@ -211,7 +211,7 @@ class MarketDataProvider:
             user_id=user_id,
         )
 
-    # -- Snapshot interface (batch; no per-symbol routing) --------------------
+    # -- Snapshot interface ---------------------------------------------------
 
     async def get_snapshots(
         self,
@@ -219,22 +219,83 @@ class MarketDataProvider:
         asset_type: str = "stocks",
         user_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Fetch batch snapshots, trying providers in order."""
+        """Fetch batch snapshots with per-symbol market routing and fallback."""
+        def normalize_symbol(value: Any) -> str:
+            return str(value).strip().upper()
+
+        pending = [s for s in symbols if str(s).strip()]
+        if not pending:
+            return []
+
+        results_by_symbol: dict[str, dict[str, Any]] = {}
         last_exc: Exception | None = None
+        supports_snapshots = False
+
         for entry in self.entries:
             fn = getattr(entry.source, "get_snapshots", None)
             if fn is None:
                 continue
+            supports_snapshots = True
+
+            batch = [
+                s
+                for s in pending
+                if "all" in entry.markets
+                or symbol_market(normalize_symbol(s)) in entry.markets
+            ]
+            if not batch:
+                continue
+
             try:
-                return await fn(symbols=symbols, asset_type=asset_type, user_id=user_id)
+                snapshots = await fn(
+                    symbols=batch,
+                    asset_type=asset_type,
+                    user_id=user_id,
+                )
             except Exception as exc:
                 logger.warning(
                     "market_data.snapshot.fallback | source=%s error=%s",
                     entry.name, exc,
                 )
                 last_exc = exc
+                continue
+
+            requested = {normalize_symbol(s) for s in batch}
+            resolved: set[str] = set()
+            for snap in snapshots or []:
+                symbol = normalize_symbol(snap.get("symbol") or "")
+                if symbol in requested:
+                    results_by_symbol[symbol] = snap
+                    resolved.add(symbol)
+                elif symbol:
+                    logger.warning(
+                        "market_data.snapshot.drop_unrequested | source=%s symbol=%s",
+                        entry.name,
+                        symbol,
+                    )
+                else:
+                    logger.warning(
+                        "market_data.snapshot.drop_unkeyed | source=%s item=%s",
+                        entry.name,
+                        snap,
+                    )
+
+            if resolved:
+                pending = [s for s in pending if normalize_symbol(s) not in resolved]
+                if not pending:
+                    break
+
+        if results_by_symbol:
+            return [
+                results_by_symbol[normalize_symbol(symbol)]
+                for symbol in symbols
+                if normalize_symbol(symbol) in results_by_symbol
+            ]
+
         if last_exc:
             raise last_exc
+        if supports_snapshots:
+            return []
         raise RuntimeError("No data source supports get_snapshots")
 
     async def get_market_status(
