@@ -98,13 +98,31 @@ class TestChartSelectionContextValidation:
                 }
             )
 
-    def test_price_range_normalized(self):
+    def test_price_level_collapses_to_single_price(self):
+        # A price_level is one price: the range is ordered, then the stray high
+        # is collapsed onto price_low so render/replay can't disagree.
         ctx = _adapter.validate_python(
             {
                 "type": "chart_selection",
                 "symbol": "NVDA",
                 "timeframe": "1day",
                 "selection_type": "price_level",
+                "price_low": 195.0,
+                "price_high": 180.5,
+            }
+        )
+        assert ctx.price_low == 180.5
+        assert ctx.price_high == 180.5
+
+    def test_region_price_range_ordered(self):
+        ctx = _adapter.validate_python(
+            {
+                "type": "chart_selection",
+                "symbol": "NVDA",
+                "timeframe": "1day",
+                "selection_type": "region",
+                "time_start": "2024-01-03T00:00:00.000Z",
+                "time_end": "2024-02-15T00:00:00.000Z",
                 "price_low": 195.0,
                 "price_high": 180.5,
             }

@@ -122,11 +122,18 @@ class ChartSelectionContext(AdditionalContextBase):
 
     @model_validator(mode="after")
     def _validate_geometry(self) -> "ChartSelectionContext":
-        """Require region bounds, order the price range, and cap bars."""
+        """Require region bounds, normalize the price range, and cap bars.
+
+        A price_level is a single price, so any stray high is collapsed onto
+        price_low — the render and draw-back hint read only price_low, so the
+        stored/replayed range must not disagree with it.
+        """
         if self.selection_type == "region" and not (self.time_start and self.time_end):
             raise ValueError("region selection requires both time_start and time_end")
         if self.price_low > self.price_high:
             self.price_low, self.price_high = self.price_high, self.price_low
+        if self.selection_type == "price_level":
+            self.price_high = self.price_low
         if len(self.bars) > _MAX_SELECTION_BARS:
             self.bars = self.bars[:_MAX_SELECTION_BARS]
             self.bars_truncated = True
