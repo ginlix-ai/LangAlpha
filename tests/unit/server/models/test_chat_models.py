@@ -171,6 +171,43 @@ class TestChatMessage:
         msg = ChatMessage(role="assistant", content=items)
         assert isinstance(msg.content, list)
 
+    def test_valid_roles_accepted(self):
+        # Roles the chat path can validly turn into a message all pass.
+        for role in ("user", "assistant", "system", "developer", "human", "ai"):
+            assert ChatMessage(role=role, content="x").role == role
+
+    def test_tool_and_function_roles_rejected(self):
+        """``tool``/``function`` are accepted by convert_to_messages but map to
+        ToolMessage/FunctionMessage, which require tool_call_id/name that
+        ChatMessage cannot supply. A client POST of {"role":"tool"} would pass
+        the model, then raise KeyError('tool_call_id') in the reducer — and under
+        DeltaChannel the raw write is persisted before the reducer, so it
+        re-raises on every reconstruction and bricks the thread. Reject at the
+        boundary."""
+        for role in ("tool", "function"):
+            with pytest.raises(ValidationError, match="Unsupported message role"):
+                ChatMessage(role=role, content="x")
+
+    def test_unknown_role_rejected(self):
+        """A client-controlled unknown role is rejected at the request boundary
+        (422), so it is never persisted to the delta channel where it would
+        re-raise in convert_to_messages on every reconstruction and brick the
+        thread."""
+        with pytest.raises(ValidationError, match="Unsupported message role"):
+            ChatMessage(role="banana", content="hi")
+
+    def test_role_is_case_sensitive(self):
+        # langchain matches roles case-sensitively (msg dict 'role' used as-is),
+        # so "User" would raise downstream — reject it cleanly here too.
+        with pytest.raises(ValidationError):
+            ChatMessage(role="User", content="hi")
+
+    def test_chatrequest_with_bad_role_rejected(self):
+        """End-to-end: the bad role is caught when the request body is parsed,
+        before any handler / graph / checkpoint runs."""
+        with pytest.raises(ValidationError):
+            ChatRequest(messages=[{"role": "banana", "content": "hi"}])
+
 
 # ---------------------------------------------------------------------------
 # ChatRequest
