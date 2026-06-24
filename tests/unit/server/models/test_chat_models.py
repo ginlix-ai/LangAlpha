@@ -11,7 +11,6 @@ from src.server.models.chat import (
     ChatMessage,
     ChatRequest,
     ContentItem,
-    GeneratePodcastRequest,
     HITLDecision,
     HITLResponse,
     SubagentMessageRequest,
@@ -170,6 +169,69 @@ class TestChatMessage:
         items = [ContentItem(type="text", text="hello")]
         msg = ChatMessage(role="assistant", content=items)
         assert isinstance(msg.content, list)
+
+    def test_valid_roles_accepted(self):
+        # Roles that both convert_to_messages can build AND langgraph stamps.
+        for role in ("user", "assistant", "system", "human", "ai"):
+            assert ChatMessage(role=role, content="x").role == role
+
+    def test_developer_role_rejected(self):
+        """``developer`` converts fine (convert_to_messages -> SystemMessage) but is
+        NOT in langgraph's ``_MESSAGE_ROLES``, so ``ensure_message_ids`` never stamps
+        it. It would persist id-less and duplicate on the hard-stop checkpoint flush
+        (a full-list ``aupdate_state`` write-back the non-minting reducer can't
+        dedup). Reject at the boundary; clients send ``system`` for the same effect."""
+        with pytest.raises(ValidationError, match="Unsupported message role"):
+            ChatMessage(role="developer", content="x")
+
+    def test_every_valid_role_is_stamped_by_langgraph(self):
+        """The invariant behind the set: every accepted role MUST be in langgraph's
+        ``_MESSAGE_ROLES`` (the set ``ensure_message_ids`` stamps at put_writes).
+        An accepted-but-unstamped role persists id-less and duplicates on the
+        hard-stop flush. Ties the validator to langgraph's actual stamping contract:
+        re-adding an unstamped role (e.g. ``developer``) or a langgraph bump that
+        narrows ``_MESSAGE_ROLES`` fails here instead of corrupting threads in prod."""
+        from langgraph.pregel._messages import _MESSAGE_ROLES
+
+        from src.server.models.chat import _VALID_MESSAGE_ROLES
+
+        unstamped = _VALID_MESSAGE_ROLES - _MESSAGE_ROLES
+        assert not unstamped, (
+            f"roles accepted but NOT stamped by langgraph: {sorted(unstamped)} — "
+            "each persists id-less and duplicates on the hard-stop flush"
+        )
+
+    def test_tool_and_function_roles_rejected(self):
+        """``tool``/``function`` are accepted by convert_to_messages but map to
+        ToolMessage/FunctionMessage, which require tool_call_id/name that
+        ChatMessage cannot supply. A client POST of {"role":"tool"} would pass
+        the model, then raise KeyError('tool_call_id') in the reducer — and under
+        DeltaChannel the raw write is persisted before the reducer, so it
+        re-raises on every reconstruction and bricks the thread. Reject at the
+        boundary."""
+        for role in ("tool", "function"):
+            with pytest.raises(ValidationError, match="Unsupported message role"):
+                ChatMessage(role=role, content="x")
+
+    def test_unknown_role_rejected(self):
+        """A client-controlled unknown role is rejected at the request boundary
+        (422), so it is never persisted to the delta channel where it would
+        re-raise in convert_to_messages on every reconstruction and brick the
+        thread."""
+        with pytest.raises(ValidationError, match="Unsupported message role"):
+            ChatMessage(role="banana", content="hi")
+
+    def test_role_is_case_sensitive(self):
+        # langchain matches roles case-sensitively (msg dict 'role' used as-is),
+        # so "User" would raise downstream — reject it cleanly here too.
+        with pytest.raises(ValidationError):
+            ChatMessage(role="User", content="hi")
+
+    def test_chatrequest_with_bad_role_rejected(self):
+        """End-to-end: the bad role is caught when the request body is parsed,
+        before any handler / graph / checkpoint runs."""
+        with pytest.raises(ValidationError):
+            ChatRequest(messages=[{"role": "banana", "content": "hi"}])
 
 
 # ---------------------------------------------------------------------------
