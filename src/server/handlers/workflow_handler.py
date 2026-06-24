@@ -58,6 +58,75 @@ def extract_state_values(checkpoint_tuple) -> dict:
     return channel_values
 
 
+async def _delta_safe_message_count(checkpoint_tuple) -> Optional[int]:
+    """Count ``messages`` from a raw checkpoint tuple, DeltaChannel-aware.
+
+    Handles the three shapes ``messages`` takes under delta (a legacy/seed list,
+    a ``_DeltaSnapshot`` blob, or absent on a non-snapshot step), then folds in
+    the head's pending writes (which sit after the checkpoint row). Returns
+    ``None`` on error — falling back to the raw list length when we have one; the
+    count is purely informational, so a missing value is safe. (Per-branch detail
+    in the inline comments below.)
+    """
+    if not checkpoint_tuple or not checkpoint_tuple.checkpoint:
+        return None
+
+    channel_values = checkpoint_tuple.checkpoint.get("channel_values", {})
+    messages_value = channel_values.get("messages")
+
+    try:
+        from langgraph.channels import DeltaChannel
+        from langgraph.errors import EmptyChannelError
+        from langgraph.types import MISSING
+
+        from ptc_agent.agent.state import (
+            MESSAGES_SNAPSHOT_FREQUENCY,
+            messages_delta_reducer,
+        )
+
+        channel = DeltaChannel(
+            messages_delta_reducer, snapshot_frequency=MESSAGES_SNAPSHOT_FREQUENCY
+        )
+        if messages_value is not None:
+            # Complete value on this checkpoint: either a legacy ``add_messages``
+            # plain list or a `_DeltaSnapshot` blob (snapshot step). Both seed via
+            # from_checkpoint — no DB round trip — then head writes fold in below.
+            channel = channel.from_checkpoint(messages_value)
+        else:
+            # Non-snapshot step: `messages` is a sentinel (absent). Seed from the
+            # delta history and replay ancestor writes. Use the tuple's own config
+            # — it carries the resolved checkpoint_id the history walk anchors on
+            # (a bare thread_id config yields nothing).
+            checkpointer = get_checkpointer()
+            history = await checkpointer.aget_delta_channel_history(
+                config=checkpoint_tuple.config, channels=["messages"]
+            )
+            entry = history.get("messages", {})
+            channel = channel.from_checkpoint(entry.get("seed", MISSING))
+            channel.replay_writes(entry.get("writes", []))
+
+        head_writes = [
+            w for w in (checkpoint_tuple.pending_writes or []) if w[1] == "messages"
+        ]
+        if head_writes:
+            channel.replay_writes(head_writes)
+
+        try:
+            return len(channel.get())
+        except EmptyChannelError:
+            return 0
+    except Exception as e:
+        # Never regress a legacy plain-list thread to None on a reconstruction
+        # error — its raw length is a correct (if pre-head-write) fallback.
+        if isinstance(messages_value, list):
+            logger.debug(f"delta message_count fold failed; raw list len: {e}")
+            return len(messages_value)
+        logger.debug(
+            f"Could not reconstruct delta message_count (reporting None): {e}"
+        )
+        return None
+
+
 async def cancel_workflow(thread_id: str, run_id: Optional[str] = None) -> dict:
     """
     Explicitly cancel a workflow execution (user stop).
@@ -179,7 +248,11 @@ async def get_workflow_status(thread_id: str) -> dict:
                 checkpoint_info = {
                     "has_plan": False,  # PTC doesn't use plans
                     "has_final_report": bool(state_values.get("final_report")),
-                    "message_count": len(state_values.get("messages", [])),
+                    # DeltaChannel-safe: messages may be absent from raw
+                    # channel_values on non-snapshot steps; reconstruct cheaply.
+                    "message_count": await _delta_safe_message_count(
+                        checkpoint_tuple
+                    ),
                     "completed": len(pending_sends) == 0,
                     "checkpoint_id": checkpoint_tuple.config.get(
                         "configurable", {}

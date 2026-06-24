@@ -67,7 +67,15 @@ def _strip_nul(value: Any) -> tuple[Any, int]:
         return out_list, n
     if isinstance(value, tuple):
         cleaned = [_strip_nul(item) for item in value]
-        return tuple(c for c, _ in cleaned), sum(n for _, n in cleaned)
+        fields = [c for c, _ in cleaned]
+        total = sum(n for _, n in cleaned)
+        # NamedTuple (e.g. langgraph's `_DeltaSnapshot`): reconstruct with the
+        # SAME type so the serializer still emits its dedicated ext code.
+        # Flattening to a plain tuple would make `DeltaChannel.from_checkpoint`
+        # stop recognizing the snapshot, corrupting the channel on resume.
+        if hasattr(value, "_fields"):
+            return type(value)(*fields), total
+        return tuple(fields), total
     # Pydantic/LangChain message objects: walk attributes that look textual.
     # `content` is the dominant carrier. Other str attributes get same treatment.
     if hasattr(value, "__dict__"):

@@ -8,16 +8,96 @@ This module is standalone and does not depend on deep_research.
 import asyncio
 import logging
 import os
-from typing import Any, Optional
+import uuid
+from typing import Any, Optional, Sequence
 
+from langchain_core.messages import BaseMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres import AsyncPostgresStore
+from langgraph.types import Overwrite
 from psycopg_pool import AsyncConnectionPool
 
 from src.config.settings import get_checkpointer_pool_max
 
 logger = logging.getLogger(__name__)
+
+
+def _stamp_message_ids(
+    writes: Sequence[tuple[str, Any]],
+) -> Sequence[tuple[str, Any]]:
+    """Stamp ids on id-less ``messages``-channel writes, in place.
+
+    Covers ``BaseMessage`` objects and raw ``{"role","content"}`` dicts (the chat
+    path), including either wrapped in an ``Overwrite`` (unwrapped, wrapper kept).
+    Needed under DeltaChannel, which persists the raw write via ``put_writes``
+    BEFORE the reducer runs — without a stable id the reducer re-mints a new uuid
+    on every replay (non-deterministic ids → duplication on the hard-stop flush).
+    langgraph >=1.2.2 stamps bare ``BaseMessage``/dict writes upstream
+    (``ensure_message_ids`` in ``pregel/_loop.py``) but NOT the ``Overwrite``
+    wrapper. In deepagents' default stack the only id-less Overwrite write is
+    ``PatchToolCallsMiddleware`` repairing a dangling tool call after a mid-tool
+    cancel (the hard-stop path); eviction keeps the original id and summarization's
+    id-less writes are plain lists, so both are already upstream-covered. The
+    Overwrite unwrap here is the load-bearing cover at >=1.2.2.
+    A no-op under plain ``add_messages``; leaves ``RemoveMessage`` untouched so
+    ``REMOVE_ALL_MESSAGES`` reset still works.
+    """
+    for ch, val in writes:
+        if ch != "messages":
+            continue
+        # Unwrap Overwrite(value=[...]) so id-less messages inside it are stamped
+        # too; the wrapper itself is left in place, preserving reset semantics.
+        inner = val.value if isinstance(val, Overwrite) else val
+        msgs = inner if isinstance(inner, (list, tuple)) else [inner]
+        for m in msgs:
+            if isinstance(m, BaseMessage):
+                if m.id is None:
+                    m.id = str(uuid.uuid4())
+            elif isinstance(m, dict) and not m.get("id"):
+                # The chat path feeds dict messages, not BaseMessage; they re-mint
+                # on every delta replay unless stamped here. convert_to_messages
+                # honors the dict "id", so this gives a stable, deterministic id.
+                m["id"] = str(uuid.uuid4())
+    return writes
+
+
+class IdStampingCheckpointerMixin:
+    """Saver mixin that id-stamps id-less ``messages`` writes before persisting.
+
+    Overrides ``put_writes``/``aput_writes`` to run :func:`_stamp_message_ids`
+    on the writes, then delegates to ``super()`` unchanged. Mix into a concrete
+    saver (e.g. ``AsyncPostgresSaver``, ``InMemorySaver``) ahead of it in the
+    MRO so the stamp happens before serialization.
+    """
+
+    def put_writes(
+        self,
+        config,
+        writes: Sequence[tuple[str, Any]],
+        task_id: str,
+        task_path: str = "",
+    ) -> None:
+        writes = _stamp_message_ids(writes)
+        return super().put_writes(config, writes, task_id, task_path)
+
+    async def aput_writes(
+        self,
+        config,
+        writes: Sequence[tuple[str, Any]],
+        task_id: str,
+        task_path: str = "",
+    ) -> None:
+        writes = _stamp_message_ids(writes)
+        return await super().aput_writes(config, writes, task_id, task_path)
+
+
+class IdStampingMemorySaver(IdStampingCheckpointerMixin, MemorySaver):
+    """In-memory saver (dev) with id-stamping of id-less ``messages`` writes."""
+
+
+class IdStampingAsyncPostgresSaver(IdStampingCheckpointerMixin, AsyncPostgresSaver):
+    """Postgres saver (prod) with id-stamping of id-less ``messages`` writes."""
 
 # Module-level connection pool cache to reuse connections across graph compilations
 _postgres_pool_cache: dict[str, AsyncConnectionPool] = {}
@@ -70,7 +150,7 @@ def get_checkpointer(memory_type: str = "memory", **kwargs) -> Optional[Any]:
     """
     if memory_type == "memory":
         logger.info("Using in-memory checkpointer")
-        return MemorySaver()
+        return IdStampingMemorySaver()
 
     elif memory_type == "postgres":
         # Get database connection info from kwargs or environment variables
@@ -113,7 +193,7 @@ def get_checkpointer(memory_type: str = "memory", **kwargs) -> Optional[Any]:
             )
 
         pool = _postgres_pool_cache[db_uri]
-        return AsyncPostgresSaver(pool)
+        return IdStampingAsyncPostgresSaver(pool)
 
     else:
         raise ValueError(f"Unsupported storage type: {memory_type}")

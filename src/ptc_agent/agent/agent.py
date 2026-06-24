@@ -21,6 +21,7 @@ from ptc_agent.agent.backends import (
     StoreBackend,
 )
 from ptc_agent.agent.middleware import SubAgentMiddleware
+from ptc_agent.agent.state import DeltaAgentState
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 
@@ -750,6 +751,7 @@ class PTCAgent:
             middleware=deepagent_middleware,
             checkpointer=checkpointer,
             store=store,
+            state_schema=DeltaAgentState,
         ).with_config({"recursion_limit": 2000})
 
         return BackgroundSubagentOrchestrator(

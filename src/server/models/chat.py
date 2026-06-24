@@ -8,9 +8,27 @@ that use the ptc-agent library for code execution in Daytona sandboxes.
 import copy
 from typing import Any, Dict, List, Literal, Mapping, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.server.models.additional_context import AdditionalContext
+
+# Roles the chat path can VALIDLY turn into a message. It persists
+# ``{"role", "content"}`` dicts straight into the ``messages`` channel; under
+# DeltaChannel that raw write is stored BEFORE the reducer runs and REPLAYED
+# through ``convert_to_messages`` on every reconstruction, so any role that
+# ``convert_to_messages`` cannot build from ``{"role", "content"}`` alone raises
+# on every resume and bricks the thread (``role`` is client-controlled). Reject
+# those at the request boundary instead — a clean 422 before anything persists.
+#
+# This is ``convert_to_messages``'s accepted set MINUS ``tool``/``function``:
+# those map to ToolMessage/FunctionMessage, which REQUIRE ``tool_call_id`` /
+# ``name`` — fields ``ChatMessage`` cannot supply, so they ALWAYS raise in
+# ``convert_to_messages`` (e.g. ``KeyError: 'tool_call_id'``) and would brick the
+# thread under delta replay. The chat API only ever produces
+# user/assistant/system/developer/human/ai messages.
+_VALID_MESSAGE_ROLES = frozenset(
+    {"user", "assistant", "system", "developer", "human", "ai"}
+)
 
 
 # =============================================================================
@@ -168,6 +186,22 @@ class ChatMessage(BaseModel):
         ...,
         description="The content of the message, either a string or a list of content items",
     )
+
+    @field_validator("role")
+    @classmethod
+    def _validate_role(cls, v: str) -> str:
+        """Reject roles that would later raise in ``convert_to_messages``.
+
+        Without this, an unknown role is persisted to the delta channel and
+        re-raises on every reconstruction (a bricked thread); see
+        ``_VALID_MESSAGE_ROLES``.
+        """
+        if v not in _VALID_MESSAGE_ROLES:
+            allowed = ", ".join(sorted(_VALID_MESSAGE_ROLES))
+            raise ValueError(
+                f"Unsupported message role {v!r}. Must be one of: {allowed}."
+            )
+        return v
 
 
 # =============================================================================

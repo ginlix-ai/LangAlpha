@@ -25,6 +25,7 @@ from ptc_agent.agent.middleware import (
     ProvenanceMiddleware,
 )
 from ptc_agent.agent.middleware.runtime_context import RuntimeContextMiddleware
+from ptc_agent.agent.state import DeltaAgentState
 from ptc_agent.agent.prompts import format_current_time, get_loader
 from ptc_agent.config import AgentConfig
 
@@ -334,6 +335,7 @@ class FlashAgent:
             middleware=middleware,
             checkpointer=checkpointer,
             store=store,
+            state_schema=DeltaAgentState,
         )
         if response_format is not None:
             create_kwargs["response_format"] = response_format

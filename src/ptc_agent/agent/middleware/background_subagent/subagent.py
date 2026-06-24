@@ -26,6 +26,7 @@ from ptc_agent.agent.middleware.background_subagent.middleware import (
 )
 from ptc_agent.agent.middleware.background_subagent.registry import BackgroundTaskRegistry
 from ptc_agent.agent.middleware._utils import append_to_system_message
+from ptc_agent.agent.state import DeltaAgentState
 from src.llms.content_utils import extract_reasoning_summary_index
 from src.llms.llm import narrow_prompt_cache_key
 from src.server.utils.content_normalizer import normalize_text_content
@@ -454,6 +455,7 @@ def _get_subagents(
             middleware=general_purpose_middleware,
             name="general-purpose",
             checkpointer=checkpointer,
+            state_schema=DeltaAgentState,
         )
         agents["general-purpose"] = general_purpose_subagent
         subagent_descriptions.append(
@@ -488,6 +490,7 @@ def _get_subagents(
             middleware=_middleware,
             name=agent_["name"],
             checkpointer=checkpointer,
+            state_schema=DeltaAgentState,
         )
     return agents, subagent_descriptions
 
