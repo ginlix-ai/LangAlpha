@@ -18,9 +18,14 @@ dependencies = [
     "langchain-anthropic>=1.0.0",
     "langchain_google_genai>=2.0.0",
     "langchain-deepseek>=0.1.4",
-    # LangGraph
-    "langgraph>=0.3.5",
-    "langgraph-checkpoint-postgres>=2.0.0",
+    # LangGraph — floor pinned at the beta DeltaChannel on-disk format (messages
+    # checkpoints are _DeltaSnapshot/sentinel blobs). langgraph<1.2 cannot read
+    # them; downgrading after delta blobs exist strands threads on resume.
+    # >=1.2.2 brings upstream id-stamping for DeltaChannel writes (ensure_message_ids
+    # in pregel/_loop.py), which covers id-less BaseMessage/dict writes; our
+    # checkpointer shim still covers the Overwrite-wrapped case it does not.
+    "langgraph>=1.2.2,<2",
+    "langgraph-checkpoint-postgres>=3.1",
     # Other dependencies
     "python-dotenv>=1.0.1",
     # Pinned: we import from scrapling.engines._browsers._controllers /
