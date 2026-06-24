@@ -60,6 +60,12 @@ export interface ChartSelection {
   bars: SelectionBar[];
   /** True when `bars` was downsampled to the cap. */
   barsTruncated: boolean;
+  /**
+   * Cropped JPEG of the selected region (data URL), region only. Used to build
+   * the multimodal image item on send; not carried in `ChartSelectionSnapshot`
+   * — the durable replay copy is the persisted attachment, not this base64.
+   */
+  croppedImage?: string;
   /** The user's note for this selection. Sent to the agent as `label`. */
   comment: string;
   status: SelectionStatus;
@@ -74,8 +80,9 @@ export type DraftSelectionInput = Omit<ChartSelection, 'id' | 'status' | 'commen
  * Serializable summary of a confirmed selection attached to a sent user
  * message (mirrors the widget-snapshot pattern). Carries the card-face fields
  * plus the agent-context detail (time bounds + the OHLCV bars the agent
- * received) so the message can render a "how the agent sees it" preview. Drops
- * only the cropped screenshot, which is no longer sent.
+ * received) so the message can render a "how the agent sees it" preview. The
+ * region's cropped screenshot is not carried here — it rides the multimodal
+ * attachment channel on send and persists as an attachment for replay.
  */
 export interface ChartSelectionSnapshot {
   selectionType: SelectionType;

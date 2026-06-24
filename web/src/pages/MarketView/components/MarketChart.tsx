@@ -392,6 +392,43 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     return () => window.removeEventListener('keydown', onKey);
   }, [selectMode]);
 
+  // Capture a cropped JPEG of the selection's pixel sub-rect from the chart's
+  // native screenshot. lightweight-charts renders to a device-pixel canvas, so
+  // the CSS-pixel rect is scaled by the screenshot/container ratio. Best-effort:
+  // returns null on any failure (disposed chart, tainted canvas) — the
+  // structured bars still ride, the image is a vision-model bonus.
+  const captureSelectionCrop = useCallback(
+    (leftX: number, topY: number, rightX: number, bottomY: number): string | null => {
+      try {
+        const chart = chartRef.current;
+        const container = chartContainerRef.current;
+        if (!chart || !container) return null;
+        const shot = chart.takeScreenshot();
+        if (!shot) return null;
+        const scaleX = shot.width / container.clientWidth;
+        const scaleY = shot.height / container.clientHeight;
+        if (!(scaleX > 0) || !(scaleY > 0)) return null;
+        const pad = 6;
+        const sx = Math.max(0, Math.round((leftX - pad) * scaleX));
+        const sy = Math.max(0, Math.round((topY - pad) * scaleY));
+        const sw = Math.min(shot.width - sx, Math.round((rightX - leftX + pad * 2) * scaleX));
+        const sh = Math.min(shot.height - sy, Math.round((bottomY - topY + pad * 2) * scaleY));
+        if (sw <= 0 || sh <= 0) return null;
+        const out = document.createElement('canvas');
+        out.width = sw;
+        out.height = sh;
+        const cctx = out.getContext('2d');
+        if (!cctx) return null;
+        cctx.drawImage(shot, sx, sy, sw, sh, 0, 0, sw, sh);
+        return out.toDataURL('image/jpeg', 0.85);
+      } catch (err) {
+        console.warn('Chart selection crop failed:', err);
+        return null;
+      }
+    },
+    [],
+  );
+
   const commitRegionSelection = useCallback((x1: number, y1: number, x2: number, y2: number) => {
     const chart = chartRef.current;
     const series = candlestickSeriesRef.current;
@@ -426,6 +463,10 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
       open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume,
     }));
 
+    // Crop the region from the chart now — the draft box is cleared right after
+    // commit and a pan/zoom would invalidate the pixel rect.
+    const croppedImage = captureSelectionCrop(leftX, topY, rightX, bottomY) ?? undefined;
+
     chartSelectionStore.beginDraft({
       symbol: selectionSymbol,
       timeframe: annotationInterval,
@@ -436,8 +477,9 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
       priceHigh: Math.max(priceLow, priceHigh),
       bars: selBars,
       barsTruncated: truncated,
+      croppedImage,
     });
-  }, [selectionSymbol, annotationInterval]);
+  }, [selectionSymbol, annotationInterval, captureSelectionCrop]);
 
   const handleSelectPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const mode = selectModeRef.current;
