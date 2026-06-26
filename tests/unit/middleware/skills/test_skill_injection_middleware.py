@@ -15,7 +15,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from src.ptc_agent.agent.middleware.skills.content import SkillPrefixResult
+from src.ptc_agent.agent.middleware.skills.content import (
+    SkillPrefixResult,
+    loaded_skill_marker,
+)
 from src.ptc_agent.agent.middleware.skills.middleware import SkillsMiddleware
 
 MW = "src.ptc_agent.agent.middleware.skills.middleware"
@@ -175,6 +178,66 @@ async def test_blank_skill_names_are_dropped():
     bsc.assert_not_called()
     cal.assert_not_called()
     assert out == {"discovered_skills": []}
+
+
+@pytest.mark.asyncio
+async def test_injected_body_survives_patch_tool_calls_rewrite():
+    """Cross-middleware ordering invariant: the injected body survives PatchToolCalls.
+
+    ``SkillsMiddleware.abefore_agent`` appends a skill body (+ ``mid``-bound marker) to
+    the last human message in place. deepagents' ``PatchToolCallsMiddleware.before_agent``
+    is the one other ``before_agent`` hook in both the PTC and Flash stacks; it runs
+    AFTER Skills and rewrites the whole ``messages`` list to patch dangling tool calls.
+    This pins that the rewrite preserves the augmented human message verbatim — same id,
+    body + marker intact — so injection is never dropped or mis-targeted. If a future
+    deepagents version (or a reordered stack) re-ids/truncates that message, this fails.
+    """
+    from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
+
+    mw = SkillsMiddleware(mode="flash")
+    hm = HumanMessage(content="annotate the chart", id="h1")
+    state = {"messages": [hm], "loaded_skills": []}
+    config = _config(
+        skill_contexts=[{"name": "chart-annotation", "instruction": "AAPL:1d"}],
+        skill_dirs=["/skills"],
+    )
+
+    # Exercise the real append path. The fake body carries the real mid-bound marker
+    # for whatever message_id Skills threads through (the last human's id), so this also
+    # proves _inject_requested_skills binds the marker to h1 — not a hardcoded constant.
+    def _fake_build(skills, *, skill_dirs, mode, already_loaded, message_id):
+        block = f"{loaded_skill_marker('chart-annotation', message_id)}\nBODY\n</loaded-skill>"
+        return SkillPrefixResult(
+            content=f"\n\n{block}\n\n[Instruction: AAPL:1d]",
+            loaded_skill_names=["chart-annotation"],
+        )
+
+    with patch(f"{MW}.build_skill_content", side_effect=_fake_build):
+        out = await mw.abefore_agent(state, MagicMock(), config=config)
+
+    augmented = out["messages"][0]
+    assert augmented.id == "h1"
+    assert '<loaded-skill name="chart-annotation" mid="h1">' in augmented.content
+
+    # PatchToolCalls runs next, with a DANGLING tool call present so its rewrite branch
+    # actually fires (it no-ops when every tool call is answered).
+    dangling = AIMessage(
+        content="",
+        id="a1",
+        tool_calls=[{"name": "do_thing", "args": {}, "id": "call_1"}],
+    )
+    patched = PatchToolCallsMiddleware().before_agent(
+        {"messages": [augmented, dangling]}, MagicMock()
+    )
+
+    # The rewrite fired (not a no-op) AND preserved the body-augmented human message.
+    assert patched is not None
+    msgs = patched["messages"]
+    assert any(getattr(m, "type", None) == "tool" for m in msgs)  # synthetic patch added
+    humans = [m for m in msgs if getattr(m, "type", None) == "human"]
+    assert len(humans) == 1
+    assert humans[0].id == "h1"
+    assert '<loaded-skill name="chart-annotation" mid="h1">' in humans[0].content
 
 
 def test_runnable_callable_injects_config_into_abefore_agent():
