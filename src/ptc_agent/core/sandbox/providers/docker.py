@@ -877,7 +877,7 @@ class DockerProvider(SandboxProvider):
                 f"Build the image manually or place {dockerfile_name} in the repo root."
             )
 
-        build_context = os.path.dirname(dockerfile_path)
+        dockerfile_basename = os.path.basename(dockerfile_path)
         image_tag = self._config.image
 
         logger.info(
@@ -886,18 +886,17 @@ class DockerProvider(SandboxProvider):
             tag=image_tag,
         )
 
-        # Use aiodocker to build. aiodocker 0.26 does not accept the Docker SDK's
-        # ``path=``/``dockerfile=`` kwargs; it expects a tar stream plus
-        # ``path_dockerfile``.
+        # Use aiodocker to build. It expects a tar stream via ``fileobj`` and
+        # the Dockerfile path via ``path_dockerfile``.
         try:
             build_tar = io.BytesIO()
             with tarfile.open(fileobj=build_tar, mode="w") as tar:
-                tar.add(build_context, arcname=".")
+                tar.add(dockerfile_path, arcname=dockerfile_basename)
             build_tar.seek(0)
 
             async for log_line in client.images.build(
                 fileobj=build_tar,
-                path_dockerfile=os.path.basename(dockerfile_path),
+                path_dockerfile=dockerfile_basename,
                 tag=image_tag,
                 rm=True,
                 stream=True,

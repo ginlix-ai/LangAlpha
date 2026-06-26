@@ -538,6 +538,7 @@ class TestDockerProvider:
         """aiodocker build expects fileobj/path_dockerfile, not Docker SDK path kwargs."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "Dockerfile.sandbox").write_text("FROM scratch\n")
+        (tmp_path / "unrelated.txt").write_text("not part of the build context\n")
         mock_client.images.inspect = AsyncMock(side_effect=Exception("missing image"))
         build_kwargs = {}
 
@@ -550,6 +551,8 @@ class TestDockerProvider:
         await provider._ensure_image(mock_client)
 
         assert "fileobj" in build_kwargs
+        with tarfile.open(fileobj=build_kwargs["fileobj"], mode="r") as tar:
+            assert tar.getnames() == ["Dockerfile.sandbox"]
         assert build_kwargs["path_dockerfile"] == "Dockerfile.sandbox"
         assert build_kwargs["tag"] == "test-sandbox:latest"
         assert build_kwargs["stream"] is True
