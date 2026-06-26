@@ -822,17 +822,17 @@ async def handle_workflow_error(
         and e.detail.get("code") in ADMISSION_CONFLICT_CODES
     ):
         await release_burst_slot(user_id)
+        # The guard above already proved e.detail is a dict whose "code" is in
+        # ADMISSION_CONFLICT_CODES (truthy), so no re-checking is needed here.
         detail = e.detail
-        message = detail.get("message") if isinstance(detail, dict) else str(detail)
         error_payload = {
             "thread_id": thread_id,
-            "error": message,
+            "error": detail.get("message"),
             "type": "workflow_error",
             "error_type": "admission_conflict",
             "error_class": type(e).__name__,
+            "code": detail["code"],
         }
-        if isinstance(detail, dict) and detail.get("code"):
-            error_payload["code"] = detail["code"]
         if handler:
             yield handler._format_sse_event("error", error_payload)
         else:
