@@ -68,9 +68,12 @@ services:
       - ./src:/app/src
       - ./server.py:/app/server.py
       - ./agent_config.yaml:/app/agent_config.yaml
+      # Required when SANDBOX_PROVIDER=docker and the backend auto-builds
+      # langalpha-sandbox:latest on first workspace creation.
+      - ./Dockerfile.sandbox:/app/Dockerfile.sandbox:ro
       # Docker socket — only needed when SANDBOX_PROVIDER=docker (DooD pattern).
       # Safe to remove if using only the Daytona provider.
-      - /var/run/docker.sock:/var/run/docker.sock
+      - ${DOCKER_HOST_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
       - ./config.yaml:/app/config.yaml
       - ./mcp_servers:/app/mcp_servers
       - ./skills:/app/skills

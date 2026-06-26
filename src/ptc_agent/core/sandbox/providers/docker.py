@@ -886,14 +886,21 @@ class DockerProvider(SandboxProvider):
             tag=image_tag,
         )
 
-        # Use aiodocker to build
+        # Use aiodocker to build. aiodocker 0.26 does not accept the Docker SDK's
+        # ``path=``/``dockerfile=`` kwargs; it expects a tar stream plus
+        # ``path_dockerfile``.
         try:
-            # aiodocker build expects a tar context or path
+            build_tar = io.BytesIO()
+            with tarfile.open(fileobj=build_tar, mode="w") as tar:
+                tar.add(build_context, arcname=".")
+            build_tar.seek(0)
+
             async for log_line in client.images.build(
-                path=build_context,
-                dockerfile=os.path.basename(dockerfile_path),
+                fileobj=build_tar,
+                path_dockerfile=os.path.basename(dockerfile_path),
                 tag=image_tag,
                 rm=True,
+                stream=True,
             ):
                 if isinstance(log_line, dict) and "stream" in log_line:
                     line = log_line["stream"].strip()

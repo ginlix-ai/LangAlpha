@@ -532,9 +532,34 @@ class TestDockerProvider:
         mock_client.containers.create.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_ensure_image_builds_with_aiodocker_tar_stream(
+        self, provider, mock_client, tmp_path, monkeypatch
+    ):
+        """aiodocker build expects fileobj/path_dockerfile, not Docker SDK path kwargs."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "Dockerfile.sandbox").write_text("FROM scratch\n")
+        mock_client.images.inspect = AsyncMock(side_effect=Exception("missing image"))
+        build_kwargs = {}
+
+        async def build_iter(**kwargs):
+            build_kwargs.update(kwargs)
+            yield {"stream": "ok"}
+
+        mock_client.images.build = build_iter
+
+        await provider._ensure_image(mock_client)
+
+        assert "fileobj" in build_kwargs
+        assert build_kwargs["path_dockerfile"] == "Dockerfile.sandbox"
+        assert build_kwargs["tag"] == "test-sandbox:latest"
+        assert build_kwargs["stream"] is True
+        assert "path" not in build_kwargs
+        assert "dockerfile" not in build_kwargs
+
+    @pytest.mark.asyncio
     async def test_create_starts_container(self, provider, mock_client):
         """create() should call container.start() after creation."""
-        runtime = await provider.create()
+        await provider.create()
         mock_container = mock_client.containers.create.return_value
         mock_container.start.assert_called_once()
 
@@ -895,7 +920,7 @@ class TestDockerRuntimePreviewUrl:
         DockerRuntime._server_side_host = None
         mock_loop = AsyncMock()
         mock_loop.getaddrinfo = AsyncMock(side_effect=OSError)
-        with patch("asyncio.get_running_loop", return_value=mock_loop) as mock_get_loop:
+        with patch("asyncio.get_running_loop", return_value=mock_loop):
             await DockerRuntime._resolve_server_side_host()
             await DockerRuntime._resolve_server_side_host()
             assert mock_loop.getaddrinfo.call_count == 1
