@@ -5,6 +5,7 @@ These tools use interrupt() to pause the graph and wait for user approval
 via the frontend, following the same HITL pattern as onboarding tools.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -25,6 +26,17 @@ logger = logging.getLogger(__name__)
 
 # TTL for ptc_origin and flash_watch Redis keys (24 hours)
 PTC_ORIGIN_TTL = 86400
+
+# Caps on concurrent report-back dispatches (cost/DoS guardrail). Per-flash
+# bounds queue depth/ordering; per-user bounds Daytona sandbox cost across all a
+# user's flash threads. Enforced as an atomic reserve-before-dispatch.
+MAX_DISPATCH_PER_FLASH = 5
+MAX_DISPATCH_PER_USER = 10
+
+# Serializes the cap check + reservation so two concurrent ptc_agent calls can't
+# both read an under-cap count and overshoot. Single process (langalpha runs one
+# uvicorn worker), so an asyncio.Lock is sufficient — no Redis lock needed.
+_dispatch_reserve_lock = asyncio.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +105,67 @@ def _error_command(error: str, tool_call_id: str) -> Command:
             ],
         }
     )
+
+
+async def _reserve_dispatch_slot(
+    flash_thread_id: str, ptc_thread_id: str, user_id: str, tool_call_id: str
+) -> Command | None:
+    """Atomically reserve a report-back slot under the per-flash + per-user caps.
+
+    Returns an error Command if a cap is hit, else None — and on success the PTC
+    is now a pending member of both the flash watch SET and the user's pending
+    SET. The reservation precedes the dispatch POST (rolled back on failure) so
+    concurrent calls can't both pass the check then overshoot. Best-effort: a
+    Redis hiccup allows the dispatch rather than blocking it.
+    """
+    from src.utils.cache.redis_cache import get_cache_client
+
+    try:
+        cache = get_cache_client()
+        if not (cache.enabled and cache.client):
+            return None
+        watch_key = f"flash_watch:{flash_thread_id}"
+        user_key = f"flash_user_pending:{user_id}"
+        async with _dispatch_reserve_lock:
+            # An existing member (idempotent re-dispatch) doesn't add load, so it
+            # never counts against the cap.
+            if not await cache.client.sismember(watch_key, ptc_thread_id):
+                if await cache.client.scard(watch_key) >= MAX_DISPATCH_PER_FLASH:
+                    return _error_command(
+                        f"too many concurrent analyses on this thread "
+                        f"(max {MAX_DISPATCH_PER_FLASH}); wait for one to finish",
+                        tool_call_id,
+                    )
+            if not await cache.client.sismember(user_key, ptc_thread_id):
+                if await cache.client.scard(user_key) >= MAX_DISPATCH_PER_USER:
+                    return _error_command(
+                        f"too many concurrent analyses running "
+                        f"(max {MAX_DISPATCH_PER_USER}); wait for one to finish",
+                        tool_call_id,
+                    )
+            await cache.client.sadd(watch_key, ptc_thread_id)
+            await cache.client.expire(watch_key, PTC_ORIGIN_TTL)
+            await cache.client.sadd(user_key, ptc_thread_id)
+            await cache.client.expire(user_key, PTC_ORIGIN_TTL)
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to reserve PTC dispatch slot: {e}")
+        return None
+
+
+async def _release_dispatch_slot(
+    flash_thread_id: str, ptc_thread_id: str, user_id: str
+) -> None:
+    """Roll back a reservation when the dispatch POST fails."""
+    try:
+        from src.utils.cache.redis_cache import get_cache_client
+
+        cache = get_cache_client()
+        if cache.client:
+            await cache.client.srem(f"flash_watch:{flash_thread_id}", ptc_thread_id)
+            await cache.client.srem(f"flash_user_pending:{user_id}", ptc_thread_id)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +523,26 @@ async def ptc_agent(
         # New thread
         thread_id = str(uuid.uuid4())
 
+    # Reserve a report-back concurrency slot BEFORE dispatching so two
+    # concurrent ptc_agent calls can't both pass the cap check then overshoot.
+    # The reservation adds the watch + per-user pending membership; roll it back
+    # if the dispatch fails.
+    flash_thread_id = configurable.get("thread_id") if report_back else None
+    flash_workspace_id = configurable.get("workspace_id")
+    reserved = False
+    if report_back and flash_thread_id:
+        cap_error = await _reserve_dispatch_slot(
+            flash_thread_id, thread_id, user_id, tool_call_id
+        )
+        if cap_error is not None:
+            return cap_error
+        reserved = True
+
+    async def _dispatch_failed(error: str) -> Command:
+        if reserved:
+            await _release_dispatch_slot(flash_thread_id, thread_id, user_id)
+        return _error_command(error, tool_call_id)
+
     # Dispatch via internal HTTP call.
     # X-Dispatch: background tells the endpoint to run the PTC workflow in a
     # background asyncio task and return JSON immediately, avoiding the
@@ -474,47 +567,40 @@ async def ptc_agent(
                 timeout=aiohttp.ClientTimeout(connect=10, sock_read=30),
             ) as resp:
                 if resp.status >= 400:
-                    return _error_command("dispatch_failed", tool_call_id)
+                    return await _dispatch_failed("dispatch_failed")
                 body = await resp.json()
                 if not body.get("status") == "dispatched":
-                    return _error_command("dispatch_failed", tool_call_id)
+                    return await _dispatch_failed("dispatch_failed")
     except (aiohttp.ClientError, ValueError) as e:
         logger.error(f"PTC dispatch HTTP error: {e}")
-        return _error_command("dispatch_failed", tool_call_id)
+        return await _dispatch_failed("dispatch_failed")
     except TimeoutError:
         logger.error("PTC dispatch timed out")
-        return _error_command("dispatch_timeout", tool_call_id)
+        return await _dispatch_failed("dispatch_timeout")
 
-    # Store origin metadata in Redis so the PTC completion hook can
-    # POST back to the flash thread when report_back is enabled.
-    if report_back:
-        flash_thread_id = configurable.get("thread_id")
-        flash_workspace_id = configurable.get("workspace_id")
-        if flash_thread_id:
-            try:
-                from src.utils.cache.redis_cache import get_cache_client
+    # Store origin metadata so the PTC completion hook can enqueue a report-back
+    # to the flash thread. The watch membership was already added by the
+    # reservation above; here we only record origin (read by the consumer).
+    if report_back and flash_thread_id:
+        try:
+            from src.utils.cache.redis_cache import get_cache_client
 
-                cache = get_cache_client()
-                await cache.set(
-                    f"ptc_origin:{thread_id}",
-                    {
-                        "origin": "flash",
-                        "flash_thread_id": flash_thread_id,
-                        "flash_workspace_id": flash_workspace_id,
-                        "ptc_thread_id": thread_id,
-                        "report_back": True,
-                        "user_id": user_id,
-                    },
-                    ttl=PTC_ORIGIN_TTL,
-                )
-                # Reverse index: add this PTC thread to the flash thread's
-                # watch set. Uses a Redis SET so multiple concurrent dispatches
-                # from the same flash thread are all tracked independently.
-                watch_key = f"flash_watch:{flash_thread_id}"
-                await cache.client.sadd(watch_key, thread_id)
-                await cache.client.expire(watch_key, PTC_ORIGIN_TTL)
-            except Exception as e:
-                logger.warning(f"Failed to store PTC origin metadata: {e}")
+            cache = get_cache_client()
+            await cache.set(
+                f"ptc_origin:{thread_id}",
+                {
+                    "origin": "flash",
+                    "flash_thread_id": flash_thread_id,
+                    "flash_workspace_id": flash_workspace_id,
+                    "ptc_thread_id": thread_id,
+                    "ptc_workspace_id": workspace_id,
+                    "report_back": True,
+                    "user_id": user_id,
+                },
+                ttl=PTC_ORIGIN_TTL,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to store PTC origin metadata: {e}")
 
     return _success_command(
         {

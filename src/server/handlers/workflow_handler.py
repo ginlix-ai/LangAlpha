@@ -294,17 +294,44 @@ async def get_workflow_status(thread_id: str) -> dict:
         pending_report_back = False
         report_back_run_id = None
         try:
-            from src.server.handlers.chat.ptc_workflow import flash_rb_run_key
+            from src.server.handlers.chat.ptc_workflow import (
+                ensure_rb_consumer,
+                flash_rb_queue_key,
+                flash_rb_run_key,
+                flash_watch_key,
+            )
             from src.utils.cache.redis_cache import get_cache_client
 
             cache = get_cache_client()
             if cache.enabled and cache.client:
-                count = await cache.client.scard(f"flash_watch:{thread_id}")
+                count = await cache.client.scard(flash_watch_key(thread_id))
                 if count and count > 0:
                     pending_report_back = True
-                    rb = await cache.get(flash_rb_run_key(thread_id))
-                    if isinstance(rb, dict):
-                        report_back_run_id = rb.get("run_id")
+                    # Resolve the run to attach to from a live per-(flash, ptc)
+                    # pointer — prefer the report-back currently being drained
+                    # (head of the durable queue), else any pending member with
+                    # a pointer. Never a finished run's id.
+                    queue_key = flash_rb_queue_key(thread_id)
+                    head = await cache.client.lindex(queue_key, 0)
+                    candidates: list[str] = []
+                    if head is not None:
+                        candidates.append(
+                            head.decode() if isinstance(head, (bytes, bytearray)) else head
+                        )
+                    members = await cache.client.smembers(flash_watch_key(thread_id))
+                    for member in members or []:
+                        ptc = member.decode() if isinstance(member, (bytes, bytearray)) else member
+                        if ptc not in candidates:
+                            candidates.append(ptc)
+                    for ptc in candidates:
+                        rb = await cache.get(flash_rb_run_key(thread_id, ptc))
+                        if isinstance(rb, dict) and rb.get("run_id"):
+                            report_back_run_id = rb.get("run_id")
+                            break
+                    # Restart-nudge: durable queued work but (after a process
+                    # restart) no live consumer — (re)start it.
+                    if await cache.client.llen(queue_key):
+                        ensure_rb_consumer(thread_id)
         except Exception:
             pass
 
