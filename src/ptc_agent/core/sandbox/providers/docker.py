@@ -900,6 +900,7 @@ class DockerProvider(SandboxProvider):
                 tag=image_tag,
                 rm=True,
                 stream=True,
+                encoding="identity",
             ):
                 if isinstance(log_line, dict) and "stream" in log_line:
                     line = log_line["stream"].strip()

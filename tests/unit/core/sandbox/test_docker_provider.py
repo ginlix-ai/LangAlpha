@@ -556,6 +556,7 @@ class TestDockerProvider:
         assert build_kwargs["path_dockerfile"] == "Dockerfile.sandbox"
         assert build_kwargs["tag"] == "test-sandbox:latest"
         assert build_kwargs["stream"] is True
+        assert build_kwargs["encoding"] == "identity"
         assert "path" not in build_kwargs
         assert "dockerfile" not in build_kwargs
 
