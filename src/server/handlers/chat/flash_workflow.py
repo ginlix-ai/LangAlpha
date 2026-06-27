@@ -86,6 +86,33 @@ from .stream_from_log import stream_from_log
 
 
 # ---------------------------------------------------------------------------
+# Report-back watch cleanup
+# ---------------------------------------------------------------------------
+
+
+async def _maybe_clear_report_back(request: ChatRequest, flash_thread_id: str) -> None:
+    """Clear the durable flash report-back watch if this run consumed one.
+
+    A flash run dispatched as a PTC report-back carries
+    ``report_back_ptc_thread_id``. This is invoked from the success-only
+    completion hook, so by now the summary is persisted — clearing the watch is
+    safe (any reload surfaces the summary via history). A failed/crashed
+    report-back run never reaches the hook, so its keys survive for recovery.
+    """
+    ptc_thread_id = getattr(request, "report_back_ptc_thread_id", None)
+    if not ptc_thread_id:
+        return
+
+    from src.utils.cache.redis_cache import get_cache_client
+    from src.server.handlers.chat.ptc_workflow import clear_flash_report_back
+
+    cache = get_cache_client()
+    if not (cache.enabled and cache.client):
+        return
+    await clear_flash_report_back(cache, ptc_thread_id, flash_thread_id)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -476,6 +503,18 @@ async def astream_flash_workflow(
                         thread_id, handler.injected_steerings
                     )
 
+                # If this flash run consumed a PTC report-back, the summary is
+                # now persisted — clear the durable watch so a client reload no
+                # longer surfaces it as pending. This success-only hook is the
+                # consumption point; a failed run leaves the keys for recovery.
+                try:
+                    await _maybe_clear_report_back(request, thread_id)
+                except Exception as e:
+                    logger.warning(
+                        f"[FLASH_COMPLETE] report-back watch cleanup failed for "
+                        f"{thread_id}: {e}"
+                    )
+
                 logger.info(
                     f"[FLASH_COMPLETE] Background completion persisted: "
                     f"thread_id={thread_id} duration={execution_time:.2f}s"
@@ -507,6 +546,12 @@ async def astream_flash_workflow(
                     "handler": handler,
                     "token_callback": token_callback,
                     "persistence_service": persistence_service,
+                    # Lets the BTM terminal handlers clear the report-back watch
+                    # if this run fails or is cancelled (the success path clears
+                    # it from the completion hook above).
+                    "report_back_ptc_thread_id": getattr(
+                        request, "report_back_ptc_thread_id", None
+                    ),
                 },
                 completion_callback=on_flash_workflow_complete,
                 graph=flash_graph,

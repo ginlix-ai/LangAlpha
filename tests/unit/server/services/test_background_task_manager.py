@@ -252,6 +252,53 @@ class TestCancelStaleWorkflowTimeout:
 
 
 # ---------------------------------------------------------------------------
+# cancel_stale_workflow — excludes the caller's own pre-registered placeholder
+# ---------------------------------------------------------------------------
+
+class TestCancelStaleWorkflowExcludesOwnRun:
+    """Regression: a dispatched cold-start must not cancel its own placeholder.
+
+    On the dispatched path threads.py pre-registers (thread_id, run_id) as a
+    QUEUED placeholder before astream_ptc_workflow runs. When the sandbox is
+    cold, astream calls cancel_stale_workflow to clear a stale prior run — and
+    without exclude_run_id it found and cancelled its OWN placeholder, so
+    start_workflow later settled it "cancelled before start" and the run
+    silently never executed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_excluded_own_placeholder_not_cancelled(self):
+        """With exclude_run_id naming the only (placeholder) run, nothing is cancelled."""
+        btm = _make_btm()
+        placeholder = _make_task_info(
+            status=TaskStatus.QUEUED, run_id="run-self", task=None, inner_task=None
+        )
+        btm.tasks[("thread-1", "run-self")] = placeholder
+
+        result = await btm.cancel_stale_workflow("thread-1", exclude_run_id="run-self")
+
+        assert result is False
+        assert not placeholder.cancel_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_other_stale_run_still_cancelled_when_excluding_own(self):
+        """A genuinely stale OTHER run is still cancelled despite the exclusion."""
+        btm = _make_btm()
+        stale = _make_task_info(status=TaskStatus.RUNNING, run_id="run-stale")
+        own = _make_task_info(
+            status=TaskStatus.QUEUED, run_id="run-self", task=None, inner_task=None
+        )
+        btm.tasks[("thread-1", "run-stale")] = stale
+        btm.tasks[("thread-1", "run-self")] = own
+
+        result = await btm.cancel_stale_workflow("thread-1", exclude_run_id="run-self")
+
+        assert result is True
+        assert stale.cancel_event.is_set()
+        assert not own.cancel_event.is_set()
+
+
+# ---------------------------------------------------------------------------
 # consume_workflow uses closure-captured events
 # ---------------------------------------------------------------------------
 
@@ -1226,3 +1273,65 @@ class TestCancelCompaction:
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
+
+
+# ---------------------------------------------------------------------------
+# _clear_report_back_watch — terminal runs clear the flash report-back watch
+# ---------------------------------------------------------------------------
+
+class TestClearReportBackWatch:
+    """A report-back flash run that fails/cancels must clear the watch, since the
+    success-only completion hook never runs on a terminal failure (else /status
+    reports the report-back pending until its 24h TTL)."""
+
+    @pytest.mark.asyncio
+    async def test_clears_when_metadata_has_ptc_thread_id(self):
+        btm = _make_btm()
+        cache = MagicMock()
+        cache.enabled = True
+        cache.client = MagicMock()
+        mock_clear = AsyncMock()
+
+        with patch(
+            "src.utils.cache.redis_cache.get_cache_client", return_value=cache
+        ), patch(
+            "src.server.handlers.chat.ptc_workflow.clear_flash_report_back", mock_clear
+        ):
+            await btm._clear_report_back_watch(
+                "flash-1", {"report_back_ptc_thread_id": "ptc-1"}
+            )
+
+        mock_clear.assert_awaited_once_with(cache, "ptc-1", "flash-1")
+
+    @pytest.mark.asyncio
+    async def test_noop_without_ptc_thread_id(self):
+        btm = _make_btm()
+        mock_clear = AsyncMock()
+
+        with patch(
+            "src.utils.cache.redis_cache.get_cache_client"
+        ) as mock_get_cache, patch(
+            "src.server.handlers.chat.ptc_workflow.clear_flash_report_back", mock_clear
+        ):
+            await btm._clear_report_back_watch("flash-1", {"user_id": "u-1"})
+
+        mock_clear.assert_not_called()
+        mock_get_cache.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_swallows_clear_errors(self):
+        btm = _make_btm()
+        cache = MagicMock()
+        cache.enabled = True
+        cache.client = MagicMock()
+
+        with patch(
+            "src.utils.cache.redis_cache.get_cache_client", return_value=cache
+        ), patch(
+            "src.server.handlers.chat.ptc_workflow.clear_flash_report_back",
+            AsyncMock(side_effect=RuntimeError("redis down")),
+        ):
+            # Must not raise — terminal handlers call this best-effort.
+            await btm._clear_report_back_watch(
+                "flash-1", {"report_back_ptc_thread_id": "ptc-1"}
+            )

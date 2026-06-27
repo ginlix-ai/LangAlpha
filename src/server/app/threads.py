@@ -90,7 +90,11 @@ def _track_task(task: asyncio.Task) -> None:
 
 
 async def _consume_background_gen(
-    gen, label: str, thread_id: str, run_id: str
+    gen,
+    label: str,
+    thread_id: str,
+    run_id: str,
+    report_back_ptc_thread_id: str | None = None,
 ) -> bool:
     """Drain an async generator in the background, cleaning up Redis on failure."""
     _ok = True
@@ -107,19 +111,29 @@ async def _consume_background_gen(
         )
         try:
             from src.utils.cache.redis_cache import get_cache_client
+            from src.server.handlers.chat.ptc_workflow import (
+                clear_flash_report_back,
+            )
 
             cache = get_cache_client()
             if cache.enabled and cache.client:
-                origin = await cache.get(f"ptc_origin:{thread_id}")
+                # Resolve the PTC thread whose report-back watch this crash should
+                # tear down. The origin is keyed by the *PTC* thread id:
+                #   - PTC_DISPATCH crash: thread_id IS the ptc thread -> direct hit,
+                #     clear (the watched run just died).
+                #   - report-back run crash: report_back_ptc_thread_id names the
+                #     completed PTC -> clear, else a never-finishing report-back
+                #     leaves /status reporting a stale pending run until TTL.
+                #   - ordinary flash-dispatch crash: no report_back id and thread_id
+                #     is the flash thread -> ptc_origin:{flash_tid} misses -> no-op,
+                #     so a still-running dispatched PTC's keys survive for reload
+                #     recovery.
+                ptc_thread_id = report_back_ptc_thread_id or thread_id
+                origin = await cache.get(f"ptc_origin:{ptc_thread_id}")
                 if origin:
                     flash_tid = origin.get("flash_thread_id")
-                    await cache.delete(f"ptc_origin:{thread_id}")
+                    await clear_flash_report_back(cache, ptc_thread_id, flash_tid)
                     if flash_tid:
-                        watch_key = f"flash_watch:{flash_tid}"
-                        await cache.client.srem(watch_key, thread_id)
-                        remaining = await cache.client.scard(watch_key)
-                        if remaining == 0:
-                            await cache.client.delete(watch_key)
                         await cache.client.publish(
                             f"thread:wake:{flash_tid}",
                             '{"error": "background_workflow_failed"}',
@@ -560,9 +574,16 @@ async def _handle_send_message(
         _svc_token = _get_service_token()
         is_internal = bool(_svc_token and _req_token and hmac.compare_digest(_req_token, _svc_token))
 
-        # Strip query_type from non-internal requests (prevent spoofing system messages)
-        if not is_internal and request.query_type:
-            request = request.model_copy(update={"query_type": None})
+        # Strip internal-only fields from non-internal requests (prevent
+        # spoofing system messages / forging report-back watch cleanup).
+        if not is_internal:
+            internal_overrides = {}
+            if request.query_type:
+                internal_overrides["query_type"] = None
+            if request.report_back_ptc_thread_id:
+                internal_overrides["report_back_ptc_thread_id"] = None
+            if internal_overrides:
+                request = request.model_copy(update=internal_overrides)
     except BaseException:
         await release_burst_slot(user_id)
         raise
@@ -628,7 +649,13 @@ async def _handle_send_message(
                 await manager.pre_register(thread_id, run_id)
             _track_task(asyncio.create_task(
                 observe_background_chat_turn(
-                    _consume_background_gen(flash_gen, "FLASH_DISPATCH", thread_id, run_id),
+                    _consume_background_gen(
+                        flash_gen,
+                        "FLASH_DISPATCH",
+                        thread_id,
+                        run_id,
+                        report_back_ptc_thread_id=request.report_back_ptc_thread_id,
+                    ),
                     mode="flash",
                     model=_model,
                     user_id=user_id,

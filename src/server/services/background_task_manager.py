@@ -1599,6 +1599,30 @@ class BackgroundTaskManager:
             )
             return False
 
+    async def _clear_report_back_watch(self, thread_id: str, metadata: dict) -> None:
+        """Best-effort clear of the flash report-back watch on a terminal run.
+
+        A report-back flash run carries ``report_back_ptc_thread_id`` in its
+        metadata; when it fails or is cancelled the watch is never consumed by
+        the success-only completion hook, so clear it here to stop ``/status``
+        reporting the report-back as pending until the keys' 24h TTL.
+        """
+        ptc_thread_id = (metadata or {}).get("report_back_ptc_thread_id")
+        if not ptc_thread_id:
+            return
+        try:
+            from src.server.handlers.chat.ptc_workflow import clear_flash_report_back
+            from src.utils.cache.redis_cache import get_cache_client
+
+            cache = get_cache_client()
+            if cache.enabled and cache.client:
+                await clear_flash_report_back(cache, ptc_thread_id, thread_id)
+        except Exception as e:
+            logger.warning(
+                f"[BackgroundTaskManager] report-back watch clear failed for "
+                f"{thread_id}: {e}"
+            )
+
     async def _mark_failed(
         self,
         thread_id: str,
@@ -1683,6 +1707,8 @@ class BackgroundTaskManager:
             logger.warning(
                 f"[BackgroundTaskManager] tracker.mark_failed failed for {key}: {tracker_err}"
             )
+
+        await self._clear_report_back_watch(thread_id, metadata)
 
         task_info.persistence_complete.set()
         async with self.task_lock:
@@ -1941,6 +1967,8 @@ class BackgroundTaskManager:
                 f"[BackgroundTaskManager] tracker.mark_cancelled failed for {key}: {tracker_err}"
             )
 
+        await self._clear_report_back_watch(thread_id, metadata)
+
         task_info.persistence_complete.set()
         async with self.task_lock:
             self._release_terminal_refs(thread_id, run_id)
@@ -2083,11 +2111,21 @@ class BackgroundTaskManager:
             return True
 
     async def cancel_stale_workflow(
-        self, thread_id: str, timeout: float = 10.0
+        self,
+        thread_id: str,
+        timeout: float = 10.0,
+        exclude_run_id: Optional[str] = None,
     ) -> bool:
-        """Cancel a stale workflow on the given thread."""
+        """Cancel a stale workflow on the given thread.
+
+        ``exclude_run_id`` skips that run when locating the stale task, so a
+        dispatched flow can pass its own pre-registered placeholder's run_id and
+        not cancel the very run it is about to start.
+        """
         async with self.task_lock:
-            task_info = self._find_active_for_thread(thread_id)
+            task_info = self._find_active_for_thread(
+                thread_id, exclude_run_id=exclude_run_id
+            )
             if not task_info:
                 return False
 

@@ -287,9 +287,14 @@ async def get_workflow_status(thread_id: str) -> dict:
             logger.debug(f"Could not fetch share status for {thread_id}: {e}")
 
         # Check if this flash thread has pending PTC report-backs
-        # (flash_watch is a Redis SET of dispatched ptc_thread_ids)
+        # (flash_watch is a Redis SET of dispatched ptc_thread_ids). When
+        # pending, surface the report-back run_id the backend recorded so the
+        # client attaches to the exact run instead of inferring it from run_id
+        # changes.
         pending_report_back = False
+        report_back_run_id = None
         try:
+            from src.server.handlers.chat.ptc_workflow import flash_rb_run_key
             from src.utils.cache.redis_cache import get_cache_client
 
             cache = get_cache_client()
@@ -297,6 +302,9 @@ async def get_workflow_status(thread_id: str) -> dict:
                 count = await cache.client.scard(f"flash_watch:{thread_id}")
                 if count and count > 0:
                     pending_report_back = True
+                    rb = await cache.get(flash_rb_run_key(thread_id))
+                    if isinstance(rb, dict):
+                        report_back_run_id = rb.get("run_id")
         except Exception:
             pass
 
@@ -312,6 +320,7 @@ async def get_workflow_status(thread_id: str) -> dict:
             "active_tasks": active_tasks,
             "is_shared": is_shared,
             "pending_report_back": pending_report_back,
+            "report_back_run_id": report_back_run_id,
         }
 
         logger.debug(f"Status check for {thread_id}: {status}")

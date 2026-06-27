@@ -302,6 +302,15 @@ class ChatRequest(BaseModel):
         description="Override query_type for this request. Internal use only.",
     )
 
+    # Internal: PTC thread id whose report-back this flash run consumes. When a
+    # flash report-back run (dispatched after PTC completion) finishes, its
+    # completion hook clears the durable flash_watch entry for this PTC thread.
+    report_back_ptc_thread_id: Optional[str] = Field(
+        default=None,
+        description="PTC thread id this flash report-back run consumes. "
+        "Internal use only.",
+    )
+
     # External thread identity (for channel integrations like Telegram, Slack)
     external_thread_id: Optional[str] = Field(
         default=None,

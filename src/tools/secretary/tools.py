@@ -379,10 +379,25 @@ async def ptc_agent(
     # Resolve workspace_id from existing thread or create/verify workspace
     if is_continuation:
         from src.server.database.conversation import get_thread_by_id
+        from src.server.utils.pg_sanitize import normalize_uuid
 
+        # Normalize once so the owner check and the fetch bind the same canonical
+        # UUID. get_thread_owner_id normalizes internally; get_thread_by_id binds
+        # raw, so a non-canonical id (e.g. urn:uuid:...) would pass the owner
+        # check yet 22P02 on the fetch. None means not a UUID -> not found.
+        normalized_id = normalize_uuid(thread_id)
+        if normalized_id is None:
+            return _error_command(
+                "thread not found or not owned by user", tool_call_id
+            )
+        thread_id = normalized_id
+
+        # Ownership lives on workspaces.user_id (conversation_threads has no
+        # user_id column), so verify via the JOIN helper rather than reading
+        # a user_id off the thread row, which is always None.
+        if err := await _verify_thread_owner(thread_id, user_id, tool_call_id):
+            return err
         thread = await get_thread_by_id(thread_id)
-        if not thread or str(thread.get("user_id")) != user_id:
-            return _error_command("thread not found", tool_call_id)
         workspace_id = str(thread["workspace_id"])
         workspace_name = None
     else:
