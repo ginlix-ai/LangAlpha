@@ -380,9 +380,12 @@ async def ptc_agent(
     if is_continuation:
         from src.server.database.conversation import get_thread_by_id
 
+        # Ownership lives on workspaces.user_id (conversation_threads has no
+        # user_id column), so verify via the JOIN helper rather than reading
+        # a user_id off the thread row, which is always None.
+        if err := await _verify_thread_owner(thread_id, user_id, tool_call_id):
+            return err
         thread = await get_thread_by_id(thread_id)
-        if not thread or str(thread.get("user_id")) != user_id:
-            return _error_command("thread not found", tool_call_id)
         workspace_id = str(thread["workspace_id"])
         workspace_name = None
     else:
