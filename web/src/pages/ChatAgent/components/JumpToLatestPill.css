@@ -6,41 +6,42 @@
   z-index: 20;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 6px 14px;
-  background: var(--color-bg-card, #ffffff);
-  border: 1px solid var(--color-border-elevated, rgba(20, 20, 23, 0.14));
+  /* 44px tall = a comfortable touch target (WCAG 2.5.5). */
+  min-height: 44px;
+  padding: 0 18px;
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border-elevated);
   border-radius: 999px;
-  font-size: 12px;
-  color: var(--color-text-primary, #1a1a1c);
+  font-size: 13px;
+  color: var(--color-text-primary);
   cursor: pointer;
-  box-shadow:
-    0 16px 32px -10px rgba(20, 20, 23, 0.16),
-    0 4px 8px -4px rgba(20, 20, 23, 0.08);
+  /* Theme-aware token (strong on the dark default, soft on light) — a hardcoded
+     near-black shadow was invisible against the dark theme's near-black bg. */
+  box-shadow: var(--shadow-card);
   transition:
     transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
-    box-shadow 180ms cubic-bezier(0.16, 1, 0.3, 1),
     border-color 180ms ease;
   animation: jumpPillIn 220ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .jump-to-latest-pill:hover {
   transform: translateX(-50%) translateY(-1px);
-  border-color: var(--color-accent-primary, #b88a2c);
-  box-shadow:
-    0 22px 40px -10px rgba(20, 20, 23, 0.18),
-    0 6px 12px -4px rgba(20, 20, 23, 0.10);
+  border-color: var(--color-accent-primary);
 }
 
 .jump-to-latest-pill:focus-visible {
-  outline: 2px solid var(--color-accent-primary, #b88a2c);
+  outline: 2px solid var(--color-accent-primary);
   outline-offset: 2px;
 }
 
 .jump-to-latest-pill__count {
-  font-weight: 600;
+  /* Text-primary (not accent): the blue accent fails AA contrast on the dark
+     near-black pill; bold tabular text-primary is legible in both themes. */
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
-  color: var(--color-accent-primary, #b88a2c);
+  color: var(--color-text-primary);
 }
 
 @keyframes jumpPillIn {

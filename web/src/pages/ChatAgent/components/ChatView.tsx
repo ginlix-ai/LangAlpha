@@ -328,6 +328,14 @@ function SubagentStatusIndicator({ status, currentTool, toolCalls = 0, messages 
   );
 }
 
+// Scroll/pin tuning. Distance from the bottom (px) still counted as "at bottom";
+// settle window the pin re-applies through as async media expands; fallback for
+// engines without a `scrollend` event.
+const NEAR_BOTTOM_PX = 120;
+const SETTLE_QUIET_MS = 1500;
+const SETTLE_HARD_CAP_MS = 8000;
+const SCROLLEND_FALLBACK_MS = 600;
+
 function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName: initialWorkspaceName, isActive = true, onThreadResolved, warmingState = false }: ChatViewProps): React.ReactElement | null {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
@@ -781,6 +789,11 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const settleHardCapRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reapplyRafRef = useRef<number | null>(null);
   const restoredForThreadRef = useRef<string | null>(null);
+  // Streaming auto-follow's deferred scroll, and the entry-restore frame —
+  // tracked so a thread switch / unmount cancels a pending scroll instead of
+  // yanking a now-stale view.
+  const streamFollowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const entryRestoreRafRef = useRef<number | null>(null);
 
   // Jump-to-latest pill.
   const messagesLenRef = useRef(0);
@@ -821,7 +834,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
           programmaticScrollRef.current = false;
         };
         c?.addEventListener('scrollend', clear, { once: true });
-        setTimeout(clear, 600);
+        setTimeout(clear, SCROLLEND_FALLBACK_MS);
       } else {
         requestAnimationFrame(() =>
           requestAnimationFrame(() => {
@@ -860,7 +873,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     settleQuietTimerRef.current = setTimeout(() => {
       pinTargetRef.current = null;
       settleQuietTimerRef.current = null;
-    }, 1500);
+    }, SETTLE_QUIET_MS);
     if (!settleHardCapRef.current) {
       settleHardCapRef.current = setTimeout(() => {
         pinTargetRef.current = null;
@@ -869,7 +882,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
           clearTimeout(settleQuietTimerRef.current);
           settleQuietTimerRef.current = null;
         }
-      }, 8000);
+      }, SETTLE_HARD_CAP_MS);
     }
   }, []);
 
@@ -2137,7 +2150,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     const handleScroll = () => {
       nearBottomRef.current = isNearBottom(
         { scrollTop: c.scrollTop, scrollHeight: c.scrollHeight, clientHeight: c.clientHeight },
-        120,
+        NEAR_BOTTOM_PX,
       );
       if (!isMain) return;
       if (programmaticScrollRef.current) return; // ignore our own scrolls
@@ -2157,6 +2170,18 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     };
     c.addEventListener('scroll', handleScroll, { passive: true });
 
+    // A real user gesture (wheel / touch) reclaims scroll control even mid
+    // programmatic smooth-scroll. Without this, those scroll events are flagged
+    // programmatic and ignored above, so the pin keeps yanking against the user.
+    const handleUserIntent = () => {
+      if (!isMain) return;
+      programmaticScrollRef.current = false;
+      pinTargetRef.current = null;
+      clearSettleTimers();
+    };
+    c.addEventListener('wheel', handleUserIntent, { passive: true });
+    c.addEventListener('touchstart', handleUserIntent, { passive: true });
+
     // While a pin target is set, re-apply it whenever the transcript grows
     // (charts/code/images finishing layout) — the fix for landing mid-thread.
     let ro: ResizeObserver | null = null;
@@ -2168,6 +2193,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     }
     return () => {
       c.removeEventListener('scroll', handleScroll);
+      c.removeEventListener('wheel', handleUserIntent);
+      c.removeEventListener('touchstart', handleUserIntent);
       ro?.disconnect();
       if (reapplyRafRef.current != null) {
         cancelAnimationFrame(reapplyRafRef.current);
@@ -2190,10 +2217,24 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     }
     const c = getScrollContainer(scrollAreaRef);
     if (!c) return;
-    setTimeout(() => {
-      c.scrollTo({ top: c.scrollHeight, behavior: 'smooth' });
+    if (streamFollowTimerRef.current) clearTimeout(streamFollowTimerRef.current);
+    streamFollowTimerRef.current = setTimeout(() => {
+      streamFollowTimerRef.current = null;
+      // Re-check at fire time: if a pin took over or the user scrolled up
+      // between scheduling and firing, do not yank them to the bottom. Wrap as
+      // programmatic so this scroll isn't misread as the user scrolling away.
+      if (pinTargetRef.current || !isNearBottomRef.current) return;
+      const el = getScrollContainer(scrollAreaRef);
+      if (!el) return;
+      withProgrammaticScroll(() => el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }), 'smooth');
     }, 0);
-  }, [messages, getScrollContainer]);
+    return () => {
+      if (streamFollowTimerRef.current) {
+        clearTimeout(streamFollowTimerRef.current);
+        streamFollowTimerRef.current = null;
+      }
+    };
+  }, [messages, getScrollContainer, withProgrammaticScroll]);
 
   // Thread-entry restore — the core fix. Fires on the real "history is present"
   // signal (isLoadingHistory flips false), not on an empty/partial list, then
@@ -2205,7 +2246,18 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     if (isLoadingHistory) return;
     if (restoredForThreadRef.current === tid) return;
     restoredForThreadRef.current = tid;
-    requestAnimationFrame(() => pinToBottom('auto'));
+    entryRestoreRafRef.current = requestAnimationFrame(() => {
+      entryRestoreRafRef.current = null;
+      // The instance may have gone inactive (cached/hidden) before this frame.
+      if (!isActiveRef.current) return;
+      pinToBottom('auto');
+    });
+    return () => {
+      if (entryRestoreRafRef.current != null) {
+        cancelAnimationFrame(entryRestoreRafRef.current);
+        entryRestoreRafRef.current = null;
+      }
+    };
   }, [isActive, isLoadingHistory, currentThreadId, threadId, pinToBottom]);
 
   // Cleanup pending scroll timers/rAF on unmount.
@@ -2214,6 +2266,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       if (settleQuietTimerRef.current) clearTimeout(settleQuietTimerRef.current);
       if (settleHardCapRef.current) clearTimeout(settleHardCapRef.current);
       if (reapplyRafRef.current != null) cancelAnimationFrame(reapplyRafRef.current);
+      if (streamFollowTimerRef.current) clearTimeout(streamFollowTimerRef.current);
+      if (entryRestoreRafRef.current != null) cancelAnimationFrame(entryRestoreRafRef.current);
     };
   }, []);
 
@@ -2590,6 +2644,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                         </button>
                       </>
                     }
+                    isActive={isActive}
                     workspaces={navWorkspaces}
                     workspaceThreads={navWorkspaceThreads}
                     currentWorkspaceId={workspaceId}
