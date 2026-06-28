@@ -248,12 +248,14 @@ describe('NavigationPanel — active-thread auto-reveal', () => {
     threadsData: { threads: { thread_id: string; title: string }[]; loading: boolean; total?: number };
     currentThreadId: string | null;
     status?: string;
+    isActive?: boolean;
     onLoadMoreThreads?: ReturnType<typeof vi.fn>;
   }) {
     resetNavPanelExpansion();
     const onLoadMoreThreads = opts.onLoadMoreThreads ?? vi.fn();
     render(
       <NavigationPanel
+        isActive={opts.isActive ?? true}
         workspaces={[{ workspace_id: WS_ID, name: 'Test workspace', status: opts.status }]}
         workspaceThreads={{ [WS_ID]: opts.threadsData }}
         currentWorkspaceId={WS_ID}
@@ -284,6 +286,25 @@ describe('NavigationPanel — active-thread auto-reveal', () => {
     });
 
     await waitFor(() => expect(onLoadMoreThreads).toHaveBeenCalledWith(WS_ID));
+  });
+
+  it('does not auto-reveal when the panel is inactive (hidden cached instance)', async () => {
+    const onLoadMoreThreads = renderWithActiveThread({
+      threadsData: {
+        threads: [
+          { thread_id: 't-1', title: 'Thread one' },
+          { thread_id: 't-2', title: 'Thread two' },
+        ],
+        loading: false,
+        total: 14,
+      },
+      currentThreadId: 't-9', // beyond the loaded page — would page in if active
+      isActive: false,
+    });
+
+    // Give any effect a chance to (wrongly) fire before asserting it did not.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onLoadMoreThreads).not.toHaveBeenCalled();
   });
 
   it('does not page when the active thread is already visible', () => {
