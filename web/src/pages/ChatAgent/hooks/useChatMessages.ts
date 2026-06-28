@@ -1720,6 +1720,7 @@ export function useChatMessages(
                         question: proposalData.question,
                         report_back: proposalData.report_back ?? true,
                         interruptId: event.interrupt_id,
+                        tool_call_id: proposalData.tool_call_id,
                         status: 'pending',
                       },
                     },
@@ -2649,20 +2650,59 @@ export function useChatMessages(
       }
     };
 
-    const { abort } = watchThread(tid, async (payload) => {
-      const wakeRunId = payload?.run_id ?? null;
-      if (wakeRunId) {
-        await reconcile('wake', wakeRunId);
-        return;
-      }
-      // Payload-less wake (older backend / malformed): fall back to a /status
-      // reconcile. A short delay lets the report-back run register so
-      // report_back_run_id is populated.
-      await new Promise((r) => setTimeout(r, 500));
-      await reconcile('wake');
-    });
+    const { abort } = watchThread(
+      tid,
+      async (payload) => {
+        const wakeRunId = payload?.run_id ?? null;
+        if (wakeRunId) {
+          await reconcile('wake', wakeRunId);
+          return;
+        }
+        // Payload-less wake (older backend / malformed): fall back to a /status
+        // reconcile. A short delay lets the report-back run register so
+        // report_back_run_id is populated.
+        await new Promise((r) => setTimeout(r, 500));
+        await reconcile('wake');
+      },
+      () => {
+        // The backend closed the persistent watch (30-min cap or a transient
+        // drop after retries) without a deliberate teardown. Null OUR abort ref
+        // — but only if this generation is still current and the ref is still
+        // ours — so the next re-arm (stream-end / loadAndMaybeReconnect) clears
+        // the idempotency guard and re-subscribes a fresh watch instead of
+        // assuming one is still live. The poll interval keeps reconciling via
+        // /status meanwhile, so a report-back arriving in the gap isn't missed.
+        if (reportBackWatchEpochRef.current !== epoch) return;
+        if (reportBackWatchAbortRef.current === abort) reportBackWatchAbortRef.current = null;
+      },
+    );
     reportBackWatchAbortRef.current = abort;
     reportBackPollRef.current = setInterval(() => reconcile('poll'), 3000);
+  };
+
+  // Reconnect a cached, re-shown view to a run that started while it was hidden.
+  // ChatView instances stay mounted in an LRU cache (useChatViewCache) with a
+  // stable key, so revisiting a thread does NOT remount or re-fire the thread-load
+  // effect below (its deps [workspaceId, threadId, reloadTrigger] are unchanged).
+  // If a new run began on this thread while the view was inactive — e.g. a
+  // second-round report-back dispatched a follow-up turn into this PTC thread —
+  // nothing would reconnect and the view would keep showing the prior, completed
+  // turn until a full refresh. The become-active effect in ChatView calls this on
+  // the inactive→active transition. /status only carries a run_id while a run is
+  // live (an idle thread returns run_id=null), so this is purely the live-run
+  // path; attach only when the live run differs from what's already on screen.
+  const reconnectIfStaleRun = async () => {
+    if (!workspaceId || !threadId || threadId === '__default__') return;
+    // Only after this instance's initial load settled; never mid-stream or -load.
+    if (historyLoadedKeyRef.current === null || isStreamingRef.current || historyLoadingRef.current) return;
+    const status = (await getWorkflowStatus(threadId).catch(() => null)) as WorkflowStatusResponse | null;
+    if (!status) return;
+    // Re-check after the await: a stream may have started or the thread changed.
+    if (isStreamingRef.current || threadIdRef.current !== threadId) return;
+    if (status.can_reconnect && status.run_id && status.run_id !== currentRunIdRef.current) {
+      console.log('[Reconnect] Re-activated view has a newer live run, attaching:', status.run_id);
+      await reconnectToStream({ activeTasks: status.active_tasks || [], runId: status.run_id, resetCursor: true });
+    }
   };
 
   // Load history when workspace or threadId changes, then check for reconnection
@@ -4196,6 +4236,10 @@ export function useChatMessages(
                   question: proposalData.question,
                   report_back: proposalData.report_back ?? true,
                   interruptId: event.interrupt_id,
+                  // Persist tool_call_id ON the proposal so the clicked card
+                  // self-identifies for backfill — never read from
+                  // `pendingInterrupt`, which N parallel dispatches overwrite.
+                  tool_call_id: proposalData.tool_call_id,
                   status: 'pending',
                 },
               },
@@ -5148,14 +5192,27 @@ export function useChatMessages(
   }, [pendingInterrupt, resumeWithHitlResponse, resolveProposal]);
 
   // --- PTC Agent approve/reject ---
-  const handleApprovePTCAgent = useCallback((_pad?: Record<string, unknown>, overrides?: { report_back?: boolean }) => {
-    if (!pendingInterrupt || pendingInterrupt.type !== 'ptc_agent') return;
-    const pid = pendingInterrupt.proposalId!;
+  // Mirrors handleAnswerQuestion: the clicked card supplies its OWN proposalId +
+  // interruptId (from segment / proposal data), and decisions are collected then
+  // batched — resume fires only once every pending interrupt is answered. Reading
+  // `pendingInterrupt` instead (single-slot state that N parallel dispatches
+  // overwrite) answers the wrong interrupt, leaves the other unanswered, and the
+  // graph re-interrupts for it — duplicating that card across the HITL boundary.
+  const handleApprovePTCAgent = useCallback((
+    pad?: Record<string, unknown>,
+    overrides?: { report_back?: boolean },
+    proposalId?: string,
+    interruptId?: string,
+  ) => {
+    if (!proposalId || !interruptId) return;
 
-    // Track this proposal for thread_id backfill from the resumed stream's tool_call_result.
-    // Maps tool_call_id → proposalId for exact matching when the result arrives.
-    if (pendingInterrupt.toolCallId) {
-      pendingPTCBackfillRef.current.set(pendingInterrupt.toolCallId, pid);
+    // Track this proposal for thread_id backfill from the resumed stream's
+    // tool_call_result. tool_call_id comes from the clicked card's proposal data
+    // (stored on the proposal), NOT pendingInterrupt — so the right card's
+    // tool_call_id is registered even with N parallel dispatches.
+    const toolCallId = pad?.tool_call_id as string | undefined;
+    if (toolCallId) {
+      pendingPTCBackfillRef.current.set(toolCallId, proposalId);
     }
 
     // Enable report-back polling if report_back is not explicitly disabled
@@ -5163,20 +5220,37 @@ export function useChatMessages(
       awaitingReportBackRef.current = true;
     }
 
-    resolveProposal('ptcAgentProposals', pid, 'approved');
+    resolveProposal('ptcAgentProposals', proposalId, 'approved');
 
     const decision: { type: string; message?: string; overrides?: { report_back?: boolean } } = { type: 'approve' };
     if (overrides) {
       decision.overrides = overrides;
     }
-    resumeWithHitlResponse({ [pendingInterrupt.interruptId!]: { decisions: [decision] } }, false);
-  }, [pendingInterrupt, resumeWithHitlResponse, resolveProposal]);
 
-  const handleRejectPTCAgent = useCallback(() => {
-    if (!pendingInterrupt || pendingInterrupt.type !== 'ptc_agent') return;
-    resolveProposal('ptcAgentProposals', pendingInterrupt.proposalId!, 'rejected');
-    resumeWithHitlResponse({ [pendingInterrupt.interruptId!]: { decisions: [{ type: 'reject' }] } }, false);
-  }, [pendingInterrupt, resumeWithHitlResponse, resolveProposal]);
+    // Collect-then-batch: hold each card's decision keyed by its interrupt_id and
+    // resume only when ALL pending interrupts have a decision.
+    collectedHitlResponsesRef.current[interruptId] = { decisions: [decision] };
+    const pending = pendingInterruptIdsRef.current;
+    const collected = collectedHitlResponsesRef.current;
+    if (pending.size > 0 && [...pending].every((id) => collected[id])) {
+      resumeWithHitlResponse({ ...collected }, false);
+    }
+  }, [resumeWithHitlResponse, resolveProposal]);
+
+  const handleRejectPTCAgent = useCallback((
+    _pad?: Record<string, unknown>,
+    proposalId?: string,
+    interruptId?: string,
+  ) => {
+    if (!proposalId || !interruptId) return;
+    resolveProposal('ptcAgentProposals', proposalId, 'rejected');
+    collectedHitlResponsesRef.current[interruptId] = { decisions: [{ type: 'reject' }] };
+    const pending = pendingInterruptIdsRef.current;
+    const collected = collectedHitlResponsesRef.current;
+    if (pending.size > 0 && [...pending].every((id) => collected[id])) {
+      resumeWithHitlResponse({ ...collected }, false);
+    }
+  }, [resumeWithHitlResponse, resolveProposal]);
 
   // --- Secretary action approve/reject (delete_workspace, stop_workspace, delete_thread) ---
   const handleApproveSecretaryAction = useCallback(() => {
@@ -5538,6 +5612,7 @@ export function useChatMessages(
     queuedSend,
     isLoadingHistory,
     isReconnecting,
+    reconnectIfStaleRun,
     messageError,
     returnedSteering,
     clearReturnedSteering: () => setReturnedSteering(null),

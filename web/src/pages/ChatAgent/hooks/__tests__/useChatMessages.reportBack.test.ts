@@ -101,7 +101,9 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
     // (a) Armed: a watch was opened for this thread with a callback, and no
     // reconnect has fired yet (the PTC turn was already complete).
     await waitFor(() => expect(mockWatch).toHaveBeenCalledTimes(1));
-    expect(mockWatch).toHaveBeenCalledWith('th-rb', expect.any(Function));
+    // Persistent watch: (tid, onWorkflowStarted, onClosed). The 3rd arg lets a
+    // backend-side close re-arm a fresh watch.
+    expect(mockWatch).toHaveBeenCalledWith('th-rb', expect.any(Function), expect.any(Function));
     expect(mockReconnect).not.toHaveBeenCalled();
 
     // (b) The wake names the report-back run directly → the callback attaches to
@@ -385,8 +387,11 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
 
     // The active run is reconnected to...
     await waitFor(() => expect(mockReconnect.mock.calls.some((c) => c[0] === 'th-flash')).toBe(true));
-    // ...AND the report-back watch is armed as the reliable catch.
-    await waitFor(() => expect(mockWatch).toHaveBeenCalledWith('th-flash', expect.any(Function)));
+    // ...AND the report-back watch is armed as the reliable catch (persistent
+    // watch signature: tid, onWorkflowStarted, onClosed).
+    await waitFor(() =>
+      expect(mockWatch).toHaveBeenCalledWith('th-flash', expect.any(Function), expect.any(Function)),
+    );
   });
 
   it('keeps the pending flash report-back alive across a jump into the live PTC thread, then streams it on return', async () => {

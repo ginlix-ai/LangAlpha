@@ -592,74 +592,87 @@ export async function getWorkflowStatus(threadId: string) {
 export function watchThread(
   threadId: string,
   onWorkflowStarted: (payload?: { run_id?: string | null }) => void | Promise<void>,
+  onClosed?: () => void,
 ): { abort: AbortController } {
   const abort = new AbortController();
   const MAX_RETRIES = 2;
 
   (async () => {
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      if (abort.signal.aborted) return;
-      try {
-        const authHeaders = await getAuthHeaders();
-        const res = await fetch(`${baseURL}/api/v1/threads/${threadId}/watch`, {
-          method: 'GET',
-          headers: { ...authHeaders },
-          signal: abort.signal,
-        });
+    try {
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        if (abort.signal.aborted) return;
+        try {
+          const authHeaders = await getAuthHeaders();
+          const res = await fetch(`${baseURL}/api/v1/threads/${threadId}/watch`, {
+            method: 'GET',
+            headers: { ...authHeaders },
+            signal: abort.signal,
+          });
 
-        if (!res.ok || !res.body) return;
+          if (!res.ok || !res.body) return;
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          // Process only COMPLETE SSE frames (terminated by a blank line). A
-          // single frame can arrive split across reads, so reacting on the first
-          // sight of the event name would race a half-buffered `data:` line and
-          // parse partial JSON — losing the run_id and forcing the caller down a
-          // /status fallback that, for a fast report-back, has already been torn
-          // down. Splitting on the frame terminator guarantees the data line is
-          // whole before we read the run_id.
-          let sep: number;
-          while ((sep = buffer.indexOf('\n\n')) >= 0) {
-            const frame = buffer.slice(0, sep);
-            buffer = buffer.slice(sep + 2);
-            // Skip keepalive pings / timeout frames — only the wake carries a run_id.
-            if (!frame.includes('event: workflow_started')) continue;
-            reader.cancel();
-            // Pull the run_id out of the event's data line so the caller can
-            // attach to that exact run without a /status round-trip. Per the SSE
-            // spec, multiple data: lines join with a newline — collect them all
-            // (mirroring streamFetch above) so a multi-line payload stays
-            // parseable instead of truncating to the first line and corrupting
-            // the JSON. The backend wake is single-line today; this is resilience.
-            let payload: { run_id?: string | null } = {};
-            const dataLines: string[] = [];
-            for (const raw of frame.split('\n')) {
-              if (raw.startsWith('data:')) dataLines.push(raw.slice(5).trim());
-            }
-            if (dataLines.length) {
-              try {
-                payload = JSON.parse(dataLines.join('\n'));
-              } catch {
-                /* payload-less / malformed wake — caller falls back to /status */
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            // Process only COMPLETE SSE frames (terminated by a blank line). A
+            // single frame can arrive split across reads, so reacting on the first
+            // sight of the event name would race a half-buffered `data:` line and
+            // parse partial JSON — losing the run_id and forcing the caller down a
+            // /status fallback that, for a fast report-back, has already been torn
+            // down. Splitting on the frame terminator guarantees the data line is
+            // whole before we read the run_id.
+            let sep: number;
+            while ((sep = buffer.indexOf('\n\n')) >= 0) {
+              const frame = buffer.slice(0, sep);
+              buffer = buffer.slice(sep + 2);
+              // Skip keepalive pings / timeout frames — only the wake carries a run_id.
+              if (!frame.includes('event: workflow_started')) continue;
+              // Pull the run_id out of the event's data line so the caller can
+              // attach to that exact run without a /status round-trip. Per the SSE
+              // spec, multiple data: lines join with a newline — collect them all
+              // (mirroring streamFetch above) so a multi-line payload stays
+              // parseable instead of truncating to the first line and corrupting
+              // the JSON. The backend wake is single-line today; this is resilience.
+              let payload: { run_id?: string | null } = {};
+              const dataLines: string[] = [];
+              for (const raw of frame.split('\n')) {
+                if (raw.startsWith('data:')) dataLines.push(raw.slice(5).trim());
               }
+              if (dataLines.length) {
+                try {
+                  payload = JSON.parse(dataLines.join('\n'));
+                } catch {
+                  /* payload-less / malformed wake — caller falls back to /status */
+                }
+              }
+              // PERSISTENT: a flash thread can dispatch N PTCs whose report-backs
+              // arrive as separate runs. Do NOT cancel + return after the first
+              // wake — keep reading so each subsequent wake is delivered on this
+              // one connection (a re-subscribe would race, and lose, wake #2+).
+              // `onWorkflowStarted` blocks until that run's stream finishes, so
+              // the next buffered wake is processed only once the prior turn ends
+              // — naturally serializing the chain.
+              await onWorkflowStarted({ run_id: payload.run_id ?? null });
             }
-            await onWorkflowStarted({ run_id: payload.run_id ?? null });
-            return;
+          }
+          return; // Backend closed the stream (30-min cap / disconnect).
+        } catch (err: unknown) {
+          if ((err as Error).name === 'AbortError') return;
+          if (attempt < MAX_RETRIES) {
+            await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
           }
         }
-        return; // Stream ended cleanly without event — no retry
-      } catch (err: unknown) {
-        if ((err as Error).name === 'AbortError') return;
-        if (attempt < MAX_RETRIES) {
-          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
-        }
       }
+    } finally {
+      // Signal a non-deliberate close (backend timeout / drop / retries spent) so
+      // the caller can clear its abort ref and let a future re-arm re-subscribe.
+      // A caller-initiated abort already tore everything down — skip it.
+      if (!abort.signal.aborted) onClosed?.();
     }
   })();
 

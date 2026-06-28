@@ -469,12 +469,62 @@ describe('ChatAgent API utilities', () => {
       expect(await runWatch()).toEqual({ run_id: 'rb-7' });
     });
 
-    it('cancels the reader once the wake is consumed', async () => {
+    it('keeps reading and delivers EVERY wake on one persistent connection (no cancel mid-stream)', async () => {
+      // A flash thread can dispatch N PTCs whose report-backs arrive as separate
+      // runs. The watch must forward every wake on a single connection — the old
+      // one-shot behavior (cancel + return after wake #1) dropped wake #2+, so
+      // only the first report-back streamed and the rest needed a page refresh.
       const { reader } = mockWatchResponse([
         'event: workflow_started\ndata: {"run_id":"rb-1"}\n\n',
+        'event: workflow_started\ndata: {"run_id":"rb-2"}\n\n',
       ]);
-      await runWatch();
-      expect(reader.cancel).toHaveBeenCalled();
+      const payloads: Array<{ run_id?: string | null } | undefined> = [];
+      await new Promise<void>((resolve) => {
+        // onClosed (3rd arg) fires when the backend ends the stream — resolve then.
+        watchThread('flash-1', (p) => { payloads.push(p); }, resolve);
+      });
+      expect(payloads).toEqual([{ run_id: 'rb-1' }, { run_id: 'rb-2' }]);
+      expect(reader.cancel).not.toHaveBeenCalled();
+    });
+
+    it('invokes onClosed when the backend closes the stream without a deliberate abort', async () => {
+      // A backend-side close (30-min cap / drop) must signal the caller so it can
+      // null its abort ref and let a future re-arm re-subscribe a fresh watch.
+      mockWatchResponse(['event: workflow_started\ndata: {"run_id":"rb-1"}\n\n']);
+      const onClosed = vi.fn();
+      await new Promise<void>((resolve) => {
+        watchThread('flash-1', () => {}, () => { onClosed(); resolve(); });
+      });
+      expect(onClosed).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT invoke onClosed after a caller-initiated abort', async () => {
+      // A deliberate teardown (stopReportBackWatch .abort()) already cleaned up;
+      // firing onClosed there would clobber a freshly re-armed watch's abort ref.
+      let rejectRead: ((e: unknown) => void) | null = null;
+      const reader = {
+        read: vi.fn(() => new Promise((_res, rej) => { rejectRead = rej; })),
+        cancel: vi.fn(async () => {}),
+      };
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        body: { getReader: () => reader },
+      }) as unknown as typeof fetch;
+
+      const onClosed = vi.fn();
+      const { abort } = watchThread('flash-1', () => {}, onClosed);
+      // Simulate fetch: aborting the signal rejects the in-flight read() with
+      // an AbortError, which is exactly how the watch loop unwinds on teardown.
+      abort.signal.addEventListener('abort', () =>
+        rejectRead?.(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+      );
+      // Let fetch resolve and the first read() begin before we abort.
+      await Promise.resolve();
+      await Promise.resolve();
+      abort.abort();
+      await new Promise((r) => setTimeout(r, 0));
+      expect(onClosed).not.toHaveBeenCalled();
     });
   });
 

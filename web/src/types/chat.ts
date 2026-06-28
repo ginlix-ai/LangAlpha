@@ -305,6 +305,7 @@ export interface PTCAgentProposalState {
   thread_id?: string;
   question?: string;
   interruptId?: string;
+  tool_call_id?: string;
   report_back?: boolean;
 }
 

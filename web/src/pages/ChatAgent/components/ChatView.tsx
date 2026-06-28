@@ -733,6 +733,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     handleThumbUp,
     handleThumbDown,
     getFeedbackForMessage,
+    reconnectIfStaleRun,
     getSubagentHistory,
     resolveSubagentIdToAgentId,
   } = useChatMessages(workspaceId, threadId, updateTodoListCard as (todoData: Record<string, unknown>) => void, updateSubagentCard, inactivateAllSubagents, finalizePendingTodos, handleOnboardingRelatedToolComplete, handleFileArtifact, handleOpenPreviewFromStream, agentMode, clearSubagentCards, handleWorkspaceCreated, 'web');
@@ -2372,6 +2373,11 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // 1. Inherit nav panel state from the shared signal so it stays open across switches
   // 2. Scroll to bottom — while hidden (display:none) auto-scroll is a no-op
   const prevIsActiveRef = useRef(false);
+  // Keep the latest reconnect-on-reactivate fn in a ref so the become-active
+  // effect can fire it without listing an unstable closure in its deps (which
+  // would re-run the nav/scroll restore on every render).
+  const reconnectIfStaleRunRef = useRef(reconnectIfStaleRun);
+  reconnectIfStaleRunRef.current = reconnectIfStaleRun;
   useEffect(() => {
     if (isActive && !prevIsActiveRef.current) {
       // Clear stale nav-hide timer from a previous activation period
@@ -2401,6 +2407,13 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
           pinToBottom('auto');
         }
       });
+
+      // Cached views stay mounted (useChatViewCache), so a run that started on
+      // this thread while it was hidden won't have re-fired the thread-load
+      // effect. Reconnect to the live run on reactivation — otherwise the view
+      // shows the prior, completed turn (e.g. a second-round PTC dispatch into
+      // an already-visited thread) until a full refresh.
+      void reconnectIfStaleRunRef.current();
     }
     prevIsActiveRef.current = isActive;
   }, [isActive, getScrollContainer, currentThreadId, threadId, pinToBottom]);
