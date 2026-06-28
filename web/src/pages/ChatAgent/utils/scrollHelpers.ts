@@ -7,7 +7,7 @@ export interface ScrollMetrics {
   clientHeight: number;
 }
 
-/** Distance from the bottom is within `threshold` px. */
+/** Distance from the bottom is within `threshold` px (inclusive). */
 export function isNearBottom(m: ScrollMetrics, threshold = 120): boolean {
-  return m.scrollHeight - m.scrollTop - m.clientHeight < threshold;
+  return m.scrollHeight - m.scrollTop - m.clientHeight <= threshold;
 }
