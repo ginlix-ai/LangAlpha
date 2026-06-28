@@ -11,7 +11,25 @@ const baseURL = api.defaults.baseURL;
 async function getAuthHeaders(): Promise<Record<string, string>> {
   if (!supabase) return {};
   const { data } = await supabase.auth.getSession();
-  const token = data.session?.access_token;
+  const session = data.session;
+  let token = session?.access_token;
+  // Supabase's auto-refresh timer is frozen while the tab is backgrounded, so on
+  // resume the cached session may already be expired. If it's past (or within
+  // ~60s of) expiry, force a refresh so SSE reconnects don't fire with a dead
+  // token and 401. expires_at is a Unix timestamp in SECONDS. Never throw from
+  // this helper: a failed refresh falls back to whatever token we already have.
+  if (session && token && typeof session.expires_at === 'number') {
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (session.expires_at - nowSec <= 60) {
+      try {
+        const { data: refreshed } = await supabase.auth.refreshSession();
+        const newToken = refreshed.session?.access_token;
+        if (newToken) token = newToken;
+      } catch {
+        /* refresh failed — keep the existing (possibly stale) token */
+      }
+    }
+  }
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
@@ -426,9 +444,16 @@ async function streamFetch(
     // callers skip reconnect/error-toast/double-cleanup.
     if ((error as { name?: string })?.name === 'AbortError') {
       aborted = true;
-    } else if (error instanceof Error && error.name === 'TypeError' && error.message.includes('network')) {
-      // Handle incomplete chunked encoding or other stream errors
-      console.warn('[api] Stream interrupted (network error):', error.message);
+    } else if (error instanceof Error && error.name === 'TypeError') {
+      // iOS Safari freezes a backgrounded tab and tears down its connection,
+      // rejecting reader.read() with "Load failed" / "The network connection was
+      // lost." — neither reliably contains "network", so the old substring guard
+      // re-threw it and surfaced a dead-end error banner with no reconnect. Per
+      // the Streams/Fetch spec, reader.read() only rejects with a TypeError on a
+      // transport-level network error; the loop body (decode/split/processLine,
+      // which guards its own JSON.parse) won't otherwise throw one. So treat any
+      // TypeError here as a dropped stream and route it into the reconnect path.
+      console.warn('[api] Stream interrupted (transport error):', error.message);
       disconnected = true;
     } else {
       throw error;

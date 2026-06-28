@@ -34,6 +34,7 @@ import {
   sendHitlResponse,
   streamWorkspaceEvents,
   watchThread,
+  reconnectToWorkflowStream,
 } from '../api';
 
 const mockGet = api.get as Mock;
@@ -474,6 +475,54 @@ describe('ChatAgent API utilities', () => {
       ]);
       await runWatch();
       expect(reader.cancel).toHaveBeenCalled();
+    });
+  });
+
+  describe('reconnectToWorkflowStream transport-error classification (Prong A)', () => {
+    let originalFetch: typeof global.fetch;
+
+    beforeEach(() => {
+      originalFetch = global.fetch;
+    });
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+
+    /** Build a fetch mock whose reader.read() rejects with the given error. */
+    function mockRejectingReader(error: Error) {
+      const reader = {
+        read: vi.fn().mockRejectedValue(error),
+        cancel: vi.fn(async () => {}),
+      };
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        body: { getReader: () => reader },
+      });
+      global.fetch = fetchMock as unknown as typeof fetch;
+      return { fetchMock, reader };
+    }
+
+    it('classifies a TypeError("Load failed") read rejection as a disconnect (iOS Safari background-kill)', async () => {
+      // The fail-first proof: "Load failed" contains no "network" substring, so
+      // the old classifier re-threw it (error banner, no reconnect). After Prong
+      // A, any TypeError out of the read loop resolves as a disconnect.
+      mockRejectingReader(new TypeError('Load failed'));
+      const result = await reconnectToWorkflowStream('t-1');
+      expect(result.disconnected).toBe(true);
+      expect(result.aborted).toBe(false);
+    });
+
+    it('classifies a TypeError("The network connection was lost.") read rejection as a disconnect', async () => {
+      // Forward-looking guard for the other iOS Safari string. (This literal
+      // already contains "network", so the old classifier handled it too; this
+      // test pins it down regardless of the substring.)
+      mockRejectingReader(new TypeError('The network connection was lost.'));
+      const result = await reconnectToWorkflowStream('t-1');
+      expect(result.disconnected).toBe(true);
+      expect(result.aborted).toBe(false);
     });
   });
 });
