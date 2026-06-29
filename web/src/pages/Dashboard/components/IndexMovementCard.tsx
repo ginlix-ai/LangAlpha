@@ -45,8 +45,16 @@ function IndexCardContent({ index }: { index: IndexData }) {
     typeof pt === 'object' ? { ...pt, i } : { val: pt as unknown as number, i },
   );
 
-  const today = new Date();
-  const dateStr = `${today.getMonth() + 1}/${today.getDate()}`;
+  // Show the date of the session the data belongs to (e.g. the last trading day
+  // when the market is closed/pre-open), falling back to today if unknown.
+  const dateStr = (() => {
+    if (index.asOfDate) {
+      const [, mo, d] = index.asOfDate.split('-');
+      return `${Number(mo)}/${Number(d)}`;
+    }
+    const today = new Date();
+    return `${today.getMonth() + 1}/${today.getDate()}`;
+  })();
 
   return (
     <>

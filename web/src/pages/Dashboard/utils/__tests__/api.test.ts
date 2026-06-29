@@ -98,6 +98,8 @@ describe('getIndex', () => {
     expect(result.sparklineData[result.sparklineData.length - 1].time).toBe('16:00');
     // price/change derive from the D1 regular-hours session, not the D2 bars.
     expect(result.price).toBe(101);
+    // date label reflects the session the data belongs to, not "today".
+    expect(result.asOfDate).toBe('2025-01-13');
   });
 });
 

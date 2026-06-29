@@ -16,6 +16,8 @@ export interface IndexData {
   isPositive: boolean;
   sparklineData: SparklinePoint[];
   quoteAvailable?: boolean;
+  /** ET date (YYYY-MM-DD) of the trading session the price/sparkline reflect. */
+  asOfDate?: string;
   previousClose?: number | null;
 }
 

@@ -33,6 +33,7 @@ interface IndexData {
   isPositive: boolean;
   sparklineData: SparklinePoint[];
   quoteAvailable?: boolean;
+  asOfDate?: string;
   previousClose?: number | null;
 }
 
@@ -166,6 +167,7 @@ export async function getIndex(symbol: string, _opts: Record<string, unknown> = 
       change: Math.round(change * 100) / 100,
       changePercent: Math.round(changePercent * 100) / 100,
       isPositive: change >= 0,
+      asOfDate: latestDate,
       sparklineData: todayPoints
         .filter((p: IntradayPoint) => Number(p.close) > 0)
         .map((p: IntradayPoint) => ({ time: utcMsToETTime(p.time), val: Number(p.close) })),
@@ -193,14 +195,15 @@ export async function getIndices(symbols: string[] = INDEX_SYMBOLS, _opts: Recor
     Promise.all(list.map(async (norm: string) => {
       try {
         const result = await getIndex(norm);
-        return { symbol: norm, sparklineData: result.sparklineData };
+        return { symbol: norm, sparklineData: result.sparklineData, asOfDate: result.asOfDate };
       } catch {
-        return { symbol: norm, sparklineData: [] as SparklinePoint[] };
+        return { symbol: norm, sparklineData: [] as SparklinePoint[], asOfDate: undefined as string | undefined };
       }
     })),
   ]);
 
   const sparklineMap: Record<string, SparklinePoint[]> = Object.fromEntries(sparklineResults.map((r) => [r.symbol, r.sparklineData]));
+  const asOfMap: Record<string, string | undefined> = Object.fromEntries(sparklineResults.map((r) => [r.symbol, r.asOfDate]));
   const snapshotList: SnapshotEntry[] = snapshots?.snapshots || snapshots?.results || snapshots?.data || [];
   const snapshotMap: Record<string, SnapshotEntry> = Array.isArray(snapshotList)
     ? Object.fromEntries(snapshotList.map((s: SnapshotEntry) => [normalizeIndexSymbol(s.symbol), s]))
@@ -222,10 +225,11 @@ export async function getIndices(symbols: string[] = INDEX_SYMBOLS, _opts: Recor
         previousClose: snap.previous_close ?? null,
         sparklineData: sparklineMap[norm] || [],
         quoteAvailable: true,
+        asOfDate: asOfMap[norm],
       };
     }
     failedCount++;
-    return { ...fallbackIndex(norm), sparklineData: sparklineMap[norm] || [] };
+    return { ...fallbackIndex(norm), sparklineData: sparklineMap[norm] || [], asOfDate: asOfMap[norm] };
   });
 
   return { indices, failedCount };
