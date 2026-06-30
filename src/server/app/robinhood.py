@@ -109,28 +109,54 @@ def _robinhood_server_blob() -> dict:
 async def initiate(workspace_id: str, user_id: CurrentUserId) -> dict:
     await _require_owned_workspace(workspace_id, user_id)
 
-    try:
-        meta = await discover_metadata(ROBINHOOD_MCP_URL)
-    except Exception as e:
-        raise HTTPException(
-            status_code=502, detail=f"Robinhood OAuth discovery failed: {e}"
-        )
-
     redirect_uri = _redirect_uri(workspace_id)
-    scope = " ".join(meta.get("scopes_supported") or [])
-    reg_ep = meta.get("registration_endpoint")
-    if not reg_ep:
-        raise HTTPException(
-            status_code=502,
-            detail="Robinhood OAuth server does not advertise dynamic client "
-            "registration; cannot connect automatically.",
-        )
-    try:
-        client = await register_client(reg_ep, redirect_uri, scope=scope)
-    except Exception as e:
-        raise HTTPException(
-            status_code=502, detail=f"Robinhood client registration failed: {e}"
-        )
+
+    # Reuse an already-registered client for this workspace instead of running
+    # dynamic client registration on every click. Repeated DCR + authorize
+    # attempts against the same account trip Robinhood's anti-abuse throttle
+    # ("Please try again later — we have blocked this action"). One stored client
+    # is reused across reconnects; `disconnect` clears it to force a fresh one.
+    existing = await ro_db.get(user_id, workspace_id)
+    if (
+        existing
+        and existing.get("client_id")
+        and existing.get("authorization_endpoint")
+        and existing.get("token_endpoint")
+        and existing.get("redirect_uri") == redirect_uri
+    ):
+        auth_ep = existing["authorization_endpoint"]
+        token_ep = existing["token_endpoint"]
+        reg_ep = existing.get("registration_endpoint")
+        client_id = existing["client_id"]
+        client_secret = existing.get("client_secret") or None
+        resource = existing["resource"]
+        scope = existing.get("scopes") or ""
+    else:
+        try:
+            meta = await discover_metadata(ROBINHOOD_MCP_URL)
+        except Exception as e:
+            raise HTTPException(
+                status_code=502, detail=f"Robinhood OAuth discovery failed: {e}"
+            )
+        reg_ep = meta.get("registration_endpoint")
+        if not reg_ep:
+            raise HTTPException(
+                status_code=502,
+                detail="Robinhood OAuth server does not advertise dynamic client "
+                "registration; cannot connect automatically.",
+            )
+        scope = " ".join(meta.get("scopes_supported") or [])
+        try:
+            client = await register_client(reg_ep, redirect_uri, scope=scope)
+        except Exception as e:
+            raise HTTPException(
+                status_code=502, detail=f"Robinhood client registration failed: {e}"
+            )
+        auth_ep = meta["authorization_endpoint"]
+        token_ep = meta["token_endpoint"]
+        resource = meta["resource"]
+        client_id = client["client_id"]
+        client_secret = client.get("client_secret")
 
     verifier, challenge = generate_pkce_pair()
     state = secrets.token_urlsafe(32)
@@ -138,12 +164,12 @@ async def initiate(workspace_id: str, user_id: CurrentUserId) -> dict:
     await ro_db.upsert_pending(
         user_id=user_id,
         workspace_id=workspace_id,
-        resource=meta["resource"],
-        authorization_endpoint=meta["authorization_endpoint"],
-        token_endpoint=meta["token_endpoint"],
+        resource=resource,
+        authorization_endpoint=auth_ep,
+        token_endpoint=token_ep,
         registration_endpoint=reg_ep,
-        client_id=client["client_id"],
-        client_secret=client.get("client_secret"),
+        client_id=client_id,
+        client_secret=client_secret,
         redirect_uri=redirect_uri,
         scopes=scope,
         state=state,
@@ -151,12 +177,12 @@ async def initiate(workspace_id: str, user_id: CurrentUserId) -> dict:
     )
 
     authorize_url = build_authorize_url(
-        authorization_endpoint=meta["authorization_endpoint"],
-        client_id=client["client_id"],
+        authorization_endpoint=auth_ep,
+        client_id=client_id,
         redirect_uri=redirect_uri,
         state=state,
         challenge=challenge,
-        resource=meta["resource"],
+        resource=resource,
         scope=scope,
     )
     return {"authorize_url": authorize_url}

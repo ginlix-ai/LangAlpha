@@ -7,6 +7,8 @@ tools) and the auth-less callback's state binding.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 from fastapi.responses import HTMLResponse
 
@@ -67,3 +69,64 @@ async def test_callback_rejects_workspace_mismatch(monkeypatch):
     monkeypatch.setattr(rh.ro_db, "get_pending_by_state", fake_lookup)
     resp = await rh.callback(workspace_id="w", state="s", code="c")
     assert "expired" in resp.body.decode()
+
+
+# ---------------------------------------------------------------------------
+# initiate — reuse one registered client per workspace (avoid Robinhood's
+# anti-abuse throttle from re-registering a new client on every click)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_initiate_reuses_existing_client(monkeypatch):
+    """When a client is already registered for the workspace, initiate must NOT
+    re-discover or re-register — it reuses the stored client_id."""
+    redirect = rh._redirect_uri("ws-1")
+    existing = {
+        "client_id": "reused-cid",
+        "authorization_endpoint": "https://robinhood.com/oauth",
+        "token_endpoint": "https://api.robinhood.com/oauth2/token/",
+        "registration_endpoint": "https://agent.robinhood.com/oauth/trading/register",
+        "redirect_uri": redirect,
+        "client_secret": "",
+        "resource": "https://agent.robinhood.com/mcp/trading",
+        "scopes": "internal",
+    }
+    monkeypatch.setattr(rh, "_require_owned_workspace", AsyncMock(return_value={}))
+    monkeypatch.setattr(rh.ro_db, "get", AsyncMock(return_value=existing))
+    upsert = AsyncMock()
+    monkeypatch.setattr(rh.ro_db, "upsert_pending", upsert)
+    disc = AsyncMock()
+    reg = AsyncMock()
+    monkeypatch.setattr(rh, "discover_metadata", disc)
+    monkeypatch.setattr(rh, "register_client", reg)
+
+    out = await rh.initiate("ws-1", "user-1")
+
+    assert "client_id=reused-cid" in out["authorize_url"]
+    disc.assert_not_called()      # no re-discovery
+    reg.assert_not_called()       # no new dynamic client registration
+    # A fresh PKCE state was still stored for this attempt.
+    assert upsert.await_args.kwargs["client_id"] == "reused-cid"
+
+
+@pytest.mark.asyncio
+async def test_initiate_registers_when_no_existing_client(monkeypatch):
+    """First connect (no stored client) discovers + registers once."""
+    monkeypatch.setattr(rh, "_require_owned_workspace", AsyncMock(return_value={}))
+    monkeypatch.setattr(rh.ro_db, "get", AsyncMock(return_value=None))
+    monkeypatch.setattr(rh.ro_db, "upsert_pending", AsyncMock())
+    monkeypatch.setattr(rh, "discover_metadata", AsyncMock(return_value={
+        "authorization_endpoint": "https://robinhood.com/oauth",
+        "token_endpoint": "https://api.robinhood.com/oauth2/token/",
+        "registration_endpoint": "https://agent.robinhood.com/oauth/trading/register",
+        "scopes_supported": ["internal"],
+        "resource": "https://agent.robinhood.com/mcp/trading",
+    }))
+    reg = AsyncMock(return_value={"client_id": "new-cid", "client_secret": None})
+    monkeypatch.setattr(rh, "register_client", reg)
+
+    out = await rh.initiate("ws-1", "user-1")
+
+    reg.assert_called_once()
+    assert "client_id=new-cid" in out["authorize_url"]
