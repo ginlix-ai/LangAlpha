@@ -199,6 +199,12 @@ class McpServerInput(BaseModel):
     # Off (default) = tool discovery runs secret-less. On = resolve real vault
     # secrets during discovery (for servers that need auth even to list tools).
     discovery_uses_secrets: bool = False
+    # Hard gate: tool names that must never be exposed to the model. Denied tools
+    # are filtered out of both the sandbox wrapper module and the per-tool docs,
+    # so the agent can neither see nor call them. Removing tools only — cannot
+    # escalate — so it is allowed on workspace servers (e.g. to keep Robinhood's
+    # place/cancel order tools off by default).
+    tool_deny: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -251,6 +257,15 @@ class McpServerInput(BaseModel):
                 )
             validate_remote_url(self.url)
             _validate_secret_map(self.headers, kind="header", key_re=ENV_KEY_RE)
+
+        # tool_deny: a list of tool names to hard-gate from the model/sandbox.
+        if len(self.tool_deny) > 100:
+            raise ValueError("tool_deny may list at most 100 tools")
+        for i, tname in enumerate(self.tool_deny):
+            if not isinstance(tname, str) or not tname.strip():
+                raise ValueError(f"tool_deny[{i}] must be a non-empty string")
+            if len(tname) > 128:
+                raise ValueError(f"tool_deny[{i}] is too long (max 128 chars)")
         return self
 
     def to_config_blob(self) -> dict[str, Any]:
@@ -268,6 +283,7 @@ class McpServerInput(BaseModel):
             "instruction": self.instruction,
             "tool_exposure_mode": self.tool_exposure_mode,
             "discovery_uses_secrets": self.discovery_uses_secrets,
+            "tool_deny": list(self.tool_deny),
         }
 
 
@@ -492,6 +508,8 @@ class EffectiveServer(BaseModel):
     instruction: str = ""
     tool_exposure_mode: str = "summary"
     discovery_uses_secrets: bool = False
+    # Tool names hard-gated off this server (never advertised or callable).
+    tool_deny: list[str] = Field(default_factory=list)
     command: Optional[str] = None
     args: list[str] = Field(default_factory=list)
     url: Optional[str] = None

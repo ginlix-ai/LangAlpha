@@ -2319,6 +2319,14 @@ except OSError as e:
             s.name: getattr(s, "source", "builtin")
             for s in self.config.mcp.servers
         }
+        # Per-server hard gate: tool names the operator has denied. Denied tools
+        # are filtered out of BOTH wrapper generation and doc generation below,
+        # so they are neither callable nor advertised to the model (e.g. keeps
+        # Robinhood's place/cancel order tools off by default).
+        deny_by_name = {
+            s.name: set(getattr(s, "tool_deny", None) or [])
+            for s in self.config.mcp.servers
+        }
 
         # 2. Tool modules and documentation
         assert self.mcp_registry is not None
@@ -2366,6 +2374,12 @@ except OSError as e:
             )
 
         for server_name, tools in tools_by_server.items():
+            # Hard gate: drop denied tools so they are neither emitted as callable
+            # wrappers nor documented for the model (applies to the docs loop below
+            # which reuses this same filtered ``tools`` list).
+            deny = deny_by_name.get(server_name)
+            if deny:
+                tools = [t for t in tools if t.name not in deny]
             source = source_by_name.get(server_name, "builtin")
             # Generate Python module
             module_code = self.tool_generator.generate_tool_module(
