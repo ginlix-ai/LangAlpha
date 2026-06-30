@@ -434,21 +434,27 @@ async def get_valid_robinhood_token(
 
 
 async def _sync_vault_token(workspace_id: str, access_token: str) -> None:
-    """Write the access token into the workspace vault and push to the sandbox."""
+    """Write the access token into the workspace vault and push to the sandbox.
+
+    The stored value is the full ``Bearer <token>`` header value, because the
+    MCP server model only permits a header that is exactly ``${vault:NAME}`` —
+    the prefix lives in the secret, not the header (see app/robinhood.py).
+    """
     from src.server.database.vault_secrets import (
         create_secret as create_secret_db,
         update_secret,
     )
 
+    header_value = f"Bearer {access_token}"
     updated = await update_secret(
-        workspace_id, "ROBINHOOD_TOKEN", value=access_token, description=None
+        workspace_id, "ROBINHOOD_TOKEN", value=header_value, description=None
     )
     if not updated:
         try:
             await create_secret_db(
                 workspace_id,
                 "ROBINHOOD_TOKEN",
-                access_token,
+                header_value,
                 "Robinhood Agentic Trading MCP access token (auto-refreshed)",
             )
         except ValueError:

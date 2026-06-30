@@ -170,6 +170,36 @@ async def get(user_id: str, workspace_id: str) -> Optional[dict[str, Any]]:
             return row
 
 
+async def get_pending_by_state(state: str) -> Optional[dict[str, Any]]:
+    """Look up a pending connect row by its (high-entropy, single-use) state.
+
+    The OAuth callback is a top-level browser redirect with no auth header, so
+    the unguessable ``state`` is what binds it back to the initiating session.
+    Returns the decrypted row (client_secret / code_verifier as strings) or None.
+    """
+    enc = get_encryption_key()
+    async with get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT
+                    user_id, workspace_id, status, resource,
+                    token_endpoint, client_id, redirect_uri, scopes,
+                    pgp_sym_decrypt(client_secret, %s) AS client_secret,
+                    pgp_sym_decrypt(code_verifier, %s) AS code_verifier
+                FROM robinhood_oauth
+                WHERE state = %s AND status = 'pending'
+                """,
+                (enc, enc, state),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return None
+            row["client_secret"] = _to_str(row["client_secret"])
+            row["code_verifier"] = _to_str(row["code_verifier"])
+            return row
+
+
 async def get_status(user_id: str, workspace_id: str) -> dict[str, Any]:
     """Quick status check (no decryption): {connected, status, expires_at, scopes}."""
     async with get_db_connection() as conn:

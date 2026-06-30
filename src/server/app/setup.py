@@ -747,6 +747,7 @@ from src.server.app.memo import router as memo_router
 from src.server.app.memory import router as memory_router
 from src.server.app.mcp_catalog import router as mcp_catalog_router
 from src.server.app.mcp_servers import router as mcp_servers_router
+from src.server.app.robinhood import router as robinhood_router
 
 # Conditionally import ginlix-data WS proxy (only when GINLIX_DATA_WS_URL is set)
 from src.config.settings import GINLIX_DATA_ENABLED
@@ -820,6 +821,9 @@ app.include_router(
 app.include_router(
     mcp_servers_router
 )  # /api/v1/workspaces/{id}/mcp/servers - Per-workspace MCP server config
+app.include_router(
+    robinhood_router
+)  # /api/v1/workspaces/{id}/robinhood/* - Robinhood Agentic Trading MCP connect
 app.include_router(health_router)  # /health - Health check
 app.include_router(
     preview_redirect_router

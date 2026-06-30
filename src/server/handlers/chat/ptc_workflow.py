@@ -631,6 +631,22 @@ async def astream_ptc_workflow(
         # to avoid claiming subagents that belong to prior turns.
         background_registry.current_run_id = run_id
 
+        # Keep the Robinhood MCP access token fresh in the workspace vault before
+        # the sandbox turn. No-op unless this workspace has connected Robinhood
+        # (a single indexed read returns None fast); refreshes + re-pushes the
+        # ROBINHOOD_TOKEN secret only when it is near expiry. Best-effort.
+        try:
+            from src.server.services.robinhood_oauth import (
+                get_valid_robinhood_token,
+            )
+
+            await get_valid_robinhood_token(user_id, workspace_id)
+        except Exception:
+            logger.debug(
+                "[PTC_CHAT] Robinhood token refresh check failed (non-fatal)",
+                exc_info=True,
+            )
+
         # Build graph with the workspace's session
         # Note: agent.md is injected dynamically by WorkspaceContextMiddleware
         # on every model call, ensuring it's always the latest content.
