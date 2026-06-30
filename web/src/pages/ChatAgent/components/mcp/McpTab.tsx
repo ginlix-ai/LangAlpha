@@ -16,6 +16,7 @@ import {
 import { toast } from '@/components/ui/use-toast';
 import { formatApiErrorDetail, getVaultSecrets, type EffectiveServer, type McpServerInput } from '../../utils/api';
 import { McpServerRow } from './McpServerRow';
+import { RobinhoodConnectCard } from './RobinhoodConnectCard';
 import { McpServerModal } from './McpServerModal';
 import { McpImportModal } from './McpImportModal';
 import { TemplatesView } from './TemplatesView';
@@ -339,6 +340,7 @@ export function McpTab({ workspaceId, onOpenVaultTab }: McpTabProps) {
 
       {view === 'workspace' ? (
         <div className="flex flex-col gap-3">
+          <RobinhoodConnectCard workspaceId={workspaceId} />
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <ServerCog className="h-4 w-4" style={{ color: 'var(--color-accent-primary)' }} />
