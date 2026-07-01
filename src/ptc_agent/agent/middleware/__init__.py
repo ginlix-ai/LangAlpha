@@ -104,6 +104,11 @@ from .runtime_context import (
     RuntimeContextMiddleware,
 )
 
+# Sparse tool context middleware
+from .sparse_tool_context import (
+    SparseToolContextMiddleware,
+)
+
 # Anthropic thinking-block sanitizer (repairs orphan signature-only blocks)
 from .anthropic_thinking_sanitizer import (
     AnthropicThinkingSanitizerMiddleware,
@@ -171,6 +176,8 @@ __all__ = [
     "MemoryContextMiddleware",
     # Memo awareness
     "MemoAwarenessMiddleware",
+    # Sparse tool context
+    "SparseToolContextMiddleware",
     # Runtime context
     "RuntimeContextMiddleware",
     # Anthropic thinking sanitizer

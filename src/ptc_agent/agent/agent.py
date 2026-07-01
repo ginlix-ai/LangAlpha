@@ -50,6 +50,7 @@ from ptc_agent.agent.middleware import (
     SteeringMiddleware,
     SubagentSteeringMiddleware,
     WorkspaceContextMiddleware,
+    SparseToolContextMiddleware,
     # memory.md injection from the LangGraph store
     MemoryContextMiddleware,
     # injects <memo-index count=N path=.../>
@@ -624,7 +625,10 @@ class PTCAgent:
         # computing from the registry for callers without a cached summary
         # (tests, the SessionProvider path).
         if tool_summary is None:
-            tool_summary = self._get_tool_summary(mcp_registry)
+            if getattr(self.config, "ace", None) and self.config.ace.enabled and self.config.ace.sparse_selection.enabled:
+                tool_summary = ""
+            else:
+                tool_summary = self._get_tool_summary(mcp_registry)
         subagent_summary = format_subagent_summary(subagents)
 
         eviction_dir = (
@@ -697,6 +701,16 @@ class PTCAgent:
         if session is not None:
             workspace_context_middleware = [WorkspaceContextMiddleware(session=session)]
 
+        # Sparse tool context middleware (matched tool injection)
+        sparse_tool_middleware: list[Any] = []
+        if getattr(self.config, "ace", None) and self.config.ace.enabled and self.config.ace.sparse_selection.enabled:
+            sparse_tool_middleware = [
+                SparseToolContextMiddleware(
+                    mcp_registry=mcp_registry,
+                    ace_config=self.config.ace
+                )
+            ]
+
         # Positioned after the prompt-cache breakpoint (innermost) so dynamic
         # content doesn't invalidate the cached prefix.
         runtime_context_middleware: list[Any] = [
@@ -736,6 +750,7 @@ class PTCAgent:
                 AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
                 EmptyToolCallRetryMiddleware(),
                 PatchToolCallsMiddleware(),
+                *sparse_tool_middleware,
                 *workspace_context_middleware,
                 *dynamic_context_middleware,
                 *runtime_context_middleware,

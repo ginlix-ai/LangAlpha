@@ -195,12 +195,34 @@ class LLMConfig(BaseModel):
     fallback: list[str] | None = None  # Fallback model names for retry exhaustion
 
 
+class AceSparseSelectionConfig(BaseModel):
+    """ACE sparse selection configuration."""
+
+    enabled: bool = True
+    fallback_to_all: bool = True
+    max_servers_per_query: int = 4
+    category_mappings: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class AceConfig(BaseModel):
+    """Agent Context Engine settings."""
+
+    enabled: bool = True
+    redis_key_prefix: str = "ace:"
+    sparse_selection: AceSparseSelectionConfig = Field(
+        default_factory=AceSparseSelectionConfig
+    )
+
+
 class AgentConfig(BaseModel):
     """Agent-specific configuration.
 
     This config contains agent-related settings (LLM, security, logging)
     while using the core config for sandbox and MCP settings.
     """
+
+    # ACE configuration
+    ace: AceConfig = Field(default_factory=AceConfig)
 
     # Agent-specific configurations
     llm: LLMConfig | None = None

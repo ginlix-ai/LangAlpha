@@ -69,8 +69,8 @@ dependencies = [
     "rich>=14.2.0",
     "redis>=5.0.0",
     "langchain-qwq>=0.3.0",
-    "edgartools>=5.7.2",
     "langsmith-fetch>=0.3.1",
+    "edgartools>=5.7.2",
     "structlog",
     # Floor at 0.6.11: that release made the messages delta reducer non-minting
     # (our vendored copy in ptc_agent.agent.state matches it — see the parity test)

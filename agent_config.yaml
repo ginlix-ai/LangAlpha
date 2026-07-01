@@ -329,3 +329,19 @@ embedding:
   batch_size: 100 # Number of texts to embed in a single batch
   enable_auto_embedding: true
   hybrid_search_alpha: 0.5 # Balance between semantic (0.0) and keyword search (1.0)
+
+# Agent Context Engine (ACE) Configuration
+ace:
+  enabled: true
+  redis_key_prefix: "ace:"
+  sparse_selection:
+    enabled: true
+    fallback_to_all: true
+    max_servers_per_query: 4
+    category_mappings:
+      price_analysis: ["price_data", "yf_price"]
+      fundamental_analysis: ["fundamentals", "yf_fundamentals"]
+      market_overview: ["macro", "yf_market"]
+      options_analysis: ["options"]
+      social_sentiment: ["x_api"]
+      web_research: ["scrapling"]
