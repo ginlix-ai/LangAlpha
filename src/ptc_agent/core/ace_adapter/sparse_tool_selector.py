@@ -1,6 +1,6 @@
 import logging
 from collections import deque
-from typing import List, Set, Dict
+from typing import List, Set, Dict, Any
 from src.ptc_agent.core.mcp_registry import MCPRegistry, MCPToolInfo
 from src.ptc_agent.core.ace_adapter.async_cache_manager import AsyncCacheManager
 from src.ptc_agent.core.ace_adapter.mcp_schema_indexer import MCPSchemaIndexer
@@ -41,7 +41,7 @@ class SparseToolSelector:
                 await self.cache.update_node(node, deps)
         return graph
 
-    async def select_relevant_tools(self, query: str, mcp_registry: MCPRegistry) -> List[MCPToolInfo]:
+    async def select_relevant_tools(self, query: str, mcp_registry: MCPRegistry, llm_client: Any = None) -> List[MCPToolInfo]:
         """
         Given a user query, selects the sparse subset of tools.
         """
@@ -54,8 +54,8 @@ class SparseToolSelector:
         if not all_tools:
             return []
 
-        # 1. Match query to servers
-        matched_servers = self.matcher.match_query(query)
+        # 1. Match query to servers using LLM matcher
+        matched_servers = await self.matcher.match_query(query, mcp_registry=mcp_registry, llm_client=llm_client)
         if not matched_servers:
             if self.fallback_to_all:
                 logger.info("ACE: No servers matched query. Falling back to all tools.")

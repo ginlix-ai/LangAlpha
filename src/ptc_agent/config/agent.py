@@ -201,6 +201,7 @@ class AceSparseSelectionConfig(BaseModel):
     enabled: bool = True
     fallback_to_all: bool = True
     max_servers_per_query: int = 4
+    classification_llm: str | None = None
     category_mappings: dict[str, list[str]] = Field(default_factory=dict)
 
 

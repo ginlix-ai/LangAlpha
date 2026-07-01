@@ -704,10 +704,26 @@ class PTCAgent:
         # Sparse tool context middleware (matched tool injection)
         sparse_tool_middleware: list[Any] = []
         if getattr(self.config, "ace", None) and self.config.ace.enabled and self.config.ace.sparse_selection.enabled:
+            classification_model = None
+            model_name = getattr(self.config.ace.sparse_selection, "classification_llm", None)
+            if model_name and model_name != "main":
+                if hasattr(self.config, "subsidiary_llm_clients") and model_name in self.config.subsidiary_llm_clients:
+                    classification_model = self.config.subsidiary_llm_clients[model_name]
+                else:
+                    from src.llms import get_llm_by_type
+                    try:
+                        classification_model = get_llm_by_type(model_name)
+                    except Exception as e:
+                        logger.warning("ACE: Could not resolve classification LLM, falling back to main model", model_name=model_name, error=str(e))
+            
+            if classification_model is None:
+                classification_model = model
+
             sparse_tool_middleware = [
                 SparseToolContextMiddleware(
                     mcp_registry=mcp_registry,
-                    ace_config=self.config.ace
+                    ace_config=self.config.ace,
+                    classification_llm=classification_model
                 )
             ]
 

@@ -338,6 +338,7 @@ ace:
     enabled: true
     fallback_to_all: true
     max_servers_per_query: 4
+    classification_llm: "qwen3.6-flash"
     category_mappings:
       price_analysis: ["price_data", "yf_price"]
       fundamental_analysis: ["fundamentals", "yf_fundamentals"]

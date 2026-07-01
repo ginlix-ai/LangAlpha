@@ -1,4 +1,5 @@
 import pytest
+import json
 from unittest.mock import MagicMock, AsyncMock
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -10,6 +11,7 @@ class MockAceSparseSelectionConfig:
     enabled = True
     fallback_to_all = True
     max_servers_per_query = 4
+    classification_llm = "test-flash"
     category_mappings = {
         "price_analysis": ["price_data", "yf_price"],
         "fundamental_analysis": ["fundamentals", "yf_fundamentals"],
@@ -72,9 +74,32 @@ async def test_ace_token_savings_benchmark():
         "options": [t for t in tools if t.server_name == "options"]
     }
     mcp_registry.config.mcp.tool_exposure_mode = "detailed"
+    
+    class MockServer:
+        def __init__(self, name, description):
+            self.name = name
+            self.enabled = True
+            self.description = description
+            self.instruction = ""
+            self.tool_exposure_mode = "detailed"
+            self.source = "builtin"
+            
+    mcp_registry.config.mcp.servers = [
+        MockServer("price_data", "stock prices"),
+        MockServer("fundamentals", "financial statements"),
+        MockServer("macro", "macro indicators"),
+        MockServer("options", "option contracts")
+    ]
 
-    # Mock cache manager inside selector to bypass Redis
-    middleware = SparseToolContextMiddleware(mcp_registry=mcp_registry, ace_config=MockAceConfig())
+    # Mock LLM client for classifier
+    llm_mock = AsyncMock()
+
+    # Initialize middleware with mock LLM client
+    middleware = SparseToolContextMiddleware(
+        mcp_registry=mcp_registry, 
+        ace_config=MockAceConfig(),
+        classification_llm=llm_mock
+    )
     middleware.selector.cache = AsyncMock()
     middleware.selector.cache.get_graph.return_value = {} # Trigger dynamic index build
 
@@ -111,6 +136,12 @@ async def test_ace_token_savings_benchmark():
     ]
 
     for scenario in scenarios:
+        # Configure LLM mock response dynamically based on scenario
+        if scenario["expected_servers"]:
+            llm_mock.ainvoke.return_value.content = json.dumps(scenario["expected_servers"])
+        else:
+            llm_mock.ainvoke.return_value.content = "[]"
+
         # Create request
         system_msg = SystemMessage(content_blocks=[{"type": "text", "text": "You are a helpful assistant."}])
         messages = [

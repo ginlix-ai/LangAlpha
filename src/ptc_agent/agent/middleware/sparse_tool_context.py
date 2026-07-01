@@ -21,9 +21,10 @@ class SparseToolContextMiddleware(AgentMiddleware):
     Dynamically selects and injects a sparse tool summary based on user query.
     Appends the selected tool guidelines after the cache breakpoint to avoid cache invalidation.
     """
-    def __init__(self, *, mcp_registry: Any, ace_config: Any) -> None:
+    def __init__(self, *, mcp_registry: Any, ace_config: Any, classification_llm: Any = None) -> None:
         self.mcp_registry = mcp_registry
         self.ace_config = ace_config
+        self.classification_llm = classification_llm
         
         from src.ptc_agent.core.ace_adapter import (
             SparseToolSelector,
@@ -94,7 +95,7 @@ class SparseToolContextMiddleware(AgentMiddleware):
 
         # 2. Select matching tools via ACE
         try:
-            selected_tools = await self.selector.select_relevant_tools(query, self.mcp_registry)
+            selected_tools = await self.selector.select_relevant_tools(query, self.mcp_registry, llm_client=self.classification_llm)
         except Exception as e:
             logger.error(f"ACE: Error selecting tools, falling back to all: {e}", exc_info=True)
             return await handler(request)
