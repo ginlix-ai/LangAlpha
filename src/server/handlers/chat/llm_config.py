@@ -58,6 +58,11 @@ def _candidate_slugs(provider: str, mc) -> list[str]:
     """
     parent = mc.get_parent_provider(provider)
     candidates: list[str] = [provider]
+    # Nested variants (e.g. z-ai-cn-coding under z-ai-cn) parent to the
+    # provider itself, not the root — walk them before the parent's family.
+    for child in mc.get_child_variants(provider):
+        if child not in candidates:
+            candidates.append(child)
     if parent and parent != provider:
         candidates.append(parent)
     root = parent if parent else provider
