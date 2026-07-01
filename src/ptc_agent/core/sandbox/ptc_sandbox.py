@@ -2373,6 +2373,7 @@ except OSError as e:
                 retry_policy=RetryPolicy.SAFE,
             )
 
+        installed_tool_count = 0
         for server_name, tools in tools_by_server.items():
             # Hard gate: drop denied tools so they are neither emitted as callable
             # wrappers nor documented for the model (applies to the docs loop below
@@ -2380,6 +2381,7 @@ except OSError as e:
             deny = deny_by_name.get(server_name)
             if deny:
                 tools = [t for t in tools if t.name not in deny]
+            installed_tool_count += len(tools)
             source = source_by_name.get(server_name, "builtin")
             # Generate Python module
             module_code = self.tool_generator.generate_tool_module(
@@ -2459,11 +2461,10 @@ except OSError as e:
                 logger.debug(msg, **kwargs)
 
         server_count = len(tools_by_server)
-        tool_count = sum(len(t) for t in tools_by_server.values())
         logger.info(
             "Tool modules installed",
             servers=server_count,
-            tools=tool_count,
+            tools=installed_tool_count,
         )
 
     # Bound concurrent discovery so a burst of servers can't exhaust the
