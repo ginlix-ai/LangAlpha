@@ -13,7 +13,6 @@ Actions emitted via context_window events (values preserved as wire protocol):
 """
 
 import asyncio
-import uuid
 import warnings
 import logging
 from collections.abc import Awaitable, Callable, Mapping
@@ -41,6 +40,7 @@ from src.llms.token_counter import extract_token_usage
 from ptc_agent.config.agent import CompactionConfig
 from src.llms import get_llm_by_type, maybe_disable_streaming
 
+from ptc_agent.agent.state import ensure_message_ids
 from ptc_agent.agent.middleware.compaction.types import (
     CompactionEvent,
     CompactionState,
@@ -266,7 +266,7 @@ class CompactionMiddleware(AgentMiddleware):
         cached_output_tokens: int = request.state.get("_cached_output_tokens", 0)
 
         # 2. Reconstruct effective messages
-        self._ensure_message_ids(request.messages)
+        ensure_message_ids(request.messages)
         effective_messages = self._get_effective_messages(
             request.messages, previous_event
         )
@@ -481,7 +481,7 @@ class CompactionMiddleware(AgentMiddleware):
         cached_input_tokens: int = request.state.get("_cached_input_tokens", 0)
         cached_output_tokens: int = request.state.get("_cached_output_tokens", 0)
 
-        self._ensure_message_ids(request.messages)
+        ensure_message_ids(request.messages)
         effective_messages = self._get_effective_messages(
             request.messages, previous_event
         )
@@ -1082,12 +1082,6 @@ class CompactionMiddleware(AgentMiddleware):
             "_cached_input_tokens": cached_input_tokens,
             "_cached_output_tokens": cached_output_tokens,
         }
-
-    def _ensure_message_ids(self, messages: list[AnyMessage]) -> None:
-        """Ensure all messages have unique IDs for the add_messages reducer."""
-        for msg in messages:
-            if msg.id is None:
-                msg.id = str(uuid.uuid4())
 
     def _partition_messages(
         self,

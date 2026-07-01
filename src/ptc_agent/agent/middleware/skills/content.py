@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from ptc_agent.agent.middleware._message_utils import message_id as _message_id
 from ptc_agent.agent.middleware.skills.registry import SkillMode, get_skill
 
 logger = logging.getLogger(__name__)
@@ -247,14 +248,6 @@ def build_skill_content(
         content=combined_content,
         loaded_skill_names=newly_loaded,
     )
-
-
-def _message_id(message: Any) -> Optional[str]:
-    """Framework-assigned id of a checkpoint message (object ``.id`` or dict ``id``)."""
-    mid = getattr(message, "id", None)
-    if mid is None and isinstance(message, dict):
-        mid = message.get("id")
-    return mid
 
 
 def _message_text(message: Any) -> str:

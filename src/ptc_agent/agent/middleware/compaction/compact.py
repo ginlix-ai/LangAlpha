@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import uuid
 from typing import Any, cast
 
 from langchain_core.messages import AnyMessage, ToolMessage
@@ -15,6 +14,7 @@ from src.llms.content_utils import format_llm_content
 from ptc_agent.config.agent import CompactionConfig
 from src.llms import get_llm_by_type
 
+from ptc_agent.agent.state import ensure_message_ids
 from ptc_agent.agent.middleware.compaction.types import (
     CompactionEvent,
     _DEFAULT_FALLBACK_MESSAGE_COUNT,
@@ -92,9 +92,7 @@ async def compact_messages(
         raise ValueError("No messages to compact")
 
     # Ensure all messages have IDs
-    for msg in messages:
-        if msg.id is None:
-            msg.id = str(uuid.uuid4())
+    ensure_message_ids(messages)
 
     # Reconstruct effective messages from previous event
     effective = get_effective_messages(messages, previous_event)
@@ -289,9 +287,7 @@ async def offload_tool_args(
     # and length, returning the SAME object for unchanged messages and a
     # model_copy (same id) for changed ones, so an identity diff isolates the
     # changes.
-    for msg in messages:
-        if msg.id is None:
-            msg.id = str(uuid.uuid4())
+    ensure_message_ids(messages)
     original_messages = list(messages)
 
     config = (compaction_config or CompactionConfig()).model_dump()

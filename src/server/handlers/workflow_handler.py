@@ -466,34 +466,27 @@ async def _require_no_active_workflow(
     )
 
     tracker = WorkflowTracker.get_instance()
-    # When Redis is unavailable the tracker returns enabled=False and get_status
-    # yields None, which would silently bypass this gate. Log a warning so the
-    # operator knows the protection is off; fail open (unless fail_closed)
-    # because chat workflows are also degraded under a Redis outage and admin
-    # actions should remain usable.
-    if not getattr(tracker, "enabled", True):
+
+    def _handle_unverifiable(reason: str) -> None:
+        # The gate can't confirm the thread is idle — Redis down, so either the
+        # tracker is disabled or get_status raised. Fail OPEN by default (log +
+        # continue) so admin actions stay usable while chat is already degraded;
+        # fail CLOSED (offload) by raising 409 so we never write blind into a
+        # possibly-active turn.
+        action = "skipped (fail-closed)" if fail_closed else "bypassed"
         logger.warning(
-            f"[{verb}] WorkflowTracker disabled (Redis unavailable); "
-            f"workflow-active gate {'skipped (fail-closed)' if fail_closed else 'bypassed'} "
-            f"for thread {thread_id}"
+            f"[{verb}] {reason}; workflow-active gate {action} for thread {thread_id}"
         )
         if fail_closed:
             raise _gate_unverifiable(verb)
+
+    if not getattr(tracker, "enabled", True):
+        _handle_unverifiable("WorkflowTracker disabled (Redis unavailable)")
         return
-    # Transient Redis errors during a healthy session would otherwise bubble up
-    # through trigger_compaction's broad except and surface as 500. Fail open
-    # (same as tracker.enabled=False) with a warning so admin actions stay
-    # usable and the operator can see that the gate was bypassed.
     try:
         status = await tracker.get_status(thread_id)
     except Exception as e:
-        logger.warning(
-            f"[{verb}] WorkflowTracker.get_status failed for thread {thread_id}: "
-            f"{e}; workflow-active gate "
-            f"{'skipped (fail-closed)' if fail_closed else 'bypassed'}"
-        )
-        if fail_closed:
-            raise _gate_unverifiable(verb)
+        _handle_unverifiable(f"WorkflowTracker.get_status failed: {e}")
         return
     if not status:
         return

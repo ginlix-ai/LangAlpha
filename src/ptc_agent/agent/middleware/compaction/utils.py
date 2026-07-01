@@ -19,6 +19,7 @@ from langchain_core.messages import (
 from langchain_core.messages.human import HumanMessage
 from langchain_core.messages.utils import convert_to_messages
 
+from ptc_agent.agent.middleware._message_utils import message_id
 from ptc_agent.agent.middleware.compaction.types import (
     CONTEXT_SUMMARY_PREFIX,
     NON_CRITICAL_READ_PREFIXES,
@@ -499,14 +500,6 @@ def truncate_read_results(
 # =============================================================================
 
 
-def _message_id(message: Any) -> str | None:
-    """Framework-assigned id of a checkpoint message (object ``.id`` or dict ``id``)."""
-    mid = getattr(message, "id", None)
-    if mid is None and isinstance(message, dict):
-        mid = message.get("id")
-    return mid
-
-
 def _strip_leading_orphan_tool_messages(
     tail: list[AnyMessage],
 ) -> list[AnyMessage]:
@@ -535,7 +528,7 @@ def _resolve_anchor_index(
     if anchor_id is None:
         return None
     for i, msg in enumerate(messages):
-        if _message_id(msg) == anchor_id:
+        if message_id(msg) == anchor_id:
             return i
     return None
 
@@ -557,7 +550,7 @@ def build_compaction_event(
     raw list later drifts.
     """
     anchor_message_id = (
-        _message_id(preserved_messages[0]) if preserved_messages else None
+        message_id(preserved_messages[0]) if preserved_messages else None
     )
 
     cutoff_index: int | None = _resolve_anchor_index(raw_messages, anchor_message_id)
@@ -604,7 +597,7 @@ def get_effective_messages(
     # O(1) happy path: only re-scan when the positional cutoff has drifted off
     # the anchor. Legacy events (no anchor) keep the positional index as-is.
     if anchor_id is not None and not (
-        0 <= cutoff < len(messages) and _message_id(messages[cutoff]) == anchor_id
+        0 <= cutoff < len(messages) and message_id(messages[cutoff]) == anchor_id
     ):
         resolved = _resolve_anchor_index(messages, anchor_id)
         if resolved is not None:
