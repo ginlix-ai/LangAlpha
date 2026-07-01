@@ -215,6 +215,7 @@ def _effective_server(
         instruction=srv.instruction or "",
         tool_exposure_mode=srv.tool_exposure_mode or "summary",
         discovery_uses_secrets=bool(getattr(srv, "discovery_uses_secrets", False)),
+        tool_deny=list(getattr(srv, "tool_deny", None) or []),
         command=srv.command,
         args=list(srv.args or []),
         url=srv.url,

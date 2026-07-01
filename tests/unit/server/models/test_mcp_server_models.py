@@ -428,3 +428,57 @@ def test_parse_undetermined_transport_marks_error():
 def test_parse_non_dict_payload_is_empty():
     assert parse_mcp_servers_payload("not a dict") == []
     assert parse_mcp_servers_payload(None) == []
+
+
+# ---------------------------------------------------------------------------
+# tool_deny — per-server hard gate (keeps e.g. Robinhood place/cancel off)
+# ---------------------------------------------------------------------------
+
+
+def test_tool_deny_defaults_empty_and_round_trips_in_blob():
+    srv = McpServerInput(**_http())
+    assert srv.tool_deny == []
+    assert srv.to_config_blob()["tool_deny"] == []
+
+    gated = McpServerInput(
+        **_http(tool_deny=["place_equity_order", "cancel_equity_order"])
+    )
+    assert gated.tool_deny == ["place_equity_order", "cancel_equity_order"]
+    assert gated.to_config_blob()["tool_deny"] == [
+        "place_equity_order",
+        "cancel_equity_order",
+    ]
+
+
+def test_tool_deny_is_allowed_on_workspace_servers():
+    """tool_deny only removes tools (cannot escalate), so it is NOT a
+    forbidden built-in-only key — a workspace server may set it."""
+    srv = McpServerInput(**_http(tool_deny=["x"]))
+    assert srv.tool_deny == ["x"]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        [""],            # empty tool name
+        ["  "],          # blank tool name
+        [123],           # non-string
+        ["a" * 129],     # over length cap
+        ["ok"] * 101,    # over list cap
+    ],
+)
+def test_tool_deny_rejects_invalid(bad):
+    with pytest.raises(ValidationError):
+        McpServerInput(**_http(tool_deny=bad))
+
+
+def test_tool_deny_flows_into_server_config():
+    """A stored blob with tool_deny converts into an MCPServerConfig carrying it,
+    so the sandbox sees the gate."""
+    from src.server.handlers.chat.mcp_config import workspace_row_to_server_config
+
+    blob = McpServerInput(**_http(tool_deny=["place_equity_order"])).to_config_blob()
+    cfg = workspace_row_to_server_config(
+        {"name": "remote_server", "enabled": True, "config": blob}
+    )
+    assert cfg.tool_deny == ["place_equity_order"]
