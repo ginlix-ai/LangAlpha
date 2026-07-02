@@ -35,6 +35,7 @@ import UserQuestionCard from './UserQuestionCard';
 import CreateWorkspaceCard from './CreateWorkspaceCard';
 import StartQuestionCard from './StartQuestionCard';
 import PTCAgentCard from './PTCAgentCard';
+import { DispatchStatusProvider } from '../hooks/usePTCDispatchStatus';
 import SecretaryConfirmCard from './SecretaryConfirmCard';
 import SubagentTaskMessageContent from './SubagentTaskMessageContent';
 import TextMessageContent from './TextMessageContent';
@@ -487,8 +488,11 @@ function MessageList({ messages, isLoading, isLoadingHistory, hideAvatar, compac
     );
   }
 
-  // Render message list
+  // Render message list. One DispatchStatusProvider for the whole list so every
+  // PTCAgentCard in the turn shares a single batched dispatch-liveness query +
+  // timer instead of each card polling /status on its own.
   return (
+    <DispatchStatusProvider>
     <div className={isMobile ? 'space-y-4' : 'space-y-6'}>
       {messages.map((message) =>
         (message.role as string) === 'notification' ? (
@@ -535,6 +539,7 @@ function MessageList({ messages, isLoading, isLoadingHistory, hideAvatar, compac
         )
       )}
     </div>
+    </DispatchStatusProvider>
   );
 }
 

@@ -569,15 +569,100 @@ export async function cancelWorkflow(threadId: string, runId: string | null = nu
 }
 
 /**
+ * The report-back slice shared by {@link ReportBackStatusResponse} and
+ * {@link WorkflowStatusResponse}. `pending_report_back` is TRI-STATE — decode it
+ * with {@link decodeReportBackSignal}, never branch on the raw `boolean | null`.
+ */
+interface ThreadReportBackStatus {
+  // true=pending, false=drained, null=the backend's own Redis read failed.
+  pending_report_back: boolean | null;
+  report_back_run_id: string | null;
+  // Recently DRAINED report-back run ids, newest first (last ~10, 15-min TTL).
+  // A drained turn's live pointer is deleted server-side, so this list is the
+  // only way a client that missed the wake discovers the turn. Optional: older
+  // backends omit it.
+  recent_report_back_run_ids?: string[];
+}
+
+// Decoding lives in a dependency-free module (usable where `./api` is mocked);
+// re-exported here for the API boundary.
+export { decodeReportBackSignal, shouldArmReportBack } from './reportBackSignal';
+export type { ReportBackSignal } from './reportBackSignal';
+
+/** Full workflow status for a thread (the `/status` response); the report-back
+ *  fields are optional here (the full status may omit them). */
+export type WorkflowStatusResponse = Partial<ThreadReportBackStatus> & {
+  can_reconnect: boolean;
+  status: string;
+  active_tasks?: string[];
+  is_shared?: boolean;
+  run_id?: string | null;
+  // Highest persisted turn_index for the thread (terminal AND live threads).
+  // null = no persisted turns (or the backend's DB read failed); absent on
+  // older backends. The staleness signal for cached views whose missed run
+  // already finished (can_reconnect=false carries no run_id to compare).
+  latest_turn_index?: number | null;
+  [key: string]: unknown;
+};
+
+/**
  * Get the current status of a workflow for a thread
  * @param {string} threadId - The thread ID to check
- * @returns {Promise<Object>} Workflow status with can_reconnect, status, etc.
+ * @returns {Promise<WorkflowStatusResponse>} Workflow status with can_reconnect, status, etc.
  */
-export async function getWorkflowStatus(threadId: string) {
+export async function getWorkflowStatus(threadId: string): Promise<WorkflowStatusResponse> {
   if (!threadId) throw new Error('Thread ID is required');
   const { data } = await api.get(`/api/v1/threads/${threadId}/status`);
   return data;
 }
+
+/** Cheap report-back-only slice of {@link getWorkflowStatus}. */
+export interface ReportBackStatusResponse extends ThreadReportBackStatus {
+  thread_id: string;
+}
+
+/**
+ * Fetch only the report-back fields of a thread's status (`?fields=report_back`
+ * skips the checkpoint / background-task / share reads the full status does).
+ * This is the slice the report-back watch's reconcile loop polls.
+ */
+export async function getReportBackStatus(
+  threadId: string,
+): Promise<ReportBackStatusResponse> {
+  if (!threadId) throw new Error('Thread ID is required');
+  const { data } = await api.get(`/api/v1/threads/${threadId}/status`, {
+    params: { fields: 'report_back' },
+  });
+  return data;
+}
+
+/** One dispatched thread's liveness slice (the cheap, batchable status read). */
+export interface DispatchLiveness {
+  thread_id: string;
+  status: string;
+  run_id: string | null;
+  can_reconnect: boolean;
+}
+
+/**
+ * Batched dispatch liveness for a turn's PTC cards: one request resolves the
+ * status + run_id of many dispatched threads at once, replacing N per-card
+ * `/status` polls. Foreign/unknown/expired ids are omitted from the response.
+ * Returns `[]` without a request for an empty id list.
+ */
+export async function getDispatchLiveness(
+  threadIds: string[],
+): Promise<DispatchLiveness[]> {
+  if (!threadIds.length) return [];
+  const { data } = await api.get('/api/v1/threads/dispatches/liveness', {
+    params: { ids: threadIds.join(',') },
+  });
+  return (data?.liveness ?? []) as DispatchLiveness[];
+}
+
+// SSE event name of a report-back wake on GET /threads/{id}/watch. Contract:
+// must match report_back.WAKE_EVENT (src/server/handlers/chat/report_back.py).
+const REPORT_BACK_WAKE_EVENT = 'workflow_started';
 
 /**
  * Watch a thread for new workflow activity via SSE (Redis pub/sub backed).
@@ -587,12 +672,19 @@ export async function getWorkflowStatus(threadId: string) {
  * caller can attach to that exact run directly.
  * @param {string} threadId - The thread ID to watch
  * @param {Function} onWorkflowStarted - Callback when new workflow is detected
+ * @param {Function} onClosed - Callback for a non-deliberate final close (backend
+ *   timeout / drop / retries spent) — never after a caller-initiated abort
+ * @param {Function} onResubscribed - Callback each time the IN-LOOP retry lands a
+ *   fresh subscription after a transient error; wakes published during that gap
+ *   are lost (pub/sub, no replay), so the caller should run a catch-up pull.
+ *   Distinct from onClosed, which still fires exactly once at the final close.
  * @returns {{ abort: AbortController }} - Call abort.abort() to stop watching
  */
 export function watchThread(
   threadId: string,
   onWorkflowStarted: (payload?: { run_id?: string | null }) => void | Promise<void>,
   onClosed?: () => void,
+  onResubscribed?: () => void,
 ): { abort: AbortController } {
   const abort = new AbortController();
   const MAX_RETRIES = 2;
@@ -610,6 +702,12 @@ export function watchThread(
           });
 
           if (!res.ok || !res.body) return;
+
+          // A retry attempt (not the initial subscribe) just re-established the
+          // stream: surface it so the caller can reconcile the gap. Fired AFTER
+          // the response is known good, so a hard-failing endpoint (the `return`
+          // above) never reports a phantom recovery.
+          if (attempt > 0) onResubscribed?.();
 
           const reader = res.body.getReader();
           const decoder = new TextDecoder();
@@ -631,7 +729,7 @@ export function watchThread(
               const frame = buffer.slice(0, sep);
               buffer = buffer.slice(sep + 2);
               // Skip keepalive pings / timeout frames — only the wake carries a run_id.
-              if (!frame.includes('event: workflow_started')) continue;
+              if (!frame.includes(`event: ${REPORT_BACK_WAKE_EVENT}`)) continue;
               // Pull the run_id out of the event's data line so the caller can
               // attach to that exact run without a /status round-trip. Per the SSE
               // spec, multiple data: lines join with a newline — collect them all
@@ -650,13 +748,10 @@ export function watchThread(
                   /* payload-less / malformed wake — caller falls back to /status */
                 }
               }
-              // PERSISTENT: a flash thread can dispatch N PTCs whose report-backs
-              // arrive as separate runs. Do NOT cancel + return after the first
-              // wake — keep reading so each subsequent wake is delivered on this
-              // one connection (a re-subscribe would race, and lose, wake #2+).
-              // `onWorkflowStarted` blocks until that run's stream finishes, so
-              // the next buffered wake is processed only once the prior turn ends
-              // — naturally serializing the chain.
+              // PERSISTENT: do NOT cancel + return after the first wake — N
+              // dispatched PTCs wake separately, and a re-subscribe would lose
+              // wake #2+. Awaiting `onWorkflowStarted` (which blocks until that
+              // run's stream finishes) naturally serializes the chain.
               await onWorkflowStarted({ run_id: payload.run_id ?? null });
             }
           }

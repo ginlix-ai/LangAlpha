@@ -39,6 +39,11 @@ export const queryKeys = {
     detail:      (threadId: string) => [...queryKeys.threads.all, 'detail', threadId],
     recent:      (limit: number) => [...queryKeys.threads.all, 'recent', limit],
     status:      (threadId: string) => [...queryKeys.threads.all, 'status', threadId],
+    // Batched dispatch-liveness read for a turn's PTC cards. The base key
+    // targets every id-set variant for invalidation; the concrete key is stable
+    // on the SORTED id set so registration order never churns the cache entry.
+    dispatchLivenessAll: () => [...queryKeys.threads.all, 'dispatch-liveness'],
+    dispatchLiveness: (ids: string[]) => [...queryKeys.threads.dispatchLivenessAll(), [...ids].sort()],
   },
   workspaceFiles: {
     all:  ['workspaceFiles'],

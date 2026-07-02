@@ -411,11 +411,3 @@ export interface SubagentTaskRefs {
   messages: AssistantMessage[];
   runIndex: number;
 }
-
-// --- History Replay ---
-
-export interface PairState {
-  contentOrderCounter: number;
-  reasoningId: string | null;
-  toolCallId: string | null;
-}
