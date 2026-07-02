@@ -495,15 +495,17 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
     }
     // Terminal staleness: the missed run already FINISHED, so the branch above
     // never opens (can_reconnect=false, no reconnectable run_id). The persisted
-    // turn counter outrunning what this view rendered is the only remaining
-    // signal that whole turns are missing. The reload's replay re-records the
-    // watermark, closing this gate against re-entry (no reload loop). A null
-    // watermark means no load settled yet — not-stale by definition (and the
-    // pre-await guard already requires a settled load).
+    // turn counter diverging from what this view rendered is the only remaining
+    // signal that the transcript changed. Divergence in EITHER direction is
+    // stale: higher means turns were missed while hidden; lower means a fork/
+    // edit elsewhere truncated rows this view still renders. The reload's
+    // replay re-records the watermark, closing this gate against re-entry (no
+    // reload loop). A null watermark means no load settled yet — not-stale by
+    // definition (and the pre-await guard already requires a settled load).
     if (
       typeof status.latest_turn_index === 'number' &&
       lastRenderedTurnIndexRef.current !== null &&
-      status.latest_turn_index > lastRenderedTurnIndexRef.current
+      status.latest_turn_index !== lastRenderedTurnIndexRef.current
     ) {
       requestHistoryReload();
       return;

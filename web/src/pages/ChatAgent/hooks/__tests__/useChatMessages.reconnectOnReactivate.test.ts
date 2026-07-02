@@ -206,6 +206,43 @@ describe('useChatMessages — reconnect-on-reactivation (cached view, run starte
     expect(mockReplay).toHaveBeenCalledTimes(2);
   });
 
+  it('reloads when the watermark exceeds the server (fork/edit elsewhere truncated turns)', async () => {
+    // Mount: two turns on screen; watermark records turn 1.
+    mockStatus.mockResolvedValue(threadStatus({ latest_turn_index: 1 }));
+    mockReplay.mockImplementation((_tid: string, onEvent: (e: Record<string, unknown>) => void) => {
+      onEvent({ event: 'user_message', turn_index: 0, content: 'earlier question', role: 'user' });
+      onEvent({ event: 'user_message', turn_index: 1, content: 'second question', role: 'user' });
+      return Promise.resolve();
+    });
+
+    const { result } = renderHookWithProviders(() => useChatMessages('ws', 'th'));
+    await waitFor(() => expect(mockReplay).toHaveBeenCalled());
+    await settleMountEffect();
+    expect(result.current.messages.some((m) => m.id === 'history-user-1')).toBe(true);
+
+    // While hidden: another tab/device edited turn 1 (fork truncates rows >= 1
+    // and its regenerated run already completed). Server MAX drops BELOW this
+    // view's watermark — the strict '>' check would never fire here.
+    mockStatus.mockResolvedValue(threadStatus({ latest_turn_index: 0 }));
+    mockReplay.mockImplementation((_tid: string, onEvent: (e: Record<string, unknown>) => void) => {
+      onEvent({ event: 'user_message', turn_index: 0, content: 'earlier question', role: 'user' });
+      return Promise.resolve();
+    });
+
+    await act(async () => {
+      await result.current.reconnectIfStaleRun();
+    });
+    await waitFor(() => expect(mockReplay).toHaveBeenCalledTimes(2));
+    await settleMountEffect();
+    // The truncated turn is gone and the gate re-closed at the new watermark.
+    expect(result.current.messages.some((m) => m.id === 'history-user-1')).toBe(false);
+    await act(async () => {
+      await result.current.reconnectIfStaleRun();
+    });
+    await settleMountEffect();
+    expect(mockReplay).toHaveBeenCalledTimes(2);
+  });
+
   it('does NOT reload on reactivation when the view already rendered the latest turn', async () => {
     // Mount: turn 0 on screen, watermark agrees.
     mockStatus.mockResolvedValue(threadStatus({ latest_turn_index: 0 }));
