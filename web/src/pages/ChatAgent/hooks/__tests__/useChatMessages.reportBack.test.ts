@@ -132,6 +132,23 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
     mockReportBackStatus.mockImplementation((...args: unknown[]) => mockStatus(...args));
   });
 
+  it('keeps approve/reconnect callback identities stable across re-renders', async () => {
+    // handleApprovePTCAgent flows into memo()'d transcript components
+    // (MessageBubble receives onApprovePTCAgent), so a per-render identity
+    // would re-render every bubble on every stream chunk. Guards the
+    // useReportBackWatch stable-facade contract: a bare re-render must not
+    // mint new callbacks.
+    mockStatus.mockResolvedValue(threadStatus());
+    const { result, rerender } = renderHookWithProviders(() => useChatMessages('ws-rb', 'th-rb'));
+    await settleMountEffect();
+
+    const approveBefore = result.current.handleApprovePTCAgent;
+    const reconnectBefore = result.current.reconnectIfStaleRun;
+    rerender();
+    expect(result.current.handleApprovePTCAgent).toBe(approveBefore);
+    expect(result.current.reconnectIfStaleRun).toBe(reconnectBefore);
+  });
+
   it('arms the report-back watch on load and the wake payload drives a direct reconnect', async () => {
     // PTC turn done (can_reconnect:false) but a report-back is still pending.
     mockStatus.mockResolvedValue(threadStatus({ pending_report_back: true }));

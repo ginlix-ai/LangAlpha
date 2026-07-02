@@ -747,7 +747,10 @@ export function useChatMessages(
     reconnectToStream: (opts) => reconnectToStreamRef.current(opts),
     requestHistoryReload: () => setReloadTrigger((n) => n + 1),
   });
-  const { awaitingReportBack } = reportBackWatch;
+  // `arm` is identity-stable (facade over a latest-impl ref), so callbacks that
+  // dispatch through it can dep on it without churning per render — the whole
+  // reportBackWatch object would change identity on awaitingReportBack flips.
+  const { awaitingReportBack, arm: armReportBackWatch } = reportBackWatch;
 
   // Batch back-to-back offload events into a single notification
   const offloadBatchRef = useRef<OffloadBatch>({ args: 0, reads: 0, timer: null });
@@ -5187,7 +5190,7 @@ export function useChatMessages(
     // to attach at stream end. No named run exists yet (approval is what
     // dispatches), so no seed and no poke.
     if (overrides?.report_back !== false) {
-      reportBackWatch.arm(threadIdRef.current, null, null);
+      armReportBackWatch(threadIdRef.current, null, null);
     }
 
     resolveProposal('ptcAgentProposals', proposalId, 'approved');
@@ -5200,7 +5203,7 @@ export function useChatMessages(
     // Collect-then-batch: hold each card's decision keyed by its interrupt_id and
     // resume only when ALL pending interrupts have a decision.
     collectHitlResponseAndMaybeResume(interruptId, { decisions: [decision] });
-  }, [collectHitlResponseAndMaybeResume, resolveProposal, reportBackWatch]);
+  }, [collectHitlResponseAndMaybeResume, resolveProposal, armReportBackWatch]);
 
   const handleRejectPTCAgent = useCallback((
     _pad?: Record<string, unknown>,

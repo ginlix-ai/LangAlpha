@@ -34,8 +34,10 @@ Return: `{ success, workspace_id, thread_id, status: "dispatched", report_back }
 - Pass `thread_id` → continues an existing conversation (overrides `workspace_id`)
 - `report_back=True` (default) → when PTC completes, you'll automatically receive the results and should summarize them for the user
 - `report_back=False` → fire-and-forget; the user will check results in the workspace themselves
+- The returned `report_back` field is authoritative, not an echo of your request: it can come back `false` even when you asked for `true` (degraded backend). If it does, results will NOT arrive automatically — poll with `agent_output`.
+- Concurrency caps (report-back dispatches only): at most 5 pending analyses per conversation and 10 per user. Over the cap the dispatch fails with an error starting "too many concurrent analyses" — wait for one to finish, or dispatch with `report_back=False`.
 
-Use the returned `thread_id` with `agent_output` to check progress later (only needed when `report_back=False`).
+Use the returned `thread_id` with `agent_output` to check progress later (only needed when the returned `report_back` is `false`).
 
 ### agent_output
 

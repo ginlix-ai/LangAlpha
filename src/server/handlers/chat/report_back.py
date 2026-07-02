@@ -103,6 +103,20 @@ def _decode(value) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _cap_error_flash() -> str:
+    return (
+        f"too many concurrent analyses on this thread "
+        f"(max {MAX_DISPATCH_PER_FLASH}); wait for one to finish"
+    )
+
+
+def _cap_error_user() -> str:
+    return (
+        f"too many concurrent analyses running "
+        f"(max {MAX_DISPATCH_PER_USER}); wait for one to finish"
+    )
+
+
 async def _reserve_slot_membership(
     flash_thread_id: str, ptc_thread_id: str, user_id: str
 ) -> tuple[str | None, dict, bool]:
@@ -132,20 +146,10 @@ async def _reserve_slot_membership(
             # never counts against the cap.
             if not in_watch_before:
                 if await cache.client.scard(watch_key) >= MAX_DISPATCH_PER_FLASH:
-                    return (
-                        f"too many concurrent analyses on this thread "
-                        f"(max {MAX_DISPATCH_PER_FLASH}); wait for one to finish",
-                        dict(no_add),
-                        False,
-                    )
+                    return _cap_error_flash(), dict(no_add), False
             if not in_user_before:
                 if await cache.client.scard(user_key) >= MAX_DISPATCH_PER_USER:
-                    return (
-                        f"too many concurrent analyses running "
-                        f"(max {MAX_DISPATCH_PER_USER}); wait for one to finish",
-                        dict(no_add),
-                        False,
-                    )
+                    return _cap_error_user(), dict(no_add), False
             # Add only the memberships not already present (so ``added`` stays
             # truthful); refresh both TTLs either way.
             pipe = cache.client.pipeline(transaction=True)
@@ -179,6 +183,32 @@ async def _release_slot_membership(
                 )
     except Exception:
         pass
+
+
+async def check_dispatch_capacity(flash_thread_id: str | None, user_id: str) -> str | None:
+    """Advisory cap read for callers about to do expensive pre-dispatch work.
+
+    Returns the cap error ``reserve()`` would raise for a NEW dispatch right
+    now, else None. Takes no reservation — ``reserve()`` stays the atomic
+    authority — and fails open like it (report_back off / Redis off / error
+    -> None).
+    """
+    if not flash_thread_id:
+        return None
+    try:
+        from src.utils.cache.redis_cache import get_cache_client
+
+        cache = get_cache_client()
+        if not (cache.enabled and cache.client):
+            return None
+        if await cache.client.scard(flash_watch_key(flash_thread_id)) >= MAX_DISPATCH_PER_FLASH:
+            return _cap_error_flash()
+        if await cache.client.scard(flash_user_pending_key(user_id)) >= MAX_DISPATCH_PER_USER:
+            return _cap_error_user()
+        return None
+    except Exception as e:
+        logger.warning(f"Dispatch capacity pre-check failed: {e}")
+        return None
 
 
 class _DispatchSlot:

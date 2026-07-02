@@ -14,7 +14,7 @@
  * `onStreamEnd` at dispatch-turn end, and `reconnectIfStaleRun` on the
  * cached-view become-active transition.
  */
-import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import {
   getReportBackStatus,
   getWorkflowStatus,
@@ -150,7 +150,9 @@ export interface ReportBackWatch {
 /**
  * Owns the report-back watch's dedicated refs, constants and lifecycle. All
  * closures are recreated each render (capturing the latest injected deps),
- * matching the original inline behavior in useChatMessages.
+ * matching the original inline behavior in useChatMessages — but the RETURNED
+ * methods are identity-stable facades over a latest-impl ref, so hosts can
+ * list them in useCallback/useEffect deps without churning per render.
  */
 export function useReportBackWatch(params: UseReportBackWatchParams): ReportBackWatch {
   const {
@@ -541,11 +543,37 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
     };
   }, []);
 
-  return {
-    awaitingReportBack,
-    arm,
-    markRunsRendered,
-    onStreamEnd,
-    reconnectIfStaleRun,
-  };
+  // The closures above are recreated each render ON PURPOSE (fresh injected
+  // deps), but their identities must not leak: the host lists what this hook
+  // returns in useCallback deps whose results flow into memo()'d transcript
+  // components, so a per-render identity re-renders every bubble on every
+  // stream chunk. Delegate through a latest-impl ref behind stable facades.
+  const implRef = useRef({ arm, markRunsRendered, onStreamEnd, reconnectIfStaleRun });
+  implRef.current = { arm, markRunsRendered, onStreamEnd, reconnectIfStaleRun };
+
+  const armStable = useCallback(
+    (
+      flashThreadId: string | null | undefined,
+      reportBackRunId: string | null | undefined,
+      pokeSource: string | null,
+    ) => implRef.current.arm(flashThreadId, reportBackRunId, pokeSource),
+    [],
+  );
+  const markRunsRenderedStable = useCallback(
+    (runIds: string[] | null | undefined) => implRef.current.markRunsRendered(runIds),
+    [],
+  );
+  const onStreamEndStable = useCallback(() => implRef.current.onStreamEnd(), []);
+  const reconnectIfStaleRunStable = useCallback(() => implRef.current.reconnectIfStaleRun(), []);
+
+  return useMemo(
+    () => ({
+      awaitingReportBack,
+      arm: armStable,
+      markRunsRendered: markRunsRenderedStable,
+      onStreamEnd: onStreamEndStable,
+      reconnectIfStaleRun: reconnectIfStaleRunStable,
+    }),
+    [awaitingReportBack, armStable, markRunsRenderedStable, onStreamEndStable, reconnectIfStaleRunStable],
+  );
 }

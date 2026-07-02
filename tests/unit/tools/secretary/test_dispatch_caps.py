@@ -273,3 +273,48 @@ async def test_concurrent_reserves_cannot_overshoot_per_flash_cap(cache):
     # The SET never overshot: the serialized check-then-add filled exactly one slot.
     assert peak == T.MAX_DISPATCH_PER_FLASH
     assert len(cache.client.sets[watch_key]) == T.MAX_DISPATCH_PER_FLASH
+
+
+# ---------------------------------------------------------------------------
+# check_dispatch_capacity — advisory pre-check used before sandbox provisioning
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_capacity_precheck_mirrors_per_flash_rejection(cache):
+    """The pre-check reports the same per-flash cap error reserve() enforces,
+    without reserving anything."""
+    flash, user = "flash-1", "u-1"
+    assert await T.check_dispatch_capacity(flash, user) is None
+    for i in range(T.MAX_DISPATCH_PER_FLASH):
+        assert await _reserve_err(flash, f"p{i}", user) is None
+    err = await T.check_dispatch_capacity(flash, user)
+    assert err is not None
+    assert str(T.MAX_DISPATCH_PER_FLASH) in err
+    # Advisory only: the probe added no members.
+    assert len(cache.client.sets[f"flash_watch:{flash}"]) == T.MAX_DISPATCH_PER_FLASH
+
+
+@pytest.mark.asyncio
+async def test_capacity_precheck_mirrors_per_user_rejection(cache):
+    user = "u-1"
+    placed = 0
+    flash_idx = 0
+    while placed < T.MAX_DISPATCH_PER_USER:
+        flash = f"flash-{flash_idx}"
+        for _ in range(min(T.MAX_DISPATCH_PER_FLASH - 1, T.MAX_DISPATCH_PER_USER - placed)):
+            assert await _reserve_err(flash, f"p{placed}", user) is None
+            placed += 1
+        flash_idx += 1
+    err = await T.check_dispatch_capacity("flash-fresh", user)
+    assert err is not None
+    assert str(T.MAX_DISPATCH_PER_USER) in err
+
+
+@pytest.mark.asyncio
+async def test_capacity_precheck_fails_open(cache):
+    """No flash thread (report_back off) and a disabled cache both mean no cap —
+    reserve() stays the authority for those paths."""
+    assert await T.check_dispatch_capacity(None, "u-1") is None
+    cache.enabled = False
+    assert await T.check_dispatch_capacity("flash-1", "u-1") is None

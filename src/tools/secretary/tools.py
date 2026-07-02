@@ -452,9 +452,20 @@ async def ptc_agent(
         if "report_back" in overrides:
             report_back = overrides["report_back"]
 
+    auto_created_workspace = False
     if not is_continuation:
         # Create workspace or verify ownership
         if workspace_id is None:
+            from src.server.handlers.chat.report_back import check_dispatch_capacity
+
+            # Advisory cap check BEFORE provisioning: a dispatch reserve() is
+            # certain to reject must not spin up a sandbox it would orphan.
+            # reserve() below remains the atomic authority.
+            cap_err = await check_dispatch_capacity(
+                configurable.get("thread_id") if report_back else None, user_id
+            )
+            if cap_err is not None:
+                return _error_command(cap_err, tool_call_id)
             try:
                 from src.server.services.workspace_manager import WorkspaceManager
 
@@ -465,6 +476,7 @@ async def ptc_agent(
                     description=f"Auto-created for: {question[:100]}",
                 )
                 workspace_id = str(workspace["workspace_id"])
+                auto_created_workspace = True
             except Exception as e:
                 logger.error(f"Failed to create workspace for PTC dispatch: {e}")
                 return _error_command("workspace_creation_failed", tool_call_id)
@@ -496,6 +508,19 @@ async def ptc_agent(
     ) as slot:
         # Cap rejection or a fail-closed origin write — abort (reserve rolls back).
         if slot.error is not None:
+            # No HTTP was sent, so a workspace auto-created above is provably
+            # unused — delete it rather than leak its sandbox (the pre-check
+            # narrows this to the pre-check/reserve race).
+            if auto_created_workspace:
+                try:
+                    from src.server.services.workspace_manager import WorkspaceManager
+
+                    await WorkspaceManager.get_instance().delete_workspace(workspace_id)
+                except Exception as cleanup_err:
+                    logger.warning(
+                        f"Failed to delete auto-created workspace {workspace_id} "
+                        f"after rejected dispatch: {cleanup_err}"
+                    )
             return _error_command(slot.error, tool_call_id)
         try:
             async with aiohttp.ClientSession() as session:
