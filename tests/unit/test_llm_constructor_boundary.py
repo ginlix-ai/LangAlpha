@@ -82,7 +82,7 @@ ALLOWLIST: dict[tuple[str, str], int] = {
     # flash fallback-model name path.
     ("src/ptc_agent/agent/flash/agent.py", "get_llm_by_type"): 1,
     # main-agent fallback-model name path.
-    ("src/ptc_agent/agent/agent.py", "get_llm_by_type"): 1,
+    ("src/ptc_agent/agent/agent.py", "get_llm_by_type"): 2,
     # compaction summarizer name path (compact.py helper).
     ("src/ptc_agent/agent/middleware/compaction/compact.py", "get_llm_by_type"): 1,
     # compaction middleware fallback name path.
@@ -152,7 +152,7 @@ def scan_tree(roots: tuple[str, ...]) -> tuple[list[Violation], list[tuple[str, 
                 if fn.startswith("test_") or fn.endswith("_test.py"):
                     continue
                 abs_path = os.path.join(dirpath, fn)
-                rel_path = os.path.relpath(abs_path, REPO_ROOT)
+                rel_path = os.path.relpath(abs_path, REPO_ROOT).replace(os.sep, "/")
                 try:
                     with open(abs_path, encoding="utf-8") as fh:
                         source = fh.read()

@@ -22,10 +22,10 @@ from src.llms.llm import ModelConfig, LLM
 
 _MANIFEST_DIR = Path(__file__).resolve().parents[3] / "src" / "llms" / "manifest"
 
-with open(_MANIFEST_DIR / "models.json") as _f:
+with open(_MANIFEST_DIR / "models.json", encoding='utf-8') as _f:
     _MODELS = json.load(_f)
 
-with open(_MANIFEST_DIR / "providers.json") as _f:
+with open(_MANIFEST_DIR / "providers.json", encoding='utf-8') as _f:
     _PROVIDERS_RAW = json.load(_f)
 
 # Build set of all valid provider names (parent + variants)

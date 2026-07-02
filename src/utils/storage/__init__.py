@@ -35,7 +35,7 @@ def _load_storage_provider() -> str:
     config_path = Path(__file__).parent.parent.parent.parent / "agent_config.yaml"
     if config_path.exists():
         try:
-            with config_path.open() as f:
+            with config_path.open(encoding='utf-8') as f:
                 config = yaml.safe_load(f)
             provider = config.get("storage", {}).get("provider")
             if provider:
