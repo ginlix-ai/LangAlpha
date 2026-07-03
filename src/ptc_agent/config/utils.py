@@ -113,6 +113,11 @@ def create_daytona_config(data: dict[str, Any]) -> DaytonaConfig:
     from ptc_agent.config.core import DaytonaConfig
 
     validate_section_fields(data, DAYTONA_REQUIRED_FIELDS, "daytona")
+    # Optional operator-tunable fields: only forward when present so the
+    # DaytonaConfig defaults (and their validators) apply otherwise.
+    optional_kwargs = {
+        key: data[key] for key in ("default_tier", "resource_tiers") if key in data
+    }
     return DaytonaConfig(
         api_key=os.getenv("DAYTONA_API_KEY", ""),
         base_url=data["base_url"],
@@ -123,6 +128,7 @@ def create_daytona_config(data: dict[str, Any]) -> DaytonaConfig:
         snapshot_enabled=data.get("snapshot_enabled", True),
         snapshot_name=data.get("snapshot_name"),
         snapshot_auto_create=data.get("snapshot_auto_create", True),
+        **optional_kwargs,
     )
 
 

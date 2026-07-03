@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Default security lists — used by SecurityConfig defaults and create_default_security_config()
 DEFAULT_ALLOWED_IMPORTS = [
@@ -81,6 +81,17 @@ class DaytonaConfig(BaseModel):
             tier.memory = min(tier.memory, RESOURCE_TIER_CEILING["memory"])
             tier.disk = min(tier.disk, RESOURCE_TIER_CEILING["disk"])
         return v
+
+    @model_validator(mode="after")
+    def _default_tier_must_exist(self) -> "DaytonaConfig":
+        """The default tier must resolve to a real preset — the create path
+        relies on it to size base sandboxes, so a missing default is a config bug."""
+        if self.default_tier not in self.resource_tiers:
+            raise ValueError(
+                f"default_tier {self.default_tier!r} is not defined in "
+                f"resource_tiers (available: {sorted(self.resource_tiers)})"
+            )
+        return self
 
 
 class SecurityConfig(BaseModel):
