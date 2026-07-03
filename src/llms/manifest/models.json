@@ -102,6 +102,29 @@
       }
     }
   },
+  "claude-sonnet-5": {
+    "model_id": "claude-sonnet-5",
+    "provider": "anthropic",
+    "visible": true,
+    "speed": 3,
+    "intelligence": 5,
+    "context": 1000000,
+    "input_modalities": [
+      "text",
+      "image",
+      "pdf"
+    ],
+    "parameters": {
+      "max_tokens": 128000,
+      "thinking": {
+        "type": "adaptive",
+        "display": "summarized"
+      },
+      "output_config": {
+        "effort": "medium"
+      }
+    }
+  },
   "claude-opus-4-8": {
     "model_id": "claude-opus-4-8",
     "provider": "anthropic",
@@ -1174,6 +1197,29 @@
       },
       "output_config": {
         "effort": "high"
+      }
+    }
+  },
+  "claude-sonnet-5-oauth": {
+    "model_id": "claude-sonnet-5",
+    "provider": "claude-oauth",
+    "visible": true,
+    "speed": 3,
+    "intelligence": 5,
+    "context": 1000000,
+    "input_modalities": [
+      "text",
+      "image",
+      "pdf"
+    ],
+    "parameters": {
+      "max_tokens": 128000,
+      "thinking": {
+        "type": "adaptive",
+        "display": "summarized"
+      },
+      "output_config": {
+        "effort": "medium"
       }
     }
   },
