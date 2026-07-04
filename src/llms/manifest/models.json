@@ -572,7 +572,8 @@
       "thinking": {
         "type": "enabled",
         "clear_thinking": false
-      }
+      },
+      "reasoning_effort": "max"
     },
     "input_modalities": [
       "text"
@@ -674,7 +675,8 @@
       "thinking": {
         "type": "enabled",
         "clear_thinking": false
-      }
+      },
+      "reasoning_effort": "max"
     },
     "input_modalities": [
       "text"

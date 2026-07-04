@@ -5,8 +5,8 @@ Maps abstract levels ("low", "medium", "high", "xhigh") to provider-specific
 parameters. Detection-based: checks which reasoning keys exist in the model's
 parameters/extra_body from models.json, then adjusts values for those specific keys.
 
-"xhigh" is only natively honored by Anthropic adaptive thinking (Opus 4.7+);
-for all other providers it is clamped to "high".
+"xhigh" is only natively honored by Anthropic adaptive thinking (Opus 4.7+)
+and GLM 5.2+ (mapped to "max"); for all other providers it is clamped to "high".
 """
 
 REASONING_LEVELS = ("low", "medium", "high", "xhigh")
@@ -16,6 +16,10 @@ _ANTHROPIC_BUDGETS = {"low": 5000, "medium": 10000, "high": 32000}
 
 # Gemini numeric thinking budgets per level (for thinking_budget pattern)
 _GEMINI_BUDGETS = {"low": 1024, "medium": 8192, "high": 32768}
+
+# GLM 5.2+ native effort levels. "low" skips thinking entirely (consistent with
+# the thinking.type pattern); the server collapses "medium" to "high".
+_GLM_EFFORT = {"low": "none", "medium": "medium", "high": "high", "xhigh": "max"}
 
 
 def _clamp(level: str) -> str:
@@ -99,5 +103,9 @@ def apply_reasoning_effort(
     # Dashscope / Qwen: extra_body.enable_thinking
     if "enable_thinking" in extra_body:
         extra_body["enable_thinking"] = level != "low"
+
+    # GLM 5.2+: extra_body.reasoning_effort (merged top-level into the request body)
+    if "reasoning_effort" in extra_body:
+        extra_body["reasoning_effort"] = _GLM_EFFORT[level]
 
     return parameters, extra_body

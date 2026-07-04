@@ -217,6 +217,46 @@ class TestDashscopeEnableThinking:
 
 
 # ---------------------------------------------------------------------------
+# GLM 5.2+: extra_body.reasoning_effort
+# ---------------------------------------------------------------------------
+
+
+class TestGLMReasoningEffort:
+    @pytest.mark.parametrize(
+        ("level", "expected"),
+        [("low", "none"), ("medium", "medium"), ("high", "high"), ("xhigh", "max")],
+    )
+    def test_maps_native_levels(self, level, expected):
+        params = {}
+        extra = {"reasoning_effort": "max"}
+        apply_reasoning_effort(level, params, extra)
+        assert extra["reasoning_effort"] == expected
+
+    def test_glm_52_shape_low_disables_thinking_and_effort(self):
+        """The real glm-5.2 extra_body carries both keys; low turns both off."""
+        params = {"max_tokens": 128000}
+        extra = {
+            "thinking": {"type": "enabled", "clear_thinking": False},
+            "reasoning_effort": "max",
+        }
+        apply_reasoning_effort("low", params, extra)
+        assert extra["thinking"]["type"] == "disabled"
+        assert extra["reasoning_effort"] == "none"
+
+    def test_glm_52_shape_xhigh_maps_to_max(self):
+        """xhigh keeps thinking enabled and requests GLM's native max effort."""
+        params = {"max_tokens": 128000}
+        extra = {
+            "thinking": {"type": "enabled", "clear_thinking": False},
+            "reasoning_effort": "high",
+        }
+        apply_reasoning_effort("xhigh", params, extra)
+        assert extra["thinking"]["type"] == "enabled"
+        assert extra["thinking"]["clear_thinking"] is False
+        assert extra["reasoning_effort"] == "max"
+
+
+# ---------------------------------------------------------------------------
 # Combined: extra_body patterns run INDEPENDENTLY of parameters branch
 # ---------------------------------------------------------------------------
 
