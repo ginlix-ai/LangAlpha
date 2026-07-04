@@ -11,9 +11,11 @@ from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from src.config.core import get_infrastructure_config
+from src.data_client.market_data_provider import is_us_symbol
 from src.utils.market_hours import (
     current_trading_date,
     expected_latest_bar_ms,
+    expected_latest_daily_date,
     interval_seconds,
     is_market_closed,
 )
@@ -24,6 +26,43 @@ ENVELOPE_VERSION = 3  # v3: adds data_date and truncated fields
 _SOFT_TTL_RATIO: float = get_infrastructure_config().redis.swr.soft_ttl_ratio
 _TRUNCATED_TTL_RATIO = 0.25  # aggressive refresh for truncated data
 _EMPTY_RESULT_TTL = 30  # short TTL for empty upstream results
+# Floor between consecutive staleness-driven daily re-fetches. When the
+# provider itself is behind (e.g. today's daily bar not yet published right
+# after the open), re-asking immediately can't yield newer data — without
+# this floor every request would bypass the cache with a blocking fetch.
+_DAILY_STALE_REFETCH_COOLDOWN = 120
+
+# Bare index symbols whose daily bars follow the US (ET) trading calendar.
+# Index symbols aren't suffix-classifiable like stocks, so the daily
+# watermark backstop only trusts this allowlist.
+_US_INDEX_SYMBOLS = {
+    "GSPC", "SPX", "DJI", "IXIC", "COMP", "NDX", "RUT", "VIX",
+    "NYA", "XAX", "OEX", "MID", "SML", "SOX", "RUI", "RUA",
+    "DJT", "DJU", "W5000", "WLSH",
+}
+
+# Dotted suffixes that mark a US class share / security type (BRK.B, BF.B,
+# HEI.A). ``symbol_market`` maps these to "other" — not a foreign region — so
+# ``is_us_symbol`` returns False and they'd wrongly skip the US backstop.
+# Genuine foreign tickers resolve to a specific region (hk/uk/jp/...) via the
+# suffix map and never land in this set, so trusting these is safe.
+_US_DOTTED_SUFFIXES = {"A", "B", "C"}
+
+
+def _follows_us_daily_calendar(symbol: str, is_index: bool) -> bool:
+    """True if *symbol*'s daily bars anchor to the US (ET) trading calendar."""
+    if is_index:
+        bare = symbol.lstrip("^").upper()
+        if bare.startswith("I:"):
+            bare = bare[2:]
+        return bare in _US_INDEX_SYMBOLS
+    if is_us_symbol(symbol):
+        return True
+    # US dotted class-shares classify as "other" (unrecognized suffix), not a
+    # foreign region — treat the known US class suffixes as US-calendar.
+    if "." in symbol:
+        return symbol.rsplit(".", 1)[-1].upper() in _US_DOTTED_SUFFIXES
+    return False
 
 
 def _build_envelope(
@@ -122,6 +161,8 @@ def is_watermark_stale(
     envelope: Dict[str, Any],
     interval: str,
     now: Optional[datetime] = None,
+    symbol: Optional[str] = None,
+    is_index: bool = False,
 ) -> bool:
     """Return True if the envelope's watermark is meaningfully behind the
     most recent bar that *should* exist right now for this interval.
@@ -133,16 +174,42 @@ def is_watermark_stale(
     trading days ago even though the date-level check alone might miss it
     (e.g. a ``data_date`` that got refreshed without the bars advancing).
 
-    Daily (``1day``) is a no-op — daily staleness is already handled at the
-    date level by :func:`_is_stale_date`, and daily bars have provider-specific
-    timestamp anchors (00:00 vs 09:30 vs 16:00) that would make a timestamp-
-    level check brittle.
+    Daily (``1day``) is checked at the DATE level: the newest bar's ET trading
+    date vs ``expected_latest_daily_date()`` (the newest bar that should exist
+    now — the previous trading day during pre-market, since today's daily bar
+    doesn't appear until the session opens). This is the only backstop daily
+    has against a ``data_date`` that was silently re-stamped with today's date
+    by a prior refresh that fetched nothing new (``_is_stale_date`` alone can't
+    catch that). US symbols only: non-US daily bars anchor at exchange-local
+    midnight, which converts to the *previous* ET date and would read as
+    permanently stale against the US calendar — daily callers must pass
+    ``symbol`` (and ``is_index``); without a symbol the daily check is
+    skipped and non-US symbols keep the date-level check via
+    ``_is_stale_date`` alone.
 
     Tolerance: ``2 * interval_period``. Absorbs provider delay plus small
     clock skew without hiding real stagnation.
     """
     if interval == "1day":
-        return False
+        # Date-level: stale when the newest bar's trading date is behind the
+        # newest daily bar that should exist now. Uses the same watermark→date
+        # conversion the daily delta-refresh trusts for its from_date.
+        if symbol is None or not _follows_us_daily_calendar(symbol, is_index):
+            # Unclassifiable (no symbol) or non-US: fail closed — a foreign
+            # anchor read against the ET calendar would look permanently stale.
+            return False
+        if not envelope.get("bars"):
+            return False  # empty window — soft-TTL governs re-fetch timing
+        if time.time() - envelope.get("fetched_at", 0) < _DAILY_STALE_REFETCH_COOLDOWN:
+            # Just fetched — the provider simply hasn't published a newer bar
+            # yet; flagging stale again would re-fetch on every request.
+            # Deliberately ahead of the corrupt-watermark check: a persistently
+            # corrupt feed re-fetches once per cooldown, not per request.
+            return False
+        last_bar_date = watermark_to_date_str(envelope.get("watermark"))
+        if last_bar_date is None:
+            return True  # bars present but unusable watermark — corrupt
+        return last_bar_date < expected_latest_daily_date(now)
     # Empty envelopes (no bars in requested window) are not meaningfully stale
     # on a watermark basis — there's nothing to be behind. They're deliberately
     # cached with a short _EMPTY_RESULT_TTL to dampen fetch storms for symbols
@@ -166,6 +233,8 @@ def _needs_refresh(
     interval: Optional[str] = None,
     now: Optional[datetime] = None,
     is_live: bool = True,
+    symbol: Optional[str] = None,
+    is_index: bool = False,
 ) -> bool:
     """Determine whether an SWR background refresh should fire.
 
@@ -184,7 +253,9 @@ def _needs_refresh(
     getting retried on subsequent hits.
 
     ``interval`` is optional for backward compatibility, but callers should
-    pass it whenever available so the watermark check fires.
+    pass it whenever available so the watermark check fires. Daily callers
+    must also pass ``symbol`` — without it the daily watermark check is
+    skipped (see :func:`is_watermark_stale`).
     """
     if is_live:
         # 1. Stale date — strongest signal
@@ -192,7 +263,7 @@ def _needs_refresh(
             return True
 
         # 2. Stale watermark — mid-session stagnation
-        if interval and is_watermark_stale(envelope, interval, now):
+        if interval and is_watermark_stale(envelope, interval, now, symbol=symbol, is_index=is_index):
             return True
 
         # 3. Complete + market reopened

@@ -7,6 +7,7 @@ used by the OHLCV cache to gate background refreshes and set TTL policies.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime, time, date, timedelta
 from zoneinfo import ZoneInfo
 
@@ -78,6 +79,18 @@ def _is_trading_day(d: date) -> bool:
     return d.weekday() < 5 and d not in _HOLIDAYS
 
 
+def _latest_trading_day(
+    start: date, ok: Callable[[date], bool] | None = None
+) -> date | None:
+    """Walk back from *start* to the most recent trading day satisfying *ok*."""
+    candidate = start
+    for _ in range(10):
+        if _is_trading_day(candidate) and (ok is None or ok(candidate)):
+            return candidate
+        candidate -= timedelta(days=1)
+    return None
+
+
 def current_market_phase(now: datetime | None = None) -> MarketPhase:
     """Classify the current moment into a market phase.
 
@@ -136,14 +149,31 @@ def current_trading_date(now: datetime | None = None) -> str:
     if now.time() < _PRE_OPEN:
         candidate -= timedelta(days=1)
 
-    # Walk backward to find the most recent trading day
-    for _ in range(10):
-        if _is_trading_day(candidate):
-            return candidate.strftime("%Y-%m-%d")
-        candidate -= timedelta(days=1)
+    found = _latest_trading_day(candidate)
+    return (found or now.date()).strftime("%Y-%m-%d")
 
-    # Fallback — shouldn't happen
-    return now.date().strftime("%Y-%m-%d")
+
+def expected_latest_daily_date(now: datetime | None = None) -> str:
+    """Return the trading date of the newest daily bar that should exist now.
+
+    A daily bar for trading day D only appears once D's regular session opens
+    (09:30 ET); pre-market produces no daily bar. So the answer is the most
+    recent trading day whose 09:30 ET open is at or before *now*. This equals
+    :func:`current_trading_date` in every phase except pre-market, where today's
+    session hasn't opened yet and the freshest possible bar is the previous
+    trading day's — the distinction the daily staleness backstop needs to avoid
+    falsely flagging a cache that correctly holds yesterday's completed bar.
+    """
+    if now is None:
+        now = datetime.now(ET)
+    else:
+        now = now.astimezone(ET)
+
+    found = _latest_trading_day(
+        now.date(),
+        lambda d: datetime.combine(d, _MARKET_OPEN, tzinfo=ET) <= now,
+    )
+    return (found or now.date()).strftime("%Y-%m-%d")
 
 
 def seconds_until_next_open(now: datetime | None = None) -> int:

@@ -11,10 +11,14 @@ reads serve envelopes whose ``data_date`` was multiple trading days stale.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from src.data_client.market_data_provider import _SUFFIX_MAP
 from src.server.services.cache._ohlcv_envelope import (
+    _US_DOTTED_SUFFIXES,
+    _follows_us_daily_calendar,
     _is_stale_date,
     is_watermark_stale,
 )
@@ -105,10 +109,11 @@ class TestExpectedLatestBarMs:
 # ---------------------------------------------------------------------------
 
 class TestIsWatermarkStale:
-    def test_daily_is_always_false(self):
-        # Daily staleness is handled at the date level.
-        env = {"watermark": 0, "data_date": "1970-01-01"}
-        assert is_watermark_stale(env, "1day") is False
+    def test_empty_daily_envelope_is_not_stale(self):
+        # An empty daily window has nothing to be behind — soft-TTL handles it.
+        env = {"watermark": 0, "data_date": "1970-01-01", "bars": []}
+        assert is_watermark_stale(env, "1day", symbol="AAPL") is False
+        assert is_watermark_stale({"watermark": 0, "data_date": "1970-01-01"}, "1day", symbol="AAPL") is False
 
     def test_empty_envelope_is_not_stale(self):
         # Empty-bar envelopes (no data in requested window) are deliberately
@@ -162,6 +167,207 @@ class TestIsWatermarkStale:
         watermark = int(friday_close.timestamp() * 1000)
         env = {"watermark": watermark, "bars": [{"time": watermark}]}
         assert is_watermark_stale(env, "5min", now=saturday) is False
+
+
+# ---------------------------------------------------------------------------
+# is_watermark_stale — daily (1day) date-level backstop
+# ---------------------------------------------------------------------------
+
+class TestDailyWatermarkStale:
+    """Daily staleness is judged DATE-level: the newest bar's ET trading date
+    vs ``current_trading_date()``. This is the backstop that catches an
+    envelope whose ``data_date`` was silently stamped with today's date by a
+    prior refresh even though the bars never advanced (the daily analogue of
+    the intraday screenshot bug). Daily bars are anchored to ET midnight, so a
+    date-level comparison sidesteps the provider timestamp-anchor brittleness
+    that motivated the old ``1day`` no-op.
+    """
+
+    @staticmethod
+    def _daily_env(bar_date: datetime, *, data_date: str) -> dict:
+        # Daily bars anchor to ET midnight of the trading day.
+        wm = int(datetime(bar_date.year, bar_date.month, bar_date.day, 0, 0, tzinfo=ET).timestamp() * 1000)
+        return {"watermark": wm, "bars": [{"time": wm}], "data_date": data_date}
+
+    def test_behind_today_is_stale_even_when_data_date_lies(self):
+        # The reported bug: Tue 2026-05-26 market open, newest bar is 2026-05-21,
+        # but a prior refresh stamped data_date="2026-05-26". The date-level
+        # check must still flag it stale so the cache re-fetches.
+        tue_open = datetime(2026, 5, 26, 11, 0, tzinfo=ET)
+        env = self._daily_env(datetime(2026, 5, 21), data_date="2026-05-26")
+        assert is_watermark_stale(env, "1day", now=tue_open, symbol="AAPL") is True
+
+    def test_today_bar_present_is_fresh(self):
+        # Provider returns the in-progress current-day daily bar → not stale.
+        tue_open = datetime(2026, 5, 26, 11, 0, tzinfo=ET)
+        env = self._daily_env(datetime(2026, 5, 26), data_date="2026-05-26")
+        assert is_watermark_stale(env, "1day", now=tue_open, symbol="AAPL") is False
+
+    def test_friday_bar_on_saturday_is_fresh(self):
+        # Saturday's current trading date is Friday; a Friday bar is current.
+        saturday = datetime(2026, 4, 18, 10, 0, tzinfo=ET)
+        env = self._daily_env(datetime(2026, 4, 17), data_date="2026-04-17")
+        assert is_watermark_stale(env, "1day", now=saturday, symbol="AAPL") is False
+
+    def test_missing_last_session_is_stale(self):
+        # Saturday read, newest bar is Thursday — Friday's completed bar is
+        # missing → stale.
+        saturday = datetime(2026, 4, 18, 10, 0, tzinfo=ET)
+        env = self._daily_env(datetime(2026, 4, 16), data_date="2026-04-17")
+        assert is_watermark_stale(env, "1day", now=saturday, symbol="AAPL") is True
+
+    def test_holiday_walks_back_to_last_trading_day(self):
+        # Memorial Day 2026-05-25 is a holiday; current trading date is Fri 05-22.
+        holiday = datetime(2026, 5, 25, 11, 0, tzinfo=ET)
+        fresh = self._daily_env(datetime(2026, 5, 22), data_date="2026-05-22")
+        stale = self._daily_env(datetime(2026, 5, 21), data_date="2026-05-22")
+        assert is_watermark_stale(fresh, "1day", now=holiday, symbol="AAPL") is False
+        assert is_watermark_stale(stale, "1day", now=holiday, symbol="AAPL") is True
+
+    def test_empty_daily_window_is_not_stale(self):
+        # No bars → nothing to be behind; soft-TTL governs re-fetch.
+        assert is_watermark_stale({"bars": [], "watermark": 0}, "1day", symbol="AAPL") is False
+
+    def test_corrupt_daily_watermark_is_stale(self):
+        # Bars present but watermark is 0 → corrupt, force re-fetch.
+        assert is_watermark_stale({"bars": [{"time": 123}], "watermark": 0}, "1day", symbol="AAPL") is True
+
+    # -- pre-market: today's daily bar doesn't exist yet -----------------
+    # The freshest bar that can legitimately exist before 09:30 ET is the
+    # PREVIOUS trading day's. Comparing against current_trading_date() (which
+    # advances to today at 04:00 ET) falsely flagged a healthy cache stale and
+    # caused a blocking sync re-fetch on every pre-market request.
+
+    def test_premarket_yesterday_bar_is_fresh(self):
+        # Wed 08:00 ET pre-market; cache holds Tue's completed bar. Wed's daily
+        # bar can't exist yet → yesterday's bar is fresh, NOT stale.
+        wed_premkt = datetime(2026, 5, 27, 8, 0, tzinfo=ET)
+        env = self._daily_env(datetime(2026, 5, 26), data_date="2026-05-27")
+        assert is_watermark_stale(env, "1day", now=wed_premkt, symbol="AAPL") is False
+
+    def test_premarket_gross_staleness_still_caught(self):
+        # Pre-market does NOT mean "never stale": a week-old bar (with a lying
+        # data_date) is still behind the previous trading day → stale.
+        wed_premkt = datetime(2026, 5, 27, 8, 0, tzinfo=ET)
+        env = self._daily_env(datetime(2026, 5, 20), data_date="2026-05-27")
+        assert is_watermark_stale(env, "1day", now=wed_premkt, symbol="AAPL") is True
+
+    def test_premarket_after_weekend_walks_back(self):
+        # Mon 08:00 ET pre-market; freshest possible bar is Fri's (weekend has
+        # no sessions). A Friday bar is fresh.
+        mon_premkt = datetime(2026, 5, 18, 8, 0, tzinfo=ET)
+        env = self._daily_env(datetime(2026, 5, 15), data_date="2026-05-18")
+        assert is_watermark_stale(env, "1day", now=mon_premkt, symbol="AAPL") is False
+
+    def test_at_open_today_bar_expected(self):
+        # At 09:30 ET the session has opened — today's in-progress bar should
+        # exist. A cache still on yesterday is now stale (chases today's bar).
+        wed_open = datetime(2026, 5, 27, 9, 30, tzinfo=ET)
+        env = self._daily_env(datetime(2026, 5, 26), data_date="2026-05-27")
+        assert is_watermark_stale(env, "1day", now=wed_open, symbol="AAPL") is True
+
+    # -- re-fetch cooldown: a just-fetched envelope is never stale ---------
+    # Right after the open the provider may not have published today's daily
+    # bar yet. A fresh fetch that still ends on yesterday must not be
+    # re-flagged stale immediately, or every request would bypass the cache
+    # with a blocking fetch until the provider catches up.
+
+    def test_just_fetched_envelope_is_not_stale(self):
+        wed_open = datetime(2026, 5, 27, 9, 35, tzinfo=ET)
+        env = self._daily_env(datetime(2026, 5, 26), data_date="2026-05-27")
+        env["fetched_at"] = time.time()
+        assert is_watermark_stale(env, "1day", now=wed_open, symbol="AAPL") is False
+
+    def test_cooldown_expiry_restores_staleness(self):
+        wed_open = datetime(2026, 5, 27, 9, 35, tzinfo=ET)
+        env = self._daily_env(datetime(2026, 5, 26), data_date="2026-05-27")
+        env["fetched_at"] = time.time() - 300  # past the 120s cooldown
+        assert is_watermark_stale(env, "1day", now=wed_open, symbol="AAPL") is True
+
+    # -- non-US symbols: the backstop is US-calendar only ------------------
+    # Non-US daily bars anchor at exchange-local midnight (e.g. 00:00 HKT),
+    # which converts to the *previous* ET date — a perfectly fresh envelope
+    # would read permanently stale against the US calendar and re-fetch on
+    # every request. Such symbols keep date-level staleness via
+    # ``_is_stale_date`` alone.
+
+    def test_non_us_symbol_skips_backstop(self):
+        tue_open = datetime(2026, 5, 26, 11, 0, tzinfo=ET)
+        env = self._daily_env(datetime(2026, 5, 21), data_date="2026-05-26")
+        assert is_watermark_stale(env, "1day", now=tue_open, symbol="0700.HK") is False
+        assert is_watermark_stale(env, "1day", now=tue_open, symbol="600519.SS") is False
+
+    def test_non_us_index_skips_backstop(self):
+        # Index symbols aren't suffix-classifiable; only allowlisted US
+        # indexes get the backstop.
+        tue_open = datetime(2026, 5, 26, 11, 0, tzinfo=ET)
+        env = self._daily_env(datetime(2026, 5, 21), data_date="2026-05-26")
+        assert is_watermark_stale(env, "1day", now=tue_open, symbol="HSI", is_index=True) is False
+
+    def test_us_symbol_and_index_keep_backstop(self):
+        tue_open = datetime(2026, 5, 26, 11, 0, tzinfo=ET)
+        env = self._daily_env(datetime(2026, 5, 21), data_date="2026-05-26")
+        assert is_watermark_stale(env, "1day", now=tue_open, symbol="AAPL") is True
+        assert is_watermark_stale(env, "1day", now=tue_open, symbol="GSPC", is_index=True) is True
+
+    def test_us_dotted_class_share_keeps_backstop(self):
+        # BRK.B / BF.B classify as "other" (unmapped suffix), not a foreign
+        # region, so the US backstop must still engage for them.
+        tue_open = datetime(2026, 5, 26, 11, 0, tzinfo=ET)
+        env = self._daily_env(datetime(2026, 5, 21), data_date="2026-05-26")
+        assert is_watermark_stale(env, "1day", now=tue_open, symbol="BRK.B") is True
+        assert is_watermark_stale(env, "1day", now=tue_open, symbol="BF.B") is True
+
+    def test_expanded_index_allowlist_keeps_backstop(self):
+        # An index added to _US_INDEX_SYMBOLS gets the backstop.
+        tue_open = datetime(2026, 5, 26, 11, 0, tzinfo=ET)
+        env = self._daily_env(datetime(2026, 5, 21), data_date="2026-05-26")
+        assert is_watermark_stale(env, "1day", now=tue_open, symbol="SOX", is_index=True) is True
+
+    def test_no_symbol_fails_closed(self):
+        # No symbol → can't classify the calendar anchor → the backstop is
+        # skipped entirely, even for a grossly behind watermark. Guards the
+        # symbol-less intraday call sites if "1day" ever routes through them.
+        tue_open = datetime(2026, 5, 26, 11, 0, tzinfo=ET)
+        env = self._daily_env(datetime(2026, 5, 21), data_date="2026-05-26")
+        assert is_watermark_stale(env, "1day", now=tue_open) is False
+
+
+# ---------------------------------------------------------------------------
+# _follows_us_daily_calendar — symbol/index classification
+# ---------------------------------------------------------------------------
+
+class TestFollowsUsDailyCalendar:
+    def test_us_dotted_suffixes_disjoint_from_foreign_suffix_map(self):
+        # Trusting _US_DOTTED_SUFFIXES as US-calendar is safe only while none
+        # of them doubles as a foreign region suffix in _SUFFIX_MAP (which
+        # already carries single-letter codes like L/T). A future addition
+        # must fail here, not silently misclassify foreign symbols as US.
+        assert _US_DOTTED_SUFFIXES.isdisjoint(_SUFFIX_MAP)
+
+    def test_bare_us_ticker(self):
+        assert _follows_us_daily_calendar("AAPL", False) is True
+
+    def test_us_dot_us_suffix(self):
+        assert _follows_us_daily_calendar("AAPL.US", False) is True
+
+    def test_us_dotted_class_shares(self):
+        assert _follows_us_daily_calendar("BRK.B", False) is True
+        assert _follows_us_daily_calendar("BF.B", False) is True
+        assert _follows_us_daily_calendar("HEI.A", False) is True
+
+    def test_foreign_suffixes_are_not_us(self):
+        # Foreign tickers resolve to a specific region via the suffix map —
+        # including the single-letter .L (London) and .T (Tokyo) codes, which
+        # must NOT be mistaken for US class shares.
+        for sym in ("0700.HK", "600519.SS", "RDS.L", "7203.T"):
+            assert _follows_us_daily_calendar(sym, False) is False
+
+    def test_index_allowlist_membership(self):
+        assert _follows_us_daily_calendar("GSPC", True) is True
+        assert _follows_us_daily_calendar("^SOX", True) is True
+        assert _follows_us_daily_calendar("I:SPX", True) is True
+        assert _follows_us_daily_calendar("HSI", True) is False
 
 
 # ---------------------------------------------------------------------------

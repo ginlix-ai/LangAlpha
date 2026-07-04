@@ -22,6 +22,7 @@ from src.server.services.cache._ohlcv_envelope import (
     _merge_bars,
     _needs_refresh,
     _parse_envelope,
+    is_watermark_stale,
     watermark_to_date_str,
 )
 from src.utils.cache.redis_cache import get_cache_client
@@ -230,7 +231,6 @@ class DailyCacheService:
         normalized = symbol.lstrip("^").upper()
 
         base_ttl = self._base_ttl()
-        cache = get_cache_client()
         phase = current_market_phase()
 
         # --- Try cache (across all known sources) ---
@@ -238,19 +238,24 @@ class DailyCacheService:
         is_live = DailyCacheKeyBuilder._is_live(to_date)
 
         if envelope is not None:
-            bars = envelope["bars"]
-            watermark = envelope.get("watermark")
-            complete = envelope.get("complete", False)
-            stored_ttl = envelope.get("stored_ttl", 0)
-            elapsed = time.time() - envelope.get("fetched_at", 0)
-            ttl_remaining = max(0, int(stored_ttl - elapsed)) if stored_ttl else None
-
             bg_triggered = False
             # Historical daily envelopes skip live-only staleness checks but
             # still participate in truncated/soft-TTL refresh via is_live.
-            if _needs_refresh(envelope, base_ttl, interval="1day", is_live=is_live):
-                if is_live and (_is_stale_date(envelope) or envelope.get("complete")):
-                    # Stale date or day-boundary transition → sync re-fetch
+            if _needs_refresh(
+                envelope, base_ttl, interval="1day", is_live=is_live,
+                symbol=normalized, is_index=is_index,
+            ):
+                if is_live and (
+                    _is_stale_date(envelope)
+                    or is_watermark_stale(envelope, "1day", symbol=normalized, is_index=is_index)
+                    or envelope.get("complete")
+                ):
+                    # Bars are behind the current trading date (stale date or a
+                    # watermark that never advanced), a day-boundary transition,
+                    # or a completed envelope past market reopen → sync re-fetch.
+                    # Sync (not background) because the daily chart fetches this
+                    # series once and never polls — a background refresh wouldn't
+                    # reach the current request.
                     logger.info("Daily cache %s: stale/complete → sync re-fetch", normalized)
                     envelope = None
                 else:
@@ -261,54 +266,106 @@ class DailyCacheService:
                     )
 
             if envelope is not None:
-                return DailyFetchResult(
-                    symbol=normalized,
-                    data=bars,
-                    cached=True,
-                    ttl_remaining=ttl_remaining,
+                return self._cached_result(
+                    normalized, envelope, cache_key, phase,
                     background_refresh_triggered=bg_triggered,
-                    cache_key=cache_key,
-                    watermark=watermark,
-                    complete=complete,
-                    market_phase=phase,
-                    truncated=envelope.get("truncated"),
                 )
 
-        # --- Cache miss: full fetch ---
-        try:
-            data, source, truncated = await self._fetch_data(normalized, from_date, to_date, is_index=is_index, user_id=user_id)
-            cache_key = DailyCacheKeyBuilder.daily_key(normalized, from_date, to_date, source=source, is_index=is_index)
+        # --- Cache miss / stale-discard: serialized full fetch ---
+        return await self._full_fetch(
+            normalized, from_date, to_date, is_index, user_id, phase, base_ttl,
+        )
 
-            closed = phase == "closed"
-            complete = closed and len(data) > 0
-            eff_ttl = self._effective_ttl(base_ttl, complete)
-            if not data:
-                eff_ttl = _EMPTY_RESULT_TTL
-            env = _build_envelope(data, phase, complete, stored_ttl=eff_ttl, truncated=truncated)
+    @staticmethod
+    def _cached_result(
+        normalized: str,
+        envelope: Dict[str, Any],
+        cache_key: Optional[str],
+        phase: str,
+        *,
+        background_refresh_triggered: bool = False,
+    ) -> DailyFetchResult:
+        """Build a cache-hit result from an envelope."""
+        stored_ttl = envelope.get("stored_ttl", 0)
+        elapsed = time.time() - envelope.get("fetched_at", 0)
+        ttl_remaining = max(0, int(stored_ttl - elapsed)) if stored_ttl else None
+        return DailyFetchResult(
+            symbol=normalized,
+            data=envelope["bars"],
+            cached=True,
+            ttl_remaining=ttl_remaining,
+            background_refresh_triggered=background_refresh_triggered,
+            cache_key=cache_key,
+            watermark=envelope.get("watermark"),
+            complete=envelope.get("complete", False),
+            market_phase=phase,
+            truncated=envelope.get("truncated"),
+        )
 
-            await cache.set(cache_key, env, ttl=eff_ttl)
+    async def _full_fetch(
+        self,
+        normalized: str,
+        from_date: Optional[str],
+        to_date: Optional[str],
+        is_index: bool,
+        user_id: Optional[str],
+        phase: str,
+        base_ttl: int,
+    ) -> DailyFetchResult:
+        """Fetch the full series upstream, serialized per series.
 
-            return DailyFetchResult(
-                symbol=normalized,
-                data=data,
-                cached=False,
-                ttl_remaining=eff_ttl,
-                background_refresh_triggered=False,
-                cache_key=cache_key,
-                watermark=env["watermark"],
-                complete=complete,
-                market_phase=phase,
-                truncated=truncated,
-            )
+        Concurrent cold/stale readers of the same series contend on one lock
+        (mirroring :meth:`_delta_refresh`); the leader fetches and fills the
+        cache, and followers re-read the freshly filled envelope instead of
+        each firing their own blocking upstream fetch. A cancelled waiter just
+        releases the lock — it can't poison the others.
+        """
+        lock = self._get_refresh_lock(f"full:{normalized}:{from_date}:{to_date}:{int(is_index)}")
+        async with lock:
+            # Double-check: the leader may have filled the cache while we waited.
+            cache_key, envelope = await self._find_cached(normalized, from_date, to_date, is_index=is_index)
+            if envelope is not None and not _needs_refresh(
+                envelope, base_ttl, interval="1day",
+                is_live=DailyCacheKeyBuilder._is_live(to_date),
+                symbol=normalized, is_index=is_index,
+            ):
+                return self._cached_result(normalized, envelope, cache_key, phase)
 
-        except Exception as e:
-            logger.error(f"Failed to fetch daily data for {symbol}: {e}")
-            return DailyFetchResult(
-                symbol=normalized,
-                data=[],
-                cached=False,
-                ttl_remaining=None,
-                background_refresh_triggered=False,
-                market_phase=phase,
-                error=str(e),
-            )
+            cache = get_cache_client()
+            try:
+                data, source, truncated = await self._fetch_data(normalized, from_date, to_date, is_index=is_index, user_id=user_id)
+                cache_key = DailyCacheKeyBuilder.daily_key(normalized, from_date, to_date, source=source, is_index=is_index)
+
+                closed = phase == "closed"
+                complete = closed and len(data) > 0
+                eff_ttl = self._effective_ttl(base_ttl, complete)
+                if not data:
+                    eff_ttl = _EMPTY_RESULT_TTL
+                env = _build_envelope(data, phase, complete, stored_ttl=eff_ttl, truncated=truncated)
+
+                await cache.set(cache_key, env, ttl=eff_ttl)
+
+                return DailyFetchResult(
+                    symbol=normalized,
+                    data=data,
+                    cached=False,
+                    ttl_remaining=eff_ttl,
+                    background_refresh_triggered=False,
+                    cache_key=cache_key,
+                    watermark=env["watermark"],
+                    complete=complete,
+                    market_phase=phase,
+                    truncated=truncated,
+                )
+
+            except Exception as e:
+                logger.error(f"Failed to fetch daily data for {normalized}: {e}")
+                return DailyFetchResult(
+                    symbol=normalized,
+                    data=[],
+                    cached=False,
+                    ttl_remaining=None,
+                    background_refresh_triggered=False,
+                    market_phase=phase,
+                    error=str(e),
+                )
