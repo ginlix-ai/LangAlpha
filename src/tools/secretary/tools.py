@@ -407,6 +407,27 @@ async def ptc_agent(
     if not user_id:
         return _error_command("user_id not found in config", tool_call_id)
 
+    # A PTC dispatch is delivered by POSTing to the internal /messages endpoint
+    # with ``X-Dispatch: background``. That header is only honoured when the
+    # request also carries a matching ``INTERNAL_SERVICE_TOKEN`` (see
+    # ``is_internal`` in src/server/app/threads.py). When the token is unset the
+    # endpoint silently downgrades to a *foreground* SSE stream: it runs the
+    # full PTC workflow synchronously (minutes, many LLM calls) and returns
+    # ``text/event-stream`` -- which this tool cannot parse as the JSON dispatch
+    # ack, so the user sees ``dispatch_failed`` while model credits are burned
+    # for a result that is never delivered. A dispatch that can never be
+    # honoured as background is a deployment misconfiguration; fail loud here
+    # instead of firing a doomed, credit-burning request.
+    if not os.environ.get("INTERNAL_SERVICE_TOKEN", "").strip():
+        logger.error(
+            "PTC dispatch aborted: INTERNAL_SERVICE_TOKEN is not set. Without "
+            "it the background dispatch cannot be authenticated and the "
+            "workflow would run in the foreground, burning credits with no "
+            "result. Set INTERNAL_SERVICE_TOKEN on the backend service to "
+            "enable dispatch."
+        )
+        return _error_command("internal_service_token_missing", tool_call_id)
+
     is_continuation = thread_id is not None
 
     # Resolve workspace_id from existing thread or create/verify workspace

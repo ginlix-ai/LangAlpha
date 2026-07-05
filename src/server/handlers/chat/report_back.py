@@ -958,6 +958,21 @@ async def _post_report_back(
 
     self_base_url = os.environ.get("GINLIXFLOW_BASE_URL", "http://localhost:8000")
     service_token = os.environ.get("INTERNAL_SERVICE_TOKEN", "")
+    # Same invariant as the ptc_agent dispatch tool: report-back POSTs to the
+    # internal /messages endpoint with ``X-Dispatch: background``, honoured only
+    # when ``INTERNAL_SERVICE_TOKEN`` matches. With the token unset the endpoint
+    # runs the flash summary in the *foreground* and streams SSE, burning
+    # credits for a report-back the caller can never consume. Drop loudly rather
+    # than dispatch a doomed, credit-burning request.
+    if not service_token.strip():
+        logger.error(
+            "[FLASH_REPORT_BACK] INTERNAL_SERVICE_TOKEN is not set; cannot "
+            "dispatch report-back for PTC thread %s without burning credits on "
+            "a foreground run. Set INTERNAL_SERVICE_TOKEN on the backend "
+            "service.",
+            ptc_thread_id,
+        )
+        return "drop", None
     ws_label = origin.get("ptc_workspace_id") or "an auto-created workspace"
     message = (
         "<system>\n"

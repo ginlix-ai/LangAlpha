@@ -223,3 +223,15 @@ async def test_dispatch_timeout_keeps_auto_created_workspace(cache):
     assert payload["error"] == "dispatch_timeout"
     mgr.create_workspace.assert_awaited_once()
     mgr.delete_workspace.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# A configured INTERNAL_SERVICE_TOKEN is the normal production state and is now
+# a precondition for dispatch (the ptc_agent / _post_report_back preflight guard
+# aborts without it, to avoid a silent foreground credit burn). These tests
+# exercise the dispatch path itself, not the guard, so give the whole module a
+# token. The dedicated guard test module asserts the unset behaviour separately.
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _internal_service_token(monkeypatch):
+    monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", "test-internal-service-token")
