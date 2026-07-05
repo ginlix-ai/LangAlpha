@@ -112,14 +112,10 @@ try:
 except ImportError:
     HumanInTheLoopMiddleware = None  # type: ignore[misc,assignment]
 
-try:
-    from langchain.agents.middleware import (
-        ModelRetryMiddleware,
-        ModelFallbackMiddleware,
-    )
-except ImportError:
-    ModelRetryMiddleware = None  # type: ignore[misc,assignment]
-    ModelFallbackMiddleware = None  # type: ignore[misc,assignment]
+from ptc_agent.agent.middleware.model_resilience import (
+    ModelResilienceMiddleware,
+    build_fallback_pairs,
+)
 
 try:
     from langgraph.types import Checkpointer
@@ -179,39 +175,25 @@ class PTCAgent:
         )
 
     def _build_model_resilience_middleware(self) -> list[Any]:
-        """Append order is outermost-first: Fallback → Retry → Model. Errors propagate inward."""
-        middleware: list[Any] = []
-
-        # Fallback middleware (outermost — catches errors after retry exhausted)
-        if ModelFallbackMiddleware is not None and self.config.llm.fallback:
-            # Use pre-resolved clients (OAuth/BYOK-aware) when available
-            if self.config.fallback_llm_clients:
-                fallback_instances = self.config.fallback_llm_clients
-            else:
-                from src.llms import get_llm_by_type
-                fallback_instances = [
-                    get_llm_by_type(name) for name in self.config.llm.fallback
-                ]
-            middleware.append(ModelFallbackMiddleware(*fallback_instances))
+        """Retry + fallback + client-visible progress in a single middleware."""
+        fallbacks = build_fallback_pairs(self.config)
+        if fallbacks:
             logger.debug(
-                "Model fallback middleware enabled",
-                fallback_models=self.config.llm.fallback,
+                "Model fallback enabled",
+                fallback_models=[name for name, _ in fallbacks],
             )
-
-        # Retry middleware (innermost — retries same model before fallback)
-        if ModelRetryMiddleware is not None:
-            middleware.append(
-                ModelRetryMiddleware(
-                    max_retries=3,
-                    on_failure="error",
-                    backoff_factor=2.0,
-                    initial_delay=1.0,
-                    max_delay=60.0,
-                    jitter=True,
-                )
+        return [
+            ModelResilienceMiddleware(
+                primary_name=self.config.llm.name,
+                primary_client=self.llm,
+                fallbacks=fallbacks,
+                max_retries=3,
+                backoff_factor=2.0,
+                initial_delay=1.0,
+                max_delay=60.0,
+                jitter=True,
             )
-
-        return middleware
+        ]
 
     def _get_tool_summary(self, mcp_registry: MCPRegistry) -> str:
         return build_tool_summary_from_registry(

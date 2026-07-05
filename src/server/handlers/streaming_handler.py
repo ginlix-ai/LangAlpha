@@ -144,6 +144,23 @@ _STATUS_CODE_RE = re.compile(r"\b([45]\d{2})\b")
 # ship that secret to the SSE client and the replay log).
 _URL_USERINFO_RE = re.compile(r"(https?://)[^@/\s]+@")
 
+# Provider exceptions can echo request headers or key params back in their
+# message (some OpenAI-compatible proxies do). Mask the common credential
+# shapes before the text reaches the SSE client or the persisted replay log.
+_BEARER_TOKEN_RE = re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}")
+_KEY_PARAM_RE = re.compile(
+    r"(?i)\b(api[-_]?key|x-api-key|authorization|access[-_]?token|client[-_]?secret)"
+    r"(\s*[=:]\s*)([\"']?)[A-Za-z0-9._~+/=-]{8,}"
+)
+_SK_TOKEN_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b")
+# Bare ``?key=``/``&token=`` URL query params — Google-style SDKs put the API
+# key in the query string and httpx echoes the full request URL in the
+# exception text, which ``_KEY_PARAM_RE`` (label-prefixed shapes) misses.
+_URL_KEY_QUERY_RE = re.compile(
+    r"(?i)([?&](?:key|apikey|token|secret|password|credential)=)[^&\s\"']+"
+)
+_GOOGLE_KEY_RE = re.compile(r"\bAIza[0-9A-Za-z_-]{16,}\b")
+
 
 def _parse_status_from_message(text: str) -> Optional[int]:
     match = _STATUS_CODE_RE.search(text)
@@ -152,7 +169,31 @@ def _parse_status_from_message(text: str) -> Optional[int]:
 
 def _sanitize_error_text(text: str) -> str:
     """Scrub credentials out of the raw exception text before we send it."""
-    return _URL_USERINFO_RE.sub(r"\1", text)
+    text = _URL_USERINFO_RE.sub(r"\1", text)
+    text = _BEARER_TOKEN_RE.sub(r"\1 [REDACTED]", text)
+    text = _KEY_PARAM_RE.sub(r"\1\2\3[REDACTED]", text)
+    text = _URL_KEY_QUERY_RE.sub(r"\1[REDACTED]", text)
+    text = _SK_TOKEN_RE.sub("[REDACTED]", text)
+    return _GOOGLE_KEY_RE.sub("[REDACTED]", text)
+
+
+def find_resilience_trace(exc: BaseException) -> Optional[Dict[str, Any]]:
+    """Find the attempt trace attached by ``ModelResilienceMiddleware``.
+
+    The middleware sets ``__model_resilience__`` (see ``RESILIENCE_TRACE_ATTR``
+    in ``src/ptc_agent/agent/middleware/model_resilience.py``) on the primary
+    model's exception before re-raising it. Walks the cause chain defensively
+    in case a wrapper exception ends up on top.
+    """
+    seen: set[int] = set()
+    current: Optional[BaseException] = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        trace = getattr(current, "__model_resilience__", None)
+        if isinstance(trace, dict):
+            return trace
+        current = current.__cause__ or current.__context__
+    return None
 
 
 def classify_stream_exception(exc: BaseException) -> Dict[str, Any]:
@@ -643,6 +684,44 @@ class WorkflowStreamHandler:
                                     )
                                 except Exception:
                                     pass
+                            continue
+
+                        # Handle model resilience progress (retry / fallback).
+                        # ``model_retry`` is transient — live + reconnect only
+                        # (accumulate=False, like ``metadata``); ``model_fallback``
+                        # is persisted so the transcript note survives replay.
+                        if event_type in ("model_retry", "model_fallback"):
+                            resilience_data: Dict[str, Any] = {
+                                "thread_id": self.thread_id,
+                                "agent": self._extract_agent_name(
+                                    agent_from_stream, event_data
+                                ),
+                            }
+                            for key in (
+                                "model",
+                                "attempt",
+                                "max_retries",
+                                "delay_seconds",
+                                "from_model",
+                                "to_model",
+                                "from_is_primary",
+                                "status_code",
+                                "attempts_on_from",
+                            ):
+                                if key in event_data:
+                                    resilience_data[key] = event_data[key]
+                            # Middleware error strings bypass format_error_event's
+                            # scrubbing — sanitize here or BYOK URL userinfo leaks.
+                            error_text = event_data.get("error")
+                            if isinstance(error_text, str):
+                                resilience_data["error"] = _sanitize_error_text(
+                                    error_text
+                                )
+                            yield self._format_sse_event(
+                                event_type,
+                                resilience_data,
+                                accumulate=(event_type == "model_fallback"),
+                            )
                             continue
 
                         # Check if this is an artifact event from middleware
@@ -1559,6 +1638,28 @@ class WorkflowStreamHandler:
         }
         if exc is not None:
             info = classify_stream_exception(exc)
+            trace = find_resilience_trace(exc)
+            if trace is not None and info["kind"] == "internal":
+                # The trace proves the failure happened inside a model call.
+                # A generic wrapper exception (no recognizable SDK module in
+                # the chain) must not demote it to "internal" — the frontend
+                # routes internal errors to a generic banner that drops the
+                # model / attempted-models context.
+                primary_status: Any = None
+                attempted_raw = trace.get("attempted_models")
+                if (
+                    isinstance(attempted_raw, list)
+                    and attempted_raw
+                    and isinstance(attempted_raw[0], dict)
+                ):
+                    primary_status = attempted_raw[0].get("status_code")
+                info = {
+                    "kind": "upstream",
+                    "status_code": primary_status
+                    if isinstance(primary_status, int)
+                    else None,
+                    "provider_module": None,
+                }
             data["error_kind"] = info["kind"]
             if info["status_code"] is not None:
                 data["status_code"] = info["status_code"]
@@ -1587,6 +1688,24 @@ class WorkflowStreamHandler:
                         "model_access",
                         "provider_status",
                         "try_another_model",
+                    ]
+            if trace is not None:
+                primary_model = trace.get("model")
+                if isinstance(primary_model, str) and primary_model:
+                    data["model"] = primary_model
+                attempted = trace.get("attempted_models")
+                if isinstance(attempted, list):
+                    data["attempted_models"] = [
+                        {
+                            "model": entry.get("model"),
+                            "error": _sanitize_error_text(
+                                str(entry.get("error") or "")
+                            ),
+                            "status_code": entry.get("status_code"),
+                            "attempts": entry.get("attempts"),
+                        }
+                        for entry in attempted
+                        if isinstance(entry, dict)
                     ]
         return self._format_sse_event("error", data)
 

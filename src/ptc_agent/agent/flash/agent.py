@@ -29,15 +29,10 @@ from ptc_agent.agent.state import DeltaAgentState
 from ptc_agent.agent.prompts import format_current_time, get_loader
 from ptc_agent.config import AgentConfig
 
-# Import model resilience middleware
-try:
-    from langchain.agents.middleware import (
-        ModelRetryMiddleware,
-        ModelFallbackMiddleware,
-    )
-except ImportError:
-    ModelRetryMiddleware = None  # type: ignore[misc,assignment]
-    ModelFallbackMiddleware = None  # type: ignore[misc,assignment]
+from ptc_agent.agent.middleware.model_resilience import (
+    ModelResilienceMiddleware,
+    build_fallback_pairs,
+)
 
 # External tools only (no sandbox, no MCP)
 from src.tools.search import get_web_search_tool
@@ -272,34 +267,25 @@ class FlashAgent:
                 threshold=self.config.compaction.token_threshold,
             )
 
-        # Model resilience middleware (retry + fallback)
-        if ModelFallbackMiddleware is not None and self.config.llm.fallback:
-            # Use pre-resolved clients (OAuth/BYOK-aware) when available
-            if self.config.fallback_llm_clients:
-                fallback_instances = self.config.fallback_llm_clients
-            else:
-                from src.llms import get_llm_by_type
-                fallback_instances = [
-                    get_llm_by_type(name) for name in self.config.llm.fallback
-                ]
-            main_middleware.append(ModelFallbackMiddleware(*fallback_instances))
-            logger.info(
-                "Flash model fallback enabled",
-                fallback_models=self.config.llm.fallback,
+        # Model resilience middleware (retry + fallback + progress events)
+        fallbacks = build_fallback_pairs(self.config)
+        main_middleware.append(
+            ModelResilienceMiddleware(
+                primary_name=self.config.llm.flash or self.config.llm.name,
+                primary_client=self.llm,
+                fallbacks=fallbacks,
+                max_retries=3,
+                backoff_factor=2.0,
+                initial_delay=1.0,
+                max_delay=60.0,
+                jitter=True,
             )
-
-        if ModelRetryMiddleware is not None:
-            main_middleware.append(
-                ModelRetryMiddleware(
-                    max_retries=3,
-                    on_failure="error",
-                    backoff_factor=2.0,
-                    initial_delay=1.0,
-                    max_delay=60.0,
-                    jitter=True,
-                )
-            )
-            logger.info("Flash model retry enabled", max_retries=3)
+        )
+        logger.info(
+            "Flash model resilience enabled",
+            max_retries=3,
+            fallback_models=[name for name, _ in fallbacks],
+        )
 
         # Prompt caching, empty tool call retry, and tool call patching
         main_middleware.extend(
