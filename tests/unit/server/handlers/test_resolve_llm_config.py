@@ -978,6 +978,8 @@ class TestResolveOneFallbackGuard:
         # Valid model resolved, invalid skipped
         assert len(config.fallback_llm_clients) == 1
         assert config.fallback_llm_clients[0] is mock_valid_client
+        # Names stay aligned index-for-index with clients (skips drop from both)
+        assert config.fallback_llm_names == ["valid-model"]
 
 
 # ---------------------------------------------------------------------------

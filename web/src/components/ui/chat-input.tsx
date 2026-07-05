@@ -85,6 +85,9 @@ export interface ChatInputHandle {
    */
   addWidgetSnapshot: (snapshot: WidgetContextSnapshot) => void;
   setValue: (text: string) => void;
+  /** Imperatively change the selected model (e.g. the model-fallback
+   *  "Switch to X" action) so the next send uses it. */
+  setModel: (model: string) => void;
 }
 
 interface Workspace {
@@ -128,6 +131,8 @@ export interface ChatInputProps {
   tokenUsage?: TokenUsageData | null;
   onAction?: ((cmd: SlashCommand) => void) | null;
   initialModel?: string | null;
+  /** Reports the live model selection (fires on mount and every change). */
+  onModelChange?: ((model: string | null) => void) | null;
   threadModels?: string[];
   dropdownDirection?: 'up' | 'down';
   minRows?: number;
@@ -370,6 +375,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   onAction = null,
   // Model selector
   initialModel = null,
+  onModelChange = null,
   // All models used in this thread (shown in primary menu)
   threadModels: threadModelsProp = [],
   // Dropdown direction: 'up' (default, for bottom-positioned inputs) or 'down' (for mid-page inputs like ThreadGallery)
@@ -409,6 +415,12 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   useEffect(() => {
     if (effectiveInitialModel) setSelectedModel(effectiveInitialModel);
   }, [effectiveInitialModel]);
+
+  // Mirror the live selection to the host (ChatView gates the fallback
+  // suggestion pill on the model the next send will actually use).
+  useEffect(() => {
+    onModelChange?.(selectedModel);
+  }, [selectedModel, onModelChange]);
 
   // Fetch model metadata for compatibility checking (eager prefetch, resolves instantly after first load)
   useEffect(() => { getModelMetadata().then((d: Record<string, unknown>) => setModelMetadata(d as typeof modelMetadata)).catch(() => { }); }, []);
@@ -607,6 +619,9 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     setValue(text) {
       setMessage(text);
       setTimeout(() => textareaRef.current?.focus(), 0);
+    },
+    setModel(model) {
+      if (model) setSelectedModel(model);
     },
   }), [selectedModel, reasoningEffort, fastMode]);
 

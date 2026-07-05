@@ -48,6 +48,8 @@ export interface NotificationSegment {
   /** Optional longer text (e.g. the compaction summary) shown in an
    *  expandable panel beneath the notification label. */
   detail?: string;
+  /** Picks the expander toggle label — 'summary' (default) or 'error'. */
+  detailKind?: 'summary' | 'error';
 }
 
 export interface UserQuestionSegment {

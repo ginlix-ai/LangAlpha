@@ -1242,3 +1242,275 @@ class TestCompactionWindowGuard:
             handler._open_compaction_window(())
         manager.begin_compaction.assert_called_once_with("t-reopen")
         assert handler._compaction_active is True
+
+
+# ---------------------------------------------------------------------------
+# Model resilience events (model_retry / model_fallback + error trace)
+# ---------------------------------------------------------------------------
+
+
+class _CustomEventGraph:
+    """LangGraph stand-in whose astream yields custom-mode events."""
+
+    def __init__(self, events, namespace=()):
+        self._events = events
+        self._namespace = namespace
+
+    def astream(self, _input_state, config=None, stream_mode=None, subgraphs=None):
+        async def _gen():
+            for event in self._events:
+                yield (self._namespace, "custom", event)
+
+        return _gen()
+
+
+class TestModelResilienceEvents:
+    def _make_handler(self, thread_id="res-thread"):
+        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+
+        return WorkflowStreamHandler(thread_id=thread_id, run_id="r-test")
+
+    async def _collect(self, handler, events, namespace=()):
+        return [
+            chunk
+            async for chunk in handler.stream_workflow(
+                _CustomEventGraph(events, namespace), input_state={}, config={}
+            )
+        ]
+
+    @staticmethod
+    def _find_event(chunks, event_type):
+        for chunk in chunks:
+            if f"event: {event_type}\n" in chunk:
+                return json.loads(chunk.split("data: ", 1)[1].rstrip("\n"))
+        return None
+
+    @pytest.mark.asyncio
+    async def test_model_retry_emitted_but_not_persisted(self):
+        handler = self._make_handler()
+        chunks = await self._collect(
+            handler,
+            [
+                {
+                    "type": "model_retry",
+                    "model": "primary-model",
+                    "attempt": 1,
+                    "max_retries": 3,
+                    "error": "upstream 500 at https://user:secret@api.example.com/v1",
+                    "status_code": 500,
+                    "delay_seconds": 1.0,
+                }
+            ],
+        )
+        data = self._find_event(chunks, "model_retry")
+        assert data is not None
+        assert data["thread_id"] == "res-thread"
+        assert data["model"] == "primary-model"
+        assert data["attempt"] == 1
+        assert data["max_retries"] == 3
+        assert data["status_code"] == 500
+        # Credentials scrubbed from the middleware-provided error text
+        assert "secret" not in data["error"]
+        # Main-stream events pin "main" (empty namespace + no langgraph_node
+        # in the middleware payload would otherwise hit the "agent" fallback).
+        assert data["agent"] == "main"
+        # Transient: never persisted to the SSE event log
+        persisted = handler.get_sse_events() or []
+        assert "model_retry" not in [e["event"] for e in persisted]
+
+    @pytest.mark.asyncio
+    async def test_model_fallback_emitted_and_persisted(self):
+        handler = self._make_handler()
+        chunks = await self._collect(
+            handler,
+            [
+                {
+                    "type": "model_fallback",
+                    "from_model": "primary-model",
+                    "to_model": "fallback-a",
+                    "from_is_primary": True,
+                    "error": "Error code: 404",
+                    "status_code": 404,
+                    "attempts_on_from": 1,
+                }
+            ],
+        )
+        data = self._find_event(chunks, "model_fallback")
+        assert data is not None
+        assert data["from_model"] == "primary-model"
+        assert data["to_model"] == "fallback-a"
+        assert data["from_is_primary"] is True
+        assert data["attempts_on_from"] == 1
+        assert data["agent"] == "main"
+        # Persisted so the transcript note survives history replay
+        persisted = handler.get_sse_events() or []
+        assert "model_fallback" in [e["event"] for e in persisted]
+
+    @pytest.mark.asyncio
+    async def test_subagent_namespace_attributed(self):
+        handler = self._make_handler()
+        chunks = await self._collect(
+            handler,
+            [
+                {
+                    "type": "model_fallback",
+                    "from_model": "m-a",
+                    "to_model": "m-b",
+                    "from_is_primary": True,
+                    "error": "x",
+                    "status_code": 400,
+                    "attempts_on_from": 1,
+                }
+            ],
+            namespace=("task-ns-uuid",),
+        )
+        data = self._find_event(chunks, "model_fallback")
+        assert data is not None
+        # Without a background registry the raw namespace passes through —
+        # the point is main-agent events don't get subagent attribution and
+        # vice versa.
+        assert data["agent"] == "task-ns-uuid"
+
+
+class TestFormatErrorEventResilienceTrace:
+    def _make_handler(self):
+        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+
+        return WorkflowStreamHandler(thread_id="err-thread", run_id="r-test")
+
+    @staticmethod
+    def _trace():
+        return {
+            "model": "primary-model",
+            "attempted_models": [
+                {
+                    "model": "primary-model",
+                    "error": "Error code: 404 at https://user:secret@h/v1",
+                    "status_code": 404,
+                    "attempts": 1,
+                },
+                {
+                    "model": "fallback-a",
+                    "error": "param mismatch",
+                    "status_code": 400,
+                    "attempts": 1,
+                },
+            ],
+        }
+
+    def test_trace_enriches_error_event(self):
+        exc = RuntimeError("Error calling model 'primary-model'")
+        exc.__model_resilience__ = self._trace()
+        handler = self._make_handler()
+        result = handler.format_error_event(str(exc), exc=exc)
+        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        assert parsed["model"] == "primary-model"
+        attempted = parsed["attempted_models"]
+        assert [a["model"] for a in attempted] == ["primary-model", "fallback-a"]
+        # Per-entry error text is sanitized before hitting the wire
+        assert "secret" not in attempted[0]["error"]
+        assert attempted[1]["status_code"] == 400
+
+    def test_trace_found_via_cause_chain(self):
+        inner = RuntimeError("primary failed")
+        inner.__model_resilience__ = self._trace()
+        try:
+            try:
+                raise inner
+            except Exception as e:
+                raise RuntimeError("wrapped") from e
+        except RuntimeError as outer:
+            exc = outer
+        handler = self._make_handler()
+        result = handler.format_error_event(str(exc), exc=exc)
+        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        assert parsed["model"] == "primary-model"
+
+    def test_no_trace_no_new_fields(self):
+        exc = RuntimeError("plain failure")
+        handler = self._make_handler()
+        result = handler.format_error_event(str(exc), exc=exc)
+        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        assert "model" not in parsed
+        assert "attempted_models" not in parsed
+        assert parsed["error_kind"] == "internal"
+
+    def test_generic_exception_with_trace_classifies_upstream(self):
+        # A generic (non-SDK) exception carrying the trace is still a
+        # model-call failure — it must not fall into the internal-error
+        # banner path, which drops the model/attempted-models context.
+        exc = RuntimeError("Error calling model 'primary-model'")
+        exc.__model_resilience__ = self._trace()
+        handler = self._make_handler()
+        result = handler.format_error_event(str(exc), exc=exc)
+        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        assert parsed["error_kind"] == "upstream"
+        # Status comes from the primary attempt record; 404 drives the hints.
+        assert parsed["status_code"] == 404
+        assert parsed["hints"] == ["model_access", "try_another_model"]
+
+    def test_generic_exception_with_trace_but_no_status(self):
+        trace = self._trace()
+        trace["attempted_models"][0]["status_code"] = None
+        exc = RuntimeError("model call blew up without a status")
+        exc.__model_resilience__ = trace
+        handler = self._make_handler()
+        result = handler.format_error_event(str(exc), exc=exc)
+        parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
+        assert parsed["error_kind"] == "upstream"
+        assert "status_code" not in parsed
+        assert parsed["hints"] == [
+            "api_key",
+            "model_access",
+            "provider_status",
+            "try_another_model",
+        ]
+
+
+class TestSanitizeErrorText:
+    """Credential shapes are masked before error text reaches the wire."""
+
+    def test_url_userinfo_stripped(self):
+        from src.server.handlers.streaming_handler import _sanitize_error_text
+
+        out = _sanitize_error_text("GET https://user:hunter2@api.example.com/v1 failed")
+        assert "hunter2" not in out
+        assert "https://api.example.com/v1" in out
+
+    def test_bearer_token_masked(self):
+        from src.server.handlers.streaming_handler import _sanitize_error_text
+
+        out = _sanitize_error_text("401 with header Authorization: Bearer abc123def456xyz")
+        assert "abc123def456xyz" not in out
+        assert "[REDACTED]" in out
+
+    def test_key_params_masked(self):
+        from src.server.handlers.streaming_handler import _sanitize_error_text
+
+        out = _sanitize_error_text('request had api_key="tok_0123456789abcdef" set')
+        assert "tok_0123456789abcdef" not in out
+        out = _sanitize_error_text("x-api-key: somelongsecretvalue1")
+        assert "somelongsecretvalue1" not in out
+
+    def test_sk_style_token_masked(self):
+        from src.server.handlers.streaming_handler import _sanitize_error_text
+
+        out = _sanitize_error_text("Invalid API key provided: sk-abcdef0123456789")
+        assert "sk-abcdef0123456789" not in out
+
+    def test_url_query_key_param_masked(self):
+        from src.server.handlers.streaming_handler import _sanitize_error_text
+
+        out = _sanitize_error_text(
+            "400 for url https://example.googleapis.com/v1/models/m:generateContent"
+            "?key=AIzaSyExampleExampleExample123&alt=json"
+        )
+        assert "AIza" not in out
+        assert "?key=[REDACTED]" in out
+        assert "&alt=json" in out
+
+    def test_plain_error_text_unchanged(self):
+        from src.server.handlers.streaming_handler import _sanitize_error_text
+
+        text = "Error code: 404 - model 'some-model' not found"
+        assert _sanitize_error_text(text) == text

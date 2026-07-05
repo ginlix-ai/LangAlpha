@@ -109,10 +109,21 @@ interface StructuredErrorDisplayProps {
  */
 function StructuredErrorDisplay({ err, fallbackText }: StructuredErrorDisplayProps): React.ReactElement {
   const { t } = useTranslation();
-  const headline = err.statusCode
-    ? t('chat.errorUpstreamHeadlineStatus', { status: err.statusCode })
-    : t('chat.errorUpstreamHeadline');
+  // When the failure is attributable to a specific model, name it in the
+  // headline; otherwise fall back to the generic "model provider" copy.
+  const headline = err.model
+    ? (err.statusCode
+        ? t('chat.errorUpstreamHeadlineModelStatus', { model: err.model, status: err.statusCode })
+        : t('chat.errorUpstreamHeadlineModel', { model: err.model }))
+    : (err.statusCode
+        ? t('chat.errorUpstreamHeadlineStatus', { status: err.statusCode })
+        : t('chat.errorUpstreamHeadline'));
   const body = err.message || fallbackText;
+  // Models other than the primary that were also tried before giving up. Only
+  // shown when the middleware actually attempted more than one model.
+  const alsoTried = (err.attemptedModels && err.attemptedModels.length > 1)
+    ? err.attemptedModels.filter((m) => m.model !== err.model)
+    : [];
   return (
     <div
       className="flex gap-3 px-4 py-3 rounded-lg text-sm"
@@ -138,6 +149,18 @@ function StructuredErrorDisplay({ err, fallbackText }: StructuredErrorDisplayPro
               <li key={h}>{t(UPSTREAM_HINT_I18N_KEY[h] ?? h)}</li>
             ))}
           </ul>
+        )}
+        {alsoTried.length > 0 && (
+          <div className="mt-1 text-xs" style={{ color: 'var(--color-text-quaternary)' }}>
+            {t('chat.errorAttemptedModels')}{' '}
+            {alsoTried.map((m, i) => (
+              <React.Fragment key={m.model}>
+                {i > 0 && ', '}
+                {/* Per-model error text lives in the tooltip, not inline. */}
+                <span title={m.error || undefined}>{m.model}</span>
+              </React.Fragment>
+            ))}
+          </div>
         )}
       </div>
     </div>

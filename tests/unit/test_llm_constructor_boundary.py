@@ -79,10 +79,9 @@ ALLOWLIST: dict[tuple[str, str], int] = {
     ("src/ptc_agent/config/agent.py", "create_llm"): 1,
     # flash standalone build.
     ("src/ptc_agent/agent/flash/agent.py", "create_llm"): 1,
-    # flash fallback-model name path.
-    ("src/ptc_agent/agent/flash/agent.py", "get_llm_by_type"): 1,
-    # main-agent fallback-model name path.
-    ("src/ptc_agent/agent/agent.py", "get_llm_by_type"): 1,
+    # fallback-model name path (build_fallback_pairs, OSS standalone — server
+    # runs pre-resolve fallback_llm_clients via resolve_llm_config first).
+    ("src/ptc_agent/agent/middleware/model_resilience.py", "get_llm_by_type"): 1,
     # compaction summarizer name path (compact.py helper).
     ("src/ptc_agent/agent/middleware/compaction/compact.py", "get_llm_by_type"): 1,
     # compaction middleware fallback name path.

@@ -14,6 +14,8 @@ export type SSEEventType =
   | 'workflow_status'
   | 'thread_created'
   | 'error'
+  | 'model_retry'
+  | 'model_fallback'
   | 'steering_delivered'
   | 'task_steering_accepted'
   | 'interrupt'
@@ -161,10 +163,63 @@ export interface ThreadCreatedEvent extends BaseSSEEvent {
   workspace_id: string;
 }
 
+/** One entry in an ``error`` event's ``attempted_models`` list: a model the
+ *  resilience middleware tried before the turn failed, with its own error. */
+export interface AttemptedModel {
+  model: string;
+  error?: string;
+  status_code?: number | null;
+  attempts?: number;
+}
+
 export interface ErrorEvent extends BaseSSEEvent {
   event: 'error';
-  content: string;
+  /** Legacy single-field message; newer backends send ``error``/``message``. */
+  content?: string;
   error_type?: string;
+  /** Enriched fields from ``streaming_handler.format_error_event``. */
+  error?: string;
+  message?: string;
+  error_kind?: 'upstream' | 'internal';
+  status_code?: number | null;
+  hints?: string[];
+  /** User-configured (primary) model name, when the failure is model-attributable. */
+  model?: string;
+  /** Every model the resilience middleware attempted this turn (primary + fallbacks). */
+  attempted_models?: AttemptedModel[];
+}
+
+/**
+ * Emitted before the resilience middleware retries the SAME model after a
+ * transient provider error. NOT persisted to history; DOES replay on
+ * live-reconnect. ``attempt`` = number of calls that have already FAILED, so
+ * the retry about to happen is ``attempt + 1`` of ``max_retries + 1`` total.
+ */
+export interface ModelRetryEvent extends BaseSSEEvent {
+  event: 'model_retry';
+  thread_id?: string;
+  model: string;
+  attempt: number;
+  max_retries: number;
+  error?: string;
+  status_code?: number | null;
+  delay_seconds?: number;
+}
+
+/**
+ * Emitted when the resilience middleware gives up on one model and switches to
+ * another. Persisted to history and replayed both on live-reconnect and in
+ * history replay, so the transcript notification survives reload.
+ */
+export interface ModelFallbackEvent extends BaseSSEEvent {
+  event: 'model_fallback';
+  thread_id?: string;
+  from_model: string;
+  to_model: string;
+  from_is_primary?: boolean;
+  error?: string;
+  status_code?: number | null;
+  attempts_on_from?: number;
 }
 
 export interface SteeringDeliveredEvent extends BaseSSEEvent {
@@ -244,6 +299,8 @@ export type SSEEvent =
   | WorkflowStatusEvent
   | ThreadCreatedEvent
   | ErrorEvent
+  | ModelRetryEvent
+  | ModelFallbackEvent
   | SteeringDeliveredEvent
   | TaskSteeringAcceptedEvent
   | UserMessageEvent

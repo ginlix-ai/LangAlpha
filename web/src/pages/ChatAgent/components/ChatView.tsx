@@ -1,12 +1,13 @@
 import React, { Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, FolderOpen, ScrollText, CheckCircle2, Circle, Loader2, TextSelect, Minus, PanelLeftOpen, Menu, Info, Pin, PinOff, Clock } from 'lucide-react';
+import { ArrowLeft, FolderOpen, ScrollText, CheckCircle2, Circle, Loader2, TextSelect, Minus, PanelLeftOpen, Menu, Info, Pin, PinOff, Clock, AlertTriangle, X } from 'lucide-react';
 import { HoverCard, HoverCardTrigger, HoverCardContent } from '@/components/ui/hover-card';
 import { useIsMobile, getIsMobileSnapshot } from '@/hooks/useIsMobile';
 import { useNarrowContainer } from '@/hooks/useNarrowContainer';
 import { ScrollArea } from '../../../components/ui/scroll-area';
 import { usePreferences } from '@/hooks/usePreferences';
+import { useUpdatePreferences } from '@/hooks/useUpdatePreferences';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { updateCurrentUser } from '../../Dashboard/utils/api';
@@ -345,7 +346,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const chatInputRef = useRef<ChatInputHandle>(null);
   const location = useLocation();
   const navigate = useNavigate();
-  usePreferences();
+  const { preferences } = usePreferences();
+  const { mutateAsync: updatePreferencesAsync } = useUpdatePreferences();
   const queryClient = useQueryClient();
   const initialMessageSentRef = useRef(false);
   // Guards one-shot consumption of the ?file= deep link (report share / copy link).
@@ -354,6 +356,15 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const state = location.state as LocationState | null;
   const [agentMode, setAgentMode] = useState(state?.agentMode || 'ptc');
   const isFlashMode = agentMode === 'flash' || state?.workspaceStatus === 'flash';
+
+  // The mode's currently-configured model — fallback initializer for
+  // nextSendModel below, mirroring ChatInput's own modePreferredModel.
+  const otherPreference = (preferences as Record<string, Record<string, unknown>> | null | undefined)?.other_preference;
+  const activePreferredModel = isFlashMode
+    ? ((otherPreference?.preferred_flash_model as string | undefined) || (otherPreference?.preferred_model as string | undefined) || null)
+    : ((otherPreference?.preferred_model as string | undefined) || null);
+  // Live model selection reported by ChatInput (null until it reports in).
+  const [inputModel, setInputModel] = useState<string | null>(null);
   const [workspaceName, setWorkspaceName] = useState(initialWorkspaceName || '');
   const [filePanelTargetFile, setFilePanelTargetFile] = useState<string | null>(null);
   const [filePanelTargetDir, setFilePanelTargetDir] = useState<string | null>(null);
@@ -702,6 +713,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     queuedSend,
     isLoadingHistory,
     isReconnecting,
+    modelStatus,
+    fallbackSuggestion,
+    clearFallbackSuggestion,
     messageError,
     returnedSteering,
     clearReturnedSteering,
@@ -738,6 +752,29 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     getSubagentHistory,
     resolveSubagentIdToAgentId,
   } = useChatMessages(workspaceId, threadId, updateTodoListCard as (todoData: Record<string, unknown>) => void, updateSubagentCard, inactivateAllSubagents, finalizePendingTodos, handleOnboardingRelatedToolComplete, handleFileArtifact, handleOpenPreviewFromStream, agentMode, clearSubagentCards, handleWorkspaceCreated, 'web');
+
+  // The model the NEXT send will actually use: the chat input's live
+  // selection, falling back to its initializer (thread's last model, then the
+  // mode's preferred model) until it reports in. The suggestion pill gates on
+  // this — not on the durable preference, which a thread's own model overrides
+  // on every send.
+  const nextSendModel = inputModel ?? (lastThreadModel || activePreferredModel);
+
+  // Fallback-suggestion pill action: adopt the model that actually answered —
+  // immediately for this thread's next send (chat input selection) and
+  // durably in preferences under the mode-appropriate key.
+  const handleSwitchModel = useCallback(async (model: string) => {
+    chatInputRef.current?.setModel(model);
+    try {
+      await updatePreferencesAsync({
+        other_preference: isFlashMode ? { preferred_flash_model: model } : { preferred_model: model },
+      });
+      clearFallbackSuggestion();
+      toast({ description: t('chat.modelSwitched', { model }) });
+    } catch {
+      toast({ description: t('chat.modelSwitchFailed'), variant: 'destructive' });
+    }
+  }, [isFlashMode, updatePreferencesAsync, clearFallbackSuggestion, t]);
 
   // Spinner state merges the in-conversation signal (chat SSE `workspace_status`
   // events, set when this client's message owns the start) with the entry-time
@@ -2881,6 +2918,67 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                         {t('chat.reconnecting', 'Reconnecting…')}
                       </div>
                     )}
+                    {/* Model resilience: the provider is retrying the current
+                        model, or has fallen back to a secondary. Transient —
+                        cleared on the first content event, on error, or on stop. */}
+                    {modelStatus && isLoading && (
+                      <div className="flex items-center gap-2 px-3 py-1.5 text-xs"
+                        role="status" aria-live="polite"
+                        style={{ color: 'var(--color-text-tertiary)' }}>
+                        <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" style={{ color: 'var(--color-accent-primary)' }} />
+                        {modelStatus.kind === 'retrying'
+                          ? t('chat.modelRetrying', {
+                              model: modelStatus.model,
+                              attempt: modelStatus.attempt + 1,
+                              total: modelStatus.maxRetries + 1,
+                            })
+                          : t('chat.modelFallingBack', { model: modelStatus.toModel })}
+                      </div>
+                    )}
+                    {/* Model-fallback suggestion: the model the user sent with
+                        had trouble and a fallback answered the last turn. Offer
+                        adopting the working model. Persistent (survives
+                        stream end + reload) until dismissed, switched, or a
+                        new turn starts. Gated on nextSendModel — the input's
+                        live selection — because that is what the next send
+                        re-uses, regardless of the durable preference. */}
+                    {fallbackSuggestion && !isLoading && fallbackSuggestion.toModel !== nextSendModel && (
+                      <div className="flex items-center gap-2 px-3 py-2 rounded-md text-sm"
+                        role="status" aria-live="polite"
+                        style={{
+                          backgroundColor: 'var(--color-warning-soft)',
+                          color: 'var(--color-text-secondary)',
+                          border: '1px solid var(--color-border-muted)',
+                        }}>
+                        <AlertTriangle aria-hidden="true" className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-warning)' }} />
+                        <span className="flex-1 min-w-0">
+                          {t('chat.modelTroubleSuggestion', {
+                            from: fallbackSuggestion.fromModel,
+                            to: fallbackSuggestion.toModel,
+                          })}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleSwitchModel(fallbackSuggestion.toModel)}
+                          className="text-xs font-medium whitespace-nowrap rounded-md px-2.5 py-1 flex-shrink-0 hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] focus-visible:ring-offset-1"
+                          style={{
+                            backgroundColor: 'var(--color-accent-primary)',
+                            color: 'var(--color-text-on-accent)',
+                          }}
+                        >
+                          {t('chat.switchToModel', { model: fallbackSuggestion.toModel })}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={clearFallbackSuggestion}
+                          aria-label={t('common.close')}
+                          className="p-1 rounded flex-shrink-0 hover:opacity-70"
+                          style={{ color: 'var(--color-text-tertiary)' }}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    )}
                     {/* Tail mode: main turn finished but a dispatched subagent is
                         still running in the backend. Independent of stop. */}
                     {hasActiveSubagents && !isLoading && (
@@ -2965,6 +3063,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                       tokenUsage={tokenUsage}
                       onAction={handleAction}
                       initialModel={lastThreadModel}
+                      onModelChange={setInputModel}
                       threadModels={threadModels}
                       mode={isFlashMode ? 'fast' : 'ptc'}
                     />

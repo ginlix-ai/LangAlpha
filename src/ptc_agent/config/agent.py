@@ -262,6 +262,9 @@ class AgentConfig(BaseModel):
     )
     subsidiary_llm_clients: dict[str, Any] = Field(default_factory=dict, exclude=True)
     fallback_llm_clients: list[Any] | None = Field(default=None, exclude=True)  # Pre-resolved fallback instances
+    # Display names aligned index-for-index with ``fallback_llm_clients``
+    # (skipped fallbacks drop from both lists).
+    fallback_llm_names: list[str] | None = Field(default=None, exclude=True)
     # Forwarded by ``get_llm_client()`` to ``create_llm(cache_key=...)`` for
     # the lazy factory path.
     cache_key: str | None = Field(default=None, exclude=True)

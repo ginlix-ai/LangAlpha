@@ -709,6 +709,7 @@ async def _resolve_fallback_clients(
             return model_name, None
 
     merged_fallbacks = []
+    merged_fallback_names = []
     byok_count = 0
     # Resolve concurrently; append in declared order to preserve fallback priority.
     for model_name, fc in await asyncio.gather(
@@ -718,6 +719,7 @@ async def _resolve_fallback_clients(
             continue
         if fc.client is not None:
             merged_fallbacks.append(fc.client)
+            merged_fallback_names.append(model_name)
             if fc.credential_source in (CredentialSource.OAUTH, CredentialSource.BYOK):
                 byok_count += 1
         elif fc.model_source is not None and fc.model_source != ModelSource.SYSTEM:
@@ -731,6 +733,7 @@ async def _resolve_fallback_clients(
 
     if merged_fallbacks:
         config.fallback_llm_clients = merged_fallbacks
+        config.fallback_llm_names = merged_fallback_names
         if byok_count:
             logger.debug(
                 f"[CHAT] Resolved {byok_count}/{len(fallback_models)} fallback models via OAuth/BYOK"

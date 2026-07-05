@@ -25,7 +25,7 @@ import { computeSteeringBoundary, shouldSkipSteeringRollback } from '../utils/st
 import { bumpThreadNavOrder } from './useNavigationData';
 export { removeStoredThreadId } from './utils/threadStorage';
 import { createUserMessage, createAssistantMessage, createNotificationMessage, appendMessage, updateMessage, type AttachmentMeta } from './utils/messageHelpers';
-import type { ChatMessage, AssistantMessage, UserMessage } from '@/types/chat';
+import type { ChatMessage, AssistantMessage, UserMessage, NotificationSegment } from '@/types/chat';
 import type { ActionRequest, ToolCallData, TodoItem } from '@/types/sse';
 import type { HtmlWidgetData, PreviewData } from './utils/types';
 import { createRecentlySentTracker } from './utils/recentlySentTracker';
@@ -191,6 +191,75 @@ interface SSEEvent {
   is_shared?: boolean;
   run_id?: string;
   [key: string]: unknown;
+}
+
+/**
+ * Transient model-resilience status surfaced as a pill above the chat input
+ * during streaming: the provider is retrying the current model, or has fallen
+ * back to a secondary. Cleared on the first content/tool event, on error, on
+ * stream end, and on stop.
+ */
+export type ModelStatus =
+  | { kind: 'retrying'; model: string; attempt: number; maxRetries: number }
+  | { kind: 'fallback'; fromModel: string; toModel: string };
+
+/**
+ * Suggestion surfaced as a pill above the chat input after a turn was
+ * answered by a fallback model: the user-configured `fromModel` had trouble;
+ * offer switching to `toModel`, the model that actually answered.
+ */
+export interface FallbackSuggestion {
+  fromModel: string;
+  toModel: string;
+}
+
+/**
+ * Build the transcript notification segment for a model_fallback event.
+ * Shared by the live-stream and history-replay branches. The expandable
+ * detail carries the failed model's error + HTTP status / attempt count;
+ * `suggestedModel` lets the renderer offer switching to the model that
+ * actually answered.
+ */
+function buildModelFallbackSegment(
+  event: Record<string, unknown>,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+  order: number,
+): NotificationSegment {
+  const fromModel = (event.from_model as string) || '';
+  const toModel = (event.to_model as string) || '';
+  const errText = typeof event.error === 'string' ? event.error.trim() : '';
+  const statusCode = typeof event.status_code === 'number' ? event.status_code : null;
+  const attempts = typeof event.attempts_on_from === 'number' ? event.attempts_on_from : null;
+  const metaBits: string[] = [];
+  if (statusCode != null) metaBits.push(`HTTP ${statusCode}`);
+  if (attempts != null && attempts > 0) metaBits.push(t('chat.modelFallbackAttempts', { count: attempts }));
+  const detail = [metaBits.join(' · '), errText].filter(Boolean).join('\n') || undefined;
+  const segment: NotificationSegment = {
+    type: 'notification',
+    content: t('chat.modelFallbackNotification', { from: fromModel, to: toModel }),
+    order,
+  };
+  if (detail) {
+    segment.detail = detail;
+    segment.detailKind = 'error';
+  }
+  return segment;
+}
+
+/**
+ * Append a notification segment unless one with the same order already exists.
+ * Redelivery guard: a reconnect or replay that re-sends a persisted event
+ * (same _eventId-derived order) must not create a duplicate divider.
+ */
+function appendNotificationSegmentOnce(
+  aMsg: AssistantMessage,
+  segment: NotificationSegment,
+): AssistantMessage {
+  const existing = aMsg.contentSegments || [];
+  if (existing.some((s) => s.type === 'notification' && s.order === segment.order)) {
+    return aMsg;
+  }
+  return { ...aMsg, contentSegments: [...existing, segment] };
 }
 
 /** Model options for send/edit/regenerate. */
@@ -560,6 +629,40 @@ export function useChatMessages(
   // Widen this union when backend adds a new sandbox_state discriminator.
   const [workspaceStarting, setWorkspaceStarting] = useState<false | 'starting' | 'archived'>(false);
   const [isCompacting, setIsCompacting] = useState<string | false>(false);  // Context compaction in progress (summarize/offload)
+  // Transient model-resilience status (retry / fallback) shown as a pill above
+  // the input while streaming. Mirrored in a ref so the clear can be
+  // ref-guarded — avoids a setState on every streamed chunk once it's already
+  // null. Set by model_retry/model_fallback; cleared on first content/tool
+  // event, on error, on stream end, and on stop.
+  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
+  const modelStatusRef = useRef<ModelStatus | null>(null);
+  const applyModelStatus = (status: ModelStatus) => {
+    modelStatusRef.current = status;
+    setModelStatus(status);
+  };
+  const clearModelStatus = () => {
+    if (modelStatusRef.current !== null) {
+      modelStatusRef.current = null;
+      setModelStatus(null);
+    }
+  };
+  // Persistent (until acted on) switch-to-working-model suggestion. Unlike
+  // modelStatus it survives stream end — set by model_fallback (live and
+  // history replay), cleared on error, on a new turn (send/edit/regenerate
+  // and replayed user_message boundaries), on thread switch, and on
+  // dismiss/switch. Chained fallbacks keep the FIRST from-model (the
+  // user-configured one) and track the LATEST to-model (the one answering).
+  const [fallbackSuggestion, setFallbackSuggestion] = useState<FallbackSuggestion | null>(null);
+  const applyFallbackSuggestion = (event: Record<string, unknown>) => {
+    const fromModel = (event.from_model as string) || '';
+    const toModel = (event.to_model as string) || '';
+    if (!toModel) return;
+    setFallbackSuggestion((prev) => ({
+      fromModel: event.from_is_primary === false && prev ? prev.fromModel : fromModel,
+      toModel,
+    }));
+  };
+  const clearFallbackSuggestion = useCallback(() => setFallbackSuggestion(null), []);
   // A message the user pressed Send on while the agent was compacting. Held
   // until compaction finishes (mirrors the backend admission gate, which 409s
   // a POST that arrives mid-compaction), then auto-sent: steered if a turn is
@@ -909,6 +1012,10 @@ export function useChatMessages(
         setMessages([]);
         setThreadModels([]);
         setLastThreadModel(null);
+        setFallbackSuggestion(null);
+        // A mid-retry pill belongs to the thread we're leaving; without this
+        // it would render over thread B until B's next content event.
+        clearModelStatus();
         // A compaction + a message parked during it belong to the thread we're
         // leaving. Clear them so the isCompacting→false flush can never replay
         // thread A's queued payload into thread B (and B doesn't inherit A's
@@ -1064,6 +1171,37 @@ export function useChatMessages(
           return;
         }
 
+        // Persisted model_fallback replays as its transcript notification
+        // divider on the turn's assistant message (no transient pill on reload).
+        // model_retry is not persisted, so there's no replay branch for it.
+        if (eventType === 'model_fallback' && !isSubagent) {
+          // Thread-level switch suggestion — history replays chronologically,
+          // so the last turn's fallbacks win (user_message boundaries and
+          // replayed error events clear it along the way).
+          applyFallbackSuggestion(event);
+          const msgId = currentActivePairIndex !== null
+            ? (assistantMessagesByPair.get(currentActivePairIndex) ?? null) : null;
+          if (msgId) {
+            const order = event._eventId != null
+              ? Number(event._eventId)
+              : (currentActivePairState ? ++currentActivePairState.contentOrderCounter : 0);
+            const segment = buildModelFallbackSegment(event, t, order);
+            setMessages((prev) => updateMessage(prev, msgId, (msg) => {
+              if (msg.role !== 'assistant') return msg;
+              return appendNotificationSegmentOnce(msg as AssistantMessage, segment);
+            }));
+          }
+          return;
+        }
+
+        // An errored turn replays its persisted error event: the fallback
+        // model didn't save the turn, so drop any switch suggestion its
+        // model_fallback events set above. (No other replay reconstruction
+        // happens for error events today — deliberately no `return`.)
+        if (eventType === 'error' && !isSubagent) {
+          setFallbackSuggestion(null);
+        }
+
         // Backward compat: handle old token_usage events from history
         if (eventType === 'token_usage') {
           const callInput = event.input_tokens || 0;
@@ -1148,6 +1286,9 @@ export function useChatMessages(
         // Handle user_message events from history
         // Note: event.content may be empty for HITL resume pairs (plan approval/rejection)
         if (eventType === 'user_message' && hasPairIndex) {
+          // New-turn boundary: the switch suggestion only reflects the most
+          // recent turn, so any earlier turn's fallback suggestion is stale.
+          setFallbackSuggestion(null);
           // Collect LLM models from query metadata (may differ across turns)
           if (event.metadata?.llm_model) {
             const llmModel = event.metadata.llm_model as string;
@@ -3083,6 +3224,7 @@ export function useChatMessages(
     setIsLoading(false);
     setWorkspaceStarting(false);
     setIsCompacting(false);
+    clearModelStatus();
     currentMessageRef.current = null;
     releaseStreamOwnership();
 
@@ -3271,6 +3413,7 @@ export function useChatMessages(
     // abort above unwinds the reader, whose finally still owns and clears it.)
     setWorkspaceStarting(false);
     setIsCompacting(false);
+    clearModelStatus();
     // Drop any message queued during compaction: the user just cancelled, so it
     // must NOT auto-send when the isCompacting→false transition fires the flush
     // effect. dropQueuedSend clears the ref synchronously (before the effect runs
@@ -3650,6 +3793,42 @@ export function useChatMessages(
         return;
       }
 
+      // Surface model retry/fallback resilience to the user. Both carry their
+      // own `task:` prefix guard: v1 ignores subagent-attributed events
+      // (agent="task:...") entirely — the pill and transcript notification are
+      // main-agent only.
+      if (eventType === 'model_retry') {
+        if (!isSubagent) {
+          applyModelStatus({
+            kind: 'retrying',
+            model: (event.model as string) || '',
+            attempt: typeof event.attempt === 'number' ? event.attempt : 0,
+            maxRetries: typeof event.max_retries === 'number' ? event.max_retries : 0,
+          });
+        }
+        return;
+      }
+
+      if (eventType === 'model_fallback') {
+        if (!isSubagent) {
+          const fromModel = (event.from_model as string) || '';
+          const toModel = (event.to_model as string) || '';
+          applyModelStatus({ kind: 'fallback', fromModel, toModel });
+          applyFallbackSuggestion(event);
+          // Persistent transcript notification — survives reload via the
+          // persisted model_fallback replay in loadConversationHistory.
+          const order = event._eventId != null
+            ? Number(event._eventId)
+            : ++refs.contentOrderCounterRef.current;
+          const segment = buildModelFallbackSegment(event, t, order);
+          setMessages((prev) => updateMessage(prev, assistantMessageId, (msg) => {
+            if (msg.role !== 'assistant') return msg;
+            return appendNotificationSegmentOnce(msg as AssistantMessage, segment);
+          }));
+        }
+        return;
+      }
+
       // Handle provenance events BEFORE the isSubagent filter so subagent-emitted
       // accessed-data records still attach to the main turn's assistant message
       // (with their `agent="task:..."` attribution preserved on the record).
@@ -3742,6 +3921,9 @@ export function useChatMessages(
       }
 
       if (eventType === 'message_chunk') {
+        // First content of the (possibly retried/fell-back) model call — the
+        // transient retry/fallback pill has served its purpose.
+        clearModelStatus();
         const contentType = event.content_type || 'text';
         const eventId = event._eventId as number | undefined;
 
@@ -3788,6 +3970,10 @@ export function useChatMessages(
         // Skip other content types
         return;
       } else if (eventType === 'error' || event.error) {
+        // The turn failed — clear any lingering retry/fallback pill, and any
+        // switch suggestion (the fallback model didn't save the turn either).
+        clearModelStatus();
+        setFallbackSuggestion(null);
         const errorMessage = event.error || event.message || 'An error occurred while processing your request.';
         // Backend (streaming_handler.format_error_event) enriches the event
         // with ``error_kind``, ``status_code`` and ``hints``. We route the
@@ -3797,6 +3983,21 @@ export function useChatMessages(
         //   - internal → banner near the chat input (our service failed;
         //     don't pollute the conversation history)
         const kind = event.error_kind as 'upstream' | 'internal' | undefined;
+        // Models the resilience middleware tried this turn (primary + fallbacks).
+        // Type-filtered defensively — the backend fields may be absent or partial.
+        const attemptedModels = Array.isArray(event.attempted_models)
+          ? (event.attempted_models as unknown[])
+              .filter((m): m is Record<string, unknown> => !!m && typeof m === 'object')
+              .map((m) => ({
+                model: typeof m.model === 'string' ? (m.model as string) : '',
+                error: typeof m.error === 'string' ? (m.error as string) : undefined,
+                statusCode: typeof m.status_code === 'number'
+                  ? (m.status_code as number)
+                  : (m.status_code === null ? null : undefined),
+                attempts: typeof m.attempts === 'number' ? (m.attempts as number) : undefined,
+              }))
+              .filter((m) => m.model)
+          : undefined;
         const structured: StructuredError | undefined =
           kind === 'upstream' || kind === 'internal'
             ? {
@@ -3810,6 +4011,10 @@ export function useChatMessages(
                 hints: kind === 'upstream' && Array.isArray(event.hints)
                   ? (event.hints.filter(isUpstreamHint) as StructuredError['hints'])
                   : undefined,
+                // User-configured model + the full attempt list, so the display
+                // can show a model-aware headline and an "Also tried" line.
+                model: typeof event.model === 'string' ? event.model : undefined,
+                attemptedModels: attemptedModels && attemptedModels.length > 0 ? attemptedModels : undefined,
               }
             : undefined;
 
@@ -3997,6 +4202,8 @@ export function useChatMessages(
         }
         return;
       } else if (eventType === 'tool_calls') {
+        // A tool call means the model call succeeded — drop the retry/fallback pill.
+        clearModelStatus();
         handleToolCalls({
           assistantMessageId,
           toolCalls: (event.tool_calls || []) as unknown as Record<string, unknown>[],
@@ -4014,6 +4221,8 @@ export function useChatMessages(
           }
         }
       } else if (eventType === 'tool_call_result') {
+        // A tool result means the turn is producing output — drop the pill.
+        clearModelStatus();
         // Check if this resolves an unresolved interrupt from history replay (FIFO array matching)
         const unresolvedList = refs.unresolvedHistoryInterruptRef?.current as HistoryInterruptInfo[] | undefined;
         if (unresolvedList && unresolvedList.length > 0 && typeof event.content === 'string') {
@@ -4692,6 +4901,7 @@ export function useChatMessages(
 
     setIsLoading(true);
     setMessageError(null);
+    setFallbackSuggestion(null);
     setHasActiveSubagents(false);
     completedTaskIdsRef.current.clear();
     // Clear the stopped guard so a fresh send can finalize again on stop.
@@ -4954,6 +5164,10 @@ export function useChatMessages(
 
     setIsLoading(true);
     setMessageError(null);
+    // New-run boundary like send/edit/regenerate: a pre-interrupt fallback
+    // suggestion would go stale if the resumed run's model calls (which start
+    // from the primary again) succeed; a re-fired model_fallback re-sets it.
+    setFallbackSuggestion(null);
     wasStoppedRef.current = false;
     backgroundReconnectRef.current = false;
     acquireStreamOwnership(threadId);
@@ -5341,6 +5555,7 @@ export function useChatMessages(
 
     setIsLoading(true);
     setMessageError(null);
+    setFallbackSuggestion(null);
     setHasActiveSubagents(false);
     completedTaskIdsRef.current.clear();
     wasStoppedRef.current = false;
@@ -5516,6 +5731,7 @@ export function useChatMessages(
     const snapshotMessages = messages;
     setIsLoading(true);
     setMessageError(null);
+    setFallbackSuggestion(null);
     const editedUserMsg = createUserMessage(newContent);
     setMessages((prev) => [
       ...prev.slice(0, msgIndex),
@@ -5559,6 +5775,7 @@ export function useChatMessages(
     const snapshotMessages = messages;
     setIsLoading(true);
     setMessageError(null);
+    setFallbackSuggestion(null);
     setMessages((prev) => [
       ...prev.slice(0, msgIndex),
       createAssistantMessage(`assistant-pending-${Date.now()}`),
@@ -5665,6 +5882,9 @@ export function useChatMessages(
     queuedSend,
     isLoadingHistory,
     isReconnecting,
+    modelStatus,
+    fallbackSuggestion,
+    clearFallbackSuggestion,
     reconnectIfStaleRun: reportBackWatch.reconnectIfStaleRun,
     messageError,
     returnedSteering,

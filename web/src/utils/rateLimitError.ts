@@ -61,6 +61,12 @@ export interface StructuredError {
   statusCode?: number;
   /** Bulleted guidance to render under the message. */
   hints?: UpstreamErrorHint[];
+  /** User-configured (primary) model name, when the failure is model-attributable.
+   *  Drives the model-aware error headline. */
+  model?: string;
+  /** Every model the resilience middleware attempted this turn (primary +
+   *  fallbacks). When more than one, the display shows an "Also tried" line. */
+  attemptedModels?: Array<{ model: string; error?: string; statusCode?: number | null; attempts?: number }>;
 }
 
 export function buildRateLimitError(
