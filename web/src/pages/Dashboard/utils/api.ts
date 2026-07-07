@@ -4,10 +4,19 @@
  */
 import { api } from '@/api/client';
 import { utcMsToETDate, utcMsToETTime } from '@/lib/utils';
+import { normalizeIndexKey } from '@/lib/marketUtils';
+import { snapshotToStockPrice } from '@/lib/quotes/quoteAdapters';
+import { getSnapshotIndexes, getSnapshotStocks } from '@/lib/quotes/snapshotApi';
+import type { SnapshotEntry, SnapshotResponse } from '@/lib/quotes/snapshotApi';
 import type { IndexData, SparklinePoint } from '@/types/market';
 import * as portfolioApi from './portfolio';
 import * as watchlistApi from './watchlist';
 import * as watchlistItemsApi from './watchlistItems';
+
+// Snapshot batch primitives moved to lib/quotes (breaking the lib→page cycle);
+// re-exported here for back-compat with existing Dashboard callers/tests.
+export { getSnapshotIndexes, getSnapshotStocks };
+export type { SnapshotEntry, SnapshotResponse };
 
 // --- Interfaces ---
 
@@ -30,23 +39,6 @@ interface StockPrice {
   previousClose?: number | null;
   earlyTradingChangePercent?: number | null;
   lateTradingChangePercent?: number | null;
-}
-
-interface SnapshotEntry {
-  symbol: string;
-  name?: string;
-  price?: number;
-  change?: number;
-  change_percent?: number;
-  previous_close?: number;
-  early_trading_change_percent?: number;
-  late_trading_change_percent?: number;
-}
-
-interface SnapshotResponse {
-  snapshots?: SnapshotEntry[];
-  results?: SnapshotEntry[];
-  data?: SnapshotEntry[];
 }
 
 interface IndicesResult {
@@ -83,9 +75,8 @@ interface EarningsResponse {
 const INDEX_SYMBOLS: string[] = ['GSPC', 'IXIC', 'DJI', 'RUT', 'VIX'];
 const INDEX_NAMES: Record<string, string> = { GSPC: 'S&P 500', IXIC: 'NASDAQ', DJI: 'Dow Jones', RUT: 'Russell 2000', VIX: 'VIX' };
 
-function normalizeIndexSymbol(s: string): string {
-  return String(s).replace(/^\^/, '').toUpperCase();
-}
+// Trim + strip a leading '^' + uppercase — the shared symbol-key normalizer.
+const normalizeIndexSymbol = normalizeIndexKey;
 
 function fallbackIndex(norm: string): IndexData {
   return {
@@ -168,6 +159,48 @@ export async function getIndex(symbol: string, _opts: Record<string, unknown> = 
   }
 }
 
+/** Minimal snapshot shape buildIndexData reads — satisfied by both the local
+ *  SnapshotEntry and the quote layer's QuoteRow (whose price is nullable). */
+interface IndexSnapshotLike {
+  symbol?: string;
+  name?: string;
+  price?: number | null;
+  change?: number | null;
+  change_percent?: number | null;
+  previous_close?: number | null;
+}
+
+/**
+ * Build one IndexData card from a raw index snapshot + its sparkline.
+ * Index prices are never legitimately 0; a zero/negative price means a partial
+ * provider snapshot, so it's treated as no quote (renders N/A, not a fake 0.00).
+ * Shared by getIndices and the quote-layer-driven useDashboardData.
+ */
+export function buildIndexData(
+  norm: string,
+  snap: IndexSnapshotLike | undefined,
+  sparklineData: SparklinePoint[] = [],
+  asOfDate?: string,
+): IndexData {
+  if (snap && snap.price != null && snap.price > 0) {
+    const change = snap.change ?? 0;
+    const changePct = snap.change_percent ?? (snap.previous_close ? ((change / snap.previous_close) * 100) : 0);
+    return {
+      symbol: norm,
+      name: INDEX_NAMES[norm] ?? snap.name ?? norm,
+      price: Math.round(snap.price * 100) / 100,
+      change: Math.round(change * 100) / 100,
+      changePercent: Math.round(changePct * 100) / 100,
+      isPositive: change >= 0,
+      previousClose: snap.previous_close ?? null,
+      sparklineData,
+      quoteAvailable: true,
+      asOfDate,
+    };
+  }
+  return { ...fallbackIndex(norm), sparklineData, asOfDate };
+}
+
 /**
  * Fetches indices data: snapshot batch for price/change, intraday for sparklines.
  * Returns { indices, failedCount }.
@@ -197,29 +230,9 @@ export async function getIndices(symbols: string[] = INDEX_SYMBOLS, _opts: Recor
 
   let failedCount = 0;
   const indices: IndexData[] = list.map((norm: string) => {
-    const snap = snapshotMap[norm];
-    // Index prices are never legitimately 0; a zero/negative price means a
-    // partial provider snapshot (e.g. yfinance coercing a missing lastPrice to
-    // 0). Treat it as no quote so the card renders N/A instead of a fake
-    // "0.00 / +0.00%" — the same symptom #287 set out to kill.
-    if (snap && snap.price != null && snap.price > 0) {
-      const change = snap.change ?? 0;
-      const changePct = snap.change_percent ?? (snap.previous_close ? ((change / snap.previous_close) * 100) : 0);
-      return {
-        symbol: norm,
-        name: INDEX_NAMES[norm] ?? snap.name ?? norm,
-        price: Math.round(snap.price * 100) / 100,
-        change: Math.round(change * 100) / 100,
-        changePercent: Math.round(changePct * 100) / 100,
-        isPositive: change >= 0,
-        previousClose: snap.previous_close ?? null,
-        sparklineData: sparklineMap[norm] || [],
-        quoteAvailable: true,
-        asOfDate: asOfMap[norm],
-      };
-    }
-    failedCount++;
-    return { ...fallbackIndex(norm), sparklineData: sparklineMap[norm] || [], asOfDate: asOfMap[norm] };
+    const idx = buildIndexData(norm, snapshotMap[norm], sparklineMap[norm] || [], asOfMap[norm]);
+    if (!idx.quoteAvailable) failedCount++;
+    return idx;
   });
 
   return { indices, failedCount };
@@ -332,45 +345,6 @@ export async function deleteWatchlistItem(itemId: string, watchlistId: string = 
   return watchlistItemsApi.deleteWatchlistItem(watchlistId, itemId);
 }
 
-// --- Snapshot & market status ---
-
-/**
- * GET /api/v1/market-data/snapshots/indexes?symbols=GSPC,IXIC,...
- * Returns batch snapshot for index symbols.
- */
-export async function getSnapshotIndexes(symbols: string[] = INDEX_SYMBOLS): Promise<SnapshotResponse> {
-  const list = symbols.map((s: string) => normalizeIndexSymbol(String(s).trim()));
-  try {
-    const { data } = await api.get('/api/v1/market-data/snapshots/indexes', {
-      params: { symbols: list.join(',') },
-    });
-    return data || {};
-  } catch (e: unknown) {
-    const err = e as { message?: string };
-    console.error('[API] getSnapshotIndexes failed:', err?.message);
-    return {};
-  }
-}
-
-/**
- * GET /api/v1/market-data/snapshots/stocks?symbols=AAPL,TSLA,...
- * Returns batch snapshot for stock symbols.
- */
-export async function getSnapshotStocks(symbols: string[]): Promise<SnapshotResponse> {
-  const list = [...(symbols || [])].map((s: string) => String(s).trim().toUpperCase()).filter(Boolean);
-  if (!list.length) return {};
-  try {
-    const { data } = await api.get('/api/v1/market-data/snapshots/stocks', {
-      params: { symbols: list.join(',') },
-    });
-    return data || {};
-  } catch (e: unknown) {
-    const err = e as { message?: string };
-    console.error('[API] getSnapshotStocks failed:', err?.message);
-    return {};
-  }
-}
-
 // --- Stock prices (batch, for watchlist) ---
 
 const DEFAULT_WATCHLIST_SYMBOLS: string[] = ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'TSLA'];
@@ -404,28 +378,12 @@ export async function getStockPrices(symbols: string[]): Promise<StockPrice[]> {
       ? Object.fromEntries(snapList.map((s: SnapshotEntry) => [String(s.symbol).toUpperCase(), s]))
       : {};
 
-    return list.map((sym: string) => {
-      const snap = snapMap[sym];
-      if (snap && snap.price != null) {
-        const change = snap.change ?? 0;
-        const changePct = snap.change_percent ?? 0;
-        return {
-          symbol: sym,
-          price: Math.round(snap.price * 100) / 100,
-          change: Math.round(change * 100) / 100,
-          changePercent: Math.round(changePct * 100) / 100,
-          isPositive: change >= 0,
-          quoteAvailable: true,
-          previousClose: snap.previous_close ?? null,
-          earlyTradingChangePercent: snap.early_trading_change_percent ?? null,
-          lateTradingChangePercent: snap.late_trading_change_percent ?? null,
-        };
-      }
-      return { symbol: sym, price: 0, change: 0, changePercent: 0, isPositive: true, quoteAvailable: false };
-    });
+    // snapshotToStockPrice is the byte-for-byte equivalent of the old inline
+    // transform — the one source for raw-snapshot → StockPrice.
+    return list.map((sym: string) => snapshotToStockPrice(sym, snapMap[sym]));
   } catch (e: unknown) {
     console.error('[API] getStockPrices failed:', e instanceof Error ? e.message : String(e));
-    return list.map((sym: string) => ({ symbol: sym, price: 0, change: 0, changePercent: 0, isPositive: true, quoteAvailable: false }));
+    return list.map((sym: string) => snapshotToStockPrice(sym, null));
   }
 }
 

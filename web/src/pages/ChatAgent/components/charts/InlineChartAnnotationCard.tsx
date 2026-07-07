@@ -36,7 +36,7 @@ import {
   useDisplayCleared,
 } from '@/pages/MarketView/stores/chartAnnotationStore';
 import { useStockBars } from '@/pages/MarketView/hooks/useStockBars';
-import { AUTO_FIT_BARS, INTERVAL_LABEL } from '@/pages/MarketView/utils/chartConstants';
+import { AUTO_FIT_BARS, INTERVAL_LABEL } from '@/lib/bars';
 import { describeAnnotationVisual } from '@/pages/MarketView/utils/annotationGeometry';
 
 import { useWorkspaceId } from '../../contexts/WorkspaceContext';

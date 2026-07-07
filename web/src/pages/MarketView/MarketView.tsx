@@ -9,7 +9,7 @@ import type { MarketChartHandle } from './components/MarketChart';
 import ChatInput from '../../components/ui/chat-input';
 import MarketChatPanel from './components/MarketChatPanel';
 import MarketSidebarPanel from './components/MarketSidebarPanel';
-import { INTERVALS, supports1sInterval } from './utils/chartConstants';
+import { INTERVALS } from './utils/chartConstants';
 import { useMarketChat } from './hooks/useMarketChat';
 import { getWorkspaces } from '../ChatAgent/utils/api';
 import { attachmentsToContexts } from '../ChatAgent/utils/fileUpload';
@@ -126,7 +126,12 @@ function MarketViewInner() {
   });
 
   const [chartMeta, setChartMeta] = useState<Record<string, unknown> | null>(null);
-  const [selectedInterval, setSelectedInterval] = useState<string>(() => loadPref('interval', '1day'));
+  const [selectedInterval, setSelectedInterval] = useState<string>(() => {
+    // Sanitize the stored pref: a since-removed interval (e.g. '1s') falls
+    // back to the default instead of leaving the chart on an unknown key.
+    const stored = loadPref('interval', '1day');
+    return INTERVALS.some(({ key }) => key === stored) ? stored : '1day';
+  });
   const chartRef = useRef<MarketChartHandle>(null);
   const [chartImage, setChartImage] = useState<string | null>(null);       // base64 data URL
   const [chartImageDesc, setChartImageDesc] = useState<string | null>(null); // text description for LLM
@@ -163,13 +168,6 @@ function MarketViewInner() {
   // Persist user preferences to localStorage (dedicated effects — no other side effects)
   useEffect(() => { savePref('symbol', selectedStock); }, [selectedStock]);
   useEffect(() => { savePref('interval', selectedInterval); }, [selectedInterval]);
-
-  // Auto-downgrade 1s → 1m when the current symbol doesn't support 1s
-  useEffect(() => {
-    if (selectedInterval === '1s' && !supports1sInterval(selectedStock)) {
-      setSelectedInterval('1min');
-    }
-  }, [selectedStock, selectedInterval]);
 
   useEffect(() => {
     setQuickQueries(pickRandomQueries(selectedStock));
@@ -624,7 +622,6 @@ function MarketViewInner() {
               snapshot={snapshotData}
               liveTick={wsPrices.get(selectedStock)?.barData || null}
               wsStatus={wsStatus}
-              ginlixDataEnabled={ginlixDataEnabled}
               marketStatus={marketStatus}
             />
           </div>
@@ -754,7 +751,6 @@ function MarketViewInner() {
                   snapshot={snapshotData}
                   liveTick={wsPrices.get(selectedStock)?.barData || null}
                   wsStatus={wsStatus}
-                  ginlixDataEnabled={ginlixDataEnabled}
                   marketStatus={marketStatus}
                 />
               </div>

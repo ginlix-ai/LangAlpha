@@ -1,4 +1,5 @@
 import React from 'react';
+import { currencySymbol } from '@/lib/bars';
 import './CrosshairTooltip.css';
 
 interface TooltipData {
@@ -20,9 +21,13 @@ interface CrosshairTooltipProps {
   enabledMaPeriods: number[];
   containerWidth?: number;
   containerHeight?: number;
+  /** ISO currency code — prefixes O/H/L/C with its symbol when provided. */
+  currency?: string;
+  /** Price decimal places (defaults to 2). */
+  decimals?: number;
 }
 
-function CrosshairTooltip({ visible, x, y, data, enabledMaPeriods: _enabledMaPeriods, containerWidth, containerHeight }: CrosshairTooltipProps) {
+function CrosshairTooltip({ visible, x, y, data, enabledMaPeriods: _enabledMaPeriods, containerWidth, containerHeight, currency, decimals }: CrosshairTooltipProps) {
   if (!visible || !data) return null;
 
   const isUp = data.close >= data.open;
@@ -34,7 +39,9 @@ function CrosshairTooltip({ visible, x, y, data, enabledMaPeriods: _enabledMaPer
   const clampedX = Math.min(Math.max(x + 16, 0), (containerWidth || 800) - tooltipWidth - 8);
   const clampedY = Math.min(Math.max(y - 10, 0), (containerHeight || 500) - tooltipHeight - 8);
 
-  const formatPrice = (v: number | null | undefined): string => v != null ? v.toFixed(2) : '\u2014';
+  const priceDecimals = typeof decimals === 'number' && decimals >= 0 ? decimals : 2;
+  const priceSymbol = currency ? currencySymbol(currency) : '';
+  const formatPrice = (v: number | null | undefined): string => v != null ? `${priceSymbol}${v.toFixed(priceDecimals)}` : '\u2014';
   const formatVol = (v: number | null | undefined): string => {
     if (v == null) return '\u2014';
     if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
@@ -45,7 +52,9 @@ function CrosshairTooltip({ visible, x, y, data, enabledMaPeriods: _enabledMaPer
   const formatDate = (ts: number | null | undefined): string => {
     if (!ts) return '';
     const d = new Date(ts * 1000);
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    // Chart times encode venue wall clock as fake UTC — read them back in UTC.
+    // A browser-local read shifts the date for users away from the venue.
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
   };
 
   return (

@@ -8,23 +8,29 @@ import { fetchStockData } from '../utils/api';
 import {
   centerLatestBarView,
   computeInitialLoadRange,
-  consumePrefetchBuffer,
   dedupeMergeByTime,
-  etDateStr,
   rangeBeforeOldest,
 } from '../utils/chartDataLoaders';
+import { applyQuoteToDailyBar, foldMinuteBar, formatPrice, useCurrencyDisplay, useLiveBars } from '@/lib/bars';
+import { timezoneForSymbol } from '@/lib/bars/exchanges';
+import { RANGE_PRESETS, rangeStartChartSec } from '@/lib/bars/rangePresets';
+import type { RangePreset } from '@/lib/bars/rangePresets';
+import { chartSecToDateStr, dateStrInTz } from '@/lib/utils';
+import VenueClock from './VenueClock';
+import { useQuote } from '@/lib/quotes';
 import { calculateMA, calculateRSI, updateRSIIncremental } from '../utils/chartHelpers';
 import type { RSIState, OHLCDataPoint } from '../utils/chartHelpers';
 import {
   getChartTheme,
   INTERVALS, PRIMARY_INTERVAL_KEYS, SCROLL_CHUNK_DAYS,
   SCROLL_LOAD_THRESHOLD, RANGE_CHANGE_DEBOUNCE_MS,
-  STAGE2_BACKFILL_DAYS, PREFETCH_ENABLED_INTERVALS, PREFETCH_THRESHOLD,
+  STAGE2_BACKFILL_DAYS,
   MA_CONFIGS, DEFAULT_ENABLED_MA, RSI_PERIODS, BARS_PER_DAY, TARGET_BAR_SPACING,
+  INTERVAL_SECONDS, WS_FOLD_INTERVALS,
   OVERLAY_COLORS, OVERLAY_LABELS,
   EXTENDED_HOURS_INTERVALS, getExtendedHoursType, computeExtendedHoursRegions,
   EXT_COLOR_PRE, EXT_COLOR_POST,
-  isUSEquity, supports1sInterval,
+  isUSEquity,
 } from '../utils/chartConstants';
 import type { ChartDataPoint as ChartConstDataPoint } from '../utils/chartConstants';
 import { ExtendedHoursBgPrimitive } from '../utils/extendedHoursBg';
@@ -97,7 +103,6 @@ interface MarketChartProps {
   stockMeta: Record<string, unknown> | null;
   liveTick: BarData | null;
   wsStatus: string;
-  ginlixDataEnabled?: boolean;
   marketStatus?: Record<string, unknown> | null;
   snapshot: SnapshotData | null;
 }
@@ -138,7 +143,6 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
   stockMeta,
   liveTick,
   wsStatus: _wsStatus,
-  ginlixDataEnabled = true,
   marketStatus,
   snapshot,
 }, ref) => {
@@ -171,6 +175,18 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
   const [error, setError] = useState<string | null>(null);
   const [_lastUpdateTime, setLastUpdateTime] = useState<Date | null>(null);
   const [rsiValue, setRsiValue] = useState<string | null>(null);
+
+  // Bottom-bar viewing-window preset (1D 5D … All). `activeRange` is the
+  // highlighted button; `pendingRangeRef` carries a clicked preset across the
+  // interval switch it triggers, so the load that follows applies the preset's
+  // window instead of the default view.
+  const [activeRange, setActiveRange] = useState<string | null>(null);
+  const pendingRangeRef = useRef<string | null>(null);
+  useEffect(() => {
+    // A preset describes a view of the symbol it was clicked on.
+    setActiveRange(null);
+    pendingRangeRef.current = null;
+  }, [symbol]);
 
   // MA / RSI config state (persisted)
   const [enabledMaPeriods, setEnabledMaPeriods] = useState<number[]>(() => loadPref('maPeriods', DEFAULT_ENABLED_MA));
@@ -281,8 +297,14 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
   const gapFillDoneRef = useRef<boolean>(false);  // gap fill between REST data and first WS tick
   const gapFillRetryRef = useRef<number>(0);    // retry count for gap fill attempts
   const gapFillInProgressRef = useRef<boolean>(false);  // prevent concurrent gap fill fetches
-  // Aggregation buffer for building 1m candles from 1s WS ticks
+  // Aggregation buffer for building 1m candles from second-level WS ticks
   const minuteAggRef = useRef<ChartDataBar>({ time: 0, open: 0, high: 0, low: 0, close: 0, volume: 0 });
+
+  // Currency-aware price labels — the hook owns the {state + mirrored ref} pair,
+  // the symbol-reset, and the protocol-meta upgrade. `priceFormatRef` feeds the
+  // chart's (creation-time) price formatter so the axis follows the currency
+  // without re-creating the series.
+  const { displayCurrency, priceFormatRef, onCurrencyMeta } = useCurrencyDisplay(symbol);
 
   // Refs for scroll-based loading
   const allDataRef = useRef<ChartDataBar[]>([]);
@@ -291,11 +313,8 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
   const rangeChangeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rangeUnsubRef = useRef<(() => void) | null>(null);
 
-  // Refs for staged loading and background prefetch
+  // Ref for the staged (stage 2) background backfill
   const stage2AbortRef = useRef<AbortController | null>(null);
-  const prefetchAbortRef = useRef<AbortController | null>(null);
-  const prefetchedDataRef = useRef<{ data: ChartDataBar[]; anchorOldest: number } | null>(null);
-  const prefetchingRef = useRef<boolean>(false);
 
   // Chart data state for hooks
   const [chartDataForHooks, setChartDataForHooks] = useState<ChartDataBar[]>([]);
@@ -310,8 +329,9 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
   // drawing (data stays in the store) until the user re-opens the artifact.
   //
   // The agent can only draw on VALID_TIMEFRAMES, so it stores under the
-  // normalized timeframe (e.g. '1s' -> '1day'). Look annotations up under the
-  // same normalized key, or they are invisible on non-agent-writable intervals.
+  // normalized timeframe (unknown intervals -> '1day'). Look annotations up
+  // under the same normalized key, or they are invisible on non-agent-writable
+  // intervals.
   const annotationInterval = normalizeTimeframe(interval);
   const selectionSymbol = symbol ? symbol.toUpperCase() : '';
   const { selections: userSelections, activeId: editorOpenId } = useChartSelections();
@@ -560,11 +580,16 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     selectionPrimitiveRef.current?.setDraft(null);
   }, []);
 
-  // --- Live tick updates from WS (1s and 1min intervals, custom/Light mode only) ---
+  // --- Live tick updates from WS (custom/Light mode only) ---
+  // 1min aggregates the second-level WS ticks into its forming bar natively;
+  // 5min–4hour fold the finer WS aggregate into the coarser forming bucket.
+  // 1day uses the quote layer (a separate effect below). Everything else has
+  // no live feed.
   useEffect(() => {
     if (!liveTick || !candlestickSeriesRef.current) return;
-    // Only apply live updates for 1s/1min interval in custom (Light) mode
-    if ((interval !== '1s' && interval !== '1min') || effectiveChartMode !== 'custom') return;
+    if (effectiveChartMode !== 'custom') return;
+    const isFoldInterval = WS_FOLD_INTERVALS.has(interval);
+    if (interval !== '1min' && !isFoldInterval) return;
 
     const { time, open, high, low, close, volume } = liveTick;
     if (!time || close == null) return;
@@ -574,13 +599,51 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     // Track when WS last delivered a usable tick (used by REST polling fallback)
     lastLiveTickTimeRef.current = Date.now();
 
+    // Coarser intervals (5min–4hour): fold the finer WS aggregate into the
+    // forming bucket rather than appending it natively. foldMinuteBar returns a
+    // NEW array only when the forming bar actually changed (in-bucket OHLCV
+    // update, or a rollover append); a late/out-of-order tick returns the same
+    // ref → no-op. We drive the forming bar with a surgical series.update() so
+    // zoom is preserved; MA/RSI/extended-hours on the forming bar refresh on
+    // bucket rollover and on the periodic reconcile poll (≤60s), which also
+    // corrects any fold drift.
+    if (isFoldInterval) {
+      const folded = foldMinuteBar(data, { time, open, high, low, close, volume }, INTERVAL_SECONDS[interval]);
+      if (folded !== data) {
+        allDataRef.current = folded;
+        if (folded.length !== data.length) {
+          // Bucket rollover — the previous bar just finalized. Full redraw so
+          // MA/RSI/ext-hours extend past it; while WS stays healthy the REST
+          // poll runs only as the ≤60s reconcile, so nothing else recomputes
+          // them promptly. Once per bucket (5–240 min) and updateSeriesData
+          // never touches the zoom.
+          updateSeriesData(folded);
+          return;
+        }
+        const head = folded[folded.length - 1];
+        candlestickSeriesRef.current.update({
+          time: head.time, open: head.open, high: head.high, low: head.low, close: head.close,
+        });
+        if (volumeSeriesRef.current) {
+          const ct = ctRef.current;
+          const ext = isUSEquity(symbolRef.current) && EXTENDED_HOURS_INTERVALS.has(interval) && getExtendedHoursType(head.time);
+          const up = head.close >= head.open;
+          volumeSeriesRef.current.update({
+            time: head.time,
+            value: head.volume,
+            color: ext ? (up ? ct.extVolumeUp : ct.extVolumeDown) : (up ? ct.upColor : ct.downColor),
+          });
+        }
+      }
+      return;
+    }
+
     // Gap fill: if there's a gap between REST data and first WS tick,
     // fetch REST data to fill it.  Retries up to 3 times with concurrency guard.
-    // Threshold: 5 seconds for 1s, 120s for 1min.
     if (!gapFillDoneRef.current && !gapFillInProgressRef.current && data.length > 0) {
       const lastDataTime = data[data.length - 1].time;
       const gapSec = time - lastDataTime;
-      const gapThreshold = interval === '1s' ? 5 : 120;
+      const gapThreshold = 120;
       if (gapSec > gapThreshold) {
         gapFillRetryRef.current += 1;
         if (gapFillRetryRef.current > 3) {
@@ -589,11 +652,16 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
           gapFillInProgressRef.current = true;
           (async () => {
             try {
-              const fromDate = etDateStr(new Date(lastDataTime * 1000));
-              const toDate = etDateStr();
+              // lastDataTime is a chart time (venue wall clock as fake UTC) —
+              // decode its date by reading it in UTC, never via a real tz.
+              const fromDate = chartSecToDateStr(lastDataTime);
+              const toDate = dateStrInTz(new Date(), timezoneForSymbol(symbol));
               const sym = symbol;
-              const result = await fetchStockData(sym, interval, fromDate, toDate);
-              if (symbolRef.current !== sym) return; // symbol changed, discard stale data
+              const iv = interval;
+              const result = await fetchStockData(sym, iv, fromDate, toDate);
+              // symbol OR interval changed mid-flight — bars from another
+              // granularity must not merge into the current series
+              if (symbolRef.current !== sym || intervalRef.current !== iv) return;
               const fillData = result?.data;
               if (Array.isArray(fillData) && fillData.length > 0) {
                 // Merge: insert bars that fill the gap (between old last bar and current last bar)
@@ -633,38 +701,35 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
       }
     }
 
-    // Clear the "waiting for live data" hint once first tick arrives
-    if (interval === '1s' && error) setError(null);
-
-    // Aggregate 1s ticks into 1m candle when on 1min interval
-    let barTime = time, barOpen = open, barHigh = high, barLow = low, barClose = close, barVolume = volume;
-    if (interval === '1min') {
-      const minuteTime = Math.floor(time / 60) * 60;
-      const agg = minuteAggRef.current;
-      if (minuteTime === agg.time) {
-        agg.high = Math.max(agg.high, high);
-        agg.low = Math.min(agg.low, low);
-        agg.close = close;
-        agg.volume += volume;
-      } else {
-        agg.time = minuteTime;
-        agg.open = open;
-        agg.high = high;
-        agg.low = low;
-        agg.close = close;
-        agg.volume = volume;
-      }
-      barTime = agg.time;
-      barOpen = agg.open;
-      barHigh = agg.high;
-      barLow = agg.low;
-      barClose = agg.close;
-      barVolume = agg.volume;
+    // Aggregate second-level WS ticks into the forming 1-minute candle. 1min
+    // is the only interval that reaches here (coarser intervals folded above;
+    // 1day uses the quote layer).
+    const minuteTime = Math.floor(time / 60) * 60;
+    const agg = minuteAggRef.current;
+    if (minuteTime === agg.time) {
+      agg.high = Math.max(agg.high, high);
+      agg.low = Math.min(agg.low, low);
+      agg.close = close;
+      agg.volume += volume;
+    } else {
+      agg.time = minuteTime;
+      agg.open = open;
+      agg.high = high;
+      agg.low = low;
+      agg.close = close;
+      agg.volume = volume;
     }
+    const barTime = agg.time;
+    const barOpen = agg.open;
+    const barHigh = agg.high;
+    const barLow = agg.low;
+    const barClose = agg.close;
+    const barVolume = agg.volume;
 
     // Skip out-of-order ticks — series.update() only accepts time >= last bar.
-    // Guard uses barTime (post-aggregation) rather than raw time to prevent crashes
-    // when switching intervals (e.g. 1s→1min where minute-flooring produces older times).
+    // Guard uses barTime (post-aggregation) rather than raw time to prevent
+    // crashes when minute-flooring produces a time older than the last bar
+    // (e.g. right after an interval switch).
     if (data.length > 0 && barTime < data[data.length - 1].time) return;
 
     // Update candlestick series in-place (same time = update, newer = append)
@@ -721,6 +786,46 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
       }
     }
   }, [liveTick, interval, effectiveChartMode]);
+
+  // --- Live quote fold for the 1day interval ---
+  // Daily bars have no WS aggregate feed, so the head daily bar is kept live by
+  // folding the shared snapshot quote (close/high/low/volume) into it. The quote
+  // cache is itself kept live by WS write-through, so this fires sub-minute. Bar
+  // creation stays REST-owned — update-only via a surgical series.update so zoom
+  // is preserved. Deliberately does NOT touch lastLiveTickTimeRef, so the 60s
+  // REST poll still runs as the authoritative correction (MA/RSI + drift).
+  const { quote: dayQuote } = useQuote(symbol, {
+    isIndex: (symbol ?? '').startsWith('^'),
+    enabled: interval === '1day' && effectiveChartMode === 'custom',
+  });
+  useEffect(() => {
+    if (interval !== '1day' || effectiveChartMode !== 'custom') return;
+    if (!dayQuote || !candlestickSeriesRef.current) return;
+    const prev = allDataRef.current;
+    // Only fold when the head bar IS the current venue session's bar.
+    // Pre-market and on weekends the head bar is the PREVIOUS session's
+    // settled candle — folding a live quote into it corrupts its close/volume
+    // and then fights the 60s poll (which restores it) in a visible
+    // oscillation. The gate compares the head bar's venue date (chart times
+    // encode venue wall clock as fake UTC — decode by reading in UTC) against
+    // "today" on the venue's clock; a mismatch just skips the fold and the
+    // poll alone keeps the bar current.
+    const prevHead = prev[prev.length - 1];
+    const venueToday = dateStrInTz(new Date(), timezoneForSymbol(symbolRef.current));
+    if (!prevHead || chartSecToDateStr(prevHead.time) !== venueToday) return;
+    const folded = applyQuoteToDailyBar(prev, dayQuote);
+    if (folded === prev) return; // no price / empty series → no-op
+    allDataRef.current = folded;
+    const head = folded[folded.length - 1];
+    candlestickSeriesRef.current.update({
+      time: head.time, open: head.open, high: head.high, low: head.low, close: head.close,
+    });
+    if (volumeSeriesRef.current) {
+      const ct = ctRef.current;
+      const up = head.close >= head.open;
+      volumeSeriesRef.current.update({ time: head.time, value: head.volume, color: up ? ct.upColor : ct.downColor });
+    }
+  }, [dayQuote, interval, effectiveChartMode]);
 
   // Temporarily reveal the hidden Light chart for capture, then restore.
   // Since it's behind the TV widget (z-index: -1), no visual flash occurs.
@@ -838,7 +943,12 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
   }));
 
   // --- Extended-hours price lines (close line + colored current-price line) ---
-  const syncExtendedHoursLines = useCallback((lastBarTime: number) => {
+  // `force` re-applies even when the ext type hasn't changed (snapshot updates
+  // move the Close line). Never null currentExtTypeRef externally *to force a
+  // re-sync* — that eats the post→null transition and strands the "Pre"/"After"
+  // title (sticky-pill bug); pass force=true instead. The symbol-switch reset
+  // that nulls it is fine: it does its own full styling + title reset inline.
+  const syncExtendedHoursLines = useCallback((lastBarTime: number, force = false) => {
     const series = candlestickSeriesRef.current;
     if (!series) return;
 
@@ -846,7 +956,7 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     const extType = isExtInterval ? getExtendedHoursType(lastBarTime) : null;
     const prevType = currentExtTypeRef.current;
 
-    if (extType === prevType) return;
+    if (!force && extType === prevType) return;
     currentExtTypeRef.current = extType;
 
     if (extType) {
@@ -893,10 +1003,8 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
   // Re-sync extended-hours close line when quoteData or snapshot changes
   useEffect(() => {
     if (currentExtTypeRef.current) {
-      // Force re-sync by temporarily clearing the cached type
-      currentExtTypeRef.current = null;
       const data = allDataRef.current;
-      if (data.length > 0) syncExtendedHoursLines(data[data.length - 1].time);
+      if (data.length > 0) syncExtendedHoursLines(data[data.length - 1].time, true);
     }
   }, [snapshot?.previous_close, snapshot?.regular_trading_change, syncExtendedHoursLines]);
 
@@ -986,6 +1094,27 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     setChartDataForHooks(data);
   }, []);
 
+  // --- Live forming-bar delta-poll (shared controller) ---
+  // The hook owns the watermark + reconcile cursors; the component owns bar
+  // storage (allDataRef) and the WS tick clock (lastLiveTickTimeRef, written by
+  // the fold effect above). Runs only in the custom (Light) chart mode. See
+  // useLiveBars for the reconcile/skip invariants. `seedMeta` seeds the
+  // watermark + currency from the initial loader's metadata.
+  const { seedMeta } = useLiveBars(symbol, interval, {
+    enabled: effectiveChartMode === 'custom',
+    dataRef: allDataRef,
+    lastWsTickRef: lastLiveTickTimeRef,
+    onMeta: onCurrencyMeta,
+    onBars: (merged) => {
+      updateSeriesData(merged);
+      // Don't re-zoom on poll updates — preserve the user's scroll/zoom.
+      setLastUpdateTime(new Date());
+      setError(null);
+      const latest = merged[merged.length - 1];
+      if (latest && typeof onLatestBar === 'function') onLatestBar(latest);
+    },
+  });
+
   // --- Merge prepended data helper (shared by scroll-load & MA backfill) ---
   const mergePrependedData = (newData: ChartDataBar[] | null | undefined) => {
     if (!newData?.length) return;
@@ -1007,44 +1136,14 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     const sym = symbol;
     const { fromStr, toStr } = rangeBeforeOldest(oldestDateRef.current, days);
 
-    const result = await fetchStockData(sym, interval, fromStr, toStr);
-    if (symbolRef.current !== sym) return; // symbol changed, discard stale data
+    const iv = interval;
+    const result = await fetchStockData(sym, iv, fromStr, toStr);
+    // symbol OR interval changed mid-flight — discard cross-granularity bars
+    if (symbolRef.current !== sym || intervalRef.current !== iv) return;
     const newData = result?.data;
     if (newData && Array.isArray(newData) && newData.length > 0) {
       mergePrependedData(newData);
     }
-  };
-
-  // --- Background prefetch for 1s (pre-load next scroll chunk before user reaches edge) ---
-  const triggerPrefetch = () => {
-    if (!PREFETCH_ENABLED_INTERVALS.has(intervalRef.current)) return;
-    if (prefetchingRef.current || prefetchedDataRef.current) return;
-    if (!oldestDateRef.current) return;
-
-    prefetchingRef.current = true;
-    const capturedOldest = oldestDateRef.current;
-    const capturedSym = symbolRef.current;
-    const capturedInterval = intervalRef.current;
-    const days = SCROLL_CHUNK_DAYS[capturedInterval] || 0;
-
-    prefetchAbortRef.current?.abort();
-    const ac = new AbortController();
-    prefetchAbortRef.current = ac;
-
-    const { fromStr, toStr } = rangeBeforeOldest(capturedOldest, days);
-
-    fetchStockData(capturedSym, capturedInterval, fromStr, toStr, { signal: ac.signal }).then(result => {
-      if (ac.signal.aborted || symbolRef.current !== capturedSym) return;
-      if (result?.data?.length > 0) {
-        prefetchedDataRef.current = { data: result.data, anchorOldest: capturedOldest };
-      }
-    }).catch(err => {
-      if (err?.name !== 'AbortError' && err?.name !== 'CanceledError') {
-        console.warn('Prefetch failed:', err);
-      }
-    }).finally(() => {
-      prefetchingRef.current = false;
-    });
   };
 
   // --- Scroll-based lazy loading ---
@@ -1053,20 +1152,7 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     fetchingRef.current = true;
     setScrollLoading(true);
     try {
-      const bufData = consumePrefetchBuffer(prefetchedDataRef.current, oldestDateRef.current);
-      if (bufData) {
-        // Instant merge from prefetch buffer — no network wait
-        mergePrependedData(bufData);
-        prefetchedDataRef.current = null;
-        triggerPrefetch();
-      } else {
-        // Buffer miss — fall back to synchronous fetch
-        prefetchedDataRef.current = null;
-        await fetchAndPrepend(SCROLL_CHUNK_DAYS[interval] || 0);
-        if (PREFETCH_ENABLED_INTERVALS.has(interval)) {
-          triggerPrefetch();
-        }
-      }
+      await fetchAndPrepend(SCROLL_CHUNK_DAYS[interval] || 0);
     } catch (err) {
       console.warn('Scroll-load fetch failed:', err);
     } finally {
@@ -1154,6 +1240,16 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
       borderVisible: false,
       wickUpColor: t0.upColor,
       wickDownColor: t0.downColor,
+      // Currency-aware price axis + native crosshair label. Scoped to this
+      // series so the volume histogram keeps its `type: 'volume'` format; the
+      // formatter reads the ref so the currency follows `displayCurrency`
+      // without re-creating the series.
+      priceFormat: {
+        type: 'custom',
+        minMove: 0.01,
+        formatter: (price: number) =>
+          formatPrice(price, priceFormatRef.current.code, priceFormatRef.current.decimals),
+      },
     });
 
     // Extended-hours background shading primitive
@@ -1328,7 +1424,10 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
         rsiChartRef.current = null;
       }
     };
-  }, []); // Mount only
+    // priceFormatRef is a stable ref (from useCurrencyDisplay) — listed so
+    // exhaustive-deps sees the formatter's read; its identity never changes, so
+    // this stays a mount-only chart-creation effect.
+  }, [priceFormatRef]); // Mount only
 
   // --- Effect: Update watermark when symbol changes ---
   useEffect(() => {
@@ -1498,11 +1597,8 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     gapFillInProgressRef.current = false;
     minuteAggRef.current = { time: 0, open: 0, high: 0, low: 0, close: 0, volume: 0 };
 
-    // Cancel any in-flight stage 2 / prefetch from previous symbol/interval
+    // Cancel any in-flight stage 2 backfill from previous symbol/interval
     stage2AbortRef.current?.abort();
-    prefetchAbortRef.current?.abort();
-    prefetchedDataRef.current = null;
-    prefetchingRef.current = false;
 
     // Unsubscribe previous scroll listener
     if (rangeUnsubRef.current) {
@@ -1520,7 +1616,10 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     extCloseLineRef.current = null;
     currentExtTypeRef.current = null;
     if (candlestickSeriesRef.current) {
-      candlestickSeriesRef.current.applyOptions({ priceLineColor: undefined });
+      // Reset the title too: it carries the "Pre"/"After" axis label, and with
+      // the ref nulled no later sync sees a transition to clear it — a US
+      // after-hours label would stick to the next symbol (sticky-pill bug).
+      candlestickSeriesRef.current.applyOptions({ priceLineColor: undefined, title: '' });
     }
 
     // Clear stale chart data so previous interval/symbol doesn't linger under an error
@@ -1546,14 +1645,15 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     if (chartRef.current) {
       chartRef.current.applyOptions({ watermark: { text: symbol } });
     }
-
     const loadData = async () => {
       setLoading(true);
       setError(null);
 
       try {
         const maxMaPeriod = Math.max(...enabledMaPeriodsRef.current, 0);
-        const { fromStr: fromDate, toStr: toDate } = computeInitialLoadRange(interval, { maxMaPeriod });
+        const { fromStr: fromDate, toStr: toDate } = computeInitialLoadRange(interval, {
+          maxMaPeriod, tz: timezoneForSymbol(symbol),
+        });
 
         const result = await fetchStockData(symbol, interval, fromDate, toDate, { signal: abortController.signal });
 
@@ -1565,10 +1665,21 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
           allDataRef.current = data;
           oldestDateRef.current = data[0].time;
 
+          // Surface loader metadata: seed the delta-poll watermark + currency
+          // through the shared controller (watermark) and the currency hook.
+          seedMeta(result?.meta);
+
           updateSeriesData(data);
 
-          // Apply default view: auto-fit barSpacing + latest bar centered
-          applyDefaultView();
+          // Apply the view: a pending bottom-bar preset wins (this load IS the
+          // preset's interval switch); otherwise default view (auto-fit
+          // barSpacing + latest bar centered).
+          if (pendingRangeRef.current) {
+            applyRangeView(pendingRangeRef.current);
+            pendingRangeRef.current = null;
+          } else {
+            applyDefaultView();
+          }
           if (chartRef.current) {
             chartRef.current.priceScale('right').applyOptions({ autoScale: true });
           }
@@ -1586,10 +1697,6 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
               if (rangeChangeTimerRef.current) clearTimeout(rangeChangeTimerRef.current);
               rangeChangeTimerRef.current = setTimeout(() => {
                 if (!range) return;
-                // Prefetch: start loading next chunk early (150 bars from left)
-                if (range.from <= PREFETCH_THRESHOLD && PREFETCH_ENABLED_INTERVALS.has(intervalRef.current)) {
-                  triggerPrefetch();
-                }
                 // Scroll-load: merge when near edge (20 bars from left)
                 if (range.from <= SCROLL_LOAD_THRESHOLD) {
                   handleScrollLoadMore();
@@ -1610,35 +1717,6 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
             setTimeout(async () => {
               if (stage2Abort.signal.aborted || symbolRef.current !== capturedSym) return;
 
-              // --- Today gap fill for 1s: fill missing morning bars ---
-              if (interval === '1s' && oldestDateRef.current) {
-                const firstBarDate = new Date(oldestDateRef.current * 1000);
-                const firstBarMins = firstBarDate.getUTCHours() * 60 + firstBarDate.getUTCMinutes();
-                const todayStr = etDateStr();
-                const firstBarDateStr = etDateStr(firstBarDate);
-
-                // Fill if first bar is from today and starts after 4:30 AM ET (270 mins)
-                if (firstBarDateStr === todayStr && firstBarMins > 270) {
-                  try {
-                    const gapResult = await fetchStockData(capturedSym, '1s', todayStr, todayStr,
-                      { signal: stage2Abort.signal });
-                    if (stage2Abort.signal.aborted || symbolRef.current !== capturedSym) return;
-                    if (gapResult?.data?.length > 0) {
-                      const gapBars = gapResult.data.filter(b => b.time < oldestDateRef.current!);
-                      if (gapBars.length > 0) {
-                        mergePrependedData(gapBars);
-                      }
-                    }
-                  } catch (err: unknown) {
-                    if (err instanceof Error && err.name !== 'AbortError' && err.name !== 'CanceledError') {
-                      console.warn('Today gap fill failed:', err);
-                    }
-                  }
-                }
-              }
-
-              if (stage2Abort.signal.aborted || symbolRef.current !== capturedSym) return;
-
               // --- Backwards backfill: fetch prior days (+ MA lookback overhead) ---
               const maxMaPeriod = Math.max(...enabledMaPeriodsRef.current, 0);
               const maOverhead = Math.ceil((maxMaPeriod / (BARS_PER_DAY[interval] || 1)) * 1.5);
@@ -1655,44 +1733,24 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
                   console.warn('Stage 2 backfill failed:', err);
                 }
               }
-
-              // Start prefetching the next scroll chunk for prefetch-enabled intervals
-              if (PREFETCH_ENABLED_INTERVALS.has(interval) && symbolRef.current === capturedSym) {
-                triggerPrefetch();
-              }
             }, 50);
           }
 
         } else {
-          // Silently downgrade 1s → 1min when ginlix-data unavailable or symbol ineligible
-          if (interval === '1s' && (!ginlixDataEnabled || !supports1sInterval(symbol))) {
-            onIntervalChange?.('1min');
-            return;
-          }
           // Silently downgrade 4H → 1H when provider doesn't support it
           if (interval === '4hour' && !supports4hInterval) {
             onIntervalChange?.('1hour');
             return;
           }
           clearChartSeries();
-          let fallbackMsg;
-          if (interval === '1s') {
-            fallbackMsg = 'No 1s data yet — waiting for pre-market to open (4:00 AM ET).';
-          } else if (interval !== '1day') {
-            fallbackMsg = 'Intraday data not available — market may be closed. Try the 1D interval.';
-          } else {
-            fallbackMsg = 'Stock data not found';
-          }
+          const fallbackMsg = interval !== '1day'
+            ? 'Intraday data not available — market may be closed. Try the 1D interval.'
+            : 'Stock data not found';
           setError(result?.error || fallbackMsg);
           if (typeof onStockMeta === 'function') onStockMeta(null);
         }
       } catch (err: unknown) {
         if (abortController.signal.aborted) return;
-        // Silently downgrade 1s → 1min when ginlix-data unavailable or symbol ineligible
-        if (interval === '1s' && (!ginlixDataEnabled || !supports1sInterval(symbol))) {
-          onIntervalChange?.('1min');
-          return;
-        }
         // Silently downgrade 4H → 1H when provider doesn't support it
         if (interval === '4hour' && !supports4hInterval) {
           onIntervalChange?.('1hour');
@@ -1713,86 +1771,13 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     return () => {
       abortController.abort();
       stage2AbortRef.current?.abort();
-      prefetchAbortRef.current?.abort();
     };
-  }, [symbol, interval, onStockMeta, updateSeriesData, handleScrollLoadMore]);
-
-  // --- REST polling fallback (1s and 1min safety net when WS not delivering) ---
-  useEffect(() => {
-    const is1sPolling = interval === '1s';
-    const is1mPolling = interval === '1min';
-    if ((!is1sPolling && !is1mPolling) || effectiveChartMode !== 'custom') return;
-
-    let timer = null;
-    let aborted = false;
-
-    const poll = async () => {
-      if (aborted) return;
-      // Skip if WS delivered a live tick recently
-      if (lastLiveTickTimeRef.current > Date.now() - 5000) return;
-      try {
-        const now = new Date();
-        const toDate = etDateStr(now);
-
-        // Delta-based: fetch only from last known bar's time onward
-        const lastBar = allDataRef.current?.[allDataRef.current.length - 1];
-        let fromDate: string;
-        if (lastBar) {
-          fromDate = etDateStr(new Date(lastBar.time * 1000));
-        } else {
-          const d = new Date(now);
-          d.setDate(d.getDate() - 3);
-          fromDate = etDateStr(d);
-        }
-
-        const result = await fetchStockData(symbol, interval, fromDate, toDate);
-        if (aborted) return;
-
-        const data = result?.data;
-        if (Array.isArray(data) && data.length > 0) {
-          if (lastBar) {
-            // Merge: append only genuinely new bars (compare by unix time)
-            const lastTime = allDataRef.current[allDataRef.current.length - 1].time;
-            const newBars = data.filter(b => b.time > lastTime);
-            if (newBars.length > 0) {
-              const merged = [...allDataRef.current, ...newBars];
-              allDataRef.current = merged;
-              updateSeriesData(merged);
-            }
-          } else {
-            allDataRef.current = data;
-            updateSeriesData(data);
-          }
-
-          // Don't re-zoom on poll updates — preserve user's manual scroll/zoom position
-          setLastUpdateTime(new Date());
-          setError(null);
-
-          // Report latest bar to parent so header stays in sync
-          const latest = allDataRef.current[allDataRef.current.length - 1];
-          if (latest && typeof onLatestBar === 'function') {
-            onLatestBar(latest);
-          }
-        }
-      } catch (err) {
-        if (!aborted) console.debug('REST poll failed:', err);
-      }
-    };
-
-    // 1s: poll every 5s as WS fallback; native 1m: poll every 15s for canonical bars
-    const pollMs = is1sPolling ? 5000 : 15000;
-    timer = setInterval(poll, pollMs);
-
-    return () => {
-      aborted = true;
-      if (timer) clearInterval(timer);
-    };
-  }, [interval, symbol, effectiveChartMode, updateSeriesData]);
+  }, [symbol, interval, onStockMeta, updateSeriesData, handleScrollLoadMore, seedMeta]);
 
   // --- Effect 3: TimeScale options per interval ---
   useEffect(() => {
     const isIntraday = interval !== '1day';
-    const showSeconds = interval === '1s' || interval === '1min';
+    const showSeconds = interval === '1min';
     const opts = { timeVisible: isIntraday, secondsVisible: showSeconds };
     if (chartRef.current) chartRef.current.applyOptions({ timeScale: opts });
     if (rsiChartRef.current) rsiChartRef.current.applyOptions({ timeScale: opts });
@@ -1816,6 +1801,38 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
     const chartWidth = chartRef.current.options().width || chartContainerRef.current?.clientWidth || 800;
     ts.setVisibleLogicalRange(centerLatestBarView({ chartWidth, barSpacing: target, dataLen }));
   }, []);
+
+  // Fit the visible window to a bottom-bar range preset: from the preset's
+  // left edge (venue-date arithmetic on chart times) to just past the last
+  // bar. 'All' fits the whole series. Clamps to available history.
+  const applyRangeView = useCallback((rangeKey: string) => {
+    if (!chartRef.current) return;
+    const data = allDataRef.current;
+    if (data.length === 0) return;
+    const ts = chartRef.current.timeScale();
+    const start = rangeStartChartSec(rangeKey, data[data.length - 1].time);
+    if (start == null) { ts.fitContent(); return; }
+    const firstIdx = data.findIndex((b) => b.time >= start);
+    ts.setVisibleLogicalRange({
+      from: Math.max(firstIdx, 0) - 0.5,
+      to: data.length + 1.5, // small future gutter, TradingView-style
+    });
+  }, []);
+
+  const handleRangeSelect = useCallback((preset: RangePreset) => {
+    const target = preset.interval === '4hour' && !supports4hInterval
+      ? (preset.fallback ?? '1day')
+      : preset.interval;
+    setActiveRange(preset.key);
+    if (target === intervalRef.current) {
+      applyRangeView(preset.key);
+      return;
+    }
+    // The interval switch re-runs the load effect; its success path consumes
+    // the pending preset instead of applying the default view.
+    pendingRangeRef.current = preset.key;
+    onIntervalChange?.(target);
+  }, [supports4hInterval, onIntervalChange, applyRangeView]);
 
   // --- Tool button handlers ---
   const handleZoomIn = useCallback(() => {
@@ -2030,9 +2047,7 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
         <div className="chart-tools-left">
           <div className="interval-selector">
             {INTERVALS.filter(({ key }) => PRIMARY_INTERVAL_KEYS.has(key)).map(({ key, label }) => {
-              const is1sDisabled = key === '1s' && (!ginlixDataEnabled || !supports1sInterval(symbol));
-              const is4hDisabled = key === '4hour' && !supports4hInterval;
-              const isDisabled = is1sDisabled || is4hDisabled;
+              const isDisabled = key === '4hour' && !supports4hInterval;
               return (
               <div key={key} style={{ position: 'relative', display: 'inline-flex' }}>
                 <button
@@ -2040,14 +2055,12 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
                   className={`interval-btn${interval === key ? ' interval-btn-active' : ''}${isDisabled ? ' interval-btn-disabled' : ''}`}
                   onClick={() => {
                     if (isDisabled) {
-                      const msg = is1sDisabled
-                        ? (!ginlixDataEnabled ? '1s data is not available' : '1s interval is only available for US stocks')
-                        : '4H data requires FMP or Ginlix Data provider';
-                      setDisabledTooltip(msg);
+                      setDisabledTooltip('4H data requires FMP or Ginlix Data provider');
                       if (disabledTooltipTimer.current) clearTimeout(disabledTooltipTimer.current);
                       disabledTooltipTimer.current = setTimeout(() => setDisabledTooltip(null), 2000);
                       return;
                     }
+                    setActiveRange(null); pendingRangeRef.current = null;
                     onIntervalChange?.(key); setIntervalsOpen(false); setIndicatorsOpen(false); setToolsOpen(false); setViewOpen(false);
                   }}
                 >
@@ -2078,7 +2091,7 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
                       key={key}
                       type="button"
                       className={`interval-dropdown-item${interval === key ? ' interval-dropdown-item-active' : ''}`}
-                      onClick={() => { onIntervalChange?.(key); setIntervalsOpen(false); setIndicatorsOpen(false); setToolsOpen(false); }}
+                      onClick={() => { setActiveRange(null); pendingRangeRef.current = null; onIntervalChange?.(key); setIntervalsOpen(false); setIndicatorsOpen(false); setToolsOpen(false); }}
                     >
                       {label}
                     </button>
@@ -2258,6 +2271,8 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
                 enabledMaPeriods={enabledMaPeriods}
                 containerWidth={chartContainerRef.current?.clientWidth}
                 containerHeight={chartContainerRef.current?.clientHeight}
+                currency={displayCurrency.code}
+                decimals={displayCurrency.decimals}
               />
               {effectiveChartMode === 'custom' && (
                 <AgentEventOverlay
@@ -2321,6 +2336,23 @@ const MarketChart = React.memo(forwardRef<MarketChartHandle, MarketChartProps>((
               <div>{error}</div>
             </div>
           )}
+
+          {/* ---- Bottom bar: viewing-window presets + venue clock (TradingView-style) ---- */}
+          <div className="chart-bottom-bar">
+            <div className="chart-range-selector">
+              {RANGE_PRESETS.map((preset) => (
+                <button
+                  key={preset.key}
+                  type="button"
+                  className={`range-btn${activeRange === preset.key ? ' range-btn-active' : ''}`}
+                  onClick={() => handleRangeSelect(preset)}
+                >
+                  {preset.key}
+                </button>
+              ))}
+            </div>
+            <VenueClock tz={timezoneForSymbol(symbol)} />
+          </div>
         </div>
 
         {/* TradingView Advanced Chart (only mounted when active) */}

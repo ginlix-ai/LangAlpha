@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { Grid2x2 } from 'lucide-react';
@@ -11,7 +11,17 @@ import {
   wrapWidgetContext,
 } from '../framework/snapshotSerializers';
 import { MiniChartGridConfigSchema } from '../framework/configSchemas';
-import { fetchStockData } from '@/pages/MarketView/utils/api';
+import {
+  currencyForSymbol,
+  currencySymbol,
+  dedupeMergeByTime,
+  fetchBarsDelta,
+  fetchStockData,
+  timezoneForSymbol,
+} from '@/lib/bars';
+import { dateStrInTz } from '@/lib/utils';
+import type { ChartBar } from '@/lib/bars';
+import { useQuotes, quoteKey } from '@/lib/quotes';
 import { DEFAULT_BLUE_CHIPS } from '../framework/defaults';
 import { SymbolListField } from '../framework/settings/SymbolListField';
 import { SettingsDoneButton } from '../framework/settings/SettingsDoneButton';
@@ -36,26 +46,62 @@ interface CellData {
   closes: number[];
   last: number;
   prev: number;
+  currency: string;
 }
 
-async function loadSpark(symbol: string): Promise<CellData | null> {
+// Per-symbol delta-poll state carried across React Query refetches. `bars` is
+// capped to the display window (+ a small buffer); `watermark` is the backend
+// epoch-ms high-water mark passed to the next `after=` delta.
+interface SparkState {
+  bars: ChartBar[];
+  watermark: number | null;
+  currency: string;
+}
+
+const BAR_CAP = SPARK_DAYS + 5;
+
+function barsToCell(symbol: string, bars: ChartBar[], currency: string): CellData | null {
+  const tail = bars.slice(-SPARK_DAYS);
+  const closes = tail.map((b) => b.close);
+  if (closes.length < 2) return null;
+  return { symbol, closes, last: closes[closes.length - 1], prev: closes[0], currency };
+}
+
+/**
+ * Load one sparkline cell. First call (no prior state) does today's full
+ * ~30-day daily fetch; subsequent calls delta-poll only bars newer than the
+ * stored watermark and dedupe-merge them in — so the 120s refresh no longer
+ * re-pulls the whole window per symbol.
+ */
+async function loadSpark(
+  symbol: string,
+  prev: SparkState | undefined,
+): Promise<{ cell: CellData | null; state: SparkState | null }> {
+  if (prev && prev.watermark != null && prev.bars.length > 0) {
+    const res = await fetchBarsDelta(symbol, '1day', prev.watermark);
+    const { merged } = dedupeMergeByTime(prev.bars, res.bars);
+    const bars = merged.slice(-BAR_CAP);
+    const currency = res.meta.currency || prev.currency;
+    const watermark = res.meta.watermark ?? prev.watermark;
+    return { cell: barsToCell(symbol, bars, currency), state: { bars, watermark, currency } };
+  }
+
+  // Full initial fetch (or empty-watermark) — today's 30-day (+buffer) window,
+  // "today" on the venue's clock so the session it is currently trading isn't
+  // excluded (UTC is still yesterday during an Asian venue's morning).
+  const venueTz = timezoneForSymbol(symbol);
   const now = new Date();
   const past = new Date();
-  past.setDate(past.getDate() - SPARK_DAYS - 5); // small buffer
-  const toISO = now.toISOString().slice(0, 10);
-  const fromISO = past.toISOString().slice(0, 10);
+  past.setDate(past.getDate() - BAR_CAP); // small buffer
+  const toISO = dateStrInTz(now, venueTz);
+  const fromISO = dateStrInTz(past, venueTz);
 
   const res = await fetchStockData(symbol, '1day', fromISO, toISO);
-  if (!res.data || res.data.length === 0) return null;
-  const tail = res.data.slice(-SPARK_DAYS);
-  const closes = tail.map((d) => d.close);
-  if (closes.length < 2) return null;
-  return {
-    symbol,
-    closes,
-    last: closes[closes.length - 1],
-    prev: closes[0],
-  };
+  if (!res.data || res.data.length === 0) return { cell: null, state: null };
+  const bars = res.data.slice(-BAR_CAP) as ChartBar[];
+  const currency = res.meta?.currency || currencyForSymbol(symbol);
+  const watermark = res.meta?.watermark ?? null;
+  return { cell: barsToCell(symbol, bars, currency), state: { bars, watermark, currency } };
 }
 
 function MiniSparkline({ cell }: { cell: CellData }) {
@@ -106,6 +152,30 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
     return DEFAULT_BLUE_CHIPS;
   }, [instance.config.symbols, watchlist.rows]);
 
+  // Per-symbol delta-poll state, carried across the 120s refetches so each
+  // cycle appends only bars newer than the stored watermark instead of
+  // re-pulling the full window. Survives re-renders (unrelated edits); entries
+  // for symbols dropped from the list are pruned below so the Map can't grow
+  // unboundedly across a session of edits.
+  const sparkStateRef = useRef<Map<string, SparkState>>(new Map());
+
+  // Prune delta-poll state for symbols no longer shown when the list changes —
+  // the query only ever *writes* keys, so without this the Map leaks an entry
+  // per removed symbol for the widget's lifetime.
+  useEffect(() => {
+    const keep = new Set(effectiveSymbols);
+    for (const key of [...sparkStateRef.current.keys()]) {
+      if (!keep.has(key)) sparkStateRef.current.delete(key);
+    }
+  }, [effectiveSymbols]);
+
+  // Live quote overlay. The daily-bar poll only refreshes on the 120s cycle;
+  // the shared quote layer keeps each cell's last close live intraday (one
+  // coalesced snapshot request for all ≤18 symbols, shared with the watchlist /
+  // portfolio widgets). Folded in at render only — the daily-bar delta baseline
+  // in `sparkStateRef` stays REST-owned so the merge never sees a live value.
+  const { quotes } = useQuotes(effectiveSymbols, { staleTime: 30_000, refetchInterval: 60_000 });
+
   const { data, isLoading } = useQuery<CellData[]>({
     queryKey: ['mini-chart-grid', effectiveSymbols.join(',')],
     queryFn: async () => {
@@ -113,11 +183,16 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
       // the whole grid. Failed cells silently drop out; successful cells
       // still render. Promise.all would reject the whole batch and leave
       // the user staring at the loading skeleton until the next refetch.
-      const results = await Promise.allSettled(effectiveSymbols.map(loadSpark));
+      const results = await Promise.allSettled(
+        effectiveSymbols.map((s) => loadSpark(s, sparkStateRef.current.get(s))),
+      );
       const cells: CellData[] = [];
-      for (const r of results) {
-        if (r.status === 'fulfilled' && r.value) cells.push(r.value);
-      }
+      effectiveSymbols.forEach((s, i) => {
+        const r = results[i];
+        if (r.status !== 'fulfilled') return;
+        if (r.value.state) sparkStateRef.current.set(s, r.value.state);
+        if (r.value.cell) cells.push(r.value.cell);
+      });
       return cells;
     },
     staleTime: 60_000,
@@ -125,9 +200,27 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
     refetchIntervalInBackground: false,
   });
 
+  // Fold the live quote into each cell's last daily bar: move the close (the
+  // sparkline endpoint + price label) to the live price. `prev` (the 30d-ago
+  // anchor) is untouched, so the displayed % stays a live-vs-30d-ago change,
+  // consistent with the widget's existing semantics. Update-only — never
+  // synthesizes a new bar. No-op for symbols without a live price.
+  const displayCells = useMemo(() => {
+    const cells = data ?? [];
+    if (!cells.length) return cells;
+    return cells.map((cell) => {
+      const price = quotes[quoteKey(cell.symbol)]?.price;
+      if (price == null) return cell;
+      const closes = cell.closes.length
+        ? [...cell.closes.slice(0, -1), price]
+        : cell.closes;
+      return { ...cell, closes, last: price };
+    });
+  }, [data, quotes]);
+
   useWidgetContextExport(instance.id, {
     full: () => {
-      const cells = data ?? [];
+      const cells = displayCells;
       const rows = cells.map((c) => {
         const change = c.last - c.prev;
         const changePct = c.prev === 0 ? 0 : (change / c.prev) * 100;
@@ -199,7 +292,7 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
               />
             ))}
           </div>
-        ) : (data?.length ?? 0) === 0 ? (
+        ) : displayCells.length === 0 ? (
           <div
             className="text-center py-8 text-xs"
             style={{ color: 'var(--color-text-tertiary)' }}
@@ -208,7 +301,7 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
           </div>
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-            {data!.map((cell) => {
+            {displayCells.map((cell) => {
               // Guard against zero anchor (delisted ticker, corrupt fixture)
               // so we don't render "Infinity%" / "NaN%" cells.
               const pct = cell.prev === 0 ? 0 : ((cell.last - cell.prev) / cell.prev) * 100;
@@ -245,7 +338,7 @@ function MiniChartGridWidget({ instance }: WidgetRenderProps<MiniChartGridConfig
                       className="text-[11px] dashboard-mono"
                       style={{ color: 'var(--color-text-secondary)' }}
                     >
-                      ${fmt2(cell.last)}
+                      {currencySymbol(cell.currency)}{fmt2(cell.last)}
                     </span>
                     <MiniSparkline cell={cell} />
                   </div>

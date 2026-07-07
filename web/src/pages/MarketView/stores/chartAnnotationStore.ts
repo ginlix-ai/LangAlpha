@@ -139,8 +139,8 @@ export interface ChartInstance {
 }
 
 // Timeframes the agent can draw on (mirrors the backend `Timeframe` enum).
-// The chart's `interval` may be a superset (e.g. '1s'); intervals outside this
-// set simply never match an agent-drawn chart instance.
+// A chart `interval` outside this set (e.g. a legacy stored value) simply
+// never matches an agent-drawn chart instance.
 export const VALID_TIMEFRAMES: ReadonlySet<string> = new Set([
   '1min',
   '5min',

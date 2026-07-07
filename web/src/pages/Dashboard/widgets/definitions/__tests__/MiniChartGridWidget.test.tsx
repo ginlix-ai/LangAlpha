@@ -3,18 +3,22 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 
-vi.mock('@/pages/MarketView/utils/api', () => ({
-  fetchStockData: vi.fn().mockResolvedValue({
-    data: Array.from({ length: 30 }, (_, i) => ({
-      timestamp: new Date(Date.UTC(2026, 0, i + 1)).toISOString(),
-      open: 100 + i,
-      high: 105 + i,
-      low: 95 + i,
-      close: 100 + i,
-      volume: 1000,
-    })),
-  }),
-}));
+vi.mock('@/lib/bars', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/bars')>();
+  return {
+    ...actual,
+    fetchStockData: vi.fn().mockResolvedValue({
+      data: Array.from({ length: 30 }, (_, i) => ({
+        timestamp: new Date(Date.UTC(2026, 0, i + 1)).toISOString(),
+        open: 100 + i,
+        high: 105 + i,
+        low: 95 + i,
+        close: 100 + i,
+        volume: 1000,
+      })),
+    }),
+  };
+});
 
 // Stub the dashboard context — the widget only reads `watchlist.rows` to fall
 // back when no symbols are configured. Mocking sidesteps Supabase / API hooks.
@@ -25,7 +29,7 @@ vi.mock('../../framework/DashboardDataContext', () => ({
 }));
 
 import '../../index'; // populate widget registry
-import { fetchStockData } from '@/pages/MarketView/utils/api';
+import { fetchStockData } from '@/lib/bars';
 import { getWidget } from '../../framework/WidgetRegistry';
 
 const mockFetch = fetchStockData as unknown as ReturnType<typeof vi.fn>;

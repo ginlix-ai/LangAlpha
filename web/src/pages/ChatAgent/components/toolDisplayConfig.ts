@@ -6,7 +6,7 @@ import {
   Sparkles, BookText, BookMarked, BookPlus, PenLine,
 } from 'lucide-react';
 import { classifyAgentPath, topicFromMemoryKey, type AgentPathInfo } from '../utils/agentPaths';
-import { INTERVAL_LABEL } from '@/pages/MarketView/utils/chartConstants';
+import { INTERVAL_LABEL } from '@/lib/bars';
 
 /** Translation function signature compatible with i18next's t() */
 type TFn = (key: string, opts?: Record<string, unknown>) => string;

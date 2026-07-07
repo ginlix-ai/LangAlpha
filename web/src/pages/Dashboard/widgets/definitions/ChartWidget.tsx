@@ -13,7 +13,6 @@ import {
   type MouseEventParams,
   type UTCTimestamp,
 } from 'lightweight-charts';
-import { fetchStockData } from '@/pages/MarketView/utils/api';
 import { searchStocks } from '@/lib/marketUtils';
 import {
   getChartTheme,
@@ -22,20 +21,29 @@ import {
   SCROLL_LOAD_THRESHOLD,
   RANGE_CHANGE_DEBOUNCE_MS,
   EXTENDED_HOURS_INTERVALS,
-  INTERVALS as MARKET_INTERVALS,
   TARGET_BAR_SPACING,
   computeExtendedHoursRegions,
   getExtendedHoursType,
-  isUSEquity,
 } from '@/pages/MarketView/utils/chartConstants';
 import { ExtendedHoursBgPrimitive } from '@/pages/MarketView/utils/extendedHoursBg';
 import {
+  INTERVALS as MARKET_INTERVALS,
+  INTERVAL_SECONDS,
+  WS_FOLD_INTERVALS,
+  isUSEquity,
+  fetchStockData,
   centerLatestBarView,
   computeInitialLoadRange,
   dedupeMergeByTime,
-  etDateStr,
   rangeBeforeOldest,
-} from '@/pages/MarketView/utils/chartDataLoaders';
+  currencySymbol,
+  foldMinuteBar,
+  formatPrice,
+  timezoneForSymbol,
+  useCurrencyDisplay,
+  useLiveBars,
+} from '@/lib/bars';
+import { chartSecToDateStr, dateStrInTz } from '@/lib/utils';
 import { useMarketDataWSContext } from '@/pages/MarketView/contexts/MarketDataWSContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { createFormatter, createDateFormatter } from '@/lib/format';
@@ -53,9 +61,9 @@ const fmt2 = createFormatter({ minimumFractionDigits: 2, maximumFractionDigits: 
 // instead of `123M` for zh-CN, `1.23 Mio.` for de-DE.
 const fmtVolumeCompact = createFormatter({ notation: 'compact', compactDisplay: 'short', maximumFractionDigits: 2 });
 const fmtVolumeRound = createFormatter({ maximumFractionDigits: 0 });
-// Hover labels use the ET-wall-clock-as-UTC convention shared across the chart;
-// timeZone: 'UTC' keeps the formatter from reapplying any regional shift while
-// month/day names still respect the user's locale.
+// Hover labels use the venue-wall-clock-as-UTC convention shared across the
+// chart; timeZone: 'UTC' keeps the formatter from reapplying any regional
+// shift while month/day names still respect the user's locale.
 const fmtHoverDay = createDateFormatter({ month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 const fmtHoverIntraday = createDateFormatter({ month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' });
 
@@ -63,7 +71,6 @@ const fmtHoverIntraday = createDateFormatter({ month: 'short', day: 'numeric', h
 // visible-range labels). The interval IS the backend interval; we share
 // INITIAL_LOAD_DAYS / SCROLL_CHUNK_DAYS / etc. with MarketView so history
 // loading behaves identically.
-//   • 1s excluded — requires US equities + live WS and doesn't suit a small widget.
 //   • 4hour excluded — not supported on the yfinance tier, and we don't plumb
 //     provider-tier gating into the widget today.
 type ChartInterval = '1min' | '5min' | '15min' | '30min' | '1hour' | '1day';
@@ -75,7 +82,7 @@ type ChartConfig = {
   chartType: ChartType;
 };
 
-const EXCLUDED_INTERVALS = new Set<string>(['1s', '4hour']);
+const EXCLUDED_INTERVALS = new Set<string>(['4hour']);
 
 // Ordered for the toolbar; labels mirror MarketView's INTERVALS table.
 const WIDGET_INTERVALS: { key: ChartInterval; label: string }[] = MARKET_INTERVALS
@@ -88,16 +95,12 @@ const VALID_INTERVALS: ReadonlySet<ChartInterval> = new Set(
 
 const DEFAULT_CONFIG: ChartConfig = { symbol: 'NVDA', interval: '1day', chartType: 'candle' };
 
-// Live-tick aggregation: MarketView only applies WS ticks on 1s/1min so the
-// bar's `open` is anchored to the true start of the bucket. We mirror that:
-// for every interval other than 1min the REST fetch (initial + stage-2) is
-// the source of truth and WS is ignored. Keeps OHLC consistent with MV.
+// Live-tick handling mirrors MarketView: 1min aggregates WS second-ticks into
+// its own bucket natively (the bar's `open` is anchored to the true bucket
+// start); 5min–1hour fold the same ticks into the REST-seeded forming bucket
+// via foldMinuteBar (open stays REST-owned, so mid-bucket observation is
+// safe); 1day is poll-only in the widget.
 const LIVE_BUCKET_SEC = 60;
-// REST polling cadence for the 1min interval — same as MV's 1min fallback.
-const DELTA_POLL_MS = 15000;
-// Skip a REST poll if a WS tick arrived within this window — the WS path
-// already has fresher data in place.
-const STALE_WS_WINDOW_MS = 5000;
 
 type Bar = {
   time: number;
@@ -108,9 +111,9 @@ type Bar = {
   volume: number;
 };
 
-// Hover timestamps are stored as ET-wall-clock-as-UTC (same 'Z' trick the rest
-// of the chart uses); the formatters are pinned to timeZone: 'UTC' so the read
-// reflects ET-local values, while month/day names follow the active locale.
+// Hover timestamps are stored as venue-wall-clock-as-UTC (same 'Z' trick the
+// rest of the chart uses); the formatters are pinned to timeZone: 'UTC' so the
+// read reflects market-local values, while month/day names follow the locale.
 function formatHoverTime(timeSec: number, daily: boolean): string {
   const d = new Date(timeSec * 1000);
   return daily ? fmtHoverDay(d) : fmtHoverIntraday(d);
@@ -247,6 +250,11 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
 
   // Live header price (from the latest applied WS tick or REST poll result).
   const [liveLast, setLiveLast] = useState<number | null>(null);
+  // Currency for the price axis + header price — the hook owns the {state +
+  // mirrored ref} pair, the symbol-reset, and the protocol-meta upgrade.
+  // `priceFormatRef` feeds the chart's price formatter so the axis follows the
+  // currency without re-creating the chart.
+  const { displayCurrency, priceFormatRef, onCurrencyMeta } = useCurrencyDisplay(config.symbol);
   // `loading` is true during the initial fetch for a (symbol, interval) combo.
   // Used to render the chart-body spinner overlay; cleared once data lands.
   const [loading, setLoading] = useState(true);
@@ -433,6 +441,23 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
     }
   }, [fetchAndPrepend]);
 
+  // --- Live forming-bar delta-poll (shared controller) ---
+  // The hook owns the watermark + reconcile cursors; the component owns bar
+  // storage (allDataRef) and the WS tick clock (lastLiveTickTimeRef, written by
+  // the WS fold effect). `seedMeta` seeds the watermark + currency from the
+  // initial loader's metadata. See useLiveBars for the reconcile/skip invariants.
+  const { seedMeta } = useLiveBars(config.symbol, config.interval, {
+    enabled: true,
+    dataRef: allDataRef,
+    lastWsTickRef: lastLiveTickTimeRef,
+    onMeta: onCurrencyMeta,
+    onBars: (merged) => {
+      updateSeriesData(merged);
+      const latest = merged[merged.length - 1];
+      if (latest) setLiveLast(latest.close);
+    },
+  });
+
   // ============================================================
   // Effect 1: Create chart once on mount
   // ============================================================
@@ -590,6 +615,16 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
     const chart = chartRef.current;
     if (!chart) return;
 
+    // Currency-aware price axis + native crosshair label, scoped to the price
+    // series (the volume histogram keeps its `type: 'volume'` format). The
+    // formatter reads the ref so the currency follows `displayCurrency`.
+    const priceFmt = {
+      type: 'custom' as const,
+      minMove: 0.01,
+      formatter: (price: number) =>
+        formatPrice(price, priceFormatRef.current.code, priceFormatRef.current.decimals),
+    };
+
     // Already correct type — just reapply colors (positive may have flipped).
     if (seriesRef.current && seriesTypeRef.current === config.chartType) {
       const s = seriesRef.current;
@@ -628,6 +663,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
         borderVisible: false,
         wickUpColor: ct.upColor,
         wickDownColor: ct.downColor,
+        priceFormat: priceFmt,
       });
     } else if (config.chartType === 'area') {
       next = chart.addAreaSeries({
@@ -637,12 +673,14 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
         lineWidth: 2,
         lineType: LineType.Simple,
         priceLineVisible: false,
+        priceFormat: priceFmt,
       });
     } else {
       next = chart.addLineSeries({
         color: changeColor,
         lineWidth: 2,
         priceLineVisible: false,
+        priceFormat: priceFmt,
       });
     }
     seriesRef.current = next;
@@ -657,7 +695,9 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
 
     // If we already have data loaded (e.g., user toggled chart type), push it.
     if (allDataRef.current.length > 0) updateSeriesData(allDataRef.current);
-  }, [config.chartType, changeColor, positive, ct.upColor, ct.downColor, ct.baselineUpFill1, ct.baselineUpFill2, ct.baselineDownFill1, ct.baselineDownFill2, updateSeriesData]);
+    // priceFormatRef is a stable ref (from useCurrencyDisplay) — listed so
+    // exhaustive-deps sees the formatter's read; its identity never changes.
+  }, [config.chartType, changeColor, positive, ct.upColor, ct.downColor, ct.baselineUpFill1, ct.baselineUpFill2, ct.baselineDownFill1, ct.baselineDownFill2, updateSeriesData, priceFormatRef]);
 
   // ============================================================
   // Effect 4: Interval label format + initial data load
@@ -703,8 +743,9 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
 
     // Shared helper: STAGE1_LOAD_DAYS if defined (fast-render path for 1min),
     // else INITIAL_LOAD_DAYS; 0 days → undefined bounds (full history).
-    // ET-anchored so the ET/UTC boundary doesn't drop today's intraday bars.
-    const { fromStr, toStr } = computeInitialLoadRange(iv);
+    // Venue-anchored so the local/UTC date boundary doesn't drop the session
+    // the venue is currently trading.
+    const { fromStr, toStr } = computeInitialLoadRange(iv, { tz: timezoneForSymbol(sym) });
 
     (async () => {
       try {
@@ -718,6 +759,9 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
         }
         allDataRef.current = bars;
         oldestDateRef.current = bars[0].time;
+        // Surface loader metadata: seed the delta-poll watermark + currency
+        // through the shared controller (watermark) and the currency hook.
+        seedMeta(res?.meta);
         updateSeriesData(bars);
         // Apply the default view immediately so the visible range is set
         // before the chart first paints (prevents a flash of "all history"
@@ -786,16 +830,17 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
       ac.abort();
       stage2AbortRef.current?.abort();
     };
-  }, [config.symbol, config.interval, applyDefaultView, updateSeriesData, mergePrependedData]);
+  }, [config.symbol, config.interval, applyDefaultView, updateSeriesData, mergePrependedData, seedMeta]);
 
   // ============================================================
   // Effect 5: WS subscription — one ref-count per symbol across all
-  // ChartWidgets sharing the same MarketDataWSProvider. Only subscribe on
-  // 1min; other intervals don't consume ticks so subscribing there is waste.
+  // ChartWidgets sharing the same MarketDataWSProvider. Subscribe on the
+  // intervals that consume ticks (1min natively, 5min–1hour via fold);
+  // 1day doesn't, so subscribing there is waste.
   // ============================================================
   useEffect(() => {
     if (!ginlixDataEnabled) return;
-    if (config.interval !== '1min') return;
+    if (config.interval !== '1min' && !WS_FOLD_INTERVALS.has(config.interval)) return;
     const upper = config.symbol.toUpperCase();
     if (!upper) return;
     subscribe([upper]);
@@ -805,17 +850,18 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
   }, [config.symbol, config.interval, ginlixDataEnabled, subscribe, unsubscribe]);
 
   // ============================================================
-  // Effect 6: WS live-tick apply — aggregate 1s ticks into the widget's
-  // bucket (1min only — matches MarketView's WS aggregation scope). Longer
-  // intervals (5min+) rely on the REST initial + stage-2 fetches to keep OHLC
-  // canonical; aggregating 1s ticks into e.g. a 5min bucket would record a
-  // wrong `open` whenever we start observing mid-bucket.
+  // Effect 6: WS live-tick apply — 1min aggregates second-ticks into its own
+  // bucket natively; 5min–1hour fold them into the REST-seeded forming bucket
+  // via foldMinuteBar (open stays REST-owned, so mid-bucket observation can't
+  // record a wrong `open`). The ≤60s reconcile poll corrects fold drift.
   // Also handles a REST gap fill if the first WS tick lands > 2 buckets past
-  // the last REST bar.
+  // the last REST bar (1min only; fold intervals heal via the reconcile poll).
   // ============================================================
   useEffect(() => {
     if (!liveTick) return;
-    if (intervalRef.current !== '1min') return;
+    const iv = intervalRef.current;
+    const isFold = WS_FOLD_INTERVALS.has(iv);
+    if (iv !== '1min' && !isFold) return;
     const series = seriesRef.current;
     const vol = volumeRef.current;
     if (!series || !vol) return;
@@ -828,6 +874,51 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
     setLiveLast(liveTick.price);
 
     const data = allDataRef.current;
+
+    if (isFold) {
+      const folded = foldMinuteBar(
+        data,
+        { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume ?? 0 },
+        INTERVAL_SECONDS[iv],
+      );
+      if (folded === data) return; // late/out-of-order tick — no-op
+      allDataRef.current = folded;
+      if (folded.length !== data.length) {
+        // Bucket rollover — full redraw so volume recolors and downstream
+        // consumers see the finalized bar; once per bucket (5–60 min).
+        updateSeriesData(folded);
+        return;
+      }
+      const head = folded[folded.length - 1];
+      const headUp = head.close >= head.open;
+      const theme = ctRef.current;
+      const headExt = isUSEquity(symbolRef.current) &&
+        EXTENDED_HOURS_INTERVALS.has(iv) &&
+        getExtendedHoursType(head.time);
+      if (seriesTypeRef.current === 'candle') {
+        (series as ISeriesApi<'Candlestick'>).update({
+          time: head.time as UTCTimestamp,
+          open: head.open,
+          high: head.high,
+          low: head.low,
+          close: head.close,
+        });
+      } else {
+        (series as ISeriesApi<'Area'> | ISeriesApi<'Line'>).update({
+          time: head.time as UTCTimestamp,
+          value: head.close,
+        });
+      }
+      vol.update({
+        time: head.time as UTCTimestamp,
+        value: head.volume,
+        color: headExt
+          ? headUp ? theme.extVolumeUp : theme.extVolumeDown
+          : headUp ? theme.volumeUp : theme.volumeDown,
+      });
+      return;
+    }
+
     const bucketTime = Math.floor(b.time / LIVE_BUCKET_SEC) * LIVE_BUCKET_SEC;
 
     // Gap fill: if the first WS tick lands well past our last REST bar, do a
@@ -844,10 +935,11 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
           gapFillInProgressRef.current = true;
           const sym = symbolRef.current;
           const iv = intervalRef.current;
-          // ET-anchored date strings — a `new Date().toISOString()` here would
-          // straddle UTC midnight late in the trading day and ask for tomorrow.
-          const fromStr = etDateStr(new Date(lastDataTime * 1000));
-          const toStr = etDateStr();
+          // lastDataTime is a chart time (venue wall clock as fake UTC) —
+          // decode its date by reading it in UTC. "Today" is the venue's
+          // trading date, not UTC's (which straddles midnight late in the day).
+          const fromStr = chartSecToDateStr(lastDataTime);
+          const toStr = dateStrInTz(new Date(), timezoneForSymbol(sym));
           (async () => {
             try {
               const res = await fetchStockData(sym, iv, fromStr, toStr);
@@ -927,59 +1019,6 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
         : up ? theme.volumeUp : theme.volumeDown,
     });
   }, [liveTick, updateSeriesData]);
-
-  // ============================================================
-  // Effect 7: REST delta-poll (every 15s) — WS fallback for 1min only.
-  // MarketView polls 1s every 5s and 1min every 15s; longer intervals refresh
-  // through stage-2 + scroll, not a fixed poll. The widget excludes 1s, so
-  // only the 1min path runs here. Skips a tick if WS delivered a fresh tick
-  // in the last 5s, and re-uses `updateSeriesData` for the in-place merge.
-  // ============================================================
-  useEffect(() => {
-    if (config.interval !== '1min') return;
-    let aborted = false;
-    const poll = async () => {
-      if (aborted) return;
-      if (lastLiveTickTimeRef.current > Date.now() - STALE_WS_WINDOW_MS) return;
-
-      const lastBar = allDataRef.current[allDataRef.current.length - 1];
-      if (!lastBar) return;
-
-      const sym = symbolRef.current;
-      const iv = intervalRef.current;
-      const fromStr = etDateStr(new Date(lastBar.time * 1000));
-      const toStr = etDateStr();
-
-      try {
-        const res = await fetchStockData(sym, iv, fromStr, toStr);
-        if (aborted) return;
-        if (symbolRef.current !== sym || intervalRef.current !== iv) return;
-        const bars = (res?.data ?? []) as Bar[];
-        if (bars.length === 0) return;
-        const lastKnown = allDataRef.current[allDataRef.current.length - 1]?.time ?? 0;
-        const newer = bars.filter((b) => b.time >= lastKnown);
-        if (newer.length === 0) return;
-
-        // Drop the stale last-bar and append the refreshed span so its close /
-        // high / low reflects the latest intraday data.
-        const trimmed = allDataRef.current.slice(0, -1);
-        const merged = [...trimmed, ...newer].sort((a, b) => a.time - b.time);
-        allDataRef.current = merged;
-        updateSeriesData(merged);
-        const latest = merged[merged.length - 1];
-        if (latest) setLiveLast(latest.close);
-      } catch (err) {
-        const e = err as { name?: string };
-        if (e?.name === 'AbortError' || e?.name === 'CanceledError') return;
-        console.debug('[chart-widget] delta poll failed:', err);
-      }
-    };
-    const timer = setInterval(poll, DELTA_POLL_MS);
-    return () => {
-      aborted = true;
-      clearInterval(timer);
-    };
-  }, [config.interval, updateSeriesData]);
 
   // --- Toolbar handlers ---
   const handleZoomIn = useCallback(() => {
@@ -1128,7 +1167,7 @@ function ChartWidget({ instance, updateConfig }: WidgetRenderProps<ChartConfig>)
                   className="text-sm tabular-nums"
                   style={{ color: 'var(--color-text-primary)' }}
                 >
-                  {fmt2(headerLast)}
+                  {currencySymbol(displayCurrency.code)}{fmt2(headerLast)}
                 </span>
               )}
             </div>

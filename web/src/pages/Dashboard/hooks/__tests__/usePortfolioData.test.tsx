@@ -12,14 +12,21 @@ vi.mock('../../utils/api', () => ({
   addPortfolioHolding: vi.fn(),
   deletePortfolioHolding: vi.fn(),
   getPortfolio: vi.fn(),
-  getStockPrices: vi.fn(),
   updatePortfolioHolding: vi.fn(),
 }));
 
-import { getPortfolio, getStockPrices } from '../../utils/api';
+// Quotes flow through the shared quote layer, whose batcher hits the snapshot
+// primitives in lib/quotes — mock those (not getStockPrices) to feed useQuotes.
+vi.mock('@/lib/quotes/snapshotApi', () => ({
+  getSnapshotStocks: vi.fn(),
+  getSnapshotIndexes: vi.fn(),
+}));
+
+import { getPortfolio } from '../../utils/api';
+import { getSnapshotStocks } from '@/lib/quotes/snapshotApi';
 
 const mockGetPortfolio = getPortfolio as Mock;
-const mockGetStockPrices = getStockPrices as Mock;
+const mockGetSnapshotStocks = getSnapshotStocks as Mock;
 
 describe('usePortfolioData', () => {
   beforeEach(() => {
@@ -45,15 +52,13 @@ describe('usePortfolioData', () => {
         },
       ],
     });
-    mockGetStockPrices.mockResolvedValue([
-      {
-        symbol: 'AAPL',
-        price: 12,
-        change: 0.5,
-        changePercent: 1.5,
-        isPositive: true,
-      },
-    ]);
+    // Raw snapshot rows — the quote layer's batcher hits getSnapshotStocks and
+    // adapts rows via snapshotToStockPrice. MSFT is absent (dropped upstream).
+    mockGetSnapshotStocks.mockResolvedValue({
+      snapshots: [
+        { symbol: 'AAPL', price: 12, change: 0.5, change_percent: 1.5 },
+      ],
+    });
 
     const { result } = renderHookWithProviders(() => usePortfolioData());
 

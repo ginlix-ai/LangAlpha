@@ -1,8 +1,9 @@
 import { useQuery, useInfiniteQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
-import { getNews, getIndices, INDEX_SYMBOLS, fallbackIndex, normalizeIndexSymbol } from '../utils/api';
+import { getNews, getIndex, INDEX_SYMBOLS, normalizeIndexSymbol, buildIndexData } from '../utils/api';
+import { useQuotes } from '@/lib/quotes';
 import { fetchMarketStatus } from '@/lib/marketUtils';
-import type { IndexData } from '@/types/market';
+import type { IndexData, SparklinePoint } from '@/types/market';
 import {
   type DashboardNewsItem,
   NEWS_POLL_INTERVAL_MS,
@@ -51,20 +52,49 @@ export function useDashboardData(): DashboardData {
   // 2. Market Indices (Adaptive Polling: 30s open / 60s closed)
   const isMarketOpen = marketStatus?.market === 'open' ||
     (marketStatus && !marketStatus.afterHours && !marketStatus.earlyHours && marketStatus.market !== 'closed');
+  const indexRefetch = isMarketOpen ? 30000 : 60000;
 
-  const { data: indices, isLoading: indicesLoading } = useQuery<IndexData[]>({
-    queryKey: ['dashboard', 'indices', INDEX_SYMBOLS],
+  // Index price/change flows through the shared quote layer (['quote', NORM]),
+  // so an index viewed in MarketView and shown here shares one cache entry.
+  const { quotes: indexQuotes, isLoading: indexQuotesLoading } = useQuotes(INDEX_SYMBOLS, {
+    isIndex: true,
+    staleTime: 10000,
+    refetchInterval: indexRefetch,
+  });
+
+  // Sparklines are the intraday series — not part of the quote layer — so they
+  // keep their own batched fetch, refreshed on the same adaptive cadence.
+  const { data: sparklineMap = {} } = useQuery<Record<string, { sparklineData: SparklinePoint[]; asOfDate?: string }>>({
+    queryKey: ['dashboard', 'indexSparklines', INDEX_SYMBOLS],
     queryFn: async () => {
-      const { indices: next } = await getIndices(INDEX_SYMBOLS);
-      return next;
+      const entries = await Promise.all(INDEX_SYMBOLS.map(async (s) => {
+        const norm = normalizeIndexSymbol(s);
+        try {
+          const r = await getIndex(norm);
+          return [norm, { sparklineData: r.sparklineData, asOfDate: r.asOfDate }] as const;
+        } catch {
+          return [norm, { sparklineData: [] as SparklinePoint[], asOfDate: undefined }] as const;
+        }
+      }));
+      return Object.fromEntries(entries);
     },
-    // Using placeholderData provides standard fallback values instantly 
-    // without populating the cache as "fresh", thereby triggering an immediate background fetch
-    placeholderData: (): IndexData[] => INDEX_SYMBOLS.map((s) => fallbackIndex(normalizeIndexSymbol(s))),
-    refetchInterval: isMarketOpen ? 30000 : 60000,
+    refetchInterval: indexRefetch,
     refetchIntervalInBackground: false,
     staleTime: 10000,
   });
+
+  // Combine snapshot + sparkline into the IndexData cards. Always an array
+  // (fallback cards for symbols with no quote yet), matching the old
+  // placeholderData behavior of rendering instantly.
+  const indices = useMemo<IndexData[]>(
+    () => INDEX_SYMBOLS.map((s) => {
+      const norm = normalizeIndexSymbol(s);
+      const sp = sparklineMap[norm];
+      return buildIndexData(norm, indexQuotes[norm], sp?.sparklineData ?? [], sp?.asOfDate);
+    }),
+    [indexQuotes, sparklineMap]
+  );
+  const indicesLoading = indexQuotesLoading;
 
   // 3. Market General Feed — kept warm server-side by the news poller, so we
   //    re-poll every 60s to surface the latest articles in an open tab.

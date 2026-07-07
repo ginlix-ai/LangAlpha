@@ -1,9 +1,12 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { fetchStockQuote, fetchCompanyOverview, fetchAnalystData } from '../utils/api';
+import { mapSnapshotToStockQuote, fetchCompanyOverview, fetchAnalystData } from '../utils/api';
+import { useQuote } from '@/lib/quotes';
 import { fetchMarketStatus } from '@/lib/marketUtils';
 import type { StockInfo, RealTimePrice, SnapshotData } from '@/types/market';
 import type { ConnectionStatus, BarData } from './useMarketDataWS';
+
+type MapperSnapshot = Parameters<typeof mapSnapshotToStockQuote>[1];
 
 /** Market status shape returned by fetchMarketStatus */
 interface MarketStatusData {
@@ -62,33 +65,40 @@ export function useStockData({
     const [realTimePrice, setRealTimePrice] = useState<RealTimePrice | null>(null);
     const [snapshotData, setSnapshotData] = useState<SnapshotData | null>(null);
 
-    // 1. Stock Quote & Snapshot
-    const { data: quoteResponse } = useQuery({
-        queryKey: ['stockQuote', selectedStock],
-        queryFn: async ({ signal }) => {
-            if (!selectedStock) return null;
-            const data = await fetchStockQuote(selectedStock, { signal });
-
-            // Side effects mapping for WS refs
-            if (data.snapshot) {
-                if (data.snapshot.previous_close != null && setPreviousClose) {
-                    setPreviousClose(selectedStock, data.snapshot.previous_close);
-                }
-                if (data.snapshot.open != null && setDayOpen) {
-                    setDayOpen(selectedStock, data.snapshot.open);
-                }
-            }
-            return data;
-        },
-        // Polling: disabled if WS is streaming real-time, otherwise poll every 60s
+    // 1. Stock Quote & Snapshot — sourced from the unified quote layer so this
+    //    symbol shares one cache entry (and one poll) with the sidebar watchlist
+    //    / portfolio showing it, and stays consistent with WS write-through.
+    const isIndex = !!selectedStock && selectedStock.startsWith('^');
+    const { quote, isLoading: quoteLoading } = useQuote(selectedStock, {
+        isIndex,
+        // Polling: disabled if WS is streaming real-time, otherwise poll every 60s.
         refetchInterval: wsStatus === 'connected' ? false : 60000,
-        refetchIntervalInBackground: false,
-        enabled: !!selectedStock,
-        staleTime: 1000 * 10, // 10s fresh cache 
+        staleTime: 1000 * 10, // 10s fresh cache
     });
 
-    // Isolate pure UI state for the realtime bar updates 
-    // This allows WebSocket to update local state extremely fast 
+    // Undefined while the first fetch is still in flight so the sync effect below
+    // keeps the prior UI state instead of flashing the fallback (matches the old
+    // "leave state untouched until the query resolves" behavior).
+    const quoteResponse = useMemo(() => {
+        if (!selectedStock) return null;
+        if (quote) return mapSnapshotToStockQuote(selectedStock, quote as MapperSnapshot);
+        if (!quoteLoading) return mapSnapshotToStockQuote(selectedStock, null);
+        return undefined;
+    }, [selectedStock, quote, quoteLoading]);
+
+    // Seed the WS refs (previousClose / dayOpen) from the resolved snapshot.
+    useEffect(() => {
+        if (!selectedStock || !quote) return;
+        if (quote.previous_close != null && setPreviousClose) {
+            setPreviousClose(selectedStock, quote.previous_close);
+        }
+        if (quote.open != null && setDayOpen) {
+            setDayOpen(selectedStock, quote.open);
+        }
+    }, [quote, selectedStock, setPreviousClose, setDayOpen]);
+
+    // Isolate pure UI state for the realtime bar updates
+    // This allows WebSocket to update local state extremely fast
     // without triggering React Query cache updates on every tick.
     useEffect(() => {
         if (!selectedStock) {

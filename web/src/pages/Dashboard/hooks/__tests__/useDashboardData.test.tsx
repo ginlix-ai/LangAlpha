@@ -4,37 +4,50 @@ import { renderHookWithProviders } from '../../../../test/utils';
 import { useDashboardData } from '../useDashboardData';
 import { waitFor } from '@testing-library/react';
 
-vi.mock('../../utils/api', () => ({
-  getNews: vi.fn(),
-  getIndices: vi.fn(),
-  INDEX_SYMBOLS: ['GSPC', 'IXIC', 'DJI', 'RUT', 'VIX'],
-  fallbackIndex: vi.fn((s: string) => ({
-    symbol: s, name: s, price: 0, change: 0, changePercent: 0, isPositive: true, sparklineData: [],
-  })),
-  normalizeIndexSymbol: vi.fn((s: string) => String(s).replace(/^\^/, '').toUpperCase()),
+// Partial mock: real pure helpers (INDEX_SYMBOLS, normalizeIndexSymbol,
+// buildIndexData, fallbackIndex) stay real; only network calls are mocked.
+vi.mock('../../utils/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../utils/api')>();
+  return {
+    ...actual,
+    getNews: vi.fn(),
+    getIndex: vi.fn(),
+  };
+});
+
+// Index quotes flow through the shared quote layer's batcher, which hits the
+// snapshot primitives in lib/quotes — mock those to feed useQuotes.
+vi.mock('@/lib/quotes/snapshotApi', () => ({
+  getSnapshotIndexes: vi.fn(),
+  getSnapshotStocks: vi.fn(),
 }));
 
-vi.mock('@/lib/marketUtils', () => ({
+// Partial mock so the real normalizeIndexKey (used by the batcher + snapshotApi)
+// survives; only fetchMarketStatus is stubbed.
+vi.mock('@/lib/marketUtils', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/marketUtils')>()),
   fetchMarketStatus: vi.fn(),
 }));
 
-import { getNews, getIndices } from '../../utils/api';
+import { getNews, getIndex } from '../../utils/api';
+import { getSnapshotIndexes } from '@/lib/quotes/snapshotApi';
 import { fetchMarketStatus } from '@/lib/marketUtils';
 
 const mockFetchMarketStatus = fetchMarketStatus as Mock;
-const mockGetIndices = getIndices as Mock;
+const mockGetSnapshotIndexes = getSnapshotIndexes as Mock;
+const mockGetIndex = getIndex as Mock;
 const mockGetNews = getNews as Mock;
 
 describe('useDashboardData', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFetchMarketStatus.mockResolvedValue({ market: 'open', afterHours: false, earlyHours: false });
-    mockGetIndices.mockResolvedValue({
-      indices: [
-        { symbol: 'GSPC', name: 'S&P 500', price: 5000, change: 50, changePercent: 1.0, isPositive: true, sparklineData: [] },
+    mockGetSnapshotIndexes.mockResolvedValue({
+      snapshots: [
+        { symbol: 'GSPC', name: 'S&P 500', price: 5000, change: 50, change_percent: 1.0 },
       ],
-      failedCount: 0,
     });
+    mockGetIndex.mockResolvedValue({ sparklineData: [], asOfDate: undefined });
     mockGetNews.mockResolvedValue({ results: [], count: 0 });
   });
 

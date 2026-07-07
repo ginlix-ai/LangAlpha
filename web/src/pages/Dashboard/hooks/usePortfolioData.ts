@@ -1,13 +1,13 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/components/ui/use-toast';
 import {
   addPortfolioHolding,
   deletePortfolioHolding,
   getPortfolio,
-  getStockPrices,
   updatePortfolioHolding,
 } from '../utils/api';
+import { useQuotes, snapshotToStockPrice } from '@/lib/quotes';
 import type { PortfolioHoldingPayload, PortfolioHoldingUpdatePayload } from '../utils/portfolio';
 import type { StockPrice } from '@/types/market';
 
@@ -29,9 +29,14 @@ export interface PortfolioRow {
   [key: string]: unknown;
 }
 
-interface PortfolioQueryData {
-  rows: PortfolioRow[];
-  hasRealHoldings: boolean;
+interface PortfolioHolding {
+  user_portfolio_id: string;
+  symbol: string;
+  quantity?: number;
+  average_cost?: number | null;
+  currency?: string | null;
+  notes?: string;
+  [key: string]: unknown;
 }
 
 interface PortfolioEditForm {
@@ -72,53 +77,69 @@ export function usePortfolioData() {
   const [editRow, setEditRow] = useState<PortfolioRow | null>(null);
   const [editForm, setEditForm] = useState<PortfolioEditForm>({ quantity: '', averageCost: '', notes: '' });
 
-  const { data = { rows: [], hasRealHoldings: false }, isLoading: loading, refetch: fetchPortfolio } = useQuery<PortfolioQueryData>({
+  // Holdings membership is its own query (keyed ['portfolioData'] so CRUD
+  // invalidation + polling are unchanged); per-symbol quotes come from the
+  // shared quote layer so a symbol held here and watched elsewhere fetch once.
+  const { data: holdings = [], isLoading: holdingsLoading, refetch: refetchHoldings } = useQuery<PortfolioHolding[]>({
     queryKey: ['portfolioData'],
-    queryFn: async (): Promise<PortfolioQueryData> => {
-      const { holdings } = await getPortfolio() as { holdings?: Array<{ user_portfolio_id: string; symbol: string; quantity?: number; average_cost?: number | null; currency?: string | null; notes?: string; [key: string]: unknown }> };
-      const symbols = holdings?.length
-        ? holdings.map((h) => String(h.symbol || '').trim().toUpperCase())
-        : [];
-      const prices: StockPrice[] = symbols.length > 0 ? await getStockPrices(symbols) : [];
-      const bySym: Record<string, StockPrice> = Object.fromEntries((prices || []).map((p) => [p.symbol, p]));
-
-      if (holdings?.length) {
-        const combined: PortfolioRow[] = holdings.map((h) => {
-          const sym = String(h.symbol || '').trim().toUpperCase();
-          const p = bySym[sym] || {} as Partial<StockPrice>;
-          const q = Number(h.quantity || 0);
-          const ac = h.average_cost != null ? Number(h.average_cost) : null;
-          const quoteAvailable = p.quoteAvailable !== false && p.price != null;
-          const price = quoteAvailable ? p.price ?? 0 : 0;
-          const marketValue = quoteAvailable ? q * price : null;
-          const plPct = quoteAvailable && ac != null && ac > 0 ? ((price - ac) / ac) * 100 : null;
-          return {
-            user_portfolio_id: h.user_portfolio_id,
-            symbol: sym,
-            quantity: q,
-            average_cost: ac,
-            currency: h.currency ?? 'USD',
-            notes: h.notes ?? '',
-            price,
-            marketValue,
-            quoteAvailable,
-            unrealizedPlPercent: plPct,
-            isPositive: quoteAvailable && plPct != null ? plPct >= 0 : true,
-            previousClose: p.previousClose ?? null,
-            earlyTradingChangePercent: p.earlyTradingChangePercent ?? null,
-            lateTradingChangePercent: p.lateTradingChangePercent ?? null,
-          };
-        });
-        return { rows: combined, hasRealHoldings: true };
-      }
-      return { rows: [], hasRealHoldings: false };
+    queryFn: async (): Promise<PortfolioHolding[]> => {
+      const { holdings: rawHoldings } = await getPortfolio() as { holdings?: PortfolioHolding[] };
+      return rawHoldings ?? [];
     },
     refetchInterval: 60000,
     refetchIntervalInBackground: false,
     staleTime: 1000 * 30, // 30s fresh cache
   });
 
-  const { rows, hasRealHoldings } = data;
+  const symbols = useMemo(
+    () => holdings.map((h) => String(h.symbol || '').trim().toUpperCase()).filter(Boolean),
+    [holdings]
+  );
+
+  const { quotes, isLoading: quotesLoading, refetch: refetchQuotes } = useQuotes(symbols, {
+    staleTime: 1000 * 30,
+    refetchInterval: 60000,
+  });
+
+  const rows = useMemo<PortfolioRow[]>(() => {
+    if (!holdings.length) return [];
+    const bySym: Record<string, StockPrice> = Object.fromEntries(
+      symbols.map((s) => [s, snapshotToStockPrice(s, quotes[s])])
+    );
+    return holdings.map((h) => {
+      const sym = String(h.symbol || '').trim().toUpperCase();
+      const p = bySym[sym] || {} as Partial<StockPrice>;
+      const q = Number(h.quantity || 0);
+      const ac = h.average_cost != null ? Number(h.average_cost) : null;
+      const quoteAvailable = p.quoteAvailable !== false && p.price != null;
+      const price = quoteAvailable ? p.price ?? 0 : 0;
+      const marketValue = quoteAvailable ? q * price : null;
+      const plPct = quoteAvailable && ac != null && ac > 0 ? ((price - ac) / ac) * 100 : null;
+      return {
+        user_portfolio_id: h.user_portfolio_id,
+        symbol: sym,
+        quantity: q,
+        average_cost: ac,
+        currency: h.currency ?? 'USD',
+        notes: h.notes ?? '',
+        price,
+        marketValue,
+        quoteAvailable,
+        unrealizedPlPercent: plPct,
+        isPositive: quoteAvailable && plPct != null ? plPct >= 0 : true,
+        previousClose: p.previousClose ?? null,
+        earlyTradingChangePercent: p.earlyTradingChangePercent ?? null,
+        lateTradingChangePercent: p.lateTradingChangePercent ?? null,
+      };
+    });
+  }, [holdings, symbols, quotes]);
+
+  const hasRealHoldings = holdings.length > 0;
+  const loading = holdingsLoading || (symbols.length > 0 && quotesLoading);
+
+  const fetchPortfolio = useCallback(async () => {
+    await Promise.all([refetchHoldings(), Promise.resolve(refetchQuotes())]);
+  }, [refetchHoldings, refetchQuotes]);
 
   const handleAdd = useCallback(
     async (payload: PortfolioHoldingPayload) => {

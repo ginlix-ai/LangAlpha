@@ -1,3 +1,29 @@
+/**
+ * MarketView page chart constants.
+ *
+ * The shared interval vocabulary, load/poll/live tables, and symbol
+ * classification now live in lib/bars (so lib/ never imports a page); they are
+ * re-exported here for page-internal callers. Cross-page consumers should import
+ * those from '@/lib/bars' directly. Everything defined below is MarketView-page
+ * presentation: theme colors, scroll/UI layout, extended-hours session shading,
+ * and MA/RSI/overlay config.
+ */
+export {
+  AUTO_FIT_BARS,
+  BARS_PER_DAY,
+  DELTA_POLL_CADENCE_MS,
+  INITIAL_LOAD_DAYS,
+  INTERVAL_LABEL,
+  INTERVAL_SECONDS,
+  INTERVALS,
+  STAGE1_LOAD_DAYS,
+  WS_FOLD_INTERVALS,
+  WS_RECONCILE_POLL_MS,
+  WS_STALE_WINDOW_MS,
+} from '@/lib/bars/chartConstants';
+export type { IntervalConfig } from '@/lib/bars/chartConstants';
+export { FOREIGN_EXCHANGES, isUSEquity } from '@/lib/bars/exchanges';
+
 // --- Chart theme constants ---
 /** @deprecated Use getChartTheme(theme).bg instead */
 export const CHART_BG = '#000000';
@@ -84,41 +110,12 @@ export function getChartTheme(theme: 'dark' | 'light'): ChartThemeColors {
   return CHART_THEME[theme] || CHART_THEME.dark;
 }
 
-export interface IntervalConfig {
-  key: string;
-  label: string;
-}
-
-export const INTERVALS: IntervalConfig[] = [
-  { key: '1s',    label: '1s'  },
-  { key: '1min',  label: '1m'  },
-  { key: '5min',  label: '5m'  },
-  { key: '15min', label: '15m' },
-  { key: '30min', label: '30m' },
-  { key: '1hour', label: '1H'  },
-  { key: '4hour', label: '4H'  },
-  { key: '1day',  label: '1D'  },
-];
-
-// Interval key → short display label, derived from INTERVALS. Single source for
-// any surface that shows a timeframe badge (chart picker, annotation cards/rows).
-// Look up as `INTERVAL_LABEL[key] ?? key` so unknown keys degrade to the raw value.
-export const INTERVAL_LABEL: Record<string, string> = Object.fromEntries(
-  INTERVALS.map((i) => [i.key, i.label]),
-);
-
 // Intervals shown as direct buttons in the toolbar
-export const PRIMARY_INTERVAL_KEYS = new Set(['1s', '1min', '1day']);
-
-// Days of history per interval for initial load (0 = full history)
-export const INITIAL_LOAD_DAYS: Record<string, number> = {
-  '1s': 0, '1min': 7, '5min': 30, '15min': 60, '30min': 120,
-  '1hour': 180, '4hour': 365, '1day': 0,
-};
+export const PRIMARY_INTERVAL_KEYS = new Set(['1min', '1day']);
 
 // Days to prepend on scroll-left per interval
 export const SCROLL_CHUNK_DAYS: Record<string, number> = {
-  '1s': 0, '1min': 5, '5min': 20, '15min': 30, '30min': 60,
+  '1min': 5, '5min': 20, '15min': 30, '30min': 60,
   '1hour': 120, '4hour': 180, '1day': 365,
 };
 
@@ -127,24 +124,10 @@ export const SCROLL_LOAD_THRESHOLD = 20;
 // Debounce delay for visible range changes (ms)
 export const RANGE_CHANGE_DEBOUNCE_MS = 300;
 
-// Stage 1 (fast) initial load — days to fetch for immediate render.
-// Intervals not listed here skip staged loading entirely.
-export const STAGE1_LOAD_DAYS: Record<string, number> = {
-  '1s': 0,    // 1s: stage 1 = no date range (today's data from backend)
-  '1min': 2,  // 1min: stage 1 = 2 days (fast render)
-};
-
 // Stage 2 (background backfill) — additional days to fetch silently after stage 1.
 export const STAGE2_BACKFILL_DAYS: Record<string, number> = {
-  '1s': 1,    // backfill 1 prior day
   '1min': 5,  // backfill remaining 5 days (total = 2 + 5 = 7 = INITIAL_LOAD_DAYS)
 };
-
-// Background prefetch: intervals that pre-load the next scroll chunk before user reaches the edge
-export const PREFETCH_ENABLED_INTERVALS = new Set(['1s']);
-
-// How far from left edge (in bars) to trigger background prefetch (well before SCROLL_LOAD_THRESHOLD=20)
-export const PREFETCH_THRESHOLD = 150;
 
 // --- MA / RSI / Volume configuration ---
 export interface MAConfig {
@@ -164,22 +147,9 @@ export const MA_CONFIGS: MAConfig[] = [
 export const DEFAULT_ENABLED_MA: number[] = [20, 50];
 export const RSI_PERIODS: number[] = [7, 14, 21];
 
-// Approximate trading bars per day per interval (extended hours: 4AM-8PM = 16h)
-export const BARS_PER_DAY: Record<string, number> = {
-  '1s': 57600, '1min': 960, '5min': 192, '15min': 64, '30min': 32,
-  '1hour': 16, '4hour': 4, '1day': 1,
-};
-
-// Ideal visible bar count per interval (legacy, used by scroll-load heuristics)
-export const AUTO_FIT_BARS: Record<string, number> = {
-  '1s': 300, '1min': 390, '5min': 390, '15min': 200,
-  '30min': 200, '1hour': 180, '4hour': 180, '1day': 180,
-};
-
 // Target bar spacing (pixels) per interval for readable candlestick charts.
 // Container width determines how many bars are visible at this spacing.
 export const TARGET_BAR_SPACING: Record<string, number> = {
-  '1s': 5,     // Dense: overview of rapid ticks
   '1min': 8,   // Sweet spot for intraday monitoring
   '5min': 8,
   '15min': 9,
@@ -205,7 +175,7 @@ export const OVERLAY_LABELS: Record<string, string> = {
 // --- Extended-hours detection ---
 export const EXT_COLOR_PRE = '#fbbf24';   // amber — pre-market
 export const EXT_COLOR_POST = '#3b82f6';  // blue  — after-hours
-export const EXTENDED_HOURS_INTERVALS = new Set(['1s', '1min', '5min', '15min', '30min', '1hour']);
+export const EXTENDED_HOURS_INTERVALS = new Set(['1min', '5min', '15min', '30min', '1hour']);
 
 export type ExtendedHoursType = 'pre' | 'post';
 
@@ -243,7 +213,7 @@ export interface ChartDataPoint {
  * Max time (seconds) between two consecutive bars before we consider the
  * stream to have "jumped" and forcibly close the currently-open extended-
  * hours region. Pre/post-market windows are at most ~5.5h and ~4h long, and
- * within a session bars on supported intervals (1s..1hour) are always spaced
+ * within a session bars on supported intervals (1min..1hour) are always spaced
  * well under this. Any gap larger than this is a day-boundary crossing or a
  * backend data gap — both cases where a region should not be stretched.
  */
@@ -297,22 +267,4 @@ export function computeExtendedHoursRegions(data: ChartDataPoint[]): ExtendedHou
     regions.push({ start: regionStart, end: prevTime!, type: regionType! });
   }
   return regions;
-}
-
-// --- Symbol classification ---
-export const FOREIGN_EXCHANGES = new Set(['HK', 'SS', 'SZ', 'L', 'T', 'TO', 'AX', 'DE', 'PA', 'MC']);
-
-/** Returns true for US-listed equities (not indexes, not foreign stocks). */
-export function isUSEquity(sym: string | null | undefined): boolean {
-  if (!sym) return true;
-  if (sym.startsWith('^')) return false;
-  const dotIdx = sym.lastIndexOf('.');
-  if (dotIdx === -1) return true;
-  const suffix = sym.slice(dotIdx + 1).toUpperCase();
-  return !FOREIGN_EXCHANGES.has(suffix);
-}
-
-/** 1s interval is only supported for US equities. */
-export function supports1sInterval(sym: string | null | undefined): boolean {
-  return isUSEquity(sym);
 }

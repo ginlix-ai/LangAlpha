@@ -235,18 +235,7 @@ describe('MarketChartSurface', () => {
     expect(overview.props!.symbol).toBe('AAPL');
   });
 
-  it('auto-downgrades a 1s timeframe to 1min for a non-US symbol', () => {
-    // A foreign-exchange suffix (.HK) does not support 1s.
-    render(<MarketChartSurface symbol="0700.HK" timeframe="1s" />);
-    expect(chart.props!.interval).toBe('1min');
-  });
-
-  it('keeps a 1s timeframe for a US equity', () => {
-    render(<MarketChartSurface symbol="AAPL" timeframe="1s" />);
-    expect(chart.props!.interval).toBe('1s');
-  });
-
-  it('forwards WS connection state + ginlix flag to header and chart', () => {
+  it('forwards WS connection state to header and chart (+ ginlix flag to header)', () => {
     ws.connectionStatus = 'connecting';
     ws.dataLevel = 'delayed';
     ws.ginlixDataEnabled = false;
@@ -256,6 +245,5 @@ describe('MarketChartSurface', () => {
     expect(header.props!.wsDataLevel).toBe('delayed');
     expect(header.props!.ginlixDataEnabled).toBe(false);
     expect(chart.props!.wsStatus).toBe('connecting');
-    expect(chart.props!.ginlixDataEnabled).toBe(false);
   });
 });

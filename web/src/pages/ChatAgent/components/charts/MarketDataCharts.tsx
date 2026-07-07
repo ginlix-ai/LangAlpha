@@ -7,7 +7,7 @@ import {
   PieChart, Pie, Cell, Legend, LabelList,
   LineChart, Line, ReferenceLine,
 } from 'recharts';
-import { fetchStockData } from '../../../MarketView/utils/api';
+import { fetchStockData } from '@/lib/bars';
 import { utcMsToChartSec } from '@/lib/utils';
 import { Sunrise, Sunset } from 'lucide-react';
 import { useTheme } from '../../../../contexts/ThemeContext';
