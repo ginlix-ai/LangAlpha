@@ -317,8 +317,8 @@ class TestMarketDataProvider:
         result = await provider.get_snapshots(["AAPL", "MSFT"])
 
         assert result == [
-            {"symbol": "AAPL", "price": 190.0},
-            {"symbol": "MSFT", "price": 420.0},
+            {"symbol": "AAPL", "price": 190.0, "source": "primary"},
+            {"symbol": "MSFT", "price": 420.0, "source": "fallback"},
         ]
         assert len(primary_src.calls) == 1
         assert len(fallback_src.calls) == 1
@@ -345,8 +345,8 @@ class TestMarketDataProvider:
         result = await provider.get_snapshots(["  AAPL  ", " MSFT "])
 
         assert result == [
-            {"symbol": "AAPL", "price": 190.0},
-            {"symbol": "MSFT", "price": 420.0},
+            {"symbol": "AAPL", "price": 190.0, "source": "primary"},
+            {"symbol": "MSFT", "price": 420.0, "source": "fallback"},
         ]
         assert primary_src.calls[0][1]["symbols"] == ["  AAPL  ", " MSFT "]
         assert fallback_src.calls[0][1]["symbols"] == [" MSFT "]
@@ -363,7 +363,7 @@ class TestMarketDataProvider:
 
         result = await provider.get_snapshots([" 301189.SZ "])
 
-        assert result == [{"symbol": "301189.SZ", "price": 42.0}]
+        assert result == [{"symbol": "301189.SZ", "price": 42.0, "source": "cn"}]
         assert cn_src.calls[0][1]["symbols"] == [" 301189.SZ "]
 
     @pytest.mark.asyncio
@@ -387,8 +387,8 @@ class TestMarketDataProvider:
         result = await provider.get_snapshots(["AAPL", "300059.SZ"])
 
         assert result == [
-            {"symbol": "AAPL", "price": 190.0},
-            {"symbol": "300059.SZ", "price": 42.0},
+            {"symbol": "AAPL", "price": 190.0, "source": "ginlix"},
+            {"symbol": "300059.SZ", "price": 42.0, "source": "cn"},
         ]
         assert us_src.calls[0][1]["symbols"] == ["AAPL"]
         assert cn_src.calls[0][1]["symbols"] == ["300059.SZ"]
@@ -408,7 +408,7 @@ class TestMarketDataProvider:
 
         result = await provider.get_snapshots(["GSPC"], asset_type="indices")
 
-        assert result == [{"symbol": "^GSPC", "price": 5000.0}]
+        assert result == [{"symbol": "^GSPC", "price": 5000.0, "source": "caret"}]
         assert "market_data.snapshot.drop_unrequested" not in caplog.text
 
     @pytest.mark.asyncio
@@ -444,7 +444,7 @@ class TestMarketDataProvider:
 
         result = await provider.get_snapshots(["301189.SZ"])
 
-        assert result == [{"symbol": "301189.SZ", "price": 42.0}]
+        assert result == [{"symbol": "301189.SZ", "price": 42.0, "source": "fallback"}]
         assert empty_src.calls[0][1]["symbols"] == ["301189.SZ"]
         assert fallback_src.calls[0][1]["symbols"] == ["301189.SZ"]
 
@@ -467,7 +467,7 @@ class TestMarketDataProvider:
 
         result = await provider.get_snapshots(["AAPL"])
 
-        assert result == [{"symbol": "AAPL", "price": 190.0}]
+        assert result == [{"symbol": "AAPL", "price": 190.0, "source": "fallback"}]
         assert bad_src.calls[0][1]["symbols"] == ["AAPL"]
         assert fallback_src.calls[0][1]["symbols"] == ["AAPL"]
         assert "market_data.snapshot.drop_unkeyed" in caplog.text
@@ -484,7 +484,7 @@ class TestMarketDataProvider:
 
         result = await provider.get_snapshots(["AAPL", "XYZ.ZZ"])
 
-        assert result == [{"symbol": "AAPL", "price": 190.0}]
+        assert result == [{"symbol": "AAPL", "price": 190.0, "source": "ginlix"}]
         assert us_src.calls[0][1]["symbols"] == ["AAPL"]
 
     @pytest.mark.asyncio
@@ -517,7 +517,7 @@ class TestMarketDataProvider:
 
         result = await provider.get_snapshots(["AAPL"])
 
-        assert result == [{"symbol": "AAPL", "price": 190.0}]
+        assert result == [{"symbol": "AAPL", "price": 190.0, "source": "yfinance"}]
         assert len(yf.calls) == 1
         assert yf.calls[0][1]["symbols"] == ["AAPL"]
 
@@ -680,7 +680,7 @@ class TestNullRowRecovery:
             ProviderEntry("second", second, {"all"}),
         ])
         out = await provider.get_snapshots(["AAPL"])
-        assert out == [{"symbol": "AAPL", "price": 190.0}]
+        assert out == [{"symbol": "AAPL", "price": 190.0, "source": "second"}]
 
     @pytest.mark.asyncio
     async def test_unresolvable_symbol_absent_from_results(self):

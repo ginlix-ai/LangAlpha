@@ -261,6 +261,7 @@ class SnapshotData(BaseModel):
     regular_trading_change: Optional[float] = Field(None, description="Regular session change (close - prev close)")
     early_trading_change_percent: Optional[float] = Field(None, description="Pre-market change %")
     late_trading_change_percent: Optional[float] = Field(None, description="After-hours change %")
+    source: Optional[str] = Field(None, description="Provider that filled this row")
 
 
 class SnapshotResponse(BaseModel):

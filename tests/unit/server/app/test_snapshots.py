@@ -51,3 +51,18 @@ async def test_symbol_cap_boundary_passes_validation(client):
         resp = await client.get(f"/api/v1/market-data/snapshots/stocks?symbols={symbols}")
     assert resp.status_code == 200
     get_instance.return_value.get_quotes.assert_awaited_once()
+
+
+async def test_snapshot_row_source_passes_through(client):
+    # The provider chain stamps each resolved row with the filling provider;
+    # the endpoint model must expose it, absent-source rows serialize null.
+    rows = [
+        {"symbol": "AAPL", "price": 190.0, "source": "ginlix-data"},
+        {"symbol": "MSFT", "price": 420.0},
+    ]
+    with _stub_quotes(rows):
+        resp = await client.get("/api/v1/market-data/snapshots/stocks?symbols=AAPL,MSFT")
+    assert resp.status_code == 200
+    snaps = {s["symbol"]: s for s in resp.json()["snapshots"]}
+    assert snaps["AAPL"]["source"] == "ginlix-data"
+    assert snaps["MSFT"]["source"] is None

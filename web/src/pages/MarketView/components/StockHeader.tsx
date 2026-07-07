@@ -89,13 +89,18 @@ const StockHeader = ({ symbol, stockInfo, realTimePrice, chartMeta: _chartMeta, 
   // Pre/post-market extended hours data
   const { extPct: extendedChangePercent, extType: extendedType } = getExtendedHoursInfo(marketStatus, snapshot);
 
-  // Data source label from market status providers
-  const providers = (marketStatus?.providers ?? []) as string[];
-  const dataSourceLabel = providers.map(p => PROVIDER_LABELS[p] ?? p).join(', ') || 'REST';
-
   // Live = WS connected AND actually delivering aggregate data for this symbol
   const usSymbol = isUSEquity(symbol);
   const isLive = wsStatus === 'connected' && usSymbol && wsHasData;
+
+  // The provider actually serving the displayed price: the WS feed when live
+  // (ginlix-data is the only WS upstream), else whichever provider filled the
+  // snapshot. Fall back to the enabled-provider list for rows without a source.
+  const providers = (marketStatus?.providers ?? []) as string[];
+  const activeSource = isLive ? 'ginlix-data' : (snapshot?.source ?? null);
+  const dataSourceLabel = activeSource
+    ? (PROVIDER_LABELS[activeSource] ?? activeSource)
+    : (providers.map(p => PROVIDER_LABELS[p] ?? p).join(', ') || 'REST');
   const isMobile = useIsMobile();
   const [metricsCollapsed, setMetricsCollapsed] = useState(false);
 

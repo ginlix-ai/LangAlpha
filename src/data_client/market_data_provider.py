@@ -392,6 +392,7 @@ class MarketDataProvider:
                             entry.name, symbol,
                         )
                         continue
+                    snap["source"] = entry.name
                     results_by_symbol[symbol] = snap
                     resolved.add(symbol)
                 elif symbol:

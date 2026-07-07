@@ -41,6 +41,7 @@ export interface SnapshotData {
   volume?: number;
   early_trading_change_percent?: number | null;
   late_trading_change_percent?: number | null;
+  source?: string | null;
   [key: string]: unknown;
 }
 

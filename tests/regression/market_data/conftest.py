@@ -42,7 +42,7 @@ UNKNOWN_SYMBOL = "ZZZZFAKE1"
 STOCK_SNAPSHOT_FIELDS = {
     "symbol", "name", "price", "change", "change_percent", "previous_close",
     "open", "high", "low", "volume", "market_status", "regular_trading_change",
-    "early_trading_change_percent", "late_trading_change_percent",
+    "early_trading_change_percent", "late_trading_change_percent", "source",
 }
 BAR_FIELDS = {"time", "open", "high", "low", "close", "volume"}
 CACHE_META_FIELDS = {
