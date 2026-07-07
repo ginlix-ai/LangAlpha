@@ -151,3 +151,4 @@ Both stores share a request-scoped cache (`backends/store_cache.py`) so multi-mi
 - **No SQLAlchemy ORM** — all DB access is raw SQL via psycopg3. Alembic is used for migrations only (raw SQL via `op.execute()`).
 - **Two config layers**: `.env` for credentials/URLs, YAML files for behavioral settings.
 - **Middleware-driven architecture**: agent behavior is composed via middleware, not graph nodes.
+- **Agent-facing docstrings are pinned**: the market-data MCP server tools (`mcp_servers/*_mcp_server.py`) and direct market tools (`src/tools/market_data/tool.py`) have hand-tuned docstrings that ship into agent prompts and sandbox wrappers. Their content is snapshot-locked (`tests/unit/mcp_servers/agent_docstring_lock.json`); any edit fails the default unit suite. Do not reword them as a side effect of other work — see `mcp_servers/AGENT_CONTRACT.md` for the standard and the lock-regeneration command.

@@ -1,10 +1,12 @@
-"""Tests for macro_mcp_server."""
+"""Tests for macro_mcp_server (standard market-data envelope)."""
 
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from .conftest import assert_error, assert_ok_envelope
 
 _MOD = "mcp_servers.macro_mcp_server"
 
@@ -45,10 +47,12 @@ class TestGetEconomicIndicator:
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
             result = await get_economic_indicator("GDP")
 
+        assert_ok_envelope(result, count=2, source="fmp")
         assert result["data_type"] == "economic_indicator"
         assert result["indicator"] == "GDP"
-        assert result["count"] == 2
-        assert result["source"] == "fmp"
+        assert isinstance(result["count"], int)
+        # macro tools without a symbol omit the symbol key entirely.
+        assert "symbol" not in result
         client.get_economic_indicators.assert_awaited_once_with("GDP", limit=50)
 
     @pytest.mark.asyncio
@@ -68,18 +72,20 @@ class TestGetEconomicIndicator:
         with patch(f"{_MOD}.get_fmp_client", side_effect=RuntimeError("no key")):
             result = await get_economic_indicator("GDP")
 
-        assert "error" in result
+        assert_error(result, "client_unavailable", detail_excludes=("no key",))
+        assert result["indicator"] == "GDP"
 
     @pytest.mark.asyncio
     async def test_api_error(self):
         from mcp_servers.macro_mcp_server import get_economic_indicator
 
         client = _make_fmp_client()
-        client.get_economic_indicators = AsyncMock(side_effect=Exception("timeout"))
+        client.get_economic_indicators = AsyncMock(side_effect=Exception("timeout at ?apikey=SECRET"))
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
             result = await get_economic_indicator("GDP")
 
-        assert "error" in result
+        assert_error(result, "upstream_error", detail_excludes=("SECRET",))
+        assert result["indicator"] == "GDP"
 
 
 # ---------------------------------------------------------------------------
@@ -95,8 +101,8 @@ class TestGetEconomicCalendar:
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
             result = await get_economic_calendar(from_date="2025-01-01", to_date="2025-01-31")
 
+        assert_ok_envelope(result, count=1, source="fmp")
         assert result["data_type"] == "economic_calendar"
-        assert result["count"] == 1
         assert result["data"][0]["event"] == "GDP"
         client.get_economic_calendar.assert_awaited_once_with(
             from_date="2025-01-01", to_date="2025-01-31",
@@ -127,8 +133,9 @@ class TestGetTreasuryRates:
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
             result = await get_treasury_rates()
 
+        assert_ok_envelope(result, count=1)
         assert result["data_type"] == "treasury_rates"
-        assert result["count"] == 1
+        assert isinstance(result["count"], int)
 
     @pytest.mark.asyncio
     async def test_with_date_range(self):
@@ -157,8 +164,8 @@ class TestGetMarketRiskPremium:
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
             result = await get_market_risk_premium()
 
+        assert_ok_envelope(result, count=1)
         assert result["data_type"] == "market_risk_premium"
-        assert result["count"] == 1
         assert result["data"][0]["country"] == "United States"
 
     @pytest.mark.asyncio
@@ -170,7 +177,7 @@ class TestGetMarketRiskPremium:
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
             result = await get_market_risk_premium()
 
-        assert "error" in result
+        assert_error(result, "upstream_error")
 
 
 # ---------------------------------------------------------------------------
@@ -186,8 +193,8 @@ class TestGetEarningsCalendar:
         with patch(f"{_MOD}.get_fmp_client", return_value=client):
             result = await get_earnings_calendar(from_date="2025-01-27", to_date="2025-01-31")
 
+        assert_ok_envelope(result, count=2)
         assert result["data_type"] == "earnings_calendar"
-        assert result["count"] == 2
         assert result["from_date"] == "2025-01-27"
         assert result["to_date"] == "2025-01-31"
         client.get_earnings_calendar_by_date.assert_awaited_once_with(
@@ -201,4 +208,4 @@ class TestGetEarningsCalendar:
         with patch(f"{_MOD}.get_fmp_client", side_effect=RuntimeError("no key")):
             result = await get_earnings_calendar(from_date="2025-01-01", to_date="2025-01-31")
 
-        assert "error" in result
+        assert_error(result, "client_unavailable")

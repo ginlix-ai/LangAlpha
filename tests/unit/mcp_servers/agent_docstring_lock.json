@@ -1,0 +1,1564 @@
+{
+  "direct:get_company_overview": {
+    "doc_lines": [
+      "Full investment snapshot for one company — quote, financial health, analyst",
+      "consensus, earnings, and revenue segmentation.",
+      "",
+      "Args:",
+      "    symbol: US \"AAPL\", A-share \"600519.SS\", HK \"0700.HK\"."
+    ],
+    "params": [
+      "symbol"
+    ],
+    "required": [
+      "symbol"
+    ]
+  },
+  "direct:get_market_indices": {
+    "doc_lines": [
+      "Historical OHLCV bars for one or more market indices (default: major US indices).",
+      "",
+      "Args:",
+      "    indices: Index symbols; default [\"^GSPC\", \"^IXIC\", \"^DJI\", \"^RUT\"]",
+      "        (S&P 500, NASDAQ, Dow Jones, Russell 2000).",
+      "    start_date: Start \"YYYY-MM-DD\" (optional).",
+      "    end_date: End \"YYYY-MM-DD\" (optional).",
+      "    limit: Records per index (default 60)."
+    ],
+    "params": [
+      "end_date",
+      "indices",
+      "limit",
+      "start_date"
+    ],
+    "required": []
+  },
+  "direct:get_market_movers": {
+    "doc_lines": [
+      "Top US market movers — the biggest daily gainers or losers among tickers with",
+      "significant volume. US market only.",
+      "",
+      "Args:",
+      "    direction: \"gainers\" or \"losers\" (default \"gainers\")."
+    ],
+    "params": [
+      "direction"
+    ],
+    "required": []
+  },
+  "direct:get_options_chain": {
+    "doc_lines": [
+      "Options contracts for an underlying with current session pricing, filterable by",
+      "type, expiration range, and strike. US-listed options only — not for non-US",
+      "underlyings.",
+      "",
+      "Args:",
+      "    underlying: Underlying ticker (e.g. \"AAPL\", \"TSLA\").",
+      "    contract_type: \"call\" or \"put\" (default: both).",
+      "    expiration_date_gte: Min expiration \"YYYY-MM-DD\".",
+      "    expiration_date_lte: Max expiration \"YYYY-MM-DD\".",
+      "    strike_min: Min strike filter.",
+      "    strike_max: Max strike filter.",
+      "    limit: Max contracts (default 20)."
+    ],
+    "params": [
+      "contract_type",
+      "expiration_date_gte",
+      "expiration_date_lte",
+      "limit",
+      "strike_max",
+      "strike_min",
+      "underlying"
+    ],
+    "required": [
+      "underlying"
+    ]
+  },
+  "direct:get_sector_performance": {
+    "doc_lines": [
+      "US stock-market sector performance — which sectors (Technology, Healthcare,",
+      "Energy, Financials, …) are up or down on the day. US only; not for non-US markets.",
+      "",
+      "Args:",
+      "    date: Analysis date \"YYYY-MM-DD\" (default: latest available). Historical",
+      "        dates may be unavailable on the current data plan."
+    ],
+    "params": [
+      "date"
+    ],
+    "required": []
+  },
+  "direct:get_stock_daily_prices": {
+    "doc_lines": [
+      "Historical daily OHLCV bars for one stock — for price history, trends, returns,",
+      "and charting.",
+      "",
+      "Args:",
+      "    symbol: US \"AAPL\", A-share \"600519.SS\", HK \"0700.HK\".",
+      "    start_date: Start \"YYYY-MM-DD\" (optional).",
+      "    end_date: End \"YYYY-MM-DD\" (optional).",
+      "    limit: Max records when no date range is given (default 60 trading days)."
+    ],
+    "params": [
+      "end_date",
+      "limit",
+      "start_date",
+      "symbol"
+    ],
+    "required": [
+      "symbol"
+    ]
+  },
+  "direct:screen_stocks": {
+    "doc_lines": [
+      "Screen/discover stocks by fundamental and market filters — market cap, price,",
+      "volume, beta, dividend, sector, industry, exchange, country, and type — via the",
+      "FMP company screener.",
+      "",
+      "Args:",
+      "    market_cap_more_than: Minimum market capitalization (e.g. 1e9 for $1B).",
+      "    market_cap_lower_than: Maximum market capitalization.",
+      "    price_more_than: Minimum share price.",
+      "    price_lower_than: Maximum share price.",
+      "    volume_more_than: Minimum daily volume.",
+      "    volume_lower_than: Maximum daily volume.",
+      "    beta_more_than: Minimum beta.",
+      "    beta_lower_than: Maximum beta.",
+      "    dividend_more_than: Minimum dividend yield.",
+      "    dividend_lower_than: Maximum dividend yield.",
+      "    sector: e.g. \"Technology\", \"Healthcare\", \"Financial Services\".",
+      "    industry: e.g. \"Software\", \"Biotechnology\".",
+      "    exchange: e.g. \"NASDAQ\", \"NYSE\", \"AMEX\".",
+      "    country: e.g. \"US\", \"CN\", \"GB\".",
+      "    is_etf: ETFs only (True) or exclude ETFs (False).",
+      "    is_fund: Funds only (True) or exclude funds (False).",
+      "    is_actively_trading: Restrict to actively trading names.",
+      "    limit: Max results (default 50)."
+    ],
+    "params": [
+      "beta_lower_than",
+      "beta_more_than",
+      "country",
+      "dividend_lower_than",
+      "dividend_more_than",
+      "exchange",
+      "industry",
+      "is_actively_trading",
+      "is_etf",
+      "is_fund",
+      "limit",
+      "market_cap_lower_than",
+      "market_cap_more_than",
+      "price_lower_than",
+      "price_more_than",
+      "sector",
+      "volume_lower_than",
+      "volume_more_than"
+    ],
+    "required": []
+  },
+  "mcp:fundamentals:get_dividends_and_splits": {
+    "doc_lines": [
+      "Fetch historical dividend payments and stock splits — analyze dividend",
+      "    growth, adjust prices for splits, or compare dividend history across peers.",
+      "",
+      "    Args:",
+      "        symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source, data_type}. data is",
+      "        {dividends, splits}, each a list; count is the total across both.",
+      "        dividends fields: date, recordDate, paymentDate, declarationDate,",
+      "        adjDividend, dividend, yield, frequency. splits fields: date, numerator,",
+      "        denominator. Field names are FMP-native camelCase; date is \"YYYY-MM-DD\";",
+      "        records are newest-first as returned by FMP. On error:",
+      "        {error: <code>, detail, symbol}.",
+      "    "
+    ],
+    "params": [
+      "symbol"
+    ],
+    "required": [
+      "symbol"
+    ]
+  },
+  "mcp:fundamentals:get_financial_ratios": {
+    "doc_lines": [
+      "Fetch raw historical key metrics and financial ratios — track P/E, ROE,",
+      "    and margins over time, or compare valuation across companies.",
+      "",
+      "    Args:",
+      "        symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SS\".",
+      "        period: \"annual\" | \"quarter\".",
+      "        limit: Number of periods (default 10).",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source, data_type, period}. data is",
+      "        {key_metrics, ratios}, each a list of period records; count is the total.",
+      "        key_metrics fields: date, marketCap, enterpriseValue, evToEBITDA,",
+      "        freeCashFlowYield. ratios fields: date, netProfitMargin, returnOnEquity,",
+      "        currentRatio, debtToEquityRatio, priceToEarningsRatio. Field names are",
+      "        FMP-native camelCase; date is \"YYYY-MM-DD\"; records are newest-first as",
+      "        returned by FMP. On error: {error: <code>, detail, symbol}.",
+      "    "
+    ],
+    "params": [
+      "limit",
+      "period",
+      "symbol"
+    ],
+    "required": [
+      "symbol"
+    ]
+  },
+  "mcp:fundamentals:get_financial_statements": {
+    "doc_lines": [
+      "Fetch raw historical financial statements for trend analysis or model",
+      "    building. statement_type=\"all\" returns income, balance sheet, and cash flow.",
+      "",
+      "    Args:",
+      "        symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SS\".",
+      "        statement_type: \"income\" | \"balance\" | \"cash\" | \"all\".",
+      "        period: \"annual\" | \"quarter\".",
+      "        limit: Number of periods (default 10).",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source, data_type, statement_type, period}.",
+      "        One statement_type → a list of period records; \"all\" → {income_statement,",
+      "        balance_sheet, cash_flow} lists with count the total. Common camelCase",
+      "        fields: date, revenue, netIncome, eps, totalAssets, operatingCashFlow.",
+      "        date is \"YYYY-MM-DD\"; records are newest-first as returned by FMP. On",
+      "        error: {error: <code>, detail, symbol}.",
+      "    "
+    ],
+    "params": [
+      "limit",
+      "period",
+      "statement_type",
+      "symbol"
+    ],
+    "required": [
+      "symbol"
+    ]
+  },
+  "mcp:fundamentals:get_growth_metrics": {
+    "doc_lines": [
+      "Fetch raw historical growth rates for trend analysis — chart revenue/EPS",
+      "    trajectory or compare growth across competitors.",
+      "",
+      "    Args:",
+      "        symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SS\".",
+      "        period: \"annual\" | \"quarter\".",
+      "        limit: Number of periods (default 10).",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source, data_type, period}. data is",
+      "        {financial_growth, income_statement_growth}, each a list; count is the",
+      "        total. financial_growth fields: date, revenueGrowth, netIncomeGrowth,",
+      "        epsgrowth; income_statement_growth fields: date, growthRevenue,",
+      "        growthNetIncome, growthEPS. Growth values are decimal fractions",
+      "        (0.1 = 10%). Field names are FMP-native camelCase; date is \"YYYY-MM-DD\";",
+      "        records are newest-first as returned by FMP. On error:",
+      "        {error: <code>, detail, symbol}.",
+      "    "
+    ],
+    "params": [
+      "limit",
+      "period",
+      "symbol"
+    ],
+    "required": [
+      "symbol"
+    ]
+  },
+  "mcp:fundamentals:get_historical_valuation": {
+    "doc_lines": [
+      "Fetch DCF fair value and enterprise value history — track fair value vs",
+      "    price or build valuation trend charts.",
+      "",
+      "    Args:",
+      "        symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SS\".",
+      "        period: \"annual\" | \"quarter\".",
+      "        limit: Number of periods (default 10).",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source, data_type, period}. data is",
+      "        {current_dcf, historical_dcf, enterprise_value}, each a list; count is",
+      "        the total. current_dcf fields: symbol, date, dcf, stockPrice.",
+      "        historical_dcf is always [] — the stable FMP API no longer exposes it.",
+      "        enterprise_value fields: date, stockPrice, marketCapitalization,",
+      "        enterpriseValue. Field names are FMP-native camelCase; date is",
+      "        \"YYYY-MM-DD\"; enterprise_value is newest-first as returned by FMP. On",
+      "        error: {error: <code>, detail, symbol}.",
+      "    "
+    ],
+    "params": [
+      "limit",
+      "period",
+      "symbol"
+    ],
+    "required": [
+      "symbol"
+    ]
+  },
+  "mcp:fundamentals:get_insider_trades": {
+    "doc_lines": [
+      "Fetch insider trading transactions and aggregate buy/sell statistics —",
+      "    detect insider buying clusters, screen unusual activity, or gauge C-suite",
+      "    confidence.",
+      "",
+      "    Args:",
+      "        symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "        limit: Number of recent transactions to fetch (default 50).",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source, data_type}. data is {trades, stats},",
+      "        each a list; count is the total across both. trades fields: symbol,",
+      "        filingDate, transactionDate, reportingName, transactionType,",
+      "        securitiesTransacted, price. stats fields: year, quarter, totalBought,",
+      "        totalSold, buySellRatio. Field names are FMP-native camelCase; dates are",
+      "        \"YYYY-MM-DD\"; trades are newest-first as returned by FMP. On error:",
+      "        {error: <code>, detail, symbol}.",
+      "    "
+    ],
+    "params": [
+      "limit",
+      "symbol"
+    ],
+    "required": [
+      "symbol"
+    ]
+  },
+  "mcp:fundamentals:get_key_executives": {
+    "doc_lines": [
+      "Fetch key executives with title and compensation — identify the",
+      "    management team or compare executive pay across peers.",
+      "",
+      "    Args:",
+      "        symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source, data_type}. data is a list of",
+      "        executive records; count is the record total. Fields: name, title, pay,",
+      "        currencyPay, gender, yearBorn, titleSince. Field names are FMP-native",
+      "        camelCase; pay is an integer in currencyPay units; order is as returned",
+      "        by FMP (not time-ordered). On error: {error: <code>, detail, symbol}.",
+      "    "
+    ],
+    "params": [
+      "symbol"
+    ],
+    "required": [
+      "symbol"
+    ]
+  },
+  "mcp:fundamentals:get_shares_float": {
+    "doc_lines": [
+      "Fetch shares float, outstanding shares, and float percentage — flag",
+      "    low-float names, gauge ownership concentration, or screen squeeze candidates.",
+      "",
+      "    Args:",
+      "        symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source, data_type}. data is a list of",
+      "        records; count is the record total. Fields: symbol, date, freeFloat,",
+      "        floatShares, outstandingShares. Field names are FMP-native camelCase;",
+      "        date is \"YYYY-MM-DD\"; latest snapshot first as returned by FMP. On error:",
+      "        {error: <code>, detail, symbol}.",
+      "    "
+    ],
+    "params": [
+      "symbol"
+    ],
+    "required": [
+      "symbol"
+    ]
+  },
+  "mcp:fundamentals:get_technical_indicator": {
+    "doc_lines": [
+      "Fetch a technical indicator time series over OHLCV bars — plot RSI,",
+      "    overlay EMA/MACD, or screen by technical signals.",
+      "",
+      "    Args:",
+      "        symbol: Ticker, e.g. \"AAPL\", \"0700.HK\", \"600519.SS\".",
+      "        indicator: FMP name — \"rsi\", \"ema\", \"sma\", \"wma\", \"adx\", \"williams\".",
+      "        period: Indicator lookback length (default 14).",
+      "        timeframe: FMP-native bar — \"1min\"…\"4hour\", \"1day\" (default \"1day\").",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source, data_type, indicator, period,",
+      "        timeframe}. data is a list of bars; count is the bar total. Fields: date,",
+      "        open, high, low, close, volume, and the indicator value keyed by its",
+      "        name. date is \"YYYY-MM-DD\" (1day) or \"YYYY-MM-DD HH:MM:SS\"",
+      "        (intraday); field names are FMP-native camelCase; bars newest-first.",
+      "        On error: {error: <code>, detail, symbol}.",
+      "    "
+    ],
+    "params": [
+      "indicator",
+      "period",
+      "symbol",
+      "timeframe"
+    ],
+    "required": [
+      "indicator",
+      "symbol"
+    ]
+  },
+  "mcp:macro:get_earnings_calendar": {
+    "doc_lines": [
+      "Fetch the earnings calendar for all companies reporting in a date range —",
+      "    build a catalyst calendar, generate a morning note, or track earnings-season",
+      "    volume.",
+      "",
+      "    Args:",
+      "        from_date: Start date \"YYYY-MM-DD\".",
+      "        to_date: End date \"YYYY-MM-DD\".",
+      "",
+      "    Returns:",
+      "        dict: {count, data, source, data_type, from_date, to_date}. data is a",
+      "        list of reporter records; count is the record total. Fields: symbol,",
+      "        date, epsActual, epsEstimated, revenueActual, revenueEstimated,",
+      "        lastUpdated. actual fields are null before a company reports. Field names",
+      "        are FMP-native camelCase; date is \"YYYY-MM-DD\"; order is as returned by",
+      "        FMP. On error: {error: <code>, detail}.",
+      "    "
+    ],
+    "params": [
+      "from_date",
+      "to_date"
+    ],
+    "required": [
+      "from_date",
+      "to_date"
+    ]
+  },
+  "mcp:macro:get_economic_calendar": {
+    "doc_lines": [
+      "Fetch economic events with prior, estimate, and actual values — build a",
+      "    catalyst calendar, generate a morning note, or track Fed meetings, jobs",
+      "    reports, and CPI releases.",
+      "",
+      "    Args:",
+      "        from_date: Start date \"YYYY-MM-DD\" (default: today).",
+      "        to_date: End date \"YYYY-MM-DD\" (default: 7 days from today).",
+      "",
+      "    Returns:",
+      "        dict: {count, data, source, data_type, from_date, to_date}. data is a",
+      "        list of events; count is the event total. Fields: date, country, event,",
+      "        currency, previous, estimate, actual, change, changePercentage, impact,",
+      "        unit. actual/estimate/previous are null for events not yet released.",
+      "        Field names are FMP-native camelCase; date is \"YYYY-MM-DD HH:MM:SS\";",
+      "        order is as returned by FMP. On error: {error: <code>, detail}.",
+      "    "
+    ],
+    "params": [
+      "from_date",
+      "to_date"
+    ],
+    "required": []
+  },
+  "mcp:macro:get_economic_indicator": {
+    "doc_lines": [
+      "Fetch an economic indicator time series — GDP growth for the macro",
+      "    outlook, CPI/inflation for discount-rate assumptions, or unemployment and",
+      "    the Fed funds rate for economic context.",
+      "",
+      "    Args:",
+      "        name: Indicator — \"GDP\", \"CPI\", \"unemploymentRate\", \"federalFundsRate\",",
+      "            \"inflationRate\", \"retailSales\", \"consumerSentiment\", \"nonFarmPayrolls\".",
+      "        limit: Number of observations to fetch (default 50).",
+      "",
+      "    Returns:",
+      "        dict: {count, data, source, data_type, indicator}. data is a list of",
+      "        observations; count is the observation total. Fields: date, value (and",
+      "        for some series, name). Field names are FMP-native camelCase; date is",
+      "        \"YYYY-MM-DD\"; observations are newest-first as returned by FMP. On error:",
+      "        {error: <code>, detail, indicator}.",
+      "    "
+    ],
+    "params": [
+      "limit",
+      "name"
+    ],
+    "required": [
+      "name"
+    ]
+  },
+  "mcp:macro:get_market_risk_premium": {
+    "doc_lines": [
+      "Fetch market risk premium by country for CAPM/WACC — get the equity risk",
+      "    premium for a DCF cost of equity, or compare premiums across markets.",
+      "",
+      "    Returns:",
+      "        dict: {count, data, source, data_type}. data is a list of country",
+      "        records; count is the record total. Fields: country, continent,",
+      "        countryRiskPremium, totalEquityRiskPremium. Premiums are percent",
+      "        (5.5 = 5.5%). Field names are FMP-native camelCase; order is by country",
+      "        as returned by FMP (not time-ordered). On error: {error: <code>, detail}.",
+      "    "
+    ],
+    "params": [],
+    "required": []
+  },
+  "mcp:macro:get_treasury_rates": {
+    "doc_lines": [
+      "Fetch US Treasury rates across the full yield curve (1M to 30Y) — get the",
+      "    risk-free rate for DCF/WACC (typically 10Y), read the curve shape, or track",
+      "    rate trends.",
+      "",
+      "    Args:",
+      "        from_date: Start date \"YYYY-MM-DD\" (default: recent data).",
+      "        to_date: End date \"YYYY-MM-DD\" (default: today).",
+      "",
+      "    Returns:",
+      "        dict: {count, data, source, data_type, from_date, to_date}. data is a",
+      "        list of daily records; count is the record total. Each record has a date",
+      "        plus per-tenor rate columns: month1, month2, month3, month6, year1,",
+      "        year2, year3, year5, year7, year10, year20, year30. Rates are percent",
+      "        (4.5 = 4.5%). Field names are FMP-native camelCase; date is \"YYYY-MM-DD\";",
+      "        records are newest-first as returned by FMP. On error:",
+      "        {error: <code>, detail}.",
+      "    "
+    ],
+    "params": [
+      "from_date",
+      "to_date"
+    ],
+    "required": []
+  },
+  "mcp:options:get_options_chain": {
+    "doc_lines": [
+      "List options contracts for an underlying; use to discover/filter contracts.",
+      "",
+      "    Filter by call/put, expiration range, and strike range. ginlix-data only.",
+      "",
+      "    Args:",
+      "        underlying_ticker: Underlying stock ticker, e.g. \"AAPL\".",
+      "        contract_type: \"call\" or \"put\" (default: both).",
+      "        expiration_date_gte: Min expiration \"YYYY-MM-DD\".",
+      "        expiration_date_lte: Max expiration \"YYYY-MM-DD\".",
+      "        strike_price_gte: Min strike price.",
+      "        strike_price_lte: Max strike price.",
+      "        limit: Max contracts (default 50, max 1000).",
+      "",
+      "    Returns:",
+      "        dict: {symbol, underlying_ticker, currency, timezone, count, data,",
+      "        source}. data: list of contract dicts with ticker, contract_type,",
+      "        expiration_date, strike_price, shares_per_contract, primary_exchange;",
+      "        strike_price in `currency` major units. On error: {error: <code>, detail}.",
+      "    "
+    ],
+    "params": [
+      "contract_type",
+      "expiration_date_gte",
+      "expiration_date_lte",
+      "limit",
+      "strike_price_gte",
+      "strike_price_lte",
+      "underlying_ticker"
+    ],
+    "required": [
+      "underlying_ticker"
+    ]
+  },
+  "mcp:options:get_options_prices": {
+    "doc_lines": [
+      "Fetch OHLCV bars for one options contract; use for option price history.",
+      "",
+      "    Intervals: 1min|5min|15min|30min|1hour|4hour|1day|1week|1month (aliases like",
+      "    \"1d\"/\"daily\" accepted). ginlix-data only.",
+      "",
+      "    Args:",
+      "        options_ticker: OCC contract ticker, e.g. \"O:AAPL260618C00220000\".",
+      "        from_date: Start date \"YYYY-MM-DD\" (required).",
+      "        to_date: End date \"YYYY-MM-DD\" (required).",
+      "        interval: Bar size; one of the intervals above.",
+      "",
+      "    Returns:",
+      "        dict: {symbol, interval, currency, timezone, count, data, source}. symbol",
+      "        echoes the contract ticker; currency/timezone are the underlying's. data:",
+      "        list of {date, open, high, low, close, volume} ascending (oldest first);",
+      "        date exchange-local \"YYYY-MM-DD[ HH:MM:SS]\"; prices in `currency` major",
+      "        units. On error: {error: <code>, detail}.",
+      "    "
+    ],
+    "params": [
+      "from_date",
+      "interval",
+      "options_ticker",
+      "to_date"
+    ],
+    "required": [
+      "from_date",
+      "options_ticker",
+      "to_date"
+    ]
+  },
+  "mcp:options:get_options_snapshot": {
+    "doc_lines": [
+      "Fetch real-time snapshots for options contracts; use for live quotes.",
+      "",
+      "    Session OHLCV is always present; bid/ask and last trade populate during",
+      "    market hours. ginlix-data only.",
+      "",
+      "    Args:",
+      "        options_tickers: One or more OCC tickers, comma-separated",
+      "            (e.g. \"O:AAPL260618C00220000,O:AAPL260618C00230000\").",
+      "",
+      "    Returns:",
+      "        dict: {currency, timezone, count, data, source}. currency/timezone are",
+      "        the underlying's, set only when all contracts share one (else omitted).",
+      "        data: list of snapshot dicts, each with ticker, name, market_status,",
+      "        session (OHLCV + change), last_quote (bid/ask/midpoint), last_trade",
+      "        (price/size); prices in `currency` major units. On error:",
+      "        {error: <code>, detail}.",
+      "    "
+    ],
+    "params": [
+      "options_tickers"
+    ],
+    "required": [
+      "options_tickers"
+    ]
+  },
+  "mcp:price_data:get_asset_data": {
+    "doc_lines": [
+      "Fetch OHLCV bars for a stock, commodity, crypto, or forex pair.",
+      "",
+      "    Intervals: 1min|5min|1hour|1day (stock adds 15min|30min|4hour); dates",
+      "    required for intraday.",
+      "",
+      "    Args:",
+      "        symbol: Stock \"AAPL\", commodity \"GCUSD\", crypto \"BTCUSD\", forex \"EURUSD\".",
+      "        asset_type: One of stock|commodity|crypto|forex.",
+      "        interval: Bar size; see intervals above.",
+      "        from_date: \"YYYY-MM-DD\" (append \" HH:MM\" for intraday time filtering).",
+      "        to_date: \"YYYY-MM-DD\" (append \" HH:MM\" for intraday time filtering).",
+      "",
+      "    Returns:",
+      "        dict: {symbol, asset_type, interval, currency, timezone, count, data,",
+      "        source}. data: list of {date, open, high, low, close, volume} ascending",
+      "        (oldest first); date exchange-local \"YYYY-MM-DD[ HH:MM:SS]\"; prices in",
+      "        `currency` major units. On error: {error: <code>, detail}.",
+      "    "
+    ],
+    "params": [
+      "asset_type",
+      "from_date",
+      "interval",
+      "symbol",
+      "to_date"
+    ],
+    "required": [
+      "asset_type",
+      "symbol"
+    ]
+  },
+  "mcp:price_data:get_short_data": {
+    "doc_lines": [
+      "Fetch short interest and/or short volume for a US stock (short-squeeze work).",
+      "",
+      "    Short interest is FINRA bi-monthly (settlement_date); short volume is daily",
+      "    off-exchange (date). ginlix-data only.",
+      "",
+      "    Args:",
+      "        symbol: Stock ticker, e.g. \"AAPL\".",
+      "        data_type: \"short_interest\", \"short_volume\", or \"both\" (default).",
+      "        from_date: \"YYYY-MM-DD\" start filter (optional).",
+      "        to_date: \"YYYY-MM-DD\" end filter (optional).",
+      "        limit: Max records per section (default 20, max 50000).",
+      "",
+      "    Returns:",
+      "        dict: {symbol, timezone, count, data, source, data_type}. data is a dict",
+      "        of {short_interest, short_volume} lists (requested sections only), newest",
+      "        first. Record fields are vendor-native (e.g. settlement_date,",
+      "        short_volume_ratio). Partial failures appear in an `errors` map. On",
+      "        error: {error: <code>, detail}.",
+      "    "
+    ],
+    "params": [
+      "data_type",
+      "from_date",
+      "limit",
+      "symbol",
+      "to_date"
+    ],
+    "required": [
+      "symbol"
+    ]
+  },
+  "mcp:price_data:get_stock_data": {
+    "doc_lines": [
+      "Fetch OHLCV price bars for a stock; use for historical charts/analysis.",
+      "",
+      "    Intervals: 1min|5min|15min|30min|1hour|4hour|1day (aliases like \"1d\"/\"daily\"",
+      "    accepted). start_date and end_date are required for intraday.",
+      "",
+      "    Args:",
+      "        symbol: Ticker — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\", LSE \"VOD.L\".",
+      "        interval: Bar size; one of the intervals above.",
+      "        start_date: \"YYYY-MM-DD\" (append \" HH:MM\" for intraday time filtering).",
+      "        end_date: \"YYYY-MM-DD\" (append \" HH:MM\" for intraday time filtering).",
+      "",
+      "    Returns:",
+      "        dict: {symbol, interval, currency, timezone, count, data, source}. data:",
+      "        list of {date, open, high, low, close, volume} ascending (oldest first);",
+      "        date exchange-local \"YYYY-MM-DD\" (daily) or \"YYYY-MM-DD HH:MM:SS\"",
+      "        (intraday); prices in `currency` major units. On error:",
+      "        {error: <code>, detail}.",
+      "    "
+    ],
+    "params": [
+      "end_date",
+      "interval",
+      "start_date",
+      "symbol"
+    ],
+    "required": [
+      "symbol"
+    ]
+  },
+  "mcp:yf_analysis:get_analyst_price_targets": {
+    "doc_lines": [
+      "Analyst price-target summary for a stock. Use for consensus target vs.",
+      "    current price.",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source}. data is a single Yahoo-native",
+      "        record {current, low, high, mean, median}; price values are as reported",
+      "        by Yahoo (minor units on some venues, e.g. LSE pence) and currency is",
+      "        omitted — no declared-currency source on this path. count is 1 when data",
+      "        exists, else 0 (empty {} when unavailable). On error:",
+      "        {error, detail, symbol} with error upstream_error.",
+      "    "
+    ],
+    "params": [
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_analysis:get_analyst_recommendations": {
+    "doc_lines": [
+      "Aggregated analyst recommendation counts by period. Use to gauge the",
+      "    buy/hold/sell balance over recent periods.",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source}. data is a list of Yahoo-native",
+      "        records {period, strongbuy, buy, hold, sell, strongsell} in Yahoo's",
+      "        order (period \"0m\" current, \"-1m\", \"-2m\", \"-3m\"). Empty data means none",
+      "        published. On error: {error, detail, symbol} with error upstream_error.",
+      "    "
+    ],
+    "params": [
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_analysis:get_earnings_estimates": {
+    "doc_lines": [
+      "Forward EPS estimates by period. Use for consensus EPS for coming",
+      "    quarters and years.",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source}. data is a list of Yahoo-native",
+      "        records, one per period {period (0q, +1q, 0y, +1y), numberofanalysts,",
+      "        avg, low, high, yearagoeps, growth} in Yahoo's period order. Empty data",
+      "        means none published. On error: {error, detail, symbol} with error",
+      "        upstream_error.",
+      "    "
+    ],
+    "params": [
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_analysis:get_earnings_history": {
+    "doc_lines": [
+      "Historical EPS estimate vs. actual with surprise. Use to review recent",
+      "    earnings beats/misses. Same data as get_earnings_data (fundamentals server).",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source}. data is a list of Yahoo-native",
+      "        records {quarter, epsestimate, epsactual, epsdifference, surprisepercent}",
+      "        in Yahoo's order (oldest first); quarter is \"YYYY-MM-DD\". Empty data",
+      "        means none reported. On error: {error, detail, symbol} with error",
+      "        upstream_error.",
+      "    "
+    ],
+    "params": [
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_analysis:get_growth_estimates": {
+    "doc_lines": [
+      "Growth estimates for the stock vs. industry, sector, and index. Use to",
+      "    compare a name's growth outlook to its peers.",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source}. data is a list of Yahoo-native",
+      "        records, one per period {period (0q, +1q, 0y, +1y, +5y, -5y), stock,",
+      "        industry, sector, index}, each a growth rate, in Yahoo's period order.",
+      "        Empty data means none published. On error: {error, detail, symbol} with",
+      "        error upstream_error.",
+      "    "
+    ],
+    "params": [
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_analysis:get_insider_roster": {
+    "doc_lines": [
+      "Current insiders and their holdings. Use to see who the insiders are and",
+      "    their share positions.",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source}. data is a list of Yahoo-native",
+      "        records {name, position, url, most_recent_transaction,",
+      "        latest_transaction_date, shares_owned_directly,",
+      "        shares_owned_indirectly, ...} in Yahoo's order; date fields are",
+      "        \"YYYY-MM-DD\". Empty data means none reported. On error:",
+      "        {error, detail, symbol} with error upstream_error.",
+      "    "
+    ],
+    "params": [
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_analysis:get_insider_transactions": {
+    "doc_lines": [
+      "Recent insider buy/sell transactions. Use to track insider activity.",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source}. data is a list of Yahoo-native",
+      "        records {start_date, insider, position, url, transaction, text, shares,",
+      "        value, ownership} in Yahoo's order (most recent first); start_date is",
+      "        \"YYYY-MM-DD\". Empty data means none reported. On error:",
+      "        {error, detail, symbol} with error upstream_error.",
+      "    "
+    ],
+    "params": [
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_analysis:get_institutional_holders": {
+    "doc_lines": [
+      "Top institutional holders of a stock. Use to see which institutions hold",
+      "    the largest positions.",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source}. data is a list of Yahoo-native",
+      "        records {date_reported, holder, shares, value, pctheld} in Yahoo's order",
+      "        (largest holders first); date_reported is \"YYYY-MM-DD\". Empty data means",
+      "        none reported. On error: {error, detail, symbol} with error",
+      "        upstream_error.",
+      "    "
+    ],
+    "params": [
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_analysis:get_major_holders": {
+    "doc_lines": [
+      "Ownership breakdown (insider %, institution %, etc.). Use for a",
+      "    high-level ownership summary.",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source}. data is a list of Yahoo-native",
+      "        records {breakdown, value} where breakdown is the label and value the",
+      "        percentage or count. Empty data means unavailable. On error:",
+      "        {error, detail, symbol} with error upstream_error.",
+      "    "
+    ],
+    "params": [
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_analysis:get_mutualfund_holders": {
+    "doc_lines": [
+      "Top mutual-fund holders of a stock. Use to see the largest fund",
+      "    positions.",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source}. data is a list of Yahoo-native",
+      "        records {date_reported, holder, shares, value, pctheld} in Yahoo's order",
+      "        (largest first); date_reported is \"YYYY-MM-DD\". Empty data means none",
+      "        reported. On error: {error, detail, symbol} with error upstream_error.",
+      "    "
+    ],
+    "params": [
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_analysis:get_news": {
+    "doc_lines": [
+      "Latest news articles for a stock. Use to pull recent headlines and",
+      "    coverage.",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "        count: Number of articles (default 10).",
+      "        tab: One of \"news\", \"all\", or \"press releases\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source}. data is a list of raw Yahoo-native",
+      "        article dicts in Yahoo's order (most recent first); each has nested",
+      "        `content` with title, publisher, url, and publish-date fields (exact",
+      "        shape is Yahoo-native and varies). Empty data means no articles. On",
+      "        error: {error, detail, symbol} with error upstream_error.",
+      "    "
+    ],
+    "params": [
+      "count",
+      "tab",
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_analysis:get_revenue_estimates": {
+    "doc_lines": [
+      "Forward revenue estimates by period. Use for consensus revenue for coming",
+      "    quarters and years.",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source}. data is a list of Yahoo-native",
+      "        records, one per period {period (0q, +1q, 0y, +1y), numberofanalysts,",
+      "        avg, low, high, yearagorevenue, growth} in Yahoo's period order. Empty",
+      "        data means none published. On error: {error, detail, symbol} with error",
+      "        upstream_error.",
+      "    "
+    ],
+    "params": [
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_analysis:get_sustainability_data": {
+    "doc_lines": [
+      "ESG / sustainability scores for a company. Use for ESG risk context.",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source}. data is a single Yahoo-native ESG",
+      "        record mapping metric name → value (e.g. totalEsg, environmentScore,",
+      "        socialScore, governanceScore); missing metrics are null. count is 1 when",
+      "        data exists, else 0 (empty {} when Yahoo has no ESG coverage). On error:",
+      "        {error, detail, symbol} with error upstream_error.",
+      "    "
+    ],
+    "params": [
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_analysis:get_upgrades_downgrades": {
+    "doc_lines": [
+      "History of analyst rating changes (upgrades/downgrades). Use to track",
+      "    how the sell-side rating evolved.",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source}. data is a list of Yahoo-native",
+      "        records {gradedate, firm, tograde, fromgrade, action} in Yahoo's order",
+      "        (most recent first); gradedate is \"YYYY-MM-DD\". Empty data means none",
+      "        reported. On error: {error, detail, symbol} with error upstream_error.",
+      "    "
+    ],
+    "params": [
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_fundamentals:compare_financials": {
+    "doc_lines": [
+      "Financial statements for several companies for side-by-side comparison.",
+      "",
+      "    Args:",
+      "        tickers: Symbols, e.g. [\"AAPL\", \"MSFT\", \"GOOGL\"].",
+      "        statement_type: \"income\", \"balance\", or \"cashflow\".",
+      "        quarterly: Quarterly if True, else annual.",
+      "",
+      "    Returns:",
+      "        dict: {statement_type, quarterly, count, data, source,",
+      "        successful_tickers, errors?}. data is keyed by canonical symbol →",
+      "        Yahoo-native {metric: {date: value}} (date keys \"YYYY-MM-DD\" newest",
+      "        first, reporting-currency native units, Yahoo-native metric names); count",
+      "        is total metrics across symbols. Failed/empty symbols are omitted and",
+      "        listed in errors as {error, detail, symbol}. On a bad statement_type:",
+      "        {error: invalid_argument, detail, supported}.",
+      "    "
+    ],
+    "params": [
+      "quarterly",
+      "statement_type",
+      "tickers"
+    ],
+    "required": [
+      "tickers"
+    ]
+  },
+  "mcp:yf_fundamentals:compare_valuations": {
+    "doc_lines": [
+      "Valuation multiples across several stocks for side-by-side comparison.",
+      "",
+      "    Args:",
+      "        tickers: Symbols, e.g. [\"AAPL\", \"MSFT\", \"GOOGL\"].",
+      "",
+      "    Returns:",
+      "        dict: {count, data, source, successful_tickers, errors?}. data is keyed",
+      "        by canonical symbol → a dict of snake_case metrics: trailing_p_e,",
+      "        forward_p_e, price_to_book, price_to_sales_trailing12_months,",
+      "        enterprise_to_ebitda, enterprise_to_revenue, peg_ratio, dividend_yield,",
+      "        payout_ratio, market_cap, enterprise_value, beta,",
+      "        fifty_two_week_high/low, fifty_day_average, two_hundred_day_average,",
+      "        current_price (nulls where absent); count is the number of symbols",
+      "        returned. Failed symbols are omitted and listed in errors as",
+      "        {error, detail, symbol}.",
+      "    "
+    ],
+    "params": [
+      "tickers"
+    ],
+    "required": [
+      "tickers"
+    ]
+  },
+  "mcp:yf_fundamentals:get_balance_sheet": {
+    "doc_lines": [
+      "Balance sheet (assets, liabilities, equity). Use for leverage, liquidity,",
+      "    and capital-structure analysis.",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "        quarterly: Quarterly if True, else annual.",
+      "",
+      "    Returns:",
+      "        dict: {symbol, quarterly, count, data, source}. data is Yahoo-native",
+      "        {metric: {date: value}} — metric names Yahoo-native (e.g. \"Total Assets\",",
+      "        \"Total Debt\"); date keys \"YYYY-MM-DD\" ordered newest first; values in the",
+      "        company's reporting currency (native units). count is the number of",
+      "        metrics. On error: {error, detail, symbol} with error",
+      "        not_found|upstream_error.",
+      "    "
+    ],
+    "params": [
+      "quarterly",
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_fundamentals:get_cash_flow": {
+    "doc_lines": [
+      "Cash flow statement (operating, investing, financing). Use for cash",
+      "    generation and capex analysis.",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "        quarterly: Quarterly if True, else annual.",
+      "",
+      "    Returns:",
+      "        dict: {symbol, quarterly, count, data, source}. data is Yahoo-native",
+      "        {metric: {date: value}} — metric names Yahoo-native (e.g.",
+      "        \"Operating Cash Flow\", \"Capital Expenditure\"); date keys \"YYYY-MM-DD\"",
+      "        ordered newest first; values in the company's reporting currency (native",
+      "        units). count is the number of metrics. On error:",
+      "        {error, detail, symbol} with error not_found|upstream_error.",
+      "    "
+    ],
+    "params": [
+      "quarterly",
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_fundamentals:get_company_info": {
+    "doc_lines": [
+      "Company profile and key statistics. Use for sector/industry, market cap,",
+      "    valuation ratios, and business summary.",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, currency?, count, data, source}. data is one Yahoo-native",
+      "        record — a flat dict of Yahoo `info` fields (e.g. shortName, sector,",
+      "        industry, marketCap, trailingPE, forwardPE, dividendYield,",
+      "        longBusinessSummary); field names are Yahoo-native, price-scale fields",
+      "        are unconverted, and None values are dropped. currency is Yahoo's",
+      "        declared trading currency (a minor-unit label like GBp on some venues),",
+      "        omitted when Yahoo declares none; count is 1. On error:",
+      "        {error, detail, symbol} with error not_found|upstream_error.",
+      "    "
+    ],
+    "params": [
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_fundamentals:get_earnings_data": {
+    "doc_lines": [
+      "Historical EPS estimate vs. actual per quarter. Use to review earnings",
+      "    beats/misses. Same data as get_earnings_history (analysis server).",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source}. data is a list of Yahoo-native",
+      "        records {quarter, epsestimate, epsactual, epsdifference, surprisepercent}",
+      "        in Yahoo's order (oldest first); quarter is \"YYYY-MM-DD\". On error:",
+      "        {error, detail, symbol} with error not_found|upstream_error.",
+      "    "
+    ],
+    "params": [
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_fundamentals:get_earnings_dates": {
+    "doc_lines": [
+      "Earnings announcement dates with EPS estimate vs. actual. Use for the",
+      "    earnings schedule and recent surprises.",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, count, data, source}. data is a list of Yahoo-native",
+      "        records {earnings_date, eps_estimate, reported_eps, surprise_pct} ordered",
+      "        newest first (future dates included, with null reported_eps/surprise_pct);",
+      "        earnings_date is exchange-local \"YYYY-MM-DD HH:MM:SS\". On error:",
+      "        {error, detail, symbol} with error not_found|upstream_error.",
+      "    "
+    ],
+    "params": [
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_fundamentals:get_income_statement": {
+    "doc_lines": [
+      "Income statement (revenue, expenses, margins, net income). Use for",
+      "    profitability and top-line trends.",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "        quarterly: Quarterly if True, else annual.",
+      "",
+      "    Returns:",
+      "        dict: {symbol, quarterly, count, data, source}. data is Yahoo-native",
+      "        {metric: {date: value}} — metric names are Yahoo-native (e.g.",
+      "        \"Total Revenue\", \"Net Income\"); date keys are \"YYYY-MM-DD\" ordered newest",
+      "        first; values are in the company's reporting currency (native units).",
+      "        count is the number of metrics. On error: {error, detail, symbol} with",
+      "        error not_found|upstream_error.",
+      "    "
+    ],
+    "params": [
+      "quarterly",
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_fundamentals:get_multiple_stocks_earnings": {
+    "doc_lines": [
+      "Historical earnings (EPS estimate vs. actual) for several stocks at once.",
+      "",
+      "    Args:",
+      "        tickers: Symbols, e.g. [\"AAPL\", \"MSFT\", \"GOOGL\"].",
+      "",
+      "    Returns:",
+      "        dict: {count, data, source, successful_tickers, errors?}. data is keyed",
+      "        by canonical symbol → {count, earnings}; each earnings is a list of",
+      "        Yahoo-native records {quarter, epsestimate, epsactual, epsdifference,",
+      "        surprisepercent} in Yahoo's order (oldest first), quarter \"YYYY-MM-DD\".",
+      "        Top-level count is total earnings records across symbols. Failed/empty",
+      "        symbols are omitted and listed in errors as {error, detail, symbol}.",
+      "    "
+    ],
+    "params": [
+      "tickers"
+    ],
+    "required": [
+      "tickers"
+    ]
+  },
+  "mcp:yf_market:get_earnings_calendar": {
+    "doc_lines": [
+      "Earnings announcements scheduled within a date range. Use to find which",
+      "    companies report in a window.",
+      "",
+      "    Args:",
+      "        start: Start date \"YYYY-MM-DD\".",
+      "        end: End date \"YYYY-MM-DD\".",
+      "",
+      "    Returns:",
+      "        dict: {start, end, count, data, source}. data is a list of records",
+      "        {symbol, company, marketcap, event_start_date, timing, eps_estimate,",
+      "        reported_eps, surprise_pct}, in Yahoo's native order; event_start_date",
+      "        is \"YYYY-MM-DD HH:MM:SS\" exchange-local. Field names are Yahoo-native.",
+      "        On error: {error, detail} with error upstream_error.",
+      "    "
+    ],
+    "params": [
+      "end",
+      "start"
+    ],
+    "required": [
+      "end",
+      "start"
+    ]
+  },
+  "mcp:yf_market:get_industry_info": {
+    "doc_lines": [
+      "Overview of an industry — top performing and top growth companies plus",
+      "    its parent sector. Use for industry-level context and constituents.",
+      "",
+      "    Args:",
+      "        industry_key: Yahoo industry key, e.g. \"software-infrastructure\".",
+      "",
+      "    Returns:",
+      "        dict: {industry, count, data, source}. data is {overview,",
+      "        top_performing_companies, top_growth_companies, sector_key,",
+      "        sector_name}: overview is a Yahoo-native dict, the two company lists are",
+      "        Yahoo-native records (name, ytd_return, last_price/target_price or",
+      "        growth_estimate). count is top_performing + top_growth. On error:",
+      "        {error, detail} with error upstream_error.",
+      "    "
+    ],
+    "params": [
+      "industry_key"
+    ],
+    "required": [
+      "industry_key"
+    ]
+  },
+  "mcp:yf_market:get_market_status": {
+    "doc_lines": [
+      "Current status and index summary for a market. Use to check whether a",
+      "    market is open and read headline index moves.",
+      "    Markets: US, GB, ASIA, EUROPE, RATES, COMMODITIES, CURRENCIES,",
+      "    CRYPTOCURRENCIES.",
+      "",
+      "    Args:",
+      "        market: Market code (see above; default \"US\").",
+      "",
+      "    Returns:",
+      "        dict: {market, count, data, source}. data is {status, summary}, both",
+      "        Yahoo-native: status holds open/close times and timezone fields,",
+      "        summary is keyed by exchange/index with price and change fields. count",
+      "        is 1 (one status snapshot). On error: {error, detail} with error",
+      "        upstream_error.",
+      "    "
+    ],
+    "params": [
+      "market"
+    ],
+    "required": []
+  },
+  "mcp:yf_market:get_predefined_screen": {
+    "doc_lines": [
+      "Run a named Yahoo predefined screener. Use for common ready-made scans",
+      "    (day_gainers, day_losers, most_actives, most_shorted_stocks,",
+      "    undervalued_growth_stocks, growth_technology_stocks, ...); an unknown name",
+      "    returns the full list of valid names in `supported`.",
+      "",
+      "    Args:",
+      "        screen_name: A Yahoo predefined screener name (see above).",
+      "",
+      "    Returns:",
+      "        dict: {screen_name, count, data, source}. data is the Yahoo-native",
+      "        screen result {quotes: [...], ...}; quotes are raw Yahoo quote dicts,",
+      "        count is the number returned. On an unknown name:",
+      "        {error: invalid_argument, detail, supported}. On upstream failure:",
+      "        {error: upstream_error, detail}.",
+      "    "
+    ],
+    "params": [
+      "screen_name"
+    ],
+    "required": [
+      "screen_name"
+    ]
+  },
+  "mcp:yf_market:get_sector_info": {
+    "doc_lines": [
+      "Overview of a market sector — top companies, ETFs, and its industries.",
+      "    Use for sector-level context and constituents.",
+      "    Sector keys: technology, healthcare, financial-services, consumer-cyclical,",
+      "    industrials, communication-services, consumer-defensive, energy,",
+      "    basic-materials, real-estate, utilities.",
+      "",
+      "    Args:",
+      "        sector_key: One of the keys above.",
+      "",
+      "    Returns:",
+      "        dict: {sector, count, data, source}. data is {overview, top_companies,",
+      "        top_etfs, industries}: overview and top_etfs are Yahoo-native dicts,",
+      "        top_companies and industries are lists of Yahoo-native records. count is",
+      "        top_companies + industries. On error: {error, detail} with error",
+      "        upstream_error.",
+      "    "
+    ],
+    "params": [
+      "sector_key"
+    ],
+    "required": [
+      "sector_key"
+    ]
+  },
+  "mcp:yf_market:screen_stocks": {
+    "doc_lines": [
+      "Screen equities with custom Yahoo filters — find stocks matching",
+      "    numeric/categorical criteria.",
+      "    Each filter is {operator, operands}; operators: gt, lt, gte, lte, eq, btwn,",
+      "    is-in, and, or. E.g. {\"operator\": \"gt\", \"operands\": [\"percentchange\", 3]},",
+      "    or nested with and/or. Multiple top-level filters are auto-wrapped in AND.",
+      "",
+      "    Args:",
+      "        filters: List of filter dicts (see above).",
+      "        sort_field: Field to sort by (default \"percentchange\").",
+      "        sort_asc: Ascending if True (default False = descending).",
+      "        count: Max rows (default 25, max 250).",
+      "",
+      "    Returns:",
+      "        dict: {count, data, source}. data is the Yahoo-native screen result",
+      "        {quotes: [...], ...}; quotes are raw Yahoo quote dicts ordered by",
+      "        sort_field, count is the number returned. On error: {error, detail} —",
+      "        invalid_argument (names the bad field/operator) | upstream_error.",
+      "    "
+    ],
+    "params": [
+      "count",
+      "filters",
+      "sort_asc",
+      "sort_field"
+    ],
+    "required": [
+      "filters"
+    ]
+  },
+  "mcp:yf_market:search_tickers": {
+    "doc_lines": [
+      "Look up tickers and related news by free-text keyword. Use to resolve a",
+      "    company name to symbols or scan headlines.",
+      "",
+      "    Args:",
+      "        query: Keyword — company name or symbol, e.g. \"apple\", \"AAPL\".",
+      "        max_results: Max ticker quotes to return (default 8).",
+      "        news_count: Max news articles to return (default 5).",
+      "",
+      "    Returns:",
+      "        dict: {count, data, source}. data is {quotes: [...], news: [...]}, both",
+      "        Yahoo-native and in Yahoo's relevance order; quote dicts carry a",
+      "        `symbol` key plus name/exchange fields, news dicts are raw Yahoo article",
+      "        records. count is quotes + news. On error: {error, detail} with error",
+      "        upstream_error.",
+      "    "
+    ],
+    "params": [
+      "max_results",
+      "news_count",
+      "query"
+    ],
+    "required": [
+      "query"
+    ]
+  },
+  "mcp:yf_price:get_dividends_and_splits": {
+    "doc_lines": [
+      "Full dividend and stock-split history for one ticker. Use for",
+      "    total-return, yield, and adjustment analysis.",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "",
+      "    Returns:",
+      "        dict: {symbol, currency, timezone, count, data, source,",
+      "        dividend_count, split_count}. data is",
+      "        {dividends: [{date, amount}], splits: [{date, ratio}]}, each ascending",
+      "        (oldest first); date is exchange-local \"YYYY-MM-DD\", amounts in",
+      "        `currency` major units (minor-unit quotes like GBp are converted, e.g.",
+      "        pence→pounds), ratio is the split factor (e.g. 4.0 = 4-for-1);",
+      "        count is dividends + splits. On error: {error, detail, symbol} with",
+      "        error upstream_error.",
+      "    "
+    ],
+    "params": [
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  },
+  "mcp:yf_price:get_multiple_stocks_dividends": {
+    "doc_lines": [
+      "Dividend history for several stocks in one call. Use to compare payout",
+      "    histories across tickers.",
+      "",
+      "    Args:",
+      "        tickers: Symbols, e.g. [\"AAPL\", \"MSFT\", \"JNJ\"].",
+      "",
+      "    Returns:",
+      "        dict: {count, data, source, errors?}. data is keyed by canonical symbol",
+      "        → {count, currency?, dividends}; each dividends is a list of",
+      "        {date, amount} ascending (oldest first), date exchange-local",
+      "        \"YYYY-MM-DD\", amounts in that symbol's major currency units (minor-unit",
+      "        quotes like GBp are converted, e.g. pence→pounds); count is the total",
+      "        dividends across symbols. Failed symbols are omitted from data and listed",
+      "        in errors as {error, detail, symbol}.",
+      "    "
+    ],
+    "params": [
+      "tickers"
+    ],
+    "required": [
+      "tickers"
+    ]
+  },
+  "mcp:yf_price:get_multiple_stocks_history": {
+    "doc_lines": [
+      "Historical OHLCV bars for several stocks — compare price series.",
+      "",
+      "    Args:",
+      "        tickers: Symbols, e.g. [\"AAPL\", \"MSFT\", \"0700.HK\"].",
+      "        period: 1d,5d,1mo,3mo,6mo,1y,2y,5y,10y,ytd,max.",
+      "        interval: 1min|5min|15min|30min|1hour|1day|1week|1month (native",
+      "            2m|90m|5d|3mo accepted; 4hour unsupported).",
+      "",
+      "    Returns:",
+      "        dict: {interval, count, data, source, period, errors?}. data is keyed by",
+      "        canonical symbol → {count, currency?, timezone?, data}; each inner data",
+      "        is a list of {date, open, high, low, close, volume, dividends?, splits?}",
+      "        ascending (oldest first), exchange-local \"YYYY-MM-DD[ HH:MM:SS]\"; count",
+      "        is total bars. Prices in major units (GBp/pence auto-converted).",
+      "        Failed symbols are listed in errors as",
+      "        {error, detail, symbol}; a bad interval returns",
+      "        {error: unsupported_interval, detail, supported}.",
+      "    "
+    ],
+    "params": [
+      "interval",
+      "period",
+      "tickers"
+    ],
+    "required": [
+      "tickers"
+    ]
+  },
+  "mcp:yf_price:get_stock_history": {
+    "doc_lines": [
+      "Historical OHLCV price bars for one stock — charts, returns, technicals.",
+      "",
+      "    Args:",
+      "        ticker: Symbol — US \"AAPL\", HK \"0700.HK\", A-share \"600519.SS\".",
+      "        period: 1d,5d,1mo,3mo,6mo,1y,2y,5y,10y,ytd,max.",
+      "        interval: 1min|5min|15min|30min|1hour|1day|1week|1month (native",
+      "            2m|90m|5d|3mo accepted; 4hour unsupported). Intraday lookback is",
+      "            capped by yfinance.",
+      "",
+      "    Returns:",
+      "        dict: {symbol, interval, period, currency, timezone, count, data,",
+      "        source}. data is a list of {date, open, high, low, close, volume,",
+      "        dividends?, splits?}",
+      "        ascending (oldest first); date is exchange-local \"YYYY-MM-DD\" or",
+      "        \"YYYY-MM-DD HH:MM:SS\" intraday, timezone is the IANA zone, prices in",
+      "        `currency` major units (minor-unit GBp/pence auto-converted to major).",
+      "        On error: {error, detail} — not_found|unsupported_interval|upstream_error.",
+      "    "
+    ],
+    "params": [
+      "interval",
+      "period",
+      "ticker"
+    ],
+    "required": [
+      "ticker"
+    ]
+  }
+}

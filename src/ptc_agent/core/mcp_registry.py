@@ -2,6 +2,8 @@
 
 import asyncio
 import os
+import threading
+from collections import deque
 from types import TracebackType
 from typing import Any
 
@@ -16,11 +18,51 @@ from src.observability.tracing import tracer as _otel_tracer
 
 logger = structlog.get_logger(__name__)
 
-# Discard MCP subprocess stderr — noisy INFO logs (e.g. "Processing request
-# of type ListToolsRequest") and failures surface as connection errors in
-# our process instead.  Needs a real FD because the MCP SDK passes it as
-# stderr to subprocess.Popen.
-_devnull = open(os.devnull, "w")  # noqa: SIM115
+
+class _StderrTail:
+    """Bounded in-memory tail of an MCP subprocess's stderr.
+
+    ``errlog`` reaches ``subprocess.Popen`` as the child's stderr, so it must
+    be a real file descriptor: a pipe drained by a daemon thread into a
+    bounded deque. Steady-state server chatter never reaches our logs; on a
+    connection failure :meth:`tail` recovers the crash output that would
+    otherwise surface only as an opaque "Connection closed".
+    """
+
+    def __init__(self, max_lines: int = 80) -> None:
+        self._lines: deque[str] = deque(maxlen=max_lines)
+        read_fd, write_fd = os.pipe()
+        self.writer = os.fdopen(write_fd, "w")
+        self._reader = os.fdopen(read_fd, "r", errors="replace")
+        # The drain thread lives for the connection's whole lifetime (not just
+        # connect): it copies subprocess stderr into the deque until EOF.
+        self._thread = threading.Thread(target=self._drain, daemon=True)
+        self._thread.start()
+
+    def _drain(self) -> None:
+        # The thread owns the read end: EOF arrives once every write end
+        # (ours and the exited subprocess's dup) is closed.
+        with self._reader:
+            for line in self._reader:
+                self._lines.append(line.rstrip("\n"))
+
+    def tail(self, *, drain: bool = False) -> str:
+        """Snapshot of the captured lines.
+
+        Pass ``drain=True`` on the failure path to close the writer and join
+        the drain thread first, so the read can't race the daemon thread still
+        appending the subprocess's dying output into the bounded deque.
+        """
+        if drain:
+            self.close()
+            self._thread.join(timeout=0.25)
+        return "\n".join(list(self._lines))
+
+    def close(self) -> None:
+        try:
+            self.writer.close()
+        except OSError:
+            pass
 
 
 class MCPToolInfo:
@@ -234,6 +276,7 @@ class MCPServerConnector:
         statements within a single task, ensuring contexts are entered and
         exited in LIFO order within the same task.
         """
+        stderr_capture: _StderrTail | None = None
         try:
             if self.config.transport == "http":
                 # HTTP transport - use direct JSON-RPC over HTTP POST
@@ -310,7 +353,8 @@ class MCPServerConnector:
                 )
 
                 # Proper nested async with pattern (MCP SDK best practice)
-                async with stdio_client(server_params, errlog=_devnull) as (read_stream, write_stream):
+                stderr_capture = _StderrTail()
+                async with stdio_client(server_params, errlog=stderr_capture.writer) as (read_stream, write_stream):
                     async with ClientSession(read_stream, write_stream) as session:
                         self.session = session
 
@@ -342,13 +386,24 @@ class MCPServerConnector:
             import traceback
             error_details = traceback.format_exc()
 
+            stderr_tail = ""
+            if stderr_capture is not None:
+                # Close the writer and join the drain thread before reading, so
+                # the tail can't race the daemon still draining the dying
+                # subprocess's traceback into the deque.
+                stderr_tail = stderr_capture.tail(drain=True)
+
             logger.error(
                 "Failed to connect to MCP server",
                 server=self.config.name,
                 error=str(e),
                 error_type=type(e).__name__,
                 traceback=error_details,
+                stderr_tail=stderr_tail or None,
             )
+        finally:
+            if stderr_capture is not None:
+                stderr_capture.close()
 
     async def _discover_tools(self) -> None:
         """Discover available tools from the server."""

@@ -1,6 +1,8 @@
 """Tests for yf_price_mcp_server tools.
 
-Covers success, empty data, and exception paths for all four tools.
+Covers the standard envelope (symbol/interval/currency/timezone/count/data),
+canonical interval mapping, partial-success semantics, and machine error codes.
+yfinance is mocked — no live network.
 """
 
 from unittest.mock import Mock, patch
@@ -15,6 +17,8 @@ from mcp_servers.yf_price_mcp_server import (
     get_stock_history,
 )
 
+from .conftest import assert_error, assert_ok_envelope
+
 
 # ============================================================================
 # Fixtures
@@ -23,7 +27,7 @@ from mcp_servers.yf_price_mcp_server import (
 
 @pytest.fixture
 def mock_history_df():
-    """Mock OHLCV DataFrame with dividends and splits columns."""
+    """OHLCV DataFrame with dividends and splits columns (tz-naive daily index)."""
     dates = pd.date_range("2024-01-01", periods=5, freq="D")
     return pd.DataFrame(
         {
@@ -41,27 +45,23 @@ def mock_history_df():
 
 @pytest.fixture
 def mock_dividends_series():
-    """Mock dividends Series."""
     dates = pd.date_range("2023-01-15", periods=4, freq="QE")
     return pd.Series([0.24, 0.24, 0.25, 0.25], index=dates)
 
 
 @pytest.fixture
 def mock_splits_series():
-    """Mock stock splits Series."""
     dates = pd.DatetimeIndex(["2020-08-31", "2014-06-09"])
     return pd.Series([4.0, 7.0], index=dates)
 
 
 @pytest.fixture
 def empty_series():
-    """Empty pandas Series."""
     return pd.Series([], dtype=float)
 
 
 @pytest.fixture
 def empty_df():
-    """Empty DataFrame."""
     return pd.DataFrame()
 
 
@@ -76,13 +76,12 @@ class TestGetStockHistory:
         mock_ticker_cls.return_value.history.return_value = mock_history_df
         result = get_stock_history("AAPL")
 
-        assert result["data_type"] == "stock_history"
-        assert result["source"] == "yfinance"
-        assert result["ticker"] == "AAPL"
+        assert_ok_envelope(
+            result, source="yfinance", symbol="AAPL", currency="USD",
+            interval="1day", count=5,  # canonical echo for yfinance "1d"
+        )
         assert result["period"] == "1y"
-        assert result["interval"] == "1d"
-        assert result["count"] == 5
-        assert len(result["data"]) == 5
+        assert "timezone" not in result  # tz-naive index → omitted
         assert result["data"][0]["date"] == "2024-01-01"
         assert result["data"][0]["close"] == 151.0
         assert result["data"][2]["dividends"] == 0.24
@@ -91,25 +90,61 @@ class TestGetStockHistory:
         )
 
     @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    def test_canonical_interval_input(self, mock_ticker_cls, mock_history_df):
+        """Canonical vocab in → canonical echo out, mapped to yfinance spelling."""
+        mock_ticker_cls.return_value.history.return_value = mock_history_df
+        result = get_stock_history("AAPL", interval="1month")
+
+        assert_ok_envelope(result, interval="1month")
+        mock_ticker_cls.return_value.history.assert_called_once_with(
+            period="1y", interval="1mo"
+        )
+
+    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
     def test_custom_params(self, mock_ticker_cls, mock_history_df):
         mock_ticker_cls.return_value.history.return_value = mock_history_df
         result = get_stock_history("MSFT", period="6mo", interval="1wk")
 
+        assert_ok_envelope(result, interval="1week")  # yfinance "1wk" → canonical
         assert result["period"] == "6mo"
-        assert result["interval"] == "1wk"
         mock_ticker_cls.return_value.history.assert_called_once_with(
             period="6mo", interval="1wk"
         )
 
     @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
-    def test_intraday_includes_time(self, mock_ticker_cls):
-        """Intraday bars use YYYY-MM-DD HH:MM:SS format (matches FMP convention)."""
+    def test_native_only_interval_passthrough(self, mock_ticker_cls, mock_history_df):
+        """yfinance-native granularity (3mo) passes through and echoes natively."""
+        mock_ticker_cls.return_value.history.return_value = mock_history_df
+        result = get_stock_history("AAPL", interval="3mo")
+
+        assert_ok_envelope(result, interval="3mo")
+        mock_ticker_cls.return_value.history.assert_called_once_with(
+            period="1y", interval="3mo"
+        )
+
+    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    def test_unsupported_interval(self, mock_ticker_cls):
+        result = get_stock_history("AAPL", interval="4hour")
+
+        assert_error(result, "unsupported_interval", symbol="AAPL")
+        assert "supported" in result
+        mock_ticker_cls.assert_not_called()
+
+    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    def test_symbol_canonicalized(self, mock_ticker_cls, mock_history_df):
+        """HK symbol echoes canonical display spelling and its currency."""
+        mock_ticker_cls.return_value.history.return_value = mock_history_df
+        result = get_stock_history("0700.hk")
+
+        assert_ok_envelope(result, symbol="0700.HK", currency="HKD")
+        mock_ticker_cls.assert_called_once_with("0700.HK")
+
+    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    def test_intraday_includes_time_and_timezone(self, mock_ticker_cls):
         import pytz
 
         tz = pytz.timezone("America/New_York")
-        dates = pd.date_range(
-            "2024-01-15 09:30", periods=3, freq="5min", tz=tz
-        )
+        dates = pd.date_range("2024-01-15 09:30", periods=3, freq="5min", tz=tz)
         df = pd.DataFrame(
             {
                 "Open": [150.0, 150.5, 151.0],
@@ -123,29 +158,33 @@ class TestGetStockHistory:
         mock_ticker_cls.return_value.history.return_value = df
         result = get_stock_history("AAPL", period="1d", interval="5m")
 
-        assert result["count"] == 3
-        # Each bar should have unique timestamp, not just "2024-01-15"
+        assert_ok_envelope(
+            result, interval="5min", timezone="America/New_York", count=3,
+        )
         bar_dates = [r["date"] for r in result["data"]]
-        assert len(set(bar_dates)) == 3  # All unique
-        assert bar_dates[0] == "2024-01-15 09:30:00"
-        assert bar_dates[1] == "2024-01-15 09:35:00"
-        assert bar_dates[2] == "2024-01-15 09:40:00"
+        assert bar_dates == [
+            "2024-01-15 09:30:00",
+            "2024-01-15 09:35:00",
+            "2024-01-15 09:40:00",
+        ]
 
     @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
-    def test_empty_data(self, mock_ticker_cls, empty_df):
+    def test_empty_data_is_not_found(self, mock_ticker_cls, empty_df):
         mock_ticker_cls.return_value.history.return_value = empty_df
         result = get_stock_history("INVALID")
 
-        assert "error" in result
-        assert "No data found" in result["error"]
+        assert_error(result, "not_found", symbol="INVALID")
 
     @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
-    def test_exception(self, mock_ticker_cls):
+    def test_exception_is_sanitized_upstream_error(self, mock_ticker_cls):
         mock_ticker_cls.return_value.history.side_effect = Exception("Network error")
         result = get_stock_history("AAPL")
 
-        assert "error" in result
-        assert "Network error" in result["error"]
+        # raw text not leaked
+        assert_error(
+            result, "upstream_error", symbol="AAPL",
+            detail_excludes=("Network error",),
+        )
 
 
 # ============================================================================
@@ -159,41 +198,49 @@ class TestGetMultipleStocksHistory:
         mock_ticker_cls.return_value.history.return_value = mock_history_df
         result = get_multiple_stocks_history(["AAPL", "MSFT"])
 
-        assert result["data_type"] == "multiple_stocks_history"
-        assert result["source"] == "yfinance"
-        assert result["total_data_points"] == 10
+        assert_ok_envelope(result, source="yfinance", interval="1day", count=10)
         assert result["period"] == "1y"
-        assert result["interval"] == "1d"
         assert "AAPL" in result["data"]
         assert "MSFT" in result["data"]
         assert result["data"]["AAPL"]["count"] == 5
+        assert result["data"]["AAPL"]["currency"] == "USD"
+        assert len(result["data"]["AAPL"]["data"]) == 5
         assert "errors" not in result
 
     @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
     def test_partial_failure(self, mock_ticker_cls, mock_history_df):
         def side_effect(ticker):
-            mock = Mock()
+            m = Mock()
             if ticker == "BAD":
-                mock.history.side_effect = Exception("Not found")
+                m.history.side_effect = Exception("Not found")
             else:
-                mock.history.return_value = mock_history_df
-            return mock
+                m.history.return_value = mock_history_df
+            return m
 
         mock_ticker_cls.side_effect = side_effect
         result = get_multiple_stocks_history(["AAPL", "BAD"])
 
+        assert_ok_envelope(result, count=5)
         assert "AAPL" in result["data"]
         assert "BAD" not in result["data"]
-        assert result["total_data_points"] == 5
         assert len(result["errors"]) == 1
-        assert result["errors"][0]["ticker"] == "BAD"
+        assert result["errors"][0]["error"] == "upstream_error"
+        assert result["errors"][0]["symbol"] == "BAD"
+
+    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    def test_unsupported_interval(self, mock_ticker_cls):
+        result = get_multiple_stocks_history(["AAPL", "MSFT"], interval="4hour")
+
+        assert_error(result, "unsupported_interval")
+        assert "supported" in result
+        mock_ticker_cls.assert_not_called()
 
     @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
     def test_all_empty(self, mock_ticker_cls, empty_df):
         mock_ticker_cls.return_value.history.return_value = empty_df
         result = get_multiple_stocks_history(["X", "Y"])
 
-        assert result["total_data_points"] == 0
+        assert_ok_envelope(result, count=0)
         assert result["data"]["X"]["count"] == 0
         assert result["data"]["Y"]["count"] == 0
 
@@ -211,9 +258,10 @@ class TestGetDividendsAndSplits:
         mock_obj.splits = mock_splits_series
         result = get_dividends_and_splits("AAPL")
 
-        assert result["data_type"] == "dividends_and_splits"
-        assert result["source"] == "yfinance"
-        assert result["ticker"] == "AAPL"
+        assert_ok_envelope(
+            result, source="yfinance", symbol="AAPL", currency="USD",
+            count=6,  # total records across both lists
+        )
         assert result["dividend_count"] == 4
         assert result["split_count"] == 2
         divs = result["data"]["dividends"]
@@ -231,6 +279,7 @@ class TestGetDividendsAndSplits:
         mock_obj.splits = empty_series
         result = get_dividends_and_splits("NOCORP")
 
+        assert_ok_envelope(result, count=0)
         assert result["dividend_count"] == 0
         assert result["split_count"] == 0
         assert result["data"]["dividends"] == []
@@ -238,14 +287,12 @@ class TestGetDividendsAndSplits:
 
     @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
     def test_exception(self, mock_ticker_cls):
-        mock_ticker_cls.return_value.dividends = property(
-            lambda self: (_ for _ in ()).throw(Exception("API down"))
-        )
         mock_ticker_cls.side_effect = Exception("API down")
         result = get_dividends_and_splits("AAPL")
 
-        assert "error" in result
-        assert "API down" in result["error"]
+        assert_error(
+            result, "upstream_error", symbol="AAPL", detail_excludes=("API down",),
+        )
 
 
 # ============================================================================
@@ -259,40 +306,146 @@ class TestGetMultipleStocksDividends:
         mock_ticker_cls.return_value.dividends = mock_dividends_series
         result = get_multiple_stocks_dividends(["AAPL", "MSFT"])
 
-        assert result["data_type"] == "multiple_stocks_dividends"
-        assert result["source"] == "yfinance"
-        assert result["total_dividends"] == 8
+        assert_ok_envelope(result, source="yfinance", count=8)
         assert "AAPL" in result["data"]
         assert "MSFT" in result["data"]
         assert result["data"]["AAPL"]["count"] == 4
+        assert result["data"]["AAPL"]["currency"] == "USD"
         assert "errors" not in result
 
     @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
     def test_partial_failure(self, mock_ticker_cls, mock_dividends_series):
         def side_effect(ticker):
-            mock = Mock()
+            m = Mock()
             if ticker == "BAD":
-                type(mock).dividends = property(
+                type(m).dividends = property(
                     lambda self: (_ for _ in ()).throw(Exception("No data"))
                 )
             else:
-                mock.dividends = mock_dividends_series
-            return mock
+                m.dividends = mock_dividends_series
+            return m
 
         mock_ticker_cls.side_effect = side_effect
         result = get_multiple_stocks_dividends(["AAPL", "BAD"])
 
+        assert_ok_envelope(result, count=4)
         assert "AAPL" in result["data"]
         assert "BAD" not in result["data"]
-        assert result["total_dividends"] == 4
         assert len(result["errors"]) == 1
-        assert result["errors"][0]["ticker"] == "BAD"
+        assert result["errors"][0]["error"] == "upstream_error"
+        assert result["errors"][0]["symbol"] == "BAD"
 
     @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
     def test_all_empty(self, mock_ticker_cls, empty_series):
         mock_ticker_cls.return_value.dividends = empty_series
         result = get_multiple_stocks_dividends(["X", "Y"])
 
-        assert result["total_dividends"] == 0
+        assert_ok_envelope(result, count=0)
         assert result["data"]["X"]["count"] == 0
         assert result["data"]["Y"]["count"] == 0
+
+
+# ============================================================================
+# Minor-unit conversion (keyed on yfinance's OWN declared currency)
+# ============================================================================
+
+
+@pytest.fixture
+def pence_history_df():
+    """OHLCV in pence (GBp scale), with a pence dividend on one bar."""
+    dates = pd.date_range("2024-01-01", periods=2, freq="D")
+    return pd.DataFrame(
+        {
+            "Open": [9850.0, 9900.0],
+            "High": [9920.5, 9950.0],
+            "Low": [9805.0, 9870.0],
+            "Close": [9890.25, 9910.0],
+            "Volume": [1000000, 1100000],
+            "Dividends": [0.0, 50.0],
+            "Stock Splits": [0.0, 0.0],
+        },
+        index=dates,
+    )
+
+
+class TestMinorUnitConversion:
+    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    def test_history_pence_converted_to_pounds(self, mock_ticker_cls, pence_history_df):
+        stock = mock_ticker_cls.return_value
+        stock.history.return_value = pence_history_df
+        stock.history_metadata = {"currency": "GBp"}  # declared by yfinance
+
+        result = get_stock_history("TEST.L")
+
+        assert_ok_envelope(result, currency="GBP")  # major code, not GBp
+        # pence → pounds (÷100), 4-decimal precision preserved
+        assert result["data"][0]["close"] == 98.9025
+        assert result["data"][0]["high"] == 99.205
+        assert result["data"][1]["dividends"] == 0.5  # 50 pence → £0.50
+        assert result["data"][0]["volume"] == 1000000  # volume NOT scaled
+
+    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    def test_conversion_keyed_on_declared_not_symbol(
+        self, mock_ticker_cls, mock_history_df
+    ):
+        """Declared GBp on a US-ref symbol still converts (not keyed on suffix)."""
+        stock = mock_ticker_cls.return_value
+        stock.history.return_value = mock_history_df
+        stock.history_metadata = {"currency": "GBp"}
+
+        result = get_stock_history("AAPL")  # ref currency is USD
+
+        assert_ok_envelope(result, currency="GBP")
+        assert result["data"][0]["close"] == 1.51  # 151.0 / 100
+
+    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    def test_no_conversion_when_declared_major(self, mock_ticker_cls, mock_history_df):
+        """A non-minor-unit declared currency leaves values untouched."""
+        stock = mock_ticker_cls.return_value
+        stock.history.return_value = mock_history_df
+        stock.history_metadata = {"currency": "USD"}
+
+        result = get_stock_history("AAPL")
+
+        assert_ok_envelope(result, currency="USD")
+        assert result["data"][0]["close"] == 151.0  # untouched, 2 decimals
+
+    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    def test_fast_info_currency_fallback(self, mock_ticker_cls, mock_history_df):
+        """When history_metadata is absent, fast_info.currency drives conversion."""
+        stock = mock_ticker_cls.return_value
+        stock.history.return_value = mock_history_df
+        stock.history_metadata = None  # not a dict → fall back
+        stock.fast_info = {"currency": "GBX"}  # case/alias variant
+
+        result = get_stock_history("AAPL")
+
+        assert_ok_envelope(result, currency="GBP")
+        assert result["data"][0]["close"] == 1.51
+
+    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    def test_multi_history_per_entry_conversion(self, mock_ticker_cls, pence_history_df):
+        stock = mock_ticker_cls.return_value
+        stock.history.return_value = pence_history_df
+        stock.history_metadata = {"currency": "GBp"}
+
+        result = get_multiple_stocks_history(["TEST.L"])
+
+        entry = result["data"]["TEST.L"]
+        assert entry["currency"] == "GBP"
+        assert entry["data"][0]["close"] == 98.9025
+
+    @patch("mcp_servers.yf_price_mcp_server.yf.Ticker")
+    def test_dividends_pence_converted_splits_untouched(self, mock_ticker_cls):
+        div_dates = pd.date_range("2023-01-15", periods=2, freq="QE")
+        split_dates = pd.DatetimeIndex(["2020-08-31"])
+        stock = mock_ticker_cls.return_value
+        stock.dividends = pd.Series([50.0, 60.0], index=div_dates)  # pence
+        stock.splits = pd.Series([4.0], index=split_dates)  # ratio
+        stock.history_metadata = {"currency": "GBp"}
+
+        result = get_dividends_and_splits("TEST.L")
+
+        assert_ok_envelope(result, currency="GBP")
+        assert result["data"]["dividends"][0]["amount"] == 0.5  # 50 pence → £0.50
+        assert result["data"]["splits"][0]["ratio"] == 4.0  # ratio NOT scaled

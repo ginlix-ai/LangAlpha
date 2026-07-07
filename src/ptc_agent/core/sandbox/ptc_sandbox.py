@@ -54,6 +54,24 @@ logger = structlog.get_logger(__name__)
 # change on every computation and would force needless re-uploads.
 _LOCK_VOLATILE_KEYS: frozenset[str] = frozenset({"installedAt", "updatedAt"})
 
+# Shared runtime modules the builtin MCP server files import as siblings
+# (``import _bootstrap`` / ``from mcp_servers._envelope import ...``). They are
+# not server entry points, so the per-server upload loop never sees them —
+# ship and hash them explicitly whenever any builtin server file ships, or the
+# servers crash on import in synced sandboxes (and prune would delete them).
+_MCP_SHARED_RUNTIME_FILES: tuple[str, ...] = (
+    "_bootstrap.py",
+    "_envelope.py",
+    "_yf_common.py",
+)
+
+# Internal ``src.<pkg>`` packages mirrored into the sandbox's ``_internal/src/``
+# so sandbox code and the builtin MCP servers can ``import src.<pkg>`` without
+# the full repo. Shipped and hashed as ONE manifest module (``internal_packages``)
+# because the upload is all-or-nothing; every regular file ships so data seeds
+# (e.g. ``market_protocol/instruments.yaml``) can never silently drop.
+_SANDBOX_INTERNAL_PACKAGES: tuple[str, ...] = ("data_client", "market_protocol")
+
 
 @dataclass
 class ChartData:
@@ -98,6 +116,33 @@ def _hash_dict(d: dict[str, str]) -> str:
     """Deterministic SHA-256 hash of a string→string dict."""
     payload = "\n".join(f"{k}:{v}" for k, v in sorted(d.items()))
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _internal_package_files(src_dir: Path) -> list[tuple[Path, Path]]:
+    """``(local_path, path relative to src/)`` for every internal-package file.
+
+    Walks ``_SANDBOX_INTERNAL_PACKAGES`` with ``rglob("*")`` — every regular
+    file except ``__pycache__`` ships, so data seeds can never silently drop
+    out of the sync. Empty when ``src/__init__.py`` is missing.
+    """
+    src_init = src_dir / "__init__.py"
+    if not src_init.exists():
+        return []
+    files: list[tuple[Path, Path]] = [(src_init, Path("__init__.py"))]
+    for pkg in _SANDBOX_INTERNAL_PACKAGES:
+        pkg_dir = (src_dir / pkg).resolve()
+        if not pkg_dir.exists():
+            logger.warning(
+                "Internal package not found - skipping",
+                package=pkg,
+                package_dir=str(pkg_dir),
+            )
+            continue
+        for file_path in sorted(pkg_dir.rglob("*")):
+            if not file_path.is_file() or "__pycache__" in file_path.parts:
+                continue
+            files.append((file_path, file_path.relative_to(src_dir)))
+    return files
 
 
 def _resolve_local_path(local_path: str, config_dir: Path | None) -> str | None:
@@ -924,10 +969,10 @@ class PTCSandbox:
             logger.debug(f"MCP trace dir sweep skipped: {e}")
 
     async def _upload_internal_packages(self) -> None:
-        """Upload internal Python packages for sandbox execution.
+        """Mirror the ``_SANDBOX_INTERNAL_PACKAGES`` set into ``_internal/src/``.
 
-        Currently uploads the `src.data_client` package so code executed inside the
-        sandbox can import `src.data_client` without depending on the full repo.
+        All-or-nothing: the whole set ships together, gated by the single
+        ``internal_packages`` manifest module.
         """
         work_dir = self._work_dir
         internal_root = Path(f"{work_dir}/_internal/src")
@@ -935,29 +980,18 @@ class PTCSandbox:
         # Resolve local paths relative to config file directory if available.
         config_dir = getattr(self.config, "config_file_dir", None)
         repo_root = config_dir or Path.cwd()
-
         local_src_dir = (repo_root / "src").resolve()
-        local_src_init = local_src_dir / "__init__.py"
-        local_data_client_dir = (local_src_dir / "data_client").resolve()
 
-        if not local_src_init.exists() or not local_data_client_dir.exists():
+        files = _internal_package_files(local_src_dir)
+        if not files:
             logger.warning(
-                "Skipping internal package upload - local src/data_client not found",
-                src_init=str(local_src_init),
-                data_client_dir=str(local_data_client_dir),
+                "Skipping internal package upload - local src/__init__.py not found",
+                src_dir=str(local_src_dir),
             )
             return
 
         assert self.runtime is not None
         sandbox = self.runtime
-
-        files: list[tuple[Path, Path]] = []
-        files.append((local_src_init, Path("__init__.py")))
-        for file_path in local_data_client_dir.rglob("*.py"):
-            if "__pycache__" in file_path.parts:
-                continue
-            rel = file_path.relative_to(local_src_dir)
-            files.append((file_path, rel))
 
         # Collect unique parent dirs → single mkdir command
         parent_dirs = {str(Path(str(internal_root / rel)).parent) for _, rel in files}
@@ -1171,24 +1205,28 @@ class PTCSandbox:
             resolved = _resolve_local_path(server.args[2], config_dir)
             if resolved:
                 mcp_files[Path(resolved).name] = _sha256_file(Path(resolved))
+        if mcp_files:
+            for shared_name in _MCP_SHARED_RUNTIME_FILES:
+                shared = _resolve_local_path(f"mcp_servers/{shared_name}", config_dir)
+                if shared:
+                    mcp_files[shared_name] = _sha256_file(Path(shared))
         mcp_version = _hash_dict(mcp_files)
         modules["mcp_servers"] = {"version": mcp_version, "files": mcp_files}
 
-        # ── Module: data_client ──
-        dc_files: dict[str, str] = {}
+        # ── Module: internal_packages (src/data_client, src/market_protocol) ──
+        # One module for the whole set: the upload is all-or-nothing, so a single
+        # version is the honest re-upload gate. Hashes the exact file set the
+        # upload ships (same collection helper), so nothing can drift or drop.
         repo_root = config_dir or Path.cwd()
         src_dir = (repo_root / "src").resolve()
-        src_init = src_dir / "__init__.py"
-        dc_dir = (src_dir / "data_client").resolve()
-        if src_init.exists() and dc_dir.exists():
-            dc_files["__init__.py"] = _sha256_file(src_init)
-            for fp in dc_dir.rglob("*.py"):
-                if "__pycache__" in fp.parts:
-                    continue
-                rel = str(fp.relative_to(src_dir))
-                dc_files[rel] = _sha256_file(fp)
-        dc_version = _hash_dict(dc_files)
-        modules["data_client"] = {"version": dc_version, "files": dc_files}
+        internal_files = {
+            str(rel): _sha256_file(local)
+            for local, rel in _internal_package_files(src_dir)
+        }
+        modules["internal_packages"] = {
+            "version": _hash_dict(internal_files),
+            "files": internal_files,
+        }
 
         # ── Module: tool_modules (derived) ──
         tool_schema_hash = self._compute_tool_schema_hash()
@@ -1333,6 +1371,17 @@ class PTCSandbox:
                             server=server.name,
                             searched_paths=searched,
                         )
+
+        # Shared runtime siblings (imported by the server files) ship alongside
+        # them; adding them to expected_files also shields them from the prune.
+        if files_to_upload:
+            for shared_name in _MCP_SHARED_RUNTIME_FILES:
+                shared = _resolve_local_path(f"mcp_servers/{shared_name}", config_dir)
+                if shared:
+                    expected_files.add(shared_name)
+                    files_to_upload.append(
+                        ("_shared", shared, f"{mcp_servers_dir}/{shared_name}")
+                    )
 
         assert self.runtime is not None
         sandbox = self.runtime
@@ -1519,11 +1568,11 @@ class PTCSandbox:
                 parallel_uploads.append(
                     ("mcp_servers", self._upload_mcp_server_files_impl())
                 )
-            if "data_client" in changed_modules:
+            if "internal_packages" in changed_modules:
                 if on_progress:
-                    on_progress("Syncing data client...")
+                    on_progress("Syncing internal packages...")
                 parallel_uploads.append(
-                    ("data_client", self._upload_internal_packages())
+                    ("internal_packages", self._upload_internal_packages())
                 )
             if "skills" in changed_modules and skill_dirs:
                 if on_progress:

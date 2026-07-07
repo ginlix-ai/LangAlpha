@@ -28,12 +28,16 @@ class TestGetStockDataLive:
         result = await get_stock_data("AAPL", interval="1day")
         assert "error" not in result, result.get("error")
         assert result["symbol"] == "AAPL"
+        assert result["interval"] == "1day"
+        assert result["currency"] == "USD"
         assert result["count"] > 0
-        row = result["rows"][0]
+        data = result["data"]
+        assert result["count"] == len(data)
+        row = data[0]
         assert all(k in row for k in ("date", "open", "high", "low", "close", "volume"))
-        # Descending order
-        if result["count"] > 1:
-            assert result["rows"][0]["date"] >= result["rows"][1]["date"]
+        # Ascending order (oldest first)
+        if len(data) > 1:
+            assert data[0]["date"] <= data[1]["date"]
 
     async def test_intraday_5min(self):
         from mcp_servers.price_data_mcp_server import get_stock_data
@@ -50,6 +54,7 @@ class TestGetStockDataLive:
 
         result = await get_stock_data("AAPL", interval="2min")
         assert "error" in result
+        assert result["error"] == "unsupported_interval"
 
 
 # ---------------------------------------------------------------------------
@@ -129,20 +134,25 @@ class TestGetShortDataLive:
         result = await mod.get_short_data("AAPL")
         assert "error" not in result, result.get("error")
         assert result["source"] == "ginlix-data"
-        assert "short_interest" in result
-        assert "short_volume" in result
-        assert len(result["short_interest"]) > 0
-        assert len(result["short_volume"]) > 0
+        assert result["data_type"] == "both"
+        # Sections live under the standard `data` payload (a dict of lists).
+        data = result["data"]
+        assert "short_interest" in data
+        assert "short_volume" in data
+        assert len(data["short_interest"]) > 0
+        assert len(data["short_volume"]) > 0
+        # `count` is a plain int totalling every record across sections.
+        assert result["count"] == len(data["short_interest"]) + len(data["short_volume"])
 
-        # Verify newest-first ordering
-        si = result["short_interest"]
+        # Short data is newest-first (per the tool docstring).
+        si = data["short_interest"]
         if len(si) > 1:
             assert si[0]["settlement_date"] >= si[1]["settlement_date"]
-        sv = result["short_volume"]
+        sv = data["short_volume"]
         if len(sv) > 1:
             assert sv[0]["date"] >= sv[1]["date"]
 
-        # Verify expected fields
+        # Verify vendor-native fields.
         si_row = si[0]
         assert "short_interest" in si_row
         assert "settlement_date" in si_row
@@ -159,15 +169,19 @@ class TestGetShortDataLive:
             "AAPL", data_type="short_interest",
             from_date="2025-01-01", to_date="2025-12-31", limit=5,
         )
-        assert "short_interest" in result
-        assert "short_volume" not in result
-        assert len(result["short_interest"]) <= 5
-        for row in result["short_interest"]:
+        assert "error" not in result, result.get("error")
+        data = result["data"]
+        assert "short_interest" in data
+        assert "short_volume" not in data
+        assert len(data["short_interest"]) <= 5
+        for row in data["short_interest"]:
             assert row["settlement_date"] >= "2025-01-01"
 
     async def test_short_volume_only(self):
         mod = await _init_ginlix()
         result = await mod.get_short_data("TSLA", data_type="short_volume", limit=3)
-        assert "short_volume" in result
-        assert "short_interest" not in result
-        assert len(result["short_volume"]) <= 3
+        assert "error" not in result, result.get("error")
+        data = result["data"]
+        assert "short_volume" in data
+        assert "short_interest" not in data
+        assert len(data["short_volume"]) <= 3
