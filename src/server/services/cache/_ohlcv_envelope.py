@@ -11,18 +11,24 @@ from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from src.config.core import get_infrastructure_config
-from src.data_client.market_data_provider import is_us_symbol
-from src.utils.market_hours import (
-    current_trading_date,
-    expected_latest_bar_ms,
-    expected_latest_daily_date,
-    interval_seconds,
-    is_market_closed,
-)
+from src.data_client.normalize import publisher_lineage
+from src.market_protocol import to_canonical
+from src.market_protocol.enums import AssetClass, Tier
+from src.market_protocol.intervals import schema_for_legacy
+from src.server.services.cache._instrument_clock import UsClock, clock_for
+from src.utils.market_hours import current_trading_date, interval_seconds
 
 _ET = ZoneInfo("America/New_York")
 
-ENVELOPE_VERSION = 3  # v3: adds data_date and truncated fields
+# Default clock: XNYS via the market_hours facade (pre-CMDP parity).
+_US_CLOCK = UsClock()
+
+# v4 (Phase 3): protocol Series container — header + records, keyed on
+# instrument_key. v3 (legacy source-segmented keys) remains readable for
+# dual-read of warm caches written before the cutover.
+ENVELOPE_VERSION = 4
+_ENVELOPE_V3 = 3
+
 _SOFT_TTL_RATIO: float = get_infrastructure_config().redis.swr.soft_ttl_ratio
 _TRUNCATED_TTL_RATIO = 0.25  # aggressive refresh for truncated data
 _EMPTY_RESULT_TTL = 30  # short TTL for empty upstream results
@@ -32,37 +38,44 @@ _EMPTY_RESULT_TTL = 30  # short TTL for empty upstream results
 # this floor every request would bypass the cache with a blocking fetch.
 _DAILY_STALE_REFETCH_COOLDOWN = 120
 
-# Bare index symbols whose daily bars follow the US (ET) trading calendar.
-# Index symbols aren't suffix-classifiable like stocks, so the daily
-# watermark backstop only trusts this allowlist.
-_US_INDEX_SYMBOLS = {
-    "GSPC", "SPX", "DJI", "IXIC", "COMP", "NDX", "RUT", "VIX",
-    "NYA", "XAX", "OEX", "MID", "SML", "SOX", "RUI", "RUA",
-    "DJT", "DJU", "W5000", "WLSH",
-}
+def series_identity(symbol: str, interval: str, is_index: bool = False) -> tuple[str, str]:
+    """(instrument_key, schema) for a legacy symbol + interval pair.
 
-# Dotted suffixes that mark a US class share / security type (BRK.B, BF.B,
-# HEI.A). ``symbol_market`` maps these to "other" — not a foreign region — so
-# ``is_us_symbol`` returns False and they'd wrongly skip the US backstop.
-# Genuine foreign tickers resolve to a specific region (hk/uk/jp/...) via the
-# suffix map and never land in this set, so trusting these is safe.
-_US_DOTTED_SUFFIXES = {"A", "B", "C"}
+    ``is_index=False`` hints EQUITY (not autodetect): the endpoint already
+    decided the asset class, and a bare index-family collision (COMP the
+    stock) must never key equity bars under the index's series. Explicit
+    ``^``/``I:`` spellings still resolve as indexes.
+    """
+    hint = AssetClass.INDEX if is_index else AssetClass.EQUITY
+    ref = to_canonical(symbol, asset_class=hint)
+    return ref.instrument_key, schema_for_legacy(interval)
 
 
-def _follows_us_daily_calendar(symbol: str, is_index: bool) -> bool:
-    """True if *symbol*'s daily bars anchor to the US (ET) trading calendar."""
-    if is_index:
-        bare = symbol.lstrip("^").upper()
-        if bare.startswith("I:"):
-            bare = bare[2:]
-        return bare in _US_INDEX_SYMBOLS
-    if is_us_symbol(symbol):
-        return True
-    # US dotted class-shares classify as "other" (unrecognized suffix), not a
-    # foreign region — treat the known US class suffixes as US-calendar.
-    if "." in symbol:
-        return symbol.rsplit(".", 1)[-1].upper() in _US_DOTTED_SUFFIXES
-    return False
+def canonical_series_key(
+    symbol: str,
+    interval: str,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    is_index: bool = False,
+    live: bool = True,
+) -> str:
+    """Phase 3 cache key: ``ohlcv:{instrument_key}:{schema}``.
+
+    Every spelling of one instrument collapses to one key, and the publisher
+    lives in the envelope header (single live data key per instrument — the
+    pin decides who fills it). Historical windows append ``:{from}:{to}``.
+    """
+    instrument_key, schema = series_identity(symbol, interval, is_index)
+    base = f"ohlcv:{instrument_key}:{schema}"
+    if live:
+        return base
+    return f"{base}:{from_date}:{to_date}"
+
+
+def pin_key(symbol: str, interval: str, is_index: bool = False) -> str:
+    """``pin:{instrument_key}:{schema}`` → {"publisher": name}."""
+    instrument_key, schema = series_identity(symbol, interval, is_index)
+    return f"pin:{instrument_key}:{schema}"
 
 
 def _build_envelope(
@@ -72,30 +85,118 @@ def _build_envelope(
     stored_ttl: int = 0,
     truncated: bool = False,
     data_date: Optional[str] = None,
+    instrument_key: Optional[str] = None,
+    schema: Optional[str] = None,
+    publisher: Optional[str] = None,
+    revision: int = 0,
 ) -> Dict[str, Any]:
+    """Build a v4 Series envelope (storage form).
+
+    Protocol lineage lives in ``header``; cache-operational flags stay
+    top-level. Records gain ``ts_event`` (bar-open ms UTC, aliasing the
+    legacy ``time`` they already carry).
+    """
     watermark = bars[-1].get("time", 0) if bars else 0
+    now = time.time()
+    for b in bars:
+        b.setdefault("ts_event", b.get("time"))
+    treatment, tier = publisher_lineage(publisher)
     return {
         "v": ENVELOPE_VERSION,
-        "bars": bars,
-        "watermark": watermark,
-        "fetched_at": time.time(),
+        "header": {
+            "instrument_key": instrument_key,
+            "schema": schema,
+            "publisher": publisher,
+            "price_treatment": treatment.value,
+            "tier": tier.value,
+            "feed_scope": "composite",
+            "ts_unit": "ms",
+            "latest_trading_date": data_date or current_trading_date(),
+            "revision": revision,
+            "asof": now,
+            "coverage": {"truncated": truncated},
+            "fetched_at": now,
+            "watermark": watermark,
+        },
+        "records": bars,
         "market_phase": market_phase,
         "complete": complete,
         "stored_ttl": stored_ttl,
-        "data_date": data_date or current_trading_date(),
-        "truncated": truncated,
+    }
+
+
+def adopt_v3_envelope(
+    v3: Dict[str, Any],
+    instrument_key: str,
+    schema: str,
+    publisher: Optional[str],
+) -> Dict[str, Any]:
+    """Translate a legacy v3 envelope into v4 storage form (dual-read adopt).
+
+    Operational fields (fetched_at, watermark, data_date, TTL bookkeeping)
+    are PRESERVED, not re-stamped — adoption is a format move, not a fresh
+    fetch, so staleness cooldowns and soft-TTL windows keep their meaning.
+    ``publisher`` comes from the legacy key's source segment; unknown header
+    fields are filled conservatively from the publisher's declared defaults.
+    """
+    bars = v3.get("bars") or []
+    for b in bars:
+        b.setdefault("ts_event", b.get("time"))
+    treatment, tier = publisher_lineage(publisher)
+    return {
+        "v": ENVELOPE_VERSION,
+        "header": {
+            "instrument_key": instrument_key,
+            "schema": schema,
+            "publisher": publisher,
+            "price_treatment": treatment.value,
+            "tier": tier.value,
+            "feed_scope": "composite",
+            "ts_unit": "ms",
+            "latest_trading_date": v3.get("data_date"),
+            "revision": 0,
+            "asof": v3.get("fetched_at", 0),
+            "coverage": {"truncated": bool(v3.get("truncated"))},
+            "fetched_at": v3.get("fetched_at", 0),
+            "watermark": v3.get("watermark", 0),
+        },
+        "records": bars,
+        "market_phase": v3.get("market_phase"),
+        "complete": v3.get("complete", False),
+        "stored_ttl": v3.get("stored_ttl", 0),
     }
 
 
 def _parse_envelope(raw: Any) -> Optional[Dict[str, Any]]:
-    """Return the envelope dict if valid, else None (treat as cache miss)."""
+    """Normalize a stored envelope (v4 or legacy v3) to the working view.
+
+    The working view is the flat dict the staleness stack reads
+    (``bars/watermark/fetched_at/data_date/truncated/...``). v4 envelopes
+    additionally expose ``header``; v3 envelopes (dual-read of warm caches
+    written before the key cutover) pass through as-is with no header.
+    Anything else → None (cache miss).
+    """
     if not isinstance(raw, dict):
         return None
-    if raw.get("v") != ENVELOPE_VERSION:
-        return None
-    if "bars" not in raw:
-        return None
-    return raw
+    if raw.get("v") == ENVELOPE_VERSION:
+        header = raw.get("header")
+        if not isinstance(header, dict) or "records" not in raw:
+            return None
+        return {
+            "v": ENVELOPE_VERSION,
+            "bars": raw["records"],
+            "watermark": header.get("watermark", 0),
+            "fetched_at": header.get("fetched_at", 0),
+            "market_phase": raw.get("market_phase"),
+            "complete": raw.get("complete", False),
+            "stored_ttl": raw.get("stored_ttl", 0),
+            "data_date": header.get("latest_trading_date"),
+            "truncated": bool((header.get("coverage") or {}).get("truncated")),
+            "header": header,
+        }
+    if raw.get("v") == _ENVELOPE_V3 and "bars" in raw:
+        return raw
+    return None
 
 
 def _merge_bars(
@@ -119,17 +220,17 @@ def _merge_bars(
     if not delta:
         return existing
 
-    # Find split point via bisect on the "time" field (Unix ms)
-    times = [b.get("time", 0) for b in existing]
+    # Find split point via bisect on the bar anchor (ts_event, legacy "time")
+    times = [_bar_time(b) for b in existing]
     split_idx = bisect_left(times, watermark)
 
     # Filter delta to only bars at or after the watermark so we don't
     # re-introduce bars that are already in the immutable prefix.
-    fresh = [b for b in delta if b.get("time", 0) >= watermark]
+    fresh = [b for b in delta if _bar_time(b) >= watermark]
 
     # Gap fill: delta bars that predate existing (partial initial load).
     first_existing_time = times[0] if times else 0
-    gap_fill = [b for b in delta if 0 < b.get("time", 0) < first_existing_time]
+    gap_fill = [b for b in delta if 0 < _bar_time(b) < first_existing_time]
 
     if not fresh and not gap_fill:
         return existing
@@ -137,24 +238,76 @@ def _merge_bars(
     return gap_fill + existing[:split_idx] + fresh
 
 
-def watermark_to_date_str(watermark) -> Optional[str]:
-    """Convert a watermark (Unix ms) to an ET date string (YYYY-MM-DD)."""
+def _bar_time(bar: Dict[str, Any]) -> int:
+    """Bar anchor ms: ``ts_event`` (protocol) with legacy ``time`` fallback."""
+    return bar.get("ts_event") or bar.get("time", 0)
+
+
+# Relative tolerance for the splice-discontinuity check. A provider
+# correction or split re-adjustment moves final bars by percents (a 2:1
+# split halves them); float noise across providers is ~1e-5.
+_DISCONTINUITY_REL_TOL = 0.005
+
+
+def splice_is_discontinuous(
+    existing: List[Dict[str, Any]],
+    delta: List[Dict[str, Any]],
+    watermark,
+) -> bool:
+    """True when the delta disagrees with cached FINAL history — never splice.
+
+    Compares overlapping bars strictly BEFORE the watermark (the bar at the
+    watermark is the forming bar; its values legitimately change). A relative
+    move beyond tolerance on any shared final bar means an adjustment or
+    provider correction happened upstream — the cached prefix is no longer
+    the same series, so the caller must discard and full-refetch (bumping
+    the header ``revision``) instead of splicing mixed treatments.
+    """
+    if not existing or not delta or not watermark:
+        return False
+    by_time = {_bar_time(b): b for b in existing}
+    for d in delta:
+        t = _bar_time(d)
+        if not t or t >= watermark:
+            continue
+        e = by_time.get(t)
+        if e is None:
+            continue
+        for f in ("close", "open"):
+            ev, dv = e.get(f), d.get(f)
+            if ev is None or dv is None or not ev:
+                continue
+            if abs(dv - ev) / abs(ev) > _DISCONTINUITY_REL_TOL:
+                return True
+    return False
+
+
+def watermark_to_date_str(watermark, tz: Optional[ZoneInfo] = None) -> Optional[str]:
+    """Convert a watermark (Unix ms) to an exchange-local date string (YYYY-MM-DD).
+
+    ``tz`` is the symbol's exchange timezone — delta-refresh from_date windows
+    must be exchange-local or non-US deltas start on the wrong trading date.
+    Defaults to ET for callers that are US-only by construction.
+    """
     if not watermark or not isinstance(watermark, (int, float)) or watermark <= 0:
         return None
-    dt_et = datetime.fromtimestamp(watermark / 1000, tz=timezone.utc).astimezone(_ET)
-    return dt_et.strftime("%Y-%m-%d")
+    dt_local = datetime.fromtimestamp(watermark / 1000, tz=timezone.utc).astimezone(tz or _ET)
+    return dt_local.strftime("%Y-%m-%d")
 
 
-def _is_stale_date(envelope: Dict[str, Any], now: Optional[datetime] = None) -> bool:
+def _is_stale_date(
+    envelope: Dict[str, Any], now: Optional[datetime] = None, clock=None,
+) -> bool:
     """Return True if the envelope's ``data_date`` is behind the current trading date.
 
-    ``current_trading_date()`` is correct in every market phase, including
-    weekends and holidays, so no phase gate is needed.
+    The trading date comes from the instrument's clock (calendar-correct for
+    non-US symbols; XNYS parity by default) and is valid in every market
+    phase, including weekends and holidays — no phase gate needed.
     """
     data_date = envelope.get("data_date")
     if not data_date:
         return True  # missing data_date — treat as stale
-    return data_date != current_trading_date(now)
+    return data_date != (clock or _US_CLOCK).current_trading_date(now)
 
 
 def is_watermark_stale(
@@ -163,6 +316,7 @@ def is_watermark_stale(
     now: Optional[datetime] = None,
     symbol: Optional[str] = None,
     is_index: bool = False,
+    clock=None,
 ) -> bool:
     """Return True if the envelope's watermark is meaningfully behind the
     most recent bar that *should* exist right now for this interval.
@@ -174,18 +328,18 @@ def is_watermark_stale(
     trading days ago even though the date-level check alone might miss it
     (e.g. a ``data_date`` that got refreshed without the bars advancing).
 
-    Daily (``1day``) is checked at the DATE level: the newest bar's ET trading
-    date vs ``expected_latest_daily_date()`` (the newest bar that should exist
-    now — the previous trading day during pre-market, since today's daily bar
+    Daily (``1day``) is checked at the DATE level: the newest bar's trading
+    date (in the instrument's exchange tz) vs the clock's
+    ``expected_latest_daily_date()`` (the newest bar that should exist now —
+    the previous trading day during pre-market, since today's daily bar
     doesn't appear until the session opens). This is the only backstop daily
     has against a ``data_date`` that was silently re-stamped with today's date
     by a prior refresh that fetched nothing new (``_is_stale_date`` alone can't
-    catch that). US symbols only: non-US daily bars anchor at exchange-local
-    midnight, which converts to the *previous* ET date and would read as
-    permanently stale against the US calendar — daily callers must pass
-    ``symbol`` (and ``is_index``); without a symbol the daily check is
-    skipped and non-US symbols keep the date-level check via
-    ``_is_stale_date`` alone.
+    catch that). Calendar-correct per instrument (Phase 3): non-US symbols
+    are judged against their own exchange calendar. Fail-closed defaults
+    remain — no symbol, unknown index families, and unrecognized suffixes
+    (other than US class shares) skip the backstop entirely rather than risk
+    reading permanently stale against the wrong calendar.
 
     Tolerance: ``2 * interval_period``. Absorbs provider delay plus small
     clock skew without hiding real stagnation.
@@ -194,9 +348,11 @@ def is_watermark_stale(
         # Date-level: stale when the newest bar's trading date is behind the
         # newest daily bar that should exist now. Uses the same watermark→date
         # conversion the daily delta-refresh trusts for its from_date.
-        if symbol is None or not _follows_us_daily_calendar(symbol, is_index):
-            # Unclassifiable (no symbol) or non-US: fail closed — a foreign
-            # anchor read against the ET calendar would look permanently stale.
+        if symbol is None and clock is None:
+            # Unclassifiable — fail closed.
+            return False
+        clock = clock or clock_for(symbol, is_index)
+        if not getattr(clock, "daily_backstop", True):
             return False
         if not envelope.get("bars"):
             return False  # empty window — soft-TTL governs re-fetch timing
@@ -206,10 +362,10 @@ def is_watermark_stale(
             # Deliberately ahead of the corrupt-watermark check: a persistently
             # corrupt feed re-fetches once per cooldown, not per request.
             return False
-        last_bar_date = watermark_to_date_str(envelope.get("watermark"))
+        last_bar_date = watermark_to_date_str(envelope.get("watermark"), tz=clock.tz)
         if last_bar_date is None:
             return True  # bars present but unusable watermark — corrupt
-        return last_bar_date < expected_latest_daily_date(now)
+        return last_bar_date < clock.expected_latest_daily_date(now)
     # Empty envelopes (no bars in requested window) are not meaningfully stale
     # on a watermark basis — there's nothing to be behind. They're deliberately
     # cached with a short _EMPTY_RESULT_TTL to dampen fetch storms for symbols
@@ -220,11 +376,25 @@ def is_watermark_stale(
     if watermark_ms <= 0:
         # Bars exist but watermark is 0 — envelope is corrupt, treat as stale.
         return True
-    expected_ms = expected_latest_bar_ms(interval, now)
+    clock = clock or clock_for(symbol, is_index)
+    expected_ms = clock.expected_latest_bar_ms(interval, now)
     if expected_ms <= 0:
         return False
-    tolerance_ms = interval_seconds(interval) * 2 * 1000
+    tolerance_ms = interval_seconds(interval) * 2 * 1000 + _tier_delay_ms(envelope)
     return watermark_ms < expected_ms - tolerance_ms
+
+
+# Publication delay allowance per declared feed tier. A delayed feed's newest
+# bar legitimately trails the clock by its delay; judging it against a
+# realtime expectation flags every mid-session check stale and degenerates the
+# cache into a full upstream refetch per request (frozen-0700.HK incident).
+_TIER_DELAY_MS: Dict[str, int] = {Tier.DELAYED_15M.value: 15 * 60 * 1000}
+
+
+def _tier_delay_ms(envelope: Dict[str, Any]) -> int:
+    """Watermark allowance (ms) for the envelope's declared feed tier."""
+    tier = (envelope.get("header") or {}).get("tier")
+    return _TIER_DELAY_MS.get(tier, 0)
 
 
 def _needs_refresh(
@@ -235,6 +405,7 @@ def _needs_refresh(
     is_live: bool = True,
     symbol: Optional[str] = None,
     is_index: bool = False,
+    clock=None,
 ) -> bool:
     """Determine whether an SWR background refresh should fire.
 
@@ -258,17 +429,21 @@ def _needs_refresh(
     skipped (see :func:`is_watermark_stale`).
     """
     if is_live:
+        clock = clock or clock_for(symbol, is_index)
+
         # 1. Stale date — strongest signal
-        if _is_stale_date(envelope, now):
+        if _is_stale_date(envelope, now, clock=clock):
             return True
 
         # 2. Stale watermark — mid-session stagnation
-        if interval and is_watermark_stale(envelope, interval, now, symbol=symbol, is_index=is_index):
+        if interval and is_watermark_stale(
+            envelope, interval, now, symbol=symbol, is_index=is_index, clock=clock,
+        ):
             return True
 
         # 3. Complete + market reopened
         if envelope.get("complete"):
-            if not is_market_closed(now):
+            if not clock.is_closed(now):
                 return True
             return False
 

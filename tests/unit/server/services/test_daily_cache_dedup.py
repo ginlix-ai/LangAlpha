@@ -30,20 +30,29 @@ class _StubCache:
     async def get(self, key: str):
         return self.store.get(key)
 
+    async def mget(self, keys: list[str]):
+        return [self.store.get(k) for k in keys]
+
     async def set(self, key: str, value: dict, ttl: int | None = None) -> None:
         self.store[key] = value
 
 
 class _GatedProvider:
-    """Provider stub whose daily fetch blocks on a gate, counting calls."""
+    """Provider stub whose daily fetch blocks on a gate, counting calls. Sets
+    ``started`` once a call enters so tests gate on observed state, not sleeps."""
 
     def __init__(self, gate: asyncio.Event) -> None:
         self._gate = gate
         self.calls = 0
+        self.started = asyncio.Event()
         self.source_names = ["stub"]
+
+    def source_names_for(self, symbol, capability=None):
+        return list(self.source_names)
 
     async def get_daily_with_source(self, symbol, from_date, to_date, is_index, user_id):
         self.calls += 1
+        self.started.set()
         await self._gate.wait()
         return [{"time": _WATERMARK_MS, "close": 1.0}], "stub", False
 
@@ -76,7 +85,7 @@ async def test_concurrent_cold_reads_coalesce_to_one_fetch(fresh_service):
     results = await asyncio.gather(*tasks)
 
     assert provider.calls == 1  # single upstream fetch for the whole burst
-    assert all(r.data == [{"time": _WATERMARK_MS, "close": 1.0}] for r in results)
+    assert all(r.data == [{"time": _WATERMARK_MS, "close": 1.0, "ts_event": _WATERMARK_MS}] for r in results)
     # Exactly one leader fetched (cached=False); the rest served the fill.
     assert sum(r.cached is False for r in results) == 1
     assert sum(r.cached is True for r in results) == 4
@@ -101,7 +110,7 @@ async def test_leader_cancellation_does_not_poison_follower(fresh_service):
 
     t1 = asyncio.create_task(svc.get_stock_daily("AAPL"))  # becomes leader
     t2 = asyncio.create_task(svc.get_stock_daily("AAPL"))  # waits on the lock
-    await asyncio.sleep(0.02)
+    await provider.started.wait()  # leader is inside the gated fetch (no sleep race)
 
     t1.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -109,7 +118,7 @@ async def test_leader_cancellation_does_not_poison_follower(fresh_service):
 
     gate.set()
     result = await t2  # follower still resolves with data, not poisoned
-    assert result.data == [{"time": _WATERMARK_MS, "close": 1.0}]
+    assert result.data == [{"time": _WATERMARK_MS, "close": 1.0, "ts_event": _WATERMARK_MS}]
     # Leader's upstream fetch was abandoned on cancel, so the follower re-fetched.
     assert provider.calls == 2
 

@@ -271,6 +271,35 @@ class RedisCacheClient:
             self.stats["errors"] += 1
             return False
 
+    async def mget(self, keys: list) -> list:
+        """Get many keys in one round trip; result aligns with *keys* (None = miss)."""
+        if not keys:
+            return []
+        if not self.enabled or not self.client:
+            return [None] * len(keys)
+
+        try:
+            values = await self.client.mget(keys)
+        except Exception as e:
+            self._log_error("Cache mget error", e)
+            self.stats["errors"] += 1
+            return [None] * len(keys)
+
+        out = []
+        for key, value in zip(keys, values):
+            if value is None:
+                self.stats["misses"] += 1
+                out.append(None)
+                continue
+            try:
+                out.append(json.loads(value))
+                self.stats["hits"] += 1
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to deserialize cache value for {key}: {e}")
+                self.stats["errors"] += 1
+                out.append(None)
+        return out
+
     async def delete(self, key: str) -> bool:
         """
         Delete key from cache.

@@ -228,6 +228,8 @@ def today_market_open_ms() -> int | None:
 # Interval period in seconds. Used for "expected-latest-bar" staleness.
 # Weekly / monthly intervals are not listed — callers fall back to 60s, which
 # is intentionally permissive for staleness but would be wrong for scheduling.
+# Covers every protocol OHLCV schema (parity-tested), including 1s, which is
+# WS-only and never REST-fetched.
 _INTERVAL_SECONDS: dict[str, int] = {
     "1s": 1,
     "1min": 60,

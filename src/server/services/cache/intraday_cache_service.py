@@ -6,29 +6,31 @@ Key improvements over the previous flat-TTL, full-refetch approach:
 - **Delta refresh** fetches only bars from the watermark onward, then merges.
 - **Market hours gating** skips refresh when market is closed.
 - **Date-free cache keys** for live queries enable cross-request sharing.
+
+The delta-refresh / pinning / dual-read core is shared with DailyCacheService
+via :class:`_SeriesCacheCore`; this module owns the intraday specifics —
+interval-aware TTL, the structural discard classifier, and the batch API.
 """
 
 import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.config.settings import get_ohlcv_ttl
 from src.data_client import get_market_data_provider
+from src.server.services.cache._instrument_clock import clock_for
 from src.server.services.cache._ohlcv_envelope import (
     _EMPTY_RESULT_TTL,
     _build_envelope,
     _is_stale_date,
-    _merge_bars,
     _needs_refresh,
-    _parse_envelope,
     is_watermark_stale,
-    watermark_to_date_str,
+    series_identity,
 )
+from src.server.services.cache._series_cache_core import _SeriesCacheCore, is_live_window
 from src.utils.cache.redis_cache import get_cache_client
-from src.utils.market_hours import current_market_phase, is_market_closed, seconds_until_next_open, today_market_open_ms
 
 
 # Max gap tolerance between market open and first cached bar (10 min in ms).
@@ -54,6 +56,7 @@ def _should_discard_envelope(
     elapsed: float = 0.0,
     gap_grace_s: float = 0.0,
     is_live: bool = True,
+    clock=None,
 ) -> bool:
     """Return True if the cached envelope should be discarded for a sync re-fetch.
 
@@ -79,12 +82,13 @@ def _should_discard_envelope(
     check is skipped to avoid fetch storms when the upstream consistently
     returns partial data.
     """
+    clock = clock or clock_for(None)
     if is_live:
-        if _is_stale_date(envelope):
+        if _is_stale_date(envelope, clock=clock):
             return True
-        if interval and is_watermark_stale(envelope, interval):
+        if interval and is_watermark_stale(envelope, interval, clock=clock):
             return True
-        if envelope.get("complete") and not is_market_closed():
+        if envelope.get("complete") and not clock.is_closed():
             return True
     # Coverage gap: bars start well after market open.
     # Large gaps (>30 min) always discard immediately.  Small gaps (10-30 min)
@@ -96,7 +100,7 @@ def _should_discard_envelope(
     # threshold fires.
     bars = envelope.get("bars")
     if bars and not envelope.get("complete"):
-        open_ms = today_market_open_ms()
+        open_ms = clock.today_market_open_ms()
         if open_ms is not None:
             first_bar_time = bars[0].get("time", 0)
             gap_ms = first_bar_time - open_ms
@@ -127,12 +131,7 @@ class IntradayCacheKeyBuilder:
 
     @classmethod
     def _is_live(cls, to_date: Optional[str]) -> bool:
-        if to_date is None:
-            return True
-        try:
-            return to_date >= date.today().strftime("%Y-%m-%d")
-        except (ValueError, TypeError):
-            return True
+        return is_live_window(to_date)
 
     @classmethod
     def stock_key(
@@ -184,6 +183,9 @@ class IntradayFetchResult:
     complete: Optional[bool] = None
     market_phase: Optional[str] = None
     truncated: Optional[bool] = None
+    # v4 envelope header (lineage), carried from the fetch so the router builds
+    # the wire Series header without a second cache read.
+    header: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
 
 
@@ -191,12 +193,13 @@ class IntradayFetchResult:
 # Service
 # ---------------------------------------------------------------------------
 
-class IntradayCacheService:
+class IntradayCacheService(_SeriesCacheCore):
     """Singleton service for cached intraday OHLCV data with delta refresh."""
 
     _instance: Optional["IntradayCacheService"] = None
     _refresh_locks: Dict[str, asyncio.Lock]
     _max_concurrent_fetches: int = 10
+    _logger = logger
 
     def __new__(cls):
         if cls._instance is None:
@@ -215,118 +218,40 @@ class IntradayCacheService:
     def _ttl_for(interval: str) -> int:
         return get_ohlcv_ttl(interval)
 
+    # -- per-service hooks (genuine deltas) -------------------------------
+
     @staticmethod
-    def _effective_ttl(base_ttl: int, complete: bool) -> int:
-        """Extend TTL when market is closed so the key survives until next open."""
-        if complete:
-            secs = seconds_until_next_open()
-            return max(base_ttl, secs) if secs > 0 else base_ttl
-        return base_ttl
+    def _cache_client():
+        return get_cache_client()
 
-    def _get_refresh_lock(self, cache_key: str) -> asyncio.Lock:
-        if cache_key not in self._refresh_locks:
-            self._refresh_locks[cache_key] = asyncio.Lock()
-        return self._refresh_locks[cache_key]
+    @staticmethod
+    async def _provider():
+        return await get_market_data_provider()
 
-    async def _fetch_data(
-        self,
-        symbol: str,
-        is_index: bool,
-        interval: str = "1min",
-        from_date: Optional[str] = None,
-        to_date: Optional[str] = None,
-        user_id: Optional[str] = None,
+    async def _fetch_chain(
+        self, provider, symbol, interval, from_date, to_date, is_index, user_id,
     ) -> Tuple[List[Dict[str, Any]], Optional[str], bool]:
-        """Fetch intraday data and return ``(bars, source_name, truncated)``."""
-        provider = await get_market_data_provider()
-        data, source, truncated = await provider.get_intraday_with_source(
-            symbol=symbol,
-            interval=interval,
-            from_date=from_date,
-            to_date=to_date,
-            is_index=is_index,
-            user_id=user_id,
+        return await provider.get_intraday_with_source(
+            symbol=symbol, interval=interval,
+            from_date=from_date, to_date=to_date,
+            is_index=is_index, user_id=user_id,
         )
-        return data, source, truncated
 
-    # -- delta refresh ----------------------------------------------------
+    async def _fetch_from(
+        self, provider, publisher, symbol, interval, from_date, to_date, is_index, user_id,
+    ) -> Tuple[List[Dict[str, Any]], Optional[str], bool]:
+        return await provider.get_intraday_from(
+            publisher, symbol, interval=interval,
+            from_date=from_date, to_date=to_date,
+            is_index=is_index, user_id=user_id,
+        )
 
-    async def _delta_refresh(
-        self,
-        cache_key: str,
-        symbol: str,
-        is_index: bool,
-        interval: str,
-        user_id: Optional[str] = None,
-    ) -> None:
-        """Background delta refresh: fetch only from watermark onward, merge."""
-        lock = self._get_refresh_lock(cache_key)
-        if lock.locked():
-            logger.debug(f"Delta refresh already in progress for {cache_key}")
-            return
-
-        async with lock:
-            try:
-                cache = get_cache_client()
-
-                # Re-read envelope (may have been updated by another refresh)
-                raw = await cache.get(cache_key)
-                envelope = _parse_envelope(raw) if raw else None
-
-                phase = current_market_phase()
-                closed = phase == "closed"
-
-                if envelope and envelope.get("complete") and closed:
-                    # Still closed — nothing to do
-                    return
-
-                watermark = envelope["watermark"] if envelope else None
-                existing_bars = envelope["bars"] if envelope else []
-
-                if envelope and envelope.get("truncated"):
-                    # Truncated base — full re-fetch instead of delta
-                    delta, _source, truncated = await self._fetch_data(
-                        symbol, is_index, interval,
-                        from_date=None,
-                        to_date=None,
-                        user_id=user_id,
-                    )
-                    merged = delta
-                else:
-                    # Normal delta refresh
-                    # Determine from_date for delta fetch (watermark is Unix ms)
-                    delta_from = watermark_to_date_str(watermark)
-
-                    delta, _source, truncated = await self._fetch_data(
-                        symbol, is_index, interval,
-                        from_date=delta_from,
-                        to_date=None,
-                        user_id=user_id,
-                    )
-
-                    if watermark and existing_bars:
-                        merged = _merge_bars(existing_bars, delta, watermark)
-                    else:
-                        merged = delta
-
-                # Build new envelope
-                complete = closed and len(merged) > 0
-                base_ttl = self._ttl_for(interval)
-                effective = self._effective_ttl(base_ttl, complete)
-                new_envelope = _build_envelope(merged, phase, complete, stored_ttl=effective, truncated=truncated)
-
-                await cache.set(cache_key, new_envelope, ttl=effective)
-
-                delta_count = len(delta)
-                total_count = len(merged)
-                logger.debug(
-                    f"Delta refresh for {cache_key}: "
-                    f"fetched {delta_count} bars, total {total_count}, "
-                    f"phase={phase}, complete={complete}"
-                )
-
-            except Exception as e:
-                logger.warning(f"Delta refresh failed for {cache_key}: {e}")
+    def _legacy_key(
+        self, symbol, interval, from_date, to_date, source, is_index,
+    ) -> str:
+        if is_index:
+            return IntradayCacheKeyBuilder.index_key(symbol, interval, from_date, to_date, source=source)
+        return IntradayCacheKeyBuilder.stock_key(symbol, interval, from_date, to_date, source=source)
 
     # -- public API -------------------------------------------------------
 
@@ -358,33 +283,6 @@ class IntradayCacheService:
             user_id=user_id,
         )
 
-    def _build_key(
-        self, symbol: str, is_index: bool, interval: str,
-        from_date: Optional[str], to_date: Optional[str],
-        source: Optional[str] = None,
-    ) -> str:
-        if is_index:
-            return IntradayCacheKeyBuilder.index_key(symbol, interval, from_date, to_date, source=source)
-        return IntradayCacheKeyBuilder.stock_key(symbol, interval, from_date, to_date, source=source)
-
-    async def _find_cached(
-        self, symbol: str, is_index: bool, interval: str,
-        from_date: Optional[str], to_date: Optional[str],
-    ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
-        """Try cache lookup across all known data sources.
-
-        Returns ``(cache_key, envelope)`` on hit, ``(None, None)`` on miss.
-        """
-        cache = get_cache_client()
-        provider = await get_market_data_provider()
-        for source in provider.source_names:
-            key = self._build_key(symbol, is_index, interval, from_date, to_date, source=source)
-            raw = await cache.get(key)
-            envelope = _parse_envelope(raw) if raw else None
-            if envelope is not None:
-                return key, envelope
-        return None, None
-
     async def _get_intraday(
         self,
         symbol: str,
@@ -398,11 +296,12 @@ class IntradayCacheService:
 
         base_ttl = self._ttl_for(interval)
         cache = get_cache_client()
-        phase = current_market_phase()
+        clock = clock_for(normalized, is_index)
+        phase = clock.market_phase()
 
         # --- Try cache (across all known sources) ---
         cache_key, envelope = await self._find_cached(
-            normalized, is_index, interval, from_date, to_date,
+            normalized, interval, from_date, to_date, is_index,
         )
         is_live = IntradayCacheKeyBuilder._is_live(to_date)
 
@@ -426,7 +325,7 @@ class IntradayCacheService:
             # partial/stale envelopes are discarded promptly even if the soft
             # TTL hasn't elapsed yet. Historical envelopes skip the live-only
             # checks via is_live=False.
-            if _should_discard_envelope(envelope, interval=interval, elapsed=elapsed, gap_grace_s=_COVERAGE_GAP_GRACE_S, is_live=is_live):
+            if _should_discard_envelope(envelope, interval=interval, elapsed=elapsed, gap_grace_s=_COVERAGE_GAP_GRACE_S, is_live=is_live, clock=clock):
                 # Use per-key lock to prevent concurrent sync re-fetches
                 # (multiple requests seeing the same stale envelope).
                 lock = self._get_refresh_lock(cache_key)
@@ -434,11 +333,11 @@ class IntradayCacheService:
                     # Re-check cache — another request may have refreshed it
                     refreshed = False
                     _, fresh = await self._find_cached(
-                        normalized, is_index, interval, from_date, to_date,
+                        normalized, interval, from_date, to_date, is_index,
                     )
                     if fresh is not None:
                         fresh_elapsed = time.time() - fresh.get("fetched_at", 0)
-                        if not _should_discard_envelope(fresh, interval=interval, elapsed=fresh_elapsed, gap_grace_s=_COVERAGE_GAP_GRACE_S, is_live=is_live):
+                        if not _should_discard_envelope(fresh, interval=interval, elapsed=fresh_elapsed, gap_grace_s=_COVERAGE_GAP_GRACE_S, is_live=is_live, clock=clock):
                             envelope = fresh
                             bars = fresh["bars"]
                             watermark = fresh.get("watermark")
@@ -451,12 +350,12 @@ class IntradayCacheService:
                             bars[0].get("time") if bars else None,
                         )
                         envelope = None
-            elif _needs_refresh(envelope, base_ttl, interval=interval, is_live=is_live):
+            elif _needs_refresh(envelope, base_ttl, interval=interval, is_live=is_live, symbol=normalized, is_index=is_index, clock=clock):
                 # Normal SWR: return stale bars, refresh in background.
                 bg_triggered = True
                 logger.info("Cache %s %s: SWR delta refresh triggered", normalized, interval)
                 asyncio.create_task(
-                    self._delta_refresh(cache_key, normalized, is_index, interval, user_id)
+                    self._delta_refresh(cache_key, normalized, interval, is_index, user_id)
                 )
 
             if envelope is not None:
@@ -472,32 +371,40 @@ class IntradayCacheService:
                     complete=complete,
                     market_phase=phase,
                     truncated=envelope.get("truncated"),
+                    header=envelope.get("header"),
                 )
 
-        # --- Cache miss: full fetch ---
+        # --- Cache miss: full fetch (pinned publisher first) ---
         logger.info("Cache MISS %s %s: fetching from=%s to=%s", normalized, interval, from_date, to_date)
         try:
-            data, source, truncated = await self._fetch_data(
-                normalized, is_index, interval, from_date, to_date, user_id=user_id,
+            data, source, truncated = await self._pinned_fetch(
+                normalized, interval, from_date, to_date, is_index, user_id,
             )
-            cache_key = self._build_key(normalized, is_index, interval, from_date, to_date, source=source)
+            cache_key = self._build_key(normalized, interval, from_date, to_date, is_index)
             first_t = data[0].get("time") if data else None
             last_t = data[-1].get("time") if data else None
             logger.info(
-                "Cache MISS %s %s: got %d bars, first=%s last=%s, key=%s",
-                normalized, interval, len(data), first_t, last_t, cache_key,
+                "Cache MISS %s %s: got %d bars from %s, first=%s last=%s, key=%s",
+                normalized, interval, len(data), source, first_t, last_t, cache_key,
             )
 
             closed = phase == "closed"
             complete = closed and len(data) > 0
-            effective_ttl = self._effective_ttl(base_ttl, complete)
+            effective_ttl = self._effective_ttl(base_ttl, complete, clock)
 
             # Use short TTL for empty results so we retry quickly
             if not data:
                 effective_ttl = _EMPTY_RESULT_TTL
-            new_envelope = _build_envelope(data, phase, complete, stored_ttl=effective_ttl, truncated=truncated)
+            instrument_key, schema = series_identity(normalized, interval, is_index)
+            new_envelope = _build_envelope(
+                data, phase, complete, stored_ttl=effective_ttl, truncated=truncated,
+                data_date=clock.current_trading_date(),
+                instrument_key=instrument_key, schema=schema, publisher=source,
+            )
 
             await cache.set(cache_key, new_envelope, ttl=effective_ttl)
+            if source and data:
+                await self._write_pin(normalized, interval, is_index, source)
 
             return IntradayFetchResult(
                 symbol=normalized,
@@ -507,10 +414,11 @@ class IntradayCacheService:
                 ttl_remaining=effective_ttl,
                 background_refresh_triggered=False,
                 cache_key=cache_key,
-                watermark=new_envelope["watermark"],
+                watermark=new_envelope["header"]["watermark"],
                 complete=complete,
                 market_phase=phase,
                 truncated=truncated,
+                header=new_envelope["header"],
             )
 
         except Exception as e:
@@ -573,7 +481,6 @@ class IntradayCacheService:
 
         base_ttl = self._ttl_for(interval)
         cache = get_cache_client()
-        phase = current_market_phase()
 
         # Phase 1: parallel cache lookups (try all source-namespaced keys)
         cache_misses: List[str] = []
@@ -583,24 +490,25 @@ class IntradayCacheService:
         async def check_cache(sym: str) -> None:
             nonlocal cache_hits, background_refreshes
             normalized = sym.lstrip("^").upper()
+            clock = clock_for(normalized, is_index)
 
             key, envelope = await self._find_cached(
-                normalized, is_index, interval, from_date, to_date,
+                normalized, interval, from_date, to_date, is_index,
             )
             is_live = IntradayCacheKeyBuilder._is_live(to_date)
 
             if envelope is not None:
                 env_elapsed = time.time() - envelope.get("fetched_at", 0)
-                if _should_discard_envelope(envelope, interval=interval, elapsed=env_elapsed, gap_grace_s=_COVERAGE_GAP_GRACE_S, is_live=is_live):
+                if _should_discard_envelope(envelope, interval=interval, elapsed=env_elapsed, gap_grace_s=_COVERAGE_GAP_GRACE_S, is_live=is_live, clock=clock):
                     cache_misses.append(sym)
                     return
                 results[normalized] = envelope["bars"]
                 resolved_keys[sym] = key
                 cache_hits += 1
-                if _needs_refresh(envelope, base_ttl, interval=interval, is_live=is_live):
+                if _needs_refresh(envelope, base_ttl, interval=interval, is_live=is_live, symbol=normalized, is_index=is_index, clock=clock):
                     background_refreshes += 1
                     asyncio.create_task(
-                        self._delta_refresh(key, normalized, is_index, interval, user_id)
+                        self._delta_refresh(key, normalized, interval, is_index, user_id)
                     )
             else:
                 cache_misses.append(sym)
@@ -609,29 +517,38 @@ class IntradayCacheService:
 
         # Phase 2: fetch misses with semaphore
         if cache_misses:
-            provider = await get_market_data_provider()
-
             async def fetch_from_api(sym: str) -> None:
                 normalized = sym.lstrip("^").upper()
+                clock = clock_for(normalized, is_index)
+                phase = clock.market_phase()
                 async with self._semaphore:
                     try:
-                        data, source, truncated = await provider.get_intraday_with_source(
-                            symbol=normalized, interval=interval,
-                            from_date=from_date, to_date=to_date,
-                            is_index=is_index, user_id=user_id,
+                        data, source, truncated = await self._pinned_fetch(
+                            normalized, interval, from_date, to_date, is_index, user_id,
                         )
                         results[normalized] = data
                         key = self._build_key(
-                            normalized, is_index, interval, from_date, to_date, source=source,
+                            normalized, interval, from_date, to_date, is_index,
                         )
 
                         closed = phase == "closed"
                         complete = closed and len(data) > 0
-                        eff_ttl = self._effective_ttl(base_ttl, complete)
+                        eff_ttl = self._effective_ttl(base_ttl, complete, clock)
                         if not data:
                             eff_ttl = _EMPTY_RESULT_TTL
-                        env = _build_envelope(data, phase, complete, stored_ttl=eff_ttl, truncated=truncated)
-                        asyncio.create_task(cache.set(key, env, ttl=eff_ttl))
+                        instrument_key, schema = series_identity(normalized, interval, is_index)
+                        env = _build_envelope(
+                            data, phase, complete, stored_ttl=eff_ttl, truncated=truncated,
+                            data_date=clock.current_trading_date(),
+                            instrument_key=instrument_key, schema=schema, publisher=source,
+                        )
+                        # Awaited (not fire-and-forget create_task): keeps the
+                        # data-then-pin write order and errors surface into the
+                        # per-symbol except below. Symbols still run concurrently
+                        # via the fetch_from_api gather.
+                        await cache.set(key, env, ttl=eff_ttl)
+                        if source and data:
+                            await self._write_pin(normalized, interval, is_index, source)
 
                     except Exception as e:
                         logger.error(f"Failed to fetch {sym}: {e}")
