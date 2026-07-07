@@ -12,10 +12,19 @@ import asyncio
 
 from langchain_core.runnables import RunnableConfig
 
+from .currency import fmt_count, fmt_money, fmt_price
+from .display import (
+    _is_us_clock,
+    _market_label,
+    _market_status_line,
+    _symbol_currency,
+    resolve_ref,
+)
 from .utils import format_number, format_percentage, get_market_session
 from src.data_client import get_financial_data_provider, get_market_data_provider
 from src.data_client.ginlix_data.pagination import paginate_cursor
 from src.data_client.market_data_provider import symbol_timezone
+from src.market_protocol import to_legacy_api
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +227,7 @@ def _format_price_data_as_table(data: List[Dict[str, Any]]) -> str:
         return "No price data available."
 
     symbol = data[0].get("symbol", "N/A")
+    cur = _symbol_currency(resolve_ref(symbol))
     num_days = len(data)
 
     # Get date range
@@ -257,14 +267,14 @@ def _format_price_data_as_table(data: List[Dict[str, Any]]) -> str:
         change_pct = record.get("changePercent")
 
         # Format prices
-        open_str = f"${open_price:.2f}" if open_price is not None else "N/A"
-        high_str = f"${high_price:.2f}" if high_price is not None else "N/A"
-        low_str = f"${low_price:.2f}" if low_price is not None else "N/A"
-        close_str = f"${close_price:.2f}" if close_price is not None else "N/A"
+        open_str = fmt_price(open_price, cur)
+        high_str = fmt_price(high_price, cur)
+        low_str = fmt_price(low_price, cur)
+        close_str = fmt_price(close_price, cur)
 
         # Format volume
         volume_str = (
-            format_number(volume).replace("$", "") if volume is not None else "N/A"
+            fmt_count(volume) if volume is not None else "N/A"
         )
         if volume is not None:
             total_volume += volume
@@ -282,7 +292,7 @@ def _format_price_data_as_table(data: List[Dict[str, Any]]) -> str:
 
     # Summary
     lines.append("")
-    total_vol_str = format_number(total_volume).replace("$", "")
+    total_vol_str = fmt_count(total_volume)
     lines.append(f"**Total Volume:** {total_vol_str}")
 
     return "\n".join(lines)
@@ -357,7 +367,7 @@ def _format_indices_data_as_table(indices_data: Dict[str, List[Dict[str, Any]]])
 
             # Format volume
             volume_str = (
-                format_number(volume).replace("$", "") if volume is not None else "N/A"
+                fmt_count(volume) if volume is not None else "N/A"
             )
 
             # Format change percentage
@@ -564,8 +574,7 @@ def _format_price_summary(stats: Dict[str, Any]) -> str:
     if not stats:
         return "No data available for summary"
 
-    from .utils import format_number, format_percentage
-
+    cur = _symbol_currency(resolve_ref(stats.get("symbol")))
     lines = []
 
     # Header
@@ -586,13 +595,13 @@ def _format_price_summary(stats: Dict[str, Any]) -> str:
     period_low = stats.get("period_low")
 
     if period_open is not None:
-        metrics_rows.append(("Period Open", f"${period_open:.2f}"))
+        metrics_rows.append(("Period Open", fmt_price(period_open, cur)))
     if period_close is not None:
-        metrics_rows.append(("Period Close", f"${period_close:.2f}"))
+        metrics_rows.append(("Period Close", fmt_price(period_close, cur)))
     if period_high is not None:
-        metrics_rows.append(("Period High", f"${period_high:.2f}"))
+        metrics_rows.append(("Period High", fmt_price(period_high, cur)))
     if period_low is not None:
-        metrics_rows.append(("Period Low", f"${period_low:.2f}"))
+        metrics_rows.append(("Period Low", fmt_price(period_low, cur)))
 
     # Performance
     period_change = stats.get("period_change")
@@ -603,7 +612,7 @@ def _format_price_summary(stats: Dict[str, Any]) -> str:
         metrics_rows.append(
             (
                 "Period Change",
-                f"{sign}${period_change:.2f} ({format_percentage(period_change_pct)})",
+                f"{sign}{fmt_price(period_change, cur)} ({format_percentage(period_change_pct)})",
             )
         )
 
@@ -614,7 +623,7 @@ def _format_price_summary(stats: Dict[str, Any]) -> str:
         metrics_rows.append(
             (
                 "Price Range",
-                f"${min_close:.2f} - ${max_close:.2f} ({format_percentage(range_pct)} range)",
+                f"{fmt_price(min_close, cur)} - {fmt_price(max_close, cur)} ({format_percentage(range_pct)} range)",
             )
         )
 
@@ -628,21 +637,21 @@ def _format_price_summary(stats: Dict[str, Any]) -> str:
     ma_200 = stats.get("ma_200")
 
     if ma_20 is not None:
-        metrics_rows.append(("20-Day MA", f"${ma_20:.2f}"))
+        metrics_rows.append(("20-Day MA", fmt_price(ma_20, cur)))
     if ma_50 is not None:
-        metrics_rows.append(("50-Day MA", f"${ma_50:.2f}"))
+        metrics_rows.append(("50-Day MA", fmt_price(ma_50, cur)))
     if ma_200 is not None:
-        metrics_rows.append(("200-Day MA", f"${ma_200:.2f}"))
+        metrics_rows.append(("200-Day MA", fmt_price(ma_200, cur)))
 
     # Volume Statistics
     avg_volume = stats.get("avg_volume")
     total_volume = stats.get("total_volume")
 
     if avg_volume is not None:
-        avg_vol_formatted = format_number(avg_volume).replace("$", "")
+        avg_vol_formatted = fmt_count(avg_volume)
         metrics_rows.append(("Average Daily Volume", avg_vol_formatted))
     if total_volume is not None:
-        total_vol_formatted = format_number(total_volume).replace("$", "")
+        total_vol_formatted = fmt_count(total_volume)
         metrics_rows.append(("Total Volume", total_vol_formatted))
 
     # Output as markdown table
@@ -709,10 +718,16 @@ def _format_indices_summary(
         period_high = stats.get("period_high")
         period_low = stats.get("period_low")
 
+        # Index levels are unitless points, not a currency amount — render bare
+        # (matching the short-period index table) so both paths agree.
         if period_open is not None and period_close is not None:
-            metrics_rows.append(("Period", f"${period_open:.2f} → ${period_close:.2f}"))
+            metrics_rows.append(
+                ("Period", f"{period_open:,.2f} → {period_close:,.2f}")
+            )
         if period_high is not None and period_low is not None:
-            metrics_rows.append(("Range", f"${period_low:.2f} - ${period_high:.2f}"))
+            metrics_rows.append(
+                ("Range", f"{period_low:,.2f} - {period_high:,.2f}")
+            )
 
         # Performance
         period_change = stats.get("period_change")
@@ -722,7 +737,7 @@ def _format_indices_summary(
             metrics_rows.append(
                 (
                     "Change",
-                    f"{sign}${period_change:.2f} ({format_percentage(period_change_pct)})",
+                    f"{sign}{period_change:,.2f} ({format_percentage(period_change_pct)})",
                 )
             )
 
@@ -737,11 +752,11 @@ def _format_indices_summary(
         ma_200 = stats.get("ma_200")
 
         if ma_20 is not None:
-            metrics_rows.append(("20-Day MA", f"${ma_20:.2f}"))
+            metrics_rows.append(("20-Day MA", f"{ma_20:,.2f}"))
         if ma_50 is not None:
-            metrics_rows.append(("50-Day MA", f"${ma_50:.2f}"))
+            metrics_rows.append(("50-Day MA", f"{ma_50:,.2f}"))
         if ma_200 is not None:
-            metrics_rows.append(("200-Day MA", f"${ma_200:.2f}"))
+            metrics_rows.append(("200-Day MA", f"{ma_200:,.2f}"))
 
         # Output as markdown table
         if metrics_rows:
@@ -798,6 +813,11 @@ async def fetch_stock_daily_prices(
         Tuple of (content string, artifact dict with structured data for charts)
     """
     try:
+        # Resolve once: normalize the agent-supplied spelling to the legacy form
+        # provider calls / cache keys use, and reuse the ref for the display label.
+        ref = resolve_ref(symbol)
+        if ref is not None:
+            symbol = to_legacy_api(ref)
         provider = await get_market_data_provider()
         user_id = _get_user_id(config)
 
@@ -865,7 +885,7 @@ No price data available for the specified period."""
 
         header = f"""## {title}
 **Retrieved:** {timestamp}
-**Market:** US Stock
+**Market:** {_market_label(ref)}
 **Period:** {actual_start} to {actual_end}
 **Data Points:** {num_days} trading days
 
@@ -1193,6 +1213,14 @@ async def fetch_company_overview(
         provider = await get_financial_data_provider()
         financial = provider.financial
         user_id = _get_user_id(config)
+        # Resolve once: normalize the agent-supplied spelling to the legacy form
+        # provider calls use, then reuse the ref for currency, session gating, and
+        # the market-status line.
+        ref = resolve_ref(symbol)
+        if ref is not None:
+            symbol = to_legacy_api(ref)
+        cur = _symbol_currency(ref)
+        is_us = _is_us_clock(ref)
         if financial is None:
             timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
             content = f"""## Company Overview: {symbol}
@@ -1234,9 +1262,9 @@ No data found for symbol {symbol}"""
         output_lines.append(f"Company: {company_name} ({symbol})")
         output_lines.append(f"Sector: {sector} | Industry: {industry}")
         output_lines.append(
-            f"Market Cap: {format_number(market_cap)} | Current Price: ${price:.2f}"
+            f"Market Cap: {fmt_money(market_cap, cur)} | Current Price: {fmt_price(price, cur)}"
             if price
-            else f"Market Cap: {format_number(market_cap)}"
+            else f"Market Cap: {fmt_money(market_cap, cur)}"
         )
         output_lines.append("")
 
@@ -1364,9 +1392,12 @@ No data found for symbol {symbol}"""
                 }
                 market_status_raw = snap.get("market_status", "")
                 market_label = _STATUS_LABELS.get(market_status_raw, session_name.replace("_", " ").title())
-                output_lines.append(
-                    f"**Market Status:** {market_label} | **As of:** {current_time_et.strftime('%H:%M ET')}"
-                )
+                # US: snapshot/session label + ET clock. Non-US: phase from the
+                # exchange calendar + exchange-local clock (the US-Eastern phase is
+                # meaningless for a foreign listing; snapshot.market_status is US-centric).
+                status_line = _market_status_line(ref, is_us, market_label, current_time_et)
+                if status_line:
+                    output_lines.append(status_line)
                 output_lines.append("")
 
                 prev_close = snap.get("previous_close")
@@ -1381,10 +1412,10 @@ No data found for symbol {symbol}"""
                     if reg_change is not None and reg_change_pct is not None:
                         sign = "+" if reg_change >= 0 else ""
                         output_lines.append(
-                            f"**Regular Close:** ${reg_close:.2f} ({sign}{reg_change:.2f} / {sign}{reg_change_pct:.3f}%)"
+                            f"**Regular Close:** {fmt_price(reg_close, cur)} ({sign}{reg_change:.2f} / {sign}{reg_change_pct:.3f}%)"
                         )
                     else:
-                        output_lines.append(f"**Regular Close:** ${reg_close:.2f}")
+                        output_lines.append(f"**Regular Close:** {fmt_price(reg_close, cur)}")
 
                 # Extended-hours current price (if different from regular close)
                 is_extended = market_status_raw in ("early_trading", "late_trading")
@@ -1400,7 +1431,7 @@ No data found for symbol {symbol}"""
                     if ext_change is not None and ext_change_pct is not None:
                         ext_sign = "+" if ext_change >= 0 else ""
                         output_lines.append(
-                            f"**{ext_label} Price:** ${last_price:.2f} ({ext_sign}{ext_change:.2f} / {ext_sign}{ext_change_pct:.3f}% from close)"
+                            f"**{ext_label} Price:** {fmt_price(last_price, cur)} ({ext_sign}{ext_change:.2f} / {ext_sign}{ext_change_pct:.3f}% from close)"
                         )
                     else:
                         # Compute from regular close
@@ -1408,7 +1439,7 @@ No data found for symbol {symbol}"""
                         diff_pct = (diff / reg_close * 100) if reg_close else 0
                         diff_sign = "+" if diff >= 0 else ""
                         output_lines.append(
-                            f"**{ext_label} Price:** ${last_price:.2f} ({diff_sign}{diff:.2f} / {diff_sign}{diff_pct:.2f}% from close)"
+                            f"**{ext_label} Price:** {fmt_price(last_price, cur)} ({diff_sign}{diff:.2f} / {diff_sign}{diff_pct:.2f}% from close)"
                         )
 
                 # Total day change (from previous close)
@@ -1425,22 +1456,26 @@ No data found for symbol {symbol}"""
                 # Build quote detail table from snapshot + FMP (FMP has 52-week range)
                 quote_rows = []
                 if snap.get("open"):
-                    quote_rows.append(("Open", f"${snap['open']:.2f}"))
+                    quote_rows.append(("Open", fmt_price(snap["open"], cur)))
                 if prev_close:
-                    quote_rows.append(("Previous Close", f"${prev_close:.2f}"))
+                    quote_rows.append(("Previous Close", fmt_price(prev_close, cur)))
                 if snap.get("low") and snap.get("high"):
-                    quote_rows.append(("Day Range", f"${snap['low']:.2f} - ${snap['high']:.2f}"))
+                    quote_rows.append(
+                        ("Day Range", f"{fmt_price(snap['low'], cur)} - {fmt_price(snap['high'], cur)}")
+                    )
                 # 52-week range from FMP quote
                 fmp_quote = quote_data[0] if _has_fmp_quote else {}
                 year_low = fmp_quote.get("yearLow")
                 year_high = fmp_quote.get("yearHigh")
                 if year_low and year_high:
-                    quote_rows.append(("52-Week Range", f"${year_low:.2f} - ${year_high:.2f}"))
+                    quote_rows.append(
+                        ("52-Week Range", f"{fmt_price(year_low, cur)} - {fmt_price(year_high, cur)}")
+                    )
                 if snap.get("volume"):
-                    vol_str = format_number(snap["volume"]).replace("$", "")
+                    vol_str = fmt_count(snap["volume"])
                     avg_volume = fmp_quote.get("avgVolume") if _has_fmp_quote else None
                     if avg_volume:
-                        avg_str = format_number(avg_volume).replace("$", "")
+                        avg_str = fmt_count(avg_volume)
                         quote_rows.append(("Volume", f"{vol_str} (Avg: {avg_str})"))
                     else:
                         quote_rows.append(("Volume", vol_str))
@@ -1456,9 +1491,9 @@ No data found for symbol {symbol}"""
                 # FMP-only fallback (no extended-hours breakdown available)
                 quote = quote_data[0]
                 session_str = session_name.replace("_", " ").title()
-                output_lines.append(
-                    f"**Market Status:** {session_str} | **As of:** {current_time_et.strftime('%H:%M ET')}"
-                )
+                status_line = _market_status_line(ref, is_us, session_str, current_time_et)
+                if status_line:
+                    output_lines.append(status_line)
                 output_lines.append("")
 
                 q_price = quote.get("price", 0)
@@ -1466,7 +1501,7 @@ No data found for symbol {symbol}"""
                 q_change_pct = quote.get("changePercentage", 0)
                 change_sign = "+" if q_change >= 0 else ""
                 output_lines.append(
-                    f"**Price:** ${q_price:.2f} ({change_sign}{q_change:.2f} / {change_sign}{q_change_pct:.2f}%)"
+                    f"**Price:** {fmt_price(q_price, cur)} ({change_sign}{q_change:.2f} / {change_sign}{q_change_pct:.2f}%)"
                 )
                 output_lines.append("")
 
@@ -1481,17 +1516,21 @@ No data found for symbol {symbol}"""
                 previous_close = quote.get("previousClose")
 
                 if open_price:
-                    quote_rows.append(("Open", f"${open_price:.2f}"))
+                    quote_rows.append(("Open", fmt_price(open_price, cur)))
                 if previous_close:
-                    quote_rows.append(("Previous Close", f"${previous_close:.2f}"))
+                    quote_rows.append(("Previous Close", fmt_price(previous_close, cur)))
                 if day_low and day_high:
-                    quote_rows.append(("Day Range", f"${day_low:.2f} - ${day_high:.2f}"))
+                    quote_rows.append(
+                        ("Day Range", f"{fmt_price(day_low, cur)} - {fmt_price(day_high, cur)}")
+                    )
                 if year_low and year_high:
-                    quote_rows.append(("52-Week Range", f"${year_low:.2f} - ${year_high:.2f}"))
+                    quote_rows.append(
+                        ("52-Week Range", f"{fmt_price(year_low, cur)} - {fmt_price(year_high, cur)}")
+                    )
                 if volume:
-                    vol_str = format_number(volume).replace("$", "")
+                    vol_str = fmt_count(volume)
                     if avg_volume:
-                        avg_str = format_number(avg_volume).replace("$", "")
+                        avg_str = fmt_count(avg_volume)
                         quote_rows.append(("Volume", f"{vol_str} (Avg: {avg_str})"))
                     else:
                         quote_rows.append(("Volume", vol_str))
@@ -1516,7 +1555,7 @@ No data found for symbol {symbol}"""
             if _has_float:
                 free_float = float_data.get("free_float")
                 if free_float:
-                    struct_rows.append(("Float", format_number(free_float).replace("$", "")))
+                    struct_rows.append(("Float", fmt_count(free_float)))
                 ff_pct = float_data.get("free_float_percent")
                 if ff_pct is not None:
                     struct_rows.append(("Float %", f"{ff_pct:.1f}%"))
@@ -1779,7 +1818,7 @@ No data found for symbol {symbol}"""
                 output_lines.append(f"**Fiscal Period End:** {fiscal_ending}")
 
                 if eps_estimate is not None:
-                    output_lines.append(f"**EPS Estimate:** ${eps_estimate:.2f}")
+                    output_lines.append(f"**EPS Estimate:** {fmt_price(eps_estimate, cur)}")
                 if rev_estimate is not None:
                     output_lines.append(
                         f"**Revenue Estimate:** {format_number(rev_estimate)}"
@@ -1822,11 +1861,11 @@ No data found for symbol {symbol}"""
                         (eps_actual - eps_estimate) / abs(eps_estimate)
                     ) * 100
                     output_lines.append(
-                        f"- **EPS:** ${eps_actual:.2f} actual vs ${eps_estimate:.2f} estimate ({format_percentage(eps_surprise)} surprise)"
+                        f"- **EPS:** {fmt_price(eps_actual, cur)} actual vs {fmt_price(eps_estimate, cur)} estimate ({format_percentage(eps_surprise)} surprise)"
                     )
                 else:
                     output_lines.append(
-                        f"- **EPS:** ${eps_actual:.2f} (no estimate available)"
+                        f"- **EPS:** {fmt_price(eps_actual, cur)} (no estimate available)"
                     )
 
             # Revenue data
@@ -1863,10 +1902,8 @@ No data found for symbol {symbol}"""
                         if q_fiscal_ending
                         else "N/A"
                     )
-                    eps_str = f"${q_eps:.2f}" if q_eps is not None else "N/A"
-                    revenue_str = (
-                        format_number(q_revenue) if q_revenue is not None else "N/A"
-                    )
+                    eps_str = fmt_price(q_eps, cur)
+                    revenue_str = format_number(q_revenue)
                     output_lines.append(
                         f"| {q_date} | {q_fiscal_label} | {eps_str} | {revenue_str} |"
                     )
@@ -1886,9 +1923,9 @@ No data found for symbol {symbol}"""
                 op_cf = cf.get("operatingCashFlow")
                 capex = cf.get("capitalExpenditure")
                 fcf = cf.get("freeCashFlow")
-                op_cf_str = format_number(op_cf) if op_cf is not None else "N/A"
-                capex_str = format_number(capex) if capex is not None else "N/A"
-                fcf_str = format_number(fcf) if fcf is not None else "N/A"
+                op_cf_str = format_number(op_cf)
+                capex_str = format_number(capex)
+                fcf_str = format_number(fcf)
                 output_lines.append(
                     f"| {cf_label} | {op_cf_str} | {capex_str} | {fcf_str} |"
                 )
@@ -1916,11 +1953,13 @@ No data found for symbol {symbol}"""
                 pt_rows.append(
                     (
                         "Consensus Target",
-                        f"${median:.2f} ({upside_sign}{upside:.1f}% from current)",
+                        f"{fmt_price(median, cur)} ({upside_sign}{upside:.1f}% from current)",
                     )
                 )
             if low and high:
-                pt_rows.append(("Target Range", f"${low:.2f} - ${high:.2f}"))
+                pt_rows.append(
+                    ("Target Range", f"{fmt_price(low, cur)} - {fmt_price(high, cur)}")
+                )
             if consensus:
                 pt_rows.append(("Analyst Consensus", str(consensus)))
 
@@ -2002,7 +2041,7 @@ No data found for symbol {symbol}"""
                 target_price = firm_target.get("adjPriceTarget")
                 analyst_name = firm_target.get("analystName", "-")
 
-                target_str = f"${target_price:.2f}" if target_price else "N/A"
+                target_str = fmt_price(target_price, cur) if target_price else "N/A"
                 output_lines.append(
                     f"| {analyst_company} | {analyst_name} | {target_str} |"
                 )
@@ -2388,6 +2427,12 @@ No index data available for the specified period."""
         else:
             title = f"Market Indices: {indices_str}"
 
+        # "US Stock Indices" is a deliberate US-default, not a per-index label.
+        # The symbology registry seeds only the 6 US index families
+        # (SPX/DJI/COMP/NDX/RUT/VIX); non-US indices (HSI/N225/FTSE/…) hit the
+        # unknown-index fallback and resolve to XNYS/USD, so a label derived from
+        # to_canonical() would still read "US". Correct per-index calendars/regions
+        # are a Phase-1 symbology task (see CMDP plan); deferred intentionally.
         header = f"""## {title}
 **Retrieved:** {timestamp}
 **Market:** US Stock Indices
@@ -2834,9 +2879,9 @@ async def fetch_stock_screener(
         if price_lower_than is not None:
             active_filters["Price <"] = f"${price_lower_than:.2f}"
         if volume_more_than is not None:
-            active_filters["Vol >"] = format_number(volume_more_than).replace("$", "")
+            active_filters["Vol >"] = fmt_count(volume_more_than)
         if volume_lower_than is not None:
-            active_filters["Vol <"] = format_number(volume_lower_than).replace("$", "")
+            active_filters["Vol <"] = fmt_count(volume_lower_than)
         if beta_more_than is not None:
             active_filters["Beta >"] = f"{beta_more_than:.2f}"
         if beta_lower_than is not None:
@@ -2873,10 +2918,11 @@ async def fetch_stock_screener(
             volume = stock.get("volume")
             change = stock.get("change")
 
-            price_str = f"${price:.2f}" if price is not None else "N/A"
-            cap_str = format_number(mkt_cap) if mkt_cap is not None else "N/A"
+            row_cur = _symbol_currency(resolve_ref(sym))
+            price_str = fmt_price(price, row_cur)
+            cap_str = fmt_money(mkt_cap, row_cur)
             beta_str = f"{beta:.2f}" if beta is not None else "N/A"
-            vol_str = format_number(volume).replace("$", "") if volume is not None else "N/A"
+            vol_str = fmt_count(volume) if volume is not None else "N/A"
             if change is not None:
                 sign = "+" if change >= 0 else ""
                 change_str = f"{sign}{change:.2f}%"
@@ -2926,6 +2972,12 @@ async def fetch_options_chain(
     try:
         provider = await get_financial_data_provider()
         user_id = _get_user_id(config)
+        # Resolve once: normalize the agent-supplied underlying to the legacy form
+        # provider calls use, and reuse the ref for currency display.
+        ref = resolve_ref(underlying)
+        if ref is not None:
+            underlying = to_legacy_api(ref)
+        cur = _symbol_currency(ref)
         if provider.intel is None:
             return (
                 "Options chain data is not available"
@@ -2992,14 +3044,14 @@ async def fetch_options_chain(
                 ticker = c.get("ticker", "N/A")
                 ctype = c.get("contract_type", "N/A")
                 strike = c.get("strike_price")
-                strike_str = f"${strike:.2f}" if strike is not None else "N/A"
+                strike_str = fmt_price(strike, cur)
                 expiry = c.get("expiration_date", "N/A")
 
                 # Merge snapshot session data
                 snap = snapshot_map.get(ticker, {})
                 session = snap.get("session", {})
                 close_val = session.get("close")
-                close_str = f"${close_val:.2f}" if close_val is not None else "—"
+                close_str = fmt_price(close_val, cur) if close_val is not None else "—"
                 chg_pct = session.get("change_percent")
                 chg_str = f"{chg_pct:+.2f}%" if chg_pct is not None else "—"
                 vol = session.get("volume")
@@ -3072,7 +3124,7 @@ async def fetch_market_movers(
                 if len(name) > 30:
                     name = name[:27] + "..."
                 price = stock.get("price", stock.get("close"))
-                price_str = f"${price:.2f}" if price is not None else "N/A"
+                price_str = fmt_price(price, _symbol_currency(resolve_ref(sym)))
                 change_pct = stock.get("change_percent", stock.get("todaysChangePerc"))
                 if change_pct is not None:
                     change_str = f"{change_pct:+.2f}%"

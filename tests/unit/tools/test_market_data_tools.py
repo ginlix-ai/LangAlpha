@@ -457,6 +457,20 @@ class TestFetchCompanyOverview:
         assert "Error" in content
         assert "error" in artifact
 
+    @pytest.mark.asyncio
+    async def test_boundary_normalizes_symbol_before_provider(self):
+        """A non-canonical spelling reaches the provider canonicalized (FIX 3).
+
+        ``zzzz.us`` is a neutral placeholder: lowercase + ``.US`` suffix, which
+        the protocol boundary folds to bare ``ZZZZ`` before any provider call.
+        """
+        financial = _make_fake_financial_source(profile_data=None)  # early-return path
+        provider = _make_fake_financial_provider(financial=financial)
+        with patch(f"{_MOD}.get_financial_data_provider", return_value=provider):
+            await fetch_company_overview("zzzz.us")
+
+        financial.get_company_profile.assert_called_once_with("ZZZZ")
+
 
 # ---------------------------------------------------------------------------
 # fetch_market_indices
@@ -792,6 +806,21 @@ class TestFetchOptionsChain:
         assert "not available" in content
         assert artifact["results"] == []
 
+    @pytest.mark.asyncio
+    async def test_boundary_normalizes_underlying_before_provider(self):
+        """A non-canonical underlying reaches the provider canonicalized (FIX 3).
+
+        ``zzzz.us`` is a neutral placeholder: lowercase + ``.US`` suffix, which
+        the protocol boundary folds to bare ``ZZZZ`` before the provider call.
+        """
+        intel = _make_fake_intel_source(options_chain={"results": []})
+        provider = _make_fake_financial_provider(intel=intel)
+        with patch(f"{_MOD}.get_financial_data_provider", return_value=provider):
+            await fetch_options_chain("zzzz.us")
+
+        assert intel.get_options_chain.await_count >= 1
+        assert intel.get_options_chain.call_args_list[0][0][0] == "ZZZZ"
+
 
 # ---------------------------------------------------------------------------
 # fetch_market_movers
@@ -852,3 +881,123 @@ class TestFetchMarketMovers:
             content, artifact = await fetch_market_movers()
 
         assert "not available" in content
+
+
+# ---------------------------------------------------------------------------
+# CMDP display fixes: per-instrument Market header, unitless index levels,
+# US-Eastern session line gated to US listings. Neutral placeholder symbols.
+# ---------------------------------------------------------------------------
+
+def _quote_only_financial(profile, quote):
+    """Financial source with just a profile + realtime quote (FMP-quote path)."""
+    return _make_fake_financial_source(profile_data=profile, quote_data=quote)
+
+
+class TestMarketHeaderLabel:
+    """`**Market:**` header is derived from the resolved instrument, not hardcoded."""
+
+    @pytest.mark.asyncio
+    async def test_us_header_byte_compatible(self):
+        provider = _make_fake_market_provider(daily_bars=_make_provider_bars(5))
+        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
+            content, _ = await fetch_stock_daily_prices("AAPL", limit=5)
+        assert "**Market:** US Stock" in content
+
+    @pytest.mark.asyncio
+    async def test_hk_header(self):
+        provider = _make_fake_market_provider(daily_bars=_make_provider_bars(5))
+        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
+            content, _ = await fetch_stock_daily_prices("0700.HK", limit=5)
+        assert "**Market:** HK Stock" in content
+        assert "**Market:** US Stock" not in content
+
+    @pytest.mark.asyncio
+    async def test_ashare_header(self):
+        provider = _make_fake_market_provider(daily_bars=_make_provider_bars(5))
+        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
+            content, _ = await fetch_stock_daily_prices("600519.SS", limit=5)
+        assert "**Market:** A-Share" in content
+
+
+class TestIndexSummaryNoCurrencyPrefix:
+    """Index levels are unitless points — the summary path carries no `$`/prefix."""
+
+    @pytest.mark.asyncio
+    async def test_index_summary_has_no_currency_symbol(self):
+        provider = _make_fake_market_provider(daily_bars=_make_provider_bars(20))
+        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
+            content, _ = await fetch_market_indices(indices=["^GSPC"], limit=20)
+        # Summary path (>= 14 days) — metric table present, no currency prefix.
+        assert "| Metric | Value |" in content
+        assert "$" not in content
+
+
+class TestOverviewSessionClockGating:
+    """US listings show the US-Eastern session phase + 'As of … ET' clock; non-US
+    listings show their exchange-calendar phase + the exchange-local clock (never ET)."""
+
+    _US_PROFILE = [{
+        "companyName": "Placeholder US Co.",
+        "sector": "Technology",
+        "industry": "Software",
+        "marketCap": 1_000_000_000_000,
+        "price": 100.0,
+        "exchangeShortName": "NASDAQ",
+    }]
+    _HK_PROFILE = [{
+        "companyName": "Placeholder HK Co.",
+        "sector": "Technology",
+        "industry": "Software",
+        "marketCap": 1_000_000_000_000,
+        "price": 318.20,
+        "exchangeShortName": "HKSE",
+    }]
+    _QUOTE = [{
+        "price": 100.0, "change": 1.0, "changePercentage": 1.0,
+        "dayHigh": 101.0, "dayLow": 99.0, "yearHigh": 120.0, "yearLow": 80.0,
+        "open": 99.5, "previousClose": 99.0, "volume": 1_000_000, "avgVolume": 1_200_000,
+    }]
+
+    def _patches(self, financial):
+        mdp = AsyncMock()
+        mdp.get_snapshots = AsyncMock(return_value=[])  # force FMP-quote path
+        provider = _make_fake_financial_provider(financial=financial)
+        return (
+            patch(f"{_MOD}.get_financial_data_provider", return_value=provider),
+            patch(f"{_MOD}.get_market_data_provider", return_value=mdp),
+            patch(f"{_MOD}._fmp_request", return_value=[]),
+        )
+
+    @pytest.mark.asyncio
+    async def test_us_shows_session_and_et_clock(self):
+        financial = _quote_only_financial(self._US_PROFILE, self._QUOTE)
+        p1, p2, p3 = self._patches(financial)
+        with p1, p2, p3:
+            content, _ = await fetch_company_overview("AAPL")
+        assert "**Market Status:**" in content
+        assert "ET" in content
+
+    @pytest.mark.asyncio
+    async def test_non_us_shows_calendar_phase_and_local_clock(self):
+        financial = _quote_only_financial(self._HK_PROFILE, self._QUOTE)
+        p1, p2, p3 = self._patches(financial)
+        with p1, p2, p3:
+            content, _ = await fetch_company_overview("0700.HK")
+        status_line = next(
+            (ln for ln in content.splitlines() if ln.startswith("**Market Status:**")), None
+        )
+        # Non-US listings DO get a status line, but from the exchange calendar:
+        # the HK exchange-local clock (HKT), never the US-Eastern "ET" clock.
+        assert status_line is not None
+        assert "HKT" in status_line
+        assert " ET" not in status_line
+        # …and a phase label the calendar can actually produce (time-of-run dependent).
+        assert any(
+            label in status_line
+            for label in (
+                "Regular Hours", "Lunch Break", "Market Closed",
+                "Pre-Market", "After-Hours", "Halted",
+            )
+        )
+        # Prices still localize to the HK listing currency.
+        assert "HK$" in content
