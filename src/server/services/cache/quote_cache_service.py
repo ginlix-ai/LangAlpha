@@ -2,9 +2,9 @@
 
 Replaces the inline snapshot caches that keyed on the full sorted symbol
 list (overlapping watchlists never shared a quote) and the separate
-single-symbol path. Keys are per-instrument (``quote:{instrument_key}``),
-reads are one MGET, misses fill via ONE batched provider call, and TTL is
-phase-aware per the instrument's calendar.
+single-symbol path. Keys are per-instrument and schema-versioned
+(``quote:v{N}:{instrument_key}``), reads are one MGET, misses fill via ONE
+batched provider call, and TTL is phase-aware per the instrument's calendar.
 """
 
 import asyncio
@@ -31,6 +31,15 @@ _TTL_CLOSED_MAX = 72 * 3600
 # for an unknown symbol re-fans out across the whole provider chain.
 _TTL_NEGATIVE = 30
 _NO_DATA = {"__no_data__": True}
+
+# Cached-row contract version. The closed-phase TTL freezes a row for up to
+# 72h, so an unversioned key keeps serving the old row shape until the next
+# open after any deploy that changes the normalizer contract. Bump to
+# cold-start the namespace (cheap: one MGET + one batched provider call,
+# in-flight dedup absorbs the stampede); orphaned old-version keys expire on
+# their own. v2: rows gained regular_close / last_minute_close / exact
+# dollar early-late changes.
+_QUOTE_SCHEMA_VERSION = 2
 
 
 def _quote_ttl(ref: InstrumentRef, now: Optional[datetime] = None) -> int:
@@ -83,7 +92,7 @@ class QuoteCacheService:
 
     @staticmethod
     def quote_key(ref: InstrumentRef) -> str:
-        return f"quote:{ref.instrument_key}"
+        return f"quote:v{_QUOTE_SCHEMA_VERSION}:{ref.instrument_key}"
 
     async def get_quotes(
         self,

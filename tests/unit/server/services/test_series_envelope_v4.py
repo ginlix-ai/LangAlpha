@@ -109,7 +109,7 @@ class TestEnvelopeV4:
             data_date="2026-07-03",
             instrument_key="AAPL.XNAS", schema="ohlcv-1h", publisher="ginlix-data",
         )
-        assert env["v"] == ENVELOPE_VERSION == 4
+        assert env["v"] == ENVELOPE_VERSION
         h = env["header"]
         assert h["instrument_key"] == "AAPL.XNAS"
         assert h["schema"] == "ohlcv-1h"
@@ -156,7 +156,7 @@ class TestEnvelopeV4:
     def test_parse_rejects_unknown_shapes(self):
         assert _parse_envelope(None) is None
         assert _parse_envelope({"v": 2, "bars": []}) is None
-        assert _parse_envelope({"v": 4, "records": []}) is None  # header missing
+        assert _parse_envelope({"v": ENVELOPE_VERSION, "records": []}) is None  # header missing
         assert _parse_envelope({"v": 3}) is None  # bars missing
 
     def test_adopt_v3_preserves_operational_fields(self):
@@ -295,7 +295,7 @@ async def test_legacy_v3_key_is_adopted_on_read(daily_svc, monkeypatch):
     assert result.cache_key == "ohlcv:AAPL.XNAS:ohlcv-1d"
     assert result.data[0]["close"] == 15.0
     adopted = cache.store["ohlcv:AAPL.XNAS:ohlcv-1d"]
-    assert adopted["v"] == 4
+    assert adopted["v"] == ENVELOPE_VERSION
     assert adopted["header"]["publisher"] == "fmp"
 
 
@@ -351,7 +351,7 @@ async def test_miss_writes_v4_and_pin(daily_svc):
     assert result.cached is False
     assert result.cache_key == "ohlcv:AAPL.XNAS:ohlcv-1d"
     stored = cache.store["ohlcv:AAPL.XNAS:ohlcv-1d"]
-    assert stored["v"] == 4
+    assert stored["v"] == ENVELOPE_VERSION
     assert stored["header"]["publisher"] == "fmp"
     assert cache.store["pin:AAPL.XNAS:ohlcv-1d"] == {"publisher": "fmp"}
 

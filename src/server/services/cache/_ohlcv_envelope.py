@@ -26,7 +26,13 @@ _US_CLOCK = UsClock()
 # v4 (Phase 3): protocol Series container — header + records, keyed on
 # instrument_key. v3 (legacy source-segmented keys) remains readable for
 # dual-read of warm caches written before the cutover.
-ENVELOPE_VERSION = 4
+#
+# Bump on ANY stored-contract change, additive included: closed-market TTLs
+# freeze complete envelopes until the venue's next open, so an unversioned
+# change keeps serving the old shape for up to a whole weekend after deploy.
+# A mismatched version reads as a miss (refetch). v5: invalidates
+# pre-release v4 rows written before `market_phase` joined the cache block.
+ENVELOPE_VERSION = 5
 _ENVELOPE_V3 = 3
 
 _SOFT_TTL_RATIO: float = get_infrastructure_config().redis.swr.soft_ttl_ratio
