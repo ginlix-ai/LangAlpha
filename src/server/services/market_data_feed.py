@@ -180,7 +180,9 @@ class FeedSubscription:
         await self._manager._consumer_subscribe(self._consumer_id, new_symbols)
 
     async def unsubscribe(self, symbols: list[str]) -> None:
-        symbols_upper = [s.upper() for s in symbols]
+        # dict.fromkeys mirrors subscribe: a duplicated symbol in one call must
+        # decrement the manager refcount once, or it cuts off other consumers.
+        symbols_upper = list(dict.fromkeys(s.upper() for s in symbols))
         remove = [s for s in symbols_upper if s in self._subscribed_symbols]
         if not remove:
             return

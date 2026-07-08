@@ -210,6 +210,18 @@ class TestRefCounting:
         await handle.unsubscribe(["AAPL"])  # never subscribed
         assert "AAPL" not in self.manager._symbol_refcount
 
+    @pytest.mark.asyncio
+    async def test_duplicate_unsubscribe_decrements_once(self):
+        """A repeated symbol in one unsubscribe frame must count once — a
+        double decrement would cut off the other consumer's feed."""
+        h1 = self.manager.register_consumer("c1", lambda r, b: None)
+        h2 = self.manager.register_consumer("c2", lambda r, b: None)
+        await h1.subscribe(["AAPL"])
+        await h2.subscribe(["AAPL"])
+        await h1.unsubscribe(["AAPL", "AAPL"])
+        assert self.manager._symbol_refcount["AAPL.XNAS"] == 1
+        assert "AAPL" in self.manager._subscribed_symbols  # c2 keeps its feed
+
 
 # ---------------------------------------------------------------------------
 # MarketDataFeed — message dispatch
