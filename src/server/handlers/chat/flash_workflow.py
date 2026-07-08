@@ -579,7 +579,12 @@ async def astream_flash_workflow(
             # Race condition: another request registered first -- queue the
             # message. The admission lock should normally prevent reaching
             # this branch, but it's kept as a belt-and-braces fallback.
-            result = await steer_thread(thread_id, user_input, user_id)
+            # Dispatched flows (can_steer=False) must never steer, even in this
+            # fallback: leave result None so they fall through to the 409, same
+            # as the primary wait_or_steer path.
+            result = None if dispatched else await steer_thread(
+                thread_id, user_input, user_id
+            )
             if result:
                 slot_owned = False
                 await release_burst_slot(user_id)
