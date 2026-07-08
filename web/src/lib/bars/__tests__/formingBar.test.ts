@@ -75,6 +75,30 @@ describe('foldMinuteBar', () => {
     expect(out).toEqual(base());
   });
 
+  it('ignores a zero-filled minute bar entirely (no positive close)', () => {
+    // Provider zero-fill rows carry no trade; folding one would wick the
+    // candle to zero until the next REST reconcile.
+    const zeroed = bar({ time: 1120, open: 0, high: 0, low: 0, close: 0, volume: 0 });
+    expect(foldMinuteBar(base(), zeroed, INTERVAL)).toEqual(base());
+  });
+
+  it('ignores non-positive high/low when accumulating into the forming bar', () => {
+    const minute = bar({ time: 1120, open: 11, high: 0, low: 0, close: 14, volume: 30 });
+    const head = foldMinuteBar(base(), minute, INTERVAL)[1];
+    expect(head.high).toBe(12); // prior high kept — a zero high never wins
+    expect(head.low).toBe(9); // prior low kept — a zero low never wicks
+    expect(head.close).toBe(14); // reconciled by the next REST poll (≤60s)
+  });
+
+  it('falls back to close for zeroed OHL on a rollover bar', () => {
+    const minute = bar({ time: 1300, open: 0, high: 0, low: 0, close: 14, volume: 30 });
+    const head = foldMinuteBar(base(), minute, INTERVAL)[2];
+    expect(head.time).toBe(1300);
+    expect(head.open).toBe(14);
+    expect(head.high).toBe(14);
+    expect(head.low).toBe(14);
+  });
+
   it('does not mutate the input array or bars', () => {
     const input = base();
     const snapshot = JSON.parse(JSON.stringify(input));

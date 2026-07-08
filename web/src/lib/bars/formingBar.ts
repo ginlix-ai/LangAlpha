@@ -54,6 +54,11 @@ export function foldMinuteBar(
 ): ChartBar[] {
   if (!bars?.length || !minuteBar || intervalSec <= 0) return bars;
 
+  // A bar without a positive close is a zero-filled provider row, not a trade
+  // (mirrors applyQuoteToDailyBar's guard) — folding it would wick the candle
+  // to zero until the next REST reconcile.
+  if (!(minuteBar.close > 0)) return bars;
+
   const lastBar = bars[bars.length - 1];
   const bucketStart = lastBar.time;
   const bucketEnd = bucketStart + intervalSec;
@@ -62,11 +67,12 @@ export function foldMinuteBar(
   if (minuteBar.time < bucketStart) return bars;
 
   if (minuteBar.time < bucketEnd) {
-    // Inside the forming bucket — accumulate into the last bar.
+    // Inside the forming bucket — accumulate into the last bar. Non-positive
+    // high/low are ignored for the same zero-fill reason as close above.
     const updated: ChartBar = {
       ...lastBar,
-      high: Math.max(lastBar.high, minuteBar.high),
-      low: Math.min(lastBar.low, minuteBar.low),
+      high: minuteBar.high > 0 ? Math.max(lastBar.high, minuteBar.high) : lastBar.high,
+      low: minuteBar.low > 0 ? Math.min(lastBar.low, minuteBar.low) : lastBar.low,
       close: minuteBar.close,
       volume: (lastBar.volume || 0) + (minuteBar.volume || 0),
     };
@@ -74,12 +80,13 @@ export function foldMinuteBar(
   }
 
   // At/after the bucket end — open a new forming bar at the aligned anchor.
+  // Zeroed OHL fields fall back to the (positive) close.
   const k = Math.floor((minuteBar.time - bucketStart) / intervalSec);
   const newBar: ChartBar = {
     time: bucketStart + k * intervalSec,
-    open: minuteBar.open,
-    high: minuteBar.high,
-    low: minuteBar.low,
+    open: minuteBar.open > 0 ? minuteBar.open : minuteBar.close,
+    high: minuteBar.high > 0 ? minuteBar.high : minuteBar.close,
+    low: minuteBar.low > 0 ? minuteBar.low : minuteBar.close,
     close: minuteBar.close,
     volume: minuteBar.volume || 0,
   };
