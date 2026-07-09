@@ -33,6 +33,7 @@ vi.mock('../utils/threadStorage', () => ({
 }));
 
 vi.mock('../../utils/api', () => ({
+  fetchMarketWatch: vi.fn().mockResolvedValue({ thread_id: 't', symbols: [] }),
   sendChatMessageStream: vi.fn(),
   sendHitlResponse: vi.fn(),
   cancelWorkflow: vi.fn().mockResolvedValue({ success: true }),

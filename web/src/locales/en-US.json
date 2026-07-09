@@ -1254,6 +1254,16 @@
       "ctaAnswerContinue": "Answer & continue",
       "ctaViewThread": "View thread"
     },
+    "marketWatch": {
+      "watching": "Watching {{symbols}}",
+      "chipTitle": "Live prices for the tickers the agent is watching",
+      "chipTitleUpdated": "Live prices for watched tickers — updated {{time}}",
+      "chipAction": "Open live market watch",
+      "panelTitle": "Market watch",
+      "panelUpdated": "Updated {{time}}",
+      "panelWaiting": "Live prices appear here while the agent is working.",
+      "panelEmpty": "No tickers are being watched."
+    },
     "missingWorkspaceOrThread": "Missing workspace or thread information",
     "accessDeniedTitle": "You don't have access to this conversation",
     "accessDeniedDesc": "Ask the owner to share the conversation to view it.",
@@ -1548,7 +1558,8 @@
       "files": "Files",
       "memory": "Memory",
       "memo": "Memo",
-      "sources": "Sources"
+      "sources": "Sources",
+      "status": "Status"
     },
     "close": "Close panel"
   },
@@ -1751,6 +1762,7 @@
     "low": "L",
     "vol": "Vol",
     "marketIndices": "Market Indices",
+    "marketOverview": "Market Overview",
     "sectorPerformance": "Sector Performance",
     "stockScreener": "Stock Screener",
     "pricePerformance": "Price Performance",
@@ -1888,8 +1900,11 @@
       "stockPrices": "Stock Prices",
       "companyOverview": "Company Overview",
       "marketIndices": "Market Indices",
+      "marketOverview": "Market Overview",
       "sectorPerformance": "Sector Performance",
       "stockScreener": "Stock Screener",
+      "watchMarket": "Watch Market",
+      "unwatchMarket": "Unwatch Market",
       "secFiling": "SEC Filing",
       "entityNews": "Entity News",
       "tickerSearch": "Ticker Search",
@@ -1973,8 +1988,11 @@
       "analyzingSymbol": "analyzing {{symbol}}...",
       "analyzing": "analyzing...",
       "fetchingMarketIndices": "fetching market indices...",
+      "fetchingMarketOverview": "fetching market overview...",
       "fetchingSectorData": "fetching sector data...",
       "screeningStocks": "screening stocks...",
+      "watchingMarket": "starting market watch...",
+      "unwatchingMarket": "stopping market watch...",
       "fetchingSymbolFiling": "fetching {{symbol}} filing...",
       "fetchingFiling": "fetching filing...",
       "searchingPattern": "searching '{{pattern}}'...",

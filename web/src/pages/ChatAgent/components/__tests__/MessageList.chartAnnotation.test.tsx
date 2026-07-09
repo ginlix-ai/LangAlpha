@@ -63,6 +63,7 @@ vi.mock('../charts/InlineArtifactCards', () => ({
   InlineCompanyOverviewCard: () => null,
   InlineMarketIndicesCard: () => null,
   InlineSectorPerformanceCard: () => null,
+  InlineMarketOverviewCard: () => null,
   InlineSecFilingCard: () => null,
   InlineStockScreenerCard: () => null,
   InlineWebSearchCard: () => null,

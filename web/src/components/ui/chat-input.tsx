@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
 import {
   Plus, ArrowUp, X, FileText, Loader2, Archive, Square,
-  ScrollText, ChartCandlestick, Zap, FileStack, ChevronDown, ChevronRight, FolderOpen, TextSelect,
+  ScrollText, Radar, ChartCandlestick, Zap, FileStack, ChevronDown, ChevronRight, FolderOpen, TextSelect,
   Terminal, Bot, Shrink, HardDriveDownload, Check, Brain, Flame, Rocket, CircleHelp,
   Mic, MicOff, Sparkles,
 } from 'lucide-react';
@@ -57,6 +57,8 @@ interface ModelOptions {
   model: string | null;
   reasoningEffort: string | null;
   fastMode: boolean;
+  /** Per-message market-watch toggle — stamps live prices for tracked tickers. */
+  marketWatch?: boolean;
   /**
    * Widget context snapshots attached via the deck rail. Forwarded to the
    * backend as `additional_context` items of `type: "widget"`. Image-bearing
@@ -398,6 +400,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   const [attachedFiles, setAttachedFiles] = useState<FileAttachment[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [planMode, setPlanMode] = useState(false);
+  const [watchMode, setWatchMode] = useState(false);
 
   // Model selector state — use flash model preference when in flash mode
   const modePreferredModel = mode === 'fast' ? (preferredFlashModel || preferredModel) : preferredModel;
@@ -584,7 +587,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   // Expose addContext method for external callers (e.g. FilePanel, message selection)
   useImperativeHandle(ref, () => ({
     getModelOptions() {
-      return { model: selectedModel, reasoningEffort, fastMode };
+      return { model: selectedModel, reasoningEffort, fastMode, marketWatch: watchMode };
     },
     addContext({ path, snippet, label, lineStart, lineEnd, lineCount, source }) {
       if (snippet) {
@@ -623,7 +626,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     setModel(model) {
       if (model) setSelectedModel(model);
     },
-  }), [selectedModel, reasoningEffort, fastMode]);
+  }), [selectedModel, reasoningEffort, fastMode, watchMode]);
 
   // Workspace dropdown
   const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false);
@@ -1105,6 +1108,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       model: selectedModel,
       reasoningEffort,
       fastMode,
+      marketWatch: watchMode,
       widgetSnapshots: widgetSnapshots.length ? widgetSnapshots : undefined,
     });
     setMessage('');
@@ -1124,7 +1128,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [hasContent, disabled, message, planMode, attachedFiles, onSend, onAction, mentionedFiles, slashCommands, selectedModel, reasoningEffort, fastMode, widgetSnapshots, t]);
+  }, [hasContent, disabled, message, planMode, watchMode, attachedFiles, onSend, onAction, mentionedFiles, slashCommands, selectedModel, reasoningEffort, fastMode, widgetSnapshots, t]);
 
   // --- Keyboard & Language Detection ---
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1588,6 +1592,35 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                 >
                   <ScrollText className="h-4 w-4" style={planMode ? { color: 'var(--color-accent-light)' } : {}} />
                   <span>Plan</span>
+                </button>
+              )}
+
+              {/* Market Watch Toggle — shown alongside Plan (PTC enforced OR mode === 'ptc') */}
+              {(!hasModeToggle || mode === 'ptc') && (
+                <button
+                  className={`inline-flex items-center rounded-full border-none cursor-pointer${watchMode ? ' watch-mode-toggle-active' : ''}`}
+                  style={{
+                    gap: '6px',
+                    padding: '6px 10px',
+                    fontSize: '13px',
+                    fontWeight: 500,
+                    background: watchMode ? 'var(--color-border-muted)' : 'transparent',
+                    color: 'var(--color-text-muted, #8b8fa3)',
+                    border: '1px solid transparent',
+                    transition: 'background 0.2s, color 0.2s, border-color 0.2s',
+                  }}
+                  onClick={(e) => { e.stopPropagation(); setWatchMode(!watchMode); }}
+                  onMouseEnter={(e) => {
+                    if (!watchMode) e.currentTarget.style.background = 'var(--color-border-muted)';
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!watchMode) e.currentTarget.style.background = 'transparent';
+                  }}
+                  type="button"
+                  title="Market watch — live prices for tickers the agent tracks"
+                >
+                  <Radar className="h-4 w-4" style={watchMode ? { color: 'var(--color-accent-light)' } : {}} />
+                  <span>Watch</span>
                 </button>
               )}
             </div>

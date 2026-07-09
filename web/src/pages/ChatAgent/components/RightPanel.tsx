@@ -4,14 +4,16 @@ import { useTranslation } from 'react-i18next';
 import { AnimatedTabs } from '@/components/ui/animated-tabs';
 import type { ContextPayload } from './FilePanel';
 import type { MemoryTier } from '../utils/agentPaths';
+import type { MarketWatchState } from '../hooks/utils/streamEventHandlers';
 import type { ProvenanceRecord } from '@/types/chat';
 
 const FilePanel = React.lazy(() => import('./FilePanel'));
 const MemoryPanel = React.lazy(() => import('./MemoryPanel'));
 const MemoPanel = React.lazy(() => import('./MemoPanel'));
 const SourcesPanel = React.lazy(() => import('./SourcesPanel'));
+const StatusPanel = React.lazy(() => import('./StatusPanel'));
 
-export type RightPanelTab = 'files' | 'memory' | 'memo' | 'sources';
+export type RightPanelTab = 'files' | 'memory' | 'memo' | 'sources' | 'status';
 
 interface RightPanelProps {
   workspaceId: string;
@@ -34,6 +36,11 @@ interface RightPanelProps {
   /** Provenance records merged across every turn in the thread (keyed by record
    * id). Powers the Sources panel's "All sources" scope. */
   allSourcesRecords?: Record<string, ProvenanceRecord>;
+  /** Live market-watch snapshot rendered by the Status tab. */
+  marketWatch?: MarketWatchState | null;
+  /** When set, snaps to the Status tab (mirror of `targetSources` — set by
+   * ChatView on chip click, cleared when the panel closes). */
+  targetStatus?: boolean | null;
   /** Routes a clicked file/memory/memo path through ChatView's path-aware
    * router. Lets in-panel markdown links (e.g., a sibling memory entry
    * referenced from memory.md) jump to the right tab + entry. */
@@ -68,6 +75,8 @@ export default function RightPanel({
   targetSources,
   sourcesRecords,
   allSourcesRecords,
+  marketWatch,
+  targetStatus,
   onOpenFile,
   files,
   filesLoading,
@@ -83,6 +92,7 @@ export default function RightPanel({
 }: RightPanelProps): React.ReactElement {
   const { t } = useTranslation();
   const [tab, setTab] = useState<RightPanelTab>(initialTab);
+  const watchSymbolCount = marketWatch?.symbols?.length ?? 0;
 
   const tabs = useMemo<{ id: RightPanelTab; label: string }[]>(
     () => {
@@ -91,6 +101,13 @@ export default function RightPanel({
         { id: 'memory', label: t('rightPanel.tabs.memory') },
         { id: 'memo', label: t('rightPanel.tabs.memo') },
       ];
+      // The Status tab surfaces the live market watch. Unlike Sources it also
+      // shows whenever a watch is active (symbols present) — so a user who
+      // opened Files by hand can still reach it — as well as on an explicit
+      // chip click (targetStatus).
+      if (targetStatus != null || watchSymbolCount > 0) {
+        base.push({ id: 'status', label: t('rightPanel.tabs.status') });
+      }
       // The Sources tab is per-turn — only surface it when a turn's provenance
       // is being shown, so the chrome stays unchanged for file/memory/memo flows.
       if (targetSources != null) {
@@ -98,19 +115,29 @@ export default function RightPanel({
       }
       return base;
     },
-    [t, targetSources],
+    [t, targetSources, targetStatus, watchSymbolCount],
   );
 
-  // Snap-back precedence: sources > memory > memo > file. The parent (ChatView)
-  // clears sibling targets before setting one, so in steady state only one
-  // branch fires; this effect is the second line of defense if multiple are set
-  // in the same render.
+  // Snap-back precedence: status > sources > memory > memo > file. Status and
+  // sources are both explicit user actions and ChatView clears sibling targets
+  // before setting one, so in steady state only one branch fires; the ordering
+  // here is only a same-render tiebreak (status first — a chip click is the most
+  // recent explicit intent). This effect is the second line of defense.
   React.useEffect(() => {
-    if (targetSources != null) setTab('sources');
+    if (targetStatus != null) setTab('status');
+    else if (targetSources != null) setTab('sources');
     else if (targetMemoryKey != null) setTab('memory');
     else if (targetMemoKey != null) setTab('memo');
     else if (targetFile || targetDirectory) setTab('files');
-  }, [targetSources, targetMemoryKey, targetMemoKey, targetFile, targetDirectory]);
+  }, [targetStatus, targetSources, targetMemoryKey, targetMemoKey, targetFile, targetDirectory]);
+
+  // The 'status' tab exists in `tabs` only while targetStatus is set OR a watch
+  // is active. If both clear while Status is open, `tab` would point at a tab no
+  // longer in the array; fall back so it always resolves (mirror of the sources
+  // fallback below).
+  React.useEffect(() => {
+    if (tab === 'status' && targetStatus == null && watchSymbolCount === 0) setTab('files');
+  }, [tab, targetStatus, watchSymbolCount]);
 
   // The 'sources' tab only exists in `tabs` while targetSources is set. If it
   // clears while Sources is open, `tab` would point at a tab no longer in the
@@ -188,6 +215,7 @@ export default function RightPanel({
               onOpenFile={onOpenFile}
             />
           )}
+          {tab === 'status' && <StatusPanel marketWatch={marketWatch} />}
           {tab === 'sources' && (
             <SourcesPanel
               provenanceRecords={sourcesRecords}

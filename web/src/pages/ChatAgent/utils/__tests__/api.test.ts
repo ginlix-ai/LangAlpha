@@ -32,6 +32,8 @@ import {
   getThread,
   deleteThread,
   sendHitlResponse,
+  sendChatMessageStream,
+  fetchMarketWatch,
   streamWorkspaceEvents,
   watchThread,
   reconnectToWorkflowStream,
@@ -598,6 +600,83 @@ describe('ChatAgent API utilities', () => {
       });
       expect(onResubscribed).not.toHaveBeenCalled();
       expect(onClosed).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('sendChatMessageStream — market-watch skill via additional_context', () => {
+    // The market_watch body flag was retired: the Watch toggle now rides as a
+    // `market-watch` skills item in additional_context (ChatView appends it).
+    // These pin the send-path body contract — the skill item is forwarded
+    // verbatim, and no market_watch key is ever emitted.
+    let originalFetch: typeof global.fetch;
+
+    beforeEach(() => {
+      originalFetch = global.fetch;
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        body: {
+          getReader: () => ({
+            read: vi.fn().mockResolvedValue({ done: true, value: undefined }),
+          }),
+        },
+      });
+    });
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+
+    const bodyOfLastSend = () => {
+      const fetchMock = global.fetch as Mock;
+      const [, opts] = fetchMock.mock.calls[0];
+      return JSON.parse(opts.body) as Record<string, unknown>;
+    };
+
+    // Watch ON: additional_context carries the market-watch skills item.
+    it('forwards the market-watch skills item and sets no market_watch flag', async () => {
+      const skillItem = {
+        type: 'skills',
+        name: 'market-watch',
+        instruction:
+          'Market watch mode is on for this message. If the central tickers are not yet registered, register them with watch_market.',
+      };
+      await sendChatMessageStream(
+        'hi', 'ws-1', 't-1', [], false, () => {}, [skillItem], 'ptc',
+      );
+
+      const body = bodyOfLastSend();
+      expect(body.market_watch).toBeUndefined();
+      const item = (body.additional_context as Array<Record<string, unknown>>).find(
+        (c) => c.type === 'skills' && c.name === 'market-watch',
+      );
+      expect(item).toBeDefined();
+      expect(item!.instruction).toBe(skillItem.instruction);
+    });
+
+    // Watch OFF: no skills item, no market_watch key.
+    it('sends no market-watch skill and no market_watch flag when off', async () => {
+      await sendChatMessageStream('hi', 'ws-1', 't-1', [], false, () => {});
+
+      const body = bodyOfLastSend();
+      expect(body.market_watch).toBeUndefined();
+      expect(body.additional_context).toBeUndefined();
+    });
+  });
+
+  describe('fetchMarketWatch', () => {
+    it('throws when threadId is falsy', async () => {
+      await expect(fetchMarketWatch('')).rejects.toThrow('Thread ID is required');
+    });
+
+    it('GETs the thread market-watch endpoint and returns the payload', async () => {
+      const payload = { thread_id: 't-1', symbols: ['NVDA', 'TSLA'] };
+      mockGet.mockResolvedValue({ data: payload });
+
+      const result = await fetchMarketWatch('t-1');
+      expect(mockGet).toHaveBeenCalledWith('/api/v1/threads/t-1/market-watch');
+      expect(result).toEqual(payload);
     });
   });
 

@@ -16,8 +16,15 @@ const CARD_BG = 'var(--color-bg-tool-card)';
 const CARD_BORDER = 'var(--color-border-muted)';
 
 export const INLINE_ARTIFACT_TOOLS = new Set([
+  'get_daily_prices',
   'get_stock_daily_prices',
   'get_company_overview',
+  // Composite tool — renders InlineMarketOverviewCard, which nests the legacy
+  // indices + sector cards. Requires the `market_overview` entry in
+  // INLINE_ARTIFACT_MAP (ActivityBlock.tsx / MessageList.tsx); the card never
+  // returns null, so a completed call always renders (see Task 6 bug).
+  'get_market_overview',
+  // Legacy names (pre-consolidation) — kept for SSE replay of historical threads
   'get_market_indices',
   'get_sector_performance',
   'get_sec_filing',
@@ -514,6 +521,64 @@ export function InlineSectorPerformanceCard({ artifact, onClick }: InlineCardPro
           </BarChart>
         )}
       </MeasuredContainer>
+    </div>
+  );
+}
+
+// ─── InlineMarketOverviewCard ───────────────────────────────────────
+
+/**
+ * Composite card for the consolidated `get_market_overview` tool. It nests the
+ * legacy market_indices / sector_performance artifacts (carried verbatim under
+ * `indices` / `sectors`) into their existing cards. It MUST never return null:
+ * a completed call routed here would otherwise render nothing (the original
+ * Task 6 bug), so when neither nested card has data it falls back to a minimal
+ * region card.
+ */
+export function InlineMarketOverviewCard({ artifact, onClick }: InlineCardProps): React.ReactElement {
+  const { t } = useTranslation();
+  const isMobile = useIsMobile();
+  const sz = isMobile ? SIZES_MOBILE : SIZES_DESKTOP;
+
+  const overview = (artifact || {}) as Record<string, unknown>;
+  const indicesArtifact = overview.indices as Record<string, unknown> | undefined;
+  const sectorsArtifact = overview.sectors as Record<string, unknown> | undefined;
+
+  // Mirror the nested cards' own null conditions so the composite knows whether
+  // either will actually render content (and thus whether the fallback is needed).
+  const indicesData = indicesArtifact?.indices as Record<string, unknown> | undefined;
+  const hasIndices = !!indicesData && Object.keys(indicesData).length > 0;
+  const sectorsData = sectorsArtifact?.sectors as unknown[] | undefined;
+  const hasSectors = Array.isArray(sectorsData) && sectorsData.length > 0;
+
+  if (hasIndices || hasSectors) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: sz.gap }}>
+        {hasIndices && <InlineMarketIndicesCard artifact={indicesArtifact} onClick={onClick} />}
+        {hasSectors && <InlineSectorPerformanceCard artifact={sectorsArtifact} onClick={onClick} />}
+      </div>
+    );
+  }
+
+  // Error / degenerate path (e.g. unknown region): keep the call visible.
+  const region = overview.region as string | undefined;
+  const regionLabel = region ? region.toUpperCase() : '';
+
+  return (
+    <div
+      style={isMobile ? mobileCardStyle : cardStyle}
+      onClick={onClick}
+      onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--color-border-muted)')}
+      onMouseLeave={(e) => (e.currentTarget.style.borderColor = CARD_BORDER)}
+    >
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: sz.gap }}>
+        <span style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: sz.headerFs }}>
+          {t('toolArtifact.marketOverview')}
+        </span>
+        {regionLabel && (
+          <span style={{ fontSize: sz.labelFs, color: TEXT_COLOR }}>{regionLabel}</span>
+        )}
+      </div>
     </div>
   );
 }

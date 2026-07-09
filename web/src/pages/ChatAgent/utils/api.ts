@@ -321,6 +321,22 @@ export async function getThread(threadId: string) {
   return data;
 }
 
+export interface MarketWatchResponse {
+  thread_id: string;
+  symbols: string[];
+}
+
+/**
+ * Fetch the thread's current market-watch list (the tickers the agent is
+ * live-stamping). Returns an empty `symbols` array when watch is off. Used to
+ * seed the persistent watch chip on thread load and to refetch after a turn.
+ */
+export async function fetchMarketWatch(threadId: string): Promise<MarketWatchResponse> {
+  if (!threadId) throw new Error('Thread ID is required');
+  const { data } = await api.get<MarketWatchResponse>(`/api/v1/threads/${threadId}/market-watch`);
+  return data;
+}
+
 /**
  * Get all threads for a specific workspace
  * @param {string} workspaceId - The workspace ID

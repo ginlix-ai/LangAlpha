@@ -57,6 +57,7 @@ import ShareButton from './ShareButton';
 import { WorkspaceProvider } from '../contexts/WorkspaceContext';
 import SubagentStatusBar from './SubagentStatusBar';
 import TodoDrawer from './TodoDrawer';
+import MarketWatchChip from './MarketWatchChip';
 import { ErrorBanner } from '@/components/ui/error-banner';
 import { motion, AnimatePresence, type PanInfo } from 'framer-motion';
 import { MobileBottomSheet } from '@/components/ui/mobile-bottom-sheet';
@@ -190,6 +191,11 @@ interface SlashCommand {
 interface ModelOptions {
   model?: string | null;
   reasoningEffort?: string | null;
+  /**
+   * Per-message Watch-toggle state. When on, `handleSendWithAttachments`
+   * appends a `market-watch` skills item to `additional_context`.
+   */
+  marketWatch?: boolean | null;
   /**
    * Widget context snapshots from the chat input's deck rail. Serialized into
    * `additional_context` items (one widget directive + optional sibling image
@@ -375,6 +381,9 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // Message id whose provenance the Sources tab shows. Stays set while the
   // Sources tab is open so the tab chrome persists; cleared on panel close.
   const [filePanelTargetSources, setFilePanelTargetSources] = useState<string | null>(null);
+  // Flags an explicit chip click that opens the Status tab. Cleared on panel
+  // close; while null the Status tab still shows whenever a watch is active.
+  const [filePanelTargetStatus, setFilePanelTargetStatus] = useState<boolean | null>(null);
   // Stable handlers — these land in useEffect deps in MemoryPanel/MemoPanel/
   // FilePanel. Inline arrows would create a new identity on every ChatView
   // render, re-triggering those effects on every streaming chunk (the
@@ -741,6 +750,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     threadId: currentThreadId,
     threadModels,
     lastThreadModel,
+    marketWatch,
     isShared: threadIsShared,
     insertNotification,
     handleEditMessage,
@@ -1113,6 +1123,18 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       } else if (cmd.type === 'subagent') {
         contexts.push({ type: 'directive', content: 'User wishes you to complete this task using subagents.' });
       }
+    }
+
+    // Watch toggle activates the market-watch skill (re-sent every turn while
+    // on, like MarketView's chart-annotation). Dedup against a manually-typed
+    // /market-watch pill added by the loop above (SkillsMiddleware also dedups
+    // the body, but this keeps the context list clean).
+    if (modelOptions.marketWatch && !contexts.some((c) => c.type === 'skills' && c.name === 'market-watch')) {
+      contexts.push({
+        type: 'skills',
+        name: 'market-watch',
+        instruction: 'Market watch mode is on for this message. If the central tickers are not yet registered, register them with watch_market.',
+      });
     }
 
     // Widget context snapshots from the deck rail. Each snapshot becomes one
@@ -1511,6 +1533,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     setFilePanelTargetMemoryTier(r.targetMemoryTier);
     setFilePanelTargetMemoKey(r.targetMemoKey);
     setFilePanelTargetSources(null);
+    setFilePanelTargetStatus(null);
     if (r.clearWorkspaceId) {
       setFilePanelWorkspaceId(null);
     } else if (r.setWorkspaceId) {
@@ -1536,7 +1559,26 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     setFilePanelTargetMemoryKey(null);
     setFilePanelTargetMemoryTier(null);
     setFilePanelTargetMemoKey(null);
+    setFilePanelTargetStatus(null);
     setFilePanelTargetSources(messageId);
+
+    setRightPanelWidth(clampPanelWidth(850));
+    setRightPanelType('file');
+    pushPanelHistory();
+  }, [clampPanelWidth, pushPanelHistory]);
+
+  // Opens the Status tab (live market watch) from the persistent chip. Clears
+  // the sibling file/dir/memory/memo/sources targets first (so RightPanel's
+  // snap-back precedence converges on Status) and flags the target; the panel
+  // resolves live watch state from `marketWatch`.
+  const handleOpenStatusFromChat = useCallback(() => {
+    setFilePanelTargetFile(null);
+    setFilePanelTargetDir(null);
+    setFilePanelTargetMemoryKey(null);
+    setFilePanelTargetMemoryTier(null);
+    setFilePanelTargetMemoKey(null);
+    setFilePanelTargetSources(null);
+    setFilePanelTargetStatus(true);
 
     setRightPanelWidth(clampPanelWidth(850));
     setRightPanelType('file');
@@ -1580,6 +1622,16 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     }
   }, [rightPanelType, filePanelTargetSources]);
 
+  // Drop the Status target on the same close/switch signal, mirroring Sources
+  // above, so a later file/memory click doesn't reopen the Status tab. (The tab
+  // still surfaces on its own while a watch is active — that's independent of
+  // this explicit-open flag.)
+  useEffect(() => {
+    if (rightPanelType !== 'file' && filePanelTargetStatus != null) {
+      setFilePanelTargetStatus(null);
+    }
+  }, [rightPanelType, filePanelTargetStatus]);
+
   // One-shot ?file= deep link: opens the file panel targeting that file. Gated
   // on isActive so only the visible ChatView consumes it (ChatAgent keeps cached
   // hidden instances), and on workspaceId so the panel has something to read.
@@ -1611,6 +1663,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     setFilePanelTargetMemoryKey(null);
     setFilePanelTargetMemoryTier(null);
     setFilePanelTargetMemoKey(null);
+    setFilePanelTargetStatus(null);
     setFilePanelTargetDir(dirPath);
     pushPanelHistory();
   }, [clampPanelWidth, pushPanelHistory]);
@@ -2903,6 +2956,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                 {activeAgentId === 'main' ? (
                   <>
                     <TodoDrawer todoData={cards['todo-list-card']?.todoData ?? null} />
+                    <MarketWatchChip symbols={marketWatch?.symbols} lastUpdate={marketWatch?.timestamp} onClick={handleOpenStatusFromChat} />
                     {pendingRejection && (
                       <div
                         className="flex items-center gap-2 px-3 py-2 rounded-md text-sm"
@@ -3168,6 +3222,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                   targetSources={filePanelTargetSources}
                   sourcesRecords={sourcesRecords}
                   allSourcesRecords={allSourcesRecords}
+                  marketWatch={marketWatch}
+                  targetStatus={filePanelTargetStatus}
                   onOpenFile={handleOpenFileFromChat}
                   files={workspaceFiles}
                   filesLoading={filesLoading}
@@ -3231,6 +3287,8 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                       targetSources={filePanelTargetSources}
                       sourcesRecords={sourcesRecords}
                       allSourcesRecords={allSourcesRecords}
+                      marketWatch={marketWatch}
+                      targetStatus={filePanelTargetStatus}
                       onOpenFile={handleOpenFileFromChat}
                       files={workspaceFiles}
                       filesLoading={filesLoading}

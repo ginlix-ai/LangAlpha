@@ -1253,6 +1253,16 @@
       "ctaAnswerContinue": "回答并继续",
       "ctaViewThread": "查看对话"
     },
+    "marketWatch": {
+      "watching": "正在监控 {{symbols}}",
+      "chipTitle": "正在为智能体监控的股票推送实时价格",
+      "chipTitleUpdated": "监控股票的实时价格 — 更新于 {{time}}",
+      "chipAction": "打开实时市场监控",
+      "panelTitle": "市场监控",
+      "panelUpdated": "更新于 {{time}}",
+      "panelWaiting": "智能体工作时，实时价格将显示在这里。",
+      "panelEmpty": "当前没有正在监控的股票。"
+    },
     "missingWorkspaceOrThread": "缺少工作区或对话信息",
     "accessDeniedTitle": "你没有权限查看此对话",
     "accessDeniedDesc": "请联系对话所有者分享此对话。",
@@ -1546,7 +1556,8 @@
       "files": "文件",
       "memory": "记忆",
       "memo": "备忘录",
-      "sources": "数据来源"
+      "sources": "数据来源",
+      "status": "状态"
     },
     "close": "关闭面板"
   },
@@ -1748,6 +1759,7 @@
     "low": "低",
     "vol": "量",
     "marketIndices": "市场指数",
+    "marketOverview": "市场概览",
     "sectorPerformance": "板块表现",
     "stockScreener": "股票筛选",
     "pricePerformance": "价格表现",
@@ -1876,8 +1888,11 @@
       "stockPrices": "股票价格",
       "companyOverview": "公司概况",
       "marketIndices": "市场指数",
+      "marketOverview": "市场概览",
       "sectorPerformance": "板块表现",
       "stockScreener": "股票筛选",
+      "watchMarket": "行情监控",
+      "unwatchMarket": "取消监控",
       "secFiling": "SEC 报告",
       "entityNews": "实体新闻",
       "tickerSearch": "股票搜索",
@@ -1961,8 +1976,11 @@
       "analyzingSymbol": "分析 {{symbol}}...",
       "analyzing": "分析中...",
       "fetchingMarketIndices": "获取市场指数...",
+      "fetchingMarketOverview": "获取市场概览...",
       "fetchingSectorData": "获取板块数据...",
       "screeningStocks": "筛选股票...",
+      "watchingMarket": "开始行情监控...",
+      "unwatchingMarket": "停止行情监控...",
       "fetchingSymbolFiling": "获取 {{symbol}} 报告...",
       "fetchingFiling": "获取报告...",
       "searchingPattern": "搜索 '{{pattern}}'...",

@@ -64,6 +64,7 @@ vi.mock('../utils/historyEventHandlers', () => ({
 
 // The API module – the core of what we're testing
 vi.mock('../../utils/api', () => ({
+  fetchMarketWatch: vi.fn().mockResolvedValue({ thread_id: 't', symbols: [] }),
   sendChatMessageStream: vi.fn(),
   sendHitlResponse: vi.fn(),
   replayThreadHistory: vi.fn(),

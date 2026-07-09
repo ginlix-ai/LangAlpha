@@ -10,7 +10,7 @@ import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { useUser } from '@/hooks/useUser';
-import { sendChatMessageStream, replayThreadHistory, getWorkflowStatus, getReportBackStatus, reconnectToWorkflowStream, sendHitlResponse, streamSubagentTaskEvents, fetchThreadTurns, submitFeedback, removeFeedback, getThreadFeedback, cancelWorkflow } from '../utils/api';
+import { sendChatMessageStream, replayThreadHistory, getWorkflowStatus, getReportBackStatus, reconnectToWorkflowStream, sendHitlResponse, streamSubagentTaskEvents, fetchThreadTurns, submitFeedback, removeFeedback, getThreadFeedback, cancelWorkflow, fetchMarketWatch } from '../utils/api';
 import type { WorkflowStatusResponse, ReportBackStatusResponse } from '../utils/api';
 // Imported from the dependency-free signal module (not `../utils/api`) so this
 // keeps decoding wire status even in the hook tests that fully mock `../utils/api`.
@@ -45,8 +45,10 @@ import {
   handleSubagentToolCalls,
   handleSubagentToolCallResult,
   handleTaskSteeringAccepted,
+  handleMarketWatchUpdate,
   getOrCreateTaskRefs,
 } from './utils/streamEventHandlers';
+import type { MarketWatchState } from './utils/streamEventHandlers';
 import {
   handleHistoryUserMessage,
   handleHistoryReasoningSignal,
@@ -703,6 +705,12 @@ export function useChatMessages(
   // Track last-used model options so HITL resume can forward them
   const lastModelOptionsRef = useRef<ModelOptions>({ model: null, reasoningEffort: null, fastMode: null });
 
+  // Latest market-watch snapshot for this thread — seeded from the GET
+  // /market-watch endpoint on thread load, overwritten live by
+  // `market_watch_update` SSE events, and refetched on turn completion. Drives
+  // the persistent "Watching …" chip (null/empty = watch off).
+  const [marketWatch, setMarketWatch] = useState<MarketWatchState | null>(null);
+
   // Refs for streaming state
   const currentMessageRef = useRef<string | null>(null);
   const contentOrderCounterRef = useRef(0);
@@ -893,6 +901,47 @@ export function useChatMessages(
   const offloadBatchRef = useRef<OffloadBatch>({ args: 0, reads: 0, timer: null });
   // Track reconnection state for UI indicator
   const [isReconnecting, setIsReconnecting] = useState(false);
+
+  // --- Market watch chip: seed (a) + turn-completion refetch (c) -----------
+  // Live SSE overwrites (b) land in processEvent's `market_watch_update` case.
+  const applyMarketWatchList = useCallback((data: { symbols?: unknown } | null) => {
+    const symbols = Array.isArray(data?.symbols)
+      ? data.symbols.filter((s): s is string => typeof s === 'string')
+      : [];
+    setMarketWatch(symbols.length ? { symbols } : null);
+  }, []);
+
+  // (a) Seed / re-seed from the thread's Redis watch list on load or switch so
+  //     the chip survives a page reload and reflects the true watch state.
+  useEffect(() => {
+    // Clear eagerly on every thread change — an in-place real-thread switch
+    // must not flash the previous thread's symbols while the fetch is in
+    // flight. The chip reappears when the new thread's list arrives.
+    setMarketWatch(null);
+    if (!threadId || threadId === '__default__') return;
+    let cancelled = false;
+    fetchMarketWatch(threadId)
+      .then((data) => { if (!cancelled) applyMarketWatchList(data); })
+      .catch(() => { /* best-effort — leave prior state untouched */ });
+    return () => { cancelled = true; };
+  }, [threadId, applyMarketWatchList]);
+
+  // (c) Refetch once when a streaming turn completes (isLoading true -> false).
+  //     Makes the chip disappear promptly after `unwatch_market` and appear
+  //     after a `watch_market` that never produced a live stamp (market closed).
+  const prevIsLoadingRef = useRef(isLoading);
+  useEffect(() => {
+    const wasLoading = prevIsLoadingRef.current;
+    prevIsLoadingRef.current = isLoading;
+    if (!wasLoading || isLoading) return;
+    const tid = threadIdRef.current;
+    if (!tid || tid === '__default__') return;
+    let cancelled = false;
+    fetchMarketWatch(tid)
+      .then((data) => { if (!cancelled) applyMarketWatchList(data); })
+      .catch(() => { /* best-effort */ });
+    return () => { cancelled = true; };
+  }, [isLoading, applyMarketWatchList]);
 
   // Track if this is a new conversation (for todo list card management)
   const isNewConversationRef = useRef(false);
@@ -3555,6 +3604,13 @@ export function useChatMessages(
         return;
       }
 
+      // (b) Live market-watch stamp — keep the persistent watch chip current
+      // mid-turn. Swallowed here so it never leaks into the message stream.
+      if (eventType === 'market_watch_update') {
+        handleMarketWatchUpdate({ event, setMarketWatch });
+        return;
+      }
+
       // Check if this is a subagent event - filter it out from main chat view
       const isSubagent = isSubagentEvent(event);
 
@@ -5874,6 +5930,7 @@ export function useChatMessages(
     threadModels,
     lastThreadModel,
     isLoading,
+    marketWatch,
     hasActiveSubagents,
     awaitingReportBack,
     workspaceStarting,

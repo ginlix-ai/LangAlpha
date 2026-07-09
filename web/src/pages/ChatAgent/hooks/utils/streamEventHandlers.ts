@@ -63,6 +63,39 @@ export function provenanceEventToRecord(event: ProvenanceEvent): ProvenanceRecor
 /** Callback to update a subagent card by task ID. */
 type UpdateSubagentCard = (taskId: string, patch: Record<string, unknown>) => void;
 
+/**
+ * Latest market-watch snapshot for a thread. Seeded from the GET
+ * `/market-watch` endpoint on thread load and overwritten live by
+ * `market_watch_update` SSE events; drives the persistent "Watching …" chip.
+ */
+export interface MarketWatchState {
+  symbols: string[];
+  content?: string;
+  timestamp?: number;
+}
+
+/**
+ * Handles `market_watch_update` custom SSE events during streaming. Parses the
+ * live watch snapshot (symbols + content + timestamp) off the event and hands
+ * it to the caller's setter so the persistent watch chip stays current
+ * mid-turn. Non-string symbol entries are dropped and a missing/non-array
+ * `symbols` field coerces to an empty list (the "watch off" signal).
+ */
+export function handleMarketWatchUpdate({ event, setMarketWatch }: {
+  event: { symbols?: unknown; content?: unknown; timestamp?: unknown };
+  setMarketWatch: (next: MarketWatchState) => void;
+}): boolean {
+  const symbols = Array.isArray(event.symbols)
+    ? event.symbols.filter((s): s is string => typeof s === 'string')
+    : [];
+  setMarketWatch({
+    symbols,
+    content: typeof event.content === 'string' ? event.content : undefined,
+    timestamp: typeof event.timestamp === 'number' ? event.timestamp : undefined,
+  });
+  return true;
+}
+
 /** Per-task ref state created by getOrCreateTaskRefs. */
 interface TaskRefs {
   contentOrderCounterRef: { current: number };
