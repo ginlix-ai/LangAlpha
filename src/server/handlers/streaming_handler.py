@@ -22,6 +22,7 @@ from src.server.utils.content_normalizer import (
     normalize_text_content,
     is_thinking_status_signal,
 )
+from src.server.utils.pg_sanitize import finite_json_dumps
 from src.llms.content_utils import extract_reasoning_summary_index
 from src.utils.tracking import ExecutionTracker
 from src.config.settings import (
@@ -779,6 +780,16 @@ class WorkflowStreamHandler:
                             }
                             self._track_artifact_state(ui_artifact_event)
                             yield self._format_sse_event("artifact", ui_artifact_event)
+                            continue
+
+                        # Live market-watch stamp notification
+                        if event_type == "market_watch_update":
+                            yield self._format_sse_event("market_watch_update", {
+                                "thread_id": self.thread_id,
+                                "symbols": event_data.get("symbols", []),
+                                "content": event_data.get("content", ""),
+                                "timestamp": event_data.get("timestamp"),
+                            })
                             continue
 
                         # Check if this is an artifact event from middleware
@@ -1636,7 +1647,9 @@ class WorkflowStreamHandler:
         else:
             self.event_sequence += 1
 
-        json_data = json.dumps(data, ensure_ascii=False)
+        # NaN/Inf floats from upstream data would serialize as bare `NaN`
+        # tokens (invalid JSON) and make the browser drop the whole frame.
+        json_data = finite_json_dumps(data, ensure_ascii=False)
 
         # Include sequence ID for reconnection support
         # Format: id: sequence_number\nevent: type\ndata: json\n\n

@@ -17,6 +17,7 @@ import os
 
 from fastapi import APIRouter, Header, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
 from src.server.utils.api import (
     CurrentUserId,
@@ -25,6 +26,7 @@ from src.server.utils.api import (
     require_workspace_owner,
     service_token_matches,
 )
+from src.utils.market_watch import get_watchlist
 from src.server.models.chat import ChatRequest, SubagentMessageRequest
 from src.server.models.conversation import (
     WorkspaceThreadListItem,
@@ -313,6 +315,19 @@ async def get_thread(thread_id: str, x_user_id: CurrentUserId):
         created_at=thread["created_at"],
         updated_at=thread["updated_at"],
     )
+
+
+class MarketWatchResponse(BaseModel):
+    thread_id: str
+    symbols: list[str]
+
+
+@router.get("/{thread_id}/market-watch", response_model=MarketWatchResponse)
+async def get_market_watch(thread_id: str, x_user_id: CurrentUserId):
+    """Current market-watch symbols for a thread (empty list when none)."""
+    await require_thread_owner(thread_id, x_user_id)
+    symbols = await get_watchlist(thread_id)
+    return MarketWatchResponse(thread_id=thread_id, symbols=symbols)
 
 
 @router.delete("/{thread_id}", response_model=ThreadDeleteResponse)
