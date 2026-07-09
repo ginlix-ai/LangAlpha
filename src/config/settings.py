@@ -292,6 +292,18 @@ def get_redis_ttl_steering() -> int:
     return get_infrastructure_config().redis.ttl.steering
 
 
+def get_market_watch_min_interval() -> int:
+    return get_infrastructure_config().market_watch.min_interval_seconds
+
+
+def get_market_watch_max_symbols() -> int:
+    return get_infrastructure_config().market_watch.max_symbols
+
+
+def get_redis_ttl_market_watch() -> int:
+    return get_infrastructure_config().redis.ttl.market_watch
+
+
 def get_redis_ttl_memo_metadata_inflight() -> int:
     """Cross-worker visibility key TTL for in-flight memo metadata tasks (seconds)."""
     return get_infrastructure_config().redis.ttl.memo_metadata_inflight

@@ -142,6 +142,7 @@ class RedisTTLConfig(BaseModel):
     steering: int = Field(
         default=3600, description="TTL for steering message Redis keys (1 hour)"
     )
+    market_watch: int = Field(default=21600, description="Market watch list TTL in seconds")
     memo_metadata_inflight: int = Field(
         default=300,
         description=(
@@ -237,6 +238,15 @@ class NewsPollConfig(BaseModel):
     feeds: List[NewsPollFeedConfig] = Field(default_factory=list)
 
 
+class MarketWatchConfig(BaseModel):
+    """Market watch mode (live price injection) settings."""
+
+    min_interval_seconds: int = Field(
+        default=25, ge=5, description="Throttle between injections per thread"
+    )
+    max_symbols: int = Field(default=10, ge=1, le=50, description="Watch list cap")
+
+
 class InfrastructureConfig(BaseModel):
     """Root model for infrastructure configuration (config.yaml)."""
 
@@ -259,6 +269,7 @@ class InfrastructureConfig(BaseModel):
         default=True, description="Enable Redis cache warming on startup"
     )
     langsmith_tracing: bool = Field(default=False, description="Enable LangSmith tracing")
+    market_watch: MarketWatchConfig = Field(default_factory=MarketWatchConfig)
 
     # SSE Event Logging
     sse_event_log_enabled: bool = Field(default=True, description="Enable SSE event logging")

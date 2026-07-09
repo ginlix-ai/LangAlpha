@@ -125,6 +125,7 @@ redis:
     workflow_status: 3600   # Completed/cancelled workflow status key TTL (1 hour)
     cancel_flag: 300        # Workflow cancel flag TTL (5 minutes)
     steering: 3600          # Steering message key TTL (1 hour)
+    market_watch: 21600     # Market watch list TTL (6 hours)
     memo_metadata_inflight: 300  # Cross-worker visibility of in-flight memo metadata tasks (5 minutes)
     memo_metadata_cancel: 60     # Cooperative cross-worker cancel flag for memo metadata (1 minute)
 
@@ -194,6 +195,15 @@ news_poll:
       limit: 50
     - provider: null       # Provider-chain general feed / Market tab (news:general:<limit>)
       limit: 50
+
+
+# =============================================================================
+# MARKET WATCH CONFIGURATION
+# =============================================================================
+# Market watch mode (live price injection via <market-watch> message stamping)
+market_watch:
+  min_interval_seconds: 25
+  max_symbols: 10
 
 
 # =============================================================================
