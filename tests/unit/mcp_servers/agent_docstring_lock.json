@@ -14,24 +14,26 @@
       "symbol"
     ]
   },
-  "direct:get_market_indices": {
+  "direct:get_daily_prices": {
     "doc_lines": [
-      "Historical OHLCV bars for one or more market indices (default: major US indices).",
+      "Historical daily OHLCV bars for one stock — for price history, trends, returns,",
+      "and charting.",
       "",
       "Args:",
-      "    indices: Index symbols; default [\"^GSPC\", \"^IXIC\", \"^DJI\", \"^RUT\"]",
-      "        (S&P 500, NASDAQ, Dow Jones, Russell 2000).",
+      "    symbol: US \"AAPL\", A-share \"600519.SS\", HK \"0700.HK\".",
       "    start_date: Start \"YYYY-MM-DD\" (optional).",
       "    end_date: End \"YYYY-MM-DD\" (optional).",
-      "    limit: Records per index (default 60)."
+      "    limit: Max records when no date range is given (default 60 trading days)."
     ],
     "params": [
       "end_date",
-      "indices",
       "limit",
-      "start_date"
+      "start_date",
+      "symbol"
     ],
-    "required": []
+    "required": [
+      "symbol"
+    ]
   },
   "direct:get_market_movers": {
     "doc_lines": [
@@ -43,6 +45,24 @@
     ],
     "params": [
       "direction"
+    ],
+    "required": []
+  },
+  "direct:get_market_overview": {
+    "doc_lines": [
+      "Big-picture market view for a region — major index performance, plus daily",
+      "sector performance for the US.",
+      "",
+      "Args:",
+      "    region: \"us\" (default), \"cn\", \"hk\", \"jp\", \"uk\", \"eu\", or \"global\".",
+      "        Sector breakdown is US only.",
+      "    indices: Explicit index symbols overriding the region basket (e.g. [\"^VIX\"]).",
+      "    limit: Trading days of index history to summarize (default 30)."
+    ],
+    "params": [
+      "indices",
+      "limit",
+      "region"
     ],
     "required": []
   },
@@ -74,39 +94,21 @@
       "underlying"
     ]
   },
-  "direct:get_sector_performance": {
+  "direct:get_quote": {
     "doc_lines": [
-      "US stock-market sector performance — which sectors (Technology, Healthcare,",
-      "Energy, Financials, …) are up or down on the day. US only; not for non-US markets.",
+      "Real-time quotes only — cheap and fast. Call it freely whenever you need the",
+      "current price, including a re-check right before stating a price in your answer.",
       "",
       "Args:",
-      "    date: Analysis date \"YYYY-MM-DD\" (default: latest available). Historical",
-      "        dates may be unavailable on the current data plan."
+      "    symbols: Up to 20 tickers — US \"NVDA\", A-share \"600519.SS\", HK \"0700.HK\".",
+      "    asset_type: \"stocks\" (default) or \"indices\" for index symbols like \"^GSPC\"."
     ],
     "params": [
-      "date"
-    ],
-    "required": []
-  },
-  "direct:get_stock_daily_prices": {
-    "doc_lines": [
-      "Historical daily OHLCV bars for one stock — for price history, trends, returns,",
-      "and charting.",
-      "",
-      "Args:",
-      "    symbol: US \"AAPL\", A-share \"600519.SS\", HK \"0700.HK\".",
-      "    start_date: Start \"YYYY-MM-DD\" (optional).",
-      "    end_date: End \"YYYY-MM-DD\" (optional).",
-      "    limit: Max records when no date range is given (default 60 trading days)."
-    ],
-    "params": [
-      "end_date",
-      "limit",
-      "start_date",
-      "symbol"
+      "asset_type",
+      "symbols"
     ],
     "required": [
-      "symbol"
+      "symbols"
     ]
   },
   "direct:screen_stocks": {

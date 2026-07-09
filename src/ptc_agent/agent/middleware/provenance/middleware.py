@@ -81,24 +81,23 @@ _MARKET_SYMBOL_ARGS = ("symbol", "underlying")
 # hover, which data products that ticker was accessed through (a single AAPL row
 # may cover both company_overview and daily_prices). The slug is i18n-mapped by
 # the frontend; symbol-less tools (screen_stocks, get_market_movers,
-# get_sector_performance) already surface their tool name as the identifier.
+# get_market_overview) already surface their tool name as the identifier.
 _MARKET_DATA_KINDS = {
     "get_company_overview": "company_overview",
-    "get_stock_daily_prices": "daily_prices",
+    "get_daily_prices": "daily_prices",
     "get_options_chain": "options_chain",
-    "get_market_indices": "market_index",
 }
 
 # Market-data tools that all share _extract_market_data. Superset of
-# _MARKET_DATA_KINDS — also covers the symbol-less ones (screen/movers/sector).
+# _MARKET_DATA_KINDS — also covers the symbol-less ones (screen/movers/overview).
 _MARKET_DATA_TOOLS = (
-    "get_stock_daily_prices",
+    "get_daily_prices",
     "get_company_overview",
-    "get_market_indices",
-    "get_sector_performance",
+    "get_market_overview",
     "screen_stocks",
     "get_options_chain",
     "get_market_movers",
+    "get_quote",
 )
 
 # Host-side bounds on the in-sandbox MCP trace (LLM-authored, untrusted): the
@@ -690,9 +689,13 @@ class ProvenanceMiddleware(AgentMiddleware):
             identifiers.extend(str(i) for i in indices if i)
         elif isinstance(indices, str) and indices:
             identifiers.append(indices)
+        symbols = args.get("symbols")
+        if isinstance(symbols, list):
+            identifiers.extend(str(s).upper() for s in symbols if s)
 
-        # No symbol arg (e.g. get_sector_performance, screen_stocks,
-        # get_market_movers) — record one source keyed by the tool name.
+        # No symbol arg (e.g. get_market_overview with no explicit indices,
+        # screen_stocks, get_market_movers) — record one source keyed by the
+        # tool name.
         if not identifiers:
             identifiers = [tool_name]
 

@@ -546,10 +546,10 @@ class TestLangChainFetcherContract:
         assert isinstance(artifact["results"], list)
         assert artifact["count"] >= 0
 
-    async def test_fetch_stock_daily_prices(self):
-        from src.tools.market_data.implementations import fetch_stock_daily_prices
+    async def test_fetch_daily_prices(self):
+        from src.tools.market_data.implementations import fetch_daily_prices
 
-        content, artifact = await fetch_stock_daily_prices(SYMBOL)
+        content, artifact = await fetch_daily_prices(SYMBOL)
         assert artifact["type"] == "stock_prices"
         assert artifact["symbol"] == SYMBOL
         assert "ohlcv" in artifact and len(artifact["ohlcv"]) > 0

@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, timedelta, timezone
 import logging
 import asyncio
+import math
 
 from langchain_core.runnables import RunnableConfig
 
@@ -20,6 +21,7 @@ from .display import (
     _symbol_currency,
     resolve_ref,
 )
+from .quote_format import build_live_stamp, format_quote_block
 from .utils import format_number, format_percentage, get_market_session
 from src.data_client import get_financial_data_provider, get_market_data_provider
 from src.data_client.ginlix_data.pagination import paginate_cursor
@@ -41,6 +43,11 @@ def _safe_result(result, default=None):
     if isinstance(result, Exception):
         return default
     return result if result is not None else default
+
+
+def _finite_or_none(v):
+    """Return v if it's a finite number, else None (NaN/Inf/non-numeric)."""
+    return v if isinstance(v, (int, float)) and math.isfinite(v) else None
 
 
 def _normalize_market_bars(
@@ -74,7 +81,9 @@ def _normalize_market_bars(
         else:
             date_str = bar.get("date", "N/A")
 
-        close = bar.get("close")
+        # A forming bar can carry NaN prices; treat non-finite as missing so
+        # it can't poison the change computation or downstream JSON.
+        close = _finite_or_none(bar.get("close"))
         change: Optional[float] = None
         change_pct: Optional[float] = None
         if close is not None and prev_close is not None and prev_close != 0:
@@ -496,10 +505,14 @@ def _calculate_price_statistics(data: List[Dict[str, Any]]) -> Dict[str, Any]:
     # Sort to have oldest first for calculations
     sorted_data = sorted(data, key=lambda x: x.get("date", ""), reverse=False)
 
-    # Extract closing prices for calculations
-    closes = [d.get("close") for d in sorted_data if d.get("close") is not None]
+    # Extract closing prices for calculations (finite values only — a forming
+    # bar can carry NaN prices that would poison every derived stat)
+    closes = [c for c in (_finite_or_none(d.get("close")) for d in sorted_data) if c is not None]
     if not closes:
         return {}
+
+    highs = [h for h in (_finite_or_none(d.get("high")) for d in sorted_data) if h is not None]
+    lows = [lo for lo in (_finite_or_none(d.get("low")) for d in sorted_data) if lo is not None]
 
     # Aggregated OHLC
     first_day = sorted_data[0]
@@ -511,14 +524,10 @@ def _calculate_price_statistics(data: List[Dict[str, Any]]) -> Dict[str, Any]:
         "start_date": first_day.get("date", "N/A"),
         "end_date": last_day.get("date", "N/A"),
         # Aggregated OHLC
-        "period_open": first_day.get("open"),
-        "period_close": last_day.get("close"),
-        "period_high": max(
-            d.get("high") for d in sorted_data if d.get("high") is not None
-        ),
-        "period_low": min(
-            d.get("low") for d in sorted_data if d.get("low") is not None
-        ),
+        "period_open": _finite_or_none(first_day.get("open")),
+        "period_close": _finite_or_none(last_day.get("close")),
+        "period_high": max(highs) if highs else None,
+        "period_low": min(lows) if lows else None,
         # Price range
         "min_close": min(closes),
         "max_close": max(closes),
@@ -567,7 +576,7 @@ def _calculate_price_statistics(data: List[Dict[str, Any]]) -> Dict[str, Any]:
         stats["volatility"] = None
 
     # Volume statistics
-    volumes = [d.get("volume") for d in sorted_data if d.get("volume") is not None]
+    volumes = [v for v in (_finite_or_none(d.get("volume")) for d in sorted_data) if v is not None]
     if volumes:
         stats["avg_volume"] = sum(volumes) / len(volumes)
         stats["total_volume"] = sum(volumes)
@@ -802,11 +811,25 @@ def _get_index_name(symbol: str) -> str:
         "000300.SS": "CSI 300",
         "^HSI": "Hang Seng Index",
         "^HSCE": "Hang Seng China Enterprises",
+        "^N225": "Nikkei 225",
+        "^FTSE": "FTSE 100",
+        "^GDAXI": "DAX",
+        "^FCHI": "CAC 40",
+        "^STOXX50E": "EURO STOXX 50",
     }
     return index_names.get(symbol, symbol)
 
 
-async def fetch_stock_daily_prices(
+async def _live_stamp_for(provider, symbols: List[str], user_id: Optional[str]) -> Optional[str]:
+    """Best-effort `[Live: ...]` stamp; never raises."""
+    try:
+        snaps = await provider.get_snapshots(symbols, asset_type="stocks", user_id=user_id)
+        return build_live_stamp(snaps or [])
+    except Exception:
+        return None
+
+
+async def fetch_daily_prices(
     symbol: str,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -829,6 +852,7 @@ async def fetch_stock_daily_prices(
     Returns:
         Tuple of (content string, artifact dict with structured data for charts)
     """
+    stamp_task = None
     try:
         # Resolve once: normalize the agent-supplied spelling to the legacy form
         # provider calls / cache keys use, and reuse the ref for the display label.
@@ -837,6 +861,9 @@ async def fetch_stock_daily_prices(
             symbol = to_legacy_api(ref)
         provider = await get_market_data_provider()
         user_id = _get_user_id(config)
+        # Concurrent freshness fetch on the resolved symbol so the live stamp and
+        # the price history agree on spelling; awaited only on the success paths.
+        stamp_task = asyncio.create_task(_live_stamp_for(provider, [symbol], user_id))
 
         # Default to last 60 trading days if no parameters
         if not start_date and not end_date and not limit:
@@ -870,6 +897,7 @@ async def fetch_stock_daily_prices(
 
         if not results:
             logger.warning(f"No price data found for {symbol}")
+            stamp_task.cancel()
             timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
             content = f"""## Stock Price Data: {symbol}
 **Retrieved:** {timestamp}
@@ -1003,16 +1031,23 @@ No price data available for the specified period."""
             logger.debug(
                 f"Retrieved {num_days} days for {symbol}, returning normalized summary"
             )
-            return header + _format_price_summary(stats), artifact
+            content = header + _format_price_summary(stats)
         else:
             # Return markdown table for short periods
             logger.debug(
                 f"Retrieved {num_days} daily price records for {symbol}, returning markdown table"
             )
-            return header + _format_price_data_as_table(results), artifact
+            content = header + _format_price_data_as_table(results)
+
+        stamp = await stamp_task
+        if stamp:
+            content = f"{stamp}\n\n{content}"
+        return content, artifact
 
     except Exception as e:
         logger.error(f"Error retrieving daily prices for {symbol}: {e}")
+        if stamp_task:
+            stamp_task.cancel()
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         content = f"""## Stock Price Data: {symbol}
 **Retrieved:** {timestamp}
@@ -2161,6 +2196,18 @@ No data found for symbol {symbol}"""
 
             output_lines.append("")
 
+        # Prefix a live freshness stamp when a real-time snapshot is available and
+        # the market is open. Best-effort: a malformed snapshot must never blow
+        # away the already-assembled overview.
+        stamp = None
+        if snapshot_data:
+            try:
+                stamp = build_live_stamp([snapshot_data])
+            except Exception:
+                stamp = None
+        if stamp:
+            output_lines.insert(0, stamp + "\n")
+
         result = "\n".join(output_lines)
         logger.debug(f"Retrieved comprehensive investment overview for {symbol}")
 
@@ -2681,6 +2728,70 @@ Error retrieving sector performance data: {str(e)}"""
         }
 
 
+_REGION_INDEX_BASKETS: Dict[str, List[str]] = {
+    "us": ["^GSPC", "^IXIC", "^DJI", "^RUT"],
+    "cn": ["000001.SS", "399001.SZ", "000300.SS"],
+    "hk": ["^HSI", "^HSCE"],
+    "jp": ["^N225"],
+    "uk": ["^FTSE"],
+    "eu": ["^GDAXI", "^FCHI", "^STOXX50E"],
+    "global": ["^GSPC", "^IXIC", "^HSI", "^N225", "^FTSE", "^GDAXI"],
+}
+
+
+async def fetch_market_overview(
+    region: str = "us",
+    indices: Optional[List[str]] = None,
+    limit: int = 30,
+    config: Optional[RunnableConfig] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Region market overview: index basket + sector performance (US only)."""
+    region = (region or "us").strip().lower()
+    basket = indices or _REGION_INDEX_BASKETS.get(region)
+    if basket is None:
+        supported = ", ".join(sorted(_REGION_INDEX_BASKETS))
+        return (
+            f"Unknown region '{region}'. Supported regions: {supported}.",
+            {"type": "market_overview", "region": region},
+        )
+
+    if region == "us":
+        (idx_content, idx_artifact), (sec_content, sec_artifact) = await asyncio.gather(
+            fetch_market_indices(indices=basket, limit=limit, config=config),
+            fetch_sector_performance(),
+        )
+    else:
+        idx_content, idx_artifact = await fetch_market_indices(
+            indices=basket, limit=limit, config=config
+        )
+        sec_content, sec_artifact = None, None
+
+    parts = [f"## Market Overview — {region.upper()}", idx_content]
+    artifact: Dict[str, Any] = {
+        "type": "market_overview",
+        "region": region,
+        "indices": idx_artifact,
+    }
+    if sec_content is not None:
+        parts.append(sec_content)
+        artifact["sectors"] = sec_artifact
+    else:
+        parts.append("_Sector breakdown unavailable for this region (US only)._")
+
+    # Live index-level stamp during open sessions (best-effort, never raises).
+    try:
+        provider = await get_market_data_provider()
+        snaps = await provider.get_snapshots(
+            basket, asset_type="indices", user_id=_get_user_id(config)
+        )
+        stamp = build_live_stamp(snaps or [])
+    except Exception:
+        stamp = None
+    if stamp:
+        parts.insert(0, stamp)
+    return "\n\n".join(parts), artifact
+
+
 async def fetch_earnings_transcript(symbol: str, year: int, quarter: int) -> str:
     """
     Fetch earnings call transcript.
@@ -3165,3 +3276,39 @@ async def fetch_market_movers(
             "type": "market_movers", "results": [],
             "error": str(e),
         }
+
+
+async def fetch_quote(
+    symbols: List[str],
+    asset_type: str = "stocks",
+    config: Optional[RunnableConfig] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Fetch real-time quotes for up to 20 symbols via the snapshot provider chain."""
+    empty = {"type": "quote", "quotes": []}
+    syms = [s.strip().upper() for s in (symbols or []) if s and s.strip()][:20]
+    if not syms:
+        return "No symbols provided.", empty
+    try:
+        provider = await get_market_data_provider()
+        user_id = _get_user_id(config)
+        # Canonicalize each symbol to the legacy REST spelling the snapshot
+        # provider chain expects (e.g. "0700.HK", index "^GSPC" -> "GSPC").
+        resolved = []
+        for s in syms:
+            ref = resolve_ref(s)
+            resolved.append(to_legacy_api(ref) if ref is not None else s)
+        snaps = await provider.get_snapshots(resolved, asset_type=asset_type, user_id=user_id)
+        if not snaps:
+            return f"No quote data available for {', '.join(syms)}.", empty
+        content = format_quote_block(snaps)
+        # FMP lstrips the "^" prefix off index symbols in the returned snapshot
+        # (request "^GSPC" -> snapshot symbol "GSPC"), so diff on the
+        # caret-stripped form to avoid false "no data" for indices.
+        returned = {(s.get("symbol") or "").lstrip("^").upper() for s in snaps}
+        missing = sorted(s for s in syms if s.lstrip("^") not in returned)
+        if missing:
+            content += f"\n(no data: {', '.join(missing)})"
+        return content, {"type": "quote", "quotes": snaps}
+    except Exception as e:
+        logger.error(f"Error fetching quotes for {syms}: {e}")
+        return f"Error fetching quotes: {e}", empty

@@ -18,17 +18,17 @@ from langchain_core.tools import tool
 
 from .implementations import (
     fetch_company_overview,
-    fetch_market_indices,
+    fetch_daily_prices,
     fetch_market_movers,
+    fetch_market_overview,
     fetch_options_chain,
-    fetch_sector_performance,
-    fetch_stock_daily_prices,
+    fetch_quote,
     fetch_stock_screener,
 )
 
 
 @tool(response_format="content_and_artifact")
-async def get_stock_daily_prices(
+async def get_daily_prices(
     symbol: str,
     config: RunnableConfig,
     start_date: Optional[str] = None,
@@ -45,7 +45,7 @@ async def get_stock_daily_prices(
         end_date: End "YYYY-MM-DD" (optional).
         limit: Max records when no date range is given (default 60 trading days).
     """
-    content, artifact = await fetch_stock_daily_prices(
+    content, artifact = await fetch_daily_prices(
         symbol, start_date, end_date, limit, config=config
     )
     return content, artifact
@@ -68,42 +68,43 @@ async def get_company_overview(
 
 
 @tool(response_format="content_and_artifact")
-async def get_market_indices(
+async def get_quote(
+    symbols: List[str],
     config: RunnableConfig,
-    indices: Optional[List[str]] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    limit: int = 60,
-) -> Tuple[Union[List[Dict[str, Any]], str], Dict[str, Any]]:
+    asset_type: str = "stocks",
+) -> Tuple[str, Dict[str, Any]]:
     """
-    Historical OHLCV bars for one or more market indices (default: major US indices).
+    Real-time quotes only — cheap and fast. Call it freely whenever you need the
+    current price, including a re-check right before stating a price in your answer.
 
     Args:
-        indices: Index symbols; default ["^GSPC", "^IXIC", "^DJI", "^RUT"]
-            (S&P 500, NASDAQ, Dow Jones, Russell 2000).
-        start_date: Start "YYYY-MM-DD" (optional).
-        end_date: End "YYYY-MM-DD" (optional).
-        limit: Records per index (default 60).
+        symbols: Up to 20 tickers — US "NVDA", A-share "600519.SS", HK "0700.HK".
+        asset_type: "stocks" (default) or "indices" for index symbols like "^GSPC".
     """
-    content, artifact = await fetch_market_indices(
-        indices, start_date, end_date, limit, config=config
-    )
+    content, artifact = await fetch_quote(symbols, asset_type=asset_type, config=config)
     return content, artifact
 
 
 @tool(response_format="content_and_artifact")
-async def get_sector_performance(
-    date: Optional[str] = None,
-) -> Tuple[Union[List[Dict[str, Any]], str], Dict[str, Any]]:
+async def get_market_overview(
+    config: RunnableConfig,
+    region: str = "us",
+    indices: Optional[List[str]] = None,
+    limit: int = 30,
+) -> Tuple[str, Dict[str, Any]]:
     """
-    US stock-market sector performance — which sectors (Technology, Healthcare,
-    Energy, Financials, …) are up or down on the day. US only; not for non-US markets.
+    Big-picture market view for a region — major index performance, plus daily
+    sector performance for the US.
 
     Args:
-        date: Analysis date "YYYY-MM-DD" (default: latest available). Historical
-            dates may be unavailable on the current data plan.
+        region: "us" (default), "cn", "hk", "jp", "uk", "eu", or "global".
+            Sector breakdown is US only.
+        indices: Explicit index symbols overriding the region basket (e.g. ["^VIX"]).
+        limit: Trading days of index history to summarize (default 30).
     """
-    content, artifact = await fetch_sector_performance(date)
+    content, artifact = await fetch_market_overview(
+        region=region, indices=indices, limit=limit, config=config
+    )
     return content, artifact
 
 

@@ -6,21 +6,27 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import pytz
 
 from src.tools.market_data.implementations import (
     _calculate_price_statistics,
     _format_price_data_as_table,
     _format_price_summary,
+    _normalize_market_bars,
     fetch_company_overview,
+    fetch_daily_prices,
     fetch_market_indices,
     fetch_market_movers,
+    fetch_market_overview,
     fetch_options_chain,
+    fetch_quote,
     fetch_sector_performance,
-    fetch_stock_daily_prices,
     fetch_stock_screener,
 )
 
 _MOD = "src.tools.market_data.implementations"
+_ET = pytz.timezone("US/Eastern")
+_FIXED_ET = _ET.localize(datetime(2026, 7, 1, 14, 32, 5))
 
 # ---------------------------------------------------------------------------
 # Helpers — canned data
@@ -170,6 +176,66 @@ class TestCalculatePriceStatistics:
         assert stats["max_close"] == 115
 
 
+class TestNanSafety:
+    """Non-finite floats (a forming Yahoo bar) must never poison output."""
+
+    def test_normalize_market_bars_nan_close_does_not_poison_change(self):
+        import math
+
+        base = {"open": 10.0, "high": 11.0, "low": 9.0, "volume": 100}
+        bars = [
+            {**base, "time": 1_000_000, "close": 10.0},
+            {**base, "time": 2_000_000, "close": float("nan")},
+            {**base, "time": 3_000_000, "close": 12.0},
+        ]
+        result = _normalize_market_bars(bars, "TEST")
+
+        for row in result:
+            for key in ("close", "change", "changePercent"):
+                v = row[key]
+                assert v is None or math.isfinite(v), f"{key} is non-finite: {v}"
+
+        # Newest-first: result[0] is the third bar. Its change must be
+        # computed against the last FINITE close (10.0), not NaN.
+        assert result[0]["close"] == 12.0
+        assert result[0]["change"] == pytest.approx(2.0)
+        assert result[0]["changePercent"] == pytest.approx(20.0)
+        # The NaN bar itself renders as missing data.
+        assert result[1]["close"] is None
+        assert result[1]["change"] is None
+
+    def test_calculate_price_statistics_nan_tail_row(self):
+        import math
+
+        data = _make_daily_records(5)
+        data.insert(0, {  # newest-first: NaN forming bar at the head
+            "date": "2025-02-01",
+            "symbol": "AAPL",
+            "open": float("nan"),
+            "high": float("nan"),
+            "low": float("nan"),
+            "close": float("nan"),
+            "volume": float("nan"),
+        })
+        stats = _calculate_price_statistics(data)
+
+        for key, v in stats.items():
+            if isinstance(v, float):
+                assert math.isfinite(v), f"stats[{key!r}] is non-finite: {v}"
+
+    def test_format_percentage_nan_is_na(self):
+        from src.tools.market_data.utils import format_percentage
+
+        assert format_percentage(float("nan")) == format_percentage(None) == "N/A"
+        assert format_percentage(float("inf")) == "N/A"
+
+    def test_format_percentage_finite_unchanged(self):
+        from src.tools.market_data.utils import format_percentage
+
+        assert format_percentage(5.234) == "+5.23%"
+        assert format_percentage(-2.15) == "-2.15%"
+
+
 class TestFormatPriceDataAsTable:
     def test_empty_data(self):
         assert _format_price_data_as_table([]) == "No price data available."
@@ -208,10 +274,10 @@ class TestFormatPriceSummary:
 
 
 # ---------------------------------------------------------------------------
-# fetch_stock_daily_prices
+# fetch_daily_prices
 # ---------------------------------------------------------------------------
 
-class TestFetchStockDailyPrices:
+class TestFetchDailyPrices:
     @pytest.mark.asyncio
     async def test_short_period_returns_table(self):
         """< 14 days should return markdown table format."""
@@ -219,7 +285,7 @@ class TestFetchStockDailyPrices:
         provider = _make_fake_market_provider(daily_bars=bars)
 
         with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
-            content, artifact = await fetch_stock_daily_prices("AAPL", limit=5)
+            content, artifact = await fetch_daily_prices("AAPL", limit=5)
 
         assert "Daily Prices" in content
         assert "| Date" in content
@@ -234,7 +300,7 @@ class TestFetchStockDailyPrices:
         provider = _make_fake_market_provider(daily_bars=bars)
 
         with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
-            content, artifact = await fetch_stock_daily_prices("AAPL", limit=20)
+            content, artifact = await fetch_daily_prices("AAPL", limit=20)
 
         assert "| Metric | Value |" in content
         assert "Period Open" in content
@@ -247,7 +313,7 @@ class TestFetchStockDailyPrices:
         provider = _make_fake_market_provider(daily_bars=[])
 
         with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
-            content, artifact = await fetch_stock_daily_prices("FAKE")
+            content, artifact = await fetch_daily_prices("FAKE")
 
         assert "No data available" in content
         assert artifact["type"] == "stock_prices"
@@ -260,7 +326,7 @@ class TestFetchStockDailyPrices:
         provider = _make_fake_market_provider(daily_bars=bars)
 
         with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
-            content, artifact = await fetch_stock_daily_prices(
+            content, artifact = await fetch_daily_prices(
                 "AAPL", start_date="2025-01-01", end_date="2025-01-05"
             )
 
@@ -279,7 +345,7 @@ class TestFetchStockDailyPrices:
         )
 
         with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
-            content, artifact = await fetch_stock_daily_prices("AAPL", limit=5)
+            content, artifact = await fetch_daily_prices("AAPL", limit=5)
 
         provider.get_intraday.assert_called_once()
         assert artifact["chart_interval"] == "5min"
@@ -292,7 +358,7 @@ class TestFetchStockDailyPrices:
         provider.get_intraday = AsyncMock(side_effect=Exception("API error"))
 
         with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
-            content, artifact = await fetch_stock_daily_prices("AAPL", limit=5)
+            content, artifact = await fetch_daily_prices("AAPL", limit=5)
 
         assert artifact["chart_interval"] == "daily"
 
@@ -303,10 +369,46 @@ class TestFetchStockDailyPrices:
         provider = _make_fake_market_provider(daily_bars=bars)
 
         with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
-            content, artifact = await fetch_stock_daily_prices("AAPL")
+            content, artifact = await fetch_daily_prices("AAPL")
 
         # Should call with date range (limit logic converts to date range)
         provider.get_daily.assert_called_once()
+
+
+class TestFreshnessStamp:
+    @pytest.mark.asyncio
+    async def test_daily_prices_stamped_when_live(self):
+        bars = _make_provider_bars(5)
+        provider = _make_fake_market_provider(daily_bars=bars)
+        provider.get_snapshots = AsyncMock(return_value=[
+            {"symbol": "AAPL", "price": 210.0, "change_percent": 1.1,
+             "volume": 1_000, "last_trade_price": 211.50, "market_status": "open"},
+        ])
+        with patch(f"{_MOD}.get_market_data_provider", return_value=provider), \
+             patch("src.tools.market_data.quote_format.get_market_session",
+                   return_value=("REGULAR_HOURS", _FIXED_ET)):
+            content, _ = await fetch_daily_prices("AAPL", limit=5)
+        assert content.startswith("[Live: AAPL $211.50")
+
+    @pytest.mark.asyncio
+    async def test_daily_prices_unstamped_when_closed(self):
+        bars = _make_provider_bars(5)
+        provider = _make_fake_market_provider(daily_bars=bars)
+        provider.get_snapshots = AsyncMock(return_value=[])
+        with patch(f"{_MOD}.get_market_data_provider", return_value=provider), \
+             patch("src.tools.market_data.quote_format.get_market_session",
+                   return_value=("CLOSED", _FIXED_ET)):
+            content, _ = await fetch_daily_prices("AAPL", limit=5)
+        assert not content.startswith("[Live:")
+
+    @pytest.mark.asyncio
+    async def test_daily_prices_snapshot_failure_is_silent(self):
+        bars = _make_provider_bars(5)
+        provider = _make_fake_market_provider(daily_bars=bars)
+        provider.get_snapshots = AsyncMock(side_effect=RuntimeError("down"))
+        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
+            content, _ = await fetch_daily_prices("AAPL", limit=5)
+        assert "Daily Prices" in content  # normal output, no crash
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +573,59 @@ class TestFetchCompanyOverview:
 
         financial.get_company_profile.assert_called_once_with("ZZZZ")
 
+    @pytest.mark.asyncio
+    async def test_malformed_snapshot_stamp_failure_does_not_lose_report(
+        self, full_financial, full_profile
+    ):
+        """A snapshot with an unparsable price must not blow away the whole report."""
+        provider = _make_fake_financial_provider(financial=full_financial)
+        market_provider = _make_fake_market_provider()
+        market_provider.get_snapshots = AsyncMock(return_value=[
+            {"symbol": "AAPL", "market_status": "open", "last_trade_price": "N/A"},
+        ])
+        with (
+            patch(f"{_MOD}.get_financial_data_provider", return_value=provider),
+            patch(f"{_MOD}.get_market_data_provider", return_value=market_provider),
+            patch(f"{_MOD}._fmp_request", return_value=[]),
+            patch("src.tools.market_data.quote_format.get_market_session",
+                  return_value=("REGULAR_HOURS", _FIXED_ET)),
+        ):
+            content, artifact = await fetch_company_overview("AAPL")
+
+        assert "Apple Inc." in content
+        assert "Technology" in content
+        assert artifact["type"] == "company_overview"
+        assert artifact["symbol"] == "AAPL"
+        assert "error" not in artifact
+        assert not content.startswith("[Live:")
+
+    @pytest.mark.asyncio
+    async def test_stamped_when_snapshot_valid_and_market_open(
+        self, full_financial, full_profile
+    ):
+        """Valid snapshot + open market should prefix content with the [Live: ...] stamp."""
+        provider = _make_fake_financial_provider(financial=full_financial)
+        market_provider = _make_fake_market_provider()
+        market_provider.get_snapshots = AsyncMock(return_value=[
+            {
+                "symbol": "AAPL",
+                "price": 235.50,
+                "last_trade_price": 236.10,
+                "change_percent": 0.99,
+                "market_status": "open",
+            },
+        ])
+        with (
+            patch(f"{_MOD}.get_financial_data_provider", return_value=provider),
+            patch(f"{_MOD}.get_market_data_provider", return_value=market_provider),
+            patch(f"{_MOD}._fmp_request", return_value=[]),
+            patch("src.tools.market_data.quote_format.get_market_session",
+                  return_value=("REGULAR_HOURS", _FIXED_ET)),
+        ):
+            content, artifact = await fetch_company_overview("AAPL")
+
+        assert content.startswith("[Live: AAPL $236.10")
+
 
 # ---------------------------------------------------------------------------
 # fetch_market_indices
@@ -603,6 +758,72 @@ class TestFetchSectorPerformance:
         assert "Technology" in content
         assert artifact["type"] == "sector_performance"
         financial.get_sector_performance.assert_awaited_once_with(target_date="2025-01-15")
+
+
+# ---------------------------------------------------------------------------
+# fetch_market_overview
+# ---------------------------------------------------------------------------
+
+def _no_snapshot_provider():
+    provider = AsyncMock()
+    provider.get_snapshots = AsyncMock(return_value=[])
+    return provider
+
+
+class TestFetchMarketOverview:
+    @pytest.mark.asyncio
+    async def test_us_includes_sectors(self):
+        with patch(f"{_MOD}.fetch_market_indices",
+                   AsyncMock(return_value=("IDX-CONTENT", {"type": "market_indices"}))), \
+             patch(f"{_MOD}.fetch_sector_performance",
+                   AsyncMock(return_value=("SECTOR-CONTENT", {"type": "sector_performance", "sectors": []}))), \
+             patch(f"{_MOD}.get_market_data_provider", return_value=_no_snapshot_provider()):
+            content, artifact = await fetch_market_overview(region="us")
+        assert "IDX-CONTENT" in content
+        assert "SECTOR-CONTENT" in content
+        assert artifact["type"] == "market_overview"
+        assert artifact["region"] == "us"
+
+    @pytest.mark.asyncio
+    async def test_live_index_stamp_when_open(self):
+        idx_snaps = [{"symbol": "^GSPC", "price": 6120.5, "change_percent": 0.42,
+                      "volume": None, "last_trade_price": None, "market_status": "open"}]
+        provider = AsyncMock()
+        provider.get_snapshots = AsyncMock(return_value=idx_snaps)
+        with patch(f"{_MOD}.fetch_market_indices", AsyncMock(return_value=("IDX", {}))), \
+             patch(f"{_MOD}.fetch_sector_performance", AsyncMock(return_value=("SEC", {}))), \
+             patch(f"{_MOD}.get_market_data_provider", return_value=provider), \
+             patch("src.tools.market_data.quote_format.get_market_session",
+                   return_value=("REGULAR_HOURS", _FIXED_ET)):
+            content, _ = await fetch_market_overview(region="us")
+        assert content.startswith("[Live: ^GSPC $6,120.50")
+
+    @pytest.mark.asyncio
+    async def test_non_us_degrades_sectors_gracefully(self):
+        with patch(f"{_MOD}.fetch_market_indices",
+                   AsyncMock(return_value=("IDX-CONTENT", {"type": "market_indices"}))) as mock_idx, \
+             patch(f"{_MOD}.get_market_data_provider", return_value=_no_snapshot_provider()):
+            content, artifact = await fetch_market_overview(region="hk")
+        assert "IDX-CONTENT" in content
+        assert "Sector breakdown unavailable" in content
+        assert "sectors" not in artifact
+        # HK basket passed through
+        assert mock_idx.await_args.kwargs["indices"] == ["^HSI", "^HSCE"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_region(self):
+        content, artifact = await fetch_market_overview(region="mars")
+        assert "Unknown region" in content
+        assert "us" in content  # lists supported regions
+
+    @pytest.mark.asyncio
+    async def test_explicit_indices_override_basket(self):
+        with patch(f"{_MOD}.fetch_market_indices",
+                   AsyncMock(return_value=("X", {}))) as mock_idx, \
+             patch(f"{_MOD}.fetch_sector_performance", AsyncMock(return_value=("S", {}))), \
+             patch(f"{_MOD}.get_market_data_provider", return_value=_no_snapshot_provider()):
+            await fetch_market_overview(region="us", indices=["^VIX"])
+        assert mock_idx.await_args.kwargs["indices"] == ["^VIX"]
 
 
 # ---------------------------------------------------------------------------
@@ -900,14 +1121,14 @@ class TestMarketHeaderLabel:
     async def test_us_header_byte_compatible(self):
         provider = _make_fake_market_provider(daily_bars=_make_provider_bars(5))
         with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
-            content, _ = await fetch_stock_daily_prices("AAPL", limit=5)
+            content, _ = await fetch_daily_prices("AAPL", limit=5)
         assert "**Market:** US Stock" in content
 
     @pytest.mark.asyncio
     async def test_hk_header(self):
         provider = _make_fake_market_provider(daily_bars=_make_provider_bars(5))
         with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
-            content, _ = await fetch_stock_daily_prices("0700.HK", limit=5)
+            content, _ = await fetch_daily_prices("0700.HK", limit=5)
         assert "**Market:** HK Stock" in content
         assert "**Market:** US Stock" not in content
 
@@ -915,7 +1136,7 @@ class TestMarketHeaderLabel:
     async def test_ashare_header(self):
         provider = _make_fake_market_provider(daily_bars=_make_provider_bars(5))
         with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
-            content, _ = await fetch_stock_daily_prices("600519.SS", limit=5)
+            content, _ = await fetch_daily_prices("600519.SS", limit=5)
         assert "**Market:** A-Share" in content
 
 
@@ -1001,3 +1222,72 @@ class TestOverviewSessionClockGating:
         )
         # Prices still localize to the HK listing currency.
         assert "HK$" in content
+
+
+# ---------------------------------------------------------------------------
+# fetch_quote
+# ---------------------------------------------------------------------------
+
+def _make_fake_snapshot_provider(snaps):
+    provider = AsyncMock()
+    provider.get_snapshots = AsyncMock(return_value=snaps)
+    return provider
+
+
+class TestFetchQuote:
+    @pytest.mark.asyncio
+    async def test_multi_symbol_quotes(self):
+        snaps = [
+            {"symbol": "NVDA", "price": 231.0, "change_percent": 2.31,
+             "volume": 187_000_000, "last_trade_price": 233.45, "market_status": "open"},
+            {"symbol": "TSLA", "price": 410.0, "change_percent": -1.02,
+             "volume": 95_000_000, "last_trade_price": 412.10, "market_status": "open"},
+        ]
+        provider = _make_fake_snapshot_provider(snaps)
+        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
+            content, artifact = await fetch_quote(["nvda", "TSLA"])
+        provider.get_snapshots.assert_awaited_once()
+        # Canonical entry: US tickers resolve to themselves and reach the provider.
+        assert provider.get_snapshots.await_args.args[0] == ["NVDA", "TSLA"]
+        assert "$233.45" in content
+        assert "TSLA" in content
+        assert artifact["type"] == "quote"
+        assert len(artifact["quotes"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_reports_missing_symbols(self):
+        snaps = [{"symbol": "NVDA", "price": 231.0, "change_percent": 2.31,
+                  "volume": 1, "last_trade_price": 233.45, "market_status": "open"}]
+        provider = _make_fake_snapshot_provider(snaps)
+        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
+            content, _ = await fetch_quote(["NVDA", "ZZZZ"])
+        assert "no data: ZZZZ" in content
+
+    @pytest.mark.asyncio
+    async def test_empty_symbols(self):
+        content, artifact = await fetch_quote([])
+        assert "No symbols" in content
+        assert artifact["quotes"] == []
+
+    @pytest.mark.asyncio
+    async def test_provider_error_returns_message(self):
+        provider = AsyncMock()
+        provider.get_snapshots = AsyncMock(side_effect=RuntimeError("boom"))
+        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
+            content, artifact = await fetch_quote(["NVDA"])
+        assert "Error" in content
+        assert artifact["quotes"] == []
+
+    @pytest.mark.asyncio
+    async def test_canonical_index_spelling_reaches_provider(self):
+        # "^GSPC" canonicalizes to its legacy REST spelling before the snapshot
+        # fetch, and FMP returns it caret-stripped — neither may read as missing.
+        snaps = [{"symbol": "GSPC", "price": 5000.0, "change_percent": 0.5,
+                  "volume": 0, "last_trade_price": 5000.0, "market_status": "open"}]
+        provider = _make_fake_snapshot_provider(snaps)
+        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
+            content, _ = await fetch_quote(["^GSPC"], asset_type="indices")
+        # Resolved (caret-stripped) spelling reached the provider.
+        assert provider.get_snapshots.await_args.args[0] == ["GSPC"]
+        assert "GSPC" in content
+        assert "no data" not in content

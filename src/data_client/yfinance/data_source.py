@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -66,6 +67,15 @@ def _exclusive_end(end: str) -> str:
         return (date.fromisoformat(end) + timedelta(days=1)).isoformat()
     except ValueError:
         return end
+
+
+def _finite(v: Any) -> float:
+    """Coerce to float, returning 0.0 for None/non-finite/unparseable values."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    return f if math.isfinite(f) else 0.0
 
 
 def _normalize_bar(idx, row: Any, scale: float = 1.0) -> dict[str, Any]:
@@ -128,8 +138,10 @@ def _fetch_single_snapshot(sym: str) -> dict[str, Any] | None:
     try:
         ticker = yf.Ticker(sym)
         fi = ticker.fast_info
-        price = float(fi.get("lastPrice", 0) or 0)
-        prev = float(fi.get("previousClose", 0) or 0)
+        # NaN is truthy, so `nan or 0` stays NaN — route every numeric field
+        # through _finite() so a snapshot can never carry non-finite floats.
+        price = _finite(fi.get("lastPrice", 0))
+        prev = _finite(fi.get("previousClose", 0))
         change = price - prev if prev else 0.0
         change_pct = (change / prev * 100) if prev else 0.0
         return {
@@ -139,10 +151,10 @@ def _fetch_single_snapshot(sym: str) -> dict[str, Any] | None:
             "change": round(change, 4),
             "change_percent": round(change_pct, 4),
             "previous_close": round(prev, 4),
-            "open": round(float(fi.get("open", 0) or 0), 4),
-            "high": round(float(fi.get("dayHigh", 0) or 0), 4),
-            "low": round(float(fi.get("dayLow", 0) or 0), 4),
-            "volume": int(fi.get("lastVolume", 0) or 0),
+            "open": round(_finite(fi.get("open", 0)), 4),
+            "high": round(_finite(fi.get("dayHigh", 0)), 4),
+            "low": round(_finite(fi.get("dayLow", 0)), 4),
+            "volume": int(_finite(fi.get("lastVolume", 0))),
             "market_status": None,
             "early_trading_change_percent": None,
             "late_trading_change_percent": None,
@@ -169,7 +181,8 @@ class YFinanceDataSource:
             raise ValueError(
                 f"Interval '{interval}' is not supported by yfinance"
             )
-        api_symbol = f"^{symbol}" if is_index and not symbol.startswith("^") else symbol
+        # Suffixed index symbols (000300.SS) are already valid — never caret them.
+        api_symbol = f"^{symbol}" if is_index and not symbol.startswith("^") and "." not in symbol else symbol
         scale = minor_unit_scale(symbol)
         return await asyncio.to_thread(
             _fetch_history, api_symbol, yf_interval, from_date, to_date, scale
@@ -183,7 +196,8 @@ class YFinanceDataSource:
         is_index: bool = False,
         user_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        api_symbol = f"^{symbol}" if is_index and not symbol.startswith("^") else symbol
+        # Suffixed index symbols (000300.SS) are already valid — never caret them.
+        api_symbol = f"^{symbol}" if is_index and not symbol.startswith("^") and "." not in symbol else symbol
         scale = minor_unit_scale(symbol)
         return await asyncio.to_thread(
             _fetch_history, api_symbol, "1d", from_date, to_date, scale
@@ -196,7 +210,7 @@ class YFinanceDataSource:
         user_id: str | None = None,
     ) -> list[dict[str, Any]]:
         prepared = [
-            (f"^{s}" if asset_type == "indices" and not s.startswith("^") else s)
+            (f"^{s}" if asset_type == "indices" and not s.startswith("^") and "." not in s else s)
             for s in symbols
         ]
         if not prepared:

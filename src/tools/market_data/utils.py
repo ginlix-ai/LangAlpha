@@ -6,6 +6,7 @@ Provides helper functions for formatting, market session detection, and FMP clie
 
 from typing import Optional, Tuple
 from datetime import datetime, time
+import math
 import pytz
 import logging
 
@@ -85,7 +86,10 @@ def format_percentage(value: Optional[float]) -> str:
     """
     if value is None:
         return "N/A"
-    return f"{value:+.2f}%" if isinstance(value, (int, float)) else str(value)
+    if isinstance(value, (int, float)):
+        # Non-finite (NaN/Inf) renders as "+nan%" otherwise — treat as missing.
+        return f"{value:+.2f}%" if math.isfinite(value) else "N/A"
+    return str(value)
 
 
 def get_rating_label(score: int) -> str:

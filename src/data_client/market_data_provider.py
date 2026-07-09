@@ -42,16 +42,31 @@ _SUFFIX_MAP: dict[str, str] = {
 }
 
 
+# Caret-prefixed indices carry no dot suffix, so the suffix parser would
+# misroute them to "us" and waste a doomed ginlix-data attempt.
+_CARET_INDEX_REGIONS: dict[str, str] = {
+    "^HSI": "hk", "^HSCE": "hk",
+    "^N225": "jp",
+    "^FTSE": "uk",
+    "^GDAXI": "eu", "^FCHI": "eu", "^STOXX50E": "eu",
+}
+
+
 def symbol_market(symbol: str) -> str:
     """Derive market region from a symbol's suffix (routing token).
 
-    Bare symbols (no dot) and ``.US`` suffixes are treated as US. Kept for
-    provider chain routing (``_market_matches``); timezone resolution moved to
-    the protocol (:func:`symbol_timezone`).
+    Bare symbols (no dot) and ``.US`` suffixes are treated as US. Known
+    caret-prefixed foreign indices are matched explicitly first, since they
+    carry no dot suffix for the suffix parser to key off of. Kept for provider
+    chain routing (``_market_matches``); timezone resolution moved to the
+    protocol (:func:`symbol_timezone`).
     """
+    symbol = symbol.upper()
+    if symbol in _CARET_INDEX_REGIONS:
+        return _CARET_INDEX_REGIONS[symbol]
     if "." not in symbol or symbol.endswith(".US"):
         return "us"
-    suffix = symbol.rsplit(".", 1)[-1].upper()
+    suffix = symbol.rsplit(".", 1)[-1]
     return _SUFFIX_MAP.get(suffix, "other")
 
 

@@ -68,7 +68,10 @@ class FMPDataSource:
 
     @staticmethod
     def _api_symbol(symbol: str, is_index: bool) -> str:
-        return f"^{symbol}" if is_index and not symbol.startswith("^") else symbol
+        # Suffixed index symbols (000300.SS) are already valid — never caret them.
+        if not is_index or symbol.startswith("^") or "." in symbol:
+            return symbol
+        return f"^{symbol}"
 
     @staticmethod
     def _normalize(row: dict[str, Any], tz: ZoneInfo, scale: float) -> dict[str, Any]:
