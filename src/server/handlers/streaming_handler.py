@@ -11,6 +11,7 @@ import copy
 import json
 import logging
 import re
+from datetime import datetime
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple, cast
 
 import json_repair
@@ -40,6 +41,56 @@ WORKFLOW_TIMEOUT = get_workflow_timeout()  # seconds
 SSE_EVENT_LOG_ENABLED = is_sse_event_log_enabled()
 
 MERGED_STREAM_CHUNK_MAX_BYTES_DEFAULT = get_merged_chunk_max_bytes()
+
+DEFAULT_TOKEN_THRESHOLD = 120000
+
+
+def resolve_token_threshold(agent_config=None) -> int:
+    """Per-request config → base config → default. Drives the UI ring.
+
+    Shared by the live handler and checkpoint replay so both stamp the same
+    ``threshold`` onto ``context_window`` token_usage events.
+    """
+    cfg = agent_config
+    if cfg is None:
+        from src.server.app import setup
+
+        cfg = setup.agent_config
+    if cfg is None:
+        return DEFAULT_TOKEN_THRESHOLD
+    return cfg.compaction.token_threshold
+
+
+def build_credit_usage_data(
+    thread_id: str,
+    token_usage: dict,
+    total_credits: float,
+    timestamp: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Aggregate per-model usage into the ``credit_usage`` wire payload.
+
+    Intentionally omits USD costs and model names (hidden from the client).
+    Shared by the live handler and table-sourced replay so both wires carry
+    the same shape.
+    """
+    total_input_tokens = 0
+    total_output_tokens = 0
+    total_tokens = 0
+    for usage in (token_usage or {}).get("by_model", {}).values():
+        total_input_tokens += usage.get("input_tokens", 0)
+        total_output_tokens += usage.get("output_tokens", 0)
+        total_tokens += usage.get("total_tokens", 0)
+
+    return {
+        "thread_id": thread_id,
+        "tokens": {
+            "input_tokens": total_input_tokens,
+            "output_tokens": total_output_tokens,
+            "total_tokens": total_tokens,
+        },
+        "total_credits": round(total_credits, 2),
+        "timestamp": timestamp or datetime.now().isoformat(),
+    }
 
 
 def _parse_tool_args(
@@ -686,6 +737,17 @@ class WorkflowStreamHandler:
                                     pass
                             continue
 
+                        # ``model_fallback`` arrives as a langgraph ui record
+                        # (push_ui_message dual-writes the custom stream + the
+                        # checkpointed ui channel); unwrap to the legacy wire
+                        # shape so the resilience branch below handles it.
+                        if (
+                            event_type == "ui"
+                            and event_data.get("name") == "model_fallback"
+                        ):
+                            event_type = "model_fallback"
+                            event_data = event_data.get("props") or {}
+
                         # Handle model resilience progress (retry / fallback).
                         # ``model_retry`` is transient — live + reconnect only
                         # (accumulate=False, like ``metadata``); ``model_fallback``
@@ -731,6 +793,24 @@ class WorkflowStreamHandler:
                             )
                             continue
 
+                        # Official langgraph.graph.ui messages (push_ui_message
+                        # dual-writes to the custom stream + the ui state key).
+                        # Map onto the existing artifact SSE event so the wire
+                        # contract is unchanged.
+                        if event_type == "ui":
+                            ui_agent = self._extract_agent_name(agent_from_stream, {})
+                            ui_artifact_event = {
+                                "artifact_type": event_data.get("name"),
+                                "artifact_id": event_data.get("id"),
+                                "agent": ui_agent,
+                                "timestamp": None,
+                                "status": None,
+                                "payload": event_data.get("props", {}),
+                            }
+                            self._track_artifact_state(ui_artifact_event)
+                            yield self._format_sse_event("artifact", ui_artifact_event)
+                            continue
+
                         # Check if this is an artifact event from middleware
                         # Generic handler: any event with artifact_type is emitted as artifact SSE
                         artifact_type = event_data.get("artifact_type")
@@ -759,28 +839,10 @@ class WorkflowStreamHandler:
                             yield self._format_sse_event("artifact", artifact_event)
                     continue
 
-                # Handle state updates (stream_mode="updates")
+                # State updates (stream_mode="updates") carry no SSE payloads of
+                # their own — the mode stays subscribed because interrupts
+                # arrive through it (handled above via "__interrupt__").
                 if stream_mode == "updates":
-                    if isinstance(event_data, dict):
-                        # Updates are structured as: {node_name: {field: value, ...}}
-                        # Look inside each node's update for pending_file_events (now artifact events)
-                        for node_name, node_update in event_data.items():
-                            if isinstance(node_update, dict) and "pending_file_events" in node_update:
-                                file_events = node_update.get("pending_file_events", [])
-                                if file_events:  # Only emit if there are actually events
-                                    # Extract agent from stream metadata (same as messages stream)
-                                    agent_name = self._extract_agent_name(agent_from_stream, {})
-
-                                    logger.debug(
-                                        f"[ARTIFACT] Emitting {len(file_events)} pending artifact events from {node_name} "
-                                        f"(agent={agent_name})"
-                                    )
-                                    for event_payload in file_events:
-                                        # Enrich event with agent if not already present
-                                        if "agent" not in event_payload or not event_payload["agent"]:
-                                            event_payload["agent"] = agent_name
-                                        self._track_artifact_state(event_payload)
-                                        yield self._format_sse_event("artifact", event_payload)
                     continue
 
                 # Process message chunks (stream_mode="messages")
@@ -1722,35 +1784,11 @@ class WorkflowStreamHandler:
         token_usage: dict,
         total_credits: float
     ) -> str:
-        """Format a credit_usage SSE event with aggregated token counts and total credits.
-
-        Intentionally omits USD costs and model names (hidden from client for privacy).
-        """
-        from datetime import datetime
-
-        # Aggregate token counts across all models (NO model names exposed)
-        total_input_tokens = 0
-        total_output_tokens = 0
-        total_tokens = 0
-
-        for model, usage in token_usage.get("by_model", {}).items():
-            total_input_tokens += usage.get("input_tokens", 0)
-            total_output_tokens += usage.get("output_tokens", 0)
-            total_tokens += usage.get("total_tokens", 0)
-
-        # Build credit event data (aggregated token counts + credits only, no model names or USD costs)
-        event_data = {
-            "thread_id": thread_id,
-            "tokens": {
-                "input_tokens": total_input_tokens,
-                "output_tokens": total_output_tokens,
-                "total_tokens": total_tokens
-            },
-            "total_credits": round(total_credits, 2),
-            "timestamp": datetime.now().isoformat()
-        }
-
-        return self._format_sse_event("credit_usage", event_data)
+        """Format a credit_usage SSE event with aggregated token counts and total credits."""
+        return self._format_sse_event(
+            "credit_usage",
+            build_credit_usage_data(thread_id, token_usage, total_credits),
+        )
 
     def get_sse_events(self) -> Optional[List[Dict[str, Any]]]:
         """Return merged SSE events for persistence."""
@@ -1843,18 +1881,8 @@ class WorkflowStreamHandler:
 
         return self.get_sse_events()
 
-    _DEFAULT_TOKEN_THRESHOLD = 120000
-
     def _resolve_token_threshold(self) -> int:
-        """Per-request config → base config → default. Drives the UI ring."""
-        cfg = self.agent_config
-        if cfg is None:
-            from src.server.app import setup
-
-            cfg = setup.agent_config
-        if cfg is None:
-            return self._DEFAULT_TOKEN_THRESHOLD
-        return cfg.compaction.token_threshold
+        return resolve_token_threshold(self.agent_config)
 
     def get_tool_usage(self) -> Optional[Dict[str, int]]:
         """Return tool-name → count usage map, or None. Result is cached for cross-context access."""

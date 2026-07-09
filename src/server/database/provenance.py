@@ -221,6 +221,33 @@ def _row_binds(
     )
 
 
+def provenance_row_to_event(row: dict[str, Any]) -> dict[str, Any]:
+    """Wire ``provenance`` event data from one table row (inverse of extraction).
+
+    ``provenance_record_id`` serves as the event ``record_id`` — the original
+    emit-time uuid isn't persisted, and nothing correlates on it across turns.
+    """
+    timestamp = row.get("source_timestamp") or row.get("created_at")
+    return {
+        "record_id": str(row.get("provenance_record_id")),
+        "source_type": row.get("source_type"),
+        "identifier": row.get("identifier"),
+        "title": row.get("title"),
+        "detail": row.get("detail"),
+        "provider": row.get("provider"),
+        "tool_call_id": row.get("tool_call_id"),
+        "args_fingerprint": row.get("args_fingerprint"),
+        "args": row.get("args"),
+        "result_sha256": row.get("result_sha256"),
+        "result_size": row.get("result_size"),
+        "result_snippet": row.get("result_snippet"),
+        "timestamp": (
+            timestamp.isoformat() if hasattr(timestamp, "isoformat") else timestamp
+        ),
+        "agent": row.get("agent"),
+    }
+
+
 async def insert_provenance_records(
     conn,
     *,

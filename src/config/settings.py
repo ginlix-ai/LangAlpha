@@ -249,6 +249,17 @@ def get_conversation_pool_max() -> int:
     return _env_pool_size("POSTGRES_CONVERSATION_POOL_MAX", default=50)
 
 
+def get_replay_projection_cache_ttl() -> int:
+    """Env REPLAY_PROJECTION_CACHE_TTL_SECONDS, default 14 days. 0 disables."""
+    default = 14 * 86400
+    try:
+        return max(
+            0, int(os.getenv("REPLAY_PROJECTION_CACHE_TTL_SECONDS", str(default)))
+        )
+    except ValueError:
+        return default
+
+
 def get_redis_socket_connect_timeout() -> int:
     return get_infrastructure_config().redis.socket_connect_timeout
 

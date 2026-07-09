@@ -652,6 +652,12 @@ async def astream_ptc_workflow(
             plan_mode=effective_plan_mode,
             skill_contexts=skill_contexts,
             skill_dirs=skill_dirs,
+            run_id=run_id,
+            turn_index=(
+                await persistence_service.get_or_calculate_turn_index()
+                if persistence_service
+                else None
+            ),
         )
         # Propagate run_id to LangGraph via the top-level config key; it
         # lands on ExecutionInfo.run_id and CheckpointMetadata.run_id so

@@ -602,6 +602,8 @@ def build_graph_config(
     extra_configurable: dict | None = None,
     skill_contexts: list[dict] | None = None,
     skill_dirs: list[str] | None = None,
+    run_id: str | None = None,
+    turn_index: int | None = None,
 ) -> dict:
     """Build the LangGraph ``config`` dict shared by flash and PTC handlers.
 
@@ -609,6 +611,9 @@ def build_graph_config(
     ``extra_configurable`` is an optional dict merged into ``configurable``.
     ``skill_contexts`` (+ ``skill_dirs``) are passed to ``SkillsMiddleware`` so it
     injects each requested skill's SKILL.md body once; omit on HITL/replay turns.
+    ``run_id`` / ``turn_index`` are stamped into config metadata so the run's
+    checkpoints self-describe (checkpoint-sourced replay can correlate turns by
+    these instead of ordinal matching).
     """
     workflow_type = "flash_agent" if mode == "flash" else "ptc_agent"
 
@@ -630,6 +635,10 @@ def build_graph_config(
         platform=request.platform,
         **({"plan_mode": plan_mode} if plan_mode is not None else {}),
     )
+    if run_id is not None:
+        langsmith_metadata["run_id"] = run_id
+    if turn_index is not None:
+        langsmith_metadata["turn_index"] = turn_index
 
     configurable: dict = {
         "thread_id": thread_id,
@@ -964,7 +973,11 @@ async def handle_workflow_error(
                         error_message=error_msg,
                         errors=[error_msg],
                         execution_time=time.time() - start_time,
-                        metadata=persist_metadata,
+                        metadata={
+                            **persist_metadata,
+                            "error_type": error_type,
+                            "error_class": type(e).__name__,
+                        },
                         per_call_records=_per_call_records,
                         tool_usage=_tool_usage,
                         sse_events=_sse_events,
@@ -1022,12 +1035,20 @@ async def handle_workflow_error(
         # Non-recoverable error
         logger.exception(f"[{log_prefix.replace('CHAT', 'ERROR')}] thread_id={thread_id}: {e}")
 
+        error_type_label = _classify_non_recoverable_error_type(e)
         if persistence_service:
             try:
                 await persistence_service.persist_error(
                     error_message=str(e),
                     execution_time=time.time() - start_time,
-                    metadata=persist_metadata,
+                    # error_type/error_class ride the row so replay can
+                    # reconstruct the terminal error event it was persisted
+                    # before (the yield below happens after this persist).
+                    metadata={
+                        **persist_metadata,
+                        "error_type": error_type_label,
+                        "error_class": type(e).__name__,
+                    },
                     per_call_records=_per_call_records,
                     tool_usage=_tool_usage,
                     sse_events=_sse_events,
@@ -1049,7 +1070,6 @@ async def handle_workflow_error(
                 f"{thread_id}: {tracker_err}"
             )
 
-        error_type_label = _classify_non_recoverable_error_type(e)
         error_payload = {
             "thread_id": thread_id,
             "error": str(e),

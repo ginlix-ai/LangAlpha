@@ -178,6 +178,17 @@ class ConversationPersistenceService:
                     f"[ConversationPersistence] _on_pair_persisted callback failed "
                     f"for thread_id={self.thread_id} run_id={self.run_id}: {e}"
                 )
+        try:
+            from src.server.services.history.projection_cache import (
+                schedule_projection_refresh,
+            )
+
+            schedule_projection_refresh(self.thread_id)
+        except Exception as e:
+            logger.warning(
+                f"[ConversationPersistence] projection refresh scheduling failed "
+                f"for thread_id={self.thread_id}: {e}"
+            )
         await self.cleanup()
 
     async def _get_latest_checkpoint_id(self) -> str | None:
@@ -565,7 +576,7 @@ class ConversationPersistenceService:
                         interrupt_reason=None,
                         metadata=metadata,
                         warnings=None,
-                        errors=None,
+                        errors=errors,
                         execution_time=execution_time,
                         created_at=timestamp,
                         sse_events=sse_events,

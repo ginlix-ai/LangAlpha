@@ -19,6 +19,7 @@ downgrading langgraph below 1.2) cannot read — so keep the `langgraph`/
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from typing import Annotated, Any, cast
 
 from langchain.agents import AgentState
@@ -30,7 +31,8 @@ from langchain_core.messages import (
 )
 from langgraph.channels import DeltaChannel
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
-from typing_extensions import Required
+from langgraph.graph.ui import AnyUIMessage, ui_message_reducer
+from typing_extensions import NotRequired, Required
 
 # A full snapshot blob is written every N updates, bounding delta replay depth
 # (matches deepagents' tested default). Single source of truth for the
@@ -124,7 +126,13 @@ def messages_delta_reducer(  # noqa: C901, PLR0912
 
 
 class DeltaAgentState(AgentState):
-    """`AgentState` with a `DeltaChannel`-backed `messages` key."""
+    """`AgentState` with a `DeltaChannel`-backed `messages` key.
+
+    ``ui`` is the official `langgraph.graph.ui` channel: compact, non-derivable
+    replay records (e.g. image path→URL maps) persisted alongside the
+    transcript. Writes must carry a pre-stamped ``id`` — the reducer upserts by
+    id, so id-less records cannot be deduplicated on re-write.
+    """
 
     messages: Required[
         Annotated[
@@ -135,3 +143,4 @@ class DeltaAgentState(AgentState):
             ),
         ]
     ]
+    ui: NotRequired[Annotated[Sequence[AnyUIMessage], ui_message_reducer]]

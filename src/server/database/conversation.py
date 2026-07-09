@@ -2934,14 +2934,15 @@ async def delete_feedback(
 
 async def get_replay_thread_data(
     thread_id: str,
-) -> tuple[str | None, dict | None, list[dict], list[dict]]:
+) -> tuple[str | None, dict | None, list[dict], list[dict], list[dict], list[dict]]:
     """Fetch all data needed for thread replay in a single connection.
 
-    Consolidates 4 separate connection acquisitions (owner check, thread summary,
-    queries, responses) into 1, reducing pool pressure during concurrent replays.
+    Consolidates the separate connection acquisitions (owner check, thread
+    summary, queries, responses, usage rows, provenance rows) into 1, reducing
+    pool pressure during concurrent replays.
 
     Returns:
-        (owner_user_id, thread_summary, queries, responses)
+        (owner_user_id, thread_summary, queries, responses, usages, provenance)
     """
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -2957,12 +2958,12 @@ async def get_replay_thread_data(
             owner_id = owner_row["user_id"] if owner_row else None
 
             if owner_id is None:
-                return None, None, [], []
+                return None, None, [], [], [], []
 
             # 2. Thread summary
             await cur.execute(
                 """SELECT conversation_thread_id, workspace_id, current_status,
-                          thread_index, created_at, updated_at
+                          thread_index, latest_checkpoint_id, created_at, updated_at
                    FROM conversation_threads
                    WHERE conversation_thread_id = %s""",
                 (thread_id,),
@@ -2987,4 +2988,37 @@ async def get_replay_thread_data(
             )
             responses = [dict(r) for r in await cur.fetchall()]
 
-    return owner_id, dict(thread) if thread else None, queries, responses
+            # 5. Usage rows (table-sourced credit_usage reconstruction)
+            await cur.execute(
+                """SELECT conversation_response_id, token_usage, total_credits,
+                          created_at
+                   FROM conversation_usages
+                   WHERE conversation_thread_id = %s
+                   ORDER BY created_at ASC""",
+                (thread_id,),
+            )
+            usages = [dict(r) for r in await cur.fetchall()]
+
+            # 6. Provenance rows (table-sourced provenance reconstruction)
+            await cur.execute(
+                """SELECT provenance_record_id, conversation_response_id,
+                          turn_index, tool_call_id, source_type, identifier,
+                          title, detail, args_fingerprint, args, result_sha256,
+                          result_size, result_snippet, agent, provider,
+                          source_timestamp, created_at
+                   FROM provenance_records
+                   WHERE conversation_thread_id = %s
+                   ORDER BY turn_index ASC,
+                            source_timestamp ASC NULLS LAST, created_at ASC""",
+                (thread_id,),
+            )
+            provenance = [dict(r) for r in await cur.fetchall()]
+
+    return (
+        owner_id,
+        dict(thread) if thread else None,
+        queries,
+        responses,
+        usages,
+        provenance,
+    )

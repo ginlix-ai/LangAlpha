@@ -445,6 +445,12 @@ async def astream_flash_workflow(
             recursion_limit=get_flash_recursion_limit(),
             skill_contexts=skill_contexts,
             skill_dirs=skill_dirs,
+            run_id=run_id,
+            turn_index=(
+                await persistence_service.get_or_calculate_turn_index()
+                if persistence_service
+                else None
+            ),
         )
         graph_config["run_id"] = run_id
 

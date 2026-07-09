@@ -962,16 +962,40 @@ async def watch_thread(thread_id: str, x_user_id: CurrentUserId):
 
 
 @router.get("/{thread_id}/messages/replay")
-async def replay_thread_messages(thread_id: str, x_user_id: CurrentUserId):
-    """Replay a thread as SSE using persisted sse_events.
+async def replay_thread_messages(
+    thread_id: str,
+    x_user_id: CurrentUserId,
+    source: str = Query(
+        "auto",
+        pattern="^(auto|checkpoint|sse)$",
+        description=(
+            "Replay source: 'checkpoint' projects the transcript from LangGraph "
+            "checkpoints, 'sse' replays persisted sse_events, 'auto' prefers "
+            "checkpoint and falls back to sse when coverage is incomplete."
+        ),
+    ),
+    limit: int | None = Query(
+        None,
+        ge=1,
+        description=(
+            "Windowed replay: build only the most recent N turns from "
+            "checkpoints (bounds initial-load latency to the window). "
+            "Checkpoint-sourced only; ignored for source='sse'."
+        ),
+    ),
+):
+    """Replay a thread as SSE.
 
     Stream includes:
     - user_message: emitted once per turn_index (query content)
-    - message_chunk/tool_* events: emitted from stored sse_events
+    - message_chunk/tool_* events: projected from checkpoints or emitted from
+      stored sse_events, per ``source``
     - replay_done: terminal sentinel
     """
     try:
-        owner_id, thread, queries, responses = await get_replay_thread_data(thread_id)
+        owner_id, thread, queries, responses, usages, provenance = (
+            await get_replay_thread_data(thread_id)
+        )
 
         # Preserve existing 404/403 semantics from require_thread_owner
         if owner_id is None:
@@ -987,70 +1011,79 @@ async def replay_thread_messages(thread_id: str, x_user_id: CurrentUserId):
             r.get("turn_index"): r for r in responses if isinstance(r, dict)
         }
 
-        async def event_generator():
-            seq = 0
+        from src.server.services.history.replay import (
+            CheckpointReplayUnavailable,
+            build_checkpoint_replay_items,
+            build_sse_replay_items,
+        )
 
-            for q in queries:
-                if not isinstance(q, dict):
-                    continue
-
-                turn_index = q.get("turn_index")
-                seq += 1
-                payload = {
-                    "thread_id": thread_id,
-                    "turn_index": turn_index,
-                    "content": q.get("content"),
-                    "timestamp": q.get("created_at"),
-                    "metadata": q.get("metadata"),
-                }
-                # Tag system queries so the frontend can hide the user bubble
-                query_type = q.get("type")
-                if query_type == "system":
-                    payload["query_type"] = "system"
-
-                yield (
-                    f"id: {seq}\n"
-                    f"event: user_message\n"
-                    f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
+        checkpoint_items: list[dict] | None = None
+        if source in ("auto", "checkpoint"):
+            try:
+                if thread.get("latest_checkpoint_id") is None:
+                    # The commit pointer (stamped at turn persist) is the only
+                    # tip checkpoint replay may read — without it the reader
+                    # would walk the newest checkpoint, which mid-run is
+                    # uncommitted partial state.
+                    raise CheckpointReplayUnavailable(
+                        "thread has no committed checkpoint pointer"
+                    )
+                checkpoint_items = await build_checkpoint_replay_items(
+                    thread_id,
+                    queries,
+                    responses_by_turn,
+                    branch_tip_checkpoint_id=thread.get("latest_checkpoint_id"),
+                    last_n_turns=limit,
+                    usages=usages,
+                    provenance=provenance,
+                )
+            except CheckpointReplayUnavailable as e:
+                if source == "checkpoint":
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Checkpoint replay unavailable: {e}",
+                    )
+                logger.info(
+                    f"[REPLAY] Checkpoint replay unavailable for {thread_id}, "
+                    f"falling back to sse: {e}"
+                )
+            except HTTPException:
+                raise
+            except Exception as e:
+                if source == "checkpoint":
+                    raise
+                logger.warning(
+                    f"[REPLAY] Checkpoint replay failed for {thread_id}, "
+                    f"falling back to sse: {e}",
+                    exc_info=True,
                 )
 
-                response = responses_by_turn.get(turn_index)
-                if not response:
-                    continue
+        replay_items = (
+            checkpoint_items
+            if checkpoint_items is not None
+            else build_sse_replay_items(thread_id, queries, responses_by_turn)
+        )
 
-                sse_events = response.get("sse_events")
-                if not (isinstance(sse_events, list) and sse_events):
-                    continue
-
-                for item in sse_events:
-                    if not isinstance(item, dict):
-                        continue
-                    event_type = item.get("event")
-                    data = item.get("data")
-                    if not event_type or not isinstance(data, dict):
-                        continue
-
-                    seq += 1
-                    replay_data = dict(data)
-                    replay_data.setdefault("thread_id", thread_id)
-                    replay_data["turn_index"] = turn_index
-                    replay_data["response_id"] = str(
-                        response.get("conversation_response_id")
-                    )
-
-                    yield (
-                        f"id: {seq}\n"
-                        f"event: {event_type}\n"
-                        f"data: {json.dumps(replay_data, ensure_ascii=False, default=str)}\n\n"
-                    )
-
+        async def event_generator():
+            seq = 0
+            for item in replay_items:
+                seq += 1
+                yield (
+                    f"id: {seq}\n"
+                    f"event: {item['event']}\n"
+                    f"data: {json.dumps(item['data'], ensure_ascii=False, default=str)}\n\n"
+                )
             seq += 1
             yield f"id: {seq}\nevent: replay_done\ndata: {json.dumps({'thread_id': thread_id}, default=str)}\n\n"
 
+        resolved_source = "checkpoint" if checkpoint_items is not None else "sse"
         return StreamingResponse(
             observe_replay_stream(event_generator(), source="private"),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache"},
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Replay-Source": resolved_source,
+            },
         )
 
     except PoolTimeout:
