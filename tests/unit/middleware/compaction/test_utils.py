@@ -193,6 +193,46 @@ class TestGetEffectiveMessages:
         # The leading dict-shaped tool result must be stripped, not passed through.
         assert result[1:] == [raw[1], raw[2]]
 
+    def test_orphan_strip_covers_injected_tool_pair(self):
+        """Cutoff landing inside a tool-call/tool-result pair strips the orphan.
+
+        When a compaction cutoff falls between an AIMessage(tool_calls=[...])
+        and its matching ToolMessage, the reconstructed tail must not start
+        with the orphaned ToolMessage (Anthropic 400: tool_result with no
+        tool_use).
+        """
+        raw = [
+            HumanMessage(content="q0", id="0"),
+            AIMessage(content="a1", id="1"),
+            AIMessage(
+                content="",
+                id="2",
+                tool_calls=[
+                    {
+                        "name": "web_search",
+                        "args": {"query": "NVDA"},
+                        "id": "call_abc",
+                    }
+                ],
+            ),
+            ToolMessage(
+                content="NVDA  $233.45",
+                id="3",
+                tool_call_id="call_abc",
+                name="web_search",
+            ),
+        ]
+        event: CompactionEvent = {
+            "cutoff_index": 3,  # between the pair, on the ToolMessage
+            "summary_message": _summary(),
+            "file_path": None,
+            "anchor_message_id": None,
+        }
+        result = get_effective_messages(raw, event)
+        assert result[0] is event["summary_message"]
+        # The orphaned tool-result ToolMessage must be stripped.
+        assert not any(isinstance(m, ToolMessage) for m in result[1:2])
+
     def test_anchor_resolves_after_left_shift_removal(self):
         """A removed pre-cutoff message left-shifts the tail; anchor still finds it."""
         raw = _conversation()

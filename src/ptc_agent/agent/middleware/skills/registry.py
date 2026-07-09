@@ -115,6 +115,26 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
         exposure="both",
         command="chart-annotation",
     ),
+    "market-watch": SkillDefinition(
+        name="market-watch",
+        # Keep in sync with the `description:` in skills/market-watch/SKILL.md
+        # frontmatter (this drives PTC discovery; the frontmatter drives the
+        # sandbox skill manifest).
+        description=(
+            "Track live prices for the tickers central to the current task. "
+            "Registers symbols for an ambient real-time price feed, keeps "
+            "analysis current with the newest quotes, and re-checks staleness "
+            "before stating prices."
+        ),
+        tools=[],
+        # Guidance-only skill: the watch_market/unwatch_market tools are always
+        # registered (subsystem c), and the <market-watch> stamping middleware is
+        # always on (subsystem b) — this skill just tells the agent how to use
+        # them. Activated by the frontend Watch toggle via additional_context.
+        skill_md_path="skills/market-watch/SKILL.md",
+        exposure="ptc",
+        command="market-watch",
+    ),
     "secretary": SkillDefinition(
         name="secretary",
         description="Manage workspaces, dispatch research, monitor running analyses",

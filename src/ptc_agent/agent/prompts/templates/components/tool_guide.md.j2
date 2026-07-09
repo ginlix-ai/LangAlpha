@@ -37,11 +37,13 @@ Call these directly for quick data retrieval. No complex post-processing — jus
 
 | Tool | Use for |
 |------|---------|
-| get_company_overview | Company profile, real-time quote, investment summary |
-| get_stock_daily_prices | Historical OHLCV price data |
-| get_market_indices | S&P 500, NASDAQ, Dow Jones index data |
-| get_sector_performance | Market sector performance metrics |
+| get_quote | Current price right now — real-time, cheap, call freely (re-check before quoting prices in answers) |
+| get_company_overview | Company profile, fundamentals, analyst data — comprehensive first-read (for just the current price use get_quote) |
+| get_daily_prices | Historical OHLCV price data (12 regions) |
+| get_market_overview | Region market snapshot: index basket + US sector performance (region="us"/"cn"/"hk"/"jp"/"uk"/"eu"/"global") |
 | get_sec_filing | SEC filings (10-K, 10-Q, 8-K), earnings calls, financials |
+| watch_market | Start live price watch for intraday-sensitive tasks (prices then arrive automatically as `<market-watch>` feed updates — not a callable tool) |
+| unwatch_market | Stop watching some or all symbols |
 
 **When to use**: Quick lookups, answering direct questions, gathering data for a report.
 

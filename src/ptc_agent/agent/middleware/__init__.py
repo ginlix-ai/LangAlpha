@@ -79,6 +79,11 @@ from .large_result_eviction import (
     LargeResultEvictionMiddleware,
 )
 
+# Market watch middleware (live price injection for watched tickers)
+from .market_watch import (
+    MarketWatchMiddleware,
+)
+
 # Steering middleware
 from .steering import (
     SteeringMiddleware,
@@ -166,6 +171,8 @@ __all__ = [
     "SkillsMiddleware",
     # Large result eviction
     "LargeResultEvictionMiddleware",
+    # Market watch
+    "MarketWatchMiddleware",
     # Steering
     "SteeringMiddleware",
     # Subagent steering

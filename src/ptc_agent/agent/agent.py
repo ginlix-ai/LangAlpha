@@ -47,6 +47,7 @@ from ptc_agent.agent.middleware import (
     CompactionMiddleware,
     resolve_compaction_client,
     LargeResultEvictionMiddleware,
+    MarketWatchMiddleware,
     SteeringMiddleware,
     SubagentSteeringMiddleware,
     WorkspaceContextMiddleware,
@@ -98,13 +99,14 @@ from src.tools.search import get_web_search_tool
 from src.tools.fetch import web_fetch_tool
 from src.tools.sec.tool import get_sec_filing
 from src.tools.market_data.tool import (
-    get_stock_daily_prices,
+    get_daily_prices,
     get_company_overview,
-    get_market_indices,
+    get_market_overview,
     get_options_chain,
-    get_sector_performance,
+    get_quote,
     screen_stocks,
 )
+from src.tools.market_watch import unwatch_market, watch_market
 from ptc_agent.config import AgentConfig
 from ptc_agent.core.mcp_registry import MCPRegistry
 from ptc_agent.core.sandbox import PTCSandbox
@@ -456,12 +458,14 @@ class PTCAgent:
 
         finance_tools = [
             get_sec_filing,  # SEC filing extraction (10-K, 10-Q, 8-K)
-            get_stock_daily_prices,  # Stock OHLCV price data
+            get_quote,  # Real-time quotes (cheap — price freshness)
+            get_daily_prices,  # Stock OHLCV price data
             get_company_overview,  # Company investment analysis (includes real-time quote)
-            get_market_indices,  # Market indices data
+            get_market_overview,  # Region index basket + US sector performance
             get_options_chain,  # Options contracts chain with snapshot pricing
-            get_sector_performance,  # Sector performance metrics
             screen_stocks,  # Stock screener with filters
+            watch_market,  # Market watch registration (live price injection)
+            unwatch_market,  # Market watch registration (live price injection)
         ]
         tools.extend(finance_tools)
 
@@ -564,6 +568,10 @@ class PTCAgent:
         ask_user_middleware = AskUserMiddleware()
         main_only_middleware.append(ask_user_middleware)
         tools.extend(ask_user_middleware.tools)
+
+        # Market watch: injects live prices for watched tickers (no-op when
+        # the thread's watch list is empty).
+        main_only_middleware.append(MarketWatchMiddleware())
 
         from ptc_agent.agent.tools import think_tool
 
