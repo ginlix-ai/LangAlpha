@@ -392,3 +392,102 @@ class TestShowWidgetWithDataFiles:
         mock_writer.assert_called_once()
         stream_payload = mock_writer.call_args[0][0]["payload"]
         assert "data" not in stream_payload
+
+
+# ---------------------------------------------------------------------------
+# _attach_widget_data / widget_data_storage_key
+# ---------------------------------------------------------------------------
+
+import hashlib
+import json
+
+from src.ptc_agent.agent.tools.show_widget import (
+    _attach_widget_data,
+    widget_data_storage_key,
+)
+
+
+class TestAttachWidgetData:
+    @pytest.mark.asyncio
+    async def test_small_data_inlines_into_artifact(self, monkeypatch):
+        upload = MagicMock()
+        monkeypatch.setattr(_mod, "is_storage_enabled", lambda: True)
+        monkeypatch.setattr(_mod, "upload_bytes", upload)
+        artifact = {"type": "html_widget"}
+
+        await _attach_widget_data(artifact, {"data.json": "[1,2]"})
+
+        assert artifact["data"] == {"data.json": "[1,2]"}
+        assert "data_ref" not in artifact
+        upload.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_large_data_uploads_content_addressed_ref(self, monkeypatch):
+        uploads = []
+        monkeypatch.setattr(_mod, "is_storage_enabled", lambda: True)
+        monkeypatch.setattr(
+            _mod, "upload_bytes", lambda *a: uploads.append(a) or True
+        )
+        monkeypatch.setattr(_mod, "_INLINE_ARTIFACT_CAP", 10)
+        artifact = {"type": "html_widget"}
+        data = {"data.json": "x" * 100}
+
+        await _attach_widget_data(artifact, data)
+
+        payload = json.dumps(data, ensure_ascii=False, sort_keys=True).encode()
+        sha = hashlib.sha256(payload).hexdigest()
+        assert artifact["data_ref"] == {
+            "key": f"widgets/{sha}.json",
+            "sha256": sha,
+            "size": len(payload),
+        }
+        assert "data" not in artifact
+        assert uploads == [(f"widgets/{sha}.json", payload, "application/json")]
+
+    @pytest.mark.asyncio
+    async def test_large_data_inlines_when_storage_disabled(self, monkeypatch):
+        monkeypatch.setattr(_mod, "is_storage_enabled", lambda: False)
+        monkeypatch.setattr(_mod, "_INLINE_ARTIFACT_CAP", 10)
+        artifact = {"type": "html_widget"}
+        data = {"data.json": "x" * 100}
+
+        await _attach_widget_data(artifact, data)
+
+        assert artifact["data"] == data
+        assert "data_ref" not in artifact
+
+    @pytest.mark.asyncio
+    async def test_upload_failure_attaches_neither(self, monkeypatch):
+        monkeypatch.setattr(_mod, "is_storage_enabled", lambda: True)
+        monkeypatch.setattr(_mod, "upload_bytes", lambda *a: False)
+        monkeypatch.setattr(_mod, "_INLINE_ARTIFACT_CAP", 10)
+        artifact = {"type": "html_widget"}
+
+        await _attach_widget_data(artifact, {"data.json": "x" * 100})
+
+        assert "data" not in artifact
+        assert "data_ref" not in artifact
+
+    def test_widget_data_storage_key_thread_scoping(self):
+        sha = "ab" * 32
+        assert widget_data_storage_key("t1", sha) == f"widgets/t1/{sha}.json"
+        assert widget_data_storage_key("", sha) == f"widgets/{sha}.json"
+
+    @pytest.mark.asyncio
+    async def test_tool_checkpointed_artifact_carries_data(self, monkeypatch):
+        # End-to-end through the tool: small resolved data must land in the
+        # ToolMessage artifact (checkpointed truth), not only the stream event.
+        mock_backend = AsyncMock()
+        mock_backend.aread_text.return_value = '["a","b"]'
+        monkeypatch.setattr(_mod, "is_storage_enabled", lambda: False)
+        tool = create_show_widget_tool(backend=mock_backend)
+
+        with patch("langgraph.config.get_stream_writer", return_value=MagicMock()):
+            result = await tool.ainvoke(
+                _tool_call({
+                    "html": "<div>chart</div>",
+                    "data_files": ["/work/data.json"],
+                })
+            )
+
+        assert result.artifact["data"] == {"data.json": '["a","b"]'}

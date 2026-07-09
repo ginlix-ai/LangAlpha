@@ -1,6 +1,9 @@
 """Show interactive HTML/SVG widgets inline in the chat."""
 
+import asyncio
 import base64
+import hashlib
+import json
 import mimetypes
 import os
 import re
@@ -10,12 +13,19 @@ from uuid import uuid4
 import structlog
 from langchain_core.tools import BaseTool, tool
 
+from src.utils.storage import is_storage_enabled, upload_bytes
+
 from ..backends.sandbox import SandboxBackend
 
 logger = structlog.get_logger(__name__)
 
 # Max total size for inline-embedded data when cloud storage is unavailable.
 _INLINE_DATA_CAP = 500 * 1024  # 500 KB
+
+# Resolved data up to this size is inlined into the checkpointed artifact;
+# larger payloads go to object storage as a content-addressed ref so graph
+# state carries pointers, never bulk payloads.
+_INLINE_ARTIFACT_CAP = 32 * 1024  # 32 KB
 
 # Extensions treated as text (everything else is binary).
 _TEXT_EXTENSIONS = frozenset({
@@ -233,6 +243,42 @@ async def _resolve_data_files(
     return inline_data
 
 
+def widget_data_storage_key(thread_id: str, sha_hex: str) -> str:
+    """Content-addressed storage key for resolved widget data."""
+    prefix = f"widgets/{thread_id}" if thread_id else "widgets"
+    return f"{prefix}/{sha_hex}.json"
+
+
+async def _attach_widget_data(
+    artifact: dict[str, Any], resolved_data: dict[str, str]
+) -> None:
+    """Make resolved data recoverable from the checkpointed artifact.
+
+    Small payloads (and everything when storage is disabled) inline as
+    ``data``; larger ones upload content-addressed and attach
+    ``data_ref {key, sha256, size}``. On upload failure the artifact carries
+    neither — replay then falls back to the stored-event merge.
+    """
+    payload = json.dumps(resolved_data, ensure_ascii=False, sort_keys=True).encode()
+    if len(payload) <= _INLINE_ARTIFACT_CAP or not is_storage_enabled():
+        artifact["data"] = resolved_data
+        return
+
+    sha = hashlib.sha256(payload).hexdigest()
+    try:
+        from langgraph.config import get_config
+
+        thread_id = (get_config().get("configurable") or {}).get("thread_id") or ""
+    except Exception:
+        thread_id = ""
+    key = widget_data_storage_key(thread_id, sha)
+    if await asyncio.to_thread(upload_bytes, key, payload, "application/json"):
+        artifact["data_ref"] = {"key": key, "sha256": sha, "size": len(payload)}
+        logger.debug("ShowWidget data uploaded", key=key, size=len(payload))
+    else:
+        logger.warning("ShowWidget data upload failed", key=key, size=len(payload))
+
+
 def create_show_widget_tool(backend: SandboxBackend) -> BaseTool:
     """Factory function to create ShowWidget tool."""
 
@@ -295,12 +341,15 @@ def create_show_widget_tool(backend: SandboxBackend) -> BaseTool:
             "title": display_title,
         }
 
-        # Resolve data files — inline only in the stream event, not the
-        # tool return, so we don't duplicate large payloads in the
-        # LangGraph checkpointer state.
+        # Resolve data files. Small payloads inline into the checkpointed
+        # artifact; large ones persist to object storage as a content-addressed
+        # data_ref — state carries pointers, not bulk payloads, and replay can
+        # recover the data without the stored SSE stream.
         resolved_data: dict[str, str] | None = None
         if data_files and backend is not None:
             resolved_data = await _resolve_data_files(backend, data_files) or None
+        if resolved_data:
+            await _attach_widget_data(artifact, resolved_data)
 
         if writer:
             stream_payload = artifact
