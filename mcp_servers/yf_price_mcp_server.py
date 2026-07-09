@@ -135,6 +135,9 @@ def _price_scale(stock: Any, ref_currency: Optional[str]) -> tuple[Optional[str]
     return ref_currency, 1.0
 
 
+_OHLC_COLUMNS = ("Open", "High", "Low", "Close")
+
+
 def _serialize_history(df: pd.DataFrame, price_divisor: float = 1.0) -> list[dict]:
     """OHLCV DataFrame → list of record dicts, ascending (oldest first).
 
@@ -142,21 +145,33 @@ def _serialize_history(df: pd.DataFrame, price_divisor: float = 1.0) -> list[dic
     "%Y-%m-%d %H:%M:%S" for intraday bars (those carrying a time component).
     ``price_divisor`` converts minor-unit quotes to major units (prices and
     dividend amounts only — never volume or split ratios).
+
+    Bars with any NaN OHLC value are dropped: yfinance appends a placeholder
+    row for an in-progress or dataless session, and a priceless bar is not a
+    real observation (NaN is also not valid JSON). A missing volume on an
+    otherwise-priced bar is coerced to 0 rather than dropped.
     """
     if df is None or df.empty:
+        return []
+
+    ohlc = [c for c in _OHLC_COLUMNS if c in df.columns]
+    if ohlc:
+        df = df.dropna(subset=ohlc)
+    if df.empty:
         return []
 
     decimals = 4 if price_divisor != 1 else 2
     records = []
     for idx, row in df.iterrows():
         dt_str = format_datetime(idx)
+        volume = row["Volume"]
         record = {
             "date": dt_str,
             "open": round(float(row["Open"]) / price_divisor, decimals),
             "high": round(float(row["High"]) / price_divisor, decimals),
             "low": round(float(row["Low"]) / price_divisor, decimals),
             "close": round(float(row["Close"]) / price_divisor, decimals),
-            "volume": int(row["Volume"]),
+            "volume": int(volume) if pd.notna(volume) else 0,
         }
         if "Dividends" in df.columns:
             record["dividends"] = round(float(row["Dividends"]) / price_divisor, 4)
