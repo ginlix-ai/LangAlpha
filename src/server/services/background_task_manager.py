@@ -10,7 +10,7 @@ workflow. Cleanup runs periodically to evict stale tasks.
 State is keyed by ``(thread_id, run_id)`` — each POST gets a fresh ``run_id``
 at the handler entry, so cross-turn state aliasing is impossible by
 construction. Per-thread admission locks still serialize the
-``wait_or_steer → persist_query_start → start_workflow`` window because
+``wait_or_steer → start_turn → start_workflow`` window because
 Pregel doesn't serialize concurrent ``astream`` on the same thread, and the
 admission policy lives in our layer.
 """
@@ -190,7 +190,7 @@ class TaskInfo:
     # True only when the user pressed Stop (HTTP /cancel). System cancels
     # (graceful shutdown, stale-sandbox recovery) set ``explicit_cancel`` for
     # the flush+teardown gate but leave this False so they are NOT persisted as
-    # user-cancelled "Stopped" turns. See ``_mark_cancelled``.
+    # user-cancelled "Stopped" turns. See ``_finalize_run``.
     user_stop: bool = False
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -457,6 +457,7 @@ class BackgroundTaskManager:
         completed_threshold = now - timedelta(seconds=self.result_ttl)
 
         to_remove: list[TaskKey] = []
+        dead_handles: list = []
 
         async with self.task_lock:
             for key, info in self.tasks.items():
@@ -474,13 +475,33 @@ class BackgroundTaskManager:
 
                 elif info.status == TaskStatus.RUNNING:
                     if info.active_connections == 0 and info.last_access_at < abandoned_threshold:
-                        to_remove.append(key)
-                        logger.warning(
-                            f"[BackgroundTaskManager] Cleanup: removing abandoned task "
-                            f"{key} (no connections for {now - info.last_access_at})"
-                        )
                         if info.task and not info.task.done():
-                            info.task.cancel()
+                            # Cancel but KEEP the entry: the cancellation
+                            # teardown's _finalize_run must still find this
+                            # TaskInfo to settle the durable row. The entry
+                            # leaves via the terminal-TTL branch above on a
+                            # later pass. cancelling() gates re-cancels so a
+                            # slow teardown isn't re-interrupted every sweep.
+                            if not info.task.cancelling():
+                                info.task.cancel()
+                                logger.warning(
+                                    f"[BackgroundTaskManager] Cleanup: cancelling "
+                                    f"abandoned task {key} (no connections for "
+                                    f"{now - info.last_access_at}); entry retained "
+                                    f"until finalize"
+                                )
+                        else:
+                            # Task object gone or settled without ever
+                            # finalizing — nothing will settle the durable
+                            # row from here; fail it open outside the lock.
+                            to_remove.append(key)
+                            handle = info.metadata.get("run_handle")
+                            if handle is not None:
+                                dead_handles.append(handle)
+                            logger.warning(
+                                f"[BackgroundTaskManager] Cleanup: removing dead "
+                                f"RUNNING task {key} (task settled without finalize)"
+                            )
 
                 elif info.status == TaskStatus.QUEUED and info.task is None:
                     if info.created_at < abandoned_threshold:
@@ -502,6 +523,16 @@ class BackgroundTaskManager:
             # tiny (one entry per thread that has ever seen traffic);
             # leave it.
 
+        # Dead RUNNING entries whose task died without finalizing: settle the
+        # durable row (outside the lock — fail_open_run does DB I/O).
+        if dead_handles:
+            from src.server.services.turn_lifecycle import TurnCoordinator
+
+            for handle in dead_handles:
+                await TurnCoordinator.get_instance().fail_open_run(
+                    handle, "worker task died without finalizing (abandoned cleanup)"
+                )
+
         if to_remove:
             logger.info(
                 f"[BackgroundTaskManager] Cleaned up {len(to_remove)} tasks: {to_remove}"
@@ -510,7 +541,7 @@ class BackgroundTaskManager:
     async def get_admission_lock(self, thread_id: str) -> asyncio.Lock:
         """Return the per-thread admission lock, creating it on first use.
 
-        Serializes ``wait_or_steer → persist_query_start → start_workflow``
+        Serializes ``wait_or_steer → start_turn → start_workflow``
         on a given thread so two simultaneous cold POSTs can't both pass
         ``wait_or_steer`` and race on the same ``turn_index``.
         """
@@ -661,6 +692,18 @@ class BackgroundTaskManager:
         # branches return or raise inside the lock.)
         if cancelled_uid:
             await release_burst_slot(cancelled_uid)
+        # The caller STARTed this run and flips slot_owned=False on return, so
+        # no executor and no generator path will ever finalize it — settle the
+        # durable row here or the thread slot leaks until the startup sweep.
+        run_handle = (metadata or {}).get("run_handle")
+        if run_handle is not None:
+            from src.server.services.turn_lifecycle import TurnCoordinator
+
+            await TurnCoordinator.get_instance().fail_open_run(
+                run_handle,
+                "cancelled before start (dispatched placeholder)",
+                status="cancelled",
+            )
         return cancelled_placeholder
 
     async def _run_workflow(
@@ -706,13 +749,13 @@ class BackgroundTaskManager:
 
             await inner_task
 
-            # Sentinel must precede _mark_completed: its persistence callback
+            # Sentinel must precede _finalize_run: its post-commit hook
             # may DEL the stream, and an append after that would recreate the
             # key. Covers interrupted turns too (an interrupt ends the
-            # generator normally; _mark_completed classifies it).
+            # generator normally; _finalize_run classifies it).
             await self.append_stream_end_sentinel(thread_id, run_id)
 
-            await self._mark_completed(thread_id, run_id)
+            await self._finalize_run(thread_id, run_id, kind="stream_end")
 
         # =====================================================================
         # Single-owner stop teardown (decision 1A). On a user stop only
@@ -724,11 +767,11 @@ class BackgroundTaskManager:
         #     2. drain killed-subagent events        # bounded (~stop_drain_timeout)
         #     3. cancel orphan collector tasks       # no post-stop mutation
         #     4. cancel_and_clear(force=True)        # kill subagents, wipe registry
-        #     5. _mark_cancelled(thread_id)          # persist merged sse_events + SSE sentinel
+        #     5. _finalize_run(kind="cancelled")     # persist merged sse_events + SSE sentinel
         #     6. raise
         #
         # Drain MUST run before cancel_and_clear wipes the registry, and
-        # cancel_and_clear must run before _mark_cancelled so the merged
+        # cancel_and_clear must run before _finalize_run so the merged
         # subagent events are in place before persistence reads them.
         # =====================================================================
         except asyncio.CancelledError:
@@ -766,7 +809,7 @@ class BackgroundTaskManager:
                     # 2-4. Drain killed-subagent events, cancel orphan
                     #      collectors, then kill subagents + wipe the registry.
                     #      Merged events are stashed on metadata so
-                    #      _mark_cancelled persists them.
+                    #      _finalize_run persists them.
                     with suppress(Exception):
                         await asyncio.shield(
                             self._teardown_subagents_on_stop(thread_id, run_id)
@@ -778,7 +821,9 @@ class BackgroundTaskManager:
                 #    teardown can't skip or tear a mid-write: burst-slot release,
                 #    tracker status, and registry cleanup always run to
                 #    completion rather than leaving half-state.
-                await asyncio.shield(self._mark_cancelled(thread_id, run_id))
+                await asyncio.shield(
+                    self._finalize_run(thread_id, run_id, kind="cancelled")
+                )
             raise
 
         except Exception as e:
@@ -786,10 +831,10 @@ class BackgroundTaskManager:
                 f"[BackgroundTaskManager] Workflow {key} failed: {e}",
                 exc_info=True
             )
-            # Sentinel before _mark_failed for the same DEL-ordering reason
+            # Sentinel before _finalize_run for the same DEL-ordering reason
             # as the completed path.
             await self.append_stream_end_sentinel(thread_id, run_id)
-            await self._mark_failed(thread_id, run_id, str(e))
+            await self._finalize_run(thread_id, run_id, kind="failed", error=str(e))
 
     async def _flush_checkpoint(self, thread_id: str, run_id: str) -> None:
         """Force a checkpoint write for the current thread state on user stop.
@@ -1466,172 +1511,264 @@ class BackgroundTaskManager:
         info.metadata.pop("handler", None)
         info.metadata.pop("token_callback", None)
         info.metadata.pop("sandbox", None)
-        info.metadata.pop("persistence_service", None)
+        info.metadata.pop("run_handle", None)
+        info.metadata.pop("artifact_hook", None)
 
-    async def _mark_completed(self, thread_id: str, run_id: str):
-        """Mark workflow as completed and notify live subscribers."""
+    async def _finalize_run(
+        self,
+        thread_id: str,
+        run_id: str,
+        *,
+        kind: Literal["stream_end", "cancelled", "failed"],
+        error: Optional[str] = None,
+    ):
+        """Resolve the run's outcome in-band and drive the single finalize CAS.
+
+        Replaces the pre-v4 ``_mark_completed``/``_mark_failed``/
+        ``_mark_cancelled`` trio. Interrupted-vs-completed comes from the
+        streaming handler's durability barrier (the timeout-prone
+        ``aget_state`` probe survives only as a no-handler fallback), and the
+        terminal write is ``TurnCoordinator.finalize_turn`` — one CAS
+        transaction carrying usage rows with it, so a persist failure can no
+        longer be swallowed into a zombie-ACTIVE turn.
+        """
+        from src.server.services.turn_lifecycle import TurnCoordinator, TurnOutcome
+
         key = (thread_id, run_id)
         async with self.task_lock:
             task_info = self.tasks.get(key)
             if not task_info:
                 return
-
-            task_info.status = TaskStatus.COMPLETED
-            task_info.completed_at = datetime.now()
-
-            graph = task_info.graph
             metadata = task_info.metadata
+            cancelled_by_user = bool(task_info.user_stop)
             completion_callback = task_info.completion_callback
+            graph = task_info.graph
 
-        is_interrupted = False
-        try:
-            if graph:
-                snapshot = await asyncio.wait_for(
-                    graph.aget_state({"configurable": {"thread_id": thread_id}}),
-                    timeout=get_checkpoint_flush_timeout(),
-                )
-                if snapshot and snapshot.next:
-                    is_interrupted = True
-        except asyncio.TimeoutError:
-            logger.error(
-                f"[BackgroundTaskManager] aget_state timed out for {key} in _mark_completed"
-            )
-        except Exception as state_error:
-            logger.warning(
-                f"[BackgroundTaskManager] Could not check workflow state for {key}: {state_error}"
-            )
-
+        handle = metadata.get("run_handle")
+        handler = metadata.get("handler")
         workspace_id = metadata.get("workspace_id")
         user_id = metadata.get("user_id")
 
-        if is_interrupted:
-            if workspace_id and user_id:
-                try:
-                    from src.server.services.persistence.conversation import ConversationPersistenceService
-
-                    persistence_service = metadata.get("persistence_service")
-                    if persistence_service is None:
-                        persistence_service = ConversationPersistenceService.get_instance(
-                            thread_id, run_id,
-                            workspace_id=workspace_id, user_id=user_id,
-                        )
-                    persistence_service._on_pair_persisted = (
-                        lambda: self.clear_event_buffer(thread_id, run_id)
-                    )
-
-                    _, per_call_records = get_token_usage_from_callback(
-                        metadata, "interrupt", thread_id
-                    )
-                    tool_usage = get_tool_usage_from_handler(
-                        metadata, "interrupt", thread_id
-                    )
-                    sse_events = get_sse_events_from_handler(
-                        metadata, "interrupt", thread_id
-                    )
-
-                    interrupt_reason = "plan_review_required"
-                    if sse_events:
-                        for chunk in sse_events:
-                            if chunk.get("event") == "interrupt":
-                                chunk_data = chunk.get("data", {})
-                                action_requests = chunk_data.get("action_requests", [])
-                                if action_requests:
-                                    action_type = action_requests[0].get("type")
-                                    if action_type == "ask_user_question":
-                                        interrupt_reason = "user_question"
-                                break
-
-                    execution_time = calculate_execution_time(metadata)
-
-                    persist_metadata = {
-                        "msg_type": metadata.get("msg_type"),
-                        "stock_code": metadata.get("stock_code"),
-                        "deepthinking": metadata.get("deepthinking", False),
-                        "is_byok": metadata.get("is_byok", False),
-                    }
-
-                    await persistence_service.persist_interrupt(
-                        interrupt_reason=interrupt_reason,
-                        execution_time=execution_time,
-                        metadata=persist_metadata,
-                        per_call_records=per_call_records,
-                        tool_usage=tool_usage,
-                        sse_events=sse_events,
-                    )
-                    logger.info(f"[WorkflowPersistence] Workflow {key} paused for human feedback")
-
-                    tracker = WorkflowTracker.get_instance()
-                    await tracker.mark_interrupted(
-                        thread_id=thread_id,
-                        run_id=run_id,
-                        metadata={"interrupt_reason": interrupt_reason},
-                    )
-                except Exception as persist_error:
-                    logger.error(
-                        f"[WorkflowPersistence] Failed to persist interrupt for {key}: {persist_error}",
-                        exc_info=True,
-                    )
+        # ---- outcome classification (in-band) ----
+        interrupt_reason: Optional[str] = None
+        if kind == "cancelled":
+            status, phase = "cancelled", "cancellation"
+        elif kind == "failed":
+            status, phase = "error", "error"
+        elif handler is not None and getattr(handler, "saw_interrupt", False):
+            if handler.interrupt_verified:
+                status, phase = "interrupted", "interrupt"
+                interrupt_reason = handler.interrupt_reason or "plan_review_required"
+            else:
+                # I8: a pause that never reached the checkpointer must not
+                # advertise resumability.
+                status, phase = "error", "error"
+                error = error or (
+                    "interrupt_not_durable: the pause was not checkpointed"
+                )
+        elif handler is not None:
+            status, phase = "completed", "completion"
         else:
-            if completion_callback:
+            # Handler-less run (defensive): legacy state probe as fallback.
+            status, phase = "completed", "completion"
+            try:
+                if graph:
+                    snapshot = await asyncio.wait_for(
+                        graph.aget_state({"configurable": {"thread_id": thread_id}}),
+                        timeout=get_checkpoint_flush_timeout(),
+                    )
+                    if snapshot and snapshot.next:
+                        status, phase = "interrupted", "interrupt"
+                        interrupt_reason = "plan_review_required"
+            except Exception:
+                logger.warning(
+                    f"[BackgroundTaskManager] fallback state probe failed for {key}",
+                    exc_info=True,
+                )
+
+        # ---- artifact assembly ----
+        execution_time = calculate_execution_time(metadata)
+        _, per_call_records = get_token_usage_from_callback(metadata, phase, thread_id)
+        tool_usage = get_tool_usage_from_handler(metadata, phase, thread_id)
+
+        # User-pressed Stop reconciles the transcript (close open reasoning /
+        # tool-call / artifact structures) so replay doesn't render zombies;
+        # system cancels leave raw events untouched.
+        sse_events = None
+        if (
+            status == "cancelled"
+            and cancelled_by_user
+            and handler is not None
+            and hasattr(handler, "finalize_stopped_events")
+        ):
+            try:
+                sse_events = handler.finalize_stopped_events()
+            except Exception as recon_err:
+                logger.warning(
+                    f"[BackgroundTaskManager] finalize_stopped_events failed "
+                    f"for {key}: {recon_err}"
+                )
+        if sse_events is None:
+            sse_events = get_sse_events_from_handler(metadata, phase, thread_id)
+        if status == "cancelled":
+            stop_subagent_events = metadata.get("_stop_subagent_events")
+            if stop_subagent_events:
+                sse_events = (sse_events or []) + stop_subagent_events
+
+        persist_metadata = {
+            "msg_type": metadata.get("msg_type"),
+            "stock_code": metadata.get("stock_code"),
+            "agent_llm_preset": metadata.get("agent_llm_preset", "default"),
+            "deepthinking": metadata.get("deepthinking", False),
+            "is_byok": metadata.get("is_byok", False),
+        }
+        for extra in ("workspace_id", "sandbox_id", "locale", "timezone"):
+            if metadata.get(extra):
+                persist_metadata[extra] = metadata[extra]
+        if status == "cancelled":
+            persist_metadata["cancelled_by_user"] = cancelled_by_user
+        # Steering inputs archive on the owning response (v4 identity model:
+        # steering = no run, no turn). Replaces the old backfill that
+        # fabricated query rows for orphan turn indexes.
+        if handler is not None and getattr(handler, "injected_steerings", None):
+            persist_metadata["steering_inputs"] = [
+                m.get("content")
+                for m in handler.injected_steerings
+                if m.get("content")
+            ]
+        if not (workspace_id and user_id):
+            # Usage rows need both; without them the ledger transition still
+            # happens, billing artifacts are simply absent.
+            per_call_records = None
+            tool_usage = None
+
+        # Pre-finalize artifact hook (sandbox image capture → storage URL
+        # rewrite) must run before sse_events are archived.
+        artifact_hook = metadata.get("artifact_hook")
+        if status == "completed" and artifact_hook and sse_events:
+            try:
+                await artifact_hook(sse_events)
+            except Exception:
+                logger.warning(
+                    f"[BackgroundTaskManager] artifact hook failed for {key}",
+                    exc_info=True,
+                )
+
+        # ---- the single terminal transition ----
+        # finalize_applied gates every terminal business effect below: losers
+        # of the finalize race (and failed finalizes) do nothing. The
+        # handle-less legacy path keeps its local effects so it can't wedge.
+        finalize_applied = True
+        survivor_status: Optional[str] = None
+        if handle is not None:
+            outcome = TurnOutcome(
+                status=status,
+                interrupt_reason=interrupt_reason,
+                metadata=persist_metadata,
+                errors=[error] if error else None,
+                execution_time=execution_time,
+                sse_events=sse_events,
+                per_call_records=per_call_records,
+                tool_usage=tool_usage,
+            )
+            try:
+                result = await TurnCoordinator.get_instance().finalize_turn(
+                    handle,
+                    outcome,
+                    post_commit=lambda: self.clear_event_buffer(thread_id, run_id),
+                )
+                finalize_applied = result.applied
+                if not result.applied:
+                    survivor_status = (result.run or {}).get("status")
+                    logger.warning(
+                        f"[BackgroundTaskManager] lost finalize race for {key}: "
+                        f"row already {survivor_status} (wanted {status}); "
+                        f"terminal side effects skipped"
+                    )
+            except Exception:
+                # The row stays in_progress — honest and recoverable — rather
+                # than masking a failed persist as a terminal turn.
+                finalize_applied = False
+                logger.critical(
+                    f"[BackgroundTaskManager] FINALIZE FAILED for {key}: run row "
+                    f"remains in_progress for recovery",
+                    exc_info=True,
+                )
+        else:
+            logger.error(
+                f"[BackgroundTaskManager] no run_handle for {key}; durable "
+                f"finalize skipped (legacy path?)"
+            )
+
+        # ---- local terminal mark (after the CAS: a losing finalize adopts
+        # the survivor's status instead of relabeling the winner's) ----
+        local_status = survivor_status or status
+        async with self.task_lock:
+            task_info.status = {
+                "cancelled": TaskStatus.CANCELLED,
+                "error": TaskStatus.FAILED,
+            }.get(local_status, TaskStatus.COMPLETED)
+            task_info.completed_at = datetime.now()
+            if error:
+                task_info.error = error
+
+        # ---- post-terminal local effects (never touch run status again).
+        # Isolated: a side-effect failure must not propagate back into
+        # _run_workflow's failure handler and trigger a second finalize. ----
+        try:
+            if finalize_applied:
+                if status == "completed" and completion_callback:
+                    try:
+                        await completion_callback(task_info)
+                    except Exception:
+                        logger.error(
+                            f"[BackgroundTaskManager] completion side-effect callback "
+                            f"failed for {key} (run remains completed)",
+                            exc_info=True,
+                        )
+
                 try:
-                    await completion_callback(task_info)
-                except Exception as e:
-                    logger.error(
-                        f"[BackgroundTaskManager] Completion callback failed for {key}: {e}",
-                        exc_info=True,
-                    )
-                    await self._mark_failed(
-                        thread_id, run_id,
-                        f"Completion callback failed: {str(e)}",
-                    )
-                    return
-
-        # Spawn collector for subagent events. response_id == run_id by 1:1 contract.
-        response_id = run_id
-
-        from src.server.services.background_registry_store import BackgroundRegistryStore
-        bg_store = BackgroundRegistryStore.get_instance()
-        bg_registry = await bg_store.get_registry(thread_id)
-        if bg_registry:
-            tasks_to_collect = []
-            # Hold the registry lock during claim so two concurrent collectors
-            # (e.g., orphan from prior turn + current turn) can't both observe
-            # collector_response_id is None for the same task and double-claim.
-            async with bg_registry._lock:
-                for t in bg_registry._tasks.values():
-                    if t.collector_response_id:
-                        continue
-                    # Filter by spawned_run_id: only claim subagents spawned
-                    # by THIS turn. None matches as a compat shim for tasks
-                    # registered before run_id stamping shipped — remove the
-                    # None branch in the next deploy.
-                    if t.spawned_run_id is not None and t.spawned_run_id != run_id:
-                        continue
-                    if (
-                        t.is_pending
-                        or t.captured_event_count > 0
-                        or t.per_call_records
-                        or t.tool_usage
-                    ):
-                        t.collector_response_id = response_id
-                        tasks_to_collect.append(t)
-            if tasks_to_collect:
-                handler = metadata.get("handler")
-                sse_events = handler.get_sse_events() if handler else []
-                if workspace_id and user_id:
-                    asyncio.create_task(
-                        self._collect_subagent_results_for_turn(
+                    tracker = WorkflowTracker.get_instance()
+                    if status == "completed":
+                        await tracker.mark_completed(
                             thread_id=thread_id,
-                            response_id=response_id,
-                            original_chunks=sse_events or [],
-                            tasks=tasks_to_collect,
-                            workspace_id=workspace_id,
-                            user_id=user_id,
-                            is_byok=metadata.get("is_byok", False),
-                            sandbox=metadata.get("sandbox"),
-                        ),
-                        name=f"subagent-collector-{thread_id}-{run_id}-post-tail",
+                            metadata={
+                                "completed_at": datetime.now().isoformat(),
+                                "execution_time": execution_time,
+                            },
+                            run_id=run_id,
+                        )
+                    elif status == "interrupted":
+                        await tracker.mark_interrupted(
+                            thread_id=thread_id,
+                            run_id=run_id,
+                            metadata={"interrupt_reason": interrupt_reason},
+                        )
+                    elif status == "cancelled":
+                        await tracker.mark_cancelled(thread_id, run_id=run_id)
+                    else:
+                        await tracker.mark_failed(
+                            thread_id, error=error or "workflow failed", run_id=run_id
+                        )
+                except Exception as tracker_err:
+                    logger.warning(
+                        f"[BackgroundTaskManager] tracker update failed for {key}: "
+                        f"{tracker_err}"
                     )
+
+                if status in ("error", "cancelled"):
+                    await self._clear_report_back_watch(thread_id, metadata)
+
+                if kind == "stream_end":
+                    await self._spawn_subagent_collector(
+                        thread_id, run_id, metadata, workspace_id, user_id
+                    )
+        except Exception:
+            logger.error(
+                f"[BackgroundTaskManager] post-terminal side effects failed for "
+                f"{key} (run remains {status})",
+                exc_info=True,
+            )
 
         if user_id:
             await release_burst_slot(user_id)
@@ -1640,10 +1777,64 @@ class BackgroundTaskManager:
         async with self.task_lock:
             self._release_terminal_refs(thread_id, run_id)
 
+    async def _spawn_subagent_collector(
+        self,
+        thread_id: str,
+        run_id: str,
+        metadata: dict,
+        workspace_id: Optional[str],
+        user_id: Optional[str],
+    ) -> None:
+        """Claim this run's subagents and collect their events post-terminal."""
+        response_id = run_id  # 1:1 contract
+
+        from src.server.services.background_registry_store import BackgroundRegistryStore
+        bg_store = BackgroundRegistryStore.get_instance()
+        bg_registry = await bg_store.get_registry(thread_id)
+        if not bg_registry:
+            return
+        tasks_to_collect = []
+        # Hold the registry lock during claim so two concurrent collectors
+        # (e.g., orphan from prior turn + current turn) can't both observe
+        # collector_response_id is None for the same task and double-claim.
+        async with bg_registry._lock:
+            for t in bg_registry._tasks.values():
+                if t.collector_response_id:
+                    continue
+                # Filter by spawned_run_id: only claim subagents spawned
+                # by THIS turn. None matches as a compat shim for tasks
+                # registered before run_id stamping shipped.
+                if t.spawned_run_id is not None and t.spawned_run_id != run_id:
+                    continue
+                if (
+                    t.is_pending
+                    or t.captured_event_count > 0
+                    or t.per_call_records
+                    or t.tool_usage
+                ):
+                    t.collector_response_id = response_id
+                    tasks_to_collect.append(t)
+        if tasks_to_collect and workspace_id and user_id:
+            handler = metadata.get("handler")
+            sse_events = handler.get_sse_events() if handler else []
+            asyncio.create_task(
+                self._collect_subagent_results_for_turn(
+                    thread_id=thread_id,
+                    response_id=response_id,
+                    original_chunks=sse_events or [],
+                    tasks=tasks_to_collect,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    is_byok=metadata.get("is_byok", False),
+                    sandbox=metadata.get("sandbox"),
+                ),
+                name=f"subagent-collector-{thread_id}-{run_id}-post-tail",
+            )
+
     async def wait_for_persistence(
         self, thread_id: str, run_id: str, timeout: float | None = None
     ) -> bool:
-        """Wait until _mark_completed has finished persisting for the given turn.
+        """Wait until _finalize_run has finished persisting for the given turn.
 
         Captures the ``persistence_complete`` event reference under the lock
         so a concurrent admission deletion of the entry doesn't make us drop a
@@ -1709,97 +1900,6 @@ class BackgroundTaskManager:
                 f"[BackgroundTaskManager] report-back watch clear failed for "
                 f"{thread_id}: {e}"
             )
-
-    async def _mark_failed(
-        self,
-        thread_id: str,
-        run_id: str,
-        error: str,
-    ):
-        """Mark workflow as failed and notify live subscribers."""
-        key = (thread_id, run_id)
-        async with self.task_lock:
-            task_info = self.tasks.get(key)
-            if not task_info:
-                return
-
-            task_info.status = TaskStatus.FAILED
-            task_info.completed_at = datetime.now()
-            task_info.error = error
-            metadata = task_info.metadata
-
-        logger.error(
-            f"[BackgroundTaskManager] Workflow {key} failed: {error}"
-        )
-
-        workspace_id = metadata.get("workspace_id")
-        user_id = metadata.get("user_id")
-
-        if workspace_id and user_id:
-            try:
-                from src.server.services.persistence.conversation import ConversationPersistenceService
-
-                persistence_service = metadata.get("persistence_service")
-                if persistence_service is None:
-                    persistence_service = ConversationPersistenceService.get_instance(
-                        thread_id, run_id,
-                        workspace_id=workspace_id, user_id=user_id,
-                    )
-                persistence_service._on_pair_persisted = (
-                    lambda: self.clear_event_buffer(thread_id, run_id)
-                )
-
-                execution_time = calculate_execution_time(metadata)
-                _, per_call_records = get_token_usage_from_callback(
-                    metadata, "error", thread_id
-                )
-                tool_usage = get_tool_usage_from_handler(
-                    metadata, "error", thread_id
-                )
-                sse_events = get_sse_events_from_handler(
-                    metadata, "error", thread_id
-                )
-
-                persist_metadata = {
-                    "msg_type": metadata.get("msg_type"),
-                    "stock_code": metadata.get("stock_code"),
-                    "agent_llm_preset": metadata.get("agent_llm_preset", "default"),
-                    "deepthinking": metadata.get("deepthinking", False),
-                    "is_byok": metadata.get("is_byok", False),
-                }
-
-                await persistence_service.persist_error(
-                    error_message=error,
-                    errors=[error],
-                    execution_time=execution_time,
-                    per_call_records=per_call_records,
-                    tool_usage=tool_usage,
-                    sse_events=sse_events,
-                    metadata=persist_metadata,
-                )
-                logger.info(f"[WorkflowPersistence] Error persisted for {key}")
-            except Exception as persist_error:
-                logger.error(
-                    f"[WorkflowPersistence] Failed to persist error for {key}: {persist_error}",
-                    exc_info=True,
-                )
-
-        if user_id:
-            await release_burst_slot(user_id)
-
-        try:
-            tracker = WorkflowTracker.get_instance()
-            await tracker.mark_failed(thread_id, error=error, run_id=run_id)
-        except Exception as tracker_err:
-            logger.warning(
-                f"[BackgroundTaskManager] tracker.mark_failed failed for {key}: {tracker_err}"
-            )
-
-        await self._clear_report_back_watch(thread_id, metadata)
-
-        task_info.persistence_complete.set()
-        async with self.task_lock:
-            self._release_terminal_refs(thread_id, run_id)
 
     async def _persist_collected_events(
         self,
@@ -1947,118 +2047,6 @@ class BackgroundTaskManager:
                 f"({persisted_records} LLM calls) for response_id={response_id} "
                 f"thread_id={thread_id}"
             )
-
-    async def _mark_cancelled(self, thread_id: str, run_id: str):
-        """Mark workflow as cancelled and notify live subscribers."""
-        key = (thread_id, run_id)
-        async with self.task_lock:
-            task_info = self.tasks.get(key)
-            if not task_info:
-                return
-
-            task_info.status = TaskStatus.CANCELLED
-            task_info.completed_at = datetime.now()
-            metadata = task_info.metadata
-            # Persist as a user action ONLY for a user-pressed Stop. Both user
-            # stops and system cancels (graceful shutdown via cancel_workflow,
-            # stale-sandbox recovery via cancel_stale_workflow) set
-            # ``explicit_cancel``, so keying off that would mislabel a pod-roll
-            # or workspace eviction as a user "Stopped" turn. ``user_stop`` is
-            # set only by the HTTP /cancel path.
-            cancelled_by_user = bool(task_info.user_stop)
-
-        logger.debug(f"[BackgroundTaskManager] Marked as cancelled: {key}")
-
-        workspace_id = metadata.get("workspace_id")
-        user_id = metadata.get("user_id")
-
-        if workspace_id and user_id:
-            try:
-                from src.server.services.persistence.conversation import ConversationPersistenceService
-
-                persistence_service = metadata.get("persistence_service")
-                if persistence_service is None:
-                    persistence_service = ConversationPersistenceService.get_instance(
-                        thread_id, run_id,
-                        workspace_id=workspace_id, user_id=user_id,
-                    )
-                persistence_service._on_pair_persisted = (
-                    lambda: self.clear_event_buffer(thread_id, run_id)
-                )
-
-                _, per_call_records = get_token_usage_from_callback(
-                    metadata, "cancellation", thread_id
-                )
-                tool_usage = get_tool_usage_from_handler(
-                    metadata, "cancellation", thread_id
-                )
-                # Reconcile the transcript at the stop point: close any open
-                # reasoning / tool-call / artifact / message structures so replay
-                # doesn't render zombies. Only for user-driven stops; system
-                # cancels (shutdown/abandoned) leave the raw events untouched.
-                handler = metadata.get("handler")
-                if cancelled_by_user and handler is not None and hasattr(
-                    handler, "finalize_stopped_events"
-                ):
-                    try:
-                        sse_events = handler.finalize_stopped_events()
-                    except Exception as recon_err:
-                        logger.warning(
-                            f"[WorkflowPersistence] finalize_stopped_events failed "
-                            f"for {key}: {recon_err}"
-                        )
-                        sse_events = get_sse_events_from_handler(
-                            metadata, "cancellation", thread_id
-                        )
-                else:
-                    sse_events = get_sse_events_from_handler(
-                        metadata, "cancellation", thread_id
-                    )
-                # Fold in killed-subagent events drained during teardown.
-                stop_subagent_events = metadata.get("_stop_subagent_events")
-                if stop_subagent_events:
-                    sse_events = (sse_events or []) + stop_subagent_events
-                execution_time = calculate_execution_time(metadata)
-
-                persist_metadata = {
-                    "msg_type": metadata.get("msg_type"),
-                    "stock_code": metadata.get("stock_code"),
-                    "agent_llm_preset": metadata.get("agent_llm_preset", "default"),
-                    "deepthinking": metadata.get("deepthinking", False),
-                    "is_byok": metadata.get("is_byok", False),
-                    "cancelled_by_user": cancelled_by_user,
-                }
-
-                await persistence_service.persist_cancelled(
-                    execution_time=execution_time,
-                    metadata=persist_metadata,
-                    per_call_records=per_call_records,
-                    tool_usage=tool_usage,
-                    sse_events=sse_events,
-                )
-                logger.info(f"[WorkflowPersistence] Cancellation persisted for {key}")
-            except Exception as persist_error:
-                logger.error(
-                    f"[WorkflowPersistence] Failed to persist cancellation for {key}: {persist_error}",
-                    exc_info=True,
-                )
-
-        if user_id:
-            await release_burst_slot(user_id)
-
-        try:
-            tracker = WorkflowTracker.get_instance()
-            await tracker.mark_cancelled(thread_id, run_id=run_id)
-        except Exception as tracker_err:
-            logger.warning(
-                f"[BackgroundTaskManager] tracker.mark_cancelled failed for {key}: {tracker_err}"
-            )
-
-        await self._clear_report_back_watch(thread_id, metadata)
-
-        task_info.persistence_complete.set()
-        async with self.task_lock:
-            self._release_terminal_refs(thread_id, run_id)
 
     # ---------- status & introspection ----------
 

@@ -14,6 +14,7 @@ import contextlib
 import json
 import time
 from datetime import datetime
+from uuid import uuid4
 
 from fastapi import HTTPException
 from langgraph.types import Command
@@ -27,6 +28,11 @@ from src.server.models.chat import (
 )
 from src.server.services.background_registry_store import BackgroundRegistryStore
 from src.server.services.background_task_manager import BackgroundTaskManager
+from src.server.services.turn_lifecycle import (
+    QuerySpec,
+    TurnCoordinator,
+    protected_finalize,
+)
 from src.server.services.workflow_tracker import WorkflowTracker
 from src.server.services.workspace_manager import WorkspaceManager
 from src.observability import (
@@ -65,8 +71,8 @@ from ptc_agent.agent.graph import build_ptc_graph_with_session
 from ._common import (
     _append_to_last_user_message,
     _is_plan_interrupt_pending,
+    _resolve_fork,
     _resolve_timezone,
-    _setup_fork_and_persistence,
     apply_fetch_override,
     build_graph_config,
     ensure_thread,
@@ -75,7 +81,6 @@ from ._common import (
     inject_inline_reminders,
     logger,
     normalize_request_messages,
-    persist_or_skip_replay,
     prepare_skill_contexts,
     process_hitl_response,
     serialize_context_metadata,
@@ -85,7 +90,7 @@ from ._common import (
 from src.config.settings import get_ptc_recursion_limit
 
 from .llm_config import resolve_llm_config
-from .steering import backfill_steering_queries, drain_steering_return_event
+from .steering import drain_steering_return_event
 from .stream_from_log import stream_from_log
 from .tasks import fire_and_forget as _fire_and_forget
 
@@ -114,7 +119,7 @@ async def astream_ptc_workflow(
     """
     start_time = time.time()
     handler = None
-    persistence_service = None
+    run_handle = None
     token_callback = None
     tool_tracker = None
     ptc_graph = None
@@ -147,12 +152,11 @@ async def astream_ptc_workflow(
         # Admission gate
         # =====================================================================
         # Per-thread asyncio.Lock that serializes the
-        # ``wait_or_steer → persist_query_start → start_workflow`` window.
+        # ``wait_or_steer → start_turn → start_workflow`` window.
         # Without this, two simultaneous cold POSTs on an idle thread both
-        # see "no in-flight task" in ``wait_or_steer``, both compute the
-        # same next ``turn_index``, and both ``persist_query_start`` calls
-        # race on the same row — the loser's content gets silently
-        # overwritten by ``ON CONFLICT DO UPDATE``.
+        # see "no in-flight task" in ``wait_or_steer`` and both attempt
+        # START; the loser now fails on the in_progress slot index instead
+        # of admitting, but serializing here routes it to steering.
         manager = BackgroundTaskManager.get_instance()
         admission_lock = await manager.get_admission_lock(thread_id)
         await admission_lock.acquire()
@@ -162,14 +166,10 @@ async def astream_ptc_workflow(
         # Early steering routing
         # =====================================================================
         # If a workflow is already running for this thread, route this POST
-        # through the steering queue *before* any DB write. ``persist_query_start``
-        # uses ``ON CONFLICT (thread_id, turn_index) DO UPDATE`` and the
-        # persistence singleton's cached ``_turn_index_cache`` is shared across
-        # concurrent POSTs on the same thread, so a second persist_query_start
-        # here would overwrite the currently-running turn's original query
-        # content with the steering text. Detecting steering here keeps
-        # ``conversation_queries`` clean and lets ``backfill_steering_queries``
-        # write the canonical ``type='steering'`` row after the workflow completes.
+        # through the steering queue *before* any DB write. Detecting steering
+        # here keeps ``conversation_queries`` clean — a steering message is
+        # neither a run nor a turn (v4 identity model); its content is archived
+        # on the owning response's metadata at finalize.
         workspace_manager = WorkspaceManager.get_instance()
         needs_startup = not workspace_manager.has_ready_session(workspace_id)
         # When the workspace was evicted/restarted, any in-BTM TaskInfo for
@@ -216,12 +216,9 @@ async def astream_ptc_workflow(
             initial_query=user_input,
         )
 
-        query_type, is_fork, persistence_service = await _setup_fork_and_persistence(
+        query_type, is_fork = await _resolve_fork(
             request=request,
             thread_id=thread_id,
-            run_id=run_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
             log_prefix="PTC_FORK",
         )
         is_checkpoint_replay = bool(request.checkpoint_id and not request.messages)
@@ -270,21 +267,41 @@ async def astream_ptc_workflow(
             if hitl_answers:
                 query_metadata["hitl_answers"] = hitl_answers
 
-        await persist_or_skip_replay(
-            persistence_service=persistence_service,
-            is_checkpoint_replay=is_checkpoint_replay,
-            request=request,
-            query_content=query_content,
-            query_type=query_type,
-            feedback_action=feedback_action,
-            query_metadata=query_metadata,
+        # =====================================================================
+        # START txn (v4): query row + in_progress run row + thread projection
+        # in one transaction. Checkpoint replays reuse the preserved query row
+        # (query=None) and pin the fork turn explicitly; everything else gets
+        # MAX+1 allocation against the post-truncation row set.
+        # =====================================================================
+        run_handle = await TurnCoordinator.get_instance().start_turn(
             thread_id=thread_id,
-            log_prefix="PTC_CHAT",
+            run_id=run_id,
+            msg_type="ptc",
+            workspace_id=workspace_id,
+            user_id=user_id,
+            is_byok=is_byok,
+            query=(
+                None
+                if is_checkpoint_replay
+                else QuerySpec(
+                    query_id=str(uuid4()),
+                    content=query_content,
+                    query_type=query_type,
+                    feedback_action=feedback_action,
+                    metadata=query_metadata,
+                )
+            ),
+            turn_index=(
+                request.fork_from_turn
+                if (is_fork and is_checkpoint_replay)
+                else None
+            ),
         )
         if not is_checkpoint_replay:
             logger.debug(
-                f"[PTC_CHAT] Database records created: workspace_id={workspace_id} "
-                f"thread_id={thread_id} query_type={query_type}"
+                f"[PTC_CHAT] Run started: workspace_id={workspace_id} "
+                f"thread_id={thread_id} query_type={query_type} "
+                f"turn_index={run_handle.turn_index}"
             )
 
         # =====================================================================
@@ -653,11 +670,7 @@ async def astream_ptc_workflow(
             skill_contexts=skill_contexts,
             skill_dirs=skill_dirs,
             run_id=run_id,
-            turn_index=(
-                await persistence_service.get_or_calculate_turn_index()
-                if persistence_service
-                else None
-            ),
+            turn_index=run_handle.turn_index,
         )
         # Propagate run_id to LangGraph via the top-level config key; it
         # lands on ExecutionInfo.run_id and CheckpointMetadata.run_id so
@@ -713,114 +726,47 @@ async def astream_ptc_workflow(
         # already ran there (gated on ``needs_startup``) so steering routed
         # against live state.
 
-        # Define completion callback for background persistence
+        # Pre-finalize artifact hook: capture sandbox images -> upload to
+        # cloud storage -> rewrite storage URLs in the events about to be
+        # archived. Runs inside _finalize_run, before the terminal txn.
+        async def capture_artifacts(sse_events):
+            if session and session.sandbox:
+                from src.server.services.persistence.image_capture import (
+                    capture_and_rewrite_images,
+                )
+
+                await capture_and_rewrite_images(
+                    sse_events, session.sandbox, thread_id=thread_id,
+                )
+
+        # Post-finalize side effects only (v4): the durable terminal write —
+        # response row, usage, projection — already happened in BTM's
+        # _finalize_run before this callback fires. A failure here is logged
+        # by the caller and never changes the run's outcome.
         async def on_background_workflow_complete(task_info):
-            """Persist workflow data after background execution completes.
-
-            State is per-run, so this callback is naturally identity-safe:
-            ``task_info``, ``persistence_service``, and the Redis stream
-            key are all bound to this turn's ``run_id``. No cross-turn
-            checks needed.
-            """
+            # Flash report-back: if this PTC thread was dispatched by a
+            # flash agent with report_back=True, send a message to the
+            # flash thread so it can summarize the results.
             try:
-                _handler = task_info.metadata.get("handler", handler)
-                _token_cb = task_info.metadata.get("token_callback", token_callback)
-                _start_time = task_info.metadata.get("start_time", start_time)
-
-                execution_time = time.time() - _start_time
-
-                _persistence_service = persistence_service
-                _persistence_service._on_pair_persisted = (
-                    lambda: manager.clear_event_buffer(thread_id, run_id)
-                )
-
-                _per_call_records = _token_cb.per_call_records if _token_cb else None
-
-                _tool_usage = None
-                if _handler:
-                    _tool_usage = _handler.get_tool_usage()
-
-                _sse_events = _handler.get_sse_events() if _handler else None
-
-                # Capture sandbox images -> upload to cloud storage -> rewrite storage URLs
-                if _sse_events and session and session.sandbox:
-                    try:
-                        from src.server.services.persistence.image_capture import (
-                            capture_and_rewrite_images,
-                        )
-
-                        await capture_and_rewrite_images(
-                            _sse_events, session.sandbox, thread_id=thread_id,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "[IMAGE_CAPTURE] Hook A failed", exc_info=True,
-                        )
-
-                await _persistence_service.persist_completion(
-                    metadata={
-                        "workspace_id": request.workspace_id,
-                        "sandbox_id": sandbox_id,
-                        "locale": request.locale,
-                        "timezone": timezone_str,
-                        "msg_type": "ptc",
-                        "is_byok": is_byok,
-                    },
-                    execution_time=execution_time,
-                    per_call_records=_per_call_records,
-                    tool_usage=_tool_usage,
-                    sse_events=_sse_events,
-                )
-
-                await tracker.mark_completed(
-                    thread_id=thread_id,
-                    metadata={
-                        "completed_at": datetime.now().isoformat(),
-                        "execution_time": execution_time,
-                    },
-                    run_id=run_id,
-                )
-
-                # Backfill query records for steering messages that produced orphan responses
-                if _handler and _handler.injected_steerings:
-                    await backfill_steering_queries(
-                        thread_id, _handler.injected_steerings
-                    )
-
-                logger.info(
-                    f"[PTC_COMPLETE] Background completion persisted: thread_id={thread_id} "
-                    f"duration={execution_time:.2f}s"
-                )
-
-                # Flash report-back: if this PTC thread was dispatched by a
-                # flash agent with report_back=True, send a message to the
-                # flash thread so it can summarize the results.
-                try:
-                    from src.server.handlers.chat.report_back import _flash_report_back
-                    await _flash_report_back(thread_id)
-                except Exception as e:
-                    logger.warning(
-                        f"[PTC_COMPLETE] Flash report-back failed for {thread_id}: {e}"
-                    )
-
-                # Post-completion sandbox housekeeping (parallel)
-                ws_manager = WorkspaceManager.get_instance()
-                housekeeping = [ws_manager._backup_files_to_db(request.workspace_id)]
-                if session and session.sandbox:
-                    housekeeping.append(session.sandbox.sync_skills_lock())
-                results = await asyncio.gather(*housekeeping, return_exceptions=True)
-                for i, result in enumerate(results):
-                    if isinstance(result, Exception):
-                        task_name = "file backup" if i == 0 else "lock sync"
-                        logger.warning(
-                            f"[PTC_COMPLETE] {task_name} failed for {thread_id}: {result}"
-                        )
-
+                from src.server.handlers.chat.report_back import _flash_report_back
+                await _flash_report_back(thread_id)
             except Exception as e:
-                logger.error(
-                    f"[PTC_CHAT] Background completion persistence failed for {thread_id}: {e}",
-                    exc_info=True,
+                logger.warning(
+                    f"[PTC_COMPLETE] Flash report-back failed for {thread_id}: {e}"
                 )
+
+            # Post-completion sandbox housekeeping (parallel)
+            ws_manager = WorkspaceManager.get_instance()
+            housekeeping = [ws_manager._backup_files_to_db(request.workspace_id)]
+            if session and session.sandbox:
+                housekeeping.append(session.sandbox.sync_skills_lock())
+            results = await asyncio.gather(*housekeeping, return_exceptions=True)
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    task_name = "file backup" if i == 0 else "lock sync"
+                    logger.warning(
+                        f"[PTC_COMPLETE] {task_name} failed for {thread_id}: {result}"
+                    )
 
         # Start workflow in background with event buffering
         await manager.start_workflow(
@@ -844,7 +790,8 @@ async def astream_ptc_workflow(
                 "timezone": timezone_str,
                 "handler": handler,
                 "token_callback": token_callback,
-                "persistence_service": persistence_service,
+                "run_handle": run_handle,
+                "artifact_hook": capture_artifacts,
             },
             completion_callback=on_background_workflow_complete,
             graph=ptc_graph,
@@ -901,6 +848,19 @@ async def astream_ptc_workflow(
     except (asyncio.CancelledError, GeneratorExit):
         if slot_owned:
             await release_burst_slot(user_id)
+            # Died between START and BTM handoff: nothing will ever execute
+            # this run, so the open slot must be released here (Phase 1 has
+            # no recovery scanner). protected_finalize: a second cancel on
+            # this already-cancelled stream task must not abort the write.
+            if run_handle is not None:
+                await protected_finalize(
+                    TurnCoordinator.get_instance().fail_open_run(
+                        run_handle,
+                        "client disconnected during setup",
+                        status="cancelled",
+                    ),
+                    label=run_handle.run_id,
+                )
             logger.warning(
                 f"[PTC_CHAT] Generator cancelled before workflow started: "
                 f"thread_id={thread_id} workspace_id={workspace_id}"
@@ -916,6 +876,9 @@ async def astream_ptc_workflow(
         # =====================================================================
         # Error Recovery with Retry Logic
         # =====================================================================
+        # run_handle is passed only while this generator still owns the run
+        # (pre-handoff). After start_workflow, BTM's _finalize_run owns the
+        # terminal write and a finalize here would race it.
         async for event in handle_workflow_error(
             e,
             thread_id=thread_id,
@@ -923,7 +886,7 @@ async def astream_ptc_workflow(
             workspace_id=workspace_id,
             handler=handler,
             token_callback=token_callback,
-            persistence_service=persistence_service,
+            run_handle=run_handle if slot_owned else None,
             start_time=start_time,
             request=request,
             is_byok=is_byok,

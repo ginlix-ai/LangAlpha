@@ -1289,11 +1289,13 @@ async def _sync_provenance_for_response(
     conversation_thread_id: str,
     turn_index: int,
     sse_events: Optional[Any],
+    strict: bool = False,
 ) -> None:
     """(Re)derive provenance_records from sse_events on the caller's connection.
 
     Imported lazily to avoid a circular import (provenance imports this module).
-    Best-effort — the helper itself never raises.
+    Best-effort by default; ``strict=True`` re-raises so a transaction-bound
+    caller (the finalize CAS) aborts instead of committing over a poisoned txn.
     """
     # Most persists carry no provenance (a turn with no external data access, or
     # a non-provenance event drain). Skip the extract + delete-then-insert when
@@ -1310,6 +1312,7 @@ async def _sync_provenance_for_response(
         conversation_thread_id=conversation_thread_id,
         turn_index=turn_index,
         sse_events=sse_events,
+        strict=strict,
     )
 
 

@@ -1,13 +1,12 @@
 """Redis steering utilities for chat workflows.
 
-Handles queuing, draining, and backfilling of user steering messages that arrive
+Handles queuing and draining of user steering messages that arrive
 while a workflow is already running. Messages are stored in Redis and consumed by
 SteeringMiddleware (main agent) or SubagentSteeringMiddleware (subagents).
 """
 
 import json
 import time
-from uuid import uuid4
 
 from fastapi import HTTPException
 
@@ -15,56 +14,6 @@ from src.server.services.background_registry_store import BackgroundRegistryStor
 from src.config.settings import get_redis_ttl_steering
 
 from ._common import logger
-
-
-async def backfill_steering_queries(
-    thread_id: str, steering_messages: list[dict]
-) -> None:
-    """Backfill query records for steering messages that produced orphan responses.
-
-    After a workflow completes, responses may exist at turn indices that have no
-    matching query (because the user message was injected mid-workflow via
-    SteeringMiddleware rather than arriving as a normal HTTP request).
-    This function finds those orphan response turns and creates query records.
-    """
-    if not steering_messages:
-        return
-
-    from src.server.database.conversation import (
-        create_query,
-        get_queries_for_thread,
-        get_responses_for_thread,
-    )
-
-    try:
-        queries, _ = await get_queries_for_thread(thread_id)
-        responses, _ = await get_responses_for_thread(thread_id)
-
-        query_turns = {q["turn_index"] for q in queries}
-        response_turns = {r["turn_index"] for r in responses}
-        orphan_turns = sorted(response_turns - query_turns)
-
-        if not orphan_turns:
-            return
-
-        # Match orphan turns with steering messages (FIFO order)
-        for turn_index, msg in zip(orphan_turns, steering_messages):
-            content = msg.get("content", "")
-            if not content:
-                continue
-            await create_query(
-                conversation_query_id=str(uuid4()),
-                conversation_thread_id=thread_id,
-                turn_index=turn_index,
-                content=content,
-                query_type="steering",
-            )
-            logger.info(
-                f"[CHAT] Backfilled steering query: thread_id={thread_id} "
-                f"turn_index={turn_index}"
-            )
-    except Exception as e:
-        logger.error(f"[CHAT] Failed to backfill steering queries: {e}")
 
 
 async def drain_steering_return_event(thread_id: str) -> str | None:

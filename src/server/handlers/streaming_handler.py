@@ -452,6 +452,21 @@ class WorkflowStreamHandler:
         # once on timeout/error/cancel.
         self._compaction_active: bool = False
 
+        # ---- Interrupt durability barrier (v4 I8) ------------------------
+        # __interrupt__ events are buffered, not emitted inline: the SSE is
+        # exposed only after the graph iterator is exhausted AND the pending
+        # interrupt is verified durable in the checkpoint. These fields are
+        # also the in-band outcome signal the finalizer classifies from
+        # (aget_state polling is demoted to a no-handler fallback).
+        self._pending_interrupts: list[dict] = []
+        self.saw_interrupt: bool = False
+        # None until the barrier runs; then True (durable, SSE exposed) or
+        # False (NOT durable — the turn must finalize failed, never
+        # interrupted: advertising resumability without a checkpoint to
+        # resume from is the I8 lie).
+        self.interrupt_verified: Optional[bool] = None
+        self.interrupt_reason: Optional[str] = None
+
         # ---- Stop reconciliation state (decision T3-A) -------------------
         # Open artifacts whose last-emitted status was not terminal. Keyed by
         # artifact_id → the last artifact event payload. Closed out on stop.
@@ -547,12 +562,17 @@ class WorkflowStreamHandler:
                 old_tasks = list(self._background_registry._tasks.values())
                 self._old_tool_call_ids = {t.tool_call_id for t in old_tasks}
 
-            # Create graph stream
+            # Create graph stream. durability="sync" awaits each checkpoint
+            # put before the next step — necessary but NOT sufficient for
+            # interrupt durability (output yields before the sync await, and
+            # dynamic interrupts ride async aput_writes), hence the barrier
+            # below.
             graph_stream = graph.astream(
                 input_state,
                 config=config,
                 stream_mode=["messages", "updates", "custom"],
                 subgraphs=True,
+                durability="sync",
             )
 
             async for graph_event in graph_stream:
@@ -609,11 +629,12 @@ class WorkflowStreamHandler:
                     f"event_type={type(event_data).__name__}"
                 )
 
-                # Handle interrupt events (can be in any stream mode)
+                # Interrupt events (any stream mode): buffer, never emit
+                # inline — exposure waits for the durability barrier after
+                # the stream drains (I8).
                 if isinstance(event_data, dict) and "__interrupt__" in event_data:
-                    interrupt_event = self._handle_interrupt(event_data)
-                    if interrupt_event:
-                        yield interrupt_event
+                    self.saw_interrupt = True
+                    self._pending_interrupts.append(event_data)
                     continue  # Skip further processing for interrupt events
                 
                 
@@ -891,6 +912,29 @@ class WorkflowStreamHandler:
                 ):
                     yield event
 
+            # I8 durability barrier. The graph iterator is exhausted, so the
+            # executor has torn down and awaited its submitted saver tasks;
+            # now verify a run-matching pending interrupt actually reached
+            # the checkpointer before exposing the interrupt to anyone.
+            if self._pending_interrupts:
+                self.interrupt_verified = await self._verify_interrupt_durable(graph)
+                if self.interrupt_verified:
+                    self.interrupt_reason = self._derive_interrupt_reason()
+                    for pending in self._pending_interrupts:
+                        interrupt_event = self._handle_interrupt(pending)
+                        if interrupt_event:
+                            yield interrupt_event
+                else:
+                    logger.error(
+                        f"[INTERRUPT_BARRIER] Pending interrupt NOT durable for "
+                        f"thread_id={self.thread_id} run_id={self.run_id} — "
+                        f"suppressing interrupt SSE; turn will finalize failed"
+                    )
+                    yield self.format_error_event(
+                        "The assistant paused for input but the pause could not be "
+                        "saved. Please retry this message.",
+                    )
+
             # After workflow completes, emit credit_usage event
             try:
                 from src.server.services.persistence.usage import UsagePersistenceService
@@ -953,7 +997,7 @@ class WorkflowStreamHandler:
             _stream_span.record_exception(e)
             _stream_span.set_status(Status(StatusCode.ERROR))
             yield self.format_error_event(str(e), exc=e)
-            raise  # Re-raise so background_task_manager calls _mark_failed()
+            raise  # Re-raise so background_task_manager finalizes as failed
         finally:
             # Safety net: if the stream ends (timeout / error / CancelledError /
             # aclose()) while a compaction window is still open, release the
@@ -976,6 +1020,66 @@ class WorkflowStreamHandler:
             if timeout_warning_sent:
                 _stream_span.set_attribute("timeout_warning", True)
             _stream_span.end()
+
+    async def _verify_interrupt_durable(self, graph) -> bool:
+        """True iff the checkpoint tip carries a pending __interrupt__ matching
+        a buffered one (by interrupt id when available).
+
+        Uses the graph's own checkpointer (in Phase 2 the session-bound
+        per-run saver, so verification rides the same fenced connection);
+        falls back to the global checkpointer.
+        """
+        try:
+            checkpointer = getattr(graph, "checkpointer", None)
+            if checkpointer is None:
+                from src.server.app import setup
+
+                checkpointer = setup.checkpointer
+            if checkpointer is None:
+                return False
+
+            cp_tuple = await checkpointer.aget_tuple(
+                {"configurable": {"thread_id": self.thread_id}}
+            )
+            if not cp_tuple or not cp_tuple.pending_writes:
+                return False
+
+            buffered_ids = set()
+            for event_data in self._pending_interrupts:
+                for intr in event_data.get("__interrupt__", ()):
+                    intr_id = getattr(intr, "id", None)
+                    if intr_id:
+                        buffered_ids.add(intr_id)
+
+            for _task_id, channel, value in cp_tuple.pending_writes:
+                if channel != "__interrupt__":
+                    continue
+                if not buffered_ids:
+                    return True
+                interrupts = value if isinstance(value, list) else [value]
+                for intr in interrupts:
+                    if getattr(intr, "id", None) in buffered_ids:
+                        return True
+            return False
+        except Exception:
+            logger.error(
+                f"[INTERRUPT_BARRIER] Verification read failed for "
+                f"thread_id={self.thread_id}",
+                exc_info=True,
+            )
+            return False
+
+    def _derive_interrupt_reason(self) -> str:
+        """Classify the buffered interrupt: user question vs plan review."""
+        for event_data in self._pending_interrupts:
+            for intr in event_data.get("__interrupt__", ()):
+                value = getattr(intr, "value", None)
+                if isinstance(value, dict):
+                    action_requests = value.get("action_requests", [])
+                    if action_requests and isinstance(action_requests[0], dict):
+                        if action_requests[0].get("type") == "ask_user_question":
+                            return "user_question"
+        return "plan_review_required"
 
     def _handle_interrupt(self, event_data: dict) -> Optional[str]:
         """Format an ``__interrupt__`` event as an SSE string."""

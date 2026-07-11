@@ -8,7 +8,6 @@ Covers:
 - init_tracking: returns (TokenTrackingManager, ToolUsageTracker)
 - apply_fetch_override: sets context vars
 - ensure_thread: correct DB call with kwargs
-- persist_or_skip_replay: skip for replay, persist otherwise
 - inject_skills: skill injection for flash and ptc modes
 - build_graph_config: mode parameterization, optional fields
 - wait_or_steer: ready, steered, and 409 cases
@@ -632,88 +631,6 @@ class TestEnsureThread:
 
 
 # ---------------------------------------------------------------------------
-# persist_or_skip_replay
-# ---------------------------------------------------------------------------
-
-
-class TestPersistOrSkipReplay:
-    @pytest.mark.asyncio
-    async def test_checkpoint_replay_skips_persist(self):
-        from src.server.handlers.chat._common import persist_or_skip_replay
-
-        persistence = MagicMock()
-        persistence.persist_query_start = AsyncMock()
-        request = MagicMock()
-        request.fork_from_turn = 3
-
-        await persist_or_skip_replay(
-            persistence_service=persistence,
-            is_checkpoint_replay=True,
-            request=request,
-            query_content="",
-            query_type="regenerate",
-            feedback_action=None,
-            query_metadata={},
-            thread_id="t-1",
-            log_prefix="TEST",
-        )
-
-        persistence.persist_query_start.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_checkpoint_replay_no_fork_calculates_turn(self):
-        from src.server.handlers.chat._common import persist_or_skip_replay
-
-        persistence = MagicMock()
-        persistence.get_or_calculate_turn_index = AsyncMock(return_value=5)
-        persistence.persist_query_start = AsyncMock()
-        request = MagicMock()
-        request.fork_from_turn = None
-
-        await persist_or_skip_replay(
-            persistence_service=persistence,
-            is_checkpoint_replay=True,
-            request=request,
-            query_content="",
-            query_type="regenerate",
-            feedback_action=None,
-            query_metadata={},
-            thread_id="t-1",
-            log_prefix="TEST",
-        )
-
-        persistence.get_or_calculate_turn_index.assert_awaited_once()
-        persistence.persist_query_start.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_normal_query_persists(self):
-        from src.server.handlers.chat._common import persist_or_skip_replay
-
-        persistence = MagicMock()
-        persistence.persist_query_start = AsyncMock()
-        request = MagicMock()
-
-        await persist_or_skip_replay(
-            persistence_service=persistence,
-            is_checkpoint_replay=False,
-            request=request,
-            query_content="hello",
-            query_type="initial",
-            feedback_action=None,
-            query_metadata={"msg_type": "flash"},
-            thread_id="t-1",
-            log_prefix="TEST",
-        )
-
-        persistence.persist_query_start.assert_called_once_with(
-            content="hello",
-            query_type="initial",
-            feedback_action=None,
-            metadata={"msg_type": "flash"},
-        )
-
-
-# ---------------------------------------------------------------------------
 # build_graph_config
 # ---------------------------------------------------------------------------
 
@@ -1201,10 +1118,35 @@ class TestHandleWorkflowErrorHTTPException:
     """An HTTPException reaching the workflow error handler is a deliberate
     protocol response (e.g. a 409 admission conflict raised in-generator by
     wait_or_steer / the dispatched gate), not an execution failure. It must
-    surface to the client as an SSE error but never persist a conversation
-    error or call mark_failed — mark_failed runs with run_id=None here, and
-    the run_id guard is skipped when run_id is None, so it would clobber a
-    concurrently-running peer turn's status to FAILED."""
+    surface to the client as an SSE error but never finalize the run as an
+    error or call mark_failed — the admission path runs with run_handle=None
+    here, and marking failed would clobber a concurrently-running peer turn's
+    status to FAILED.
+
+    v4: the durable terminal write moved off ``ConversationPersistenceService``
+    onto ``TurnCoordinator.finalize_turn`` (driven by the STARTed ``run_handle``),
+    so these tests observe the coordinator rather than a persistence service.
+    """
+
+    TC = "src.server.services.turn_lifecycle.TurnCoordinator"
+
+    @staticmethod
+    def _handler():
+        handler = MagicMock()
+        handler.get_tool_usage = MagicMock(return_value=None)
+        handler.get_sse_events = MagicMock(return_value=None)
+        handler._format_sse_event = MagicMock(
+            side_effect=lambda ev, data: f"event: {ev}\ndata: {data}\n\n"
+        )
+        return handler
+
+    @staticmethod
+    def _request():
+        request = MagicMock()
+        request.workspace_id = None
+        request.locale = None
+        request.timezone = None
+        return request
 
     @pytest.mark.asyncio
     async def test_http_exception_surfaces_error_but_skips_persist_and_mark_failed(
@@ -1219,18 +1161,8 @@ class TestHandleWorkflowErrorHTTPException:
             detail={"code": "compacting", "message": "compacting; retry shortly"},
         )
 
-        persistence_service = AsyncMock()
         tracker = AsyncMock()
-        handler = MagicMock()
-        handler.get_tool_usage = MagicMock(return_value=None)
-        handler.get_sse_events = MagicMock(return_value=None)
-        handler._format_sse_event = MagicMock(
-            side_effect=lambda ev, data: f"event: {ev}\ndata: {data}\n\n"
-        )
-        request = MagicMock()
-        request.workspace_id = None
-        request.locale = None
-        request.timezone = None
+        coordinator = AsyncMock()
 
         with (
             patch(
@@ -1240,8 +1172,10 @@ class TestHandleWorkflowErrorHTTPException:
                 "src.server.handlers.chat._common.release_burst_slot",
                 new_callable=AsyncMock,
             ),
+            patch(self.TC) as mock_coord_cls,
         ):
             mock_tracker_cls.get_instance.return_value = tracker
+            mock_coord_cls.get_instance.return_value = coordinator
             events = [
                 ev
                 async for ev in handle_workflow_error(
@@ -1249,11 +1183,11 @@ class TestHandleWorkflowErrorHTTPException:
                     thread_id="t-1",
                     user_id="u-1",
                     workspace_id="w-1",
-                    handler=handler,
+                    handler=self._handler(),
                     token_callback=None,
-                    persistence_service=persistence_service,
+                    run_handle=None,
                     start_time=0.0,
-                    request=request,
+                    request=self._request(),
                     is_byok=False,
                     msg_type="ptc",
                     log_prefix="PTC_TEST",
@@ -1263,17 +1197,18 @@ class TestHandleWorkflowErrorHTTPException:
         # The client still sees a clean error event...
         assert any("event: error" in ev for ev in events)
         assert any("compacting" in ev for ev in events)
-        # ...but the conflict is never persisted as a turn failure and never
+        # ...but the conflict is never finalized as a turn failure and never
         # clobbers the (possibly peer-owned) tracker status.
-        persistence_service.persist_error.assert_not_awaited()
+        coordinator.finalize_turn.assert_not_awaited()
+        coordinator.fail_open_run.assert_not_awaited()
         tracker.mark_failed.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_not_running_conflict_skips_persist_and_mark_failed(self):
         """not_running (steer_only probe on an idle thread) is an admission
         outcome: it must reach the client as an SSE error but never be
-        persisted or mark a (possibly peer-owned) turn failed. Pins the
-        ADMISSION_CONFLICT_CODES membership added for steer_only."""
+        finalized as an error or mark a (possibly peer-owned) turn failed. Pins
+        the ADMISSION_CONFLICT_CODES membership added for steer_only."""
         from fastapi import HTTPException
 
         from src.server.handlers.chat._common import handle_workflow_error
@@ -1283,18 +1218,8 @@ class TestHandleWorkflowErrorHTTPException:
             detail={"code": "not_running", "message": "no workflow to steer"},
         )
 
-        persistence_service = AsyncMock()
         tracker = AsyncMock()
-        handler = MagicMock()
-        handler.get_tool_usage = MagicMock(return_value=None)
-        handler.get_sse_events = MagicMock(return_value=None)
-        handler._format_sse_event = MagicMock(
-            side_effect=lambda ev, data: f"event: {ev}\ndata: {data}\n\n"
-        )
-        request = MagicMock()
-        request.workspace_id = None
-        request.locale = None
-        request.timezone = None
+        coordinator = AsyncMock()
 
         with (
             patch(
@@ -1304,8 +1229,10 @@ class TestHandleWorkflowErrorHTTPException:
                 "src.server.handlers.chat._common.release_burst_slot",
                 new_callable=AsyncMock,
             ),
+            patch(self.TC) as mock_coord_cls,
         ):
             mock_tracker_cls.get_instance.return_value = tracker
+            mock_coord_cls.get_instance.return_value = coordinator
             events = [
                 ev
                 async for ev in handle_workflow_error(
@@ -1313,11 +1240,11 @@ class TestHandleWorkflowErrorHTTPException:
                     thread_id="t-1",
                     user_id="u-1",
                     workspace_id="w-1",
-                    handler=handler,
+                    handler=self._handler(),
                     token_callback=None,
-                    persistence_service=persistence_service,
+                    run_handle=None,
                     start_time=0.0,
-                    request=request,
+                    request=self._request(),
                     is_byok=False,
                     msg_type="ptc",
                     log_prefix="PTC_TEST",
@@ -1326,7 +1253,8 @@ class TestHandleWorkflowErrorHTTPException:
 
         assert any("event: error" in ev for ev in events)
         assert any("not_running" in ev for ev in events)
-        persistence_service.persist_error.assert_not_awaited()
+        coordinator.finalize_turn.assert_not_awaited()
+        coordinator.fail_open_run.assert_not_awaited()
         tracker.mark_failed.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1334,26 +1262,20 @@ class TestHandleWorkflowErrorHTTPException:
         """The skip path is scoped to the 409 admission/cancellation contract.
         A non-409 HTTPException (e.g. a 503 raised because the agent isn't
         initialized) is a genuine failure: it must flow through the normal
-        failure path — persist the error, mark the turn failed, and be labeled
-        as a real workflow error, NOT mislabeled as an admission conflict."""
+        failure path — finalize the run as error, mark the turn failed, and be
+        labeled as a real workflow error, NOT mislabeled as an admission
+        conflict."""
         from fastapi import HTTPException
 
         from src.server.handlers.chat._common import handle_workflow_error
 
         exc = HTTPException(status_code=503, detail="backend not ready")
 
-        persistence_service = AsyncMock()
         tracker = AsyncMock()
-        handler = MagicMock()
-        handler.get_tool_usage = MagicMock(return_value=None)
-        handler.get_sse_events = MagicMock(return_value=None)
-        handler._format_sse_event = MagicMock(
-            side_effect=lambda ev, data: f"event: {ev}\ndata: {data}\n\n"
+        coordinator = AsyncMock()
+        run_handle = MagicMock(
+            finalized=False, run_id="r-1", workspace_id="w-1", user_id="u-1"
         )
-        request = MagicMock()
-        request.workspace_id = None
-        request.locale = None
-        request.timezone = None
 
         with (
             patch(
@@ -1363,8 +1285,10 @@ class TestHandleWorkflowErrorHTTPException:
                 "src.server.handlers.chat._common.release_burst_slot",
                 new_callable=AsyncMock,
             ),
+            patch(self.TC) as mock_coord_cls,
         ):
             mock_tracker_cls.get_instance.return_value = tracker
+            mock_coord_cls.get_instance.return_value = coordinator
             events = [
                 ev
                 async for ev in handle_workflow_error(
@@ -1372,19 +1296,20 @@ class TestHandleWorkflowErrorHTTPException:
                     thread_id="t-1",
                     user_id="u-1",
                     workspace_id="w-1",
-                    handler=handler,
+                    handler=self._handler(),
                     token_callback=None,
-                    persistence_service=persistence_service,
+                    run_handle=run_handle,
                     start_time=0.0,
-                    request=request,
+                    request=self._request(),
                     is_byok=False,
                     msg_type="ptc",
                     log_prefix="PTC_TEST",
                 )
             ]
 
-        # A genuine 503 is persisted and marked failed (real failure path)...
-        persistence_service.persist_error.assert_awaited()
+        # A genuine 503 is finalized as error and marked failed (real failure
+        # path)...
+        coordinator.finalize_turn.assert_awaited()
         tracker.mark_failed.assert_awaited()
         # ...and is never mislabeled as a transient admission conflict.
         assert not any("admission_conflict" in ev for ev in events)
@@ -1393,7 +1318,7 @@ class TestHandleWorkflowErrorHTTPException:
     async def test_409_without_admission_code_is_persisted_and_marked_failed(self):
         """The skip path is keyed on the admission-conflict CODE, not the bare
         409 status. A 409 raised elsewhere in the generator (no structured
-        admission code) is a genuine failure: it must persist + mark_failed, not
+        admission code) is a genuine failure: it must finalize + mark_failed, not
         silently skip them — otherwise a future non-admission 409 would clobber a
         peer turn the same way the original bug #2 did."""
         from fastapi import HTTPException
@@ -1404,18 +1329,11 @@ class TestHandleWorkflowErrorHTTPException:
         # by middleware — must NOT be treated as an admission conflict.
         exc = HTTPException(status_code=409, detail="some unrelated conflict")
 
-        persistence_service = AsyncMock()
         tracker = AsyncMock()
-        handler = MagicMock()
-        handler.get_tool_usage = MagicMock(return_value=None)
-        handler.get_sse_events = MagicMock(return_value=None)
-        handler._format_sse_event = MagicMock(
-            side_effect=lambda ev, data: f"event: {ev}\ndata: {data}\n\n"
+        coordinator = AsyncMock()
+        run_handle = MagicMock(
+            finalized=False, run_id="r-1", workspace_id="w-1", user_id="u-1"
         )
-        request = MagicMock()
-        request.workspace_id = None
-        request.locale = None
-        request.timezone = None
 
         with (
             patch(
@@ -1425,8 +1343,10 @@ class TestHandleWorkflowErrorHTTPException:
                 "src.server.handlers.chat._common.release_burst_slot",
                 new_callable=AsyncMock,
             ),
+            patch(self.TC) as mock_coord_cls,
         ):
             mock_tracker_cls.get_instance.return_value = tracker
+            mock_coord_cls.get_instance.return_value = coordinator
             events = [
                 ev
                 async for ev in handle_workflow_error(
@@ -1434,18 +1354,18 @@ class TestHandleWorkflowErrorHTTPException:
                     thread_id="t-1",
                     user_id="u-1",
                     workspace_id="w-1",
-                    handler=handler,
+                    handler=self._handler(),
                     token_callback=None,
-                    persistence_service=persistence_service,
+                    run_handle=run_handle,
                     start_time=0.0,
-                    request=request,
+                    request=self._request(),
                     is_byok=False,
                     msg_type="ptc",
                     log_prefix="PTC_TEST",
                 )
             ]
 
-        persistence_service.persist_error.assert_awaited()
+        coordinator.finalize_turn.assert_awaited()
         tracker.mark_failed.assert_awaited()
         assert not any("admission_conflict" in ev for ev in events)
 

@@ -408,11 +408,11 @@ class TestConsumeWorkflowUsesClosureEvents:
         task_info = _make_task_info(thread_id="thread-closure", status=TaskStatus.RUNNING)
         btm.tasks[("thread-closure", "run-1")] = task_info
 
-        # Patch _mark_completed, _mark_cancelled, _mark_failed so they don't
-        # try to do real persistence work
-        with patch.object(btm, "_mark_completed", new_callable=AsyncMock) as mock_mark_completed, \
-             patch.object(btm, "_mark_cancelled", new_callable=AsyncMock) as mock_mark_cancelled, \
-             patch.object(btm, "_mark_failed", new_callable=AsyncMock), \
+        # Patch the terminal finalize + sentinel so they don't try to do real
+        # persistence work. v4 folded _mark_completed/_cancelled/_failed into a
+        # single _finalize_run(kind=...); the kind reveals which terminal path ran.
+        with patch.object(btm, "_finalize_run", new_callable=AsyncMock) as mock_finalize, \
+             patch.object(btm, "append_stream_end_sentinel", new_callable=AsyncMock), \
              patch.object(btm, "_flush_checkpoint", new_callable=AsyncMock), \
              patch.object(btm, "_teardown_subagents_on_stop", new_callable=AsyncMock):
 
@@ -438,11 +438,12 @@ class TestConsumeWorkflowUsesClosureEvents:
         # The workflow should NOT have consumed all 20 events — it should
         # have been cut short by the cancel_event being set.
         assert cancel_event.is_set()
-        # The closure observed the cancel_event: cancellation path ran and the
-        # completion path did not. Without these the test false-passes even if
-        # _run_workflow ignored the event and ran to completion.
-        mock_mark_cancelled.assert_awaited_once_with("thread-closure", "run-1")
-        mock_mark_completed.assert_not_awaited()
+        # The closure observed the cancel_event: the cancellation finalize ran
+        # (and only it). Without this the test false-passes even if
+        # _run_workflow ignored the event and ran to completion (kind="stream_end").
+        mock_finalize.assert_awaited_once_with(
+            "thread-closure", "run-1", kind="cancelled"
+        )
         # The inner task was registered on the task_info.
         assert task_info.inner_task is not None
 
@@ -456,7 +457,7 @@ class TestOuterTaskCancelPropagatesToInner:
     @pytest.mark.asyncio
     async def test_outer_task_cancel_propagates_to_inner(self):
         """Cancelling the outer task that wraps _run_workflow now cancels the
-        inner consume_workflow task and runs _mark_cancelled.
+        inner consume_workflow task and runs the cancellation finalize.
 
         Pinpoints the behavior change from removing ``asyncio.shield(inner_task)``:
         shutdown's force-cancel path (background_task_manager.py:367) and
@@ -484,9 +485,8 @@ class TestOuterTaskCancelPropagatesToInner:
         )
         btm.tasks[("thread-outer", "run-outer")] = task_info
 
-        with patch.object(btm, "_mark_completed", new_callable=AsyncMock), \
-             patch.object(btm, "_mark_cancelled", new_callable=AsyncMock) as mock_mark_cancelled, \
-             patch.object(btm, "_mark_failed", new_callable=AsyncMock), \
+        with patch.object(btm, "_finalize_run", new_callable=AsyncMock) as mock_finalize, \
+             patch.object(btm, "append_stream_end_sentinel", new_callable=AsyncMock), \
              patch.object(btm, "_flush_checkpoint", new_callable=AsyncMock), \
              patch.object(btm, "_teardown_subagents_on_stop", new_callable=AsyncMock):
 
@@ -517,8 +517,10 @@ class TestOuterTaskCancelPropagatesToInner:
         # Inner task is now done (shield removal lets the cancel propagate).
         assert inner_task.done()
         assert inner_task.cancelled()
-        # _mark_cancelled ran inside the except handler.
-        mock_mark_cancelled.assert_awaited_once_with("thread-outer", "run-outer")
+        # The cancellation finalize ran inside the except handler.
+        mock_finalize.assert_awaited_once_with(
+            "thread-outer", "run-outer", kind="cancelled"
+        )
         # The workflow generator's finally block ran — no orphaned generator.
         assert generator_closed.is_set()
 
@@ -537,18 +539,24 @@ class TestMarkCancelledUserLabeling:
     explicit_cancel (to gate flush+teardown) but leave user_stop False, so they
     must persist cancelled_by_user=False. Keying off explicit_cancel would
     mislabel a pod-roll or workspace eviction as a user "Stopped" turn.
+
+    v4: the labeling lives in the single ``_finalize_run`` (kind="cancelled");
+    the terminal write is ``TurnCoordinator.finalize_turn(run_handle, outcome)``,
+    so the ``cancelled_by_user`` flag is read off the ``TurnOutcome.metadata``.
     """
 
-    async def _run_mark_cancelled(self, btm, task_info):
-        """Drive _mark_cancelled's persistence path and return the persist kwargs."""
-        persistence_service = MagicMock()
-        persistence_service.persist_cancelled = AsyncMock(return_value="resp-id")
+    async def _run_finalize_cancelled(self, btm, task_info):
+        """Drive _finalize_run(kind="cancelled") and return the outcome metadata."""
+        run_handle = MagicMock()
         task_info.metadata = {
             "workspace_id": "ws-1",
             "user_id": "user-1",
-            "persistence_service": persistence_service,
+            "run_handle": run_handle,
         }
         btm.tasks[(task_info.thread_id, task_info.run_id)] = task_info
+
+        coordinator = MagicMock()
+        coordinator.finalize_turn = AsyncMock()
 
         mod = "src.server.services.background_task_manager"
         with patch(f"{mod}.get_token_usage_from_callback", return_value=(None, [])), \
@@ -556,12 +564,16 @@ class TestMarkCancelledUserLabeling:
              patch(f"{mod}.get_sse_events_from_handler", return_value=[]), \
              patch(f"{mod}.calculate_execution_time", return_value=1.0), \
              patch(f"{mod}.release_burst_slot", new_callable=AsyncMock), \
-             patch(f"{mod}.WorkflowTracker") as mock_tracker_cls:
+             patch(f"{mod}.WorkflowTracker") as mock_tracker_cls, \
+             patch("src.server.services.turn_lifecycle.TurnCoordinator") as mock_coord_cls, \
+             patch.object(btm, "_clear_report_back_watch", new_callable=AsyncMock):
             mock_tracker_cls.get_instance.return_value.mark_cancelled = AsyncMock()
-            await btm._mark_cancelled(task_info.thread_id, task_info.run_id)
+            mock_coord_cls.get_instance.return_value = coordinator
+            await btm._finalize_run(task_info.thread_id, task_info.run_id, kind="cancelled")
 
-        persistence_service.persist_cancelled.assert_awaited_once()
-        return persistence_service.persist_cancelled.await_args.kwargs["metadata"]
+        coordinator.finalize_turn.assert_awaited_once()
+        outcome = coordinator.finalize_turn.await_args.args[1]
+        return outcome.metadata
 
     @pytest.mark.asyncio
     async def test_abandoned_cancel_persists_not_user(self):
@@ -571,7 +583,7 @@ class TestMarkCancelledUserLabeling:
         assert task_info.explicit_cancel is False
         assert task_info.user_stop is False
 
-        persist_metadata = await self._run_mark_cancelled(btm, task_info)
+        persist_metadata = await self._run_finalize_cancelled(btm, task_info)
 
         assert persist_metadata["cancelled_by_user"] is False
 
@@ -583,7 +595,7 @@ class TestMarkCancelledUserLabeling:
         task_info.explicit_cancel = True
         task_info.user_stop = True
 
-        persist_metadata = await self._run_mark_cancelled(btm, task_info)
+        persist_metadata = await self._run_finalize_cancelled(btm, task_info)
 
         assert persist_metadata["cancelled_by_user"] is True
 
@@ -599,7 +611,7 @@ class TestMarkCancelledUserLabeling:
         task_info.explicit_cancel = True   # shutdown/stale set this...
         assert task_info.user_stop is False  # ...but NOT user_stop
 
-        persist_metadata = await self._run_mark_cancelled(btm, task_info)
+        persist_metadata = await self._run_finalize_cancelled(btm, task_info)
 
         assert persist_metadata["cancelled_by_user"] is False
 
@@ -625,9 +637,8 @@ class TestStopPathFlushGating:
         task_info.explicit_cancel = explicit
         btm.tasks[("t-stop", "r-stop")] = task_info
 
-        with patch.object(btm, "_mark_completed", new_callable=AsyncMock), \
-             patch.object(btm, "_mark_cancelled", new_callable=AsyncMock), \
-             patch.object(btm, "_mark_failed", new_callable=AsyncMock), \
+        with patch.object(btm, "_finalize_run", new_callable=AsyncMock), \
+             patch.object(btm, "append_stream_end_sentinel", new_callable=AsyncMock), \
              patch.object(btm, "_flush_checkpoint", new_callable=AsyncMock) as flush, \
              patch.object(btm, "_teardown_subagents_on_stop", new_callable=AsyncMock) as teardown:
 
@@ -662,7 +673,7 @@ class TestStopPathFlushGating:
 
     @pytest.mark.asyncio
     async def test_flush_failure_still_marks_cancelled(self):
-        """A raising _flush_checkpoint must not prevent _mark_cancelled."""
+        """A raising _flush_checkpoint must not prevent the cancellation finalize."""
         btm = _make_btm()
 
         async def fake_workflow():
@@ -677,9 +688,8 @@ class TestStopPathFlushGating:
         task_info.explicit_cancel = True
         btm.tasks[("t-flushfail", "r-flushfail")] = task_info
 
-        with patch.object(btm, "_mark_completed", new_callable=AsyncMock), \
-             patch.object(btm, "_mark_cancelled", new_callable=AsyncMock) as mark, \
-             patch.object(btm, "_mark_failed", new_callable=AsyncMock), \
+        with patch.object(btm, "_finalize_run", new_callable=AsyncMock) as finalize, \
+             patch.object(btm, "append_stream_end_sentinel", new_callable=AsyncMock), \
              patch.object(btm, "_flush_checkpoint", new_callable=AsyncMock,
                           side_effect=RuntimeError("flush boom")), \
              patch.object(btm, "_teardown_subagents_on_stop", new_callable=AsyncMock):
@@ -697,7 +707,9 @@ class TestStopPathFlushGating:
             with suppress(asyncio.CancelledError):
                 await outer
 
-        mark.assert_awaited_once_with("t-flushfail", "r-flushfail")
+        finalize.assert_awaited_once_with(
+            "t-flushfail", "r-flushfail", kind="cancelled"
+        )
 
     @pytest.mark.asyncio
     async def test_recancel_during_teardown_still_marks_cancelled(self):
@@ -720,9 +732,8 @@ class TestStopPathFlushGating:
         task_info.explicit_cancel = True
         btm.tasks[("t-recancel", "r-recancel")] = task_info
 
-        with patch.object(btm, "_mark_completed", new_callable=AsyncMock), \
-             patch.object(btm, "_mark_cancelled", new_callable=AsyncMock) as mark, \
-             patch.object(btm, "_mark_failed", new_callable=AsyncMock), \
+        with patch.object(btm, "_finalize_run", new_callable=AsyncMock) as finalize, \
+             patch.object(btm, "append_stream_end_sentinel", new_callable=AsyncMock), \
              patch.object(btm, "_flush_checkpoint", new_callable=AsyncMock), \
              patch.object(btm, "_teardown_subagents_on_stop", new_callable=AsyncMock,
                           side_effect=asyncio.CancelledError()):
@@ -741,7 +752,9 @@ class TestStopPathFlushGating:
                 await outer
 
         # Even though teardown raised CancelledError, persistence still ran.
-        mark.assert_awaited_once_with("t-recancel", "r-recancel")
+        finalize.assert_awaited_once_with(
+            "t-recancel", "r-recancel", kind="cancelled"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1480,8 +1493,8 @@ class TestAppendStreamEndSentinel:
 
 class TestSentinelAppendedOnTerminalFlavors:
     """_run_workflow appends the sentinel after the final buffered event for
-    every terminal flavor, and before the _mark_* persistence that may DEL
-    the stream."""
+    every terminal flavor, and before the _finalize_run whose post-commit hook
+    may DEL the stream. The finalize ``kind`` names the terminal flavor."""
 
     def _btm_with_task(self, thread_id: str, run_id: str):
         btm = _make_btm()
@@ -1506,13 +1519,12 @@ class TestSentinelAppendedOnTerminalFlavors:
         async def record_sentinel(thread_id, run_id):
             order.append("sentinel")
 
-        async def record_completed(thread_id, run_id):
-            order.append("mark_completed")
+        async def record_finalize(thread_id, run_id, *, kind, error=None):
+            order.append(f"finalize:{kind}")
 
         with patch.object(btm, "_buffer_event_redis", side_effect=record_buffer), \
              patch.object(btm, "append_stream_end_sentinel", side_effect=record_sentinel), \
-             patch.object(btm, "_mark_completed", side_effect=record_completed), \
-             patch.object(btm, "_mark_failed", new_callable=AsyncMock) as mock_failed:
+             patch.object(btm, "_finalize_run", side_effect=record_finalize):
             await btm._run_workflow(
                 thread_id="t-comp",
                 run_id="r-1",
@@ -1520,8 +1532,9 @@ class TestSentinelAppendedOnTerminalFlavors:
                 cancel_event=asyncio.Event(),
             )
 
-        assert order == ["event:id: 1", "event:id: 2", "sentinel", "mark_completed"]
-        mock_failed.assert_not_awaited()
+        assert order == [
+            "event:id: 1", "event:id: 2", "sentinel", "finalize:stream_end"
+        ]
 
     @pytest.mark.asyncio
     async def test_failed_appends_sentinel_before_mark_failed(self):
@@ -1538,13 +1551,12 @@ class TestSentinelAppendedOnTerminalFlavors:
         async def record_sentinel(thread_id, run_id):
             order.append("sentinel")
 
-        async def record_failed(thread_id, run_id, error):
-            order.append("mark_failed")
+        async def record_finalize(thread_id, run_id, *, kind, error=None):
+            order.append(f"finalize:{kind}")
 
         with patch.object(btm, "_buffer_event_redis", side_effect=record_buffer), \
              patch.object(btm, "append_stream_end_sentinel", side_effect=record_sentinel), \
-             patch.object(btm, "_mark_completed", new_callable=AsyncMock) as mock_completed, \
-             patch.object(btm, "_mark_failed", side_effect=record_failed):
+             patch.object(btm, "_finalize_run", side_effect=record_finalize):
             await btm._run_workflow(
                 thread_id="t-fail",
                 run_id="r-1",
@@ -1552,8 +1564,7 @@ class TestSentinelAppendedOnTerminalFlavors:
                 cancel_event=asyncio.Event(),
             )
 
-        assert order == ["event", "sentinel", "mark_failed"]
-        mock_completed.assert_not_awaited()
+        assert order == ["event", "sentinel", "finalize:failed"]
 
     @pytest.mark.asyncio
     async def test_cancelled_appends_sentinel_before_mark_cancelled(self):
@@ -1569,8 +1580,8 @@ class TestSentinelAppendedOnTerminalFlavors:
         async def record_sentinel(thread_id, run_id):
             order.append("sentinel")
 
-        async def record_cancelled(thread_id, run_id):
-            order.append("mark_cancelled")
+        async def record_finalize(thread_id, run_id, *, kind, error=None):
+            order.append(f"finalize:{kind}")
 
         async def set_cancel():
             await asyncio.sleep(0.03)
@@ -1578,9 +1589,7 @@ class TestSentinelAppendedOnTerminalFlavors:
 
         with patch.object(btm, "_buffer_event_redis", new_callable=AsyncMock), \
              patch.object(btm, "append_stream_end_sentinel", side_effect=record_sentinel), \
-             patch.object(btm, "_mark_completed", new_callable=AsyncMock), \
-             patch.object(btm, "_mark_cancelled", side_effect=record_cancelled), \
-             patch.object(btm, "_mark_failed", new_callable=AsyncMock), \
+             patch.object(btm, "_finalize_run", side_effect=record_finalize), \
              patch.object(btm, "_flush_checkpoint", new_callable=AsyncMock), \
              patch.object(btm, "_teardown_subagents_on_stop", new_callable=AsyncMock):
             setter = asyncio.create_task(set_cancel())
@@ -1593,4 +1602,4 @@ class TestSentinelAppendedOnTerminalFlavors:
                 )
             await setter
 
-        assert order == ["sentinel", "mark_cancelled"]
+        assert order == ["sentinel", "finalize:cancelled"]

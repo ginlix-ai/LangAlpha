@@ -5,9 +5,9 @@ Covers:
   subagents can't get claimed by a later turn's collector.
 - A7: ``_await_drain_and_cleanup_tasks`` evicts collected tasks from the
   per-thread registry so the dict doesn't grow unboundedly across turns.
-- A8: The claim loop in ``_mark_completed`` holds ``bg_registry._lock``
-  so two concurrent collectors can't both observe ``collector_response_id``
-  is ``None`` for the same task and double-claim.
+- A8: The claim loop in ``_finalize_run`` (``_spawn_subagent_collector``) holds
+  ``bg_registry._lock`` so two concurrent collectors can't both observe
+  ``collector_response_id`` is ``None`` for the same task and double-claim.
 - A4: The legacy-fallback ``stream_from_log`` path polls WorkflowTracker
   instead of exiting eagerly, so a rolling-deploy reconnect can still
   drain in-flight events.
@@ -75,7 +75,7 @@ class TestCollectorFiltersBySpawnedRunId:
         collector runs. Prevents the cross-turn event leak."""
         btm = _make_btm()
 
-        # run-2 is the turn whose _mark_completed we are simulating.
+        # run-2 is the turn whose _finalize_run we are simulating.
         run_id_current = "run-2"
         thread_id = "thread-A"
 
@@ -104,7 +104,7 @@ class TestCollectorFiltersBySpawnedRunId:
         bg_store = MagicMock()
         bg_store.get_registry = AsyncMock(return_value=registry)
 
-        # Patch out everything _mark_completed does AFTER the claim loop so
+        # Patch out everything _finalize_run does AFTER the claim loop so
         # the test only exercises the claim logic.
         with patch(
             "src.server.services.background_registry_store.BackgroundRegistryStore.get_instance",
@@ -114,7 +114,7 @@ class TestCollectorFiltersBySpawnedRunId:
                           new_callable=AsyncMock) as collect_mock, \
              patch("src.server.services.background_task_manager.release_burst_slot",
                    new_callable=AsyncMock):
-            await btm._mark_completed(thread_id, run_id_current)
+            await btm._finalize_run(thread_id, run_id_current, kind="stream_end")
             # The collector is spawned via asyncio.create_task; yield once
             # to let it run.
             await asyncio.sleep(0)
@@ -164,7 +164,7 @@ class TestCollectorFiltersBySpawnedRunId:
                           new_callable=AsyncMock) as collect_mock, \
              patch("src.server.services.background_task_manager.release_burst_slot",
                    new_callable=AsyncMock):
-            await btm._mark_completed(thread_id, run_id_current)
+            await btm._finalize_run(thread_id, run_id_current, kind="stream_end")
             await asyncio.sleep(0)
             await asyncio.sleep(0)
 
@@ -183,9 +183,9 @@ class TestClaimLoopHoldsRegistryLock:
 
     @pytest.mark.asyncio
     async def test_claim_blocks_when_lock_held_elsewhere(self):
-        """If a competing coroutine holds bg_registry._lock, _mark_completed's
-        claim loop can't observe collector_response_id mid-mutation. We
-        prove this by holding the lock and timing-out _mark_completed."""
+        """If a competing coroutine holds bg_registry._lock, _finalize_run's
+        collector claim loop can't observe collector_response_id mid-mutation.
+        We prove this by holding the lock and timing-out _finalize_run."""
         btm = _make_btm()
         thread_id = "thread-C"
         run_id = "run-C"
@@ -219,10 +219,12 @@ class TestClaimLoopHoldsRegistryLock:
             hog = asyncio.create_task(hold_lock_then_release(0.15))
             await asyncio.sleep(0.01)  # let hog acquire
 
-            # _mark_completed must block on the lock and not proceed past
+            # _finalize_run must block on the lock and not proceed past
             # the claim until the hog releases. We verify by checking that
             # the task has not been claimed before hog releases.
-            mc_task = asyncio.create_task(btm._mark_completed(thread_id, run_id))
+            mc_task = asyncio.create_task(
+                btm._finalize_run(thread_id, run_id, kind="stream_end")
+            )
             await asyncio.sleep(0.05)
             task = registry._tasks["tc-X"]
             assert task.collector_response_id is None, (

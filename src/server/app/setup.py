@@ -345,6 +345,17 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Failed to initialize PTC Agent: {e}")
         logger.warning("PTC Agent endpoints may not work correctly")
 
+    # Sweep stale in_progress runs (turn lifecycle v4, Phase 1). Single-worker:
+    # this process restarting proves any open run's executor is dead.
+    try:
+        from src.server.services.turn_lifecycle import TurnCoordinator
+
+        swept = await TurnCoordinator.get_instance().sweep_stale_runs()
+        if swept:
+            logger.warning(f"Startup sweep finalized {swept} stale run(s)")
+    except Exception as e:
+        logger.warning(f"Stale-run startup sweep failed: {e}")
+
     # Start MarketDataFeed (shared upstream WS to ginlix-data)
     try:
         from src.server.services.market_data_feed import DEFAULT_WS_FEEDS, MarketDataFeed

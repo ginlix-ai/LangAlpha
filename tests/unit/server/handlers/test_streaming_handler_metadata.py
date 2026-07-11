@@ -34,7 +34,10 @@ class _EmptyGraph:
     With both None the handler emits the metadata frame and exits cleanly.
     """
 
-    def astream(self, _input_state, config=None, stream_mode=None, subgraphs=None):
+    def astream(
+        self, _input_state, config=None, stream_mode=None, subgraphs=None,
+        durability=None,
+    ):
         async def _gen():
             if False:
                 yield  # pragma: no cover — empty async generator

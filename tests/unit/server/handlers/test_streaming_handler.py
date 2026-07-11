@@ -1276,7 +1276,10 @@ class _CustomEventGraph:
         self._events = events
         self._namespace = namespace
 
-    def astream(self, _input_state, config=None, stream_mode=None, subgraphs=None):
+    def astream(
+        self, _input_state, config=None, stream_mode=None, subgraphs=None,
+        durability=None,
+    ):
         async def _gen():
             for event in self._events:
                 yield (self._namespace, "custom", event)

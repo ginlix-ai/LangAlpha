@@ -14,6 +14,7 @@ import asyncio
 import json
 import time
 from datetime import datetime
+from uuid import uuid4
 
 from fastapi import HTTPException
 from langgraph.types import Command
@@ -29,6 +30,11 @@ from src.server.models.chat import (
     serialize_hitl_response_map,
 )
 from src.server.services.background_task_manager import BackgroundTaskManager
+from src.server.services.turn_lifecycle import (
+    QuerySpec,
+    TurnCoordinator,
+    protected_finalize,
+)
 from src.server.services.workflow_tracker import WorkflowTracker
 from src.server.utils.directive_context import (
     build_directive_reminder,
@@ -59,8 +65,8 @@ from ptc_agent.agent.graph import get_user_profile_for_prompt
 
 from ._common import (
     _append_to_last_user_message,
+    _resolve_fork,
     _resolve_timezone,
-    _setup_fork_and_persistence,
     admission_conflict_detail,
     apply_fetch_override,
     build_graph_config,
@@ -70,7 +76,6 @@ from ._common import (
     inject_inline_reminders,
     logger,
     normalize_request_messages,
-    persist_or_skip_replay,
     prepare_skill_contexts,
     process_hitl_response,
     serialize_context_metadata,
@@ -81,7 +86,6 @@ from src.config.settings import get_flash_recursion_limit
 
 from .llm_config import resolve_llm_config
 from .steering import (
-    backfill_steering_queries,
     drain_steering_return_event,
     steer_thread,
 )
@@ -156,7 +160,7 @@ async def astream_flash_workflow(
     token_callback = None
     tool_tracker = None
     flash_graph = None
-    persistence_service = None
+    run_handle = None
     workspace_id = None
     timezone_str = None
 
@@ -177,7 +181,7 @@ async def astream_flash_workflow(
         # Admission gate
         # =================================================================
         # Per-thread asyncio.Lock that serializes the
-        # ``wait_or_steer → persist_query_start → start_workflow`` window.
+        # ``wait_or_steer → start_turn → start_workflow`` window.
         # See the BTM docstring on ``get_admission_lock`` for the race
         # this defends against.
         manager = BackgroundTaskManager.get_instance()
@@ -189,12 +193,10 @@ async def astream_flash_workflow(
         # Early steering routing
         # =================================================================
         # If a workflow is already running for this thread, route this POST
-        # through the steering queue *before* any DB write. The persistence
-        # singleton's ``_turn_index_cache`` is shared across concurrent POSTs
-        # on the same thread, and ``qr_db.create_query`` uses ``ON CONFLICT
-        # (thread_id, turn_index) DO UPDATE``, so a second ``persist_query_start``
-        # here would overwrite the running turn's query content with the
-        # steering text. Admit a fresh turn, steer the running one, or 409 —
+        # through the steering queue *before* any DB write — a steering
+        # message is neither a run nor a turn (v4 identity model); its
+        # content is archived on the owning response's metadata at finalize.
+        # Admit a fresh turn, steer the running one, or 409 —
         # see ``wait_or_steer``. Dispatched flows own the pre-registered
         # ``(thread_id, run_id)`` placeholder, so they pass it as
         # ``exclude_run_id`` (ignore it in the admission scan) and
@@ -236,12 +238,9 @@ async def astream_flash_workflow(
             initial_query=user_input,
         )
 
-        query_type, is_fork, persistence_service = await _setup_fork_and_persistence(
+        query_type, is_fork = await _resolve_fork(
             request=request,
             thread_id=thread_id,
-            run_id=run_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
             log_prefix="FLASH_FORK",
         )
         is_checkpoint_replay = bool(request.checkpoint_id and not request.messages)
@@ -285,21 +284,39 @@ async def astream_flash_workflow(
             if hitl_answers:
                 query_metadata["hitl_answers"] = hitl_answers
 
-        # Skip query persistence for checkpoint replay (regenerate/retry)
-        await persist_or_skip_replay(
-            persistence_service,
-            is_checkpoint_replay,
-            request,
-            query_content,
-            query_type,
-            feedback_action,
-            query_metadata,
-            thread_id,
-            log_prefix="FLASH_CHAT",
+        # =================================================================
+        # START txn (v4): query row + in_progress run row + thread
+        # projection in one transaction. Checkpoint replays reuse the
+        # preserved query row (query=None) and pin the fork turn.
+        # =================================================================
+        run_handle = await TurnCoordinator.get_instance().start_turn(
+            thread_id=thread_id,
+            run_id=run_id,
+            msg_type="flash",
+            workspace_id=workspace_id,
+            user_id=user_id,
+            is_byok=is_byok,
+            query=(
+                None
+                if is_checkpoint_replay
+                else QuerySpec(
+                    query_id=str(uuid4()),
+                    content=query_content,
+                    query_type=query_type,
+                    feedback_action=feedback_action,
+                    metadata=query_metadata,
+                )
+            ),
+            turn_index=(
+                request.fork_from_turn
+                if (is_fork and is_checkpoint_replay)
+                else None
+            ),
         )
 
         logger.info(
-            f"[FLASH_CHAT] Database records created: workspace_id={workspace_id}"
+            f"[FLASH_CHAT] Run started: workspace_id={workspace_id} "
+            f"turn_index={run_handle.turn_index}"
         )
 
         # =================================================================
@@ -446,11 +463,7 @@ async def astream_flash_workflow(
             skill_contexts=skill_contexts,
             skill_dirs=skill_dirs,
             run_id=run_id,
-            turn_index=(
-                await persistence_service.get_or_calculate_turn_index()
-                if persistence_service
-                else None
-            ),
+            turn_index=run_handle.turn_index,
         )
         graph_config["run_id"] = run_id
 
@@ -487,67 +500,19 @@ async def astream_flash_workflow(
             },
         )
 
+        # Post-finalize side effects only (v4): the durable terminal write
+        # already happened in BTM's _finalize_run before this callback fires.
         async def on_flash_workflow_complete(task_info):
-            """Per-run state — no identity guards needed."""
+            # If this flash run consumed a PTC report-back, the summary is
+            # now persisted — clear the durable watch so a client reload no
+            # longer surfaces it as pending. This success-only hook is the
+            # consumption point; a failed run leaves the keys for recovery.
             try:
-                execution_time = time.time() - start_time
-                _per_call_records = (
-                    token_callback.per_call_records if token_callback else None
-                )
-                _tool_usage = handler.get_tool_usage() if handler else None
-                _sse_events = handler.get_sse_events() if handler else None
-
-                if persistence_service:
-                    await persistence_service.persist_completion(
-                        metadata={
-                            "workspace_id": workspace_id,
-                            "locale": request.locale,
-                            "timezone": timezone_str,
-                            "msg_type": "flash",
-                            "is_byok": is_byok,
-                        },
-                        execution_time=execution_time,
-                        per_call_records=_per_call_records,
-                        tool_usage=_tool_usage,
-                        sse_events=_sse_events,
-                    )
-
-                await tracker.mark_completed(
-                    thread_id=thread_id,
-                    metadata={
-                        "completed_at": datetime.now().isoformat(),
-                        "execution_time": execution_time,
-                    },
-                    run_id=run_id,
-                )
-
-                # Backfill query records for steering messages that produced
-                # orphan responses
-                if handler and handler.injected_steerings:
-                    await backfill_steering_queries(
-                        thread_id, handler.injected_steerings
-                    )
-
-                # If this flash run consumed a PTC report-back, the summary is
-                # now persisted — clear the durable watch so a client reload no
-                # longer surfaces it as pending. This success-only hook is the
-                # consumption point; a failed run leaves the keys for recovery.
-                try:
-                    await _maybe_clear_report_back(request, thread_id)
-                except Exception as e:
-                    logger.warning(
-                        f"[FLASH_COMPLETE] report-back watch cleanup failed for "
-                        f"{thread_id}: {e}"
-                    )
-
-                logger.info(
-                    f"[FLASH_COMPLETE] Background completion persisted: "
-                    f"thread_id={thread_id} duration={execution_time:.2f}s"
-                )
+                await _maybe_clear_report_back(request, thread_id)
             except Exception as e:
-                logger.error(
-                    f"[FLASH_CHAT] Background completion persistence failed: {e}",
-                    exc_info=True,
+                logger.warning(
+                    f"[FLASH_COMPLETE] report-back watch cleanup failed for "
+                    f"{thread_id}: {e}"
                 )
 
         try:
@@ -570,7 +535,7 @@ async def astream_flash_workflow(
                     "timezone": timezone_str,
                     "handler": handler,
                     "token_callback": token_callback,
-                    "persistence_service": persistence_service,
+                    "run_handle": run_handle,
                     # Lets the BTM terminal handlers clear the report-back watch
                     # if this run fails or is cancelled (the success path clears
                     # it from the completion hook above).
@@ -588,6 +553,18 @@ async def astream_flash_workflow(
             # Dispatched flows (can_steer=False) must never steer, even in this
             # fallback: leave result None so they fall through to the 409, same
             # as the primary wait_or_steer path.
+            #
+            # v4: START already created this run's in_progress row; whichever
+            # way this branch exits (steer away or 409), no executor will ever
+            # own it — release the durable slot first.
+            await protected_finalize(
+                TurnCoordinator.get_instance().fail_open_run(
+                    run_handle,
+                    "superseded by concurrent run (admission fallback)",
+                    status="cancelled",
+                ),
+                label=run_handle.run_id,
+            )
             result = None if dispatched else await steer_thread(
                 thread_id, user_input, user_id
             )
@@ -633,6 +610,19 @@ async def astream_flash_workflow(
     except (asyncio.CancelledError, GeneratorExit):
         if slot_owned:
             await release_burst_slot(user_id)
+            # Died between START and BTM handoff: release the open run slot
+            # (Phase 1 has no recovery scanner). protected_finalize: a second
+            # cancel on this already-cancelled stream task must not abort
+            # the write.
+            if run_handle is not None:
+                await protected_finalize(
+                    TurnCoordinator.get_instance().fail_open_run(
+                        run_handle,
+                        "client disconnected during setup",
+                        status="cancelled",
+                    ),
+                    label=run_handle.run_id,
+                )
             logger.warning(
                 f"[FLASH_CHAT] Generator cancelled before workflow started: "
                 f"thread_id={thread_id}"
@@ -645,6 +635,8 @@ async def astream_flash_workflow(
         raise
 
     except Exception as e:
+        # run_handle only while this generator still owns the run — after
+        # handoff, BTM's _finalize_run owns the terminal write.
         async for event in handle_workflow_error(
             e,
             thread_id=thread_id,
@@ -652,7 +644,7 @@ async def astream_flash_workflow(
             workspace_id=workspace_id,
             handler=handler,
             token_callback=token_callback,
-            persistence_service=persistence_service,
+            run_handle=run_handle if slot_owned else None,
             start_time=start_time,
             request=request,
             is_byok=is_byok,

@@ -30,9 +30,6 @@ from src.server.app import setup
 from src.server.database import conversation as qr_db
 from src.server.models.chat import summarize_hitl_response_map
 from src.server.services.background_task_manager import BackgroundTaskManager
-from src.server.services.persistence.conversation import (
-    ConversationPersistenceService,
-)
 from src.server.services.workflow_tracker import WorkflowTracker
 from src.server.utils.skill_context import (
     detect_slash_commands,
@@ -110,32 +107,28 @@ def _resolve_timezone(request_timezone: Optional[str], locale: Optional[str]) ->
     return locale_config.get("timezone", "UTC")
 
 
-async def _setup_fork_and_persistence(
+async def _resolve_fork(
     *,
     request: ChatRequest,
     thread_id: str,
-    run_id: str,
-    workspace_id: str,
-    user_id: str,
     log_prefix: str = "FORK",
-) -> tuple[str, bool, ConversationPersistenceService]:
-    """Compute query_type, apply fork cleanup, init per-run persistence service.
+) -> tuple[str, bool]:
+    """Compute query_type and apply fork cleanup (truncation + checkpoint pin).
 
-    Shared by flash and PTC handlers. Returns
-    ``(query_type, is_fork, persistence_service)``. Persistence is keyed
-    by ``(thread_id, run_id)`` — fresh per turn, no cross-turn aliasing.
+    Shared by flash and PTC handlers; returns ``(query_type, is_fork)``.
+    Truncation happens here so the START txn's MAX+1 turn allocation sees
+    the post-fork row set. The v4 TurnCoordinator replaces the old per-run
+    persistence-service init this helper used to perform.
     """
+    is_checkpoint_replay = bool(request.checkpoint_id and not request.messages)
     if request.query_type:
         query_type = request.query_type
+    elif request.hitl_response:
+        query_type = "resume_feedback"
+    elif is_checkpoint_replay:
+        query_type = "regenerate"
     else:
-        is_resume = bool(request.hitl_response)
-        is_checkpoint_replay = bool(request.checkpoint_id and not request.messages)
-        if is_resume:
-            query_type = "resume_feedback"
-        elif is_checkpoint_replay:
-            query_type = "regenerate"
-        else:
-            query_type = "initial"
+        query_type = "initial"
 
     is_fork = request.fork_from_turn is not None and request.checkpoint_id
     if is_fork:
@@ -155,19 +148,7 @@ async def _setup_fork_and_persistence(
         # the new per-run key; pre-clearing the legacy thread-keyed buffer
         # is unnecessary because the new key didn't exist yet.
 
-    persistence_service = ConversationPersistenceService.get_instance(
-        thread_id=thread_id,
-        run_id=run_id,
-        workspace_id=workspace_id,
-        user_id=user_id,
-    )
-
-    if is_fork:
-        persistence_service.reset_for_fork(request.fork_from_turn)
-    else:
-        await persistence_service.get_or_calculate_turn_index()
-
-    return query_type, is_fork, persistence_service
+    return query_type, is_fork
 
 
 async def _is_plan_interrupt_pending(thread_id: str) -> bool:
@@ -496,42 +477,6 @@ async def ensure_thread(
     await qr_db.ensure_thread_exists(**ensure_kwargs)
 
 
-async def persist_or_skip_replay(
-    persistence_service: ConversationPersistenceService,
-    is_checkpoint_replay: bool,
-    request: ChatRequest,
-    query_content: str,
-    query_type: str,
-    feedback_action: str | None,
-    query_metadata: dict,
-    thread_id: str,
-    log_prefix: str,
-) -> None:
-    """Persist query start or skip persistence for checkpoint replay.
-
-    For checkpoint replays (regenerate/retry), the preserved query row is
-    already in the database, so we skip the re-insert.  Otherwise calls
-    ``persist_query_start``.
-    """
-    if is_checkpoint_replay:
-        turn_to_mark = (
-            request.fork_from_turn
-            if request.fork_from_turn is not None
-            else await persistence_service.get_or_calculate_turn_index()
-        )
-        logger.debug(
-            f"[{log_prefix}] Skipped query persist (checkpoint replay): "
-            f"thread_id={thread_id} turn_index={turn_to_mark}"
-        )
-    else:
-        await persistence_service.persist_query_start(
-            content=query_content,
-            query_type=query_type,
-            feedback_action=feedback_action,
-            metadata=query_metadata,
-        )
-
-
 def _slash_text_target(content: Any) -> tuple[str, dict | None]:
     """Locate the leading-slash text for command detection in a user message.
 
@@ -850,7 +795,7 @@ async def handle_workflow_error(
     workspace_id: str | None,
     handler,
     token_callback,
-    persistence_service: ConversationPersistenceService | None,
+    run_handle,
     start_time: float,
     request: ChatRequest,
     is_byok: bool,
@@ -858,15 +803,61 @@ async def handle_workflow_error(
     log_prefix: str,
     timezone_str: str | None = None,
 ) -> AsyncGenerator[str, None]:
-    """Handle a workflow exception: classify, retry-or-fail, persist, yield SSE events.
+    """Handle a workflow exception: classify, retry-or-fail, finalize, yield SSE events.
 
     This is an async generator that yields SSE event strings (``retry`` or
     ``error``).  Call it with ``async for event in handle_workflow_error(...): yield event``.
 
+    ``run_handle`` is the STARTed run to finalize, or ``None`` when the error
+    fired before START — or after handoff to BTM, whose ``_finalize_run``
+    owns the terminal write from that point (callers pass
+    ``run_handle if slot_owned else None`` to encode exactly that).
     ``workspace_id`` accepts ``None`` to guard against the case where the
     error occurred before the workspace was resolved.
     ``timezone_str`` is the resolved timezone; falls back to ``request.timezone``.
     """
+    from src.server.services.turn_lifecycle import (
+        TurnCoordinator,
+        TurnOutcome,
+        protected_finalize,
+    )
+
+    async def _finalize_error(error_msg: str, extra_metadata: dict) -> None:
+        """Terminal-write the open run as error; CRITICAL on failure (row
+        stays in_progress for recovery rather than masking the persist).
+
+        Runs via ``protected_finalize``: this generator lives on the
+        client-stream task, so a disconnect-injected CancelledError must not
+        abort the terminal transaction mid-flight."""
+        if run_handle is None or run_handle.finalized:
+            return
+        records = token_callback.per_call_records if token_callback else None
+        tools = handler.get_tool_usage() if handler else None
+        if not (run_handle.workspace_id and run_handle.user_id):
+            records = None
+            tools = None
+        try:
+            await protected_finalize(
+                TurnCoordinator.get_instance().finalize_turn(
+                    run_handle,
+                    TurnOutcome(
+                        status="error",
+                        metadata={**persist_metadata, **extra_metadata},
+                        errors=[error_msg],
+                        execution_time=time.time() - start_time,
+                        sse_events=handler.get_sse_events() if handler else None,
+                        per_call_records=records,
+                        tool_usage=tools,
+                    ),
+                ),
+                label=run_handle.run_id,
+            )
+        except Exception:
+            logger.critical(
+                f"[{log_prefix}] FINALIZE FAILED for run={run_handle.run_id}: "
+                f"row remains in_progress for recovery",
+                exc_info=True,
+            )
     # An admission-conflict 409 is a deliberate protocol response (raised
     # in-generator by ``wait_or_steer`` for both the foreground and dispatched
     # paths), not a workflow execution failure. Surface it to the client as an
@@ -886,6 +877,16 @@ async def handle_workflow_error(
         and e.detail.get("code") in ADMISSION_CONFLICT_CODES
     ):
         await release_burst_slot(user_id)
+        # Normally pre-START (run_handle is None). The flash RuntimeError
+        # fallback can 409 after START, though — release the durable slot so
+        # it doesn't leak until the stale-run sweep.
+        if run_handle is not None:
+            await protected_finalize(
+                TurnCoordinator.get_instance().fail_open_run(
+                    run_handle, "admission conflict after START", status="cancelled"
+                ),
+                label=run_handle.run_id,
+            )
         # The guard above already proved e.detail is a dict whose "code" is in
         # ADMISSION_CONFLICT_CODES (truthy), so no re-checking is needed here.
         detail = e.detail
@@ -932,13 +933,6 @@ async def handle_workflow_error(
     # Release burst slot on error (setup errors before background task starts)
     await release_burst_slot(user_id)
 
-    # Gather tracking data for persistence
-    _per_call_records = (
-        token_callback.per_call_records if token_callback else None
-    )
-    _tool_usage = handler.get_tool_usage() if handler else None
-    _sse_events = handler.get_sse_events() if handler else None
-
     classification = classify_error(e)
     is_recoverable = classification["is_recoverable"]
     error_type = classification["error_type"]
@@ -976,32 +970,21 @@ async def handle_workflow_error(
                 f"{type(e).__name__}: {str(e)}"
             )
 
-            if persistence_service:
-                try:
-                    await persistence_service.persist_error(
-                        error_message=error_msg,
-                        errors=[error_msg],
-                        execution_time=time.time() - start_time,
-                        metadata={
-                            **persist_metadata,
-                            "error_type": error_type,
-                            "error_class": type(e).__name__,
-                        },
-                        per_call_records=_per_call_records,
-                        tool_usage=_tool_usage,
-                        sse_events=_sse_events,
-                    )
-                except Exception as persist_error:
-                    logger.error(
-                        f"[{log_prefix}] Failed to persist error: {persist_error}"
-                    )
+            await _finalize_error(
+                error_msg,
+                {
+                    "error_type": error_type,
+                    "error_class": type(e).__name__,
+                    "retry_count": retry_count,
+                },
+            )
 
             # Push terminal status to Redis so /status reports FAILED with
             # bounded TTL instead of leaving the key as ACTIVE. The setup-
-            # error path runs outside BackgroundTaskManager's _mark_failed,
+            # error path runs outside BackgroundTaskManager's _finalize_run,
             # so this is the only chance to update tracker.
             try:
-                _expected = persistence_service.run_id if persistence_service else None
+                _expected = run_handle.run_id if run_handle else None
                 await tracker.mark_failed(
                     thread_id, error=error_msg, run_id=_expected
                 )
@@ -1027,6 +1010,26 @@ async def handle_workflow_error(
                 f"{type(e).__name__}: {str(e)[:100]}"
             )
 
+            # v4: the run itself is terminal (error, retryable) — leaving it
+            # in_progress would hold the thread's run slot with no executor.
+            # The 1.4 /retry redesign starts attempt N+1 from this row.
+            # Finalize BEFORE the retry SSE: a client disconnect while this
+            # generator is suspended at the yield would otherwise strand the
+            # run in_progress with no executor.
+            await _finalize_error(
+                f"{type(e).__name__}: {str(e)}",
+                {
+                    "error_type": error_type,
+                    "error_class": type(e).__name__,
+                    "retryable": True,
+                    "retry_count": retry_count,
+                },
+            )
+            # Legacy projection override: the frontend's resume affordance
+            # keys off thread status 'interrupted'. Replaced by the status
+            # vocabulary module in 1.6.
+            await qr_db.update_thread_status(thread_id, "interrupted")
+
             retry_data = {
                 "message": "Temporary error occurred, you can retry or resume the workflow",
                 "thread_id": thread_id,
@@ -1038,32 +1041,20 @@ async def handle_workflow_error(
             }
             yield f"event: retry\ndata: {json.dumps(retry_data)}\n\n"
 
-            await qr_db.update_thread_status(thread_id, "interrupted")
-
     else:
         # Non-recoverable error
         logger.exception(f"[{log_prefix.replace('CHAT', 'ERROR')}] thread_id={thread_id}: {e}")
 
         error_type_label = _classify_non_recoverable_error_type(e)
-        if persistence_service:
-            try:
-                await persistence_service.persist_error(
-                    error_message=str(e),
-                    execution_time=time.time() - start_time,
-                    # error_type/error_class ride the row so replay can
-                    # reconstruct the terminal error event it was persisted
-                    # before (the yield below happens after this persist).
-                    metadata={
-                        **persist_metadata,
-                        "error_type": error_type_label,
-                        "error_class": type(e).__name__,
-                    },
-                    per_call_records=_per_call_records,
-                    tool_usage=_tool_usage,
-                    sse_events=_sse_events,
-                )
-            except Exception as persist_error:
-                logger.error(f"[{log_prefix}] Failed to persist error: {persist_error}")
+        # error_type/error_class ride the row so replay can reconstruct the
+        # terminal error event (the yield below happens after this finalize).
+        await _finalize_error(
+            str(e),
+            {
+                "error_type": error_type_label,
+                "error_class": type(e).__name__,
+            },
+        )
 
         # Mirror the recoverable max-retries branch: push FAILED to Redis with
         # bounded TTL. Without this, /status keeps reporting ACTIVE for the

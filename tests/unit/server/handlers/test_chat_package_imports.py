@@ -73,7 +73,6 @@ class TestSubmoduleImports:
         assert hasattr(mod, "init_tracking")
         assert hasattr(mod, "apply_fetch_override")
         assert hasattr(mod, "ensure_thread")
-        assert hasattr(mod, "persist_or_skip_replay")
         assert hasattr(mod, "prepare_skill_contexts")
         assert hasattr(mod, "build_graph_config")
         assert hasattr(mod, "wait_or_steer")
@@ -94,7 +93,6 @@ class TestSubmoduleImports:
         assert hasattr(mod, "steer_thread")
         assert hasattr(mod, "steer_subagent")
         assert hasattr(mod, "drain_pending_steerings")
-        assert hasattr(mod, "backfill_steering_queries")
 
     def test_import_flash_workflow(self):
         import src.server.handlers.chat.flash_workflow as mod
