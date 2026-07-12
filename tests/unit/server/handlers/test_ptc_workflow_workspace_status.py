@@ -122,7 +122,7 @@ async def _run_to_sentinel(request, workspace_manager):
             new_callable=AsyncMock,
             return_value=("Q", False),
         ),
-        patch(f"{PTC}.TurnCoordinator") as mock_coord_cls,
+        patch(f"{PTC}.begin_turn", new_callable=AsyncMock) as mock_begin_turn,
         patch(f"{PTC}._resolve_timezone", return_value="UTC"),
         patch(f"{PTC}.init_tracking", return_value=(MagicMock(), MagicMock())),
         patch(f"{PTC}.apply_fetch_override"),
@@ -136,9 +136,7 @@ async def _run_to_sentinel(request, workspace_manager):
         mock_wm_cls.get_instance.return_value = workspace_manager
         mock_reg_store_cls.get_instance.return_value = sentinel_registry_store
         run_handle = MagicMock(run_id="r-1", turn_index=1, finalized=False)
-        mock_coord_cls.get_instance.return_value.start_turn = AsyncMock(
-            return_value=run_handle
-        )
+        mock_begin_turn.return_value = run_handle
 
         gen = astream_ptc_workflow(
             request=request,

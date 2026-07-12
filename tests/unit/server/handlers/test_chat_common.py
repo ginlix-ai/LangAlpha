@@ -33,7 +33,7 @@ COMMON = "src.server.handlers.chat._common"
 
 class TestClassifyError:
     def _classify(self, e):
-        from src.server.handlers.chat._common import classify_error
+        from src.server.handlers.chat.error_handling import classify_error
 
         return classify_error(e)
 
@@ -158,7 +158,7 @@ class TestClassifyNonRecoverableErrorType:
     raw traceback strings."""
 
     def _classify(self, e):
-        from src.server.handlers.chat._common import (
+        from src.server.handlers.chat.error_handling import (
             _classify_non_recoverable_error_type,
         )
         return _classify_non_recoverable_error_type(e)
@@ -744,7 +744,7 @@ class TestBuildGraphConfig:
 class TestWaitOrSteer:
     @pytest.mark.asyncio
     async def test_fresh_returns_true(self):
-        from src.server.handlers.chat._common import wait_or_steer
+        from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value="fresh")
@@ -761,7 +761,7 @@ class TestWaitOrSteer:
         409 'not_running' routes the gateway to its resubmit path instead."""
         from fastapi import HTTPException
 
-        from src.server.handlers.chat._common import wait_or_steer
+        from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value="fresh")
@@ -781,7 +781,7 @@ class TestWaitOrSteer:
     async def test_steer_only_still_steers_running(self):
         """steer_only forbids only the fresh-admission fallback; a
         genuinely-running turn steers exactly as before."""
-        from src.server.handlers.chat._common import wait_or_steer
+        from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value="running")
@@ -806,7 +806,7 @@ class TestWaitOrSteer:
         the Redis push landed: the message must be reclaimed and the POST
         routed as a fresh turn — never a false steering_accepted for a
         message nothing will consume."""
-        from src.server.handlers.chat._common import wait_or_steer
+        from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value="running")
@@ -836,7 +836,7 @@ class TestWaitOrSteer:
         not_running so the gateway resubmits — not as a fresh admission."""
         from fastapi import HTTPException
 
-        from src.server.handlers.chat._common import wait_or_steer
+        from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value="running")
@@ -868,7 +868,7 @@ class TestWaitOrSteer:
         message first and steering_returned already carried it back on the
         turn stream — the POST keeps the queue contract and reports
         accepted."""
-        from src.server.handlers.chat._common import wait_or_steer
+        from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value="running")
@@ -896,7 +896,7 @@ class TestWaitOrSteer:
         """CRITICAL regression: a genuinely-running turn is steered immediately
         — admission returns "running" and steer_thread is called without any
         wait on the running task."""
-        from src.server.handlers.chat._common import wait_or_steer
+        from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value="running")
@@ -926,7 +926,7 @@ class TestWaitOrSteer:
         never steered (a second checkpoint writer would corrupt state)."""
         from fastapi import HTTPException
 
-        from src.server.handlers.chat._common import wait_or_steer
+        from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value="stopping")
@@ -952,7 +952,7 @@ class TestWaitOrSteer:
     async def test_raises_409_when_steering_fails(self):
         from fastapi import HTTPException
 
-        from src.server.handlers.chat._common import wait_or_steer
+        from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value="running")
@@ -979,7 +979,7 @@ class TestWaitOrSteer:
         never steered (steering mid-summarize corrupts the context rewrite)."""
         from fastapi import HTTPException
 
-        from src.server.handlers.chat._common import wait_or_steer
+        from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value="compacting")
@@ -1009,7 +1009,7 @@ class TestWaitOrSteer:
         checkpointer would collide."""
         from fastapi import HTTPException
 
-        from src.server.handlers.chat._common import wait_or_steer
+        from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value="running")
@@ -1031,7 +1031,7 @@ class TestWaitOrSteer:
     async def test_exclude_run_id_reaches_admission_scan(self):
         """A dispatched flow passes its own pre-registered run_id so the
         admission scan ignores its placeholder and only sees OTHER runs."""
-        from src.server.handlers.chat._common import wait_or_steer
+        from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
         manager.wait_for_admission = AsyncMock(return_value="fresh")
@@ -1059,7 +1059,7 @@ class TestAdmissionConflictDetail:
     and dispatched."""
 
     def test_compacting_state_names_compaction(self):
-        from src.server.handlers.chat._common import admission_conflict_detail
+        from src.server.handlers.chat.admission import admission_conflict_detail
 
         detail = admission_conflict_detail("compacting")
         # Structured detail (code + message) so handle_workflow_error can tag the
@@ -1070,7 +1070,7 @@ class TestAdmissionConflictDetail:
         assert "retry" in detail["message"].lower() or "resend" in detail["message"].lower()
 
     def test_stopping_state_names_stopping(self):
-        from src.server.handlers.chat._common import admission_conflict_detail
+        from src.server.handlers.chat.admission import admission_conflict_detail
 
         detail = admission_conflict_detail("stopping")
         assert isinstance(detail, dict)
@@ -1078,7 +1078,7 @@ class TestAdmissionConflictDetail:
         assert "stopping" in detail["message"].lower()
 
     def test_not_running_names_the_steer_refusal(self):
-        from src.server.handlers.chat._common import admission_conflict_detail
+        from src.server.handlers.chat.admission import admission_conflict_detail
 
         # The steer_only probe against an idle thread: not a wait_for_admission
         # state, but routed through the same mapper so the wording lives here too.
@@ -1088,7 +1088,7 @@ class TestAdmissionConflictDetail:
         assert "running" in detail["message"].lower()
 
     def test_running_state_is_the_generic_fallback(self):
-        from src.server.handlers.chat._common import admission_conflict_detail
+        from src.server.handlers.chat.admission import admission_conflict_detail
 
         # Any other non-fresh state (e.g. "running") falls through to the
         # "still running" code.
@@ -1102,7 +1102,7 @@ class TestAdmissionConflictDetail:
         assert "cancel" in detail["message"].lower()
 
     def test_unknown_state_falls_back_to_generic(self):
-        from src.server.handlers.chat._common import admission_conflict_detail
+        from src.server.handlers.chat.admission import admission_conflict_detail
 
         detail = admission_conflict_detail("wedged")
         assert detail["code"] == "running"
@@ -1154,7 +1154,7 @@ class TestHandleWorkflowErrorHTTPException:
     ):
         from fastapi import HTTPException
 
-        from src.server.handlers.chat._common import handle_workflow_error
+        from src.server.handlers.chat.error_handling import handle_workflow_error
 
         exc = HTTPException(
             status_code=409,
@@ -1166,10 +1166,10 @@ class TestHandleWorkflowErrorHTTPException:
 
         with (
             patch(
-                "src.server.handlers.chat._common.WorkflowTracker"
+                "src.server.handlers.chat.error_handling.WorkflowTracker"
             ) as mock_tracker_cls,
             patch(
-                "src.server.handlers.chat._common.release_burst_slot",
+                "src.server.handlers.chat.error_handling.release_burst_slot",
                 new_callable=AsyncMock,
             ),
             patch(self.TC) as mock_coord_cls,
@@ -1211,7 +1211,7 @@ class TestHandleWorkflowErrorHTTPException:
         the ADMISSION_CONFLICT_CODES membership added for steer_only."""
         from fastapi import HTTPException
 
-        from src.server.handlers.chat._common import handle_workflow_error
+        from src.server.handlers.chat.error_handling import handle_workflow_error
 
         exc = HTTPException(
             status_code=409,
@@ -1223,10 +1223,10 @@ class TestHandleWorkflowErrorHTTPException:
 
         with (
             patch(
-                "src.server.handlers.chat._common.WorkflowTracker"
+                "src.server.handlers.chat.error_handling.WorkflowTracker"
             ) as mock_tracker_cls,
             patch(
-                "src.server.handlers.chat._common.release_burst_slot",
+                "src.server.handlers.chat.error_handling.release_burst_slot",
                 new_callable=AsyncMock,
             ),
             patch(self.TC) as mock_coord_cls,
@@ -1267,7 +1267,7 @@ class TestHandleWorkflowErrorHTTPException:
         conflict."""
         from fastapi import HTTPException
 
-        from src.server.handlers.chat._common import handle_workflow_error
+        from src.server.handlers.chat.error_handling import handle_workflow_error
 
         exc = HTTPException(status_code=503, detail="backend not ready")
 
@@ -1279,10 +1279,10 @@ class TestHandleWorkflowErrorHTTPException:
 
         with (
             patch(
-                "src.server.handlers.chat._common.WorkflowTracker"
+                "src.server.handlers.chat.error_handling.WorkflowTracker"
             ) as mock_tracker_cls,
             patch(
-                "src.server.handlers.chat._common.release_burst_slot",
+                "src.server.handlers.chat.error_handling.release_burst_slot",
                 new_callable=AsyncMock,
             ),
             patch(self.TC) as mock_coord_cls,
@@ -1323,7 +1323,7 @@ class TestHandleWorkflowErrorHTTPException:
         peer turn the same way the original bug #2 did."""
         from fastapi import HTTPException
 
-        from src.server.handlers.chat._common import handle_workflow_error
+        from src.server.handlers.chat.error_handling import handle_workflow_error
 
         # A plain-string 409 (no {"code": ...}) — e.g. a future conflict raised
         # by middleware — must NOT be treated as an admission conflict.
@@ -1337,10 +1337,10 @@ class TestHandleWorkflowErrorHTTPException:
 
         with (
             patch(
-                "src.server.handlers.chat._common.WorkflowTracker"
+                "src.server.handlers.chat.error_handling.WorkflowTracker"
             ) as mock_tracker_cls,
             patch(
-                "src.server.handlers.chat._common.release_burst_slot",
+                "src.server.handlers.chat.error_handling.release_burst_slot",
                 new_callable=AsyncMock,
             ),
             patch(self.TC) as mock_coord_cls,

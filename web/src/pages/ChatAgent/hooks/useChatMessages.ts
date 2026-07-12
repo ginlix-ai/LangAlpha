@@ -5537,7 +5537,7 @@ export function useChatMessages(
   // =====================================================================
 
   /** Lazy-cached turn checkpoint data. Invalidated after each edit/regenerate. */
-  const turnCheckpointsRef = useRef<{ turns: Array<{ edit_checkpoint_id: string | null; regenerate_checkpoint_id: string; turn_index: number }>; retry_checkpoint_id: string | null } | null>(null);
+  const turnCheckpointsRef = useRef<{ turns: Array<{ edit_checkpoint_id: string | null; regenerate_checkpoint_id: string; turn_index: number }> } | null>(null);
 
   /**
    * Helper: get or fetch turn checkpoints for the current thread.
@@ -5558,8 +5558,11 @@ export function useChatMessages(
   }, []);
 
   /**
-   * Helper: run a checkpoint-based stream (shared by edit, regenerate, retry).
-   * Sets up assistant placeholder, event processor, and handles the stream lifecycle.
+   * Helper: stream a forked or retried turn (shared by edit, regenerate, retry).
+   * Edit/regenerate fork from an explicit `checkpointId`; retry goes through the
+   * POST /retry attempt chain with `checkpointId=null` (the server resolves the
+   * retry checkpoint). Sets up the assistant placeholder, event processor, and
+   * stream lifecycle.
    */
   const streamFromCheckpoint = useCallback(async (message: string | null, checkpointId: string | null, truncateIndex: number, forkFromTurn: number | null = null, modelOptions: ModelOptions = {}, viaRetryEndpoint: boolean = false) => {
     if (isStreamingRef.current) return;
@@ -5643,6 +5646,11 @@ export function useChatMessages(
       // Retry goes through POST /retry (v4 attempt chain: server validates
       // the latest attempt + resolves the checkpoint, no truncation); edit/
       // regenerate keep the fork path.
+      // Latch run_id from response headers — see handleSendMessage for the same
+      // closing-the-race rationale. Shared by both branches.
+      const latchRunId = (runId: string) => {
+        currentRunIdRef.current = runId;
+      };
       const result = viaRetryEndpoint
         ? await sendRetryStream(
             workspaceId,
@@ -5651,9 +5659,7 @@ export function useChatMessages(
             modelOptions.model || null,
             modelOptions.reasoningEffort || null,
             modelOptions.fastMode || null,
-            (runId) => {
-              currentRunIdRef.current = runId;
-            },
+            latchRunId,
             abortController.signal,
           )
         : await sendChatMessageStream(
@@ -5673,11 +5679,7 @@ export function useChatMessages(
             modelOptions.reasoningEffort || null,
             modelOptions.fastMode || null,
             platform,
-            // Latch run_id from response headers — see handleSendMessage for
-            // the same closing-the-race rationale.
-            (runId) => {
-              currentRunIdRef.current = runId;
-            },
+            latchRunId,
             abortController.signal,
           );
 

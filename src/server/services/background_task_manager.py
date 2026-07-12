@@ -357,6 +357,17 @@ class BackgroundTaskManager:
                     return True
         return False
 
+    async def is_run_live(self, thread_id: str, run_id: str) -> bool:
+        """True while this exact run's workflow task (or inner task) is still
+        executing. A live executor owns the ledger row, the tracker, and all
+        terminal transport — callers must not finalize a live run."""
+        async with self.task_lock:
+            ti = self.tasks.get((thread_id, run_id))
+            for t in (ti.task if ti else None, ti.inner_task if ti else None):
+                if t is not None and not t.done():
+                    return True
+        return False
+
     async def has_active_task_for_thread(self, thread_id: str) -> bool:
         """True if any QUEUED/RUNNING task exists for the thread.
 
@@ -1622,7 +1633,7 @@ class BackgroundTaskManager:
         transaction carrying usage rows with it, so a persist failure can no
         longer be swallowed into a zombie-ACTIVE turn.
         """
-        from src.server.services.turn_lifecycle import TurnCoordinator, TurnOutcome
+        from src.server.services.turn_lifecycle import TurnOutcome
 
         key = (thread_id, run_id)
         async with self.task_lock:
@@ -1639,7 +1650,107 @@ class BackgroundTaskManager:
         workspace_id = metadata.get("workspace_id")
         user_id = metadata.get("user_id")
 
-        # ---- outcome classification (in-band) ----
+        status, phase, interrupt_reason, error = await self._classify_outcome(
+            kind, handler=handler, graph=graph, thread_id=thread_id, error=error
+        )
+
+        (
+            execution_time,
+            per_call_records,
+            tool_usage,
+            sse_events,
+            persist_metadata,
+        ) = await self._assemble_finalize_artifacts(
+            key,
+            metadata=metadata,
+            status=status,
+            phase=phase,
+            handler=handler,
+            cancelled_by_user=cancelled_by_user,
+            workspace_id=workspace_id,
+            user_id=user_id,
+        )
+
+        # ---- the single terminal transition ----
+        # finalize_applied gates every terminal business effect below: losers
+        # of the finalize race (and failed finalizes) do nothing. The
+        # handle-less legacy path keeps its local effects so it can't wedge.
+        finalize_applied = True
+        survivor_status: Optional[str] = None
+        if handle is not None:
+            # I5: terminal hooks (burst release, report-back dispatch,
+            # needs-input wake, watch clear) ride the finalize transaction
+            # as durable outbox jobs — finalize_run derives them from the
+            # row's START-stamped metadata, so no explicit factory here.
+            outcome = TurnOutcome(
+                status=status,
+                interrupt_reason=interrupt_reason,
+                metadata=persist_metadata,
+                errors=[error] if error else None,
+                execution_time=execution_time,
+                sse_events=sse_events,
+                per_call_records=per_call_records,
+                tool_usage=tool_usage,
+            )
+            finalize_applied, status, survivor_status = (
+                await self._drive_finalize_cas(key, handle, outcome)
+            )
+        else:
+            logger.error(
+                f"[BackgroundTaskManager] no run_handle for {key}; durable "
+                f"finalize skipped (legacy path?)"
+            )
+
+        # ---- local terminal mark (after the CAS: a losing finalize adopts
+        # the survivor's status instead of relabeling the winner's) ----
+        local_status = survivor_status or status
+        async with self.task_lock:
+            task_info.status = {
+                "cancelled": TaskStatus.CANCELLED,
+                "error": TaskStatus.FAILED,
+            }.get(local_status, TaskStatus.COMPLETED)
+            task_info.completed_at = datetime.now()
+            if error:
+                task_info.error = error
+
+        if finalize_applied:
+            await self._apply_post_terminal_effects(
+                thread_id,
+                run_id,
+                kind=kind,
+                status=status,
+                task_info=task_info,
+                completion_callback=completion_callback,
+                execution_time=execution_time,
+                interrupt_reason=interrupt_reason,
+                error=error,
+                metadata=metadata,
+                workspace_id=workspace_id,
+                user_id=user_id,
+            )
+
+        if handle is None and user_id:
+            # Legacy fallback only: without a durable run row there are no
+            # outbox jobs, so the burst slot must release inline.
+            await release_burst_slot(user_id, metadata.get("burst_slot_id"))
+
+        task_info.persistence_complete.set()
+        async with self.task_lock:
+            self._release_terminal_refs(thread_id, run_id)
+
+    async def _classify_outcome(
+        self,
+        kind: Literal["stream_end", "cancelled", "failed"],
+        *,
+        handler,
+        graph,
+        thread_id: str,
+        error: Optional[str],
+    ) -> tuple[str, str, Optional[str], Optional[str]]:
+        """In-band outcome classification -> (status, phase, interrupt_reason,
+        error). Interrupted-vs-completed comes from the streaming handler's
+        durability barrier; the timeout-prone aget_state probe survives only
+        for handler-less runs."""
         interrupt_reason: Optional[str] = None
         if kind == "cancelled":
             status, phase = "cancelled", "cancellation"
@@ -1672,12 +1783,28 @@ class BackgroundTaskManager:
                         interrupt_reason = "plan_review_required"
             except Exception:
                 logger.warning(
-                    f"[BackgroundTaskManager] fallback state probe failed for {key}",
+                    f"[BackgroundTaskManager] fallback state probe failed for "
+                    f"({thread_id}, ...)",
                     exc_info=True,
                 )
+        return status, phase, interrupt_reason, error
 
-        # ---- artifact assembly ----
+    async def _assemble_finalize_artifacts(
+        self,
+        key: tuple,
+        *,
+        metadata: dict,
+        status: str,
+        phase: str,
+        handler,
+        cancelled_by_user: bool,
+        workspace_id: Optional[str],
+        user_id: Optional[str],
+    ) -> tuple:
+        """Build everything the finalize CAS archives: usage records, the
+        (possibly stop-reconciled) sse_events, and the persist metadata."""
         execution_time = calculate_execution_time(metadata)
+        thread_id = key[0]
         _, per_call_records = get_token_usage_from_callback(metadata, phase, thread_id)
         tool_usage = get_tool_usage_from_handler(metadata, phase, thread_id)
 
@@ -1743,175 +1870,154 @@ class BackgroundTaskManager:
                     f"[BackgroundTaskManager] artifact hook failed for {key}",
                     exc_info=True,
                 )
+        return execution_time, per_call_records, tool_usage, sse_events, persist_metadata
 
-        # ---- the single terminal transition ----
-        # finalize_applied gates every terminal business effect below: losers
-        # of the finalize race (and failed finalizes) do nothing. The
-        # handle-less legacy path keeps its local effects so it can't wedge.
-        finalize_applied = True
-        survivor_status: Optional[str] = None
-        if handle is not None:
-            # I5: terminal hooks (burst release, report-back dispatch,
-            # needs-input wake, watch clear) ride the finalize transaction
-            # as durable outbox jobs — finalize_run derives them from the
-            # row's START-stamped metadata, so no explicit factory here.
-            outcome = TurnOutcome(
-                status=status,
-                interrupt_reason=interrupt_reason,
-                metadata=persist_metadata,
-                errors=[error] if error else None,
-                execution_time=execution_time,
-                sse_events=sse_events,
-                per_call_records=per_call_records,
-                tool_usage=tool_usage,
-            )
-            try:
-                # 1.5: no post_commit DEL — the stream is retained to its
-                # redis_event_ttl so post-terminal reconnects replay from
-                # Redis and see the run_end frame appended below.
-                result = await TurnCoordinator.get_instance().finalize_turn(
-                    handle,
-                    outcome,
-                )
-                finalize_applied = result.applied
-                if result.applied:
-                    final_status = (result.run or {}).get("status")
-                    if final_status and final_status != status:
-                        # Durable cancel intent, stamped before the CAS landed,
-                        # overrode the natural outcome inside finalize. Adopt it
-                        # for the local mark and side-effect selection below.
-                        logger.info(
-                            f"[BackgroundTaskManager] finalize adopted durable "
-                            f"cancel for {key}: {status} -> {final_status}"
-                        )
-                        status = final_status
-                else:
-                    survivor_status = (result.run or {}).get("status")
-                    logger.warning(
-                        f"[BackgroundTaskManager] lost finalize race for {key}: "
-                        f"row already {survivor_status} (wanted {status}); "
-                        f"terminal side effects skipped"
-                    )
-            except Exception:
-                # The row stays in_progress — honest and recoverable — rather
-                # than masking a failed persist as a terminal turn.
-                finalize_applied = False
-                logger.critical(
-                    f"[BackgroundTaskManager] FINALIZE FAILED for {key}: run row "
-                    f"remains in_progress for recovery",
-                    exc_info=True,
-                )
-        else:
-            logger.error(
-                f"[BackgroundTaskManager] no run_handle for {key}; durable "
-                f"finalize skipped (legacy path?)"
-            )
+    async def _drive_finalize_cas(
+        self, key: tuple, handle, outcome
+    ) -> tuple[bool, str, Optional[str]]:
+        """One finalize CAS -> (applied, adopted_status, survivor_status).
 
-        # ---- local terminal mark (after the CAS: a losing finalize adopts
-        # the survivor's status instead of relabeling the winner's) ----
-        local_status = survivor_status or status
-        async with self.task_lock:
-            task_info.status = {
-                "cancelled": TaskStatus.CANCELLED,
-                "error": TaskStatus.FAILED,
-            }.get(local_status, TaskStatus.COMPLETED)
-            task_info.completed_at = datetime.now()
-            if error:
-                task_info.error = error
+        Winners adopt the row's final status (durable cancel intent can flip
+        it); losers report the survivor's. A failed persist leaves the row
+        in_progress — honest and recoverable — never a masked terminal turn.
+        """
+        from src.server.services.turn_lifecycle import TurnCoordinator
 
-        # ---- post-terminal local effects (never touch run status again).
-        # Isolated: a side-effect failure must not propagate back into
-        # _run_workflow's failure handler and trigger a second finalize. ----
+        status = outcome.status
         try:
-            if finalize_applied:
-                # Visible run_end AFTER the commit, carrying the adopted
-                # status (I6). Attached consumers yield it and close. Losers
-                # of a finalize race skip it — their consumers close via the
-                # terminal handshake once the local mark above lands.
-                await self.append_run_end_event(thread_id, run_id, status)
+            # 1.5: no post_commit DEL — the stream is retained to its
+            # redis_event_ttl so post-terminal reconnects replay from
+            # Redis and see the run_end frame appended after the commit.
+            result = await TurnCoordinator.get_instance().finalize_turn(
+                handle,
+                outcome,
+            )
+            if result.applied:
+                final_status = (result.run or {}).get("status")
+                if final_status and final_status != status:
+                    logger.info(
+                        f"[BackgroundTaskManager] finalize adopted durable "
+                        f"cancel for {key}: {status} -> {final_status}"
+                    )
+                    status = final_status
+                return True, status, None
+            survivor_status = (result.run or {}).get("status")
+            logger.warning(
+                f"[BackgroundTaskManager] lost finalize race for {key}: "
+                f"row already {survivor_status} (wanted {status}); "
+                f"terminal side effects skipped"
+            )
+            return False, status, survivor_status
+        except Exception:
+            logger.critical(
+                f"[BackgroundTaskManager] FINALIZE FAILED for {key}: run row "
+                f"remains in_progress for recovery",
+                exc_info=True,
+            )
+            return False, status, None
 
-                if status == "completed" and completion_callback:
-                    try:
-                        await completion_callback(task_info)
-                    except Exception:
-                        logger.error(
-                            f"[BackgroundTaskManager] completion side-effect callback "
-                            f"failed for {key} (run remains completed)",
-                            exc_info=True,
-                        )
+    async def _apply_post_terminal_effects(
+        self,
+        thread_id: str,
+        run_id: str,
+        *,
+        kind: Literal["stream_end", "cancelled", "failed"],
+        status: str,
+        task_info,
+        completion_callback,
+        execution_time,
+        interrupt_reason: Optional[str],
+        error: Optional[str],
+        metadata: dict,
+        workspace_id: Optional[str],
+        user_id: Optional[str],
+    ) -> None:
+        """Local effects after a WON finalize CAS (never touch run status
+        again). Isolated: a side-effect failure must not propagate back into
+        _run_workflow's failure handler and trigger a second finalize."""
+        key = (thread_id, run_id)
+        try:
+            # Visible run_end AFTER the commit, carrying the adopted
+            # status (I6). Attached consumers yield it and close. Losers
+            # of a finalize race skip it — their consumers close via the
+            # terminal handshake once the local mark lands.
+            await self.append_run_end_event(thread_id, run_id, status)
 
+            if status == "completed" and completion_callback:
                 try:
-                    tracker = WorkflowTracker.get_instance()
-                    if status == "completed":
-                        await tracker.mark_completed(
-                            thread_id=thread_id,
-                            metadata={
-                                "completed_at": datetime.now().isoformat(),
-                                "execution_time": execution_time,
-                            },
-                            run_id=run_id,
-                        )
-                    elif status == "interrupted":
-                        await tracker.mark_interrupted(
-                            thread_id=thread_id,
-                            run_id=run_id,
-                            metadata={"interrupt_reason": interrupt_reason},
-                        )
-                    elif status == "cancelled":
-                        await tracker.mark_cancelled(thread_id, run_id=run_id)
-                    else:
-                        await tracker.mark_failed(
-                            thread_id, error=error or "workflow failed", run_id=run_id
-                        )
-                except Exception as tracker_err:
+                    await completion_callback(task_info)
+                except Exception:
+                    logger.error(
+                        f"[BackgroundTaskManager] completion side-effect callback "
+                        f"failed for {key} (run remains completed)",
+                        exc_info=True,
+                    )
+
+            # Legacy parallel store; readers are one-release compat shims.
+            # TODO(v4-P2): delete with WorkflowTracker (plan 2.4).
+            try:
+                tracker = WorkflowTracker.get_instance()
+                if status == "completed":
+                    await tracker.mark_completed(
+                        thread_id=thread_id,
+                        metadata={
+                            "completed_at": datetime.now().isoformat(),
+                            "execution_time": execution_time,
+                        },
+                        run_id=run_id,
+                    )
+                elif status == "interrupted":
+                    await tracker.mark_interrupted(
+                        thread_id=thread_id,
+                        run_id=run_id,
+                        metadata={"interrupt_reason": interrupt_reason},
+                    )
+                elif status == "cancelled":
+                    await tracker.mark_cancelled(thread_id, run_id=run_id)
+                else:
+                    await tracker.mark_failed(
+                        thread_id, error=error or "workflow failed", run_id=run_id
+                    )
+            except Exception as tracker_err:
+                logger.warning(
+                    f"[BackgroundTaskManager] tracker update failed for {key}: "
+                    f"{tracker_err}"
+                )
+
+            # Collection follows the ADOPTED status: only a run that
+            # actually ended completed/interrupted gets a collector. A
+            # terminal error or (adopted) cancel instead kills this run's
+            # still-pending subagents — run-scoped, so prior turns' orphan
+            # collectors and claims survive. No drain: the CAS already
+            # committed this run's sse_events, and a cancelled/errored
+            # run's subagent output is deliberately never billed. (On the
+            # explicit user-stop path the teardown already popped the
+            # whole registry; the scoped call is then a no-op.)
+            if kind == "stream_end" and status in ("completed", "interrupted"):
+                await self._spawn_subagent_collector(
+                    thread_id, run_id, metadata, workspace_id, user_id
+                )
+            elif status in ("error", "cancelled"):
+                try:
+                    from src.server.services.background_registry_store import (
+                        BackgroundRegistryStore,
+                    )
+
+                    await BackgroundRegistryStore.get_instance().cancel_run_tasks(
+                        thread_id, run_id, force=True
+                    )
+                except Exception:
                     logger.warning(
-                        f"[BackgroundTaskManager] tracker update failed for {key}: "
-                        f"{tracker_err}"
+                        f"[BackgroundTaskManager] run-scoped subagent "
+                        f"cleanup failed for {key}",
+                        exc_info=True,
                     )
-
-                # Collection follows the ADOPTED status: only a run that
-                # actually ended completed/interrupted gets a collector. A
-                # terminal error or (adopted) cancel instead kills this run's
-                # still-pending subagents — run-scoped, so prior turns' orphan
-                # collectors and claims survive. No drain: the CAS already
-                # committed this run's sse_events, and a cancelled/errored
-                # run's subagent output is deliberately never billed. (On the
-                # explicit user-stop path the teardown already popped the
-                # whole registry; the scoped call is then a no-op.)
-                if kind == "stream_end" and status in ("completed", "interrupted"):
-                    await self._spawn_subagent_collector(
-                        thread_id, run_id, metadata, workspace_id, user_id
-                    )
-                elif status in ("error", "cancelled"):
-                    try:
-                        from src.server.services.background_registry_store import (
-                            BackgroundRegistryStore,
-                        )
-
-                        await BackgroundRegistryStore.get_instance().cancel_run_tasks(
-                            thread_id, run_id, force=True
-                        )
-                    except Exception:
-                        logger.warning(
-                            f"[BackgroundTaskManager] run-scoped subagent "
-                            f"cleanup failed for {key}",
-                            exc_info=True,
-                        )
         except Exception:
             logger.error(
                 f"[BackgroundTaskManager] post-terminal side effects failed for "
                 f"{key} (run remains {status})",
                 exc_info=True,
             )
-
-        if handle is None and user_id:
-            # Legacy fallback only: without a durable run row there are no
-            # outbox jobs, so the burst slot must release inline.
-            await release_burst_slot(user_id, metadata.get("burst_slot_id"))
-
-        task_info.persistence_complete.set()
-        async with self.task_lock:
-            self._release_terminal_refs(thread_id, run_id)
 
     async def _spawn_subagent_collector(
         self,

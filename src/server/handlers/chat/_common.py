@@ -1,36 +1,29 @@
 """Shared helpers for chat handler modules (flash & PTC).
 
-This module consolidates private helpers, error classification, and common
+This module consolidates private helpers, turn-lifecycle wiring, and common
 setup routines that are identical (or near-identical) between the flash and
 PTC workflow handlers.  Keeping them in one place eliminates duplication and
-ensures behavioural parity.
+ensures behavioural parity. Turn admission lives in ``admission``; error
+classification and the terminal error funnel live in ``error_handling``.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import time
-from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, Optional
 
-import psycopg
 from fastapi import HTTPException
 
-from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
 from src.config.settings import (
     get_langsmith_metadata,
     get_langsmith_tags,
     get_locale_config,
-    get_max_workflow_retries,
     is_sse_event_log_enabled,
 )
 from src.server.app import setup
 from src.server.database import conversation as qr_db
 from src.server.models.chat import summarize_hitl_response_map
-from src.server.services.background_task_manager import BackgroundTaskManager
-from src.server.services.workflow_tracker import WorkflowTracker
 from src.server.utils.skill_context import (
     detect_slash_commands,
     parse_skill_contexts,
@@ -195,122 +188,6 @@ async def _is_plan_interrupt_pending(thread_id: str) -> bool:
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
-
-
-def _classify_non_recoverable_error_type(e: Exception) -> str:
-    """Map a non-recoverable exception to a structured ``error_type`` label.
-
-    Channel gateways switch on this label to surface user-actionable
-    messages (e.g. "this thread's workspace is gone — start fresh") instead
-    of opaque tracebacks. Defaults to ``"workflow_error"`` for unrecognized
-    cases so existing consumers keep working.
-    """
-    if isinstance(e, (ValueError, RuntimeError)):
-        msg = str(e)
-        if "Workspace" in msg:
-            if "not found" in msg:
-                return "workspace_not_found"
-            if "has been deleted" in msg:
-                return "workspace_deleted"
-            if "error state" in msg:
-                return "workspace_error_state"
-            return "workspace_unavailable"
-    return "workflow_error"
-
-
-def classify_error(e: Exception) -> dict:
-    """Classify an exception as recoverable or non-recoverable.
-
-    Returns ``{is_recoverable, is_non_recoverable, error_type}`` where
-    ``error_type`` is one of ``"connection_error"``, ``"timeout_error"``,
-    ``"api_error"``, ``"transient_error"``, or ``None`` for non-recoverable.
-    """
-    # Non-recoverable error types (code bugs, config issues)
-    non_recoverable_types = (
-        AttributeError,
-        NameError,
-        SyntaxError,
-        ImportError,
-        TypeError,
-        KeyError,
-    )
-
-    is_non_recoverable = isinstance(e, non_recoverable_types)
-
-    # Recoverable error patterns (transient issues)
-    is_sandbox_error = isinstance(e, (SandboxTransientError, SandboxGoneError))
-
-    is_postgres_connection = isinstance(
-        e, psycopg.OperationalError
-    ) and "server closed the connection" in str(e)
-
-    is_timeout = (
-        isinstance(e, TimeoutError)
-        or "timeout" in str(e).lower()
-        or "timed out" in str(e).lower()
-    )
-
-    is_network_issue = (
-        isinstance(e, ConnectionError)
-        or "connection" in str(e).lower()
-        or "network" in str(e).lower()
-        or "unreachable" in str(e).lower()
-        or "connection refused" in str(e).lower()
-    )
-
-    # API errors (transient server errors, rate limits, etc.)
-    error_str = str(e).lower()
-    error_type_name = type(e).__name__.lower()
-
-    api_error_indicators = [
-        "internal server error",
-        "api_error",
-        "system error",
-        "error code: 500",
-        "error code: 502",
-        "error code: 503",
-        "error code: 429",
-        "rate limit",
-        "service unavailable",
-        "bad gateway",
-        "gateway timeout",
-    ]
-
-    is_api_error = (
-        any(indicator in error_str for indicator in api_error_indicators)
-        or "internal" in error_type_name
-        or "api" in error_type_name
-        or "server" in error_type_name
-    )
-
-    is_recoverable = (
-        is_sandbox_error
-        or is_postgres_connection
-        or is_timeout
-        or is_network_issue
-        or is_api_error
-    ) and not is_non_recoverable
-
-    # Determine specific error_type label
-    if is_recoverable:
-        if is_sandbox_error:
-            error_type = "transient_error"
-        elif is_postgres_connection or is_network_issue:
-            error_type = "connection_error"
-        elif is_timeout:
-            error_type = "timeout_error"
-        elif is_api_error:
-            error_type = "api_error"
-        else:
-            error_type = "transient_error"
-    else:
-        error_type = None
-
-    return {
-        "is_recoverable": is_recoverable,
-        "is_non_recoverable": is_non_recoverable,
-        "error_type": error_type,
-    }
 
 
 def process_hitl_response(request: ChatRequest) -> tuple[str, str, dict, list]:
@@ -626,65 +503,6 @@ def build_graph_config(
     return graph_config
 
 
-# Structured codes carried by every in-generator admission-conflict 409
-# (``admission_conflict_detail`` and ``wait_or_steer``). ``handle_workflow_error``
-# keys its skip-persist/skip-mark_failed path on these so a non-admission 409
-# can't be mistaken for one. ``request_cancelled`` (from the cancellation
-# wrapper) is included defensively though it does not currently reach this path.
-# ``not_running`` (steer_only probe against a fresh thread) is likewise an
-# admission outcome, not a workflow failure — nothing was admitted to persist
-# or mark failed.
-ADMISSION_CONFLICT_CODES = {
-    "stopping",
-    "compacting",
-    "running",
-    "not_running",
-    "request_cancelled",
-    # Retry-validation outcomes from ``resolve_retry_of``: protocol
-    # responses raised in-generator pre-START (run_handle is None, nothing
-    # was admitted). Without these codes they'd fall into the generic
-    # persist + mark_failed path — and a stale retry often coexists with a
-    # NEWER running turn whose tracker status mark_failed would clobber.
-    "stale_retry",
-    "not_retryable",
-}
-
-
-def admission_conflict_detail(state: str) -> dict:
-    """Map an admission outcome to its 409 ``{"code", "message"}`` detail.
-
-    The single wording source for every in-generator admission 409 (see
-    ``ADMISSION_CONFLICT_CODES``): the ``stopping``/``compacting``/``running``
-    conflicts and the ``steer_only`` probe's ``not_running`` refusal. Returns a
-    structured dict so ``handle_workflow_error`` can tag the SSE error with the
-    code and the client can recognize the state; the thread_id is deliberately
-    absent from the user-facing message so it can't leak into the UI on a
-    client-state desync.
-    """
-    if state == "stopping":
-        return {
-            "code": "stopping",
-            "message": "The workflow is stopping. Wait a moment, then retry.",
-        }
-    if state == "compacting":
-        return {
-            "code": "compacting",
-            "message": "The assistant is compacting its context. Wait a moment, then retry.",
-        }
-    if state == "not_running":
-        return {
-            "code": "not_running",
-            "message": "No workflow is running to steer. Resubmit as a new message.",
-        }
-    return {
-        "code": "running",
-        "message": (
-            "The workflow is still running. Wait a moment, then retry — "
-            "or use /reconnect to continue streaming, or /cancel to stop it."
-        ),
-    }
-
-
 async def dedup_retransmit_or_raise(request: ChatRequest) -> None:
     """Resolve a retransmitted request_key to its existing run — or pass.
 
@@ -770,506 +588,85 @@ async def resolve_retry_of(request: ChatRequest, thread_id: str):
     return prev
 
 
-async def wait_or_steer(
-    manager: BackgroundTaskManager,
-    thread_id: str,
-    user_input: str,
-    user_id: str,
+async def begin_turn(
+    request: "ChatRequest",
     *,
-    steer_only: bool = False,
-    can_steer: bool = True,
-    exclude_run_id: str | None = None,
-) -> tuple[bool, str | None]:
-    """Admit a new turn, steer the running one, or 409.
-
-    The single admission decision for both the foreground and dispatched
-    paths. Returns ``(ready, steering_event)``: ``ready=True`` → start a new
-    workflow; ``ready=False`` with a non-None ``steering_event`` → yield that
-    SSE string and return. A non-admissible state raises HTTP 409 whose detail
-    carries a structured ``admission_conflict_detail`` code (surfaced as an SSE
-    ``error`` event once the stream has started).
-
-    ``steer_only=True`` (gateway steer probes) forbids the fresh-admission
-    fallback: the probe's SSE reader only understands ``steering_accepted``/
-    ``error``, so admitting a full turn on that connection streams the whole
-    response — interrupts included — into a client that ignores it. A steer
-    that finds no running turn gets ``not_running`` and the gateway resubmits
-    it as a normal message. A steer accepted just before the workflow's exit
-    may still go unconsumed — the final drain returns it via
-    ``steering_returned`` on the turn stream, not this connection.
-
-    ``can_steer=False`` (dispatched X-Dispatch=background flows) forbids
-    steering entirely: they own a pre-registered ``(thread_id, run_id)``
-    placeholder — passed as ``exclude_run_id`` so the admission scan ignores
-    it — and any OTHER in-flight run is a hard conflict, never a steer.
-
-    Admission states (see ``BackgroundTaskManager.wait_for_admission``):
-    - ``"fresh"``     → start a new turn ``(True, None)``; with ``steer_only``,
-      409 ``not_running`` instead.
-    - ``"stopping"``/``"compacting"`` → 409 (never start a second checkpoint
-      writer, never steer mid-summarize).
-    - ``"running"``   → steer immediately (no wait); an accept that raced the
-      workflow's exit is reclaimed and re-routed as "fresh"; 409 only if
-      steering fails. With ``can_steer=False`` a running peer is a 409 too.
-    """
-    # Deferred to avoid circular import: steering imports _common at
-    # module level, so _common must not import steering at module level.
-    from src.server.handlers.chat.steering import steer_thread, unsteer_thread
-
-    state = await manager.wait_for_admission(thread_id, exclude_run_id=exclude_run_id)
-    if state == "fresh":
-        if steer_only:
-            raise HTTPException(
-                status_code=409, detail=admission_conflict_detail("not_running")
-            )
-        return True, None
-
-    # Only a genuinely-running turn on a steerable path can be steered; every
-    # other non-fresh state — and every dispatched peer (``can_steer=False``) —
-    # is a conflict. Steering mid-stopping would start a second checkpoint
-    # writer; mid-compaction would corrupt the context rewrite.
-    if state != "running" or not can_steer:
-        raise HTTPException(
-            status_code=409, detail=admission_conflict_detail(state)
-        )
-
-    # state == "running" and steerable → steer the running workflow immediately.
-    result = await steer_thread(thread_id, user_input, user_id)
-    if not result:
-        # Steering failed (e.g. Redis unavailable) on a running turn.
-        raise HTTPException(
-            status_code=409, detail=admission_conflict_detail("running")
-        )
-
-    # Close the accept-after-exit race: the admission snapshot said "running",
-    # but the workflow may have exited — and run its final steering drain —
-    # between that snapshot and the Redis push. If the thread has no live task
-    # anymore, try to reclaim the message: a successful reclaim proves nothing
-    # consumed it, so route as if admission had said "fresh". Reclaim failure is
-    # the best-effort branch: almost always the exit drain got there first and
-    # ``steering_returned`` carried the text back on the turn stream, so report
-    # accepted — but a Redis fault on the reclaim also lands here, so "accepted"
-    # is the graceful default, not a hard delivery guarantee.
-    if not await manager.has_active_task_for_thread(thread_id):
-        reclaimed = await unsteer_thread(thread_id, result["payload"])
-        if reclaimed:
-            if steer_only:
-                raise HTTPException(
-                    status_code=409,
-                    detail=admission_conflict_detail("not_running"),
-                )
-            return True, None
-    event_data = json.dumps(
-        {
-            "thread_id": thread_id,
-            "content": user_input,
-            "position": result["position"],
-        }
-    )
-    return False, f"event: steering_accepted\ndata: {event_data}\n\n"
-
-
-def _emit_sse_error(handler, payload: dict) -> str:
-    """Format an ``error`` SSE frame via *handler* when present, else raw.
-
-    Single source for the ``if handler: _format_sse_event else: raw f-string``
-    shape repeated across ``handle_workflow_error``'s terminal branches.
-    """
-    if handler:
-        return handler._format_sse_event("error", payload)
-    return f"event: error\ndata: {json.dumps(payload)}\n\n"
-
-
-async def handle_workflow_error(
-    e: Exception,
     thread_id: str,
-    user_id: str,
-    workspace_id: str | None,
-    handler,
-    token_callback,
-    run_handle,
-    start_time: float,
-    request: ChatRequest,
-    is_byok: bool,
+    run_id: str,
     msg_type: str,
-    log_prefix: str,
-    timezone_str: str | None = None,
-) -> AsyncGenerator[str, None]:
-    """Handle a workflow exception: classify, retry-or-fail, finalize, yield SSE events.
+    workspace_id: Optional[str],
+    user_id: Optional[str],
+    is_byok: bool,
+    query_content,
+    query_type,
+    feedback_action,
+    query_metadata: dict,
+    is_fork: bool,
+    is_checkpoint_replay: bool,
+    extra_run_metadata: Optional[dict] = None,
+):
+    """The one START-txn entrypoint: maps a ChatRequest onto the durable
+    attempt chain — retries chain onto the failed run's turn, forked
+    checkpoint replays pin their turn and reuse the preserved query row,
+    everything else allocates MAX+1 — so the derivation can never drift
+    between agent modes."""
+    from uuid import uuid4
 
-    This is an async generator that yields SSE event strings (``retry`` or
-    ``error``).  Call it with ``async for event in handle_workflow_error(...): yield event``.
+    from src.server.services.turn_lifecycle import QuerySpec, TurnCoordinator
 
-    ``run_handle`` is the STARTed run to finalize, or ``None`` when the error
-    fired before START — or after handoff to BTM, whose ``_finalize_run``
-    owns the terminal write from that point (callers pass
-    ``run_handle if slot_owned else None`` to encode exactly that).
-    ``workspace_id`` accepts ``None`` to guard against the case where the
-    error occurred before the workspace was resolved.
-    ``timezone_str`` is the resolved timezone; falls back to ``request.timezone``.
-    """
-    from src.server.services.turn_lifecycle import (
-        AttemptConflictError,
-        DuplicateRequestError,
-        RunSlotBusyError,
-        TurnCoordinator,
-        TurnOutcome,
-        protected_finalize,
+    retry_of = await resolve_retry_of(request, thread_id)
+    return await TurnCoordinator.get_instance().start_turn(
+        thread_id=thread_id,
+        run_id=run_id,
+        msg_type=msg_type,
+        request_key=request.request_key,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        is_byok=is_byok,
+        query=(
+            None
+            if is_checkpoint_replay
+            else QuerySpec(
+                query_id=str(uuid4()),
+                content=query_content,
+                query_type=query_type,
+                feedback_action=feedback_action,
+                metadata=query_metadata,
+            )
+        ),
+        turn_index=(
+            retry_of["turn_index"]
+            if retry_of is not None
+            else request.fork_from_turn
+            if (is_fork and is_checkpoint_replay)
+            else None
+        ),
+        attempt_no=(retry_of["attempt_no"] + 1 if retry_of is not None else 1),
+        retry_of_run_id=(
+            str(retry_of["conversation_response_id"])
+            if retry_of is not None
+            else None
+        ),
+        # Durable on the row so the startup sweep can enqueue this run's
+        # terminal hooks (burst release, watch clear) without any in-process
+        # context surviving the crash.
+        run_metadata={
+            "user_id": user_id,
+            "burst_slot_id": request.burst_slot_id,
+            **(extra_run_metadata or {}),
+        },
     )
 
-    async def _finalize_error(error_msg: str, extra_metadata: dict) -> str | None:
-        """Terminal-write the open run as error; CRITICAL on failure (row
-        stays in_progress for recovery rather than masking the persist).
 
-        Returns the row's ACTUAL terminal status (from the CAS, or the
-        survivor on a lost race) — durable cancel intent can override the
-        requested 'error' to 'cancelled', and every post-finalize effect in
-        the branches below must follow the real status, not the request.
-        None = nothing finalized (no handle, or the finalize itself failed).
+async def release_and_fail_open(run_handle, *, user_id, burst_slot_id) -> None:
+    """Death-path teardown for a generator dying between START and BTM
+    handoff: release the burst slot and settle the open run (Phase 1 has no
+    recovery scanner). fail_open_run shields its write internally, so a
+    second cancel on the already-cancelled stream task cannot abort it."""
+    from src.server.services.turn_lifecycle import TurnCoordinator
 
-        Runs via ``protected_finalize``: this generator lives on the
-        client-stream task, so a disconnect-injected CancelledError must not
-        abort the terminal transaction mid-flight."""
-        if run_handle is None or run_handle.finalized:
-            return None
-        records = token_callback.per_call_records if token_callback else None
-        tools = handler.get_tool_usage() if handler else None
-        if not (run_handle.workspace_id and run_handle.user_id):
-            records = None
-            tools = None
-        try:
-            result = await protected_finalize(
-                TurnCoordinator.get_instance().finalize_turn(
-                    run_handle,
-                    TurnOutcome(
-                        status="error",
-                        metadata={**persist_metadata, **extra_metadata},
-                        errors=[error_msg],
-                        execution_time=time.time() - start_time,
-                        sse_events=handler.get_sse_events() if handler else None,
-                        per_call_records=records,
-                        tool_usage=tools,
-                    ),
-                ),
-                label=run_handle.run_id,
-            )
-            return (result.run or {}).get("status")
-        except Exception:
-            logger.critical(
-                f"[{log_prefix}] FINALIZE FAILED for run={run_handle.run_id}: "
-                f"row remains in_progress for recovery",
-                exc_info=True,
-            )
-            return None
-
-    async def _mark_tracker_cancelled() -> None:
-        """Redis /status follows a finalize the durable cancel intent won."""
-        try:
-            tracker = WorkflowTracker.get_instance()
-            await tracker.mark_cancelled(
-                thread_id, run_id=run_handle.run_id if run_handle else None
-            )
-        except Exception as tracker_err:
-            logger.warning(
-                f"[{log_prefix}] tracker.mark_cancelled failed for "
-                f"{thread_id}: {tracker_err}"
-            )
-    # An admission-conflict 409 is a deliberate protocol response (raised
-    # in-generator by ``wait_or_steer`` for both the foreground and dispatched
-    # paths), not a workflow execution failure. Surface it to the client as an
-    # SSE error, but never persist it as a conversation error or call
-    # ``mark_failed``: this path runs with ``run_id=None``, the run_id guard is
-    # skipped when run_id is None, so marking failed would clobber a
-    # concurrently-running peer turn's status (defeating the guard). Keyed on
-    # the structured admission CODE, not the bare
-    # 409 status: every admission 409 now carries ``detail={"code", ...}`` (see
-    # ``admission_conflict_detail`` / ``wait_or_steer``), so any other
-    # HTTPException — a 503, or even a future non-admission 409 from middleware —
-    # falls through to the persist + mark_failed + classify path below.
-    if (
-        isinstance(e, HTTPException)
-        and e.status_code == 409
-        and isinstance(e.detail, dict)
-        and e.detail.get("code") in ADMISSION_CONFLICT_CODES
-    ):
-        await release_burst_slot(user_id, getattr(request, "burst_slot_id", None))
-        # Normally pre-START (run_handle is None). The flash RuntimeError
-        # fallback can 409 after START, though — release the durable slot so
-        # it doesn't leak until the stale-run sweep.
-        if run_handle is not None:
-            await protected_finalize(
-                TurnCoordinator.get_instance().fail_open_run(
-                    run_handle, "admission conflict after START", status="cancelled"
-                ),
-                label=run_handle.run_id,
-            )
-        # The guard above already proved e.detail is a dict whose "code" is in
-        # ADMISSION_CONFLICT_CODES (truthy), so no re-checking is needed here.
-        detail = e.detail
-        error_payload = {
-            "thread_id": thread_id,
-            "error": detail.get("message"),
-            "type": "workflow_error",
-            "error_type": "admission_conflict",
-            "error_class": type(e).__name__,
-            "code": detail["code"],
-        }
-        yield _emit_sse_error(handler, error_payload)
-        return
-
-    # START-txn conflicts (v4): the durable ledger refused this attempt via a
-    # DB constraint. Protocol responses, not workflow failures — START rolled
-    # back, so nothing was persisted for THIS request (run_handle is None) and
-    # there is nothing to finalize.
-    if isinstance(e, DuplicateRequestError):
-        await release_burst_slot(user_id, getattr(request, "burst_slot_id", None))
-        existing = e.existing_run or {}
-        error_payload = {
-            "thread_id": thread_id,
-            "error": (
-                "This request was already accepted; reconnect to the "
-                "existing run instead of resending."
-            ),
-            "type": "workflow_error",
-            "error_type": "duplicate_request",
-            "error_class": type(e).__name__,
-            "code": "duplicate_request",
-        }
-        # Two users can race the same client-controlled key: disclose the
-        # winner's identity only to its owner, failing closed on unknown.
-        # run_thread_id may differ from the ambient thread_id: an
-        # initial-message retransmit that raced past the route probe minted
-        # a second thread before START refused it — the existing run lives
-        # on the FIRST thread, and reconnects must target that one.
-        ex_thread = str(existing.get("conversation_thread_id") or "")
-        owner_id = None
-        if ex_thread:
-            try:
-                owner_id = await qr_db.get_thread_owner_id(ex_thread)
-            except Exception:
-                owner_id = None
-        if owner_id is not None and owner_id == user_id:
-            error_payload.update(
-                run_id=str(existing.get("conversation_response_id") or ""),
-                run_status=existing.get("status"),
-                run_thread_id=ex_thread,
-            )
-        yield _emit_sse_error(handler, error_payload)
-        return
-
-    if isinstance(e, (RunSlotBusyError, AttemptConflictError)):
-        await release_burst_slot(user_id, getattr(request, "burst_slot_id", None))
-        detail = (
-            admission_conflict_detail("running")
-            if isinstance(e, RunSlotBusyError)
-            else {
-                "code": "attempt_conflict",
-                "message": "A concurrent request already claimed this attempt.",
-            }
+    await release_burst_slot(user_id, burst_slot_id)
+    if run_handle is not None:
+        await TurnCoordinator.get_instance().fail_open_run(
+            run_handle, "client disconnected during setup", status="cancelled"
         )
-        error_payload = {
-            "thread_id": thread_id,
-            "error": detail["message"],
-            "type": "workflow_error",
-            "error_type": "admission_conflict",
-            "error_class": type(e).__name__,
-            "code": detail["code"],
-        }
-        yield _emit_sse_error(handler, error_payload)
-        return
-
-    # A (platform, external_id) create race won by a DIFFERENT user is a
-    # deterministic protocol conflict, not a workflow execution failure: thread
-    # creation lost the ``idx_conversation_threads_external`` check. Surface it
-    # as a clean SSE error carrying the same structured ``error_type`` as the
-    # stamp API's HTTP 409, and (like the admission-conflict path above) never
-    # persist it or call ``mark_failed``. Thread creation runs inside the
-    # already-started stream, so this is the response surface — a synchronous
-    # HTTP 409 status is not reachable from here.
-    if isinstance(e, qr_db.ExternalIdConflictError):
-        await release_burst_slot(user_id, getattr(request, "burst_slot_id", None))
-        # Same core fields (error_type discriminator + offending pair + human
-        # wording) as the stamp API's HTTP 409, built from the shared helper so
-        # the two surfaces never drift; the SSE-envelope fields (thread_id, type,
-        # error_class) are layered on top.
-        conflict = qr_db.external_id_conflict_payload(e.platform, e.external_id)
-        error_payload = {
-            "thread_id": thread_id,
-            "error": conflict["message"],
-            "type": "workflow_error",
-            "error_type": conflict["error_type"],
-            "error_class": type(e).__name__,
-            "platform": conflict["platform"],
-            "external_id": conflict["external_id"],
-        }
-        yield _emit_sse_error(handler, error_payload)
-        return
-
-    MAX_RETRIES = get_max_workflow_retries()
-
-    # Release burst slot on error (setup errors before background task starts)
-    await release_burst_slot(user_id, getattr(request, "burst_slot_id", None))
-
-    classification = classify_error(e)
-    is_recoverable = classification["is_recoverable"]
-    error_type = classification["error_type"]
-
-    # Build metadata for persistence calls
-    persist_metadata = {
-        "msg_type": msg_type,
-        "is_byok": is_byok,
-    }
-    if workspace_id is not None:
-        persist_metadata["workspace_id"] = workspace_id
-    # Prefer request.workspace_id when available (PTC sets it on the request)
-    if hasattr(request, "workspace_id") and request.workspace_id:
-        persist_metadata["workspace_id"] = request.workspace_id
-    if hasattr(request, "locale") and request.locale:
-        persist_metadata["locale"] = request.locale
-    # Use the resolved timezone_str (validated/defaulted) when available,
-    # falling back to the raw request field.
-    _tz = timezone_str or getattr(request, "timezone", None)
-    if _tz:
-        persist_metadata["timezone"] = _tz
-
-    if is_recoverable:
-        # v4: the retry count IS the attempt chain — this run's attempt_no,
-        # durable and race-free (the Redis increment_retry_count counter is
-        # gone). Post-handoff calls have no handle; those errors surface via
-        # BTM's finalize, so 1 is only a display fallback here.
-        retry_count = run_handle.attempt_no if run_handle else 1
-
-        if retry_count > MAX_RETRIES:
-            logger.error(
-                f"[{log_prefix}] Max retries exceeded ({retry_count}/{MAX_RETRIES}) for "
-                f"thread_id={thread_id}: {type(e).__name__}: {str(e)[:100]}"
-            )
-
-            error_msg = (
-                f"Max retries exceeded ({retry_count}/{MAX_RETRIES}): "
-                f"{type(e).__name__}: {str(e)}"
-            )
-
-            final_status = await _finalize_error(
-                error_msg,
-                {
-                    "error_type": error_type,
-                    "error_class": type(e).__name__,
-                    "retry_count": retry_count,
-                },
-            )
-            if final_status == "cancelled":
-                # Durable cancel intent won inside the CAS: the user asked
-                # this run to stop, so no failure surface — no FAILED
-                # tracker mark, no error SSE (their /cancel already
-                # resolved; the error detail stays on the row).
-                await _mark_tracker_cancelled()
-                return
-
-            # Push terminal status to Redis so /status reports FAILED with
-            # bounded TTL instead of leaving the key as ACTIVE. The setup-
-            # error path runs outside BackgroundTaskManager's _finalize_run,
-            # so this is the only chance to update tracker.
-            try:
-                tracker = WorkflowTracker.get_instance()
-                _expected = run_handle.run_id if run_handle else None
-                await tracker.mark_failed(
-                    thread_id, error=error_msg, run_id=_expected
-                )
-            except Exception as tracker_err:
-                logger.warning(
-                    f"[{log_prefix}] tracker.mark_failed failed for "
-                    f"{thread_id}: {tracker_err}"
-                )
-
-            error_data = {
-                "message": f"Workflow failed after {MAX_RETRIES} retry attempts",
-                "error_type": error_type,
-                "error_class": type(e).__name__,
-                "retry_count": retry_count,
-                "max_retries": MAX_RETRIES,
-                "thread_id": thread_id,
-            }
-            yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
-        else:
-            logger.warning(
-                f"[{log_prefix}] Recoverable error ({error_type}) for thread_id={thread_id} "
-                f"(retry {retry_count}/{MAX_RETRIES}): "
-                f"{type(e).__name__}: {str(e)[:100]}"
-            )
-
-            # v4: the run itself is terminal (error, retryable) — leaving it
-            # in_progress would hold the thread's run slot with no executor.
-            # The 1.4 /retry redesign starts attempt N+1 from this row.
-            # Finalize BEFORE the retry SSE: a client disconnect while this
-            # generator is suspended at the yield would otherwise strand the
-            # run in_progress with no executor.
-            final_status = await _finalize_error(
-                f"{type(e).__name__}: {str(e)}",
-                {
-                    "error_type": error_type,
-                    "error_class": type(e).__name__,
-                    "retryable": True,
-                    "retry_count": retry_count,
-                },
-            )
-            if final_status == "cancelled":
-                # Durable cancel intent won inside the CAS — the run is
-                # terminally cancelled, not "retryable error": keep the
-                # cancelled projection (no 'interrupted' override), mark the
-                # tracker, and emit no retry affordance.
-                await _mark_tracker_cancelled()
-                return
-
-            retry_data = {
-                "message": "Temporary error occurred, you can retry or resume the workflow",
-                "thread_id": thread_id,
-                "auto_retry": True,
-                "error_type": error_type,
-                "error_class": type(e).__name__,
-                "retry_count": retry_count,
-                "max_retries": MAX_RETRIES,
-            }
-            yield f"event: retry\ndata: {json.dumps(retry_data)}\n\n"
-
-    else:
-        # Non-recoverable error
-        logger.exception(f"[{log_prefix.replace('CHAT', 'ERROR')}] thread_id={thread_id}: {e}")
-
-        error_type_label = _classify_non_recoverable_error_type(e)
-        # error_type/error_class ride the row so replay can reconstruct the
-        # terminal error event (the yield below happens after this finalize).
-        final_status = await _finalize_error(
-            str(e),
-            {
-                "error_type": error_type_label,
-                "error_class": type(e).__name__,
-            },
-        )
-        if final_status == "cancelled":
-            # Durable cancel intent won inside the CAS: no failure surface.
-            await _mark_tracker_cancelled()
-            return
-
-        # Mirror the recoverable max-retries branch: push FAILED to Redis with
-        # bounded TTL. Without this, /status keeps reporting ACTIVE for the
-        # full mark_active TTL window after a non-recoverable workflow error.
-        try:
-            tracker = WorkflowTracker.get_instance()
-            await tracker.mark_failed(
-                thread_id, error=f"{type(e).__name__}: {str(e)}"
-            )
-        except Exception as tracker_err:
-            logger.warning(
-                f"[{log_prefix}] tracker.mark_failed failed for "
-                f"{thread_id}: {tracker_err}"
-            )
-
-        error_payload = {
-            "thread_id": thread_id,
-            "error": str(e),
-            "type": "workflow_error",
-            "error_type": error_type_label,
-            "error_class": type(e).__name__,
-        }
-        yield _emit_sse_error(handler, error_payload)

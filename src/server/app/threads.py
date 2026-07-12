@@ -177,15 +177,9 @@ async def _consume_background_gen(
                 BackgroundTaskManager,
             )
 
-            _manager = BackgroundTaskManager.get_instance()
-            async with _manager.task_lock:
-                _ti = _manager.tasks.get((thread_id, run_id))
-                for _t in (
-                    _ti.task if _ti else None,
-                    _ti.inner_task if _ti else None,
-                ):
-                    if _t is not None and not _t.done():
-                        _btm_live = True
+            _btm_live = await BackgroundTaskManager.get_instance().is_run_live(
+                thread_id, run_id
+            )
         except Exception:
             pass
         if not _ok and _btm_live:
@@ -198,10 +192,10 @@ async def _consume_background_gen(
         # When the generator raised before reaching start_workflow, the
         # frontend already received {status: dispatched, run_id} and
         # navigated to workflow:stream:{tid}:{rid} — but no events will
-        # ever land. Write a terminal `error` SSE so a reconnected client
-        # sees the failure instead of silently waiting on an empty stream.
-        # Wrapped in its own try/except so failure to emit never blocks
-        # the placeholder/tracker cleanup below.
+        # ever land. The coordinator is the last-resort owner (I6): it
+        # settles a still-in_progress row and writes the terminal frames a
+        # reconnected client needs; it never raises, so the placeholder/
+        # tracker cleanup below always runs.
         terminal_status = None
         if not _ok and not _btm_live:
             # Report-back crash teardown is business logic owned by
@@ -209,116 +203,14 @@ async def _consume_background_gen(
             # own failures. Must not run while the executor is alive: a live
             # dispatched run's watch keys are still in use.
             from src.server.handlers.chat.report_back import clear_on_crash
+            from src.server.services.turn_lifecycle import TurnCoordinator
 
             await clear_on_crash(thread_id, report_back_ptc_thread_id, user_id)
-
-            try:
-                from src.server.database import turn_lifecycle as tl_db
-                from src.server.services.background_task_manager import (
-                    BackgroundTaskManager,
-                    stream_key,
+            terminal_status = await (
+                TurnCoordinator.get_instance().reconcile_orphaned_dispatch(
+                    thread_id, run_id, error_text=_error_text, label=label
                 )
-                from src.utils.cache.redis_cache import get_cache_client
-
-                cache = get_cache_client()
-                if cache.enabled and cache.client:
-                    skey = stream_key(thread_id, run_id)
-
-                    # If the stream already closed with run_end, the run's
-                    # real owner finalized and emitted — add nothing.
-                    tail_is_run_end = False
-                    try:
-                        tail = await cache.client.xrevrange(skey, count=1)
-                        if tail:
-                            wire = tail[0][1].get(b"event") or tail[0][1].get(
-                                "event"
-                            ) or b""
-                            if isinstance(wire, str):
-                                wire = wire.encode("utf-8")
-                            tail_is_run_end = wire.startswith(b"event: run_end")
-                    except Exception:
-                        pass
-
-                    run_row = None
-                    try:
-                        run_row = await tl_db.get_run(run_id)
-                    except Exception:
-                        logger.warning(
-                            f"[{label}] run-row read failed for {run_id}; "
-                            f"emitting error frame without run_end",
-                            exc_info=True,
-                        )
-
-                    # Last-resort owner (I6): the generator died without
-                    # settling its own row — CAS it terminal here; a durable
-                    # cancel intent may adopt 'cancelled'. run_end is emitted
-                    # ONLY with a verified terminal status, never assumed,
-                    # and only by whoever WON the terminal transition:
-                    # losing the CAS means the real owner finalized
-                    # concurrently and emits its own frames.
-                    cas_owned = True
-                    if run_row is not None:
-                        if run_row.get("status") == "in_progress":
-                            try:
-                                # finalize_run's default enqueues the
-                                # terminal hooks from START-stamped row
-                                # metadata (burst release, watch clear).
-                                result = await tl_db.finalize_run_idempotent(
-                                    run_id=run_id,
-                                    thread_id=thread_id,
-                                    status="error",
-                                    errors=[
-                                        _error_text
-                                        or "background workflow failed"
-                                    ],
-                                    metadata={
-                                        "recovery": "dispatch_consumer_crash"
-                                    },
-                                )
-                                cas_owned = result.applied
-                                if result.run:
-                                    terminal_status = result.run.get("status")
-                            except Exception:
-                                logger.critical(
-                                    f"[{label}] last-resort finalize failed "
-                                    f"for run={run_id}; row remains "
-                                    f"in_progress for recovery",
-                                    exc_info=True,
-                                )
-                        else:
-                            terminal_status = run_row.get("status")
-
-                    # Emission matrix: an error frame only for a real error
-                    # (an adopted cancel is not a failure to the client — it
-                    # gets only run_end(cancelled)); nothing for a run that
-                    # ended completed/interrupted; nothing on a duplicate
-                    # close or a lost CAS.
-                    if not tail_is_run_end and cas_owned:
-                        if terminal_status in (None, "error"):
-                            error_payload = {
-                                "thread_id": thread_id,
-                                "content": "background workflow failed",
-                                "error_type": "background_failure",
-                                "error": _error_text
-                                or "background workflow failed",
-                            }
-                            sse_wire = (
-                                f"event: error\n"
-                                f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
-                            )
-                            await cache.client.xadd(
-                                skey, {b"event": sse_wire.encode("utf-8")}
-                            )
-                        if terminal_status in ("error", "cancelled"):
-                            await BackgroundTaskManager.get_instance().append_run_end_event(
-                                thread_id, run_id, terminal_status
-                            )
-            except Exception:
-                logger.warning(
-                    f"[{label}] Failed to emit terminal error SSE for "
-                    f"thread_id={thread_id} run_id={run_id}",
-                    exc_info=True,
-                )
+            )
 
         try:
             from src.server.services.background_task_manager import (
@@ -1470,19 +1362,14 @@ async def get_dispatches_liveness(
     absent = [tid for tid in deduped if tid not in resolved]
     if absent:
         from src.server.database.conversation import get_threads_terminal_status
+        from src.server.services.status_vocabulary import to_public_terminal
 
-        # DB current_status -> public vocabulary so the frontend mapStatus
-        # resolves it (a raw 'error' would hit its default -> 'starting' and
-        # re-freeze). 'in_progress' / anything else is intentionally omitted.
-        terminal_by_db_status = {
-            "completed": "completed",
-            "error": "failed",
-            "cancelled": "cancelled",
-            "interrupted": "interrupted",
-        }
         statuses = await get_threads_terminal_status(absent, x_user_id)
         for tid, current_status in statuses.items():
-            status = terminal_by_db_status.get(current_status)
+            # Public vocabulary so the frontend mapStatus resolves it (a raw
+            # 'error' would hit its default -> 'starting' and re-freeze);
+            # 'in_progress' / anything else is intentionally omitted.
+            status = to_public_terminal(current_status)
             if status is None:
                 continue
             liveness.append(
@@ -1579,7 +1466,7 @@ async def retry_thread(
     """
     from src.server.database import turn_lifecycle as tl_db
     from src.server.dependencies.usage_limits import release_burst_slot
-    from src.server.handlers.chat._common import admission_conflict_detail
+    from src.server.handlers.chat.admission import admission_conflict_detail
     from src.server.handlers.checkpoint_handler import get_retry_checkpoint
 
     try:

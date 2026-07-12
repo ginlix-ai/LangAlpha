@@ -30,6 +30,7 @@ SRC = Path(__file__).resolve().parents[5] / "src"
 _SCAN_ROOTS = (
     SRC / "server" / "handlers",
     SRC / "server" / "services" / "history",
+    SRC / "server" / "services" / "turn_lifecycle.py",
     SRC / "server" / "app" / "threads.py",
 )
 

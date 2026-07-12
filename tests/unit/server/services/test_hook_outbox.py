@@ -10,12 +10,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.server.services import hook_outbox
-from src.server.services.hook_outbox import (
-    HookOutboxDrainer,
+from src.server.database.hook_outbox import (
     build_finalize_jobs,
     build_finalize_jobs_from_run_row,
 )
+from src.server.services import hook_outbox
+from src.server.services.hook_outbox import HookOutboxDrainer
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +229,7 @@ class TestExecWatchClear:
         with a client still present; a drainer booted in that state must NACK
         pending jobs (real get_strict raises), never ack them as config-off
         no-ops — Redis may come back with the effects still owed."""
-        from src.server.database import turn_lifecycle as tl_db
+        from src.server.database import hook_outbox as outbox_db
         from src.utils.cache.redis_cache import RedisCacheClient
 
         cache = RedisCacheClient(url="redis://unit-test-never-connects:6379/0")
@@ -239,8 +239,8 @@ class TestExecWatchClear:
         drainer = HookOutboxDrainer()
         with patch(
             "src.utils.cache.redis_cache.get_cache_client", return_value=cache
-        ), patch.object(tl_db, "ack_outbox_job", AsyncMock()) as ack, patch.object(
-            tl_db, "nack_outbox_job", AsyncMock(return_value="pending")
+        ), patch.object(outbox_db, "ack_outbox_job", AsyncMock()) as ack, patch.object(
+            outbox_db, "nack_outbox_job", AsyncMock(return_value="pending")
         ) as nack:
             await drainer._execute(
                 _job(hook_type="watch_clear", payload={"ptc_thread_id": "ptc-1"})
@@ -270,13 +270,13 @@ def _job(hook_type="burst_release", payload=None):
 class TestDrainerExecute:
     @pytest.mark.asyncio
     async def test_success_acks(self):
-        from src.server.database import turn_lifecycle as tl_db
+        from src.server.database import hook_outbox as outbox_db
 
         drainer = HookOutboxDrainer()
         with patch.dict(
             hook_outbox._EXECUTORS, {"burst_release": AsyncMock()}
-        ), patch.object(tl_db, "ack_outbox_job", AsyncMock()) as ack, patch.object(
-            tl_db, "nack_outbox_job", AsyncMock()
+        ), patch.object(outbox_db, "ack_outbox_job", AsyncMock()) as ack, patch.object(
+            outbox_db, "nack_outbox_job", AsyncMock()
         ) as nack:
             await drainer._execute(_job())
         ack.assert_awaited_once_with("job-1")
@@ -284,14 +284,14 @@ class TestDrainerExecute:
 
     @pytest.mark.asyncio
     async def test_executor_failure_nacks(self):
-        from src.server.database import turn_lifecycle as tl_db
+        from src.server.database import hook_outbox as outbox_db
 
         drainer = HookOutboxDrainer()
         with patch.dict(
             hook_outbox._EXECUTORS,
             {"burst_release": AsyncMock(side_effect=RuntimeError("boom"))},
-        ), patch.object(tl_db, "ack_outbox_job", AsyncMock()) as ack, patch.object(
-            tl_db, "nack_outbox_job", AsyncMock(return_value="pending")
+        ), patch.object(outbox_db, "ack_outbox_job", AsyncMock()) as ack, patch.object(
+            outbox_db, "nack_outbox_job", AsyncMock(return_value="pending")
         ) as nack:
             await drainer._execute(_job())
         nack.assert_awaited_once()
@@ -299,11 +299,11 @@ class TestDrainerExecute:
 
     @pytest.mark.asyncio
     async def test_unknown_hook_type_nacks_toward_dead(self):
-        from src.server.database import turn_lifecycle as tl_db
+        from src.server.database import hook_outbox as outbox_db
 
         drainer = HookOutboxDrainer()
-        with patch.object(tl_db, "ack_outbox_job", AsyncMock()) as ack, patch.object(
-            tl_db, "nack_outbox_job", AsyncMock(return_value="dead")
+        with patch.object(outbox_db, "ack_outbox_job", AsyncMock()) as ack, patch.object(
+            outbox_db, "nack_outbox_job", AsyncMock(return_value="dead")
         ) as nack:
             await drainer._execute(_job(hook_type="not_a_hook"))
         nack.assert_awaited_once()

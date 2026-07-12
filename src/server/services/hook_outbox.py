@@ -4,8 +4,8 @@ Every required post-commit effect of a run's terminal transition is a
 unique idempotent ``hook_outbox`` row written INSIDE the finalize
 transaction, and executed afterwards by the in-process
 ``HookOutboxDrainer``. The decision table (``build_finalize_jobs``) lives
-in ``database.turn_lifecycle`` where ``finalize_run`` applies it as the
-DEFAULT from the row's START-stamped metadata — no finalize path can skip
+in ``database.hook_outbox``; ``finalize_run`` applies it as the DEFAULT
+from the row's START-stamped metadata — no finalize path can skip
 required effects. Phase 1 runs one drainer; Phase 2 adds competing
 drainers over the same job protocol — committed claims, lease-expiry
 reclaim, stable idempotency keys, per-ordering-key FIFO, effect-before-ack
@@ -21,12 +21,7 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable, Dict, Optional
 
-from src.server.database import turn_lifecycle as tl_db
-from src.server.database.turn_lifecycle import (  # noqa: F401 — re-exported
-    HookJob,
-    build_finalize_jobs,
-    build_finalize_jobs_from_run_row,
-)
+from src.server.database import hook_outbox as outbox_db
 
 logger = logging.getLogger(__name__)
 
@@ -148,8 +143,12 @@ class HookOutboxDrainer:
             self._task.cancel()
             try:
                 await self._task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
+            except Exception:
+                logger.warning(
+                    "[HookOutbox] drainer raised during stop", exc_info=True
+                )
             self._task = None
 
     def nudge(self) -> None:
@@ -159,7 +158,7 @@ class HookOutboxDrainer:
     async def _loop(self) -> None:
         while True:
             try:
-                jobs = await tl_db.claim_outbox_jobs(
+                jobs = await outbox_db.claim_outbox_jobs(
                     limit=CLAIM_BATCH, lease_seconds=LEASE_SECONDS
                 )
             except asyncio.CancelledError:
@@ -189,7 +188,7 @@ class HookOutboxDrainer:
                 f"nacking toward dead"
             )
             try:
-                await tl_db.nack_outbox_job(job_id, max_attempts=MAX_ATTEMPTS)
+                await outbox_db.nack_outbox_job(job_id, max_attempts=MAX_ATTEMPTS)
             except Exception:
                 logger.error(f"[HookOutbox] nack failed for {job_id}", exc_info=True)
             return
@@ -204,7 +203,7 @@ class HookOutboxDrainer:
                 exc_info=True,
             )
             try:
-                new_status = await tl_db.nack_outbox_job(
+                new_status = await outbox_db.nack_outbox_job(
                     job_id, max_attempts=MAX_ATTEMPTS
                 )
                 if new_status == "dead":
@@ -216,7 +215,7 @@ class HookOutboxDrainer:
                 logger.error(f"[HookOutbox] nack failed for {job_id}", exc_info=True)
             return
         try:
-            await tl_db.ack_outbox_job(job_id)
+            await outbox_db.ack_outbox_job(job_id)
         except Exception:
             # The effect ran; a lost ack re-runs it after lease expiry —
             # acceptable because every executor is idempotent.

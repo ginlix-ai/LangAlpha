@@ -14,7 +14,6 @@ import asyncio
 import json
 import time
 from datetime import datetime
-from uuid import uuid4
 
 from fastapi import HTTPException
 from langgraph.types import Command
@@ -30,11 +29,7 @@ from src.server.models.chat import (
     serialize_hitl_response_map,
 )
 from src.server.services.background_task_manager import BackgroundTaskManager
-from src.server.services.turn_lifecycle import (
-    QuerySpec,
-    TurnCoordinator,
-    protected_finalize,
-)
+from src.server.services.turn_lifecycle import TurnCoordinator
 from src.server.services.workflow_tracker import WorkflowTracker
 from src.server.utils.directive_context import (
     build_directive_reminder,
@@ -67,25 +62,25 @@ from ._common import (
     _append_to_last_user_message,
     _resolve_fork,
     _resolve_timezone,
-    admission_conflict_detail,
     apply_fetch_override,
+    begin_turn,
     build_graph_config,
     dedup_retransmit_or_raise,
     ensure_thread,
-    handle_workflow_error,
     init_tracking,
     inject_inline_reminders,
     logger,
     normalize_request_messages,
     prepare_skill_contexts,
     process_hitl_response,
-    resolve_retry_of,
+    release_and_fail_open,
     serialize_context_metadata,
     setup_steering_tracking,
-    wait_or_steer,
 )
 from src.config.settings import get_flash_recursion_limit
 
+from .admission import admission_conflict_detail, wait_or_steer
+from .error_handling import handle_workflow_error
 from .llm_config import resolve_llm_config
 from .steering import (
     drain_steering_return_event,
@@ -269,49 +264,24 @@ async def astream_flash_workflow(
 
         # =================================================================
         # START txn (v4): query row + in_progress run row + thread
-        # projection in one transaction. Checkpoint replays reuse the
-        # preserved query row (query=None) and pin the fork turn; retries
-        # chain a new attempt onto the failed run's turn (no truncation).
+        # projection in one transaction (begin_turn owns the attempt-chain
+        # derivation).
         # =================================================================
-        retry_of = await resolve_retry_of(request, thread_id)
-        run_handle = await TurnCoordinator.get_instance().start_turn(
+        run_handle = await begin_turn(
+            request,
             thread_id=thread_id,
             run_id=run_id,
             msg_type="flash",
-            request_key=request.request_key,
             workspace_id=workspace_id,
             user_id=user_id,
             is_byok=is_byok,
-            query=(
-                None
-                if is_checkpoint_replay
-                else QuerySpec(
-                    query_id=str(uuid4()),
-                    content=query_content,
-                    query_type=query_type,
-                    feedback_action=feedback_action,
-                    metadata=query_metadata,
-                )
-            ),
-            turn_index=(
-                retry_of["turn_index"]
-                if retry_of is not None
-                else request.fork_from_turn
-                if (is_fork and is_checkpoint_replay)
-                else None
-            ),
-            attempt_no=(retry_of["attempt_no"] + 1 if retry_of is not None else 1),
-            retry_of_run_id=(
-                str(retry_of["conversation_response_id"])
-                if retry_of is not None
-                else None
-            ),
-            # Durable on the row so the startup sweep can enqueue this run's
-            # terminal hooks (burst release, watch clear) without any
-            # in-process context surviving the crash.
-            run_metadata={
-                "user_id": user_id,
-                "burst_slot_id": request.burst_slot_id,
+            query_content=query_content,
+            query_type=query_type,
+            feedback_action=feedback_action,
+            query_metadata=query_metadata,
+            is_fork=is_fork,
+            is_checkpoint_replay=is_checkpoint_replay,
+            extra_run_metadata={
                 "report_back_ptc_thread_id": getattr(
                     request, "report_back_ptc_thread_id", None
                 ),
@@ -547,13 +517,10 @@ async def astream_flash_workflow(
             # v4: START already created this run's in_progress row; whichever
             # way this branch exits (steer away or 409), no executor will ever
             # own it — release the durable slot first.
-            await protected_finalize(
-                TurnCoordinator.get_instance().fail_open_run(
-                    run_handle,
-                    "superseded by concurrent run (admission fallback)",
-                    status="cancelled",
-                ),
-                label=run_handle.run_id,
+            await TurnCoordinator.get_instance().fail_open_run(
+                run_handle,
+                "superseded by concurrent run (admission fallback)",
+                status="cancelled",
             )
             result = None if dispatched else await steer_thread(
                 thread_id, user_input, user_id
@@ -599,20 +566,9 @@ async def astream_flash_workflow(
 
     except (asyncio.CancelledError, GeneratorExit):
         if slot_owned:
-            await release_burst_slot(user_id, request.burst_slot_id)
-            # Died between START and BTM handoff: release the open run slot
-            # (Phase 1 has no recovery scanner). protected_finalize: a second
-            # cancel on this already-cancelled stream task must not abort
-            # the write.
-            if run_handle is not None:
-                await protected_finalize(
-                    TurnCoordinator.get_instance().fail_open_run(
-                        run_handle,
-                        "client disconnected during setup",
-                        status="cancelled",
-                    ),
-                    label=run_handle.run_id,
-                )
+            await release_and_fail_open(
+                run_handle, user_id=user_id, burst_slot_id=request.burst_slot_id
+            )
             logger.warning(
                 f"[FLASH_CHAT] Generator cancelled before workflow started: "
                 f"thread_id={thread_id}"

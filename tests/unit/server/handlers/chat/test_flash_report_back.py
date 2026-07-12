@@ -399,7 +399,7 @@ async def test_reassert_skipped_when_membership_already_cleared():
 
 
 def test_completed_flash_with_report_back_id_enqueues_consumption_clear():
-    from src.server.services.hook_outbox import build_finalize_jobs
+    from src.server.database.hook_outbox import build_finalize_jobs
 
     jobs = build_finalize_jobs(
         run_id="run-1",
@@ -417,7 +417,7 @@ def test_completed_flash_with_report_back_id_enqueues_consumption_clear():
 
 
 def test_completed_flash_without_report_back_id_skips_clear():
-    from src.server.services.hook_outbox import build_finalize_jobs
+    from src.server.database.hook_outbox import build_finalize_jobs
 
     jobs = build_finalize_jobs(
         run_id="run-1",

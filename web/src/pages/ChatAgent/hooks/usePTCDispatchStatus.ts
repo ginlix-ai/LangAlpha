@@ -37,11 +37,12 @@ const POLL_FAST_MS = 4_000;
 const POLL_STEADY_MS = 10_000;
 const POLL_FAST_COUNT = 5;
 
-/** Map the backend's public status vocabulary onto the card's status.
- *  `idle`/absent means the run hasn't registered yet, so we show "starting"
- *  and keep polling; `stopping` is still a live run, `recovering`/`queued`
- *  haven't produced output yet. Legacy pre-1.6 spellings (`active`) are kept
- *  for the rolling-deploy window. */
+/** Map the backend's public status vocabulary (`WorkflowRunStatus`) onto the
+ *  card's status. The cases enumerate that union's members so the mapping stays
+ *  exhaustive: `idle`/`queued`/`recovering` (registered but no output yet) show
+ *  "starting" and keep polling; `stopping` is still a live run. `raw` stays
+ *  `unknown` — the wire boundary is untrusted, so the default absorbs anything
+ *  off-vocabulary, including legacy pre-1.6 spellings (`active`). */
 function mapStatus(raw: unknown): PTCDispatchStatus {
   switch (raw) {
     case 'running':
@@ -51,6 +52,9 @@ function mapStatus(raw: unknown): PTCDispatchStatus {
     case 'completed': return 'completed';
     case 'failed': return 'failed';
     case 'cancelled': return 'stopped';
+    case 'idle':
+    case 'queued':
+    case 'recovering': return 'starting';
     default: return 'starting';
   }
 }

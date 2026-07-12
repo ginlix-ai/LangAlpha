@@ -145,6 +145,7 @@ async def _run_crash(cache, run_row, finalize_result=None):
     order = []
     cache.client.xadd.side_effect = lambda *a, **kw: order.append("error_xadd")
     fake_manager = AsyncMock()
+    fake_manager.is_run_live = AsyncMock(return_value=False)
     fake_manager.append_run_end_event.side_effect = (
         lambda *a, **kw: order.append("run_end")
     )
@@ -277,6 +278,10 @@ async def test_live_btm_executor_blocks_last_resort_finalize():
             self.tasks = {("ptc-1", "run-1"): info}
             self.append_run_end_event = AsyncMock()
 
+        # The real probe, run against the fake's tasks dict — pins the
+        # "not-done task => live => hands off" semantics, not a stub's.
+        is_run_live = BackgroundTaskManager.is_run_live
+
     fake_manager = _FakeManager()
     cache = _FakeCache({"ptc_origin:ptc-1": {"flash_thread_id": "flash-1"}})
     finalize = AsyncMock()
@@ -311,6 +316,7 @@ async def test_failed_last_resort_finalize_withholds_run_end():
     order = []
     cache.client.xadd.side_effect = lambda *a, **kw: order.append("error_xadd")
     fake_manager = AsyncMock()
+    fake_manager.is_run_live = AsyncMock(return_value=False)
     fake_manager.append_run_end_event.side_effect = (
         lambda *a, **kw: order.append("run_end")
     )

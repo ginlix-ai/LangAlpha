@@ -10,10 +10,11 @@ else may write a run's terminal state.
 """
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional, Union
+from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional
 from uuid import uuid4
 
 from src.server.database import turn_lifecycle as tl_db
@@ -21,7 +22,6 @@ from src.server.database.turn_lifecycle import (  # re-exported for callers
     AttemptConflictError,
     DuplicateRequestError,
     FinalizeResult,
-    HookJob,
     QuerySpec,
     RunSlotBusyError,
 )
@@ -32,7 +32,6 @@ __all__ = [
     "RunHandle",
     "TurnOutcome",
     "QuerySpec",
-    "HookJob",
     "FinalizeResult",
     "RunSlotBusyError",
     "DuplicateRequestError",
@@ -88,12 +87,6 @@ class TurnOutcome:
     sse_events: Optional[List[Dict[str, Any]]] = None
     per_call_records: Optional[list] = None
     tool_usage: Optional[Dict[str, int]] = None
-    # A static list, or a factory invoked inside the finalize transaction
-    # with the CAS-adopted final status (build_finalize_jobs) — the adopted
-    # status may differ from outcome.status when durable cancel intent wins.
-    outbox_jobs: Union[List[HookJob], Callable[[str], List[HookJob]]] = field(
-        default_factory=list
-    )
 
 
 @dataclass
@@ -221,7 +214,6 @@ class TurnCoordinator:
             sse_events=outcome.sse_events,
             checkpoint_id=checkpoint_id,
             usage_writer=usage_writer,
-            outbox_jobs=outcome.outbox_jobs,
         )
         handle.finalized = True
 
@@ -235,8 +227,7 @@ class TurnCoordinator:
                         f"run={handle.run_id}",
                         exc_info=True,
                     )
-            self._schedule_projection_refresh(handle.thread_id)
-            self._nudge_hook_drainer()
+            self._post_finalize_tail(handle.thread_id)
         return result
 
     async def fail_open_run(
@@ -251,21 +242,27 @@ class TurnCoordinator:
 
         Phase 1 has no recovery scanner: any code path that STARTed a run and
         cannot hand it to the executor MUST call this, or the slot leaks until
-        operator intervention. Never raises.
+        operator intervention. Death paths run on the client-stream task, so
+        the finalize is internally shielded (protected_finalize) — callers
+        never need to wrap it. Never raises, except propagating the caller's
+        own cancellation after the detached finalize is underway.
         """
         if handle.finalized:
             return None
         try:
-            return await self.finalize_turn(
-                handle,
-                TurnOutcome(
-                    status=status,
-                    metadata=metadata or {},
-                    errors=[error_message],
-                    execution_time=(
-                        datetime.now(timezone.utc) - handle.started_at
-                    ).total_seconds(),
+            return await protected_finalize(
+                self.finalize_turn(
+                    handle,
+                    TurnOutcome(
+                        status=status,
+                        metadata=metadata or {},
+                        errors=[error_message],
+                        execution_time=(
+                            datetime.now(timezone.utc) - handle.started_at
+                        ).total_seconds(),
+                    ),
                 ),
+                label=handle.run_id,
             )
         except Exception:
             logger.error(
@@ -308,6 +305,7 @@ class TurnCoordinator:
                 )
                 if result.applied:
                     swept += 1
+                    self._post_finalize_tail(thread_id)
                     logger.warning(
                         f"[TurnCoordinator] swept stale run {run_id} "
                         f"(thread={thread_id}) -> {status}"
@@ -317,9 +315,121 @@ class TurnCoordinator:
                     f"[TurnCoordinator] failed to sweep stale run {run_id}",
                     exc_info=True,
                 )
-        if swept:
-            self._nudge_hook_drainer()
         return swept
+
+    async def reconcile_orphaned_dispatch(
+        self,
+        thread_id: str,
+        run_id: str,
+        *,
+        error_text: Optional[str] = None,
+        label: str = "dispatch",
+    ) -> Optional[str]:
+        """Last-resort owner (I6) for a dispatched run whose consumer died
+        without the executor settling the row.
+
+        CASes a still-in_progress row to error (durable cancel intent may
+        adopt 'cancelled') and emits the terminal frames the real owner never
+        wrote: an error frame only for a real error, run_end only with a
+        verified terminal status, and only if this call won the CAS — losing
+        means the real owner finalized concurrently and emits its own frames.
+        Returns the verified terminal status, or None when nothing durable
+        could be established. Never raises.
+        """
+        from src.server.services.background_task_manager import (
+            BackgroundTaskManager,
+            stream_key,
+        )
+        from src.utils.cache.redis_cache import get_cache_client
+
+        terminal_status: Optional[str] = None
+        try:
+            cache = get_cache_client()
+            if not (cache.enabled and cache.client):
+                return None
+            skey = stream_key(thread_id, run_id)
+
+            # If the stream already closed with run_end, the run's real owner
+            # finalized and emitted — add nothing.
+            tail_is_run_end = False
+            try:
+                tail = await cache.client.xrevrange(skey, count=1)
+                if tail:
+                    wire = (
+                        tail[0][1].get(b"event") or tail[0][1].get("event") or b""
+                    )
+                    if isinstance(wire, str):
+                        wire = wire.encode("utf-8")
+                    tail_is_run_end = wire.startswith(b"event: run_end")
+            except Exception:
+                pass
+
+            run_row = None
+            try:
+                run_row = await tl_db.get_run(run_id)
+            except Exception:
+                logger.warning(
+                    f"[{label}] run-row read failed for {run_id}; "
+                    f"emitting error frame without run_end",
+                    exc_info=True,
+                )
+
+            cas_owned = True
+            if run_row is not None:
+                if run_row.get("status") == "in_progress":
+                    try:
+                        result = await tl_db.finalize_run_idempotent(
+                            run_id=run_id,
+                            thread_id=thread_id,
+                            status="error",
+                            errors=[error_text or "background workflow failed"],
+                            metadata={"recovery": "dispatch_consumer_crash"},
+                        )
+                        cas_owned = result.applied
+                        if result.run:
+                            terminal_status = result.run.get("status")
+                        if result.applied:
+                            self._post_finalize_tail(thread_id)
+                    except Exception:
+                        logger.critical(
+                            f"[{label}] last-resort finalize failed for "
+                            f"run={run_id}; row remains in_progress for "
+                            f"recovery",
+                            exc_info=True,
+                        )
+                else:
+                    terminal_status = run_row.get("status")
+
+            # Emission matrix: an error frame only for a real error (an
+            # adopted cancel is not a failure to the client — it gets only
+            # run_end(cancelled)); nothing for a run that ended completed/
+            # interrupted; nothing on a duplicate close or a lost CAS.
+            if not tail_is_run_end and cas_owned:
+                if terminal_status in (None, "error"):
+                    error_payload = {
+                        "thread_id": thread_id,
+                        "content": "background workflow failed",
+                        "error_type": "background_failure",
+                        "error": error_text or "background workflow failed",
+                    }
+                    sse_wire = (
+                        f"event: error\n"
+                        f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
+                    )
+                    await cache.client.xadd(
+                        skey, {b"event": sse_wire.encode("utf-8")}
+                    )
+                if terminal_status in ("error", "cancelled"):
+                    await BackgroundTaskManager.get_instance().append_run_end_event(
+                        thread_id, run_id, terminal_status
+                    )
+        except Exception:
+            logger.warning(
+                f"[{label}] failed to emit terminal error SSE for "
+                f"thread_id={thread_id} run_id={run_id}",
+                exc_info=True,
+            )
+        return terminal_status
 
     # ------------------------------------------------------------------ utils
 
@@ -374,6 +484,13 @@ class TurnCoordinator:
                 exc_info=True,
             )
             return None
+
+    def _post_finalize_tail(self, thread_id: str) -> None:
+        """The uniform after-a-won-CAS tail: every site that applies a
+        terminal transition schedules the projection refresh and nudges the
+        drainer, so the two never drift apart per call site."""
+        self._schedule_projection_refresh(thread_id)
+        self._nudge_hook_drainer()
 
     def _nudge_hook_drainer(self) -> None:
         """Post-commit hint only — the drainer's poll is the delivery

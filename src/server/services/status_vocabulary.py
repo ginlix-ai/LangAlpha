@@ -60,3 +60,19 @@ def to_public(
         return "running"
     mapped = _LEGACY.get(value, value)
     return mapped if mapped in PUBLIC_STATUSES else "idle"
+
+
+_TERMINAL_INTERNAL = frozenset({"completed", "error", "cancelled", "interrupted"})
+
+
+def to_public_terminal(raw: Any) -> Optional[str]:
+    """Map an internal status to the public vocabulary only if it is terminal.
+
+    Returns None for live/unknown values so callers that publish settled
+    outcomes only (e.g. the liveness terminal fallback) omit rather than
+    mislabel a run that is still in flight.
+    """
+    value = getattr(raw, "value", raw)
+    if value is None or str(value) not in _TERMINAL_INTERNAL:
+        return None
+    return to_public(value)

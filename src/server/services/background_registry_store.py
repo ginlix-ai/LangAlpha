@@ -56,18 +56,8 @@ class BackgroundRegistryStore:
         if registry is None:
             return 0
 
-        cancelled = await registry.cancel_run_tasks(run_id, force=force)
-        if cancelled:
-            logger.info(
-                "Cancelled run-scoped background tasks",
-                extra={
-                    "thread_id": thread_id,
-                    "run_id": run_id,
-                    "cancelled": cancelled,
-                    "force": force,
-                },
-            )
-        return cancelled
+        # registry.cancel_run_tasks logs the cancellation with task detail.
+        return await registry.cancel_run_tasks(run_id, force=force)
 
     async def cancel_and_clear(self, thread_id: str, *, force: bool = False) -> int:
         async with self._lock:

@@ -4,7 +4,7 @@
  */
 import { api } from '@/api/client';
 import { supabase } from '@/lib/supabase';
-import type { ResourceTier, WorkspaceQuota } from '@/types/api';
+import type { ResourceTier, WorkspaceQuota, WorkflowRunStatus } from '@/types/api';
 
 const baseURL = api.defaults.baseURL;
 
@@ -579,6 +579,45 @@ export async function replayThreadHistory(threadId: string, onEvent: (event: Rec
   await streamFetch(`/api/v1/threads/${threadId}/messages/replay`, { method: 'GET', headers: { ...authHeaders } }, onEvent);
 }
 
+/**
+ * Shared POST→SSE plumbing for the three send paths (new/continue, retry, HITL
+ * resume): attaches auth headers, streams the response, and latches the run/thread
+ * id out of the `Content-Location` header before the first SSE event. The three
+ * callers differ only in path + body.
+ */
+async function postSSEStream(
+  path: string,
+  body: unknown,
+  opts: {
+    onEvent: (event: Record<string, unknown>) => void;
+    onRunIdResolved?: ((runId: string, threadId: string | null) => void) | null;
+    signal?: AbortSignal | null;
+  },
+): Promise<{ disconnected: boolean; aborted: boolean; contentLocation: string | null }> {
+  const { onEvent, onRunIdResolved, signal } = opts;
+  const authHeaders = await getAuthHeaders();
+  return await streamFetch(
+    path,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream',
+        ...authHeaders,
+      },
+      body: JSON.stringify(body),
+      ...(signal ? { signal } : {}),
+    },
+    onEvent,
+    onRunIdResolved
+      ? (contentLocation) => {
+          const runId = parseRunIdFromContentLocation(contentLocation);
+          if (runId) onRunIdResolved(runId, parseThreadIdFromContentLocation(contentLocation));
+        }
+      : undefined,
+  );
+}
+
 export async function sendChatMessageStream(
   message: string,
   workspaceId: string,
@@ -629,27 +668,7 @@ export async function sendChatMessageStream(
   const url = isNewThread
     ? '/api/v1/threads/messages'
     : `/api/v1/threads/${threadId}/messages`;
-  const authHeaders = await getAuthHeaders();
-  return await streamFetch(
-    url,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'text/event-stream',
-        ...authHeaders,
-      },
-      body: JSON.stringify(body),
-      ...(signal ? { signal } : {}),
-    },
-    onEvent,
-    onRunIdResolved
-      ? (contentLocation) => {
-          const runId = parseRunIdFromContentLocation(contentLocation);
-          if (runId) onRunIdResolved(runId, parseThreadIdFromContentLocation(contentLocation));
-        }
-      : undefined,
-  );
+  return await postSSEStream(url, body, { onEvent, onRunIdResolved, signal });
 }
 
 /**
@@ -673,27 +692,7 @@ export async function sendRetryStream(
   if (llmModel) body.llm_model = llmModel;
   if (reasoningEffort) body.reasoning_effort = reasoningEffort;
   if (fastMode) body.fast_mode = true;
-  const authHeaders = await getAuthHeaders();
-  return await streamFetch(
-    `/api/v1/threads/${threadId}/retry`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'text/event-stream',
-        ...authHeaders,
-      },
-      body: JSON.stringify(body),
-      ...(signal ? { signal } : {}),
-    },
-    onEvent,
-    onRunIdResolved
-      ? (contentLocation) => {
-          const runId = parseRunIdFromContentLocation(contentLocation);
-          if (runId) onRunIdResolved(runId, parseThreadIdFromContentLocation(contentLocation));
-        }
-      : undefined,
-  );
+  return await postSSEStream(`/api/v1/threads/${threadId}/retry`, body, { onEvent, onRunIdResolved, signal });
 }
 
 /**
@@ -748,7 +747,9 @@ export type { ReportBackSignal } from './reportBackSignal';
  *  fields are optional here (the full status may omit them). */
 export type WorkflowStatusResponse = Partial<ThreadReportBackStatus> & {
   can_reconnect: boolean;
-  status: string;
+  // Backend's public run vocabulary, plus `'error'` — a client-only sentinel the
+  // reconnect flow synthesizes when the `/status` fetch itself fails.
+  status: WorkflowRunStatus | 'error';
   active_tasks?: string[];
   is_shared?: boolean;
   run_id?: string | null;
@@ -972,7 +973,7 @@ export async function reconnectToWorkflowStream(
  * Fetch turn-boundary checkpoint IDs for a thread.
  * Used lazily (on-demand) when user clicks Edit or Regenerate on a message.
  * @param {string} threadId - The thread ID
- * @returns {Promise<{thread_id: string, turns: Array<{turn_index: number, edit_checkpoint_id: string|null, regenerate_checkpoint_id: string}>, retry_checkpoint_id: string|null}>}
+ * @returns {Promise<{thread_id: string, turns: Array<{turn_index: number, edit_checkpoint_id: string|null, regenerate_checkpoint_id: string}>}>}
  */
 export async function fetchThreadTurns(threadId: string) {
   if (!threadId) throw new Error('Thread ID is required');
@@ -1125,27 +1126,7 @@ export async function sendHitlResponse(
   if (modelOptions?.model) body.llm_model = modelOptions.model;
   if (modelOptions?.reasoningEffort) body.reasoning_effort = modelOptions.reasoningEffort;
   if (modelOptions?.fastMode) body.fast_mode = true;
-  const authHeaders = await getAuthHeaders();
-  return await streamFetch(
-    `/api/v1/threads/${threadId}/messages`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'text/event-stream',
-        ...authHeaders,
-      },
-      body: JSON.stringify(body),
-      ...(signal ? { signal } : {}),
-    },
-    onEvent,
-    onRunIdResolved
-      ? (contentLocation) => {
-          const runId = parseRunIdFromContentLocation(contentLocation);
-          if (runId) onRunIdResolved(runId, parseThreadIdFromContentLocation(contentLocation));
-        }
-      : undefined,
-  );
+  return await postSSEStream(`/api/v1/threads/${threadId}/messages`, body, { onEvent, onRunIdResolved, signal });
 }
 
 /**

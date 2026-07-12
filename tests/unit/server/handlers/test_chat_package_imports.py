@@ -67,7 +67,6 @@ class TestSubmoduleImports:
     def test_import_common(self):
         import src.server.handlers.chat._common as mod
 
-        assert hasattr(mod, "classify_error")
         assert hasattr(mod, "process_hitl_response")
         assert hasattr(mod, "normalize_request_messages")
         assert hasattr(mod, "init_tracking")
@@ -75,10 +74,21 @@ class TestSubmoduleImports:
         assert hasattr(mod, "ensure_thread")
         assert hasattr(mod, "prepare_skill_contexts")
         assert hasattr(mod, "build_graph_config")
-        assert hasattr(mod, "wait_or_steer")
-        assert hasattr(mod, "handle_workflow_error")
         assert hasattr(mod, "serialize_context_metadata")
         assert hasattr(mod, "setup_steering_tracking")
+
+    def test_import_admission(self):
+        import src.server.handlers.chat.admission as mod
+
+        assert hasattr(mod, "ADMISSION_CONFLICT_CODES")
+        assert hasattr(mod, "admission_conflict_detail")
+        assert hasattr(mod, "wait_or_steer")
+
+    def test_import_error_handling(self):
+        import src.server.handlers.chat.error_handling as mod
+
+        assert hasattr(mod, "classify_error")
+        assert hasattr(mod, "handle_workflow_error")
 
     def test_import_llm_config(self):
         import src.server.handlers.chat.llm_config as mod

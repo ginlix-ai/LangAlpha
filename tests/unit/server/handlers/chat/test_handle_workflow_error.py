@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.server.handlers.chat import _common
+from src.server.handlers.chat import error_handling
 
 
 def _consume(agen):
@@ -40,7 +40,7 @@ def patch_tracker():
     mock_tracker = MagicMock()
     mock_tracker.mark_failed = AsyncMock(return_value=True)
     with patch.object(
-        _common.WorkflowTracker, "get_instance", return_value=mock_tracker
+        error_handling.WorkflowTracker, "get_instance", return_value=mock_tracker
     ):
         yield mock_tracker
 
@@ -65,9 +65,9 @@ async def test_max_retries_branch_marks_failed(patch_tracker):
     handler.get_tool_usage.return_value = None
     handler.get_sse_events.return_value = None
 
-    with patch.object(_common, "release_burst_slot", new=AsyncMock()), \
-         patch.object(_common, "get_max_workflow_retries", return_value=3):
-        await _consume(_common.handle_workflow_error(
+    with patch.object(error_handling, "release_burst_slot", new=AsyncMock()), \
+         patch.object(error_handling, "get_max_workflow_retries", return_value=3):
+        await _consume(error_handling.handle_workflow_error(
             e=err,
             thread_id="t-max-retry",
             user_id="u-1",
@@ -99,9 +99,9 @@ async def test_non_recoverable_branch_marks_failed(patch_tracker):
     handler.get_sse_events.return_value = None
     handler._format_sse_event.return_value = "event: error\ndata: {}\n\n"
 
-    with patch.object(_common, "release_burst_slot", new=AsyncMock()), \
-         patch.object(_common, "get_max_workflow_retries", return_value=3):
-        await _consume(_common.handle_workflow_error(
+    with patch.object(error_handling, "release_burst_slot", new=AsyncMock()), \
+         patch.object(error_handling, "get_max_workflow_retries", return_value=3):
+        await _consume(error_handling.handle_workflow_error(
             e=err,
             thread_id="t-non-recov",
             user_id="u-1",
@@ -135,9 +135,9 @@ async def test_tracker_failure_does_not_break_error_flow(patch_tracker):
     sse = "event: error\ndata: {\"thread_id\": \"t-fail\"}\n\n"
     handler._format_sse_event.return_value = sse
 
-    with patch.object(_common, "release_burst_slot", new=AsyncMock()), \
-         patch.object(_common, "get_max_workflow_retries", return_value=3):
-        events = await _consume(_common.handle_workflow_error(
+    with patch.object(error_handling, "release_burst_slot", new=AsyncMock()), \
+         patch.object(error_handling, "get_max_workflow_retries", return_value=3):
+        events = await _consume(error_handling.handle_workflow_error(
             e=err,
             thread_id="t-fail",
             user_id="u-1",
@@ -168,10 +168,10 @@ async def test_external_id_conflict_branch_emits_conflict_and_skips_mark_failed(
 
     err = ExternalIdConflictError(platform="telegram", external_id="chat:42")
 
-    with patch.object(_common, "release_burst_slot", new=AsyncMock()), \
-         patch.object(_common, "get_max_workflow_retries", return_value=3):
+    with patch.object(error_handling, "release_burst_slot", new=AsyncMock()), \
+         patch.object(error_handling, "get_max_workflow_retries", return_value=3):
         # handler=None takes the json.dumps SSE branch, easy to parse.
-        events = await _consume(_common.handle_workflow_error(
+        events = await _consume(error_handling.handle_workflow_error(
             e=err,
             thread_id="t-ext",
             user_id="u-1",
