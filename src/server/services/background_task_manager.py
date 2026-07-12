@@ -74,6 +74,10 @@ def stream_meta_key(thread_id: str, run_id: str) -> str:
 # event forwarding ends (mirrors SUBAGENT_STREAM_END_EVENT). Consumers close
 # on sight instead of waiting out the empty-XREAD terminal handshake.
 WORKFLOW_STREAM_END_EVENT = "workflow_stream_end"
+# Visible end-of-run frame (I6): written only after the finalize CAS commits,
+# carrying {thread_id, run_id, outcome}. Replaces the swallowed pre-finalize
+# sentinel above, which survives in the consumer as a legacy swallow only.
+WORKFLOW_RUN_END_EVENT = "run_end"
 
 
 # ========== Shared Helpers (DRY) ==========
@@ -159,6 +163,15 @@ def _record_to_persist_event(record: dict, thread_id: str) -> dict:
     if ts is not None:
         out["ts"] = ts
     return out
+
+
+class TransportLostError(RuntimeError):
+    """Mid-run event-buffer failure — fatal to the run (I6).
+
+    Raised by the Redis buffering path; the workflow failure handler turns it
+    into a ``failed(transport_lost)`` finalize instead of letting the run
+    complete with silently missing events.
+    """
 
 
 class TaskStatus(str, Enum):
@@ -786,7 +799,16 @@ class BackgroundTaskManager:
                         raise asyncio.CancelledError("Explicitly cancelled by user")
 
                     if self.enable_storage:
-                        await self._buffer_event_redis(thread_id, run_id, event)
+                        try:
+                            await self._buffer_event_redis(thread_id, run_id, event)
+                        except TransportLostError:
+                            # Fatal (I6): stop the graph at this event boundary
+                            # so the failure handler finalizes
+                            # failed(transport_lost) instead of the run
+                            # completing with holes in its archive.
+                            with suppress(Exception):
+                                await wf_gen.aclose()
+                            raise
 
             inner_task = asyncio.create_task(consume_workflow(workflow_generator))
 
@@ -803,12 +825,10 @@ class BackgroundTaskManager:
 
             await inner_task
 
-            # Sentinel must precede _finalize_run: its post-commit hook
-            # may DEL the stream, and an append after that would recreate the
-            # key. Covers interrupted turns too (an interrupt ends the
-            # generator normally; _finalize_run classifies it).
-            await self.append_stream_end_sentinel(thread_id, run_id)
-
+            # No pre-finalize sentinel (1.5): the visible run_end frame is
+            # written by _finalize_run AFTER the CAS commits, carrying the
+            # adopted outcome. Consumers close on run_end, with the
+            # two-empty-round handshake as the finalize-failure fallback.
             await self._finalize_run(thread_id, run_id, kind="stream_end")
 
         # =====================================================================
@@ -821,7 +841,7 @@ class BackgroundTaskManager:
         #     2. drain killed-subagent events        # bounded (~stop_drain_timeout)
         #     3. cancel orphan collector tasks       # no post-stop mutation
         #     4. cancel_and_clear(force=True)        # kill subagents, wipe registry
-        #     5. _finalize_run(kind="cancelled")     # persist merged sse_events + SSE sentinel
+        #     5. _finalize_run(kind="cancelled")     # persist merged sse_events + run_end frame
         #     6. raise
         #
         # Drain MUST run before cancel_and_clear wipes the registry, and
@@ -841,13 +861,8 @@ class BackgroundTaskManager:
                 # finish across that re-cancel. Don't drop a shield assuming
                 # suppress already covers the cancellation case.
                 #
-                # Sentinel first: inner_task is settled so no more real events
-                # can land; attached consumers close now rather than waiting
-                # out the terminal handshake while teardown runs.
-                with suppress(Exception):
-                    await asyncio.shield(
-                        self.append_stream_end_sentinel(thread_id, run_id)
-                    )
+                # No sentinel here (1.5): consumers close on the run_end frame
+                # _finalize_run writes after the CAS in step 5.
                 if explicit:
                     # 1. Flush the LangGraph checkpoint so the next message
                     #    resumes from the last committed boundary. Gated on
@@ -885,9 +900,6 @@ class BackgroundTaskManager:
                 f"[BackgroundTaskManager] Workflow {key} failed: {e}",
                 exc_info=True
             )
-            # Sentinel before _finalize_run for the same DEL-ordering reason
-            # as the completed path.
-            await self.append_stream_end_sentinel(thread_id, run_id)
             await self._finalize_run(thread_id, run_id, kind="failed", error=str(e))
 
     async def _flush_checkpoint(self, thread_id: str, run_id: str) -> None:
@@ -1096,27 +1108,33 @@ class BackgroundTaskManager:
         return merged
 
     async def _buffer_event_redis(self, thread_id: str, run_id: str, event: str):
-        """Append a workflow event to the per-run Redis Stream."""
+        """Append a workflow event to the per-run Redis Stream.
+
+        Buffer failure is FATAL to the run (I6): a dropped event means the
+        replay archive and any attached consumer silently diverge from what
+        the model actually produced, so the run must finalize
+        ``failed(transport_lost)`` instead of completing with holes. Only the
+        memory backend (explicitly configured, no stream consumers) keeps
+        best-effort semantics.
+        """
         key = (thread_id, run_id)
         async with self.task_lock:
             if key not in self.tasks:
                 return
 
+        if self.event_storage_backend != "redis":
+            return  # memory backend: no stream transport to lose
+
         try:
             cache = get_cache_client()
         except Exception as e:
-            logger.warning(
-                f"[EventBuffer] get_cache_client() failed for {key}: {e}; dropping event"
+            raise TransportLostError(
+                f"transport_lost: cache client unavailable ({e})"
+            ) from e
+        if not cache.enabled:
+            raise TransportLostError(
+                "transport_lost: Redis event transport is disabled/unreachable"
             )
-            return
-        use_redis = self.event_storage_backend == "redis" and cache.enabled
-
-        if not use_redis:
-            logger.warning(
-                f"[EventBuffer] Redis unavailable for {key}; "
-                "consumers attached to workflow:stream:* will see no events"
-            )
-            return
 
         event_id = None
         try:
@@ -1126,11 +1144,10 @@ class BackgroundTaskManager:
             pass
 
         if event_id is None:
-            logger.warning(
-                "[EventBuffer] Could not parse event ID from SSE string for "
-                f"{key}; event dropped"
+            raise TransportLostError(
+                "transport_lost: unparsable event ID in SSE frame; replay "
+                "archive would silently diverge"
             )
-            return
 
         meta_k = stream_meta_key(thread_id, run_id)
         stream_k = stream_key(thread_id, run_id)
@@ -1145,11 +1162,9 @@ class BackgroundTaskManager:
         )
 
         if not success:
-            logger.error(
-                f"[EventBuffer] Redis pipeline failed for {key}; "
-                "event dropped from workflow:stream:*"
+            raise TransportLostError(
+                f"transport_lost: Redis pipeline write failed for {key}"
             )
-            return
 
         logger.debug(f"[EventBuffer] Buffered event to Redis: {key} (id={event_id}, seq={seq})")
 
@@ -1161,14 +1176,18 @@ class BackgroundTaskManager:
                 "Oldest events will be dropped (FIFO)."
             )
 
-    async def append_stream_end_sentinel(self, thread_id: str, run_id: str):
-        """Write a ``WORKFLOW_STREAM_END_EVENT`` sentinel to the per-run Stream.
+    async def append_run_end_event(
+        self, thread_id: str, run_id: str, outcome: str
+    ) -> None:
+        """Write the visible ``run_end`` frame to the per-run Stream (I6).
 
-        Raw auto-ID XADD, not ``_buffer_event_redis`` — the sentinel is a
-        transport-level signal with no ``id: N`` prefix or seq slot, and the
-        auto ID (ms timestamp) always sorts after the explicit ``seq-0`` IDs
-        real events use. Best-effort: on failure the consumer's two-empty-round
-        terminal handshake still closes the stream, just slower.
+        Written only AFTER the finalize CAS commits, carrying the ADOPTED
+        terminal status — a consumer that sees ``run_end`` may trust the
+        durable row exists with that outcome. Raw auto-ID XADD, not
+        ``_buffer_event_redis``: it has no seq slot, and the auto ID (ms
+        timestamp) always sorts after the explicit ``seq-0`` IDs real events
+        use. Best-effort: on failure the consumer's two-empty-round terminal
+        handshake still closes the stream, just slower.
         """
         if self.event_storage_backend != "redis":
             return
@@ -1177,9 +1196,13 @@ class BackgroundTaskManager:
             if not cache.enabled or not cache.client:
                 return
             stream_k = stream_key(thread_id, run_id)
-            payload = json.dumps(
-                {"event": WORKFLOW_STREAM_END_EVENT}, ensure_ascii=False
-            ).encode("utf-8")
+            data = json.dumps(
+                {"thread_id": thread_id, "run_id": run_id, "outcome": outcome},
+                ensure_ascii=False,
+            )
+            payload = f"event: {WORKFLOW_RUN_END_EVENT}\ndata: {data}\n\n".encode(
+                "utf-8"
+            )
             async with cache.client.pipeline(transaction=False) as pipe:
                 pipe.xadd(
                     stream_k,
@@ -1187,13 +1210,13 @@ class BackgroundTaskManager:
                     maxlen=self.max_stored_messages,
                     approximate=True,
                 )
-                # Refresh TTL so a sentinel landing on an expired/cleared key
+                # Refresh TTL so a run_end landing on an expired/cleared key
                 # can't recreate it without an expiry.
                 pipe.expire(stream_k, self.redis_event_ttl)
                 await pipe.execute()
         except Exception as exc:
             logger.debug(
-                f"[EventBuffer] Stream-end sentinel append failed for "
+                f"[EventBuffer] run_end append failed for "
                 f"({thread_id}, {run_id}): {exc}"
             )
 
@@ -1737,10 +1760,12 @@ class BackgroundTaskManager:
                 tool_usage=tool_usage,
             )
             try:
+                # 1.5: no post_commit DEL — the stream is retained to its
+                # redis_event_ttl so post-terminal reconnects replay from
+                # Redis and see the run_end frame appended below.
                 result = await TurnCoordinator.get_instance().finalize_turn(
                     handle,
                     outcome,
-                    post_commit=lambda: self.clear_event_buffer(thread_id, run_id),
                 )
                 finalize_applied = result.applied
                 if result.applied:
@@ -1793,6 +1818,12 @@ class BackgroundTaskManager:
         # _run_workflow's failure handler and trigger a second finalize. ----
         try:
             if finalize_applied:
+                # Visible run_end AFTER the commit, carrying the adopted
+                # status (I6). Attached consumers yield it and close. Losers
+                # of a finalize race skip it — their consumers close via the
+                # terminal handshake once the local mark above lands.
+                await self.append_run_end_event(thread_id, run_id, status)
+
                 if status == "completed" and completion_callback:
                     try:
                         await completion_callback(task_info)
@@ -2200,34 +2231,6 @@ class BackgroundTaskManager:
                 task_info.active_connections = max(0, task_info.active_connections - 1)
                 return True
             return False
-
-    async def clear_event_buffer(self, thread_id: str, run_id: str):
-        """Drop the per-run workflow event keys after persistence.
-
-        Per-run keying makes this trivially safe: a concurrent new POST gets
-        a different ``run_id`` and therefore different keys, so this DEL can
-        never wipe an in-flight workflow's live stream.
-        """
-        try:
-            cache = get_cache_client()
-
-            if self.event_storage_backend == "redis" and cache.enabled:
-                stream_k = stream_key(thread_id, run_id)
-                meta_k = stream_meta_key(thread_id, run_id)
-
-                await cache.delete(stream_k)
-                await cache.delete(meta_k)
-
-                logger.debug(
-                    f"[EventBuffer] Cleared Redis event buffer for "
-                    f"thread_id={thread_id} run_id={run_id}"
-                )
-        except Exception as e:
-            logger.error(
-                f"[EventBuffer] Error clearing event buffer for "
-                f"thread_id={thread_id} run_id={run_id}: {e}",
-                exc_info=True,
-            )
 
     async def cancel_workflow(
         self, thread_id: str, run_id: Optional[str] = None,

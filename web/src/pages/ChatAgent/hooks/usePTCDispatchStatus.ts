@@ -37,10 +37,15 @@ const POLL_FAST_MS = 4_000;
 const POLL_STEADY_MS = 10_000;
 const POLL_FAST_COUNT = 5;
 
-/** Map the backend WorkflowStatus enum onto the card's status. `unknown`/absent
- *  means the run hasn't registered yet, so we show "starting" and keep polling. */
+/** Map the backend's public status vocabulary onto the card's status.
+ *  `idle`/absent means the run hasn't registered yet, so we show "starting"
+ *  and keep polling; `stopping` is still a live run, `recovering`/`queued`
+ *  haven't produced output yet. Legacy pre-1.6 spellings (`active`) are kept
+ *  for the rolling-deploy window. */
 function mapStatus(raw: unknown): PTCDispatchStatus {
   switch (raw) {
+    case 'running':
+    case 'stopping':
     case 'active': return 'running';
     case 'interrupted': return 'needs_input';
     case 'completed': return 'completed';

@@ -9,7 +9,7 @@ impossible by construction — these tests pin that invariant.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -68,26 +68,12 @@ async def test_pre_register_rejects_duplicate_run():
     assert await btm.pre_register("thread-X", "run-A") is False
 
 
-@pytest.mark.asyncio
-async def test_clear_event_buffer_is_run_scoped():
-    """clear_event_buffer DELs only the per-run keys — never bleeds across
-    runs on the same thread."""
+def test_event_buffer_is_never_deleted_at_finalize():
+    """1.5 retention contract: streams live to redis_event_ttl so reconnects
+    can replay terminal runs — no code path DELs them at finalize. The old
+    ``clear_event_buffer`` must stay gone."""
     btm = _make_btm()
-
-    cache = MagicMock()
-    cache.enabled = True
-    cache.delete = AsyncMock()
-    with patch(
-        "src.server.services.background_task_manager.get_cache_client",
-        return_value=cache,
-    ):
-        await btm.clear_event_buffer("thread-Z", "run-A")
-
-    deleted = [call.args[0] for call in cache.delete.await_args_list]
-    assert "workflow:stream:thread-Z:run-A" in deleted
-    assert "workflow:events:meta:thread-Z:run-A" in deleted
-    # No legacy thread-only key DEL: the new scheme never writes it.
-    assert "workflow:stream:thread-Z" not in deleted
+    assert not hasattr(btm, "clear_event_buffer")
 
 
 @pytest.mark.asyncio

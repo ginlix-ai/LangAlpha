@@ -24,6 +24,7 @@ from ptc_agent.agent.middleware.background_subagent.registry import (
 )
 from src.server.services.background_registry_store import BackgroundRegistryStore
 from src.server.services.background_task_manager import (
+    WORKFLOW_RUN_END_EVENT,
     WORKFLOW_STREAM_END_EVENT,
     BackgroundTaskManager,
     TaskStatus,
@@ -96,6 +97,30 @@ def _is_stream_end_sentinel(raw: str, sentinel_event: str) -> bool:
     )
 
 
+def _first_available_seq(entries: list) -> Optional[int]:
+    """Parse the seq of the first ``id: N``-prefixed entry, or None.
+
+    Auto-ID entries (run_end / legacy sentinels) have no seq and sort after
+    every explicit ``seq-0`` ID, so the first parseable entry IS the oldest
+    surviving real event.
+    """
+    for _entry_id, fields in entries:
+        payload = fields.get(b"event")
+        if isinstance(payload, bytes):
+            try:
+                payload = payload.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+        if not payload or not payload.startswith("id: "):
+            return None
+        first_line, _, _ = payload.partition("\n")
+        try:
+            return int(first_line[4:].strip())
+        except ValueError:
+            return None
+    return None
+
+
 async def _stream_from_redis_log(
     stream_key: str,
     terminal_check: Callable[[], Awaitable[bool]],
@@ -103,6 +128,7 @@ async def _stream_from_redis_log(
     on_attach: Optional[Callable[[], Awaitable[None]]] = None,
     on_detach: Optional[Callable[[], Awaitable[None]]] = None,
     sentinel_event: Optional[str] = None,
+    close_event: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """Generic XREAD BLOCK loop yielding SSE strings stored in a Redis Stream.
 
@@ -131,6 +157,11 @@ async def _stream_from_redis_log(
     immediately without yielding it, skipping the handshake above. The
     handshake stays as the fallback for sentinel-less streams (crashed
     producers, pre-deploy buffers).
+
+    ``close_event`` (optional) names an SSE event (wire-string entries
+    starting ``event: <name>\\n``) that is YIELDED to the client and then
+    ends the stream — the visible ``run_end`` frame, vs the swallowed
+    legacy sentinel above.
     """
     cache = get_cache_client()
     if not cache.enabled or not cache.client:
@@ -149,6 +180,28 @@ async def _stream_from_redis_log(
 
     stream_key_bytes = stream_key.encode("utf-8")
     block_ms = _xread_block_ms()
+
+    if last_event_id is not None and last_event_id > 0:
+        # Trimmed-head detection (1.5c): if the oldest surviving entry's seq
+        # is beyond the client's cursor + 1, events were dropped (FIFO maxlen
+        # trim or TTL churn). Say so explicitly instead of replaying with a
+        # silent hole.
+        try:
+            head = await cache.client.xrange(stream_key_bytes, count=1)
+            first_seq = _first_available_seq(head) if head else None
+            if first_seq is not None and first_seq > last_event_id + 1:
+                gap = json.dumps(
+                    {
+                        "expected_from": last_event_id + 1,
+                        "first_available": first_seq,
+                    },
+                    ensure_ascii=False,
+                )
+                yield f"event: stream_gap\ndata: {gap}\n\n"
+        except Exception as exc:
+            logger.warning(
+                "[stream_from_log] gap probe failed on %s: %s", stream_key, exc
+            )
 
     attached = False
     try:
@@ -242,8 +295,14 @@ async def _stream_from_redis_log(
                     if sentinel_event is not None and _is_stream_end_sentinel(
                         payload, sentinel_event
                     ):
-                        # Producer's end-of-run marker — close without
-                        # yielding it to the wire.
+                        # Legacy pre-finalize sentinel (pre-1.5 producers) —
+                        # close without yielding it to the wire.
+                        return
+                    if close_event is not None and payload.startswith(
+                        f"event: {close_event}\n"
+                    ):
+                        # Visible end-of-run frame: deliver it, then close.
+                        yield payload
                         return
                     yield payload
 
@@ -351,6 +410,7 @@ async def stream_from_log(
         on_attach=on_attach,
         on_detach=on_detach,
         sentinel_event=WORKFLOW_STREAM_END_EVENT,
+        close_event=WORKFLOW_RUN_END_EVENT,
     ):
         yield event
 

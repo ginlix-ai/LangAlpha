@@ -99,6 +99,7 @@ class TestContentLocationHeader:
         # All of these are deferred imports inside the handler — patch at
         # the source module, not the threads namespace.
         with patch.object(setup_module, "agent_config", MagicMock()), \
+             patch("src.server.app.threads._assert_stream_transport_ready", new=AsyncMock()), \
              patch("src.server.handlers.chat.resolve_llm_config", new=AsyncMock(return_value=_resolved_config())), \
              patch("src.server.dependencies.usage_limits.enforce_credit_limit", new=AsyncMock()), \
              patch("src.server.database.conversation.get_thread_by_id", new=AsyncMock(return_value={"workspace_id": "ws-1"})), \
@@ -142,15 +143,19 @@ class TestContentLocationHeader:
 
 
 class TestReconnectWiring:
-    """``run_id`` from the querystring must reach
-    ``reconnect_to_workflow_stream`` unchanged. When omitted, the parameter
-    is forwarded as ``None`` so downstream code falls back to "latest run on
-    the thread."
+    """1.5d: the querystring ``run_id`` reaches ``classify_reconnect``
+    unchanged (admission decided pre-headers), and the classifier's
+    *effective* run id — not the raw param — is what the stream generator
+    receives.
     """
 
     @pytest.mark.asyncio
     async def test_reconnect_forwards_run_id_and_last_event_id(self, threads_client):
         captured: dict[str, Any] = {}
+
+        async def _fake_classify(thread_id, run_id):
+            captured["classify"] = (thread_id, run_id)
+            return run_id
 
         async def _fake_reconnect(thread_id, run_id, last_event_id):
             captured["args"] = (thread_id, run_id, last_event_id)
@@ -158,6 +163,7 @@ class TestReconnectWiring:
                 yield ""
 
         with patch("src.server.app.threads.require_thread_owner", new=AsyncMock()), \
+             patch("src.server.handlers.chat.stream_reconnect.classify_reconnect", new=_fake_classify), \
              patch("src.server.handlers.chat.reconnect_to_workflow_stream", new=_fake_reconnect):
             resp = await threads_client.get(
                 "/api/v1/threads/tid-X/messages/stream",
@@ -165,13 +171,20 @@ class TestReconnectWiring:
             )
 
         assert resp.status_code == 200
+        assert captured["classify"] == ("tid-X", "r-X")
         assert captured["args"] == ("tid-X", "r-X", 5), (
             f"reconnect wiring mismatch: got {captured.get('args')!r}"
         )
 
     @pytest.mark.asyncio
-    async def test_reconnect_without_run_id_passes_none(self, threads_client):
+    async def test_reconnect_without_run_id_streams_classifier_resolution(
+        self, threads_client
+    ):
         captured: dict[str, Any] = {}
+
+        async def _fake_classify(thread_id, run_id):
+            captured["classify"] = (thread_id, run_id)
+            return "r-latest"
 
         async def _fake_reconnect(thread_id, run_id, last_event_id):
             captured["args"] = (thread_id, run_id, last_event_id)
@@ -179,14 +192,17 @@ class TestReconnectWiring:
                 yield ""
 
         with patch("src.server.app.threads.require_thread_owner", new=AsyncMock()), \
+             patch("src.server.handlers.chat.stream_reconnect.classify_reconnect", new=_fake_classify), \
              patch("src.server.handlers.chat.reconnect_to_workflow_stream", new=_fake_reconnect):
             resp = await threads_client.get(
                 "/api/v1/threads/tid-Y/messages/stream",
             )
 
         assert resp.status_code == 200
+        assert captured["classify"] == ("tid-Y", None)
         thread_id, run_id, _last = captured["args"]
         assert thread_id == "tid-Y"
-        assert run_id is None, (
-            f"run_id must default to None when missing; got {run_id!r}"
+        assert run_id == "r-latest", (
+            "the classifier's effective run id must reach the generator; "
+            f"got {run_id!r}"
         )

@@ -122,6 +122,10 @@ def _stub_workflow(release_burst=None):
             return_value=tracker,
         ),
         patch("src.server.app.threads._consume_background_gen", new=AsyncMock()),
+        patch(
+            "src.server.app.threads._assert_stream_transport_ready",
+            new=AsyncMock(),
+        ),
         # Sync passthrough (patch() would auto-create an AsyncMock for this
         # async function, whose wrapper coroutine returns — never awaits —
         # the inner one, leaking it).

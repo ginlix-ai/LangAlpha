@@ -112,7 +112,7 @@ async def test_filters_to_owner_and_maps_liveness(threads_client):
         "liveness": [
             {
                 "thread_id": "t-own",
-                "status": "active",
+                "status": "running",
                 "run_id": "r-1",
                 "can_reconnect": True,
             }
@@ -276,7 +276,7 @@ async def test_present_blob_resolves_via_blob_pass_not_db(threads_client):
         "liveness": [
             {
                 "thread_id": tid,
-                "status": "active",
+                "status": "running",
                 "run_id": "r-1",
                 "can_reconnect": True,
             }
@@ -302,7 +302,7 @@ async def test_present_blob_and_absent_terminal_coexist(threads_client):
     by_id = {s["thread_id"]: s for s in resp.json()["liveness"]}
     assert by_id[live] == {
         "thread_id": live,
-        "status": "active",
+        "status": "running",
         "run_id": "r-1",
         "can_reconnect": True,
     }
@@ -373,7 +373,7 @@ async def test_active_blob_unchanged_when_btm_has_task(threads_client):
         "liveness": [
             {
                 "thread_id": tid,
-                "status": "active",
+                "status": "running",
                 "run_id": "r-1",
                 "can_reconnect": True,
             }

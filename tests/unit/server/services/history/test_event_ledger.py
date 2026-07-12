@@ -62,6 +62,8 @@ LIVE_ONLY = {
     "tool_call_chunks",  # replay's consolidated tool_calls carries full args
     "compaction_chunk",  # summarize context_window carries summary_text
     "subagent_stream_end",  # reconnect-stream sentinel
+    "stream_gap",  # reconnect trim notice (Last-Event-ID < stream head)
+    "run_end",  # post-CAS terminal frame closing the run stream (I6)
     "replay_done",  # replay sentinel
     "market_watch_update",  # transient stamp notice, accumulate=False; the
     # durable watchlist re-seeds the chip via GET /{thread}/market-watch on replay

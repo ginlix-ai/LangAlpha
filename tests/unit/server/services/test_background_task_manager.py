@@ -412,7 +412,7 @@ class TestConsumeWorkflowUsesClosureEvents:
         # persistence work. v4 folded _mark_completed/_cancelled/_failed into a
         # single _finalize_run(kind=...); the kind reveals which terminal path ran.
         with patch.object(btm, "_finalize_run", new_callable=AsyncMock) as mock_finalize, \
-             patch.object(btm, "append_stream_end_sentinel", new_callable=AsyncMock), \
+             patch.object(btm, "append_run_end_event", new_callable=AsyncMock), \
              patch.object(btm, "_flush_checkpoint", new_callable=AsyncMock), \
              patch.object(btm, "_teardown_subagents_on_stop", new_callable=AsyncMock):
 
@@ -486,7 +486,7 @@ class TestOuterTaskCancelPropagatesToInner:
         btm.tasks[("thread-outer", "run-outer")] = task_info
 
         with patch.object(btm, "_finalize_run", new_callable=AsyncMock) as mock_finalize, \
-             patch.object(btm, "append_stream_end_sentinel", new_callable=AsyncMock), \
+             patch.object(btm, "append_run_end_event", new_callable=AsyncMock), \
              patch.object(btm, "_flush_checkpoint", new_callable=AsyncMock), \
              patch.object(btm, "_teardown_subagents_on_stop", new_callable=AsyncMock):
 
@@ -638,7 +638,7 @@ class TestStopPathFlushGating:
         btm.tasks[("t-stop", "r-stop")] = task_info
 
         with patch.object(btm, "_finalize_run", new_callable=AsyncMock), \
-             patch.object(btm, "append_stream_end_sentinel", new_callable=AsyncMock), \
+             patch.object(btm, "append_run_end_event", new_callable=AsyncMock), \
              patch.object(btm, "_flush_checkpoint", new_callable=AsyncMock) as flush, \
              patch.object(btm, "_teardown_subagents_on_stop", new_callable=AsyncMock) as teardown:
 
@@ -689,7 +689,7 @@ class TestStopPathFlushGating:
         btm.tasks[("t-flushfail", "r-flushfail")] = task_info
 
         with patch.object(btm, "_finalize_run", new_callable=AsyncMock) as finalize, \
-             patch.object(btm, "append_stream_end_sentinel", new_callable=AsyncMock), \
+             patch.object(btm, "append_run_end_event", new_callable=AsyncMock), \
              patch.object(btm, "_flush_checkpoint", new_callable=AsyncMock,
                           side_effect=RuntimeError("flush boom")), \
              patch.object(btm, "_teardown_subagents_on_stop", new_callable=AsyncMock):
@@ -733,7 +733,7 @@ class TestStopPathFlushGating:
         btm.tasks[("t-recancel", "r-recancel")] = task_info
 
         with patch.object(btm, "_finalize_run", new_callable=AsyncMock) as finalize, \
-             patch.object(btm, "append_stream_end_sentinel", new_callable=AsyncMock), \
+             patch.object(btm, "append_run_end_event", new_callable=AsyncMock), \
              patch.object(btm, "_flush_checkpoint", new_callable=AsyncMock), \
              patch.object(btm, "_teardown_subagents_on_stop", new_callable=AsyncMock,
                           side_effect=asyncio.CancelledError()):
@@ -1432,7 +1432,7 @@ class TestClearReportBackWatch:
 
 
 # ---------------------------------------------------------------------------
-# Terminal stream-end sentinel (WORKFLOW_STREAM_END_EVENT)
+# Terminal run_end frame (WORKFLOW_RUN_END_EVENT)
 # ---------------------------------------------------------------------------
 
 class _FakePipeline:
@@ -1470,10 +1470,10 @@ def _sentinel_cache(calls: list, fail: bool = False) -> MagicMock:
     return cache
 
 
-class TestAppendStreamEndSentinel:
+class TestAppendRunEndEvent:
 
     @pytest.mark.asyncio
-    async def test_appends_raw_json_sentinel_with_ttl(self):
+    async def test_appends_sse_wire_frame_with_outcome_and_ttl(self):
         import json as _json
 
         btm = _make_btm()
@@ -1484,14 +1484,21 @@ class TestAppendStreamEndSentinel:
             "src.server.services.background_task_manager.get_cache_client",
             return_value=_sentinel_cache(calls),
         ):
-            await btm.append_stream_end_sentinel("t-1", "r-1")
+            await btm.append_run_end_event("t-1", "r-1", "completed")
 
         assert calls[0][0] == "xadd"
         assert calls[0][1] == "workflow:stream:t-1:r-1"
-        assert _json.loads(calls[0][2][b"event"]) == {
-            "event": "workflow_stream_end"
+        # Pre-rendered SSE wire string — the consumer passes it through and
+        # close-matches on the "event: run_end" prefix.
+        wire = calls[0][2][b"event"].decode("utf-8")
+        assert wire.startswith("event: run_end\ndata: ")
+        assert wire.endswith("\n\n")
+        assert _json.loads(wire.split("data: ", 1)[1]) == {
+            "thread_id": "t-1",
+            "run_id": "r-1",
+            "outcome": "completed",
         }
-        # TTL refreshed so a sentinel on an expired key can't leak it.
+        # TTL refreshed so a run_end landing on an expired key can't leak it.
         assert ("expire", "workflow:stream:t-1:r-1", btm.redis_event_ttl) in calls
 
     @pytest.mark.asyncio
@@ -1503,8 +1510,9 @@ class TestAppendStreamEndSentinel:
             "src.server.services.background_task_manager.get_cache_client",
             return_value=_sentinel_cache([], fail=True),
         ):
-            # Must not raise — terminal paths call this best-effort.
-            await btm.append_stream_end_sentinel("t-1", "r-1")
+            # Must not raise — the finalize effects region calls this
+            # best-effort (consumers still close via the terminal handshake).
+            await btm.append_run_end_event("t-1", "r-1", "error")
 
     @pytest.mark.asyncio
     async def test_noop_when_backend_not_redis(self):
@@ -1513,15 +1521,17 @@ class TestAppendStreamEndSentinel:
         with patch(
             "src.server.services.background_task_manager.get_cache_client"
         ) as mock_get:
-            await btm.append_stream_end_sentinel("t-1", "r-1")
+            await btm.append_run_end_event("t-1", "r-1", "completed")
 
         mock_get.assert_not_called()
 
 
-class TestSentinelAppendedOnTerminalFlavors:
-    """_run_workflow appends the sentinel after the final buffered event for
-    every terminal flavor, and before the _finalize_run whose post-commit hook
-    may DEL the stream. The finalize ``kind`` names the terminal flavor."""
+class TestNoPreFinalizeRunEndOnTerminalFlavors:
+    """1.5 (I6): _run_workflow itself never writes ``run_end`` — the frame is
+    written inside ``_finalize_run``'s effects region, AFTER the CAS commits,
+    carrying the adopted status. A pre-finalize write would let a consumer see
+    ``run_end`` for a run whose durable row isn't terminal yet. The finalize
+    ``kind`` names the terminal flavor."""
 
     def _btm_with_task(self, thread_id: str, run_id: str):
         btm = _make_btm()
@@ -1532,7 +1542,7 @@ class TestSentinelAppendedOnTerminalFlavors:
         return btm
 
     @pytest.mark.asyncio
-    async def test_completed_appends_sentinel_after_last_event(self):
+    async def test_completed_writes_no_run_end_before_finalize(self):
         btm = self._btm_with_task("t-comp", "r-1")
         order: list[str] = []
 
@@ -1543,14 +1553,14 @@ class TestSentinelAppendedOnTerminalFlavors:
         async def record_buffer(thread_id, run_id, event):
             order.append(f"event:{event.splitlines()[0]}")
 
-        async def record_sentinel(thread_id, run_id):
-            order.append("sentinel")
+        async def record_run_end(thread_id, run_id, outcome):
+            order.append(f"run_end:{outcome}")
 
         async def record_finalize(thread_id, run_id, *, kind, error=None):
             order.append(f"finalize:{kind}")
 
         with patch.object(btm, "_buffer_event_redis", side_effect=record_buffer), \
-             patch.object(btm, "append_stream_end_sentinel", side_effect=record_sentinel), \
+             patch.object(btm, "append_run_end_event", side_effect=record_run_end), \
              patch.object(btm, "_finalize_run", side_effect=record_finalize):
             await btm._run_workflow(
                 thread_id="t-comp",
@@ -1559,12 +1569,10 @@ class TestSentinelAppendedOnTerminalFlavors:
                 cancel_event=asyncio.Event(),
             )
 
-        assert order == [
-            "event:id: 1", "event:id: 2", "sentinel", "finalize:stream_end"
-        ]
+        assert order == ["event:id: 1", "event:id: 2", "finalize:stream_end"]
 
     @pytest.mark.asyncio
-    async def test_failed_appends_sentinel_before_mark_failed(self):
+    async def test_failed_writes_no_run_end_before_finalize(self):
         btm = self._btm_with_task("t-fail", "r-1")
         order: list[str] = []
 
@@ -1575,14 +1583,14 @@ class TestSentinelAppendedOnTerminalFlavors:
         async def record_buffer(thread_id, run_id, event):
             order.append("event")
 
-        async def record_sentinel(thread_id, run_id):
-            order.append("sentinel")
+        async def record_run_end(thread_id, run_id, outcome):
+            order.append(f"run_end:{outcome}")
 
         async def record_finalize(thread_id, run_id, *, kind, error=None):
             order.append(f"finalize:{kind}")
 
         with patch.object(btm, "_buffer_event_redis", side_effect=record_buffer), \
-             patch.object(btm, "append_stream_end_sentinel", side_effect=record_sentinel), \
+             patch.object(btm, "append_run_end_event", side_effect=record_run_end), \
              patch.object(btm, "_finalize_run", side_effect=record_finalize):
             await btm._run_workflow(
                 thread_id="t-fail",
@@ -1591,10 +1599,10 @@ class TestSentinelAppendedOnTerminalFlavors:
                 cancel_event=asyncio.Event(),
             )
 
-        assert order == ["event", "sentinel", "finalize:failed"]
+        assert order == ["event", "finalize:failed"]
 
     @pytest.mark.asyncio
-    async def test_cancelled_appends_sentinel_before_mark_cancelled(self):
+    async def test_cancelled_writes_no_run_end_before_finalize(self):
         btm = self._btm_with_task("t-canc", "r-1")
         order: list[str] = []
         cancel_event = asyncio.Event()
@@ -1604,8 +1612,8 @@ class TestSentinelAppendedOnTerminalFlavors:
                 await asyncio.sleep(0.01)
                 yield f"id: {i}\nevent: x\ndata: a\n\n"
 
-        async def record_sentinel(thread_id, run_id):
-            order.append("sentinel")
+        async def record_run_end(thread_id, run_id, outcome):
+            order.append(f"run_end:{outcome}")
 
         async def record_finalize(thread_id, run_id, *, kind, error=None):
             order.append(f"finalize:{kind}")
@@ -1615,7 +1623,7 @@ class TestSentinelAppendedOnTerminalFlavors:
             cancel_event.set()
 
         with patch.object(btm, "_buffer_event_redis", new_callable=AsyncMock), \
-             patch.object(btm, "append_stream_end_sentinel", side_effect=record_sentinel), \
+             patch.object(btm, "append_run_end_event", side_effect=record_run_end), \
              patch.object(btm, "_finalize_run", side_effect=record_finalize), \
              patch.object(btm, "_flush_checkpoint", new_callable=AsyncMock), \
              patch.object(btm, "_teardown_subagents_on_stop", new_callable=AsyncMock):
@@ -1629,4 +1637,4 @@ class TestSentinelAppendedOnTerminalFlavors:
                 )
             await setter
 
-        assert order == ["sentinel", "finalize:cancelled"]
+        assert order == ["finalize:cancelled"]

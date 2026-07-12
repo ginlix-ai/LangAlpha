@@ -231,12 +231,13 @@ async def test_status_latest_turn_index_none_when_thread_has_no_turns():
 
 
 def test_liveness_from_blob_active_is_reconnectable():
+    # Wire status is the PUBLIC vocabulary (1.6): tracker 'active' -> 'running'.
     out = workflow_handler.liveness_from_blob(
         "t-1", {"status": "active", "run_id": "r-1", "user_id": "u-1"}
     )
     assert out == {
         "thread_id": "t-1",
-        "status": "active",
+        "status": "running",
         "run_id": "r-1",
         "can_reconnect": True,
     }
@@ -250,10 +251,10 @@ def test_liveness_from_blob_completed_is_not_reconnectable():
     assert out["run_id"] == "r-2"
 
 
-def test_liveness_from_blob_missing_blob_is_unknown():
-    from src.server.services.workflow_tracker import WorkflowStatus
-
+def test_liveness_from_blob_missing_blob_is_idle():
+    # Tracker's 'unknown' placeholder maps to public 'idle' — the internal
+    # spelling never crosses the wire.
     out = workflow_handler.liveness_from_blob("t-3", None)
-    assert out["status"] == WorkflowStatus.UNKNOWN
+    assert out["status"] == "idle"
     assert out["run_id"] is None
     assert out["can_reconnect"] is False

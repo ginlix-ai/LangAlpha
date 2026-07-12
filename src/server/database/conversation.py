@@ -1269,8 +1269,29 @@ async def get_queries_for_thread(
 _RESPONSE_COLUMNS = (
     "conversation_response_id, conversation_thread_id, turn_index, status, "
     "interrupt_reason, metadata, warnings, errors, execution_time, created_at, "
-    "sse_events"
+    "sse_events, attempt_no, retry_of_run_id"
 )
+
+# 1.6: retries append attempt rows at the SAME turn_index, and the live run is
+# an in_progress row. History readers must see ONE row per turn — the newest
+# attempt that has settled. in_progress is the slot, not history (pre-v4 no
+# row existed until finalize, so excluding it preserves reader semantics).
+# DISTINCT ON (turn_index) + attempt_no DESC picks that row without leaking a
+# rank column into SELECT-* consumers.
+_SETTLED_ATTEMPTS = """
+    SELECT DISTINCT ON (turn_index) *
+    FROM conversation_responses
+    WHERE conversation_thread_id = %s AND status <> 'in_progress'
+    ORDER BY turn_index ASC, attempt_no DESC
+"""
+
+# Cross-thread variant (no thread param) for the stats aggregates.
+_SETTLED_ATTEMPTS_ALL = """
+    SELECT DISTINCT ON (conversation_thread_id, turn_index) *
+    FROM conversation_responses
+    WHERE status <> 'in_progress'
+    ORDER BY conversation_thread_id, turn_index, attempt_no DESC
+"""
 
 
 def _sse_has_provenance(sse_events: Optional[Any]) -> bool:
@@ -1672,16 +1693,16 @@ async def append_sse_event(
 async def get_responses_for_thread(
     conversation_thread_id: str, limit: Optional[int] = None, offset: int = 0
 ) -> Tuple[List[Dict[str, Any]], int]:
-    """Get responses for a thread."""
+    """Get the settled responses for a thread — latest attempt per turn."""
     try:
         async with get_db_connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
-                # Get total count
+                # Total = settled turns, not raw rows (attempts would inflate).
                 await cur.execute(
                     """
-                    SELECT COUNT(*) as total
+                    SELECT COUNT(DISTINCT turn_index) as total
                     FROM conversation_responses
-                    WHERE conversation_thread_id = %s
+                    WHERE conversation_thread_id = %s AND status <> 'in_progress'
                 """,
                     (conversation_thread_id,),
                 )
@@ -1694,8 +1715,7 @@ async def get_responses_for_thread(
                     await cur.execute(
                         f"""
                         SELECT {_RESPONSE_COLUMNS}
-                        FROM conversation_responses
-                        WHERE conversation_thread_id = %s
+                        FROM ({_SETTLED_ATTEMPTS}) r
                         ORDER BY turn_index ASC
                         LIMIT %s OFFSET %s
                     """,
@@ -1705,8 +1725,7 @@ async def get_responses_for_thread(
                     await cur.execute(
                         f"""
                         SELECT {_RESPONSE_COLUMNS}
-                        FROM conversation_responses
-                        WHERE conversation_thread_id = %s
+                        FROM ({_SETTLED_ATTEMPTS}) r
                         ORDER BY turn_index ASC
                     """,
                         (conversation_thread_id,),
@@ -1725,17 +1744,17 @@ async def get_recent_responses_for_thread(
 ) -> List[Dict[str, Any]]:
     """Return the most-recent turns in chronological order (oldest -> newest).
 
-    Selects the newest ``limit`` rows via ``turn_index DESC`` (so a window
-    keeps the latest turns, not the oldest) and reverses them to chronological
-    order. ``limit=None`` returns every turn.
+    Selects the newest ``limit`` settled turns (latest attempt each) via
+    ``turn_index DESC`` (so a window keeps the latest turns, not the oldest)
+    and reverses them to chronological order. ``limit=None`` returns every
+    turn.
     """
     try:
         async with get_db_connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 base = f"""
                     SELECT {_RESPONSE_COLUMNS}
-                    FROM conversation_responses
-                    WHERE conversation_thread_id = %s
+                    FROM ({_SETTLED_ATTEMPTS}) r
                     ORDER BY turn_index DESC
                 """
                 if limit:
@@ -1775,10 +1794,11 @@ async def get_query_response_pairs(
                 total_result = await cur.fetchone()
                 total_count = total_result["total"]
 
-                # Get joined query-response pairs
+                # Joined pairs: one settled response per turn (no attempt
+                # fan-out; a live turn pairs with NULL, as pre-v4).
                 if limit:
                     await cur.execute(
-                        """
+                        f"""
                         SELECT
                             q.conversation_query_id, q.conversation_thread_id, q.turn_index, q.content as query_content,
                             q.type as query_type, q.feedback_action, q.metadata as query_metadata,
@@ -1789,16 +1809,16 @@ async def get_query_response_pairs(
                             r.created_at as response_created_at
 
                         FROM conversation_queries q
-                        LEFT JOIN conversation_responses r ON q.conversation_thread_id = r.conversation_thread_id AND q.turn_index = r.turn_index
+                        LEFT JOIN ({_SETTLED_ATTEMPTS}) r ON q.turn_index = r.turn_index
                         WHERE q.conversation_thread_id = %s
                         ORDER BY q.turn_index ASC
                         LIMIT %s OFFSET %s
                     """,
-                        (conversation_thread_id, limit, offset),
+                        (conversation_thread_id, conversation_thread_id, limit, offset),
                     )
                 else:
                     await cur.execute(
-                        """
+                        f"""
                         SELECT
                             q.conversation_query_id, q.conversation_thread_id, q.turn_index, q.content as query_content,
                             q.type as query_type, q.feedback_action, q.metadata as query_metadata,
@@ -1809,11 +1829,11 @@ async def get_query_response_pairs(
                             r.created_at as response_created_at
 
                         FROM conversation_queries q
-                        LEFT JOIN conversation_responses r ON q.conversation_thread_id = r.conversation_thread_id AND q.turn_index = r.turn_index
+                        LEFT JOIN ({_SETTLED_ATTEMPTS}) r ON q.turn_index = r.turn_index
                         WHERE q.conversation_thread_id = %s
                         ORDER BY q.turn_index ASC
                     """,
-                        (conversation_thread_id,),
+                        (conversation_thread_id, conversation_thread_id),
                     )
 
                 pairs = await cur.fetchall()
@@ -1850,21 +1870,28 @@ async def get_thread_with_summary(
 
                 thread = dict(thread)
 
-                # Get aggregated pair data
+                # Aggregates: pair/time/error over the settled attempt per
+                # turn (superseded attempts must not inflate them), but cost
+                # over ALL usage rows — spend on failed attempts is real.
                 await cur.execute(
-                    """
+                    f"""
                     SELECT
                         COUNT(q.turn_index) as pair_count,
-                        COALESCE(SUM((u.token_usage->>'total_cost')::float), 0) as total_cost,
+                        (SELECT COALESCE(SUM((u.token_usage->>'total_cost')::float), 0)
+                         FROM conversation_usages u
+                         WHERE u.conversation_thread_id = %s) as total_cost,
                         COALESCE(SUM(r.execution_time), 0) as total_execution_time,
                         MAX(q.type) as last_query_type,
                         BOOL_OR(COALESCE(array_length(r.errors, 1), 0) > 0) as has_errors
                     FROM conversation_queries q
-                    LEFT JOIN conversation_responses r ON q.conversation_thread_id = r.conversation_thread_id AND q.turn_index = r.turn_index
-                    LEFT JOIN conversation_usages u ON r.conversation_response_id = u.conversation_response_id
+                    LEFT JOIN ({_SETTLED_ATTEMPTS}) r ON q.turn_index = r.turn_index
                     WHERE q.conversation_thread_id = %s
                 """,
-                    (conversation_thread_id,),
+                    (
+                        conversation_thread_id,
+                        conversation_thread_id,
+                        conversation_thread_id,
+                    ),
                 )
 
                 stats = await cur.fetchone()
@@ -2227,22 +2254,42 @@ async def get_user_stats(user_id: str) -> Dict[str, Any]:
                 )
                 ws_count = (await cur.fetchone())["total_workspaces"]
 
-                # Get thread statistics via workspaces
+                # Get thread statistics via workspaces. Each source table is
+                # aggregated per thread BEFORE joining — joining queries and
+                # responses independently by thread would fan out (q x r rows
+                # per thread) and multiply the SUMs. total_cost is thread-wide
+                # over ALL usage rows (spend on failed attempts is real);
+                # execution time counts settled attempts only.
                 await cur.execute(
-                    """
+                    f"""
                     SELECT
                         COUNT(DISTINCT t.conversation_thread_id) as total_threads,
-                        COUNT(DISTINCT q.conversation_query_id) as total_queries,
-                        COUNT(DISTINCT r.conversation_response_id) as total_responses,
-                        COALESCE(SUM((u.token_usage->>'total_cost')::float), 0) as total_cost,
-                        COALESCE(SUM(r.execution_time), 0) as total_execution_time,
+                        COALESCE(SUM(qa.query_count), 0)::bigint as total_queries,
+                        COALESCE(SUM(ra.response_count), 0)::bigint as total_responses,
+                        COALESCE(SUM(ua.cost), 0) as total_cost,
+                        COALESCE(SUM(ra.execution_time), 0) as total_execution_time,
                         MIN(t.created_at) as first_activity,
                         MAX(t.updated_at) as last_activity
                     FROM workspaces w
                     LEFT JOIN conversation_threads t ON w.workspace_id = t.workspace_id
-                    LEFT JOIN conversation_queries q ON t.conversation_thread_id = q.conversation_thread_id
-                    LEFT JOIN conversation_responses r ON t.conversation_thread_id = r.conversation_thread_id
-                    LEFT JOIN conversation_usages u ON r.conversation_response_id = u.conversation_response_id
+                    LEFT JOIN (
+                        SELECT conversation_thread_id, COUNT(*) AS query_count
+                        FROM conversation_queries
+                        GROUP BY conversation_thread_id
+                    ) qa ON qa.conversation_thread_id = t.conversation_thread_id
+                    LEFT JOIN (
+                        SELECT conversation_thread_id,
+                               COUNT(*) AS response_count,
+                               SUM(execution_time) AS execution_time
+                        FROM ({_SETTLED_ATTEMPTS_ALL}) s
+                        GROUP BY conversation_thread_id
+                    ) ra ON ra.conversation_thread_id = t.conversation_thread_id
+                    LEFT JOIN (
+                        SELECT conversation_thread_id,
+                               SUM((token_usage->>'total_cost')::float) AS cost
+                        FROM conversation_usages
+                        GROUP BY conversation_thread_id
+                    ) ua ON ua.conversation_thread_id = t.conversation_thread_id
                     WHERE w.user_id = %s
                 """,
                     (user_id,),
@@ -2290,18 +2337,35 @@ async def get_workspace_stats(workspace_id: str) -> Dict[str, Any]:
     try:
         async with get_db_connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
-                # Get thread and pair statistics
+                # Get thread and pair statistics. Aggregate-per-thread before
+                # joining (see get_user_stats): independent thread joins fan
+                # out and multiply the SUMs. total_cost is thread-wide over
+                # ALL usage rows; execution time counts settled attempts only.
                 await cur.execute(
-                    """
+                    f"""
                     SELECT
                         COUNT(DISTINCT t.conversation_thread_id) as total_threads,
-                        COUNT(DISTINCT q.conversation_query_id) as total_pairs,
-                        COALESCE(SUM((u.token_usage->>'total_cost')::float), 0) as total_cost,
-                        COALESCE(SUM(r.execution_time), 0) as total_execution_time
+                        COALESCE(SUM(qa.query_count), 0)::bigint as total_pairs,
+                        COALESCE(SUM(ua.cost), 0) as total_cost,
+                        COALESCE(SUM(ra.execution_time), 0) as total_execution_time
                     FROM conversation_threads t
-                    LEFT JOIN conversation_queries q ON t.conversation_thread_id = q.conversation_thread_id
-                    LEFT JOIN conversation_responses r ON t.conversation_thread_id = r.conversation_thread_id
-                    LEFT JOIN conversation_usages u ON r.conversation_response_id = u.conversation_response_id
+                    LEFT JOIN (
+                        SELECT conversation_thread_id, COUNT(*) AS query_count
+                        FROM conversation_queries
+                        GROUP BY conversation_thread_id
+                    ) qa ON qa.conversation_thread_id = t.conversation_thread_id
+                    LEFT JOIN (
+                        SELECT conversation_thread_id,
+                               SUM(execution_time) AS execution_time
+                        FROM ({_SETTLED_ATTEMPTS_ALL}) s
+                        GROUP BY conversation_thread_id
+                    ) ra ON ra.conversation_thread_id = t.conversation_thread_id
+                    LEFT JOIN (
+                        SELECT conversation_thread_id,
+                               SUM((token_usage->>'total_cost')::float) AS cost
+                        FROM conversation_usages
+                        GROUP BY conversation_thread_id
+                    ) ua ON ua.conversation_thread_id = t.conversation_thread_id
                     WHERE t.workspace_id = %s
                 """,
                     (workspace_id,),
@@ -2806,12 +2870,16 @@ async def upsert_feedback(
 
     async def _execute(conn):
         async with conn.cursor(row_factory=dict_row) as cur:
-            # Resolve response_id
+            # Resolve response_id — the turn's latest settled attempt (what
+            # the user actually saw); never an in_progress slot.
             await cur.execute(
                 """
                 SELECT conversation_response_id
                 FROM conversation_responses
                 WHERE conversation_thread_id = %s AND turn_index = %s
+                    AND status <> 'in_progress'
+                ORDER BY attempt_no DESC
+                LIMIT 1
             """,
                 (conversation_thread_id, turn_index),
             )
@@ -2878,13 +2946,15 @@ async def get_feedback_for_thread(
 
     async def _execute(conn):
         async with conn.cursor(row_factory=dict_row) as cur:
+            # Join through the settled attempt per turn so feedback left on a
+            # superseded attempt doesn't resurface on the visible turn.
             await cur.execute(
-                """
+                f"""
                 SELECT f.*, r.turn_index
                 FROM conversation_feedback f
-                JOIN conversation_responses r
+                JOIN ({_SETTLED_ATTEMPTS}) r
                     ON f.conversation_response_id = r.conversation_response_id
-                WHERE r.conversation_thread_id = %s AND f.user_id = %s
+                WHERE f.user_id = %s
                 ORDER BY r.turn_index
             """,
                 (conversation_thread_id, user_id),
@@ -2915,13 +2985,20 @@ async def delete_feedback(
 
     async def _execute(conn):
         async with conn.cursor(row_factory=dict_row) as cur:
+            # Target only the turn's latest settled attempt — mirroring the
+            # upsert resolution, so delete undoes exactly what upsert wrote.
             await cur.execute(
                 """
                 DELETE FROM conversation_feedback f
-                USING conversation_responses r
+                USING (
+                    SELECT conversation_response_id
+                    FROM conversation_responses
+                    WHERE conversation_thread_id = %s AND turn_index = %s
+                        AND status <> 'in_progress'
+                    ORDER BY attempt_no DESC
+                    LIMIT 1
+                ) r
                 WHERE f.conversation_response_id = r.conversation_response_id
-                    AND r.conversation_thread_id = %s
-                    AND r.turn_index = %s
                     AND f.user_id = %s
             """,
                 (conversation_thread_id, turn_index, user_id),
@@ -2990,11 +3067,10 @@ async def get_replay_thread_data(
             )
             queries = [dict(r) for r in await cur.fetchall()]
 
-            # 4. Responses
+            # 4. Responses — one settled row per turn; an in_progress slot or
+            # superseded attempt must never drive replay rendering.
             await cur.execute(
-                """SELECT * FROM conversation_responses
-                   WHERE conversation_thread_id = %s
-                   ORDER BY turn_index ASC""",
+                _SETTLED_ATTEMPTS,
                 (thread_id,),
             )
             responses = [dict(r) for r in await cur.fetchall()]

@@ -653,6 +653,50 @@ export async function sendChatMessageStream(
 }
 
 /**
+ * Retry the thread's latest failed run as a new attempt on the same turn
+ * (v4 attempt chain). The backend validates the target is still the latest
+ * attempt and resolves the retry checkpoint itself — no client-side
+ * checkpoint fetch, no fork/truncation. Streams the same SSE contract as a
+ * normal send.
+ */
+export async function sendRetryStream(
+  workspaceId: string,
+  threadId: string,
+  onEvent: (event: Record<string, unknown>) => void = () => {},
+  llmModel: string | null = null,
+  reasoningEffort: string | null = null,
+  fastMode: boolean | null = null,
+  onRunIdResolved: ((runId: string, threadId: string | null) => void) | null = null,
+  signal: AbortSignal | null = null,
+) {
+  const body: Record<string, unknown> = { workspace_id: workspaceId };
+  if (llmModel) body.llm_model = llmModel;
+  if (reasoningEffort) body.reasoning_effort = reasoningEffort;
+  if (fastMode) body.fast_mode = true;
+  const authHeaders = await getAuthHeaders();
+  return await streamFetch(
+    `/api/v1/threads/${threadId}/retry`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream',
+        ...authHeaders,
+      },
+      body: JSON.stringify(body),
+      ...(signal ? { signal } : {}),
+    },
+    onEvent,
+    onRunIdResolved
+      ? (contentLocation) => {
+          const runId = parseRunIdFromContentLocation(contentLocation);
+          if (runId) onRunIdResolved(runId, parseThreadIdFromContentLocation(contentLocation));
+        }
+      : undefined,
+  );
+}
+
+/**
  * Hard-cancel the workflow for a thread (stops the main agent AND kills all
  * subagents immediately, flushing the checkpoint so the next message resumes
  * from the last committed step).

@@ -10,7 +10,7 @@ import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { useUser } from '@/hooks/useUser';
-import { sendChatMessageStream, replayThreadHistory, getWorkflowStatus, getReportBackStatus, reconnectToWorkflowStream, sendHitlResponse, streamSubagentTaskEvents, fetchThreadTurns, submitFeedback, removeFeedback, getThreadFeedback, cancelWorkflow } from '../utils/api';
+import { sendChatMessageStream, sendRetryStream, replayThreadHistory, getWorkflowStatus, getReportBackStatus, reconnectToWorkflowStream, sendHitlResponse, streamSubagentTaskEvents, fetchThreadTurns, submitFeedback, removeFeedback, getThreadFeedback, cancelWorkflow } from '../utils/api';
 import type { WorkflowStatusResponse, ReportBackStatusResponse } from '../utils/api';
 // Imported from the dependency-free signal module (not `../utils/api`) so this
 // keeps decoding wire status even in the hook tests that fully mock `../utils/api`.
@@ -5561,7 +5561,7 @@ export function useChatMessages(
    * Helper: run a checkpoint-based stream (shared by edit, regenerate, retry).
    * Sets up assistant placeholder, event processor, and handles the stream lifecycle.
    */
-  const streamFromCheckpoint = useCallback(async (message: string | null, checkpointId: string, truncateIndex: number, forkFromTurn: number | null = null, modelOptions: ModelOptions = {}) => {
+  const streamFromCheckpoint = useCallback(async (message: string | null, checkpointId: string | null, truncateIndex: number, forkFromTurn: number | null = null, modelOptions: ModelOptions = {}, viaRetryEndpoint: boolean = false) => {
     if (isStreamingRef.current) return;
 
     // Edit/regenerate/retry are chat activity — bump like a fresh send.
@@ -5640,30 +5640,46 @@ export function useChatMessages(
       };
       const processEvent = createStreamEventProcessor(assistantMessageId, refs, getTaskIdFromEvent, wasInterruptedRef);
 
-      const result = await sendChatMessageStream(
-        message || '',
-        workspaceId,
-        threadId,
-        [],
-        false,
-        processEvent,
-        null,
-        agentMode,
-        userLocale,
-        userTimezone,
-        checkpointId,
-        forkFromTurn,
-        modelOptions.model || null,
-        modelOptions.reasoningEffort || null,
-        modelOptions.fastMode || null,
-        platform,
-        // Latch run_id from response headers — see handleSendMessage for the
-        // same closing-the-race rationale.
-        (runId) => {
-          currentRunIdRef.current = runId;
-        },
-        abortController.signal,
-      );
+      // Retry goes through POST /retry (v4 attempt chain: server validates
+      // the latest attempt + resolves the checkpoint, no truncation); edit/
+      // regenerate keep the fork path.
+      const result = viaRetryEndpoint
+        ? await sendRetryStream(
+            workspaceId,
+            threadId,
+            processEvent,
+            modelOptions.model || null,
+            modelOptions.reasoningEffort || null,
+            modelOptions.fastMode || null,
+            (runId) => {
+              currentRunIdRef.current = runId;
+            },
+            abortController.signal,
+          )
+        : await sendChatMessageStream(
+            message || '',
+            workspaceId,
+            threadId,
+            [],
+            false,
+            processEvent,
+            null,
+            agentMode,
+            userLocale,
+            userTimezone,
+            checkpointId,
+            forkFromTurn,
+            modelOptions.model || null,
+            modelOptions.reasoningEffort || null,
+            modelOptions.fastMode || null,
+            platform,
+            // Latch run_id from response headers — see handleSendMessage for
+            // the same closing-the-race rationale.
+            (runId) => {
+              currentRunIdRef.current = runId;
+            },
+            abortController.signal,
+          );
 
       // User hit stop: stopWorkflow already finalized + tore down. Exception: a
       // foreground handler aborted this stream on tab resume (background abort,
@@ -5809,29 +5825,17 @@ export function useChatMessages(
   }, [messages, getTurnCheckpoints, streamFromCheckpoint]);
 
   /**
-   * Retry the last failed/errored turn from the latest checkpoint.
+   * Retry the last failed turn as a new attempt on the same turn (v4 attempt
+   * chain). The backend validates the latest attempt and resolves the retry
+   * checkpoint itself — no client checkpoint fetch, no fork/truncation of
+   * persisted turns. The UI still replaces the errored bubble in place so the
+   * positional assistant-bubble count stays aligned with backend turn_index.
    */
   const handleRetry = useCallback(async (modelOptions: ModelOptions = {}) => {
-    const turnsData = await getTurnCheckpoints();
-    const checkpointId = turnsData?.retry_checkpoint_id;
-    if (!checkpointId) {
-      setMessageError('Unable to retry: no checkpoint available');
-      return;
-    }
-
-    if (!turnsData.turns?.length) {
-      setMessageError('Unable to retry: checkpoint data unavailable');
-      return;
-    }
-
-    // Find the last error message and truncate from there
     const lastErrorIndex = messages.findLastIndex((m) => m.role === 'assistant' && (m as AssistantMessage).error);
     const truncateIndex = lastErrorIndex !== -1 ? lastErrorIndex : messages.length;
-
-    // Retry overwrites the last turn
-    const forkFromTurn = turnsData.turns.length - 1;
-    await streamFromCheckpoint(null, checkpointId, truncateIndex, forkFromTurn, modelOptions);
-  }, [messages, getTurnCheckpoints, streamFromCheckpoint]);
+    await streamFromCheckpoint(null, null, truncateIndex, null, modelOptions, true);
+  }, [messages, streamFromCheckpoint]);
 
   // ==================== Feedback ====================
 

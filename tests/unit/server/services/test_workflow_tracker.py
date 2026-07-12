@@ -284,10 +284,13 @@ class TestStatusSetInvariants:
     @pytest.mark.parametrize("status", sorted(RECONNECTABLE_STATUSES))
     async def test_get_workflow_status_reconnectable(self, status):
         # Reconnectable statuses must surface ``can_reconnect=True`` so the
-        # frontend retries the SSE stream. Pins the actual decision.
+        # frontend retries the SSE stream. Pins the actual decision. The wire
+        # status is the public vocabulary (1.6).
+        from src.server.services.status_vocabulary import to_public
+
         result = await _call_get_workflow_status(status, bg_status="active")
         assert result["can_reconnect"] is True
-        assert result["status"] == status
+        assert result["status"] == to_public(status)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("status", sorted(TERMINAL_STATUSES))

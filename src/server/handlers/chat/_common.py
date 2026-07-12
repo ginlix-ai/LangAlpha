@@ -1221,11 +1221,6 @@ async def handle_workflow_error(
                 await _mark_tracker_cancelled()
                 return
 
-            # Legacy projection override: the frontend's resume affordance
-            # keys off thread status 'interrupted'. Replaced by the status
-            # vocabulary module in 1.6.
-            await qr_db.update_thread_status(thread_id, "interrupted")
-
             retry_data = {
                 "message": "Temporary error occurred, you can retry or resume the workflow",
                 "thread_id": thread_id,

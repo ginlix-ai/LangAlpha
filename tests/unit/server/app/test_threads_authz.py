@@ -106,6 +106,11 @@ def _stub_downstream(owner_id, ws_owner=CALLER):
             "src.server.dependencies.usage_limits.release_burst_slot",
             new=AsyncMock(),
         ),
+        # Transport preflight (I6) would 503 in the Redis-less unit env.
+        patch(
+            "src.server.app.threads._assert_stream_transport_ready",
+            new=AsyncMock(),
+        ),
     ):
         yield
 

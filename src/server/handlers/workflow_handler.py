@@ -203,8 +203,10 @@ def liveness_from_blob(thread_id: str, blob: Optional[dict]) -> dict:
 
     No checkpoint deserialize, DB read, or BTM call. Shared by
     ``/dispatches/liveness`` and ``get_workflow_status`` so both agree on the
-    reconnectability rule.
+    reconnectability rule. ``status`` is the PUBLIC vocabulary (1.6);
+    ``can_reconnect`` is decided on the raw tracker value before mapping.
     """
+    from src.server.services.status_vocabulary import to_public
     from src.server.services.workflow_tracker import (
         RECONNECTABLE_STATUSES,
         WorkflowStatus,
@@ -213,7 +215,7 @@ def liveness_from_blob(thread_id: str, blob: Optional[dict]) -> dict:
     status = blob.get("status", WorkflowStatus.UNKNOWN) if blob else WorkflowStatus.UNKNOWN
     return {
         "thread_id": thread_id,
-        "status": status,
+        "status": to_public(status),
         "run_id": blob.get("run_id") if blob else None,
         "can_reconnect": status in RECONNECTABLE_STATUSES,
     }
@@ -348,6 +350,38 @@ async def get_workflow_status(
             logger.debug(
                 f"Could not get background task status for {thread_id}: {e}"
             )
+
+        # 1.6 ledger-first: a durable in_progress slot outranks the tracker
+        # blob — it can say stopping (durable cancel intent) or recovering
+        # (no local executor), which no blob state expresses. Absent a slot,
+        # map whatever the blob/checkpoint fallback produced to the public
+        # vocabulary so internal spellings (e.g. "unknown") never leak.
+        from src.server.services.status_vocabulary import to_public
+
+        try:
+            from src.server.database import turn_lifecycle as tl_db
+
+            active_run = await tl_db.get_active_run(thread_id)
+        except Exception as e:
+            logger.debug(f"Could not read active run for {thread_id}: {e}")
+            active_run = None
+        if active_run is not None:
+            # Derive run identity, executor presence, and reconnectability
+            # together: the executor only counts if it is executing THIS run,
+            # and a live slot with a matching executor must advertise
+            # can_reconnect even when the tracker blob is gone (e.g. after a
+            # Redis flush) — the attach path needs no blob.
+            ledger_run_id = str(active_run["conversation_response_id"])
+            has_executor = run_id == ledger_run_id
+            status = to_public(
+                active_run["status"],
+                cancel_requested_at=active_run.get("cancel_requested_at"),
+                has_executor=has_executor,
+            )
+            run_id = ledger_run_id
+            can_reconnect = has_executor and status in ("running", "stopping")
+        else:
+            status = to_public(status)
 
         # Include share status so the UI can show the correct icon without an
         # extra API call. The ``/status`` route resolves this while authorizing

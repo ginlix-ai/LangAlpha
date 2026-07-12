@@ -97,6 +97,52 @@ def _track_task(task: asyncio.Task) -> None:
     task.add_done_callback(_background_tasks.discard)
 
 
+async def _assert_stream_transport_ready() -> None:
+    """503 before any durable row when the Redis event transport is down (I6).
+
+    Every chat consumer — first connect included — tails the Redis stream
+    (``stream_from_log``), so a deployment without Redis event storage can
+    never deliver a live turn: refuse admission outright instead of
+    committing a 200 to a stream nothing will ever write. When Redis IS
+    configured, a PING failure here means the run's very first buffered
+    event would finalize it failed(transport_lost); refusing admission is
+    strictly cheaper.
+    """
+    from src.server.services.background_task_manager import BackgroundTaskManager
+    from src.utils.cache.redis_cache import get_cache_client
+
+    manager = BackgroundTaskManager.get_instance()
+    if not (manager.enable_storage and manager.event_storage_backend == "redis"):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "transport_unavailable",
+                "message": (
+                    "This deployment is configured without the Redis "
+                    "event-stream transport; live chat streaming is "
+                    "unavailable."
+                ),
+            },
+        )
+    try:
+        cache = get_cache_client()
+        if cache.enabled and cache.client and await cache.client.ping():
+            return
+    except Exception:
+        pass
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "code": "transport_unavailable",
+            "message": (
+                "The event-stream transport is temporarily unreachable; "
+                "retry shortly."
+            ),
+        },
+        headers={"Retry-After": "3"},
+    )
+
+
 async def _consume_background_gen(
     gen,
     label: str,
@@ -118,12 +164,37 @@ async def _consume_background_gen(
             f"[{label}] Background workflow failed: thread_id={thread_id} run_id={run_id}",
             exc_info=True,
         )
-        # Report-back crash teardown is business logic owned by report_back —
-        # it fetches its own cache client and swallows its own failures.
-        from src.server.handlers.chat.report_back import clear_on_crash
-
-        await clear_on_crash(thread_id, report_back_ptc_thread_id, user_id)
     finally:
+        # Ownership check: if BTM still drives this exact run's workflow
+        # task, this generator was only a dead tail (e.g. the stream
+        # consumer failed after handoff). The executor owns the ledger row,
+        # the tracker, and all terminal transport — finalizing here would
+        # terminalize a row whose graph is still checkpointing, and BTM
+        # would later lose its own CAS.
+        _btm_live = False
+        try:
+            from src.server.services.background_task_manager import (
+                BackgroundTaskManager,
+            )
+
+            _manager = BackgroundTaskManager.get_instance()
+            async with _manager.task_lock:
+                _ti = _manager.tasks.get((thread_id, run_id))
+                for _t in (
+                    _ti.task if _ti else None,
+                    _ti.inner_task if _ti else None,
+                ):
+                    if _t is not None and not _t.done():
+                        _btm_live = True
+        except Exception:
+            pass
+        if not _ok and _btm_live:
+            logger.warning(
+                f"[{label}] stream consumer died but the run's executor is "
+                f"still live: thread_id={thread_id} run_id={run_id}; leaving "
+                f"the run to its owner"
+            )
+
         # When the generator raised before reaching start_workflow, the
         # frontend already received {status: dispatched, run_id} and
         # navigated to workflow:stream:{tid}:{rid} — but no events will
@@ -131,8 +202,18 @@ async def _consume_background_gen(
         # sees the failure instead of silently waiting on an empty stream.
         # Wrapped in its own try/except so failure to emit never blocks
         # the placeholder/tracker cleanup below.
-        if not _ok:
+        terminal_status = None
+        if not _ok and not _btm_live:
+            # Report-back crash teardown is business logic owned by
+            # report_back — it fetches its own cache client and swallows its
+            # own failures. Must not run while the executor is alive: a live
+            # dispatched run's watch keys are still in use.
+            from src.server.handlers.chat.report_back import clear_on_crash
+
+            await clear_on_crash(thread_id, report_back_ptc_thread_id, user_id)
+
             try:
+                from src.server.database import turn_lifecycle as tl_db
                 from src.server.services.background_task_manager import (
                     BackgroundTaskManager,
                     stream_key,
@@ -141,26 +222,94 @@ async def _consume_background_gen(
 
                 cache = get_cache_client()
                 if cache.enabled and cache.client:
-                    error_payload = {
-                        "thread_id": thread_id,
-                        "content": "background workflow failed",
-                        "error_type": "background_failure",
-                        "error": _error_text or "background workflow failed",
-                    }
-                    sse_wire = (
-                        f"event: error\n"
-                        f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
-                    )
-                    await cache.client.xadd(
-                        stream_key(thread_id, run_id),
-                        {b"event": sse_wire.encode("utf-8")},
-                    )
-                    # Terminal sentinel after the error event so an attached
-                    # consumer closes now instead of waiting out the
-                    # empty-XREAD handshake (best-effort, swallows failures).
-                    await BackgroundTaskManager.get_instance().append_stream_end_sentinel(
-                        thread_id, run_id
-                    )
+                    skey = stream_key(thread_id, run_id)
+
+                    # If the stream already closed with run_end, the run's
+                    # real owner finalized and emitted — add nothing.
+                    tail_is_run_end = False
+                    try:
+                        tail = await cache.client.xrevrange(skey, count=1)
+                        if tail:
+                            wire = tail[0][1].get(b"event") or tail[0][1].get(
+                                "event"
+                            ) or b""
+                            if isinstance(wire, str):
+                                wire = wire.encode("utf-8")
+                            tail_is_run_end = wire.startswith(b"event: run_end")
+                    except Exception:
+                        pass
+
+                    run_row = None
+                    try:
+                        run_row = await tl_db.get_run(run_id)
+                    except Exception:
+                        logger.warning(
+                            f"[{label}] run-row read failed for {run_id}; "
+                            f"emitting error frame without run_end",
+                            exc_info=True,
+                        )
+
+                    # Last-resort owner (I6): the generator died without
+                    # settling its own row — CAS it terminal here; a durable
+                    # cancel intent may adopt 'cancelled'. run_end is emitted
+                    # ONLY with a verified terminal status, never assumed,
+                    # and only by whoever WON the terminal transition:
+                    # losing the CAS means the real owner finalized
+                    # concurrently and emits its own frames.
+                    cas_owned = True
+                    if run_row is not None:
+                        if run_row.get("status") == "in_progress":
+                            try:
+                                result = await tl_db.finalize_run_idempotent(
+                                    run_id=run_id,
+                                    thread_id=thread_id,
+                                    status="error",
+                                    errors=[
+                                        _error_text
+                                        or "background workflow failed"
+                                    ],
+                                    metadata={
+                                        "recovery": "dispatch_consumer_crash"
+                                    },
+                                )
+                                cas_owned = result.applied
+                                if result.run:
+                                    terminal_status = result.run.get("status")
+                            except Exception:
+                                logger.critical(
+                                    f"[{label}] last-resort finalize failed "
+                                    f"for run={run_id}; row remains "
+                                    f"in_progress for recovery",
+                                    exc_info=True,
+                                )
+                        else:
+                            terminal_status = run_row.get("status")
+
+                    # Emission matrix: an error frame only for a real error
+                    # (an adopted cancel is not a failure to the client — it
+                    # gets only run_end(cancelled)); nothing for a run that
+                    # ended completed/interrupted; nothing on a duplicate
+                    # close or a lost CAS.
+                    if not tail_is_run_end and cas_owned:
+                        if terminal_status in (None, "error"):
+                            error_payload = {
+                                "thread_id": thread_id,
+                                "content": "background workflow failed",
+                                "error_type": "background_failure",
+                                "error": _error_text
+                                or "background workflow failed",
+                            }
+                            sse_wire = (
+                                f"event: error\n"
+                                f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
+                            )
+                            await cache.client.xadd(
+                                skey, {b"event": sse_wire.encode("utf-8")}
+                            )
+                        if terminal_status in ("error", "cancelled"):
+                            await BackgroundTaskManager.get_instance().append_run_end_event(
+                                thread_id, run_id, terminal_status
+                            )
             except Exception:
                 logger.warning(
                     f"[{label}] Failed to emit terminal error SSE for "
@@ -193,6 +342,15 @@ async def _consume_background_gen(
                 if meta.get("dispatched") and status.get("run_id") == run_id:
                     if _ok:
                         await tracker.mark_completed(thread_id, run_id=run_id)
+                    elif _btm_live or terminal_status in (
+                        "completed",
+                        "interrupted",
+                    ):
+                        # A live or victorious executor marks its own tracker
+                        # terminal; relabeling here would misreport the run.
+                        pass
+                    elif terminal_status == "cancelled":
+                        await tracker.mark_cancelled(thread_id, run_id=run_id)
                     else:
                         await tracker.mark_failed(
                             thread_id, error=_error_text, run_id=run_id
@@ -565,6 +723,13 @@ async def _handle_send_message(
         if request.retry_of_run_id != retry_of_run_id:
             request = request.model_copy(update={"retry_of_run_id": retry_of_run_id})
 
+        # Burst slot: server-stamped from the admission dependency; never
+        # trust a client-sent value (see ChatRequest.burst_slot_id).
+        if request.burst_slot_id != auth.burst_slot_id:
+            request = request.model_copy(
+                update={"burst_slot_id": auth.burst_slot_id}
+            )
+
         # Idempotency: a request_key that already produced a run is a
         # retransmit — classify it before any durable work happens for
         # this copy (thread creation, fork truncation, steering).
@@ -719,6 +884,13 @@ async def _handle_send_message(
         #   debt from past platform usage, e.g. fallback routing).
         await enforce_credit_limit(user_id, byok=is_byok)
 
+        # I6: Redis down at START = 503 before any durable row. Ordered after
+        # the auth/authz/credit gates (their statuses are more meaningful and
+        # leak nothing about infra), before anything durable happens. Without
+        # the transport the run's first buffered event would kill it as
+        # failed(transport_lost) anyway — refuse cheaply instead.
+        await _assert_stream_transport_ready()
+
         # Strip internal-only fields from non-internal requests (prevent
         # spoofing system messages / forging report-back watch cleanup).
         if not is_internal:
@@ -730,7 +902,7 @@ async def _handle_send_message(
             if internal_overrides:
                 request = request.model_copy(update=internal_overrides)
     except BaseException:
-        await release_burst_slot(user_id)
+        await release_burst_slot(user_id, auth.burst_slot_id)
         raise
 
     # Resolve model name for observability labels (bounded by models.json keys).
@@ -796,7 +968,7 @@ async def _handle_send_message(
                 rb_cache, thread_id, rb_ptc, run_id
             ) as rb_claim:
                 if rb_claim.incumbent is not None:
-                    await release_burst_slot(user_id)
+                    await release_burst_slot(user_id, auth.burst_slot_id)
                     logger.info(
                         f"[FLASH_DISPATCH] Idempotent report-back: returning "
                         f"in-flight run {rb_claim.incumbent} for ptc={rb_ptc} on "
@@ -811,7 +983,7 @@ async def _handle_send_message(
                     thread_id, exclude_run_id=run_id
                 )
                 if state != "fresh":
-                    await release_burst_slot(user_id)
+                    await release_burst_slot(user_id, auth.burst_slot_id)
                     raise HTTPException(
                         status_code=409,
                         detail=(
@@ -903,7 +1075,7 @@ async def _handle_send_message(
                 thread_id, exclude_run_id=run_id
             )
             if state != "fresh":
-                await release_burst_slot(user_id)
+                await release_burst_slot(user_id, auth.burst_slot_id)
                 raise HTTPException(
                     status_code=409,
                     detail=(
@@ -973,6 +1145,7 @@ async def reconnect_to_stream(
     """
     await require_thread_owner(thread_id, x_user_id)
     from src.server.handlers.chat import reconnect_to_workflow_stream
+    from src.server.handlers.chat.stream_reconnect import classify_reconnect
 
     safe_add(sse_reconnects, 1)
 
@@ -982,14 +1155,16 @@ async def reconnect_to_stream(
         except ValueError:
             pass
 
+    # 1.5d: admission decided here, before headers commit — a 404/409/410
+    # raised inside the generator would arrive after HTTP 200.
+    effective_run_id = await classify_reconnect(thread_id, run_id)
+
     async def stream_reconnection():
         try:
             async for event in reconnect_to_workflow_stream(
-                thread_id, run_id, last_event_id
+                thread_id, effective_run_id, last_event_id
             ):
                 yield event
-        except HTTPException:
-            raise
         except Exception as e:
             logger.error(f"[PTC_RECONNECT] Error: {e}", exc_info=True)
             yield f'event: error\ndata: {{"error": "Reconnection failed: {str(e)}"}}\n\n'
@@ -1252,7 +1427,7 @@ async def get_dispatches_liveness(
     if not deduped:
         return {"liveness": []}
 
-    from src.server.services.workflow_tracker import WorkflowStatus, WorkflowTracker
+    from src.server.services.workflow_tracker import WorkflowTracker
     from src.server.handlers.workflow_handler import (
         crosscheck_btm_liveness,
         liveness_from_blob,
@@ -1271,12 +1446,13 @@ async def get_dispatches_liveness(
         # the in-process BTM (authoritative under the single-worker invariant); a
         # stale ACTIVE with no live task heals to a terminal slice. INTERRUPTED is
         # resumable-by-design with no live task, so it is left untouched.
-        if slice_["status"] == WorkflowStatus.ACTIVE:
+        # slice_ speaks the public vocabulary (1.6): live == "running".
+        if slice_["status"] == "running":
             result = await crosscheck_btm_liveness(tid, tracker, True)
             if not result["live"]:
                 slice_ = {
                     "thread_id": tid,
-                    "status": WorkflowStatus.COMPLETED,
+                    "status": "completed",
                     "run_id": None,
                     "can_reconnect": False,
                 }
@@ -1292,14 +1468,14 @@ async def get_dispatches_liveness(
     if absent:
         from src.server.database.conversation import get_threads_terminal_status
 
-        # DB current_status -> WorkflowStatus enum value so the frontend
-        # mapStatus resolves it (a raw 'error' would hit its default -> 'starting'
-        # and re-freeze). 'in_progress' / anything else is intentionally omitted.
+        # DB current_status -> public vocabulary so the frontend mapStatus
+        # resolves it (a raw 'error' would hit its default -> 'starting' and
+        # re-freeze). 'in_progress' / anything else is intentionally omitted.
         terminal_by_db_status = {
-            "completed": WorkflowStatus.COMPLETED,
-            "error": WorkflowStatus.FAILED,
-            "cancelled": WorkflowStatus.CANCELLED,
-            "interrupted": WorkflowStatus.INTERRUPTED,
+            "completed": "completed",
+            "error": "failed",
+            "cancelled": "cancelled",
+            "interrupted": "interrupted",
         }
         statuses = await get_threads_terminal_status(absent, x_user_id)
         for tid, current_status in statuses.items():
@@ -1406,6 +1582,9 @@ async def retry_thread(
     try:
         await require_thread_owner(thread_id, auth.user_id)
 
+        # I6: refuse before any durable row when the event transport is down.
+        await _assert_stream_transport_ready()
+
         # Retransmit probe FIRST: a duplicate /retry must resolve to its
         # existing attempt, not trip the latest-attempt validation below
         # (which would mislabel it stale_retry or running).
@@ -1463,7 +1642,7 @@ async def retry_thread(
         # early exit above bypasses _handle_send_message, whose own guard
         # normally releases it — without this, repeated stale retries
         # exhaust the user's burst allowance until TTL expiry.
-        await release_burst_slot(auth.user_id)
+        await release_burst_slot(auth.user_id, auth.burst_slot_id)
         raise
 
     # Delegate to the message flow as a checkpoint replay carrying the
@@ -1474,6 +1653,9 @@ async def retry_thread(
         messages=[],
         checkpoint_id=retry_checkpoint_id,
         request_key=(body.request_key if body else None),
+        llm_model=(body.llm_model if body else None),
+        reasoning_effort=(body.reasoning_effort if body else None),
+        fast_mode=(body.fast_mode if body else None),
     )
 
     return await _handle_send_message(
