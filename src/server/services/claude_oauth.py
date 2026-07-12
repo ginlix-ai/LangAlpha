@@ -225,7 +225,7 @@ async def get_valid_token(user_id: str) -> dict | None:
 
     # Token still valid (with 5-min buffer)
     if expires_at > now + timedelta(minutes=5):
-        return {"access_token": tokens["access_token"]}
+        return {"access_token": tokens["access_token"], "plan_type": tokens.get("plan_type")}
 
     # Need to refresh — acquire Redis lock
     from src.utils.cache.redis_cache import get_cache_client
@@ -240,7 +240,7 @@ async def get_valid_token(user_id: str) -> dict | None:
             await asyncio.sleep(1)
             tokens = await get_oauth_tokens(user_id, CLAUDE_PROVIDER)
             if tokens:
-                return {"access_token": tokens["access_token"]}
+                return {"access_token": tokens["access_token"], "plan_type": tokens.get("plan_type")}
             return None
 
     try:
@@ -265,7 +265,7 @@ async def get_valid_token(user_id: str) -> dict | None:
             pass
 
         logger.debug(f"[claude_oauth] Refreshed tokens for user_id={user_id}")
-        return {"access_token": new["access_token"]}
+        return {"access_token": new["access_token"], "plan_type": tokens.get("plan_type")}
     except Exception as e:
         logger.error(f"[claude_oauth] Token refresh failed for user_id={user_id}: {e}")
         return None

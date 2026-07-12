@@ -1057,6 +1057,7 @@
   "gpt-5.3-codex-spark-oauth": {
     "model_id": "gpt-5.3-codex-spark",
     "provider": "codex-oauth",
+    "oauth_plans": ["pro", "prolite"],
     "visible": true,
     "speed": 5,
     "intelligence": 4,

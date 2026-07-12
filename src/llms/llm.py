@@ -170,6 +170,10 @@ class ModelConfig:
             # Only include tier when explicitly set — absence means "not platform-managed"
             if "tier" in model_info:
                 entry["tier"] = model_info["tier"]
+            # OAuth plan allowlist — the connected subscription's plan_type must
+            # be one of these for the model to be usable (absence = no gate).
+            if "oauth_plans" in model_info:
+                entry["oauth_plans"] = model_info["oauth_plans"]
             # Optional editorial metadata for the model-detail flyout. Additive —
             # only surfaced for models that authored it in models.json; the
             # frontend renders only the rows that are present.
@@ -541,8 +545,14 @@ class LLM:
         }
         params.update(self._resolve_base_url("base_url"))
 
-        if self.default_headers:
-            params["default_headers"] = self.default_headers
+        # The codex backend gates newer models (e.g. GPT-5.6 Luna) to first-party
+        # clients: without an originator naming a known client AND a User-Agent
+        # carrying the matching "<originator>/" prefix, it 404s "Model not found".
+        params["default_headers"] = {
+            "originator": "codex_cli_rs",
+            "User-Agent": "codex_cli_rs/0.46.0",
+            **(self.default_headers or {}),
+        }
 
         if self.use_response_api:
             params["output_version"] = "responses/v1"

@@ -369,6 +369,25 @@ async def resolve_oauth_llm_client(
             },
         )
 
+    # Plan-gated OAuth models (manifest `oauth_plans`): reject early with a
+    # clear message instead of an opaque upstream error. Unknown plan_type
+    # fails open — the upstream backend remains the authority.
+    allowed_plans = model_info.get("oauth_plans")
+    plan_type = (token_data.get("plan_type") or "").lower()
+    if allowed_plans and plan_type and plan_type not in {p.lower() for p in allowed_plans}:
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": (
+                    f"Model '{model_name}' is not available on your connected "
+                    f"'{plan_type}' plan (available on: {', '.join(allowed_plans)})."
+                ),
+                "type": "oauth_plan_unsupported",
+            },
+        )
+
     access_token = token_data["access_token"]
     if not access_token or not isinstance(access_token, str):
         logger.error(
