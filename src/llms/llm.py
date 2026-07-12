@@ -541,8 +541,14 @@ class LLM:
         }
         params.update(self._resolve_base_url("base_url"))
 
-        if self.default_headers:
-            params["default_headers"] = self.default_headers
+        # The codex backend gates newer models (e.g. GPT-5.6 Luna) to first-party
+        # clients: without an originator naming a known client AND a User-Agent
+        # carrying the matching "<originator>/" prefix, it 404s "Model not found".
+        params["default_headers"] = {
+            "originator": "codex_cli_rs",
+            "User-Agent": "codex_cli_rs/0.46.0",
+            **(self.default_headers or {}),
+        }
 
         if self.use_response_api:
             params["output_version"] = "responses/v1"
