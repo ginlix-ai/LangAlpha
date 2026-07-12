@@ -54,7 +54,6 @@ from src.server.database.conversation import (
     get_thread_owner_id,
     update_thread_sharing,
     lookup_thread_by_external_id,
-    get_next_turn_index,
     upsert_feedback,
     get_feedback_for_thread,
     delete_feedback,
@@ -491,11 +490,52 @@ async def send_thread_message(
     return await _handle_send_message(request, auth, thread_id, raw_request)
 
 
+async def _reject_duplicate_request(request_key: str, user_id: str) -> None:
+    """409 if this request_key already produced a run — a retransmit.
+
+    Route-level twin of the in-generator ``dedup_retransmit_or_raise``:
+    classifying here answers with a clean HTTP 409 before a thread is
+    minted, a fork truncates the rows holding the key, or a steering path
+    consumes the duplicate. Discloses the existing run's identity only to
+    the owning user.
+    """
+    from src.server.database import turn_lifecycle as tl_db
+
+    existing = await tl_db.find_run_by_request_key(request_key)
+    if existing is None:
+        return
+    existing_thread = str(existing["conversation_thread_id"])
+    owner_id = await get_thread_owner_id(existing_thread)
+    detail: dict = {
+        "code": "duplicate_request",
+        "message": (
+            "This request was already accepted; reconnect to the existing "
+            "run instead of resending."
+        ),
+    }
+    # Fail closed: an unresolvable owner (thread deleted mid-probe) gets the
+    # bare conflict, never another user's run identity.
+    if owner_id is not None and owner_id == user_id:
+        detail.update(
+            thread_id=existing_thread,
+            run_id=str(existing["conversation_response_id"]),
+            run_status=existing["status"],
+        )
+    raise HTTPException(status_code=409, detail=detail)
+
+
 async def _handle_send_message(
     request: ChatRequest, auth: ChatRateLimited, thread_id: str,
     raw_request: Request | None = None,
+    *,
+    retry_of_run_id: str | None = None,
 ):
-    """Shared logic for both POST /threads/messages and POST /threads/{id}/messages."""
+    """Shared logic for both POST /threads/messages and POST /threads/{id}/messages.
+
+    ``retry_of_run_id`` is retry provenance and route-internal: only the
+    /retry route passes it. Whatever the public body carried is overwritten
+    — a forged value could chain a new attempt onto an arbitrary failed run.
+    """
     from src.server.handlers.chat import (
         astream_flash_workflow,
         astream_ptc_workflow,
@@ -520,6 +560,17 @@ async def _handle_send_message(
     from src.server.dependencies.usage_limits import release_burst_slot
 
     try:
+        # Retry provenance: force the route-supplied value over anything in
+        # the public body (see docstring).
+        if request.retry_of_run_id != retry_of_run_id:
+            request = request.model_copy(update={"retry_of_run_id": retry_of_run_id})
+
+        # Idempotency: a request_key that already produced a run is a
+        # retransmit — classify it before any durable work happens for
+        # this copy (thread creation, fork truncation, steering).
+        if request.request_key:
+            await _reject_duplicate_request(request.request_key, user_id)
+
         # 403 guard: require BYOK, OAuth, or platform access (tier >= 0).
         # All flags are pre-checked by enforce_chat_limit — no DB calls here.
         from src.config.settings import HOST_MODE
@@ -1339,39 +1390,95 @@ async def retry_thread(
     body: Optional[RetryRequest] = None,
 ):
     """
-    Retry a failed or interrupted thread from its last checkpoint.
+    Retry a failed run as a new attempt on the same turn (v4 attempt chain).
 
-    Accepts optional checkpoint_id in request body for precise control.
-    If not provided, auto-detects the latest checkpoint.
+    Validates the target is the thread's LATEST attempt and terminally
+    retryable (status=error), then starts attempt N+1 with
+    ``retry_of_run_id`` chaining — no truncation, the failed attempt stays
+    archived. Graph-wise the retry resumes from the last checkpoint.
     Returns an SSE stream.
     """
-    await require_thread_owner(thread_id, auth.user_id)
+    from src.server.database import turn_lifecycle as tl_db
+    from src.server.dependencies.usage_limits import release_burst_slot
+    from src.server.handlers.chat._common import admission_conflict_detail
     from src.server.handlers.checkpoint_handler import get_retry_checkpoint
 
-    explicit_checkpoint_id = body.checkpoint_id if body else None
-    retry_checkpoint_id = await get_retry_checkpoint(thread_id, explicit_checkpoint_id)
+    try:
+        await require_thread_owner(thread_id, auth.user_id)
 
-    # Resolve workspace_id from body or from the thread record
-    workspace_id = body.workspace_id if body and body.workspace_id else None
-    if not workspace_id:
-        thread_record = await get_thread_by_id(thread_id)
-        if not thread_record:
-            raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
-        workspace_id = str(thread_record.get("workspace_id", ""))
+        # Retransmit probe FIRST: a duplicate /retry must resolve to its
+        # existing attempt, not trip the latest-attempt validation below
+        # (which would mislabel it stale_retry or running).
+        if body and body.request_key:
+            await _reject_duplicate_request(body.request_key, auth.user_id)
 
-    # Calculate fork_from_turn for retry: overwrite the last (failed) turn
-    current_count = await get_next_turn_index(thread_id)
-    fork_turn = max(0, current_count - 1)
+        latest = await tl_db.get_latest_attempt(thread_id)
+        if latest is None:
+            raise HTTPException(
+                status_code=404, detail=f"Thread {thread_id} has no runs to retry"
+            )
+        latest_run_id = str(latest["conversation_response_id"])
+        if body and body.run_id and body.run_id != latest_run_id:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "stale_retry",
+                    "message": "The requested run is no longer the latest attempt.",
+                    "latest_run_id": latest_run_id,
+                    "latest_status": latest["status"],
+                },
+            )
+        if latest["status"] == "in_progress":
+            raise HTTPException(
+                status_code=409, detail=admission_conflict_detail("running")
+            )
+        if latest["status"] != "error":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "not_retryable",
+                    "message": f"Latest run is {latest['status']}; only failed "
+                    "runs can be retried.",
+                    "latest_run_id": latest_run_id,
+                    "latest_status": latest["status"],
+                },
+            )
 
-    # Delegate to the existing message flow with checkpoint_id and empty messages
+        explicit_checkpoint_id = body.checkpoint_id if body else None
+        retry_checkpoint_id = await get_retry_checkpoint(
+            thread_id, explicit_checkpoint_id
+        )
+
+        # Resolve workspace_id from body or from the thread record
+        workspace_id = body.workspace_id if body and body.workspace_id else None
+        if not workspace_id:
+            thread_record = await get_thread_by_id(thread_id)
+            if not thread_record:
+                raise HTTPException(
+                    status_code=404, detail=f"Thread {thread_id} not found"
+                )
+            workspace_id = str(thread_record.get("workspace_id", ""))
+    except BaseException:
+        # ChatRateLimited acquired a burst slot at the dependency; every
+        # early exit above bypasses _handle_send_message, whose own guard
+        # normally releases it — without this, repeated stale retries
+        # exhaust the user's burst allowance until TTL expiry.
+        await release_burst_slot(auth.user_id)
+        raise
+
+    # Delegate to the message flow as a checkpoint replay carrying the
+    # attempt chain (no fork_from_turn: nothing is truncated). Retry
+    # provenance travels as a route-internal parameter, never in the body.
     request = ChatRequest(
         workspace_id=workspace_id,
         messages=[],
         checkpoint_id=retry_checkpoint_id,
-        fork_from_turn=fork_turn,
+        request_key=(body.request_key if body else None),
     )
 
-    return await _handle_send_message(request, auth, thread_id)
+    return await _handle_send_message(
+        request, auth, thread_id, retry_of_run_id=latest_run_id
+    )
 
 
 @router.get("/{thread_id}/tasks/{task_id}")

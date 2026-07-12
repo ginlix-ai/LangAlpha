@@ -2,8 +2,10 @@
 Tests for WorkflowTracker service.
 
 Tests workflow status tracking via Redis cache: marking active/disconnected/
-completed/cancelled/interrupted, cancel flags, retry counts, and graceful
-degradation when Redis is unavailable.
+completed/cancelled/interrupted, status get/delete, and graceful degradation
+when Redis is unavailable. (v4 dropped the Redis cancel flag and retry-count
+counter — cancel intent is durable on the run row, retry counts come from the
+attempt chain.)
 """
 
 import json
@@ -298,52 +300,6 @@ class TestStatusSetInvariants:
 
 
 # ---------------------------------------------------------------------------
-# Cancel flag
-# ---------------------------------------------------------------------------
-
-class TestCancelFlag:
-    """Test cancel flag operations."""
-
-    def teardown_method(self):
-        WorkflowTracker._instance = None
-
-    @pytest.mark.asyncio
-    async def test_set_cancel_flag(self):
-        tracker, mock_cache = _make_tracker(enabled=True)
-        thread_id = str(uuid.uuid4())
-
-        result = await tracker.set_cancel_flag(thread_id)
-
-        assert result is True
-        call_args = mock_cache.set.call_args
-        key = call_args[0][0]
-        assert key == f"workflow:cancel:{thread_id}"
-
-    @pytest.mark.asyncio
-    async def test_is_cancelled_false(self):
-        tracker, mock_cache = _make_tracker(enabled=True)
-        mock_cache.exists.return_value = False
-
-        result = await tracker.is_cancelled("t-1")
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_is_cancelled_true(self):
-        tracker, mock_cache = _make_tracker(enabled=True)
-        mock_cache.exists.return_value = True
-
-        result = await tracker.is_cancelled("t-1")
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_cancel_flag_disabled(self):
-        tracker, _ = _make_tracker(enabled=False)
-
-        assert await tracker.set_cancel_flag("t-1") is False
-        assert await tracker.is_cancelled("t-1") is False
-
-
-# ---------------------------------------------------------------------------
 # get_status / delete_status
 # ---------------------------------------------------------------------------
 
@@ -385,97 +341,15 @@ class TestStatusOperations:
         result = await tracker.delete_status(thread_id)
 
         assert result is True
-        # Should delete both status and cancel keys
-        assert mock_cache.delete.await_count == 2
+        # v4: only the status key is deleted (the cancel flag key is gone —
+        # cancel intent is durable on the run row, not a Redis flag).
+        mock_cache.delete.assert_awaited_once_with(f"workflow:status:{thread_id}")
 
     @pytest.mark.asyncio
     async def test_delete_status_disabled(self):
         tracker, _ = _make_tracker(enabled=False)
         result = await tracker.delete_status("t-1")
         assert result is False
-
-
-# ---------------------------------------------------------------------------
-# Retry count tracking
-# ---------------------------------------------------------------------------
-
-class TestRetryCount:
-    """Test retry count increment/get/reset."""
-
-    def teardown_method(self):
-        WorkflowTracker._instance = None
-
-    @pytest.mark.asyncio
-    async def test_increment_retry_count(self):
-        tracker, mock_cache = _make_tracker(enabled=True)
-        thread_id = str(uuid.uuid4())
-        mock_cache.get.return_value = {
-            "status": "active",
-            "thread_id": thread_id,
-            "retry_count": 1,
-        }
-
-        result = await tracker.increment_retry_count(thread_id)
-
-        assert result == 2
-        mock_cache.set.assert_awaited_once()
-        saved_obj = mock_cache.set.call_args[0][1]
-        assert saved_obj["retry_count"] == 2
-
-    @pytest.mark.asyncio
-    async def test_increment_retry_count_no_status(self):
-        tracker, mock_cache = _make_tracker(enabled=True)
-        mock_cache.get.return_value = None
-
-        result = await tracker.increment_retry_count("t-1")
-        assert result == 0
-
-    @pytest.mark.asyncio
-    async def test_get_retry_count(self):
-        tracker, mock_cache = _make_tracker(enabled=True)
-        mock_cache.get.return_value = {"retry_count": 3}
-
-        result = await tracker.get_retry_count("t-1")
-        assert result == 3
-
-    @pytest.mark.asyncio
-    async def test_get_retry_count_default_zero(self):
-        tracker, mock_cache = _make_tracker(enabled=True)
-        mock_cache.get.return_value = {"status": "active"}
-
-        result = await tracker.get_retry_count("t-1")
-        assert result == 0
-
-    @pytest.mark.asyncio
-    async def test_reset_retry_count(self):
-        tracker, mock_cache = _make_tracker(enabled=True)
-        thread_id = str(uuid.uuid4())
-        mock_cache.get.return_value = {
-            "status": "active",
-            "retry_count": 5,
-        }
-
-        result = await tracker.reset_retry_count(thread_id)
-
-        assert result is True
-        saved_obj = mock_cache.set.call_args[0][1]
-        assert saved_obj["retry_count"] == 0
-
-    @pytest.mark.asyncio
-    async def test_reset_retry_count_no_status(self):
-        tracker, mock_cache = _make_tracker(enabled=True)
-        mock_cache.get.return_value = None
-
-        result = await tracker.reset_retry_count("t-1")
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_retry_disabled(self):
-        tracker, _ = _make_tracker(enabled=False)
-
-        assert await tracker.increment_retry_count("t-1") == 0
-        assert await tracker.get_retry_count("t-1") == 0
-        assert await tracker.reset_retry_count("t-1") is False
 
 
 # ---------------------------------------------------------------------------

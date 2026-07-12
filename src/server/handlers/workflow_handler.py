@@ -61,27 +61,24 @@ def extract_state_values(checkpoint_tuple) -> dict:
 
 async def cancel_workflow(thread_id: str, run_id: Optional[str] = None) -> dict:
     """
-    Explicitly cancel a workflow execution (user stop).
+    Explicitly cancel a workflow execution (user stop) — v4 honest cancel.
 
-    Signal-only: sets the cancel flag, marks status, and force-cancels the
-    in-flight task via ``manager.cancel_workflow`` (which interrupts the
-    current step immediately). The subagent kill + registry wipe is owned by
-    the single-owner teardown in ``BackgroundTaskManager`` when the
-    ``CancelledError`` lands — this handler only runs ``cancel_and_clear`` as a
-    safety net when no active task exists (e.g. an orphaned registry left by a
-    crash), so the deterministic teardown sequence (flush → drain → clear →
-    persist) isn't raced.
+    Records durable cancel *intent* on the run's in_progress row
+    (``cancel_requested_at``), then signals the local task via
+    ``manager.cancel_workflow`` (which interrupts the current step
+    immediately). The terminal ``cancelled`` state is written only by the
+    finalize CAS when the teardown actually completes — never eagerly from
+    here. A cancel that arrives after the run finalized is an honest
+    idempotent "already finished", not a recorded losing cancel.
+
+    The subagent kill + registry wipe is owned by the single-owner teardown
+    in ``BackgroundTaskManager`` when the ``CancelledError`` lands — this
+    handler only runs ``cancel_and_clear`` as a safety net when no active
+    task exists (e.g. an orphaned registry left by a crash).
 
     ``run_id`` targets a specific run so a slow/retried stop can't cancel a
-    *newer* turn the user started after the stopped one finished (the manager
-    otherwise falls back to "latest active run"). Omitted = latest active run.
-
-    Args:
-        thread_id: Thread ID to cancel
-        run_id: Specific run to cancel; None falls back to the latest active run
-
-    Returns:
-        Confirmation of cancellation with thread_id
+    *newer* turn the user started after the stopped one finished. Omitted =
+    the thread's active run.
     """
     try:
         from src.server.services.background_task_manager import (
@@ -94,12 +91,10 @@ async def cancel_workflow(thread_id: str, run_id: Optional[str] = None) -> dict:
         # Manual compaction stop. A manual /compact|/offload registers no
         # workflow task (it runs inside its own HTTP request handler), so when
         # there is no active workflow, cancelling the in-flight compaction is
-        # the entire job. Take this path before the workflow-cancel tracker
-        # writes below (cancel flag / mark_cancelled / "cancelled" thread
-        # status) so a pure compaction stop doesn't mislabel the thread as a
-        # stopped turn. (An AUTO compaction runs inside the turn's task — there
-        # has_active is True, so we fall through and cancel_workflow's
-        # inner_task cancel interrupts the summarize.)
+        # the entire job — and it must not stamp cancel intent on a run row.
+        # (An AUTO compaction runs inside the turn's task — there has_active
+        # is True, so we fall through and cancel_workflow's inner_task cancel
+        # interrupts the summarize.)
         if not has_active and manager.cancel_compaction(thread_id):
             logger.info(f"Manual compaction stopped by user: {thread_id}")
             return {
@@ -108,35 +103,38 @@ async def cancel_workflow(thread_id: str, run_id: Optional[str] = None) -> dict:
                 "message": "Compaction stopped.",
             }
 
-        from src.server.services.workflow_tracker import WorkflowTracker
+        # Durable cancel intent on the run row. Only an in_progress row
+        # accepts it (the row lock linearizes cancel vs finalize), so this is
+        # self-gating: no active run, nothing stamped — the old eager
+        # tracker/thread-status "cancelled" writes are gone with it.
+        from src.server.database import turn_lifecycle as tl_db
 
-        tracker = WorkflowTracker.get_instance()
+        # `or None`: an empty-string run_id (e.g. `?run_id=`) must resolve
+        # like an omitted one, not skip both the active-run lookup and the
+        # honest no_active_run response below.
+        target_run_id = run_id or None
+        if target_run_id is None:
+            active = await tl_db.get_active_run(thread_id)
+            if active:
+                target_run_id = str(active["conversation_response_id"])
 
-        # A /cancel that reaches here with no BTM task AND no in-flight
-        # compaction is almost always a Stop click racing a compaction that
-        # JUST finished (its finally already cleared the guard). Marking such an
-        # idle thread "cancelled" would mislabel a successful compaction as a
-        # stopped turn, so only write the cancel signal/status when a turn is
-        # genuinely active — a BTM task, or a tracker-reported ACTIVE/INTERRUPTED
-        # dispatched turn. The orphan-registry safety net below still runs.
-        turn_is_active = has_active or await _thread_turn_is_active(
-            tracker, thread_id
-        )
+        intent_state = None
+        if target_run_id:
+            intent = await tl_db.request_run_cancel(target_run_id, thread_id=thread_id)
+            intent_state = intent["state"]
+            logger.info(
+                f"[cancel] durable intent for run={target_run_id} "
+                f"thread={thread_id}: {intent_state}"
+            )
 
-        success = True
-        if turn_is_active:
-            # Set cancellation flag (checked by exception handler)
-            success = await tracker.set_cancel_flag(thread_id)
-
-            # Mark workflow as cancelled immediately for fast frontend feedback.
-            await tracker.mark_cancelled(thread_id)
-
-            # Update thread status in database for consistency
-            from src.server.database import conversation as qr_db
-
-            await qr_db.update_thread_status(thread_id, "cancelled")
-
-        cancel_success = await manager.cancel_workflow(thread_id, run_id)
+        # Local execution signal (Phase 1, single worker: the executor is
+        # in-process; Phase 2 adds the pub/sub nudge for remote owners).
+        # Signal the SAME run the intent was stamped on: if the resolved
+        # run finalizes and a newer one starts between the stamp and this
+        # call, an untargeted (None) signal would cancel the newer run.
+        # None only when no ledger row exists — the pre-START placeholder
+        # window, where the manager's thread scan is the only handle.
+        cancel_success = await manager.cancel_workflow(thread_id, target_run_id)
 
         if not cancel_success and not await manager.has_active_task_for_thread(
             thread_id
@@ -157,15 +155,38 @@ async def cancel_workflow(thread_id: str, run_id: Optional[str] = None) -> dict:
             registry_store = BackgroundRegistryStore.get_instance()
             await registry_store.cancel_and_clear(thread_id, force=True)
 
-        if not success:
-            logger.warning(
-                f"Failed to set cancel flag for {thread_id} (Redis may be unavailable)"
-            )
+        if intent_state == "already_terminal":
+            return {
+                "cancelled": False,
+                "thread_id": thread_id,
+                "state": "already_finished",
+                "message": "Run already finished; nothing to cancel.",
+            }
+        if intent_state == "not_found" and not cancel_success:
+            # A caller-supplied run_id that matches neither a ledger row nor
+            # a local task (wrong id, or another thread's run). Distinct from
+            # the pre-START dispatched window, where the placeholder cancel
+            # succeeds (cancel_success=True) despite the row not existing yet.
+            return {
+                "cancelled": False,
+                "thread_id": thread_id,
+                "state": "run_not_found",
+                "message": "No such run on this thread; nothing to cancel.",
+            }
+        if target_run_id is None and not cancel_success:
+            # No durable run, no local task, no compaction — an honest no-op
+            # instead of pretending a signal was sent.
+            return {
+                "cancelled": False,
+                "thread_id": thread_id,
+                "state": "no_active_run",
+                "message": "No active run to cancel.",
+            }
 
-        logger.info(f"Workflow cancelled: {thread_id}")
-
+        logger.info(f"Workflow cancel requested: {thread_id}")
         return {
-            "cancelled": True,
+            "cancelled": bool(intent_state in ("requested", "already_requested"))
+            or cancel_success,
             "thread_id": thread_id,
             "message": "Cancellation signal sent. Workflow will stop shortly.",
         }
@@ -564,30 +585,6 @@ async def _require_no_active_workflow(
                 ),
             },
         )
-
-
-async def _thread_turn_is_active(tracker, thread_id: str) -> bool:
-    """Best-effort: is a turn genuinely active on the thread?
-
-    Returns True for a tracker-reported ACTIVE/INTERRUPTED turn, and True
-    (fail-safe) when the tracker is disabled or errors — we cannot confirm the
-    thread is idle, so a real cancel is never skipped. Returns False only when
-    the tracker is reachable and reports no active turn.
-    """
-    from src.server.services.workflow_tracker import WorkflowStatus
-
-    if not getattr(tracker, "enabled", True):
-        return True
-    try:
-        status = await tracker.get_status(thread_id)
-    except Exception:
-        return True
-    if not status:
-        return False
-    return status.get("status") in {
-        WorkflowStatus.ACTIVE,
-        WorkflowStatus.INTERRUPTED,
-    }
 
 
 def _open_manual_compaction(manager, thread_id: str, verb: str) -> None:

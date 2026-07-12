@@ -448,3 +448,14 @@ class RetryRequest(BaseModel):
         None,
         description="Specific checkpoint ID to retry from. If not provided, auto-detects the last checkpoint.",
     )
+    run_id: Optional[str] = Field(
+        None,
+        description="The failed run to retry. Must be the thread's latest "
+        "attempt; a stale id is rejected (409) instead of silently retrying "
+        "a different run.",
+    )
+    request_key: Optional[str] = Field(
+        None,
+        description="Client-generated UUID for idempotent delivery; reuse "
+        "across retransmits of the same retry.",
+    )

@@ -38,7 +38,6 @@ def _make_request():
 def patch_tracker():
     """Patch WorkflowTracker.get_instance to return a recordable mock."""
     mock_tracker = MagicMock()
-    mock_tracker.increment_retry_count = AsyncMock()
     mock_tracker.mark_failed = AsyncMock(return_value=True)
     with patch.object(
         _common.WorkflowTracker, "get_instance", return_value=mock_tracker
@@ -49,8 +48,17 @@ def patch_tracker():
 @pytest.mark.asyncio
 async def test_max_retries_branch_marks_failed(patch_tracker):
     # Recoverable error past MAX_RETRIES → marks tracker FAILED with the
-    # retry-limit error message.
-    patch_tracker.increment_retry_count.return_value = 99  # > MAX_RETRIES
+    # retry-limit error message. v4: the retry count is the run's attempt_no
+    # (the Redis increment_retry_count counter is gone), so drive the
+    # max-retries branch via run_handle.attempt_no > MAX_RETRIES. finalized=True
+    # short-circuits _finalize_error so no TurnCoordinator mock is needed.
+    run_handle = SimpleNamespace(
+        run_id="r-max",
+        attempt_no=99,  # > MAX_RETRIES
+        finalized=True,
+        workspace_id=None,
+        user_id=None,
+    )
 
     err = ConnectionError("connection refused")
     handler = MagicMock()
@@ -66,7 +74,7 @@ async def test_max_retries_branch_marks_failed(patch_tracker):
             workspace_id="ws-1",
             handler=handler,
             token_callback=None,
-            run_handle=None,
+            run_handle=run_handle,
             start_time=0.0,
             request=_make_request(),
             is_byok=False,

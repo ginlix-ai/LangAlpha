@@ -46,6 +46,29 @@ class BackgroundRegistryStore:
         async with self._lock:
             return self._registries.get(thread_id)
 
+    async def cancel_run_tasks(
+        self, thread_id: str, run_id: str, *, force: bool = False
+    ) -> int:
+        """Cancel only the tasks spawned by ``run_id``; the registry and any
+        prior-turn tasks/claims survive (unlike ``cancel_and_clear``)."""
+        async with self._lock:
+            registry = self._registries.get(thread_id)
+        if registry is None:
+            return 0
+
+        cancelled = await registry.cancel_run_tasks(run_id, force=force)
+        if cancelled:
+            logger.info(
+                "Cancelled run-scoped background tasks",
+                extra={
+                    "thread_id": thread_id,
+                    "run_id": run_id,
+                    "cancelled": cancelled,
+                    "force": force,
+                },
+            )
+        return cancelled
+
     async def cancel_and_clear(self, thread_id: str, *, force: bool = False) -> int:
         async with self._lock:
             registry = self._registries.get(thread_id)

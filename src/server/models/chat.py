@@ -256,6 +256,27 @@ class ChatRequest(BaseModel):
         "(interrupts included) is dropped.",
     )
 
+    # Idempotency (v4 attempt chain): one logical send = one request_key,
+    # reused verbatim across network retransmits. The server dedups on it
+    # (globally unique), so a lost-response resubmit reconnects to the
+    # existing run instead of starting a duplicate. Server-minted fallback
+    # when omitted (no dedup).
+    request_key: Optional[str] = Field(
+        default=None,
+        description="Client-generated UUID identifying this logical send; "
+        "reuse across retransmits for idempotent delivery.",
+    )
+    # Internal retry provenance: only the /retry route sets it, as a
+    # parameter to _handle_send_message — a body-supplied value is
+    # overwritten there unconditionally, so clients cannot chain a new
+    # attempt onto an arbitrary failed run. The new run reuses the
+    # turn_index with attempt_no+1 and no new query row.
+    retry_of_run_id: Optional[str] = Field(
+        default=None,
+        description="Run id this request is an attempt-chain retry of. "
+        "Internal use only; ignored when supplied by clients.",
+    )
+
     # Interrupt/resume support (HITL)
     hitl_response: Optional[Dict[str, HITLResponse]] = Field(
         default=None,

@@ -59,6 +59,11 @@ def _make_request():
     # Explicit bool: a bare MagicMock attribute is truthy, which would trip
     # the steer_only fresh-admission rejection in the real wait_or_steer.
     req.steer_only = False
+    # Explicit None: a bare MagicMock attribute is truthy, so resolve_retry_of
+    # would treat this as a real retry and hit the DB (get_run) — killing the
+    # generator. request_key is likewise threaded into start_turn.
+    req.retry_of_run_id = None
+    req.request_key = None
     return req
 
 

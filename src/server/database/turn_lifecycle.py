@@ -236,7 +236,7 @@ async def finalize_run(
     execution_time: Optional[float] = None,
     sse_events: Optional[List[Dict[str, Any]]] = None,
     checkpoint_id: Optional[str] = None,
-    usage_writer: Optional[Callable[[Any], Awaitable[None]]] = None,
+    usage_writer: Optional[Callable[[Any, str], Awaitable[None]]] = None,
     outbox_jobs: Optional[List[HookJob]] = None,
 ) -> FinalizeResult:
     """The finalize transaction: exactly one CAS from in_progress to terminal.
@@ -244,9 +244,18 @@ async def finalize_run(
     Zero rows from the guarded UPDATE means someone else already finalized —
     the caller lost an intended race (cancel vs owner, janitor vs owner) and
     gets applied=False with the surviving row; nothing else is written.
-    usage_writer runs inside the transaction on the same connection so a
-    persist failure aborts the terminal transition with it (no more
-    swallowed-exception zombie turns).
+    Committed cancel intent is authoritative: a row stamped with
+    cancel_requested_at before this CAS lands finalizes as 'cancelled'
+    regardless of the requested status (I3: the durable cancel that locks
+    the row first wins — the row lock linearizes cancel vs finalize).
+    Callers must read the terminal status from the returned row, not from
+    what they asked for. Pre-existing intent stamps metadata.cancelled_by_user
+    regardless of the requested status (intent only ever comes from a user
+    /cancel); a requested 'cancelled' finalize backfills cancel_requested_at
+    so terminal cancelled rows are self-consistent — on terminal rows the
+    flag is the user-provenance marker, the timestamp only the decision time. usage_writer runs inside the transaction on the
+    same connection so a persist failure aborts the terminal transition
+    with it (no more swallowed-exception zombie turns).
     """
     if status not in TERMINAL_STATUSES:
         raise ValueError(f"finalize_run: {status!r} is not a terminal status")
@@ -257,9 +266,25 @@ async def finalize_run(
                 await cur.execute(
                     """
                     UPDATE conversation_responses
-                    SET status = %s,
-                        interrupt_reason = %s,
-                        metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
+                    SET status = CASE
+                            WHEN cancel_requested_at IS NOT NULL THEN 'cancelled'
+                            ELSE %s
+                        END,
+                        interrupt_reason = CASE
+                            WHEN cancel_requested_at IS NOT NULL THEN NULL
+                            ELSE %s
+                        END,
+                        cancel_requested_at = CASE
+                            WHEN cancel_requested_at IS NULL AND %s = 'cancelled'
+                                THEN NOW()
+                            ELSE cancel_requested_at
+                        END,
+                        metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                            || CASE
+                                WHEN cancel_requested_at IS NOT NULL
+                                    THEN '{"cancelled_by_user": true}'::jsonb
+                                ELSE '{}'::jsonb
+                            END,
                         warnings = %s,
                         errors = %s,
                         execution_time = %s,
@@ -270,6 +295,7 @@ async def finalize_run(
                     (
                         status,
                         interrupt_reason,
+                        status,
                         SafeJson(metadata or {}),
                         warnings or [],
                         errors or [],
@@ -285,6 +311,12 @@ async def finalize_run(
                 raise _AlreadyTerminal()
 
             run_row = dict(run_row)
+            final_status = run_row["status"]
+            if final_status != status:
+                logger.info(
+                    f"[turn_lifecycle] durable cancel intent overrode finalize "
+                    f"for run={run_id}: {status} -> {final_status}"
+                )
 
             # The helpers below historically swallow failures (return False /
             # catch-all). Inside this transaction a swallowed SQL error leaves
@@ -293,7 +325,7 @@ async def finalize_run(
             # written. Every helper result is therefore checked, and the
             # transaction status is verified before commit as a backstop.
             if not await qr_db.update_thread_status(
-                thread_id, status, checkpoint_id=checkpoint_id, conn=conn
+                thread_id, final_status, checkpoint_id=checkpoint_id, conn=conn
             ):
                 raise RuntimeError(
                     f"thread projection update failed for thread={thread_id}"
@@ -309,7 +341,7 @@ async def finalize_run(
             )
 
             if usage_writer is not None:
-                await usage_writer(conn)
+                await usage_writer(conn, final_status)
 
             if outbox_jobs:
                 await enqueue_hooks(
@@ -323,7 +355,8 @@ async def finalize_run(
                 )
 
     logger.info(
-        f"[turn_lifecycle] FINALIZE run={run_id} thread={thread_id} status={status}"
+        f"[turn_lifecycle] FINALIZE run={run_id} thread={thread_id} "
+        f"status={final_status}"
     )
     return FinalizeResult(applied=True, run=run_row)
 
@@ -347,35 +380,54 @@ async def finalize_run_idempotent(**kwargs) -> FinalizeResult:
         return FinalizeResult(applied=False, run=run)
 
 
-async def request_run_cancel(run_id: str) -> Dict[str, Any]:
+async def request_run_cancel(
+    run_id: str, thread_id: Optional[str] = None
+) -> Dict[str, Any]:
     """Durable cancel intent: honest, idempotent, never a recorded losing cancel.
 
-    Returns {"state": "requested"|"already_requested"|"already_terminal"|
-    "not_found", "run": row|None}.
-    """
-    async with qr_db.get_db_connection() as conn:
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                """
-                UPDATE conversation_responses
-                SET cancel_requested_at = NOW()
-                WHERE conversation_response_id = %s
-                  AND status = 'in_progress'
-                  AND cancel_requested_at IS NULL
-                RETURNING *
-                """,
-                (run_id,),
-            )
-            row = await cur.fetchone()
-            if row:
-                return {"state": "requested", "run": dict(row)}
+    ``thread_id`` scopes the write so a caller-supplied run_id can't stamp
+    intent on another thread's run. Returns {"state": "requested"|
+    "already_requested"|"already_terminal"|"not_found", "run": row|None}.
 
-    run = await get_run(run_id)
-    if run is None:
-        return {"state": "not_found", "run": None}
-    if run["status"] == "in_progress":
-        return {"state": "already_requested", "run": run}
-    return {"state": "already_terminal", "run": run}
+    Two stamp laps: a cancel racing the START commit can run its guarded
+    UPDATE before the row is visible (zero rows), then read the committed
+    row as in_progress — one lap would misreport that as already_requested
+    while no intent ever landed. The second lap stamps the now-visible row.
+    """
+    sql = """
+        UPDATE conversation_responses
+        SET cancel_requested_at = NOW()
+        WHERE conversation_response_id = %s
+          AND status = 'in_progress'
+          AND cancel_requested_at IS NULL
+    """
+    params: list = [run_id]
+    if thread_id is not None:
+        sql += "  AND conversation_thread_id = %s\n"
+        params.append(thread_id)
+    sql += "        RETURNING *"
+
+    run: Optional[Dict[str, Any]] = None
+    for _lap in range(2):
+        async with qr_db.get_db_connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(sql, params)
+                row = await cur.fetchone()
+                if row:
+                    return {"state": "requested", "run": dict(row)}
+
+        run = await get_run(run_id)
+        if run is None or (
+            thread_id is not None and str(run["conversation_thread_id"]) != thread_id
+        ):
+            return {"state": "not_found", "run": None}
+        if run["status"] != "in_progress":
+            return {"state": "already_terminal", "run": run}
+        if run.get("cancel_requested_at"):
+            return {"state": "already_requested", "run": run}
+        # in_progress with NULL intent, yet our UPDATE matched nothing:
+        # the START-commit visibility race — go around once more.
+    return {"state": "already_requested", "run": run}
 
 
 async def get_run(run_id: str) -> Optional[Dict[str, Any]]:
@@ -397,6 +449,23 @@ async def get_active_run(thread_id: str) -> Optional[Dict[str, Any]]:
                 """
                 SELECT * FROM conversation_responses
                 WHERE conversation_thread_id = %s AND status = 'in_progress'
+                """,
+                (thread_id,),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+
+async def get_latest_attempt(thread_id: str) -> Optional[Dict[str, Any]]:
+    """The thread's most recent attempt row — /retry's validation target."""
+    async with qr_db.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT * FROM conversation_responses
+                WHERE conversation_thread_id = %s
+                ORDER BY turn_index DESC, attempt_no DESC
+                LIMIT 1
                 """,
                 (thread_id,),
             )

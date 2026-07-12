@@ -18,7 +18,7 @@ from typing import Optional, Dict, Any
 from enum import Enum
 
 from src.utils.cache.redis_cache import get_cache_client
-from src.config.settings import get_redis_ttl_workflow_status, get_redis_ttl_cancel_flag
+from src.config.settings import get_redis_ttl_workflow_status
 
 logger = logging.getLogger(__name__)
 
@@ -62,13 +62,10 @@ class WorkflowTracker:
 
     Redis Key Structure:
     - workflow:status:{thread_id} -> JSON status object (TTL: redis.ttl.workflow_status)
-      - Includes retry_count and last_retry_at for error handling
-    - workflow:cancel:{thread_id} -> "true" (TTL: redis.ttl.cancel_flag)
 
-    Retry Tracking:
-    - Increments retry_count on each transient error
-    - Resets retry_count on successful completion
-    - Maximum retries: 3 (enforced by app.py exception handler)
+    v4: the Redis cancel flag and retry-count tracking are gone — cancel
+    intent is durable on the run row (cancel_requested_at) and retry counts
+    come from the attempt chain (attempt_no).
     """
 
     # Singleton instance
@@ -76,7 +73,6 @@ class WorkflowTracker:
 
     # Redis key prefixes
     STATUS_PREFIX = "workflow:status:"
-    CANCEL_PREFIX = "workflow:cancel:"
 
     def __init__(self):
         """Initialize workflow tracker with Redis client."""
@@ -329,62 +325,6 @@ class WorkflowTracker:
 
         return success
 
-    async def set_cancel_flag(self, thread_id: str) -> bool:
-        """
-        Set explicit cancellation flag (separate from status).
-
-        This flag is checked by the streaming generator to distinguish
-        explicit user cancellation from accidental disconnect.
-
-        Args:
-            thread_id: Thread/workflow identifier
-
-        Returns:
-            True if successfully set, False otherwise
-        """
-        if not self.enabled:
-            return False
-
-        try:
-            key = f"{self.CANCEL_PREFIX}{thread_id}"
-
-            success = await self.cache.set(key, "true", ttl=get_redis_ttl_cancel_flag())
-
-            if success:
-                logger.debug(f"[WorkflowTracker] Set cancel flag: {thread_id}")
-
-            return success
-
-        except Exception as e:
-            logger.error(f"[WorkflowTracker] Error setting cancel flag: {e}")
-            return False
-
-    async def is_cancelled(self, thread_id: str) -> bool:
-        """
-        Check if explicit cancellation flag is set.
-
-        Args:
-            thread_id: Thread/workflow identifier
-
-        Returns:
-            True if cancel flag exists, False otherwise
-        """
-        if not self.enabled:
-            return False
-
-        try:
-            key = f"{self.CANCEL_PREFIX}{thread_id}"
-            exists = await self.cache.exists(key)
-
-            if exists:
-                logger.debug(f"[WorkflowTracker] Cancel flag exists: {thread_id}")
-
-            return exists
-
-        except Exception as e:
-            logger.error(f"[WorkflowTracker] Error checking cancel flag: {e}")
-            return False
-
     async def get_status(self, thread_id: str) -> Optional[Dict[str, Any]]:
         """
         Get current workflow status.
@@ -458,11 +398,7 @@ class WorkflowTracker:
 
         try:
             status_key = f"{self.STATUS_PREFIX}{thread_id}"
-            cancel_key = f"{self.CANCEL_PREFIX}{thread_id}"
-
-            # Delete both status and cancel flag
             status_deleted = await self.cache.delete(status_key)
-            await self.cache.delete(cancel_key)  # Best effort
 
             if status_deleted:
                 logger.info(f"[WorkflowTracker] Deleted status: {thread_id}")
@@ -471,107 +407,4 @@ class WorkflowTracker:
 
         except Exception as e:
             logger.error(f"[WorkflowTracker] Error deleting status: {e}")
-            return False
-
-    # ==================== Retry Count Tracking ====================
-
-    async def increment_retry_count(self, thread_id: str) -> int:
-        """
-        Increment retry count for a workflow.
-
-        Args:
-            thread_id: Thread/workflow identifier
-
-        Returns:
-            Current retry count after increment, or 0 if tracking disabled
-        """
-        if not self.enabled:
-            return 0
-
-        try:
-            key = f"{self.STATUS_PREFIX}{thread_id}"
-            status = await self.cache.get(key)
-
-            if not status:
-                logger.warning(
-                    f"[WorkflowTracker] No status found for {thread_id}, "
-                    "cannot increment retry count"
-                )
-                return 0
-
-            # Increment retry count
-            retry_count = status.get("retry_count", 0) + 1
-            status["retry_count"] = retry_count
-            status["last_retry_at"] = datetime.now().isoformat()
-            status["last_update"] = datetime.now().isoformat()
-
-            await self.cache.set(key, status)
-
-            logger.info(
-                f"[WorkflowTracker] Incremented retry count for {thread_id}: {retry_count}"
-            )
-
-            return retry_count
-
-        except Exception as e:
-            logger.error(f"[WorkflowTracker] Error incrementing retry count: {e}")
-            return 0
-
-    async def get_retry_count(self, thread_id: str) -> int:
-        """
-        Get current retry count for a workflow.
-
-        Args:
-            thread_id: Thread/workflow identifier
-
-        Returns:
-            Current retry count, or 0 if not found
-        """
-        if not self.enabled:
-            return 0
-
-        try:
-            key = f"{self.STATUS_PREFIX}{thread_id}"
-            status = await self.cache.get(key)
-
-            if not status:
-                return 0
-
-            return status.get("retry_count", 0)
-
-        except Exception as e:
-            logger.error(f"[WorkflowTracker] Error getting retry count: {e}")
-            return 0
-
-    async def reset_retry_count(self, thread_id: str) -> bool:
-        """
-        Reset retry count for a workflow (e.g., after successful execution).
-
-        Args:
-            thread_id: Thread/workflow identifier
-
-        Returns:
-            True if reset successfully, False otherwise
-        """
-        if not self.enabled:
-            return False
-
-        try:
-            key = f"{self.STATUS_PREFIX}{thread_id}"
-            status = await self.cache.get(key)
-
-            if not status:
-                return False
-
-            status["retry_count"] = 0
-            status["last_update"] = datetime.now().isoformat()
-
-            await self.cache.set(key, status)
-
-            logger.info(f"[WorkflowTracker] Reset retry count for {thread_id}")
-
-            return True
-
-        except Exception as e:
-            logger.error(f"[WorkflowTracker] Error resetting retry count: {e}")
             return False

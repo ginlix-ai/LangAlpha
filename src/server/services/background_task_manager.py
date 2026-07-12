@@ -258,10 +258,11 @@ class BackgroundTaskManager:
 
         self.cleanup_task: Optional[asyncio.Task] = None
 
-        # Per-thread set of live orphan-collector tasks. Tracked so the stop
-        # teardown can cancel any collector that would otherwise mutate the
-        # persisted response after the user has stopped the turn.
-        self._orphan_collectors: Dict[str, set[asyncio.Task]] = {}
+        # Per-thread map of live orphan-collector tasks to their owning
+        # run_id. Tracked so the stop teardown can cancel the stopped run's
+        # collector that would otherwise mutate the persisted response after
+        # the user has stopped the turn.
+        self._orphan_collectors: Dict[str, dict[asyncio.Task, str]] = {}
 
         # Per-thread compaction guard. An entry means a compaction (auto Tier-2
         # summarize or manual /compact|/offload) is in progress on the thread;
@@ -599,6 +600,7 @@ class BackgroundTaskManager:
         key = (thread_id, run_id)
         cancelled_placeholder: Optional[TaskInfo] = None
         cancelled_uid: Optional[str] = None
+        started: Optional[TaskInfo] = None
         async with self.task_lock:
             if key in self.tasks:
                 existing = self.tasks[key]
@@ -641,7 +643,7 @@ class BackgroundTaskManager:
                             f"[BackgroundTaskManager] Upgraded pre-registered "
                             f"workflow thread_id={thread_id} run_id={run_id} to RUNNING"
                         )
-                        return existing
+                        started = existing
                 else:
                     raise RuntimeError(
                         f"Workflow {key} already exists with status {existing.status}"
@@ -683,28 +685,80 @@ class BackgroundTaskManager:
                     f"run_id={run_id} (running: {running_count + 1}/{self.max_concurrent})"
                 )
 
-                return task_info
+                started = task_info
 
-        # Cancelled-before-start placeholder: release its burst slot OUTSIDE the
-        # lock, mirroring every other release_burst_slot in this file. Holding
-        # task_lock across the Redis DECR would delay a concurrent /cancel, which
-        # also needs the lock. (Reached only via the fall-through above; all other
-        # branches return or raise inside the lock.)
-        if cancelled_uid:
-            await release_burst_slot(cancelled_uid)
-        # The caller STARTed this run and flips slot_owned=False on return, so
-        # no executor and no generator path will ever finalize it — settle the
-        # durable row here or the thread slot leaks until the startup sweep.
         run_handle = (metadata or {}).get("run_handle")
-        if run_handle is not None:
-            from src.server.services.turn_lifecycle import TurnCoordinator
 
-            await TurnCoordinator.get_instance().fail_open_run(
-                run_handle,
-                "cancelled before start (dispatched placeholder)",
-                status="cancelled",
-            )
-        return cancelled_placeholder
+        if cancelled_placeholder is not None:
+            # Cancelled-before-start placeholder: release its burst slot OUTSIDE
+            # the lock, mirroring every other release_burst_slot in this file.
+            # Holding task_lock across the Redis DECR would delay a concurrent
+            # /cancel, which also needs the lock.
+            if cancelled_uid:
+                await release_burst_slot(cancelled_uid)
+            # The caller STARTed this run and flips slot_owned=False on return, so
+            # no executor and no generator path will ever finalize it — settle the
+            # durable row here or the thread slot leaks until the startup sweep.
+            if run_handle is not None:
+                from src.server.database import turn_lifecycle as tl_db
+                from src.server.services.turn_lifecycle import TurnCoordinator
+
+                # Intent and the cancelled_by_user flag both mean "a user
+                # asked": a system cancel (graceful shutdown, stale-workflow
+                # recovery) stamps neither and relies on the finalize
+                # timestamp backfill alone.
+                user_stop = bool(cancelled_placeholder.user_stop)
+                if user_stop:
+                    # Stamp durable intent before finalizing: a crash between
+                    # here and the finalize must sweep this row as cancelled
+                    # (the user asked for it), not error(worker_lost).
+                    try:
+                        await tl_db.request_run_cancel(
+                            run_handle.run_id, thread_id=thread_id
+                        )
+                    except Exception:
+                        logger.warning(
+                            f"[BackgroundTaskManager] could not stamp cancel "
+                            f"intent on cancelled placeholder {key}",
+                            exc_info=True,
+                        )
+                await TurnCoordinator.get_instance().fail_open_run(
+                    run_handle,
+                    "cancelled before start (dispatched placeholder)",
+                    status="cancelled",
+                    # Explicit provenance: if the intent stamp failed, the
+                    # finalize CAS can't infer it from the (absent) intent.
+                    metadata={"cancelled_by_user": True} if user_stop else None,
+                )
+            return cancelled_placeholder
+
+        # Handoff intent recheck: a /cancel between START and this registration
+        # stamped durable intent on the row but found no TaskInfo to signal.
+        # The row is the authority — re-derive the local signal from it now
+        # that a task exists, closing the foreground setup window.
+        if run_handle is not None:
+            from src.server.database import turn_lifecycle as tl_db
+
+            run_row = None
+            try:
+                run_row = await tl_db.get_run(run_handle.run_id)
+            except Exception:
+                logger.warning(
+                    f"[BackgroundTaskManager] handoff cancel-intent recheck "
+                    f"failed for {key}",
+                    exc_info=True,
+                )
+            if (
+                run_row
+                and run_row.get("cancel_requested_at")
+                and run_row.get("status") == "in_progress"
+            ):
+                logger.info(
+                    f"[BackgroundTaskManager] durable cancel intent found at "
+                    f"handoff for {key}; signalling cancel"
+                )
+                await self.cancel_workflow(thread_id, run_id)
+        return started
 
     async def _run_workflow(
         self,
@@ -885,8 +939,11 @@ class BackgroundTaskManager:
                 f"[BackgroundTaskManager] Failed to flush checkpoint for {thread_id}: {e}"
             )
 
-    def _track_orphan_collector(self, thread_id: str, task: asyncio.Task) -> None:
-        """Register a live orphan-collector task for stop-time cancellation.
+    def _track_orphan_collector(
+        self, thread_id: str, run_id: str, task: asyncio.Task
+    ) -> None:
+        """Register a live orphan-collector task for stop-time cancellation,
+        keyed by the run whose collection it continues.
 
         The done-callback discards the finished task and drops the per-thread
         bucket once it empties, so threads whose collectors complete naturally
@@ -894,23 +951,27 @@ class BackgroundTaskManager:
         server. The ``is bucket`` guard keeps a fresh bucket from a later turn
         on the same thread from being removed by this callback.
         """
-        bucket = self._orphan_collectors.setdefault(thread_id, set())
-        bucket.add(task)
+        bucket = self._orphan_collectors.setdefault(thread_id, {})
+        bucket[task] = run_id
 
         def _discard(t: asyncio.Task) -> None:
-            bucket.discard(t)
+            bucket.pop(t, None)
             if not bucket and self._orphan_collectors.get(thread_id) is bucket:
                 self._orphan_collectors.pop(thread_id, None)
 
         task.add_done_callback(_discard)
 
     async def _teardown_subagents_on_stop(self, thread_id: str, run_id: str) -> None:
-        """Single-owner subagent teardown on a user stop.
+        """Single-owner subagent teardown on a user stop — scoped to the
+        stopped run.
 
         Order (decision 1A): drain killed-subagent events (bounded) → cancel
-        orphan collectors → cancel_and_clear(force) → stash merged events on
-        metadata for _mark_cancelled to persist. Drain MUST precede
-        cancel_and_clear so the registry still holds the captured events.
+        this run's orphan collectors → cancel_run_tasks(force) → stash merged
+        events on metadata for the finalize to persist. Drain MUST precede
+        cancel_run_tasks so the registry still holds the captured events.
+        Everything is keyed by ``spawned_run_id``: a prior turn's orphan
+        collector persists to ITS OWN response, so stopping the current run
+        must neither kill it nor archive its tasks' events here.
         """
         from src.server.services.background_registry_store import BackgroundRegistryStore
 
@@ -922,7 +983,11 @@ class BackgroundTaskManager:
         drain_timeout = get_stop_drain_timeout()
         if registry is not None:
             try:
-                tasks = await registry.get_all_tasks()
+                tasks = [
+                    t
+                    for t in await registry.get_all_tasks()
+                    if getattr(t, "spawned_run_id", None) == run_id
+                ]
             except Exception:
                 tasks = []
             try:
@@ -942,24 +1007,24 @@ class BackgroundTaskManager:
                     f"thread_id={thread_id}: {exc}"
                 )
 
-        # --- 3. Cancel orphan collectors so they can't mutate the response ---
-        collectors = list(self._orphan_collectors.get(thread_id, set()))
+        # --- 3. Cancel THIS run's orphan collectors (normally none: a stopped
+        # run never reached collection) so they can't mutate the response.
+        # Prior turns' collectors keep running — they own other responses. ---
+        bucket = self._orphan_collectors.get(thread_id, {})
+        collectors = [t for t, owner in bucket.items() if owner == run_id]
         for collector in collectors:
             if not collector.done():
                 collector.cancel()
         if collectors:
             with suppress(Exception):
                 await asyncio.gather(*collectors, return_exceptions=True)
-        # This explicit drain runs only on the explicit_cancel paths (user stop
-        # / graceful shutdown / stale-sandbox recovery — the only callers of
-        # this method). On non-explicit cancels (abandoned-task cleanup, which
-        # cancels the OUTER task with the flag unset) collectors are left to the
-        # per-task done-callback (`_discard`) to drain — no leak, different owner.
-        self._orphan_collectors.pop(thread_id, None)
+            for collector in collectors:
+                bucket.pop(collector, None)
 
-        # --- 4. Kill subagents + wipe the registry ---
+        # --- 4. Kill this run's subagents; the registry and prior-turn tasks
+        # survive for their own collectors. ---
         with suppress(Exception):
-            await registry_store.cancel_and_clear(thread_id, force=True)
+            await registry_store.cancel_run_tasks(thread_id, run_id, force=True)
 
         # Stash merged events for _mark_cancelled to fold into persisted sse_events.
         if merged_subagent_events:
@@ -1253,7 +1318,7 @@ class BackgroundTaskManager:
                     ),
                     name=f"subagent-orphan-collector-{thread_id}",
                 )
-                self._track_orphan_collector(thread_id, orphan_task)
+                self._track_orphan_collector(thread_id, response_id, orphan_task)
 
             collected_tasks = [t for t in tasks if t not in pending.values()]
             await self._persist_subagent_usage(
@@ -1678,7 +1743,18 @@ class BackgroundTaskManager:
                     post_commit=lambda: self.clear_event_buffer(thread_id, run_id),
                 )
                 finalize_applied = result.applied
-                if not result.applied:
+                if result.applied:
+                    final_status = (result.run or {}).get("status")
+                    if final_status and final_status != status:
+                        # Durable cancel intent, stamped before the CAS landed,
+                        # overrode the natural outcome inside finalize. Adopt it
+                        # for the local mark and side-effect selection below.
+                        logger.info(
+                            f"[BackgroundTaskManager] finalize adopted durable "
+                            f"cancel for {key}: {status} -> {final_status}"
+                        )
+                        status = final_status
+                else:
                     survivor_status = (result.run or {}).get("status")
                     logger.warning(
                         f"[BackgroundTaskManager] lost finalize race for {key}: "
@@ -1759,10 +1835,34 @@ class BackgroundTaskManager:
                 if status in ("error", "cancelled"):
                     await self._clear_report_back_watch(thread_id, metadata)
 
-                if kind == "stream_end":
+                # Collection follows the ADOPTED status: only a run that
+                # actually ended completed/interrupted gets a collector. A
+                # terminal error or (adopted) cancel instead kills this run's
+                # still-pending subagents — run-scoped, so prior turns' orphan
+                # collectors and claims survive. No drain: the CAS already
+                # committed this run's sse_events, and a cancelled/errored
+                # run's subagent output is deliberately never billed. (On the
+                # explicit user-stop path the teardown already popped the
+                # whole registry; the scoped call is then a no-op.)
+                if kind == "stream_end" and status in ("completed", "interrupted"):
                     await self._spawn_subagent_collector(
                         thread_id, run_id, metadata, workspace_id, user_id
                     )
+                elif status in ("error", "cancelled"):
+                    try:
+                        from src.server.services.background_registry_store import (
+                            BackgroundRegistryStore,
+                        )
+
+                        await BackgroundRegistryStore.get_instance().cancel_run_tasks(
+                            thread_id, run_id, force=True
+                        )
+                    except Exception:
+                        logger.warning(
+                            f"[BackgroundTaskManager] run-scoped subagent "
+                            f"cleanup failed for {key}",
+                            exc_info=True,
+                        )
         except Exception:
             logger.error(
                 f"[BackgroundTaskManager] post-terminal side effects failed for "

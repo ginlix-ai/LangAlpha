@@ -37,6 +37,10 @@ def _make_request(steer_only: bool = True):
     req.subagents_enabled = None
     req.llm_model = None
     req.steer_only = steer_only
+    # Truthy MagicMock attrs would trip the request_key dedup probe (real
+    # DB call) and the retry-chain resolution before wait_or_steer.
+    req.request_key = None
+    req.retry_of_run_id = None
     return req
 
 

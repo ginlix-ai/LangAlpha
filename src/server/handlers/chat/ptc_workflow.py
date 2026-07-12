@@ -75,6 +75,7 @@ from ._common import (
     _resolve_timezone,
     apply_fetch_override,
     build_graph_config,
+    dedup_retransmit_or_raise,
     ensure_thread,
     handle_workflow_error,
     init_tracking,
@@ -83,6 +84,7 @@ from ._common import (
     normalize_request_messages,
     prepare_skill_contexts,
     process_hitl_response,
+    resolve_retry_of,
     serialize_context_metadata,
     setup_steering_tracking,
     wait_or_steer,
@@ -162,6 +164,12 @@ async def astream_ptc_workflow(
         await admission_lock.acquire()
         admission_held = True
 
+        # Idempotency probe under the admission lock: a retransmitted
+        # request_key resolves to its existing run HERE, before the steering
+        # or fork paths below can act on the duplicate (raises
+        # DuplicateRequestError → structured duplicate_request SSE).
+        await dedup_retransmit_or_raise(request)
+
         # =====================================================================
         # Early steering routing
         # =====================================================================
@@ -186,13 +194,15 @@ async def astream_ptc_workflow(
         # ``exclude_run_id`` (ignore it in the admission scan) and
         # ``can_steer=False`` (any OTHER in-flight run is a hard conflict,
         # never a steer). Foreground turns steer.
+        # Retries are never steerable: a /retry that finds another live run
+        # is a hard conflict, not an (empty) steering message into that run.
         ready, steering_event = await wait_or_steer(
             manager,
             thread_id,
             user_input,
             user_id,
             steer_only=request.steer_only,
-            can_steer=not dispatched,
+            can_steer=not dispatched and request.retry_of_run_id is None,
             exclude_run_id=run_id if dispatched else None,
         )
         if not ready:
@@ -270,13 +280,16 @@ async def astream_ptc_workflow(
         # =====================================================================
         # START txn (v4): query row + in_progress run row + thread projection
         # in one transaction. Checkpoint replays reuse the preserved query row
-        # (query=None) and pin the fork turn explicitly; everything else gets
-        # MAX+1 allocation against the post-truncation row set.
+        # (query=None) and pin the fork turn explicitly; retries chain a new
+        # attempt onto the failed run's turn (no truncation); everything else
+        # gets MAX+1 allocation against the post-truncation row set.
         # =====================================================================
+        retry_of = await resolve_retry_of(request, thread_id)
         run_handle = await TurnCoordinator.get_instance().start_turn(
             thread_id=thread_id,
             run_id=run_id,
             msg_type="ptc",
+            request_key=request.request_key,
             workspace_id=workspace_id,
             user_id=user_id,
             is_byok=is_byok,
@@ -292,8 +305,16 @@ async def astream_ptc_workflow(
                 )
             ),
             turn_index=(
-                request.fork_from_turn
+                retry_of["turn_index"]
+                if retry_of is not None
+                else request.fork_from_turn
                 if (is_fork and is_checkpoint_replay)
+                else None
+            ),
+            attempt_no=(retry_of["attempt_no"] + 1 if retry_of is not None else 1),
+            retry_of_run_id=(
+                str(retry_of["conversation_response_id"])
+                if retry_of is not None
                 else None
             ),
         )

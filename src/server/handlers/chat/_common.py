@@ -640,6 +640,13 @@ ADMISSION_CONFLICT_CODES = {
     "running",
     "not_running",
     "request_cancelled",
+    # Retry-validation outcomes from ``resolve_retry_of``: protocol
+    # responses raised in-generator pre-START (run_handle is None, nothing
+    # was admitted). Without these codes they'd fall into the generic
+    # persist + mark_failed path — and a stale retry often coexists with a
+    # NEWER running turn whose tracker status mark_failed would clobber.
+    "stale_retry",
+    "not_retryable",
 }
 
 
@@ -676,6 +683,91 @@ def admission_conflict_detail(state: str) -> dict:
             "or use /reconnect to continue streaming, or /cancel to stop it."
         ),
     }
+
+
+async def dedup_retransmit_or_raise(request: ChatRequest) -> None:
+    """Resolve a retransmitted request_key to its existing run — or pass.
+
+    Must run under the admission lock BEFORE any steering, fork, or retry
+    path can act on the duplicate: steering would inject the retransmit
+    into the live run as a new message; a fork retransmit would truncate
+    the very rows holding the key. START's unique index remains the
+    race-safe backstop for keys that haven't produced a row yet.
+    """
+    if not request.request_key:
+        return
+    from src.server.database import turn_lifecycle as tl_db
+    from src.server.services.turn_lifecycle import DuplicateRequestError
+
+    existing = await tl_db.find_run_by_request_key(request.request_key)
+    if existing is not None:
+        raise DuplicateRequestError(existing)
+
+
+async def resolve_retry_of(request: ChatRequest, thread_id: str):
+    """Resolve and re-validate the attempt-chain predecessor for a retry.
+
+    The /retry route validated latest-attempt + retryable-terminal before
+    dispatch, but the generator may run later (dispatched flows) — re-check
+    against live state so a stale retry can't chain onto the wrong run.
+    Returns the predecessor row, or None when this isn't a retry.
+    """
+    if not request.retry_of_run_id:
+        return None
+    if request.fork_from_turn is not None:
+        # A fork truncates; a retry chains. Combining them would truncate
+        # first and then chain onto a deleted predecessor.
+        raise HTTPException(
+            status_code=400,
+            detail="retry_of_run_id cannot be combined with fork_from_turn",
+        )
+    from src.server.database import turn_lifecycle as tl_db
+
+    prev = await tl_db.get_run(request.retry_of_run_id)
+    if prev is None or str(prev["conversation_thread_id"]) != thread_id:
+        # Provenance is route-internal, so a vanished predecessor means a
+        # fork/delete truncated it after route validation — a stale retry.
+        # Structured 409 routes through the no-persist protocol branch;
+        # an unstructured 404 here would hit mark_failed and could clobber
+        # the newer turn's tracker state.
+        latest = await tl_db.get_latest_attempt(thread_id)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "stale_retry",
+                "message": "The run to retry no longer exists on this thread.",
+                "latest_run_id": (
+                    str(latest["conversation_response_id"]) if latest else None
+                ),
+                "latest_status": latest["status"] if latest else None,
+            },
+        )
+    if prev["status"] != "error":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "not_retryable",
+                "message": f"Run to retry is {prev['status']}, not a failed run.",
+            },
+        )
+    latest = await tl_db.get_latest_attempt(thread_id)
+    if latest is None or str(latest["conversation_response_id"]) != str(
+        prev["conversation_response_id"]
+    ):
+        # Newer turns/attempts landed between route validation and this
+        # generator running — retrying an older failure would fork history.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "stale_retry",
+                "message": "The run to retry is no longer the latest attempt.",
+                "latest_run_id": (
+                    str(latest["conversation_response_id"]) if latest else None
+                ),
+                "latest_status": latest["status"] if latest else None,
+            },
+        )
+    return prev
 
 
 async def wait_or_steer(
@@ -817,27 +909,36 @@ async def handle_workflow_error(
     ``timezone_str`` is the resolved timezone; falls back to ``request.timezone``.
     """
     from src.server.services.turn_lifecycle import (
+        AttemptConflictError,
+        DuplicateRequestError,
+        RunSlotBusyError,
         TurnCoordinator,
         TurnOutcome,
         protected_finalize,
     )
 
-    async def _finalize_error(error_msg: str, extra_metadata: dict) -> None:
+    async def _finalize_error(error_msg: str, extra_metadata: dict) -> str | None:
         """Terminal-write the open run as error; CRITICAL on failure (row
         stays in_progress for recovery rather than masking the persist).
+
+        Returns the row's ACTUAL terminal status (from the CAS, or the
+        survivor on a lost race) — durable cancel intent can override the
+        requested 'error' to 'cancelled', and every post-finalize effect in
+        the branches below must follow the real status, not the request.
+        None = nothing finalized (no handle, or the finalize itself failed).
 
         Runs via ``protected_finalize``: this generator lives on the
         client-stream task, so a disconnect-injected CancelledError must not
         abort the terminal transaction mid-flight."""
         if run_handle is None or run_handle.finalized:
-            return
+            return None
         records = token_callback.per_call_records if token_callback else None
         tools = handler.get_tool_usage() if handler else None
         if not (run_handle.workspace_id and run_handle.user_id):
             records = None
             tools = None
         try:
-            await protected_finalize(
+            result = await protected_finalize(
                 TurnCoordinator.get_instance().finalize_turn(
                     run_handle,
                     TurnOutcome(
@@ -852,11 +953,26 @@ async def handle_workflow_error(
                 ),
                 label=run_handle.run_id,
             )
+            return (result.run or {}).get("status")
         except Exception:
             logger.critical(
                 f"[{log_prefix}] FINALIZE FAILED for run={run_handle.run_id}: "
                 f"row remains in_progress for recovery",
                 exc_info=True,
+            )
+            return None
+
+    async def _mark_tracker_cancelled() -> None:
+        """Redis /status follows a finalize the durable cancel intent won."""
+        try:
+            tracker = WorkflowTracker.get_instance()
+            await tracker.mark_cancelled(
+                thread_id, run_id=run_handle.run_id if run_handle else None
+            )
+        except Exception as tracker_err:
+            logger.warning(
+                f"[{log_prefix}] tracker.mark_cancelled failed for "
+                f"{thread_id}: {tracker_err}"
             )
     # An admission-conflict 409 is a deliberate protocol response (raised
     # in-generator by ``wait_or_steer`` for both the foreground and dispatched
@@ -893,6 +1009,67 @@ async def handle_workflow_error(
         error_payload = {
             "thread_id": thread_id,
             "error": detail.get("message"),
+            "type": "workflow_error",
+            "error_type": "admission_conflict",
+            "error_class": type(e).__name__,
+            "code": detail["code"],
+        }
+        yield _emit_sse_error(handler, error_payload)
+        return
+
+    # START-txn conflicts (v4): the durable ledger refused this attempt via a
+    # DB constraint. Protocol responses, not workflow failures — START rolled
+    # back, so nothing was persisted for THIS request (run_handle is None) and
+    # there is nothing to finalize.
+    if isinstance(e, DuplicateRequestError):
+        await release_burst_slot(user_id)
+        existing = e.existing_run or {}
+        error_payload = {
+            "thread_id": thread_id,
+            "error": (
+                "This request was already accepted; reconnect to the "
+                "existing run instead of resending."
+            ),
+            "type": "workflow_error",
+            "error_type": "duplicate_request",
+            "error_class": type(e).__name__,
+            "code": "duplicate_request",
+        }
+        # Two users can race the same client-controlled key: disclose the
+        # winner's identity only to its owner, failing closed on unknown.
+        # run_thread_id may differ from the ambient thread_id: an
+        # initial-message retransmit that raced past the route probe minted
+        # a second thread before START refused it — the existing run lives
+        # on the FIRST thread, and reconnects must target that one.
+        ex_thread = str(existing.get("conversation_thread_id") or "")
+        owner_id = None
+        if ex_thread:
+            try:
+                owner_id = await qr_db.get_thread_owner_id(ex_thread)
+            except Exception:
+                owner_id = None
+        if owner_id is not None and owner_id == user_id:
+            error_payload.update(
+                run_id=str(existing.get("conversation_response_id") or ""),
+                run_status=existing.get("status"),
+                run_thread_id=ex_thread,
+            )
+        yield _emit_sse_error(handler, error_payload)
+        return
+
+    if isinstance(e, (RunSlotBusyError, AttemptConflictError)):
+        await release_burst_slot(user_id)
+        detail = (
+            admission_conflict_detail("running")
+            if isinstance(e, RunSlotBusyError)
+            else {
+                "code": "attempt_conflict",
+                "message": "A concurrent request already claimed this attempt.",
+            }
+        )
+        error_payload = {
+            "thread_id": thread_id,
+            "error": detail["message"],
             "type": "workflow_error",
             "error_type": "admission_conflict",
             "error_class": type(e).__name__,
@@ -956,8 +1133,11 @@ async def handle_workflow_error(
         persist_metadata["timezone"] = _tz
 
     if is_recoverable:
-        tracker = WorkflowTracker.get_instance()
-        retry_count = await tracker.increment_retry_count(thread_id)
+        # v4: the retry count IS the attempt chain — this run's attempt_no,
+        # durable and race-free (the Redis increment_retry_count counter is
+        # gone). Post-handoff calls have no handle; those errors surface via
+        # BTM's finalize, so 1 is only a display fallback here.
+        retry_count = run_handle.attempt_no if run_handle else 1
 
         if retry_count > MAX_RETRIES:
             logger.error(
@@ -970,7 +1150,7 @@ async def handle_workflow_error(
                 f"{type(e).__name__}: {str(e)}"
             )
 
-            await _finalize_error(
+            final_status = await _finalize_error(
                 error_msg,
                 {
                     "error_type": error_type,
@@ -978,12 +1158,20 @@ async def handle_workflow_error(
                     "retry_count": retry_count,
                 },
             )
+            if final_status == "cancelled":
+                # Durable cancel intent won inside the CAS: the user asked
+                # this run to stop, so no failure surface — no FAILED
+                # tracker mark, no error SSE (their /cancel already
+                # resolved; the error detail stays on the row).
+                await _mark_tracker_cancelled()
+                return
 
             # Push terminal status to Redis so /status reports FAILED with
             # bounded TTL instead of leaving the key as ACTIVE. The setup-
             # error path runs outside BackgroundTaskManager's _finalize_run,
             # so this is the only chance to update tracker.
             try:
+                tracker = WorkflowTracker.get_instance()
                 _expected = run_handle.run_id if run_handle else None
                 await tracker.mark_failed(
                     thread_id, error=error_msg, run_id=_expected
@@ -1016,7 +1204,7 @@ async def handle_workflow_error(
             # Finalize BEFORE the retry SSE: a client disconnect while this
             # generator is suspended at the yield would otherwise strand the
             # run in_progress with no executor.
-            await _finalize_error(
+            final_status = await _finalize_error(
                 f"{type(e).__name__}: {str(e)}",
                 {
                     "error_type": error_type,
@@ -1025,6 +1213,14 @@ async def handle_workflow_error(
                     "retry_count": retry_count,
                 },
             )
+            if final_status == "cancelled":
+                # Durable cancel intent won inside the CAS — the run is
+                # terminally cancelled, not "retryable error": keep the
+                # cancelled projection (no 'interrupted' override), mark the
+                # tracker, and emit no retry affordance.
+                await _mark_tracker_cancelled()
+                return
+
             # Legacy projection override: the frontend's resume affordance
             # keys off thread status 'interrupted'. Replaced by the status
             # vocabulary module in 1.6.
@@ -1048,13 +1244,17 @@ async def handle_workflow_error(
         error_type_label = _classify_non_recoverable_error_type(e)
         # error_type/error_class ride the row so replay can reconstruct the
         # terminal error event (the yield below happens after this finalize).
-        await _finalize_error(
+        final_status = await _finalize_error(
             str(e),
             {
                 "error_type": error_type_label,
                 "error_class": type(e).__name__,
             },
         )
+        if final_status == "cancelled":
+            # Durable cancel intent won inside the CAS: no failure surface.
+            await _mark_tracker_cancelled()
+            return
 
         # Mirror the recoverable max-retries branch: push FAILED to Redis with
         # bounded TTL. Without this, /status keeps reporting ACTIVE for the

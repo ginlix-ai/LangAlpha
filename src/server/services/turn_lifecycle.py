@@ -234,7 +234,12 @@ class TurnCoordinator:
         return result
 
     async def fail_open_run(
-        self, handle: RunHandle, error_message: str, *, status: str = "error"
+        self,
+        handle: RunHandle,
+        error_message: str,
+        *,
+        status: str = "error",
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[FinalizeResult]:
         """Guarantee-finalize for paths that die between START and execution.
 
@@ -249,6 +254,7 @@ class TurnCoordinator:
                 handle,
                 TurnOutcome(
                     status=status,
+                    metadata=metadata or {},
                     errors=[error_message],
                     execution_time=(
                         datetime.now(timezone.utc) - handle.started_at
@@ -307,7 +313,7 @@ class TurnCoordinator:
     # ------------------------------------------------------------------ utils
 
     def _build_usage_writer(self, handle: RunHandle, outcome: TurnOutcome):
-        async def _write(conn) -> None:
+        async def _write(conn, final_status: str) -> None:
             from src.server.services.persistence.usage import UsagePersistenceService
 
             usage = UsagePersistenceService(
@@ -321,12 +327,13 @@ class TurnCoordinator:
                 usage.record_tool_usage_batch(outcome.tool_usage)
             # msg_type is the producer mode, never a status — interrupted
             # turns bill as their real mode ('interrupted' rows were the old
-            # vocabulary pollution).
+            # vocabulary pollution). final_status comes from the CAS row, not
+            # outcome.status: durable cancel intent may have overridden it.
             ok = await usage.persist_usage(
                 response_id=handle.run_id,
                 msg_type=outcome.metadata.get("msg_type") or handle.msg_type,
                 deepthinking=outcome.metadata.get("deepthinking", False),
-                status=outcome.status,
+                status=final_status,
                 conn=conn,
                 is_byok=outcome.metadata.get("is_byok", handle.is_byok),
             )

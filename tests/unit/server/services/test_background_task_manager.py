@@ -758,16 +758,17 @@ class TestStopPathFlushGating:
 
 
 # ---------------------------------------------------------------------------
-# Single-owner teardown ordering (decision 1A): drain BEFORE cancel_and_clear
+# Single-owner teardown ordering (decision 1A): drain BEFORE cancel_run_tasks,
+# everything scoped to the stopped run.
 # ---------------------------------------------------------------------------
 
 class TestStopTeardownOrdering:
 
     @pytest.mark.asyncio
-    async def test_drain_runs_before_cancel_and_clear(self):
-        """_teardown_subagents_on_stop drains killed-subagent events and stashes
-        them on metadata, and the drain happens BEFORE cancel_and_clear wipes
-        the registry."""
+    async def test_drain_runs_before_cancel_run_tasks(self):
+        """_teardown_subagents_on_stop drains killed-subagent events (only the
+        stopped run's tasks) and stashes them on metadata, and the drain
+        happens BEFORE cancel_run_tasks drops the run's registry entries."""
         btm = _make_btm()
 
         order: list[str] = []
@@ -777,21 +778,28 @@ class TestStopTeardownOrdering:
         )
         btm.tasks[("t-order", "r-order")] = task_info
 
+        own_task = MagicMock(spawned_run_id="r-order")
+        foreign_task = MagicMock(spawned_run_id="r-prior")
         fake_registry = MagicMock()
-        fake_registry.get_all_tasks = AsyncMock(return_value=["task-a"])
+        fake_registry.get_all_tasks = AsyncMock(
+            return_value=[own_task, foreign_task]
+        )
+
+        drained_tasks: list = []
 
         async def fake_drain(thread_id, tasks):
             order.append("drain")
+            drained_tasks.extend(tasks)
             return [{"event": "message_chunk", "data": {"agent": "task:x"}}]
 
         fake_store = MagicMock()
         fake_store.get_registry = AsyncMock(return_value=fake_registry)
 
-        async def fake_cancel_and_clear(thread_id, *, force):
-            order.append("cancel_and_clear")
+        async def fake_cancel_run_tasks(thread_id, run_id, *, force):
+            order.append("cancel_run_tasks")
             return 1
 
-        fake_store.cancel_and_clear = AsyncMock(side_effect=fake_cancel_and_clear)
+        fake_store.cancel_run_tasks = AsyncMock(side_effect=fake_cancel_run_tasks)
 
         with patch(
             "src.server.services.background_registry_store.BackgroundRegistryStore.get_instance",
@@ -799,7 +807,13 @@ class TestStopTeardownOrdering:
         ), patch.object(btm, "_drain_killed_subagent_events", side_effect=fake_drain):
             await btm._teardown_subagents_on_stop("t-order", "r-order")
 
-        assert order == ["drain", "cancel_and_clear"]
+        assert order == ["drain", "cancel_run_tasks"]
+        # Prior-turn tasks are excluded: their events belong to their own
+        # response, not the stopped one.
+        assert drained_tasks == [own_task]
+        fake_store.cancel_run_tasks.assert_awaited_once_with(
+            "t-order", "r-order", force=True
+        )
         stashed = task_info.metadata.get("_stop_subagent_events")
         assert stashed and stashed[0]["data"]["agent"] == "task:x"
 
@@ -814,7 +828,9 @@ class TestStopTeardownOrdering:
         btm.tasks[("t-tmo", "r-tmo")] = task_info
 
         fake_registry = MagicMock()
-        fake_registry.get_all_tasks = AsyncMock(return_value=["task-a"])
+        fake_registry.get_all_tasks = AsyncMock(
+            return_value=[MagicMock(spawned_run_id="r-tmo")]
+        )
 
         async def slow_drain(thread_id, tasks):
             await asyncio.sleep(5)
@@ -822,7 +838,7 @@ class TestStopTeardownOrdering:
 
         fake_store = MagicMock()
         fake_store.get_registry = AsyncMock(return_value=fake_registry)
-        fake_store.cancel_and_clear = AsyncMock(return_value=1)
+        fake_store.cancel_run_tasks = AsyncMock(return_value=1)
 
         with patch(
             "src.server.services.background_registry_store.BackgroundRegistryStore.get_instance",
@@ -834,14 +850,15 @@ class TestStopTeardownOrdering:
            ):
             await btm._teardown_subagents_on_stop("t-tmo", "r-tmo")
 
-        # No drained events stashed, but cancel_and_clear still ran.
+        # No drained events stashed, but cancel_run_tasks still ran.
         assert "_stop_subagent_events" not in task_info.metadata
-        fake_store.cancel_and_clear.assert_awaited_once()
+        fake_store.cancel_run_tasks.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_orphan_collectors_cancelled_on_stop(self):
-        """Tracked orphan collectors are cancelled during teardown so they
-        can't mutate the response after the stop."""
+        """The stopped run's orphan collector is cancelled during teardown so
+        it can't mutate the response; a prior turn's collector — which owns a
+        different response — survives."""
         btm = _make_btm()
 
         task_info = _make_task_info(
@@ -850,18 +867,22 @@ class TestStopTeardownOrdering:
         btm.tasks[("t-orph", "r-orph")] = task_info
 
         started = asyncio.Event()
+        prior_started = asyncio.Event()
 
-        async def long_collector():
-            started.set()
+        async def long_collector(event):
+            event.set()
             await asyncio.sleep(100)
 
-        collector = asyncio.create_task(long_collector())
-        btm._track_orphan_collector("t-orph", collector)
+        collector = asyncio.create_task(long_collector(started))
+        prior_collector = asyncio.create_task(long_collector(prior_started))
+        btm._track_orphan_collector("t-orph", "r-orph", collector)
+        btm._track_orphan_collector("t-orph", "r-prior", prior_collector)
         await started.wait()
+        await prior_started.wait()
 
         fake_store = MagicMock()
         fake_store.get_registry = AsyncMock(return_value=None)
-        fake_store.cancel_and_clear = AsyncMock(return_value=0)
+        fake_store.cancel_run_tasks = AsyncMock(return_value=0)
 
         with patch(
             "src.server.services.background_registry_store.BackgroundRegistryStore.get_instance",
@@ -869,8 +890,14 @@ class TestStopTeardownOrdering:
         ):
             await btm._teardown_subagents_on_stop("t-orph", "r-orph")
 
+        await asyncio.sleep(0)  # let done-callbacks run
         assert collector.cancelled()
-        assert "t-orph" not in btm._orphan_collectors
+        assert not prior_collector.done()
+        assert btm._orphan_collectors.get("t-orph") == {prior_collector: "r-prior"}
+
+        prior_collector.cancel()
+        with suppress(asyncio.CancelledError):
+            await prior_collector
 
     @pytest.mark.asyncio
     async def test_orphan_collector_bucket_cleared_on_natural_completion(self):
@@ -882,7 +909,7 @@ class TestStopTeardownOrdering:
             return None
 
         collector = asyncio.create_task(quick_collector())
-        btm._track_orphan_collector("t-nat", collector)
+        btm._track_orphan_collector("t-nat", "r-nat", collector)
         assert "t-nat" in btm._orphan_collectors  # tracked while running
 
         await collector

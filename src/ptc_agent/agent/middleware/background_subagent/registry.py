@@ -881,6 +881,54 @@ class BackgroundTaskRegistry:
 
         return cancelled
 
+    async def cancel_run_tasks(self, run_id: str, *, force: bool = False) -> int:
+        """Cancel and drop only the tasks spawned by ``run_id``.
+
+        Run-scoped teardown for a run that finalized error/cancelled with no
+        collector: thread-wide ``cancel_all`` here would abort another turn's
+        orphan collector mid-collection. Tasks with an unknown spawned_run_id
+        are left alone — killing work whose owner is ambiguous is the failure
+        mode this exists to prevent.
+        """
+        scoped: list[str] = []
+        cancelled = 0
+        async with self._lock:
+            for tool_call_id, task in self._tasks.items():
+                if task.spawned_run_id != run_id:
+                    continue
+                scoped.append(tool_call_id)
+                if (
+                    task.asyncio_task is not None
+                    and not task.completed
+                    and not task.asyncio_task.done()
+                ):
+                    if force and task.handler_task and not task.handler_task.done():
+                        task.handler_task.cancel()
+                    task.asyncio_task.cancel()
+                    task.completed = True
+                    task.cancelled = True
+                    task.error = "Cancelled"
+                    task.last_updated_at = time.time()
+                    task.result = {
+                        "success": False,
+                        "error": "Cancelled",
+                        "status": "cancelled",
+                    }
+                    cancelled += 1
+        # No collector will ever claim these entries — drop them so the
+        # registry doesn't grow across turns on a long-lived thread.
+        for tool_call_id in scoped:
+            await self.remove_task(tool_call_id)
+
+        if cancelled > 0:
+            logger.info(
+                "Cancelled run-scoped background tasks",
+                run_id=run_id,
+                count=cancelled,
+                force=force,
+            )
+        return cancelled
+
     async def remove_task(self, tool_call_id: str) -> None:
         """Remove a single task's registry entry and its lookup mappings.
 
