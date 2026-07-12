@@ -394,6 +394,8 @@ function Settings() {
               email: result.email as string,
               plan_type: result.plan_type as string,
             });
+            queryClient.invalidateQueries({ queryKey: queryKeys.oauth.codex() });
+            queryClient.invalidateQueries({ queryKey: queryKeys.platform.models() });
           }
           // result.pending → keep polling
         } catch {
@@ -471,6 +473,8 @@ function Settings() {
           email: (result.email as string) || null,
           plan_type: (result.plan_type as string) || null,
         });
+        queryClient.invalidateQueries({ queryKey: queryKeys.oauth.claude() });
+        queryClient.invalidateQueries({ queryKey: queryKeys.platform.models() });
       }
     } catch (e: unknown) {
       const axiosError = e as { response?: { data?: { detail?: string } } };

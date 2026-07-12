@@ -429,6 +429,7 @@ export default function ConnectStep() {
           if ('success' in pollResult && pollResult.success) {
             await queryClient.invalidateQueries({ queryKey: queryKeys.user.me() });
             await queryClient.invalidateQueries({ queryKey: queryKeys.oauth.codex() });
+            await queryClient.invalidateQueries({ queryKey: queryKeys.platform.models() });
             navigate('/setup/models', {
               state: { method, provider, displayName, brandKey },
             });
@@ -475,6 +476,7 @@ export default function ConnectStep() {
       if (result.success) {
         await queryClient.invalidateQueries({ queryKey: queryKeys.user.me() });
         await queryClient.invalidateQueries({ queryKey: queryKeys.oauth.claude() });
+        await queryClient.invalidateQueries({ queryKey: queryKeys.platform.models() });
         navigate('/setup/models', {
           state: { method, provider, displayName, brandKey },
         });
