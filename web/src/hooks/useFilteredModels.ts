@@ -14,6 +14,9 @@ export interface ModelMetadataEntry {
   requires_own_key?: string;
   /** Numeric tier for platform-served access. Absent = 0. */
   tier?: number;
+  /** OAuth-plan allowlist — the connected subscription's plan_type must be
+   * one of these for the model to show. Absent = no plan gate. */
+  oauth_plans?: string[];
   /** True for user-added custom models — bypasses all access filters. */
   is_custom_model?: boolean;
 }
@@ -303,6 +306,26 @@ export function buildVisibleModels(
     data.models = data.models.filter(
       (m) => !Object.hasOwn(shadowOwner, m) || shadowOwner[m] === groupKey,
     );
+  }
+
+  // 3b. OAuth plan gate — drop models whose `oauth_plans` allowlist excludes
+  // the connected subscription's plan. Unknown plan fails open; the backend
+  // enforces the same gate at turn admission either way.
+  const oauthPlanByProvider = new Map<string, string>();
+  for (const p of configuredProviders) {
+    if (p.access_type === 'oauth' && p.plan_type) {
+      oauthPlanByProvider.set(p.provider, p.plan_type.toLowerCase());
+    }
+  }
+  for (const data of Object.values(normalized)) {
+    if (!data.models) continue;
+    data.models = data.models.filter((m) => {
+      const plans = metadata[m]?.oauth_plans;
+      if (!plans || plans.length === 0) return true;
+      const provider = metadata[m]?.provider;
+      const plan = provider ? oauthPlanByProvider.get(provider) : undefined;
+      return !plan || plans.some((allowed) => allowed.toLowerCase() === plan);
+    });
   }
 
   // 4. Filter
