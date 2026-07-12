@@ -637,6 +637,7 @@ export async function sendChatMessageStream(
   platform: string | null = null,
   onRunIdResolved: ((runId: string, threadId: string | null) => void) | null = null,
   signal: AbortSignal | null = null,
+  requestKey: string | null = null,
 ) {
   // For checkpoint replay (regenerate/retry), send empty messages
   const messages = checkpointId && !message
@@ -650,6 +651,7 @@ export async function sendChatMessageStream(
     locale,
     timezone,
   };
+  if (requestKey) body.request_key = requestKey;
   if (additionalContext) {
     body.additional_context = additionalContext;
   }
@@ -687,11 +689,13 @@ export async function sendRetryStream(
   fastMode: boolean | null = null,
   onRunIdResolved: ((runId: string, threadId: string | null) => void) | null = null,
   signal: AbortSignal | null = null,
+  requestKey: string | null = null,
 ) {
   const body: Record<string, unknown> = { workspace_id: workspaceId };
   if (llmModel) body.llm_model = llmModel;
   if (reasoningEffort) body.reasoning_effort = reasoningEffort;
   if (fastMode) body.fast_mode = true;
+  if (requestKey) body.request_key = requestKey;
   return await postSSEStream(`/api/v1/threads/${threadId}/retry`, body, { onEvent, onRunIdResolved, signal });
 }
 
@@ -1115,6 +1119,7 @@ export async function sendHitlResponse(
   agentMode: string = 'ptc',
   onRunIdResolved: ((runId: string, threadId: string | null) => void) | null = null,
   signal: AbortSignal | null = null,
+  requestKey: string | null = null,
 ) {
   const body: Record<string, unknown> = {
     workspace_id: workspaceId,
@@ -1126,6 +1131,7 @@ export async function sendHitlResponse(
   if (modelOptions?.model) body.llm_model = modelOptions.model;
   if (modelOptions?.reasoningEffort) body.reasoning_effort = modelOptions.reasoningEffort;
   if (modelOptions?.fastMode) body.fast_mode = true;
+  if (requestKey) body.request_key = requestKey;
   return await postSSEStream(`/api/v1/threads/${threadId}/messages`, body, { onEvent, onRunIdResolved, signal });
 }
 

@@ -29,6 +29,7 @@ import type { ChatMessage, AssistantMessage, UserMessage, NotificationSegment } 
 import type { ActionRequest, ToolCallData, TodoItem } from '@/types/sse';
 import type { HtmlWidgetData, PreviewData } from './utils/types';
 import { createRecentlySentTracker } from './utils/recentlySentTracker';
+import { createRequestKeyTracker } from './utils/requestKey';
 import {
   handleReasoningSignal,
   handleReasoningContent,
@@ -906,6 +907,9 @@ export function useChatMessages(
 
   // Recently sent messages tracker
   const recentlySentTrackerRef = useRef(createRecentlySentTracker());
+  // v4 idempotent delivery: one request_key per logical send, reused across
+  // retransmits of the same send until response headers prove acceptance.
+  const requestKeyRef = useRef(createRequestKeyTracker());
 
   // Map tool call IDs (from main agent's task tool calls) to agent_ids for routing subagent events
   const toolCallIdToTaskIdMapRef = useRef(new Map<string, string>()); // Map<toolCallId, agentId>
@@ -2866,6 +2870,30 @@ export function useChatMessages(
     setReloadTrigger((n) => n + 1);
   };
 
+  /**
+   * v4 request_key dedup: a 409 `duplicate_request` means an earlier copy of
+   * this logical send was already accepted and only its response was lost.
+   * Adopt the existing run — latch its thread/run ids and reconnect (a live
+   * run replays its stream; a settled one falls through to the history
+   * reload) — instead of surfacing an error banner for a turn that exists.
+   * Returns true when adopted; the caller must skip its own error/finalize
+   * path (the reconnect owns teardown from here).
+   */
+  const adoptDuplicateRun = (err: unknown, assistantMessageId: string): boolean => {
+    const e = err as { status?: number; errorInfo?: Record<string, unknown> };
+    if (e?.status !== 409 || e?.errorInfo?.code !== 'duplicate_request') return false;
+    const runId = e.errorInfo.run_id as string | undefined;
+    const dupThreadId = e.errorInfo.thread_id as string | undefined;
+    // Run identity not disclosed (the key belongs to another user's run —
+    // shouldn't happen for an honest client): fall through to a plain error.
+    if (!runId || !dupThreadId) return false;
+    requestKeyRef.current.clear(); // consumed by the accepted copy
+    threadIdRef.current = dupThreadId;
+    currentRunIdRef.current = runId;
+    attemptReconnectAfterDisconnect(assistantMessageId);
+    return true;
+  };
+
   // Load history when workspace or threadId changes, then check for reconnection
   useEffect(() => {
     // A reconnect stream is live on a DIFFERENT thread than the one we're now
@@ -4662,6 +4690,11 @@ export function useChatMessages(
       demotedProcessor = createStreamEventProcessor(newAssistantId, refs, getTaskIdFromEvent, demotedInterruptedRef);
     };
 
+    // Same fingerprint form as handleSendMessage: if this POST is demoted to
+    // a new turn and its response is lost, the user's re-send (which will
+    // route through handleSendMessage once loading clears) reuses the key and
+    // dedups against the accepted run.
+    const requestKey = requestKeyRef.current.take(`send|${threadId}|${message}`);
     try {
       // Send to same endpoint — backend will auto-accept steering and return steering_accepted SSE
       const result = await sendChatMessageStream(
@@ -4718,9 +4751,11 @@ export function useChatMessages(
         // overwrite the active workflow's run_id with a stream key that
         // never gets written to.
         (runId) => {
+          requestKeyRef.current.clear();
           pendingRunIdFromHeader = runId;
         },
         steeringAbort.signal,
+        requestKey,
       );
       if (mainStreamAbortRef.current === steeringAbort) {
         mainStreamAbortRef.current = null;
@@ -4956,6 +4991,10 @@ export function useChatMessages(
     });
     currentMessageRef.current = assistantMessageId;
 
+    // One request_key per logical send, reused if this exact send is
+    // retransmitted after a lost response (fingerprint match) — see
+    // createRequestKeyTracker.
+    const requestKey = requestKeyRef.current.take(`send|${threadId}|${message}`);
     let wasDisconnected = false;
     const wasInterruptedRef = { current: false };
     try {
@@ -4995,12 +5034,14 @@ export function useChatMessages(
         // run instead of skipping cancel. The first event still drives the
         // route/storage update (see the thread_id branch in processEvent).
         (runId, resolvedThreadId) => {
+          requestKeyRef.current.clear();
           currentRunIdRef.current = runId;
           if (resolvedThreadId && resolvedThreadId !== '__default__') {
             threadIdRef.current = resolvedThreadId;
           }
         },
         abortController.signal,
+        requestKey,
       );
 
       // The user hit stop: stopWorkflow already finalized the message and ran
@@ -5038,6 +5079,13 @@ export function useChatMessages(
           // streamFetch normally swallows AbortError and returns { aborted },
           // but guard here too so a stop never surfaces an error banner.
           if ((err as Error)?.name === 'AbortError' || wasStoppedRef.current) {
+            return;
+          }
+          // 409 duplicate_request: an earlier copy of this send was already
+          // accepted (its response was lost) — adopt that run instead of
+          // erroring; the reconnect owns finalization from here.
+          if (adoptDuplicateRun(err, assistantMessageId)) {
+            wasDisconnected = true;
             return;
           }
           // Handle rate limit (429) — show limit message and remove optimistic assistant message
@@ -5204,6 +5252,11 @@ export function useChatMessages(
     const wasInterruptedRef = { current: false };
     const processEvent = createStreamEventProcessor(assistantMessageId, refs, getTaskIdFromEvent, wasInterruptedRef);
 
+    // One request_key per resume (keyed by the interrupt answers), reused on
+    // a retransmit after a lost response — see createRequestKeyTracker.
+    const requestKey = requestKeyRef.current.take(
+      `hitl|${threadId}|${JSON.stringify(hitlResponse)}`,
+    );
     let wasDisconnected = false;
     try {
       const result = await sendHitlResponse(
@@ -5220,9 +5273,11 @@ export function useChatMessages(
         // attemptReconnectAfterDisconnect fall back to the prior run's
         // TaskInfo and silently hang.
         (runId) => {
+          requestKeyRef.current.clear();
           currentRunIdRef.current = runId;
         },
         abortController.signal,
+        requestKey,
       );
 
       // User hit stop: stopWorkflow already finalized + tore down. Exception: a
@@ -5258,6 +5313,12 @@ export function useChatMessages(
       }
     } catch (err: unknown) {
       if ((err as Error)?.name === 'AbortError' || wasStoppedRef.current) {
+        return;
+      }
+      // 409 duplicate_request: an earlier copy of this resume was already
+      // accepted (its response was lost) — adopt that run instead of erroring.
+      if (adoptDuplicateRun(err, assistantMessageId)) {
+        wasDisconnected = true;
         return;
       }
       console.error('[HITL] Error resuming workflow:', err);
@@ -5628,6 +5689,13 @@ export function useChatMessages(
     // Invalidate turn checkpoints cache (branch creates new checkpoints)
     turnCheckpointsRef.current = null;
 
+    // One request_key per retry click / fork, reused on a retransmit after a
+    // lost response — see createRequestKeyTracker.
+    const requestKey = requestKeyRef.current.take(
+      viaRetryEndpoint
+        ? `retry|${threadId}`
+        : `fork|${threadId}|${checkpointId ?? ''}|${forkFromTurn ?? ''}|${message ?? ''}`,
+    );
     let wasDisconnected = false;
     const wasInterruptedRef = { current: false };
     try {
@@ -5649,6 +5717,7 @@ export function useChatMessages(
       // Latch run_id from response headers — see handleSendMessage for the same
       // closing-the-race rationale. Shared by both branches.
       const latchRunId = (runId: string) => {
+        requestKeyRef.current.clear();
         currentRunIdRef.current = runId;
       };
       const result = viaRetryEndpoint
@@ -5661,6 +5730,7 @@ export function useChatMessages(
             modelOptions.fastMode || null,
             latchRunId,
             abortController.signal,
+            requestKey,
           )
         : await sendChatMessageStream(
             message || '',
@@ -5681,6 +5751,7 @@ export function useChatMessages(
             platform,
             latchRunId,
             abortController.signal,
+            requestKey,
           );
 
       // User hit stop: stopWorkflow already finalized + tore down. Exception: a
@@ -5712,6 +5783,12 @@ export function useChatMessages(
       markTranscriptPersisted();
     } catch (err: unknown) {
       if ((err as Error)?.name === 'AbortError' || wasStoppedRef.current) {
+        return;
+      }
+      // 409 duplicate_request: an earlier copy of this retry/fork was already
+      // accepted (its response was lost) — adopt that run instead of erroring.
+      if (adoptDuplicateRun(err, assistantMessageId)) {
+        wasDisconnected = true;
         return;
       }
       console.error('[streamFromCheckpoint] Error:', err);

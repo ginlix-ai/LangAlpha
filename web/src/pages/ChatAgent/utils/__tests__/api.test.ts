@@ -441,7 +441,7 @@ describe('ChatAgent API utilities', () => {
       mockWatchResponse([
         'event: workflow_started\ndata: {"thread_id":"flash-1","run_id":"rb-1"}\n\n',
       ]);
-      expect(await runWatch()).toEqual({ run_id: 'rb-1' });
+      expect(await runWatch()).toEqual({ run_id: 'rb-1', needs_input: null });
     });
 
     it('parses the run_id when the data line arrives in a later read() chunk', async () => {
@@ -452,7 +452,7 @@ describe('ChatAgent API utilities', () => {
         'event: workflow_started\ndata: {"thread_id":"flash-1","ru',
         'n_id":"rb-1"}\n\n',
       ]);
-      expect(await runWatch()).toEqual({ run_id: 'rb-1' });
+      expect(await runWatch()).toEqual({ run_id: 'rb-1', needs_input: null });
     });
 
     it('skips keepalive pings before reporting the wake run_id', async () => {
@@ -461,12 +461,12 @@ describe('ChatAgent API utilities', () => {
         ': ping\n\n',
         'event: workflow_started\ndata: {"run_id":"rb-9"}\n\n',
       ]);
-      expect(await runWatch()).toEqual({ run_id: 'rb-9' });
+      expect(await runWatch()).toEqual({ run_id: 'rb-9', needs_input: null });
     });
 
     it('reports a null run_id for a malformed wake (caller falls back to /status)', async () => {
       mockWatchResponse(['event: workflow_started\ndata: {not json}\n\n']);
-      expect(await runWatch()).toEqual({ run_id: null });
+      expect(await runWatch()).toEqual({ run_id: null, needs_input: null });
     });
 
     it('joins multiple data: lines per the SSE spec before parsing', async () => {
@@ -476,7 +476,7 @@ describe('ChatAgent API utilities', () => {
       mockWatchResponse([
         'event: workflow_started\ndata: {"thread_id":"flash-1",\ndata: "run_id":"rb-7"}\n\n',
       ]);
-      expect(await runWatch()).toEqual({ run_id: 'rb-7' });
+      expect(await runWatch()).toEqual({ run_id: 'rb-7', needs_input: null });
     });
 
     it('keeps reading and delivers EVERY wake on one persistent connection (no cancel mid-stream)', async () => {
@@ -494,7 +494,10 @@ describe('ChatAgent API utilities', () => {
         // onClosed (3rd arg) fires when the backend ends the stream — resolve then.
         watchThread('flash-1', (p) => { payloads.push(p); }, resolve, onResubscribed);
       });
-      expect(payloads).toEqual([{ run_id: 'rb-1' }, { run_id: 'rb-2' }]);
+      expect(payloads).toEqual([
+        { run_id: 'rb-1', needs_input: null },
+        { run_id: 'rb-2', needs_input: null },
+      ]);
       expect(reader.cancel).not.toHaveBeenCalled();
       // The initial (non-retry) subscription is not a recovery.
       expect(onResubscribed).not.toHaveBeenCalled();
@@ -580,7 +583,7 @@ describe('ChatAgent API utilities', () => {
 
         expect(onResubscribed).toHaveBeenCalledTimes(1);
         // The wake buffered on the fresh connection was still delivered.
-        expect(payloads).toEqual([{ run_id: 'rb-after-gap' }]);
+        expect(payloads).toEqual([{ run_id: 'rb-after-gap', needs_input: null }]);
         // Final close signalled exactly once — the recovery didn't double-fire it.
         expect(onClosed).toHaveBeenCalledTimes(1);
       } finally {
