@@ -170,6 +170,10 @@ class ModelConfig:
             # Only include tier when explicitly set — absence means "not platform-managed"
             if "tier" in model_info:
                 entry["tier"] = model_info["tier"]
+            # OAuth plan allowlist — the connected subscription's plan_type must
+            # be one of these for the model to be usable (absence = no gate).
+            if "oauth_plans" in model_info:
+                entry["oauth_plans"] = model_info["oauth_plans"]
             # Optional editorial metadata for the model-detail flyout. Additive —
             # only surfaced for models that authored it in models.json; the
             # frontend renders only the rows that are present.

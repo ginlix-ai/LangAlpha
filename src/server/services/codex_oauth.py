@@ -210,6 +210,7 @@ async def get_valid_token(user_id: str) -> dict | None:
         return {
             "access_token": tokens["access_token"],
             "account_id": tokens["account_id"],
+            "plan_type": tokens.get("plan_type"),
         }
 
     # Need to refresh — acquire Redis lock
@@ -228,6 +229,7 @@ async def get_valid_token(user_id: str) -> dict | None:
                 return {
                     "access_token": tokens["access_token"],
                     "account_id": tokens["account_id"],
+                    "plan_type": tokens.get("plan_type"),
                 }
             return None
 
@@ -264,6 +266,7 @@ async def get_valid_token(user_id: str) -> dict | None:
         return {
             "access_token": new["access_token"],
             "account_id": account_id,
+            "plan_type": claims.get("plan_type") or tokens.get("plan_type"),
         }
     except Exception as e:
         logger.error(f"[codex_oauth] Token refresh failed for user_id={user_id}: {e}")
