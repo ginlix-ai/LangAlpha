@@ -338,12 +338,56 @@ async def lifespan(app: FastAPI):
             logger.warning("Offloaded ID dedup will use in-memory fallback")
             store = None
 
+        # Phase 2 (I2): the pinned-session writer pool. Only meaningful with
+        # a Postgres checkpointer in the SAME database as the app tables —
+        # advisory locks are database-local, so a split deployment gets no
+        # fence (and must stay single-worker).
+        try:
+            from src.server.database.conversation import get_db_connection_string
+            from src.server.services import writer_guard
+
+            if checkpointer is not None and hasattr(checkpointer, "conn"):
+                app_dsn = get_db_connection_string()
+                cp_pool = checkpointer.conn
+                cp_dsn = getattr(cp_pool, "conninfo", None) or getattr(
+                    cp_pool, "_conninfo", ""
+                )
+                if writer_guard.same_database(app_dsn, cp_dsn):
+                    await writer_guard.open_writer_pool(app_dsn)
+                else:
+                    logger.warning(
+                        "WriterGuard disabled: checkpointer database differs "
+                        "from the app database; runs are unfenced and "
+                        "--workers>1 is unsupported"
+                    )
+            else:
+                logger.warning(
+                    "WriterGuard disabled: non-Postgres checkpointer; runs "
+                    "are unfenced and --workers>1 is unsupported"
+                )
+        except Exception as e:
+            logger.warning(f"WriterGuard pool setup failed: {e}; running unfenced")
+
     except FileNotFoundError as e:
         logger.warning(f"PTC Agent config not found: {e}")
         logger.warning("PTC Agent endpoints will not be available")
     except Exception as e:
         logger.warning(f"Failed to initialize PTC Agent: {e}")
         logger.warning("PTC Agent endpoints may not work correctly")
+
+    # Multi-worker hard gate (top level — must not be swallowed by the PTC
+    # init catch-all): without the fence, two workers could both write one
+    # thread's checkpoints. Refuse to boot rather than corrupt.
+    _workers = int(os.getenv("LANGALPHA_WORKERS", "1") or 1)
+    if _workers > 1:
+        from src.server.services import writer_guard as _wg
+
+        if not _wg.guard_enabled():
+            raise RuntimeError(
+                f"--workers={_workers} requires the WriterGuard fence: "
+                f"use a Postgres checkpointer in the same database as "
+                f"the app tables, or run a single worker."
+            )
 
     # Start the hook-outbox drainer BEFORE the stale-run sweep so the jobs
     # the sweep enqueues (and any left over from the previous process — the
@@ -565,6 +609,15 @@ async def lifespan(app: FastAPI):
         logger.info("HookOutboxDrainer stopped")
     except Exception as e:
         logger.warning(f"Error stopping HookOutboxDrainer: {e}")
+
+    # 6c. Close the writer-guard pool AFTER BTM shutdown: the final
+    # finalizes run on pinned guard sessions checked out of this pool.
+    try:
+        from src.server.services.writer_guard import close_writer_pool
+
+        await close_writer_pool()
+    except Exception as e:
+        logger.warning(f"Error closing writer-guard pool: {e}")
 
     # 7. Close database pools
     try:

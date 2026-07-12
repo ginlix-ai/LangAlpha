@@ -84,6 +84,11 @@ if __name__ == "__main__":
             args.workers,
         )
 
+    # Uvicorn never exposes the worker count to the app, so hand it over via
+    # env: the lifespan refuses --workers>1 when the WriterGuard fence cannot
+    # activate (non-Postgres checkpointer or split app/checkpoint databases).
+    os.environ["LANGALPHA_WORKERS"] = str(args.workers)
+
     try:
         logger.info(f"Starting server on {args.host}:{args.port}")
         uvicorn.run(

@@ -331,7 +331,9 @@ async def astream_flash_workflow(
         # Build flash graph (no sandbox, no session)
         flash_graph = build_flash_graph(
             config=config,
-            checkpointer=setup.checkpointer,
+            # I2: flash turns write checkpoints too — same fenced session
+            # rule as PTC (InsightService, checkpointer-less, is exempt).
+            checkpointer=run_handle.checkpointer,
             user_profile=flash_user_profile,
             store=setup.store,
         )

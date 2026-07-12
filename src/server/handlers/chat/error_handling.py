@@ -356,6 +356,26 @@ async def handle_workflow_error(
         yield _emit_sse_error(handler, error_payload)
         return
 
+    # Pinned-session budget/lock refusal (I2): bounded capacity signal, raised
+    # by START before anything durable exists — retryable, nothing to finalize.
+    from src.server.services.writer_guard import WriterGuardUnavailable
+
+    if isinstance(e, WriterGuardUnavailable):
+        await release_burst_slot(user_id, getattr(request, "burst_slot_id", None))
+        error_payload = {
+            "thread_id": thread_id,
+            "error": (
+                "The server is at its concurrent-run capacity; please retry "
+                "in a moment."
+            ),
+            "type": "workflow_error",
+            "error_type": "capacity_limit",
+            "error_class": type(e).__name__,
+            "code": "writer_capacity",
+        }
+        yield _emit_sse_error(handler, error_payload)
+        return
+
     # A (platform, external_id) create race won by a DIFFERENT user is a
     # deterministic protocol conflict, not a workflow execution failure: thread
     # creation lost the ``idx_conversation_threads_external`` check. Surface it

@@ -12,6 +12,7 @@ else may write a run's terminal state.
 import asyncio
 import json
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional
@@ -111,6 +112,20 @@ class RunHandle:
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     outcome_hint: Optional[TurnOutcome] = None
     finalized: bool = False
+    # Phase 2 (I2): the run's pinned PG session — advisory-lock fence,
+    # lifecycle SQL, and per-run saver on one connection. None = Phase-1
+    # fallback (memory saver, split app/checkpoint DBs, or pool not open).
+    guard: Optional[Any] = None
+
+    @property
+    def checkpointer(self) -> Optional[Any]:
+        """The saver this run's graph MUST use: the guard's session-bound
+        saver when fenced, else the global pooled saver."""
+        if self.guard is not None:
+            return self.guard.saver
+        from src.server.app import setup
+
+        return setup.checkpointer
 
 
 class TurnCoordinator:
@@ -145,22 +160,39 @@ class TurnCoordinator:
         """Create the durable attempt: query row + in_progress run + projection.
 
         Raises RunSlotBusyError (409 admission), DuplicateRequestError
-        (idempotent retransmit — reconnect to the existing run), or
-        AttemptConflictError. A server-minted request_key is the legacy
-        fallback only; callers should supply one for dedup to mean anything.
+        (idempotent retransmit — reconnect to the existing run, guard
+        released first), AttemptConflictError, or WriterGuardUnavailable
+        (503 — pinned-session budget/lock bounded refusal). A server-minted
+        request_key is the legacy fallback only; callers should supply one
+        for dedup to mean anything.
         """
+        from src.server.services import writer_guard as wg
+
         metadata = {"msg_type": msg_type, **(run_metadata or {})}
-        row = await tl_db.start_run(
-            run_id=run_id,
-            thread_id=thread_id,
-            request_key=request_key or str(uuid4()),
-            turn_index=turn_index,
-            attempt_no=attempt_no,
-            retry_of_run_id=retry_of_run_id,
-            query=query,
-            metadata=metadata,
-        )
-        return RunHandle(
+
+        guard = None
+        if wg.guard_enabled():
+            guard = await wg.WriterGuard.acquire_root(
+                thread_id=thread_id, run_id=run_id
+            )
+        try:
+            async with (guard.mutex if guard is not None else nullcontext()):
+                row = await tl_db.start_run(
+                    run_id=run_id,
+                    thread_id=thread_id,
+                    request_key=request_key or str(uuid4()),
+                    turn_index=turn_index,
+                    attempt_no=attempt_no,
+                    retry_of_run_id=retry_of_run_id,
+                    query=query,
+                    metadata=metadata,
+                    conn=guard.conn if guard is not None else None,
+                )
+        except BaseException:
+            if guard is not None:
+                await guard.release()
+            raise
+        handle = RunHandle(
             run_id=run_id,
             thread_id=thread_id,
             turn_index=row["turn_index"],
@@ -172,7 +204,9 @@ class TurnCoordinator:
             query_id=query.query_id if query else None,
             is_byok=is_byok,
             started_at=row["created_at"],
+            guard=guard,
         )
+        return handle
 
     # --------------------------------------------------------------- FINALIZE
 
@@ -182,6 +216,7 @@ class TurnCoordinator:
         outcome: TurnOutcome,
         *,
         post_commit: Optional[Callable[[], Awaitable[None]]] = None,
+        tail_drain: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> FinalizeResult:
         """The single terminal transition. Idempotent: losing a finalize race
         (cancel vs owner) returns applied=False and performs no writes.
@@ -189,33 +224,64 @@ class TurnCoordinator:
         Usage rows ride the same transaction — a billing persist failure
         aborts the terminal write with it and surfaces, instead of being
         swallowed into a zombie ACTIVE turn.
+
+        Owns the guard teardown: the finalize SQL runs on the pinned session
+        (a lost session downgrades the outcome — see ``_downgrade_if_guard_
+        lost``); afterwards N(root) drops so the next turn can start, and the
+        session is released — immediately, or after ``tail_drain`` when
+        background-subagent writers outlive the turn (their saver IS this
+        session).
         """
-        checkpoint_id = await self._latest_checkpoint_id(handle.thread_id)
+        try:
+            checkpoint_id = await self._latest_checkpoint_id(handle)
 
-        usage_writer = None
-        if outcome.per_call_records or outcome.tool_usage:
-            usage_writer = self._build_usage_writer(handle, outcome)
+            usage_writer = None
+            if outcome.per_call_records or outcome.tool_usage:
+                usage_writer = self._build_usage_writer(handle, outcome)
 
-        if outcome.errors:
-            outcome.errors = [
-                sanitize_error_text(e) if isinstance(e, str) else e
-                for e in outcome.errors
-            ]
+            if outcome.errors:
+                outcome.errors = [
+                    sanitize_error_text(e) if isinstance(e, str) else e
+                    for e in outcome.errors
+                ]
 
-        result = await tl_db.finalize_run_idempotent(
-            run_id=handle.run_id,
-            thread_id=handle.thread_id,
-            status=outcome.status,
-            interrupt_reason=outcome.interrupt_reason,
-            metadata=outcome.metadata,
-            warnings=outcome.warnings,
-            errors=outcome.errors,
-            execution_time=outcome.execution_time,
-            sse_events=outcome.sse_events,
-            checkpoint_id=checkpoint_id,
-            usage_writer=usage_writer,
-        )
+            # ANY guard's mutex gates the CAS — including an already-lost
+            # one: a lost-but-open session's saver can still execute, and
+            # only its mutex serializes those ops against the pool CAS.
+            raw_guard = handle.guard
+            async with (raw_guard.mutex if raw_guard is not None else nullcontext()):
+                # The loss decision and the CAS must be atomic: the monitor
+                # sets `lost` while holding the guard mutex, so deciding
+                # HERE — inside the mutex — is race-free where a snapshot
+                # taken outside would be stale (monitor queued ahead of
+                # finalize).
+                guard = raw_guard
+                if guard is not None and (guard.lost or guard.conn.closed):
+                    guard = None
+                outcome = self._downgrade_if_guard_lost(handle, outcome, guard)
+                result = await tl_db.finalize_run_idempotent(
+                    run_id=handle.run_id,
+                    thread_id=handle.thread_id,
+                    status=outcome.status,
+                    interrupt_reason=outcome.interrupt_reason,
+                    metadata=outcome.metadata,
+                    warnings=outcome.warnings,
+                    errors=outcome.errors,
+                    execution_time=outcome.execution_time,
+                    sse_events=outcome.sse_events,
+                    checkpoint_id=checkpoint_id,
+                    usage_writer=usage_writer,
+                    conn=guard.conn if guard is not None else None,
+                )
+        except BaseException:
+            # A failed finalize leaves the row in_progress for recovery; the
+            # session must not stay pinned while nothing owns the run — and
+            # tail writers may still be live, so the session is discarded
+            # (closed), never clean-released out from under them.
+            self._teardown_guard(handle, tail_drain=None, discard=True)
+            raise
         handle.finalized = True
+        self._teardown_guard(handle, tail_drain=tail_drain)
 
         if result.applied:
             if post_commit is not None:
@@ -273,21 +339,63 @@ class TurnCoordinator:
             return None
 
     async def sweep_stale_runs(self) -> int:
-        """Startup-only (Phase 1, single worker): a server restart proves every
-        open run's executor is dead, so finalize them — cancelled if durable
-        cancel intent was recorded, else error(worker_lost). Phase 2 replaces
-        this with the guard-acquiring recovery scanner.
+        """Startup sweep: finalize open runs whose executor is provably dead —
+        cancelled if durable cancel intent was recorded, else
+        error(worker_lost). With the WriterGuard active, "provably dead"
+        means the run's root guard is acquirable: a sibling worker's live
+        run holds its N(root) and is skipped. Phase 2.2 extends this into
+        the periodic recovery scanner.
         """
-        swept = 0
         try:
             open_runs = await tl_db.list_open_runs()
         except Exception:
             logger.error("[TurnCoordinator] stale-run sweep query failed", exc_info=True)
             return 0
+        if not open_runs:
+            return 0
+
+        from src.server.services import writer_guard as wg
+
+        if wg.guard_enabled():
+            try:
+                async with wg.get_writer_pool().connection() as lock_conn:
+                    # The pool's reset callback runs unlock_all on the way out.
+                    return await self._sweep_runs(open_runs, lock_conn)
+            except Exception:
+                logger.error(
+                    "[TurnCoordinator] guarded sweep session failed", exc_info=True
+                )
+                return 0
+        return await self._sweep_runs(open_runs, None)
+
+    async def _sweep_runs(self, open_runs: List[Dict[str, Any]], lock_conn) -> int:
+        from src.server.services import writer_guard as wg
+
+        swept = 0
         for run in open_runs:
             run_id = str(run["conversation_response_id"])
             thread_id = str(run["conversation_thread_id"])
             status = "cancelled" if run.get("cancel_requested_at") else "error"
+            root_key = None
+            if lock_conn is not None:
+                root_key = wg.namespace_key(thread_id, wg.ROOT_NS)
+                try:
+                    cur = await lock_conn.execute(
+                        "SELECT pg_try_advisory_lock(%s)", (root_key,)
+                    )
+                    acquired = (await cur.fetchone())[0]
+                except Exception:
+                    logger.error(
+                        f"[TurnCoordinator] sweep lock probe failed for {run_id}",
+                        exc_info=True,
+                    )
+                    continue
+                if not acquired:
+                    logger.info(
+                        f"[TurnCoordinator] sweep skipping run {run_id}: root "
+                        f"guard held (live owner on another worker)"
+                    )
+                    continue
             try:
                 # finalize_run's default derives the terminal hooks from the
                 # row's START-stamped metadata — a crashed run still
@@ -315,6 +423,14 @@ class TurnCoordinator:
                     f"[TurnCoordinator] failed to sweep stale run {run_id}",
                     exc_info=True,
                 )
+            finally:
+                if lock_conn is not None and root_key is not None:
+                    try:
+                        await lock_conn.execute(
+                            "SELECT pg_advisory_unlock(%s)", (root_key,)
+                        )
+                    except Exception:
+                        pass
         return swept
 
     async def reconcile_orphaned_dispatch(
@@ -431,6 +547,90 @@ class TurnCoordinator:
             )
         return terminal_status
 
+    # ------------------------------------------------------------ guard utils
+
+    def _usable_guard(self, handle: RunHandle):
+        """The handle's guard iff its session is still trustworthy."""
+        guard = handle.guard
+        if guard is None or guard.lost or guard.conn.closed:
+            return None
+        return guard
+
+    def _downgrade_if_guard_lost(
+        self, handle: RunHandle, outcome: TurnOutcome, usable_guard
+    ) -> TurnOutcome:
+        """A run whose pinned session died cannot vouch for its final
+        checkpoints (the saver died with the session), so success statuses
+        are dishonest: downgrade completed/interrupted to error, exactly as
+        the recovery scanner would classify it. The finalize then runs on
+        the pool — same CAS, one winner — with the loss stamped.
+
+        ``usable_guard`` is the caller's guard view re-validated under the
+        guard mutex — the one the CAS will use — so the loss decision and
+        the CAS connection can never diverge."""
+        if handle.guard is None or usable_guard is not None:
+            return outcome
+        if outcome.status != "error":
+            # Even a requested 'cancelled' downgrades: without durable intent
+            # it would backfill cancel_requested_at and masquerade as a user
+            # stop, when the truth is an infra abort. Real user intent is on
+            # the row and the CAS adopts 'cancelled' from it regardless.
+            logger.critical(
+                f"[TurnCoordinator] guard session lost for run={handle.run_id}; "
+                f"downgrading {outcome.status} -> error"
+            )
+            outcome.status = "error"
+            outcome.interrupt_reason = None
+            outcome.errors = (outcome.errors or []) + [
+                "guard_session_lost: the run's writer session died before "
+                "its final checkpoints could be verified"
+            ]
+        outcome.metadata = {**outcome.metadata, "guard_session_lost": True}
+        return outcome
+
+    def _teardown_guard(
+        self,
+        handle: RunHandle,
+        *,
+        tail_drain: Optional[Callable[[], Awaitable[None]]],
+        discard: bool = False,
+    ) -> None:
+        """Detached, exactly-once guard teardown: drop N(root) now so the
+        thread's next turn can start, hold the session through the tail
+        writers' drain, then unlock and return the connection.
+
+        A drain failure (registry error, deadline) means writers may still
+        be live, so it flips to ``discard``: a clean release would retarget
+        their saver at the pool and let them checkpoint unfenced — the
+        session is closed instead, and any late write fails loudly."""
+        guard = handle.guard
+        if guard is None:
+            return
+        handle.guard = None
+
+        async def _run() -> None:
+            must_discard = discard
+            try:
+                if tail_drain is not None and not must_discard:
+                    await guard.demote_to_tail()
+                    try:
+                        await tail_drain()
+                    except BaseException:
+                        must_discard = True
+                        logger.warning(
+                            f"[TurnCoordinator] tail drain failed for "
+                            f"run={handle.run_id}; discarding the session",
+                            exc_info=True,
+                        )
+            finally:
+                await guard.release(discard=must_discard)
+
+        task = asyncio.create_task(
+            _run(), name=f"writer-guard-teardown-{handle.run_id[:8]}"
+        )
+        _protected_tasks.add(task)
+        task.add_done_callback(_reap_protected)
+
     # ------------------------------------------------------------------ utils
 
     def _build_usage_writer(self, handle: RunHandle, outcome: TurnOutcome):
@@ -468,19 +668,27 @@ class TurnCoordinator:
 
         return _write
 
-    async def _latest_checkpoint_id(self, thread_id: str) -> Optional[str]:
+    async def _latest_checkpoint_id(self, handle: RunHandle) -> Optional[str]:
+        """Checkpoint tip via the run's own session when fenced (reads its
+        own writes; a lock-lost session can't answer), else the pool saver."""
         try:
-            from src.server.app import setup
+            guard = self._usable_guard(handle)
+            if guard is not None:
+                saver = guard.saver
+            else:
+                from src.server.app import setup
 
-            if not setup.checkpointer:
+                saver = setup.checkpointer
+            if not saver:
                 return None
-            cp = await setup.checkpointer.aget_tuple(
-                {"configurable": {"thread_id": thread_id}}
+            cp = await saver.aget_tuple(
+                {"configurable": {"thread_id": handle.thread_id}}
             )
             return cp.config["configurable"]["checkpoint_id"] if cp else None
         except Exception:
             logger.warning(
-                f"[TurnCoordinator] checkpoint_id read failed for {thread_id}",
+                f"[TurnCoordinator] checkpoint_id read failed for "
+                f"{handle.thread_id}",
                 exc_info=True,
             )
             return None

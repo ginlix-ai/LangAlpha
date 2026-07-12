@@ -10,6 +10,7 @@ happen inside these two transactions and nowhere else.
 """
 
 import logging
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
@@ -80,6 +81,16 @@ class FinalizeResult:
     run: Optional[Dict[str, Any]] = None
 
 
+@asynccontextmanager
+async def _lifecycle_connection(conn=None):
+    """Yield the caller-pinned session as-is, or a pool connection."""
+    if conn is not None:
+        yield conn
+        return
+    async with qr_db.get_db_connection() as pool_conn:
+        yield pool_conn
+
+
 async def allocate_turn_index(conn, thread_id: str) -> int:
     """Next turn = MAX+1 across queries ∪ responses (gap-robust, unlike COUNT)."""
     async with conn.cursor(row_factory=dict_row) as cur:
@@ -114,18 +125,21 @@ async def start_run(
     query: Optional[QuerySpec] = None,
     metadata: Optional[Dict[str, Any]] = None,
     created_at: Optional[datetime] = None,
+    conn=None,
 ) -> Dict[str, Any]:
     """The START transaction: query row + in_progress run row + thread projection.
 
     Returns the run row. Raises DuplicateRequestError / RunSlotBusyError /
     AttemptConflictError — each backed by a DB constraint, so two workers
     racing the same admission cannot both win regardless of what they read.
+    ``conn`` pins the transaction to the caller's session (WriterGuard);
+    the post-conflict classification reads always use fresh pool reads.
     """
     created_at = created_at or datetime.now(timezone.utc)
     conflict: Optional[str] = None
 
     try:
-        async with qr_db.get_db_connection() as conn:
+        async with _lifecycle_connection(conn) as conn:
             async with conn.transaction():
                 # Fast-path dedup probe. The unique index below is the
                 # race-safe backstop; this just avoids burning a turn_index.
@@ -231,6 +245,7 @@ async def finalize_run(
     sse_events: Optional[List[Dict[str, Any]]] = None,
     checkpoint_id: Optional[str] = None,
     usage_writer: Optional[Callable[[Any, str], Awaitable[None]]] = None,
+    conn=None,
 ) -> FinalizeResult:
     """The finalize transaction: exactly one CAS from in_progress to terminal.
 
@@ -253,7 +268,7 @@ async def finalize_run(
     if status not in TERMINAL_STATUSES:
         raise ValueError(f"finalize_run: {status!r} is not a terminal status")
 
-    async with qr_db.get_db_connection() as conn:
+    async with _lifecycle_connection(conn) as conn:
         async with conn.transaction():
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(

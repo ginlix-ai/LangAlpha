@@ -28,6 +28,10 @@ logger = structlog.get_logger(__name__)
 # stays open for the rest of the run (see ``_spill_record_to_redis``).
 _SPILL_TIMEOUT_SECONDS = 0.5
 
+# Bounded wait for a cancelled task's unwind before its registry entry drops
+# (normal unwind is milliseconds; see ``cancel_run_tasks``).
+CANCEL_UNWIND_TIMEOUT = 15.0
+
 # Event-type marker for the per-task stream-end sentinel. The producer writes
 # one of these via ``append_sentinel_to_stream`` when the subagent finishes
 # streaming; the per-task SSE consumer treats it as "drain complete" and exits.
@@ -211,6 +215,7 @@ class BackgroundTaskRegistry:
         ] = {}  # LangGraph namespace UUID -> tool_call_id
         self._lock = asyncio.Lock()
         self._results: dict[str, Any] = {}
+        self._late_removals: set[asyncio.Task] = set()
         self.current_turn_index: int = 0
         self.current_run_id: str | None = None
         self.thread_id: str = thread_id
@@ -233,6 +238,38 @@ class BackgroundTaskRegistry:
         concurrent turns share the registry.
         """
         async with self._lock:
+            # A same-id re-registration (checkpoint replay re-executing the
+            # tool call) must not evict a still-live writer from the guard
+            # drain's view: the displaced entry moves to a tombstone key —
+            # drains iterate values, so any key keeps it visible — and is
+            # reaped once its writers settle. Known residual: the displaced
+            # writer's own late ops still key by the original tool_call_id
+            # and so attribute to the replacement — same logical call, no
+            # fence impact; run/task-scoped routing identity lands with the
+            # namespace-sealing milestone (v4 Phase 2.4).
+            existing = self._tasks.get(tool_call_id)
+            if existing is not None and any(
+                t is not None and not t.done()
+                for t in (existing.asyncio_task, existing.handler_task)
+            ):
+                tombstone = f"{tool_call_id}#displaced-{secrets.token_hex(3)}"
+                self._tasks[tombstone] = self._tasks.pop(tool_call_id)
+                self._task_id_to_tool_call_id[existing.task_id] = tombstone
+                for ns, tid in list(self._ns_uuid_to_tool_call_id.items()):
+                    if tid == tool_call_id:
+                        self._ns_uuid_to_tool_call_id[ns] = tombstone
+                if tool_call_id in self._results:
+                    self._results[tombstone] = self._results.pop(tool_call_id)
+                logger.warning(
+                    "tool_call_id re-registered while previous writer alive; "
+                    "displaced entry retained for drain visibility",
+                    tool_call_id=tool_call_id,
+                    tombstone=tombstone,
+                    old_run_id=existing.spawned_run_id,
+                    new_run_id=run_id,
+                )
+                self._remove_when_settled(tombstone, existing)
+
             # Generate short alphanumeric task_id
             task_id = secrets.token_urlsafe(4)[:6]
 
@@ -915,9 +952,45 @@ class BackgroundTaskRegistry:
                         "status": "cancelled",
                     }
                     cancelled += 1
+            # Snapshot the writers before dropping entries: a cancelled task
+            # keeps unwinding (checkpoint writes in cleanup sections) after
+            # cancel() returns, and the writer-guard tail drain discovers
+            # writers THROUGH this registry — removing a live one would let
+            # the run's pinned session release out from under it.
+            unwinding = [
+                t
+                for tool_call_id in scoped
+                if (task := self._tasks.get(tool_call_id)) is not None
+                for t in (task.asyncio_task, task.handler_task)
+                if t is not None and not t.done()
+            ]
+        if unwinding:
+            await asyncio.wait(unwinding, timeout=CANCEL_UNWIND_TIMEOUT)
         # No collector will ever claim these entries — drop them so the
-        # registry doesn't grow across turns on a long-lived thread.
-        for tool_call_id in scoped:
+        # registry doesn't grow across turns on a long-lived thread. A task
+        # whose writers are STILL alive after the bounded wait stays
+        # registered (drain-visible); the guard drain's own deadline is the
+        # backstop for a writer that never dies.
+        removable: list[str] = []
+        async with self._lock:
+            for tool_call_id in scoped:
+                task = self._tasks.get(tool_call_id)
+                if task is None:
+                    continue
+                if any(
+                    t is not None and not t.done()
+                    for t in (task.asyncio_task, task.handler_task)
+                ):
+                    logger.warning(
+                        "Cancelled background task still unwinding; left "
+                        "registered for the guard drain",
+                        run_id=run_id,
+                        tool_call_id=tool_call_id,
+                    )
+                    self._remove_when_settled(tool_call_id, task)
+                    continue
+                removable.append(tool_call_id)
+        for tool_call_id in removable:
             await self.remove_task(tool_call_id)
 
         if cancelled > 0:
@@ -937,17 +1010,44 @@ class BackgroundTaskRegistry:
         on a long-lived thread.
         """
         async with self._lock:
-            task = self._tasks.pop(tool_call_id, None)
-            if task is None:
-                return
-            self._task_id_to_tool_call_id.pop(task.task_id, None)
-            self._results.pop(tool_call_id, None)
-            stale_ns = [
-                ns for ns, tid in self._ns_uuid_to_tool_call_id.items()
-                if tid == tool_call_id
-            ]
-            for ns in stale_ns:
-                del self._ns_uuid_to_tool_call_id[ns]
+            self._remove_entry_unlocked(tool_call_id)
+
+    def _remove_entry_unlocked(self, tool_call_id: str) -> None:
+        task = self._tasks.pop(tool_call_id, None)
+        if task is None:
+            return
+        self._task_id_to_tool_call_id.pop(task.task_id, None)
+        self._results.pop(tool_call_id, None)
+        stale_ns = [
+            ns for ns, tid in self._ns_uuid_to_tool_call_id.items()
+            if tid == tool_call_id
+        ]
+        for ns in stale_ns:
+            del self._ns_uuid_to_tool_call_id[ns]
+
+    def _remove_when_settled(self, tool_call_id: str, task) -> None:
+        """A cancelled entry retained for the guard drain must still leave
+        the registry once its writers finally settle, or a long-lived thread
+        leaks one entry per slow unwind. Identity-checked under the lock so
+        a re-registration of the same tool_call_id is never removed."""
+        writers = [
+            t for t in (task.asyncio_task, task.handler_task) if t is not None
+        ]
+
+        async def _late_remove() -> None:
+            try:
+                await asyncio.wait(writers)
+            except Exception:
+                pass
+            async with self._lock:
+                if self._tasks.get(tool_call_id) is task:
+                    self._remove_entry_unlocked(tool_call_id)
+
+        reaper = asyncio.create_task(
+            _late_remove(), name=f"bg-task-late-remove-{tool_call_id[:8]}"
+        )
+        self._late_removals.add(reaper)
+        reaper.add_done_callback(self._late_removals.discard)
 
     def _clear_unlocked(self) -> None:
         """Drop all task/result/lookup state. Caller owns concurrency control."""

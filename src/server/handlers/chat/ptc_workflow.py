@@ -440,7 +440,9 @@ async def astream_ptc_workflow(
             config=config,
             subagent_names=subagents,
             operation_callback=None,
-            checkpointer=setup.checkpointer,
+            # I2: the run's fenced session-bound saver when the WriterGuard
+            # is active; the global pooled saver otherwise.
+            checkpointer=run_handle.checkpointer,
             background_registry=background_registry,
             user_id=user_id,
             plan_mode=effective_plan_mode,

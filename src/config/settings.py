@@ -249,6 +249,16 @@ def get_conversation_pool_max() -> int:
     return _env_pool_size("POSTGRES_CONVERSATION_POOL_MAX", default=50)
 
 
+def get_writer_pool_max() -> int:
+    """Env POSTGRES_WRITER_POOL_MAX, default 25.
+
+    The pinned-session budget: one physical connection is held per live run
+    (WriterGuard), so this IS the effective concurrent-run cap when the
+    guard is active. Exhaustion is a bounded 503, never an unfenced run.
+    """
+    return _env_pool_size("POSTGRES_WRITER_POOL_MAX", default=25)
+
+
 def get_replay_projection_cache_ttl() -> int:
     """Env REPLAY_PROJECTION_CACHE_TTL_SECONDS, default 14 days. 0 disables."""
     default = 14 * 86400

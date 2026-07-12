@@ -784,6 +784,25 @@ class BackgroundTaskManager:
                     f"handoff for {key}; signalling cancel"
                 )
                 await self.cancel_workflow(thread_id, run_id)
+
+        # I2: the guard monitor aborts the run on session loss before it can
+        # act on a stale view — same force path as a user stop (cooperative
+        # event + inner-task cancel), classified by the guard-lost downgrade.
+        if (
+            started is not None
+            and run_handle is not None
+            and run_handle.guard is not None
+        ):
+
+            def _abort_on_session_loss() -> None:
+                info = self.tasks.get(key)
+                if info is None:
+                    return
+                info.cancel_event.set()
+                if info.inner_task is not None and not info.inner_task.done():
+                    info.inner_task.cancel()
+
+            run_handle.guard.attach_abort(_abort_on_session_loss)
         return started
 
     async def _run_workflow(
@@ -1692,8 +1711,19 @@ class BackgroundTaskManager:
                 per_call_records=per_call_records,
                 tool_usage=tool_usage,
             )
+            # I2 tail mode: subagent writers that survive the turn checkpoint
+            # through the run's pinned session, so its release must wait for
+            # them (N(root) drops at finalize either way).
+            tail_drain = None
+            if handle.guard is not None:
+
+                async def tail_drain() -> None:
+                    await self._drain_run_subagent_writers(thread_id, run_id)
+
             finalize_applied, status, survivor_status = (
-                await self._drive_finalize_cas(key, handle, outcome)
+                await self._drive_finalize_cas(
+                    key, handle, outcome, tail_drain=tail_drain
+                )
             )
         else:
             logger.error(
@@ -1873,7 +1903,7 @@ class BackgroundTaskManager:
         return execution_time, per_call_records, tool_usage, sse_events, persist_metadata
 
     async def _drive_finalize_cas(
-        self, key: tuple, handle, outcome
+        self, key: tuple, handle, outcome, *, tail_drain=None
     ) -> tuple[bool, str, Optional[str]]:
         """One finalize CAS -> (applied, adopted_status, survivor_status).
 
@@ -1891,6 +1921,7 @@ class BackgroundTaskManager:
             result = await TurnCoordinator.get_instance().finalize_turn(
                 handle,
                 outcome,
+                tail_drain=tail_drain,
             )
             if result.applied:
                 final_status = (result.run or {}).get("status")
@@ -1915,6 +1946,56 @@ class BackgroundTaskManager:
                 exc_info=True,
             )
             return False, status, None
+
+    # Legit tail subagents (deep research) run 15+ min; this only bounds how
+    # long a HUNG writer can pin a budget slot before the teardown discards
+    # the session out from under it.
+    TAIL_DRAIN_TIMEOUT = 1800.0
+
+    async def _drain_run_subagent_writers(self, thread_id: str, run_id: str) -> None:
+        """Wait until none of this run's subagents can touch the checkpointer
+        anymore — they write through the run's pinned session, so the guard
+        holds until the last of their asyncio tasks settles. Collectors are
+        not writers (they read Redis and persist via the app pool).
+
+        Fail-closed: raises on registry failure or deadline, so the guard
+        teardown discards the session instead of clean-releasing it under
+        writers it could not account for. Re-snapshots after each wait to
+        catch writers registered while earlier ones were draining."""
+        from src.server.services.background_registry_store import (
+            BackgroundRegistryStore,
+        )
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.TAIL_DRAIN_TIMEOUT
+        while True:
+            bg_registry = await BackgroundRegistryStore.get_instance().get_registry(
+                thread_id
+            )
+            if not bg_registry:
+                return
+            writers: list[asyncio.Task] = []
+            async with bg_registry._lock:
+                for t in bg_registry._tasks.values():
+                    if t.spawned_run_id is not None and t.spawned_run_id != run_id:
+                        continue
+                    for writer in (t.asyncio_task, getattr(t, "handler_task", None)):
+                        if writer is not None and not writer.done():
+                            writers.append(writer)
+            if not writers:
+                return
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"tail drain deadline: {len(writers)} subagent writer(s) "
+                    f"still running for run={run_id} after "
+                    f"{self.TAIL_DRAIN_TIMEOUT:.0f}s"
+                )
+            logger.info(
+                f"[BackgroundTaskManager] guard tail-drain awaiting "
+                f"{len(writers)} subagent writer(s) for run={run_id}"
+            )
+            await asyncio.wait(writers, timeout=remaining)
 
     async def _apply_post_terminal_effects(
         self,
