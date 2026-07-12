@@ -837,7 +837,9 @@ const REPORT_BACK_WAKE_EVENT = 'workflow_started';
  */
 export function watchThread(
   threadId: string,
-  onWorkflowStarted: (payload?: { run_id?: string | null }) => void | Promise<void>,
+  onWorkflowStarted: (
+    payload?: { run_id?: string | null; needs_input?: string | null },
+  ) => void | Promise<void>,
   onClosed?: () => void,
   onResubscribed?: () => void,
 ): { abort: AbortController } {
@@ -891,7 +893,7 @@ export function watchThread(
               // (mirroring streamFetch above) so a multi-line payload stays
               // parseable instead of truncating to the first line and corrupting
               // the JSON. The backend wake is single-line today; this is resilience.
-              let payload: { run_id?: string | null } = {};
+              let payload: { run_id?: string | null; needs_input?: string | null } = {};
               const dataLines: string[] = [];
               for (const raw of frame.split('\n')) {
                 if (raw.startsWith('data:')) dataLines.push(raw.slice(5).trim());
@@ -907,7 +909,10 @@ export function watchThread(
               // dispatched PTCs wake separately, and a re-subscribe would lose
               // wake #2+. Awaiting `onWorkflowStarted` (which blocks until that
               // run's stream finishes) naturally serializes the chain.
-              await onWorkflowStarted({ run_id: payload.run_id ?? null });
+              await onWorkflowStarted({
+                run_id: payload.run_id ?? null,
+                needs_input: payload.needs_input ?? null,
+              });
             }
           }
           return; // Backend closed the stream (30-min cap / disconnect).

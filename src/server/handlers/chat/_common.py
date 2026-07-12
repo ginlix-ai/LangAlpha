@@ -992,7 +992,7 @@ async def handle_workflow_error(
         and isinstance(e.detail, dict)
         and e.detail.get("code") in ADMISSION_CONFLICT_CODES
     ):
-        await release_burst_slot(user_id)
+        await release_burst_slot(user_id, getattr(request, "burst_slot_id", None))
         # Normally pre-START (run_handle is None). The flash RuntimeError
         # fallback can 409 after START, though — release the durable slot so
         # it doesn't leak until the stale-run sweep.
@@ -1022,7 +1022,7 @@ async def handle_workflow_error(
     # back, so nothing was persisted for THIS request (run_handle is None) and
     # there is nothing to finalize.
     if isinstance(e, DuplicateRequestError):
-        await release_burst_slot(user_id)
+        await release_burst_slot(user_id, getattr(request, "burst_slot_id", None))
         existing = e.existing_run or {}
         error_payload = {
             "thread_id": thread_id,
@@ -1058,7 +1058,7 @@ async def handle_workflow_error(
         return
 
     if isinstance(e, (RunSlotBusyError, AttemptConflictError)):
-        await release_burst_slot(user_id)
+        await release_burst_slot(user_id, getattr(request, "burst_slot_id", None))
         detail = (
             admission_conflict_detail("running")
             if isinstance(e, RunSlotBusyError)
@@ -1087,7 +1087,7 @@ async def handle_workflow_error(
     # already-started stream, so this is the response surface — a synchronous
     # HTTP 409 status is not reachable from here.
     if isinstance(e, qr_db.ExternalIdConflictError):
-        await release_burst_slot(user_id)
+        await release_burst_slot(user_id, getattr(request, "burst_slot_id", None))
         # Same core fields (error_type discriminator + offending pair + human
         # wording) as the stamp API's HTTP 409, built from the shared helper so
         # the two surfaces never drift; the SSE-envelope fields (thread_id, type,
@@ -1108,7 +1108,7 @@ async def handle_workflow_error(
     MAX_RETRIES = get_max_workflow_retries()
 
     # Release burst slot on error (setup errors before background task starts)
-    await release_burst_slot(user_id)
+    await release_burst_slot(user_id, getattr(request, "burst_slot_id", None))
 
     classification = classify_error(e)
     is_recoverable = classification["is_recoverable"]

@@ -115,6 +115,17 @@ async def test_ptc_dispatch_crash_clears_via_thread_id():
 # emits NOTHING when the stream already closed or the run actually succeeded.
 
 
+def _row(status):
+    """A minimally-real ledger row: the fallback finalize builds its hook
+    factory from these fields (build_finalize_jobs_from_run_row)."""
+    return {
+        "conversation_response_id": "run-1",
+        "conversation_thread_id": "ptc-1",
+        "status": status,
+        "metadata": {"msg_type": "ptc", "user_id": "u-1"},
+    }
+
+
 def _ledger_patches(run_row, finalize_result=None):
     from src.server.database import turn_lifecycle as tl_db
 
@@ -161,7 +172,7 @@ async def test_orphaned_in_progress_row_is_finalized_then_run_end():
     cache = _FakeCache({})
     order, manager = await _run_crash(
         cache,
-        run_row={"status": "in_progress"},
+        run_row=_row("in_progress"),
         finalize_result=FinalizeResult(applied=True, run={"status": "error"}),
     )
     assert order == ["error_xadd", "run_end"]
@@ -177,7 +188,7 @@ async def test_durable_cancel_intent_adopts_cancelled_outcome():
     cache = _FakeCache({})
     order, manager = await _run_crash(
         cache,
-        run_row={"status": "in_progress"},
+        run_row=_row("in_progress"),
         finalize_result=FinalizeResult(applied=True, run={"status": "cancelled"}),
     )
     assert order == ["run_end"]
@@ -196,7 +207,7 @@ async def test_lost_finalize_cas_emits_nothing():
     cache = _FakeCache({})
     order, manager = await _run_crash(
         cache,
-        run_row={"status": "in_progress"},
+        run_row=_row("in_progress"),
         finalize_result=FinalizeResult(applied=False, run={"status": "error"}),
     )
     assert order == []
@@ -216,7 +227,7 @@ async def test_no_ledger_row_emits_error_frame_without_run_end():
 async def test_completed_row_emits_nothing():
     """A run that really finished must not gain a misleading error frame."""
     cache = _FakeCache({})
-    order, manager = await _run_crash(cache, run_row={"status": "completed"})
+    order, manager = await _run_crash(cache, run_row=_row("completed"))
     assert order == []
     manager.append_run_end_event.assert_not_awaited()
 
@@ -226,7 +237,7 @@ async def test_terminal_error_row_gets_error_frame_and_its_real_status():
     """In-generator finalize (row already error, no run_end on the stream):
     the consumer path completes the transport close with the ROW's status."""
     cache = _FakeCache({})
-    order, manager = await _run_crash(cache, run_row={"status": "error"})
+    order, manager = await _run_crash(cache, run_row=_row("error"))
     assert order == ["error_xadd", "run_end"]
     manager.append_run_end_event.assert_awaited_once_with("ptc-1", "run-1", "error")
 
@@ -237,7 +248,7 @@ async def test_stream_already_closed_with_run_end_emits_nothing():
     cache.client.xrevrange = AsyncMock(
         return_value=[("1-0", {b"event": b"event: run_end\ndata: {}\n\n"})]
     )
-    order, manager = await _run_crash(cache, run_row={"status": "error"})
+    order, manager = await _run_crash(cache, run_row=_row("error"))
     assert order == []
     manager.append_run_end_event.assert_not_awaited()
 
@@ -306,7 +317,7 @@ async def test_failed_last_resort_finalize_withholds_run_end():
     clear = AsyncMock()
     p1, p2, p0 = _patched(cache, clear)
     with p1, p2, p0, patch.object(
-        tl_db, "get_run", AsyncMock(return_value={"status": "in_progress"})
+        tl_db, "get_run", AsyncMock(return_value=_row("in_progress"))
     ), patch.object(
         tl_db,
         "finalize_run_idempotent",

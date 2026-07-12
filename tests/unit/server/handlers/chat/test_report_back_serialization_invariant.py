@@ -169,6 +169,10 @@ class _FakeCache:
     async def get(self, key):
         return self.kv.get(key)
 
+    async def get_strict(self, key):
+        # Fake transport never fails, so strict == plain get here.
+        return self.kv.get(key)
+
     async def set(self, key, value, ttl=None) -> None:
         self.kv[key] = value
 

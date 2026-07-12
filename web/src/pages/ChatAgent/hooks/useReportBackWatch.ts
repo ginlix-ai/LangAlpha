@@ -15,6 +15,8 @@
  * cached-view become-active transition.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { queryKeys } from '@/lib/queryKeys';
 import {
   getReportBackStatus,
   getWorkflowStatus,
@@ -168,6 +170,7 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
     requestHistoryReload,
   } = params;
 
+  const queryClient = useQueryClient();
   const awaitingReportBackRef = useRef(false);
   // React-state mirror of awaitingReportBackRef for the chat-input tip; the ref
   // stays the synchronous source of truth.
@@ -411,6 +414,16 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
           const wakeRunId = payload?.run_id ?? null;
           if (wakeRunId) {
             await reconcile('wake', wakeRunId);
+            return;
+          }
+          // needs_input wake: a dispatched PTC hit a HITL interrupt (no
+          // report-back run — it hasn't completed). Refetch the batched
+          // dispatch-liveness query so its card flips to needs_input now
+          // instead of on the next slow poll.
+          if (payload?.needs_input) {
+            void queryClient.invalidateQueries({
+              queryKey: queryKeys.threads.dispatchLivenessAll(),
+            });
             return;
           }
           // Payload-less wake (older backend / malformed): /status reconcile

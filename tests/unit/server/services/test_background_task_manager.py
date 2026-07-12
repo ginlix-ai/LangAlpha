@@ -565,8 +565,7 @@ class TestMarkCancelledUserLabeling:
              patch(f"{mod}.calculate_execution_time", return_value=1.0), \
              patch(f"{mod}.release_burst_slot", new_callable=AsyncMock), \
              patch(f"{mod}.WorkflowTracker") as mock_tracker_cls, \
-             patch("src.server.services.turn_lifecycle.TurnCoordinator") as mock_coord_cls, \
-             patch.object(btm, "_clear_report_back_watch", new_callable=AsyncMock):
+             patch("src.server.services.turn_lifecycle.TurnCoordinator") as mock_coord_cls:
             mock_tracker_cls.get_instance.return_value.mark_cancelled = AsyncMock()
             mock_coord_cls.get_instance.return_value = coordinator
             await btm._finalize_run(task_info.thread_id, task_info.run_id, kind="cancelled")
@@ -1103,7 +1102,7 @@ class TestStartWorkflowCancelledPlaceholder:
                 thread_id=thread_id,
                 run_id=run_id,
                 workflow_generator=gen(),
-                metadata={"user_id": "u-1"},
+                metadata={"user_id": "u-1", "burst_slot_id": "slot-1"},
             )
 
         # Settled terminally; no resurrected task; generator never consumed.
@@ -1111,7 +1110,7 @@ class TestStartWorkflowCancelledPlaceholder:
         assert ti.task is None
         assert consumed is False
         # Burst slot released here — no BTM task will finalize to release it.
-        rel.assert_awaited_once_with("u-1")
+        rel.assert_awaited_once_with("u-1", "slot-1")
         # No second workflow lingers active on the thread.
         assert await btm.wait_for_admission(thread_id) == "fresh"
 
@@ -1318,118 +1317,6 @@ class TestCancelCompaction:
 # ---------------------------------------------------------------------------
 # _clear_report_back_watch — terminal runs clear the flash report-back watch
 # ---------------------------------------------------------------------------
-
-class TestClearReportBackWatch:
-    """A terminal report-back-adjacent run must clear its flash report-back watch,
-    since the success-only completion hook never runs on a terminal failure/cancel
-    (else /status reports the report-back pending until its 24h TTL). The PTC
-    thread whose origin to tear down is resolved exactly as the crash path does:
-    ``report_back_ptc_thread_id`` else ``thread_id``, then ``ptc_origin``."""
-
-    @staticmethod
-    def _cache_with_origin(origin):
-        cache = MagicMock()
-        cache.enabled = True
-        cache.client = MagicMock()
-        cache.client.publish = AsyncMock()
-        cache.get = AsyncMock(return_value=origin)
-        return cache
-
-    @pytest.mark.asyncio
-    async def test_clears_report_back_flash_run_via_origin(self):
-        """A report-back flash run (report_back_ptc_thread_id set) resolves its
-        origin by that ptc id and clears the originating flash's watch + wakes it."""
-        from src.server.handlers.chat.report_back_keys import (
-            ptc_origin_key,
-            thread_wake_key,
-        )
-
-        btm = _make_btm()
-        cache = self._cache_with_origin(
-            {"flash_thread_id": "flash-1", "user_id": "u-1"}
-        )
-        mock_clear = AsyncMock()
-
-        with patch(
-            "src.utils.cache.redis_cache.get_cache_client", return_value=cache
-        ), patch(
-            "src.server.handlers.chat.report_back.clear_flash_report_back", mock_clear
-        ):
-            await btm._clear_report_back_watch(
-                "flash-1", {"report_back_ptc_thread_id": "ptc-1", "user_id": "u-1"}
-            )
-
-        cache.get.assert_awaited_once_with(ptc_origin_key("ptc-1"))
-        # Owner threaded through so the per-user cap slot is released even if
-        # ptc_origin TTL-expired; flash thread comes from the origin record.
-        mock_clear.assert_awaited_once_with(cache, "ptc-1", "flash-1", user_id="u-1")
-        channel, _payload = cache.client.publish.await_args.args
-        assert channel == thread_wake_key("flash-1")
-
-    @pytest.mark.asyncio
-    async def test_clears_cancelled_dispatched_ptc_via_origin(self):
-        """A user-cancelled dispatched PTC run carries NO report_back_ptc_thread_id
-        and thread_id IS the ptc thread — its origin (keyed by thread_id) still
-        exists, so the flash's watch + per-user cap slot must be cleared and the
-        watching client woken (the crash-clear never fires on a clean cancel)."""
-        from src.server.handlers.chat.report_back_keys import (
-            ptc_origin_key,
-            thread_wake_key,
-        )
-
-        btm = _make_btm()
-        cache = self._cache_with_origin(
-            {"flash_thread_id": "flash-9", "user_id": "u-1"}
-        )
-        mock_clear = AsyncMock()
-
-        with patch(
-            "src.utils.cache.redis_cache.get_cache_client", return_value=cache
-        ), patch(
-            "src.server.handlers.chat.report_back.clear_flash_report_back", mock_clear
-        ):
-            await btm._clear_report_back_watch("ptc-1", {"user_id": "u-1"})
-
-        cache.get.assert_awaited_once_with(ptc_origin_key("ptc-1"))
-        mock_clear.assert_awaited_once_with(cache, "ptc-1", "flash-9", user_id="u-1")
-        assert cache.client.publish.await_args.args[0] == thread_wake_key("flash-9")
-
-    @pytest.mark.asyncio
-    async def test_noop_for_ordinary_flash_turn_without_origin(self):
-        """An ordinary flash turn (thread_id is the flash thread, no ptc_origin
-        keyed on it) must stay a no-op — no clear, no wake."""
-        btm = _make_btm()
-        cache = self._cache_with_origin(None)  # no origin for this id
-        mock_clear = AsyncMock()
-
-        with patch(
-            "src.utils.cache.redis_cache.get_cache_client", return_value=cache
-        ), patch(
-            "src.server.handlers.chat.report_back.clear_flash_report_back", mock_clear
-        ):
-            await btm._clear_report_back_watch("flash-1", {"user_id": "u-1"})
-
-        mock_clear.assert_not_called()
-        cache.client.publish.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_swallows_clear_errors(self):
-        btm = _make_btm()
-        cache = self._cache_with_origin(
-            {"flash_thread_id": "flash-1", "user_id": "u-1"}
-        )
-
-        with patch(
-            "src.utils.cache.redis_cache.get_cache_client", return_value=cache
-        ), patch(
-            "src.server.handlers.chat.report_back.clear_flash_report_back",
-            AsyncMock(side_effect=RuntimeError("redis down")),
-        ):
-            # Must not raise — terminal handlers call this best-effort.
-            await btm._clear_report_back_watch(
-                "flash-1", {"report_back_ptc_thread_id": "ptc-1"}
-            )
-
 
 # ---------------------------------------------------------------------------
 # Terminal run_end frame (WORKFLOW_RUN_END_EVENT)

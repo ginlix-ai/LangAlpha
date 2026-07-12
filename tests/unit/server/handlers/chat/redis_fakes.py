@@ -152,6 +152,10 @@ class FakeCache:
     async def get(self, key):
         return self.kv.get(key)
 
+    async def get_strict(self, key):
+        # Fake transport never fails, so strict == plain get here.
+        return self.kv.get(key)
+
     async def set(self, key, value, ttl=None) -> bool:
         # Mirror RedisCache.set's True-on-success: reserve()'s fail-closed
         # origin write treats a falsy return as a dispatch failure.

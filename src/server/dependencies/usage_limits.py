@@ -27,7 +27,23 @@ logger = logging.getLogger(__name__)
 
 # Default burst limit when the auth/quota service doesn't specify one
 _DEFAULT_MAX_CONCURRENT = int(os.getenv("BURST_MAX_CONCURRENT") or "10")
-_BURST_COUNTER_TTL = int(os.getenv("BURST_COUNTER_TTL") or "300")  # seconds
+# Margin past the workflow timeout before an unreleased slot is presumed leaked
+_BURST_REAP_MARGIN = 300  # seconds
+
+
+def _burst_reap_horizon() -> int:
+    """Age after which an unreleased slot member is reaped as leaked.
+
+    Must exceed the longest legitimate run (the workflow timeout) — a shorter
+    horizon reaps slots of still-running turns, so long runs silently stop
+    counting against the burst limit. BURST_COUNTER_TTL overrides for tests.
+    """
+    override = os.getenv("BURST_COUNTER_TTL")
+    if override:
+        return int(override)
+    from src.config.settings import get_workflow_timeout
+
+    return get_workflow_timeout() + _BURST_REAP_MARGIN
 
 # Shared httpx client (created lazily, async-safe)
 _http_client: Optional[httpx.AsyncClient] = None
@@ -63,57 +79,101 @@ class ChatAuthResult:
     is_byok: bool = False
     has_oauth: bool = False
     access_tier: int = -1  # -1 = no platform access, 0+ = tier level
+    burst_slot_id: Optional[str] = None  # ZSET member held for this request
 
 
 
 # ---------------------------------------------------------------------------
-# Burst guard (local Redis INCR/DECR — stays in langalpha)
+# Burst guard (local Redis ZSET of slot ids — stays in langalpha)
+#
+# v4 (1.7): each admission holds a uuid member in a per-user ZSET scored by
+# admission time. Release is ZREM — idempotent, so the finalize-time release
+# can ride the hook outbox (effect-before-ack retries are harmless), unlike
+# the old INCR/DECR counter where a retried DECR freed slots never held.
+# Stale members (crashed before release) are reaped by score on each check,
+# so a leak self-heals after the reap horizon even for a busy user who keeps
+# the key alive (the old counter never healed under load). The horizon is
+# workflow-timeout-based so a long-running turn is never reaped while live.
 # ---------------------------------------------------------------------------
+
+def _burst_key(user_id: str) -> str:
+    # New key name: the legacy key held a counter STRING; ZADD on it would
+    # WRONGTYPE during a rolling deploy. Old keys expire on their own TTL.
+    return f"usage:burst:slots:{user_id}"
+
 
 async def _check_burst_guard(user_id: str, max_concurrent: int) -> dict:
-    """Redis-based burst guard: INCR on entry, DECR on release."""
+    """Admit by ZSET cardinality; returns the held slot_id on success."""
+    import time
+    from uuid import uuid4
+
     from src.utils.cache.redis_cache import get_cache_client
 
     cache = get_cache_client()
     if not cache.enabled or not cache.client:
         return {"allowed": True}
 
-    key = f"usage:burst:{user_id}"
+    key = _burst_key(user_id)
+    slot_id = str(uuid4())
+    now = time.time()
+    horizon = _burst_reap_horizon()
     try:
         pipe = cache.client.pipeline()
-        pipe.incr(key)
-        pipe.expire(key, _BURST_COUNTER_TTL)
+        pipe.zremrangebyscore(key, "-inf", now - horizon)  # reap leaked
+        pipe.zadd(key, {slot_id: now})
+        pipe.zcard(key)
+        pipe.expire(key, horizon)
         results = await pipe.execute()
-        current = results[0]
+        current = results[2]
 
         if current > max_concurrent:
-            # Roll back
-            await cache.client.decr(key)
+            # Roll back our own member only.
+            await cache.client.zrem(key, slot_id)
             return {"allowed": False, "current": current - 1, "limit": max_concurrent}
 
-        return {"allowed": True, "current": current, "limit": max_concurrent}
+        return {
+            "allowed": True,
+            "current": current,
+            "limit": max_concurrent,
+            "slot_id": slot_id,
+        }
     except Exception as e:
         logger.warning("Burst guard Redis error, allowing request: %s", e)
         return {"allowed": True}
 
 
-async def release_burst_slot(user_id: str) -> None:
-    """Release a burst slot (DECR) after request completes."""
+async def release_burst_slot(
+    user_id: str, slot_id: Optional[str] = None, *, strict: bool = False
+) -> None:
+    """Release a held burst slot (ZREM). Idempotent — safe to retry.
+
+    slot_id None is a no-op (fail-open admission held no member; legacy
+    in-flight requests from before the ZSET cutover release nothing and
+    their old counter key simply expires). strict=True re-raises Redis
+    errors — the hook-outbox executor's nack/backoff is the retry path,
+    and a swallowed ZREM would ack a still-held slot.
+    """
     if HOST_MODE == "oss":
         return  # No burst guard in OSS mode
+    if not slot_id:
+        return
 
     from src.utils.cache.redis_cache import get_cache_client
 
     cache = get_cache_client()
     if not cache.enabled or not cache.client:
+        # `enabled` flips off on a FAILED startup connect too, so a held
+        # slot must not be acked as released in this state — raise so the
+        # outbox drainer nacks and retries once Redis is back.
+        if strict:
+            raise RuntimeError("Redis cache unavailable — burst slot not released")
         return
 
-    key = f"usage:burst:{user_id}"
     try:
-        current = await cache.client.decr(key)
-        if current < 0:
-            await cache.client.set(key, 0, ex=_BURST_COUNTER_TTL)
+        await cache.client.zrem(_burst_key(user_id), slot_id)
     except Exception as e:
+        if strict:
+            raise
         logger.warning("Burst guard release error: %s", e)
 
 
@@ -169,6 +229,7 @@ async def enforce_chat_limit(
         is_byok=is_byok,
         has_oauth=has_oauth,
         access_tier=tier,
+        burst_slot_id=burst_result.get("slot_id"),
     )
 
 

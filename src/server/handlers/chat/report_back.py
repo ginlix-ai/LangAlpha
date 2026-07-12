@@ -561,21 +561,29 @@ WAKE_MAX_WATCH_DURATION = 30 * 60  # auto-close an abandoned watch after 30 min
 
 
 async def publish_wake(
-    cache, flash_thread_id: str, run_id: str | None = None, *, error: str | None = None
+    cache,
+    flash_thread_id: str,
+    run_id: str | None = None,
+    *,
+    error: str | None = None,
+    needs_input: str | None = None,
 ) -> None:
     """Publish a report-back wake on a flash thread's channel. Best-effort.
 
     Single home for the wire payload shape: a normal wake carries
-    ``{thread_id, run_id}``; an error wake carries ``{error}``. Swallows publish
+    ``{thread_id, run_id}``; an error wake carries ``{error}``; a HITL pause
+    on a dispatched PTC carries ``{needs_input: <ptc thread id>}`` (run_id-less,
+    so the client treats it as a /status-refresh nudge). Swallows publish
     failures — a dropped nudge degrades to the client's ``/status`` poll.
     """
     if not (cache and getattr(cache, "client", None)):
         return
-    payload = (
-        {"error": error}
-        if error
-        else {"thread_id": flash_thread_id, "run_id": run_id}
-    )
+    if error:
+        payload = {"error": error}
+    elif needs_input:
+        payload = {"needs_input": needs_input}
+    else:
+        payload = {"thread_id": flash_thread_id, "run_id": run_id}
     try:
         await cache.client.publish(thread_wake_key(flash_thread_id), json.dumps(payload))
     except Exception:
@@ -752,16 +760,19 @@ async def _flash_report_back(ptc_thread_id: str) -> None:
     from src.utils.cache.redis_cache import get_cache_client
 
     cache = get_cache_client()
-    if not cache.client:
-        return
-    origin = await cache.get(ptc_origin_key(ptc_thread_id))
+    # Strict read (sole caller is the hook-outbox drainer): raises on ANY
+    # unavailable state — blip, failed startup connect, config-off — so the
+    # drainer nacks instead of acking a dropped dispatch as "not report-back".
+    origin = await cache.get_strict(ptc_origin_key(ptc_thread_id))
     if not origin or origin.get("origin") != "flash" or not origin.get("report_back"):
         return
     flash_thread_id = origin.get("flash_thread_id")
     if not flash_thread_id or not origin.get("user_id"):
         return
 
-    # Atomic enqueue — see _ENQUEUE_REPORT_BACK_LUA.
+    # Atomic enqueue — see _ENQUEUE_REPORT_BACK_LUA. A failed EVAL must
+    # raise: the sole caller is the hook-outbox drainer, whose nack/backoff
+    # is the retry path — swallowing here would ack a dropped dispatch.
     try:
         enqueued = await cache.client.eval(
             _ENQUEUE_REPORT_BACK_LUA,
@@ -778,7 +789,7 @@ async def _flash_report_back(ptc_thread_id: str) -> None:
             f"on flash thread {flash_thread_id}",
             exc_info=True,
         )
-        return
+        raise
 
     # 1 = newly enqueued -> start the consumer; 0 = not a member / already queued.
     if enqueued:

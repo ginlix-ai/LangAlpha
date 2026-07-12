@@ -260,6 +260,9 @@ async def _consume_background_gen(
                     if run_row is not None:
                         if run_row.get("status") == "in_progress":
                             try:
+                                # finalize_run's default enqueues the
+                                # terminal hooks from START-stamped row
+                                # metadata (burst release, watch clear).
                                 result = await tl_db.finalize_run_idempotent(
                                     run_id=run_id,
                                     thread_id=thread_id,

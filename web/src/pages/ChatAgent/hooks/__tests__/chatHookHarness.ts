@@ -54,7 +54,7 @@ export function threadStatus(over: Record<string, unknown> = {}) {
 /** One captured watchThread subscription: thread, callbacks, abort controller. */
 export interface WatchCall {
   tid: string;
-  cb: (p?: { run_id?: string | null }) => void | Promise<void>;
+  cb: (p?: { run_id?: string | null; needs_input?: string | null }) => void | Promise<void>;
   onClosed?: () => void;
   onResubscribed?: () => void;
   controller: AbortController;

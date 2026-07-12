@@ -345,6 +345,18 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Failed to initialize PTC Agent: {e}")
         logger.warning("PTC Agent endpoints may not work correctly")
 
+    # Start the hook-outbox drainer BEFORE the stale-run sweep so the jobs
+    # the sweep enqueues (and any left over from the previous process — the
+    # lease-expiry reclaim doubles as startup recovery) start executing
+    # immediately.
+    try:
+        from src.server.services.hook_outbox import HookOutboxDrainer
+
+        HookOutboxDrainer.get_instance().start()
+        logger.info("HookOutboxDrainer started")
+    except Exception as e:
+        logger.warning(f"Failed to start HookOutboxDrainer: {e}")
+
     # Sweep stale in_progress runs (turn lifecycle v4, Phase 1). Single-worker:
     # this process restarting proves any open run's executor is dead.
     try:
@@ -542,6 +554,17 @@ async def lifespan(app: FastAPI):
         await manager.shutdown()  # Uses shutdown_timeout from config.yaml
     except Exception as e:
         logger.error(f"Error during BackgroundTaskManager shutdown: {e}")
+
+    # 6b. Stop the hook-outbox drainer AFTER BTM shutdown so jobs enqueued by
+    # those final finalizes still execute; anything unclaimed survives
+    # durably for the next startup's reclaim.
+    try:
+        from src.server.services.hook_outbox import HookOutboxDrainer
+
+        await HookOutboxDrainer.get_instance().stop()
+        logger.info("HookOutboxDrainer stopped")
+    except Exception as e:
+        logger.warning(f"Error stopping HookOutboxDrainer: {e}")
 
     # 7. Close database pools
     try:

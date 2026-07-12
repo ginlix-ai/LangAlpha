@@ -207,7 +207,7 @@ async def astream_ptc_workflow(
         )
         if not ready:
             slot_owned = False
-            await release_burst_slot(user_id)
+            await release_burst_slot(user_id, request.burst_slot_id)
             # Release admission immediately — no workflow will register
             # under this lock, so holding it would needlessly block any
             # follow-up POST.
@@ -317,6 +317,13 @@ async def astream_ptc_workflow(
                 if retry_of is not None
                 else None
             ),
+            # Durable on the row so the startup sweep can enqueue this run's
+            # terminal hooks (burst release, watch clear) without any
+            # in-process context surviving the crash.
+            run_metadata={
+                "user_id": user_id,
+                "burst_slot_id": request.burst_slot_id,
+            },
         )
         if not is_checkpoint_replay:
             logger.debug(
@@ -765,16 +772,10 @@ async def astream_ptc_workflow(
         # _finalize_run before this callback fires. A failure here is logged
         # by the caller and never changes the run's outcome.
         async def on_background_workflow_complete(task_info):
-            # Flash report-back: if this PTC thread was dispatched by a
-            # flash agent with report_back=True, send a message to the
-            # flash thread so it can summarize the results.
-            try:
-                from src.server.handlers.chat.report_back import _flash_report_back
-                await _flash_report_back(thread_id)
-            except Exception as e:
-                logger.warning(
-                    f"[PTC_COMPLETE] Flash report-back failed for {thread_id}: {e}"
-                )
+            # Flash report-back moved to the hook outbox (1.7): finalize
+            # enqueues a durable report_back job, so a crash right here can
+            # no longer drop the dispatch. This callback keeps only
+            # best-effort sandbox housekeeping.
 
             # Post-completion sandbox housekeeping (parallel)
             ws_manager = WorkspaceManager.get_instance()
@@ -807,6 +808,7 @@ async def astream_ptc_workflow(
                 "start_time": start_time,
                 "msg_type": "ptc",
                 "is_byok": is_byok,
+                "burst_slot_id": request.burst_slot_id,
                 "locale": request.locale,
                 "timezone": timezone_str,
                 "handler": handler,
@@ -868,7 +870,7 @@ async def astream_ptc_workflow(
 
     except (asyncio.CancelledError, GeneratorExit):
         if slot_owned:
-            await release_burst_slot(user_id)
+            await release_burst_slot(user_id, request.burst_slot_id)
             # Died between START and BTM handoff: nothing will ever execute
             # this run, so the open slot must be released here (Phase 1 has
             # no recovery scanner). protected_finalize: a second cancel on

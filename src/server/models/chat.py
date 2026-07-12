@@ -342,6 +342,15 @@ class ChatRequest(BaseModel):
         "Internal use only.",
     )
 
+    # Server-stamped: the burst-guard ZSET member held by this request's
+    # admission. The route overwrites whatever a client sent (a forged value
+    # could only orphan the caller's own slot until reap, but stamping keeps
+    # the release chain trustworthy end to end).
+    burst_slot_id: Optional[str] = Field(
+        default=None,
+        description="Burst-guard slot held for this request. Server-stamped.",
+    )
+
     # External thread identity (for channel integrations like Telegram, Slack)
     external_thread_id: Optional[str] = Field(
         default=None,

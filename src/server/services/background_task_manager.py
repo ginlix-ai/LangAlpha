@@ -708,7 +708,9 @@ class BackgroundTaskManager:
             # Holding task_lock across the Redis DECR would delay a concurrent
             # /cancel, which also needs the lock.
             if cancelled_uid:
-                await release_burst_slot(cancelled_uid)
+                await release_burst_slot(
+                    cancelled_uid, (metadata or {}).get("burst_slot_id")
+                )
             # The caller STARTed this run and flips slot_owned=False on return, so
             # no executor and no generator path will ever finalize it — settle the
             # durable row here or the thread slot leaks until the startup sweep.
@@ -1749,6 +1751,10 @@ class BackgroundTaskManager:
         finalize_applied = True
         survivor_status: Optional[str] = None
         if handle is not None:
+            # I5: terminal hooks (burst release, report-back dispatch,
+            # needs-input wake, watch clear) ride the finalize transaction
+            # as durable outbox jobs — finalize_run derives them from the
+            # row's START-stamped metadata, so no explicit factory here.
             outcome = TurnOutcome(
                 status=status,
                 interrupt_reason=interrupt_reason,
@@ -1863,9 +1869,6 @@ class BackgroundTaskManager:
                         f"{tracker_err}"
                     )
 
-                if status in ("error", "cancelled"):
-                    await self._clear_report_back_watch(thread_id, metadata)
-
                 # Collection follows the ADOPTED status: only a run that
                 # actually ended completed/interrupted gets a collector. A
                 # terminal error or (adopted) cancel instead kills this run's
@@ -1901,8 +1904,10 @@ class BackgroundTaskManager:
                 exc_info=True,
             )
 
-        if user_id:
-            await release_burst_slot(user_id)
+        if handle is None and user_id:
+            # Legacy fallback only: without a durable run row there are no
+            # outbox jobs, so the burst slot must release inline.
+            await release_burst_slot(user_id, metadata.get("burst_slot_id"))
 
         task_info.persistence_complete.set()
         async with self.task_lock:
@@ -1987,50 +1992,6 @@ class BackgroundTaskManager:
                 f"thread_id={thread_id} run_id={run_id} after {timeout}s"
             )
             return False
-
-    async def _clear_report_back_watch(self, thread_id: str, metadata: dict) -> None:
-        """Best-effort clear of the flash report-back watch on a terminal run.
-
-        Resolves the PTC thread via ``report_back_ptc_thread_id`` (a report-back
-        flash run) else ``thread_id`` (a cancelled/failed dispatched PTC run).
-        Needed because cancellation ends the consumer generator normally — the
-        crash-clear never fires and the watch membership + per-user cap slot
-        would leak. An ordinary flash turn (no origin keyed on the id) is a no-op.
-        """
-        metadata = metadata or {}
-        ptc_thread_id = metadata.get("report_back_ptc_thread_id") or thread_id
-        try:
-            from src.server.handlers.chat.report_back import (
-                clear_flash_report_back,
-                publish_wake,
-            )
-            from src.server.handlers.chat.report_back_keys import ptc_origin_key
-            from src.utils.cache.redis_cache import get_cache_client
-
-            cache = get_cache_client()
-            if not (cache.enabled and cache.client):
-                return
-            origin = await cache.get(ptc_origin_key(ptc_thread_id))
-            if not origin:
-                return
-            flash_tid = origin.get("flash_thread_id")
-            # Pass the known owner so the per-user cap slot is released even if
-            # ptc_origin TTL-expired before this terminal clear.
-            await clear_flash_report_back(
-                cache, ptc_thread_id, flash_tid,
-                user_id=metadata.get("user_id") or origin.get("user_id"),
-            )
-            if flash_tid:
-                # Wake watching clients so a cancelled/failed dispatch's card
-                # reconciles instead of spinning until TTL.
-                await publish_wake(
-                    cache, flash_tid, error="background_workflow_failed"
-                )
-        except Exception as e:
-            logger.warning(
-                f"[BackgroundTaskManager] report-back watch clear failed for "
-                f"{thread_id}: {e}"
-            )
 
     async def _persist_collected_events(
         self,

@@ -235,6 +235,20 @@ class RedisCacheClient:
             self.stats["errors"] += 1
             return None
 
+    async def get_strict(self, key: str) -> Optional[Any]:
+        """Get with fail-loud semantics: None ONLY for a confirmed-absent key.
+
+        For callers whose retry path is an exception (outbox executors) —
+        the swallowing ``get`` would turn a Redis blip into "no data" and
+        let a required effect ack as a no-op.
+        """
+        if not self.enabled or not self.client:
+            raise RuntimeError("Redis cache disabled — strict read unavailable")
+        value = await self.client.get(key)
+        if value is None:
+            return None
+        return json.loads(value)
+
     async def set(
         self,
         key: str,

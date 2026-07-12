@@ -18,31 +18,37 @@ MODULE = "src.server.dependencies.usage_limits"
 # ===================================================================
 
 
-def _mock_redis_cache(enabled=True, pipeline_results=None, decr_result=0):
-    """Return a mock Redis cache for burst guard tests."""
+def _mock_redis_cache(enabled=True, zcard=1):
+    """Return a mock Redis cache for the ZSET burst guard tests.
+
+    Pipeline result order mirrors the implementation:
+    [zremrangebyscore, zadd, zcard, expire].
+    """
     cache = MagicMock()
     cache.enabled = enabled
     cache.client = MagicMock() if enabled else None
 
     if enabled and cache.client:
         pipe = AsyncMock()
-        pipe.incr = MagicMock(return_value=pipe)
+        pipe.zremrangebyscore = MagicMock(return_value=pipe)
+        pipe.zadd = MagicMock(return_value=pipe)
+        pipe.zcard = MagicMock(return_value=pipe)
         pipe.expire = MagicMock(return_value=pipe)
-        pipe.execute = AsyncMock(return_value=pipeline_results or [1])
+        pipe.execute = AsyncMock(return_value=[0, 1, zcard, True])
         cache.client.pipeline = MagicMock(return_value=pipe)
-        cache.client.decr = AsyncMock(return_value=decr_result)
-        cache.client.set = AsyncMock()
+        cache.client.zrem = AsyncMock(return_value=1)
 
     return cache
 
 
 class TestCheckBurstGuard:
-    """Tests for _check_burst_guard Redis INCR/DECR logic."""
+    """_check_burst_guard: ZSET-membership admission (slot per request)."""
 
     @pytest.mark.asyncio
-    async def test_under_limit_allowed(self):
-        """Request under the limit returns allowed=True with correct count."""
-        cache = _mock_redis_cache(pipeline_results=[3])
+    async def test_under_limit_allowed_returns_slot(self):
+        """Admission under the limit returns the held slot's id — the caller
+        must thread it through to release_burst_slot."""
+        cache = _mock_redis_cache(zcard=3)
 
         with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
             from src.server.dependencies.usage_limits import _check_burst_guard
@@ -52,11 +58,16 @@ class TestCheckBurstGuard:
         assert result["allowed"] is True
         assert result["current"] == 3
         assert result["limit"] == 10
+        assert result["slot_id"]
+        # The slot registered in the ZSET is the one handed back.
+        pipe = cache.client.pipeline()
+        zadd_members = pipe.zadd.call_args[0][1]
+        assert list(zadd_members.keys()) == [result["slot_id"]]
 
     @pytest.mark.asyncio
     async def test_at_limit_allowed(self):
-        """Request at exactly max_concurrent is still allowed."""
-        cache = _mock_redis_cache(pipeline_results=[10])
+        """Request landing exactly at max_concurrent is still allowed."""
+        cache = _mock_redis_cache(zcard=10)
 
         with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
             from src.server.dependencies.usage_limits import _check_burst_guard
@@ -65,11 +76,13 @@ class TestCheckBurstGuard:
 
         assert result["allowed"] is True
         assert result["current"] == 10
+        assert result["slot_id"]
 
     @pytest.mark.asyncio
-    async def test_over_limit_rollback(self):
-        """Request over limit triggers DECR rollback and returns allowed=False."""
-        cache = _mock_redis_cache(pipeline_results=[11])
+    async def test_over_limit_removes_own_member_only(self):
+        """Denial rolls back the request's OWN ZSET member — never another
+        in-flight request's slot (the old counter DECR could)."""
+        cache = _mock_redis_cache(zcard=11)
 
         with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
             from src.server.dependencies.usage_limits import _check_burst_guard
@@ -79,7 +92,11 @@ class TestCheckBurstGuard:
         assert result["allowed"] is False
         assert result["current"] == 10
         assert result["limit"] == 10
-        cache.client.decr.assert_awaited_once()
+        assert "slot_id" not in result
+        pipe = cache.client.pipeline()
+        own_slot = list(pipe.zadd.call_args[0][1].keys())[0]
+        cache.client.zrem.assert_awaited_once()
+        assert cache.client.zrem.call_args[0][1] == own_slot
 
     @pytest.mark.asyncio
     async def test_redis_disabled_fail_open(self):
@@ -98,7 +115,7 @@ class TestCheckBurstGuard:
     @pytest.mark.asyncio
     async def test_redis_error_fail_open(self):
         """When Redis raises an exception, burst guard allows the request."""
-        cache = _mock_redis_cache(pipeline_results=[1])
+        cache = _mock_redis_cache()
         pipe = cache.client.pipeline()
         pipe.execute = AsyncMock(side_effect=ConnectionError("Redis down"))
 
@@ -108,15 +125,32 @@ class TestCheckBurstGuard:
             result = await _check_burst_guard("user-1", max_concurrent=10)
 
         assert result["allowed"] is True
+        assert "slot_id" not in result
 
 
 class TestReleaseBurstSlot:
-    """Tests for release_burst_slot Redis DECR logic."""
+    """release_burst_slot: idempotent ZREM of the held slot member."""
 
     @pytest.mark.asyncio
-    async def test_decr_to_positive(self):
-        """Normal release: DECR to a positive value, no clamping."""
-        cache = _mock_redis_cache(decr_result=2)
+    async def test_release_zrems_the_held_slot(self):
+        cache = _mock_redis_cache()
+
+        with (
+            patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
+            patch(f"{MODULE}.HOST_MODE", "platform"),
+        ):
+            from src.server.dependencies.usage_limits import release_burst_slot
+
+            await release_burst_slot("user-1", "slot-abc")
+
+        cache.client.zrem.assert_awaited_once()
+        assert cache.client.zrem.call_args[0][1] == "slot-abc"
+
+    @pytest.mark.asyncio
+    async def test_release_without_slot_is_noop(self):
+        """No slot id means fail-open admission held no member (or a legacy
+        pre-cutover request): nothing to remove, never touch the ZSET."""
+        cache = _mock_redis_cache()
 
         with (
             patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
@@ -126,33 +160,14 @@ class TestReleaseBurstSlot:
 
             await release_burst_slot("user-1")
 
-        cache.client.decr.assert_awaited_once()
-        cache.client.set.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_decr_to_negative_clamps_to_zero(self):
-        """When DECR goes negative, clamp the key to 0."""
-        cache = _mock_redis_cache(decr_result=-1)
-
-        with (
-            patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
-            patch(f"{MODULE}.HOST_MODE", "platform"),
-        ):
-            from src.server.dependencies.usage_limits import release_burst_slot
-
-            await release_burst_slot("user-1")
-
-        cache.client.decr.assert_awaited_once()
-        cache.client.set.assert_awaited_once()
-        # Verify it sets to 0
-        set_args = cache.client.set.call_args
-        assert set_args[0][1] == 0
+        cache.client.zrem.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_redis_error_swallowed(self):
-        """Redis errors during release are swallowed (no exception raised)."""
+        """Redis errors during release are swallowed (no exception raised);
+        the ZSET reap-by-score self-heals the leaked slot."""
         cache = _mock_redis_cache()
-        cache.client.decr = AsyncMock(side_effect=ConnectionError("Redis down"))
+        cache.client.zrem = AsyncMock(side_effect=ConnectionError("Redis down"))
 
         with (
             patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
@@ -161,7 +176,59 @@ class TestReleaseBurstSlot:
             from src.server.dependencies.usage_limits import release_burst_slot
 
             # Should not raise
-            await release_burst_slot("user-1")
+            await release_burst_slot("user-1", "slot-abc")
+
+    @pytest.mark.asyncio
+    async def test_strict_reraises_redis_error(self):
+        """strict=True (hook-outbox executor path) re-raises so the drainer
+        nacks and retries — a swallowed ZREM would ack a still-held slot."""
+        cache = _mock_redis_cache()
+        cache.client.zrem = AsyncMock(side_effect=ConnectionError("Redis down"))
+
+        with (
+            patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
+            patch(f"{MODULE}.HOST_MODE", "platform"),
+        ):
+            from src.server.dependencies.usage_limits import release_burst_slot
+
+            with pytest.raises(ConnectionError):
+                await release_burst_slot("user-1", "slot-abc", strict=True)
+
+    @pytest.mark.asyncio
+    async def test_strict_raises_when_cache_unavailable(self):
+        """`enabled` flips off on a failed startup connect: strict release
+        must raise (drainer nack), never return as if the slot were freed."""
+        cache = _mock_redis_cache(enabled=False)
+        cache.client = None
+
+        with (
+            patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache),
+            patch(f"{MODULE}.HOST_MODE", "platform"),
+        ):
+            from src.server.dependencies.usage_limits import release_burst_slot
+
+            with pytest.raises(RuntimeError):
+                await release_burst_slot("user-1", "slot-abc", strict=True)
+            # Non-strict callers keep the quiet no-op (reap self-heals).
+            await release_burst_slot("user-1", "slot-abc")
+
+
+class TestBurstReapHorizon:
+    """The leak-reap horizon must cover the longest legitimate run — a
+    shorter horizon reaps live slots, so long turns stop counting."""
+
+    def test_horizon_covers_workflow_timeout(self, monkeypatch):
+        monkeypatch.delenv("BURST_COUNTER_TTL", raising=False)
+        from src.config.settings import get_workflow_timeout
+        from src.server.dependencies.usage_limits import _burst_reap_horizon
+
+        assert _burst_reap_horizon() >= get_workflow_timeout()
+
+    def test_env_override_wins(self, monkeypatch):
+        monkeypatch.setenv("BURST_COUNTER_TTL", "42")
+        from src.server.dependencies.usage_limits import _burst_reap_horizon
+
+        assert _burst_reap_horizon() == 42
 
 
 def _mock_cache_miss():

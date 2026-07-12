@@ -8,12 +8,11 @@ terminal (``clear_flash_report_back``) before advancing.
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from src.server.handlers.chat import flash_workflow, report_back
+from src.server.handlers.chat import report_back
 from tests.unit.server.handlers.chat.redis_fakes import (
     FakeCache as _FakeCache,
     drain as _drain,
@@ -393,37 +392,38 @@ async def test_reassert_skipped_when_membership_already_cleared():
 
 
 # ---------------------------------------------------------------------------
-# Flash completion hook -> clear gated on report_back_ptc_thread_id
+# Consumption clear (1.7): the completed report-back flash run enqueues a
+# watch_clear outbox job gated on report_back_ptc_thread_id — no in-process
+# completion hook remains.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_completion_clears_when_report_back_id_set():
-    cache = _FakeCache()
-    request = SimpleNamespace(report_back_ptc_thread_id="ptc-1")
+def test_completed_flash_with_report_back_id_enqueues_consumption_clear():
+    from src.server.services.hook_outbox import build_finalize_jobs
 
-    with patch(
-        "src.utils.cache.redis_cache.get_cache_client", return_value=cache
-    ), patch(
-        "src.server.handlers.chat.report_back.clear_flash_report_back",
-        new=AsyncMock(),
-    ) as mock_clear:
-        await flash_workflow._maybe_clear_report_back(request, "flash-1")
+    jobs = build_finalize_jobs(
+        run_id="run-1",
+        thread_id="flash-1",
+        msg_type="flash",
+        user_id="u-1",
+        report_back_ptc_thread_id="ptc-1",
+    )("completed")
 
-    mock_clear.assert_awaited_once_with(cache, "ptc-1", "flash-1")
+    clears = [j for j in jobs if j.hook_type == "watch_clear"]
+    assert len(clears) == 1
+    assert clears[0].payload["ptc_thread_id"] == "ptc-1"
+    assert clears[0].payload["error_wake"] is False  # consumption, not failure
+    assert clears[0].ordering_key == "ptc-1"
 
 
-@pytest.mark.asyncio
-async def test_completion_skips_clear_when_report_back_id_none():
-    request = SimpleNamespace(report_back_ptc_thread_id=None)
+def test_completed_flash_without_report_back_id_skips_clear():
+    from src.server.services.hook_outbox import build_finalize_jobs
 
-    with patch(
-        "src.server.handlers.chat.report_back.clear_flash_report_back",
-        new=AsyncMock(),
-    ) as mock_clear, patch(
-        "src.utils.cache.redis_cache.get_cache_client"
-    ) as mock_get_cache:
-        await flash_workflow._maybe_clear_report_back(request, "flash-1")
+    jobs = build_finalize_jobs(
+        run_id="run-1",
+        thread_id="flash-1",
+        msg_type="flash",
+        user_id="u-1",
+    )("completed")
 
-    mock_clear.assert_not_called()
-    mock_get_cache.assert_not_called()  # short-circuits before touching the cache
+    assert not [j for j in jobs if j.hook_type == "watch_clear"]

@@ -95,33 +95,6 @@ from .stream_from_log import stream_from_log
 
 
 # ---------------------------------------------------------------------------
-# Report-back watch cleanup
-# ---------------------------------------------------------------------------
-
-
-async def _maybe_clear_report_back(request: ChatRequest, flash_thread_id: str) -> None:
-    """Clear the durable flash report-back watch if this run consumed one.
-
-    A flash run dispatched as a PTC report-back carries
-    ``report_back_ptc_thread_id``. This is invoked from the success-only
-    completion hook, so by now the summary is persisted — clearing the watch is
-    safe (any reload surfaces the summary via history). A failed/crashed
-    report-back run never reaches the hook, so its keys survive for recovery.
-    """
-    ptc_thread_id = getattr(request, "report_back_ptc_thread_id", None)
-    if not ptc_thread_id:
-        return
-
-    from src.utils.cache.redis_cache import get_cache_client
-    from src.server.handlers.chat.report_back import clear_flash_report_back
-
-    cache = get_cache_client()
-    if not (cache.enabled and cache.client):
-        return
-    await clear_flash_report_back(cache, ptc_thread_id, flash_thread_id)
-
-
-# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -223,7 +196,7 @@ async def astream_flash_workflow(
         )
         if not ready:
             slot_owned = False
-            await release_burst_slot(user_id)
+            await release_burst_slot(user_id, request.burst_slot_id)
             admission_lock.release()
             admission_held = False
             if steering_event:
@@ -333,6 +306,16 @@ async def astream_flash_workflow(
                 if retry_of is not None
                 else None
             ),
+            # Durable on the row so the startup sweep can enqueue this run's
+            # terminal hooks (burst release, watch clear) without any
+            # in-process context surviving the crash.
+            run_metadata={
+                "user_id": user_id,
+                "burst_slot_id": request.burst_slot_id,
+                "report_back_ptc_thread_id": getattr(
+                    request, "report_back_ptc_thread_id", None
+                ),
+            },
         )
 
         logger.info(
@@ -521,21 +504,6 @@ async def astream_flash_workflow(
             },
         )
 
-        # Post-finalize side effects only (v4): the durable terminal write
-        # already happened in BTM's _finalize_run before this callback fires.
-        async def on_flash_workflow_complete(task_info):
-            # If this flash run consumed a PTC report-back, the summary is
-            # now persisted — clear the durable watch so a client reload no
-            # longer surfaces it as pending. This success-only hook is the
-            # consumption point; a failed run leaves the keys for recovery.
-            try:
-                await _maybe_clear_report_back(request, thread_id)
-            except Exception as e:
-                logger.warning(
-                    f"[FLASH_COMPLETE] report-back watch cleanup failed for "
-                    f"{thread_id}: {e}"
-                )
-
         try:
             await manager.start_workflow(
                 thread_id=thread_id,
@@ -552,19 +520,20 @@ async def astream_flash_workflow(
                     "start_time": start_time,
                     "msg_type": "flash",
                     "is_byok": is_byok,
+                    "burst_slot_id": request.burst_slot_id,
                     "locale": request.locale,
                     "timezone": timezone_str,
                     "handler": handler,
                     "token_callback": token_callback,
                     "run_handle": run_handle,
-                    # Lets the BTM terminal handlers clear the report-back watch
-                    # if this run fails or is cancelled (the success path clears
-                    # it from the completion hook above).
+                    # Keys the finalize outbox decision table: a report-back
+                    # flash run gets watch_clear on ANY terminal — the
+                    # consumption clear on completed, teardown + error wake
+                    # on error/cancelled (1.7; no in-process hook remains).
                     "report_back_ptc_thread_id": getattr(
                         request, "report_back_ptc_thread_id", None
                     ),
                 },
-                completion_callback=on_flash_workflow_complete,
                 graph=flash_graph,
             )
         except RuntimeError:
@@ -591,7 +560,7 @@ async def astream_flash_workflow(
             )
             if result:
                 slot_owned = False
-                await release_burst_slot(user_id)
+                await release_burst_slot(user_id, request.burst_slot_id)
                 admission_lock.release()
                 admission_held = False
                 event_data = json.dumps(
@@ -630,7 +599,7 @@ async def astream_flash_workflow(
 
     except (asyncio.CancelledError, GeneratorExit):
         if slot_owned:
-            await release_burst_slot(user_id)
+            await release_burst_slot(user_id, request.burst_slot_id)
             # Died between START and BTM handoff: release the open run slot
             # (Phase 1 has no recovery scanner). protected_finalize: a second
             # cancel on this already-cancelled stream task must not abort

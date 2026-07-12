@@ -13,7 +13,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional, Union
 from uuid import uuid4
 
 from src.server.database import turn_lifecycle as tl_db
@@ -88,7 +88,12 @@ class TurnOutcome:
     sse_events: Optional[List[Dict[str, Any]]] = None
     per_call_records: Optional[list] = None
     tool_usage: Optional[Dict[str, int]] = None
-    outbox_jobs: List[HookJob] = field(default_factory=list)
+    # A static list, or a factory invoked inside the finalize transaction
+    # with the CAS-adopted final status (build_finalize_jobs) — the adopted
+    # status may differ from outcome.status when durable cancel intent wins.
+    outbox_jobs: Union[List[HookJob], Callable[[str], List[HookJob]]] = field(
+        default_factory=list
+    )
 
 
 @dataclass
@@ -231,6 +236,7 @@ class TurnCoordinator:
                         exc_info=True,
                     )
             self._schedule_projection_refresh(handle.thread_id)
+            self._nudge_hook_drainer()
         return result
 
     async def fail_open_run(
@@ -286,6 +292,9 @@ class TurnCoordinator:
             thread_id = str(run["conversation_thread_id"])
             status = "cancelled" if run.get("cancel_requested_at") else "error"
             try:
+                # finalize_run's default derives the terminal hooks from the
+                # row's START-stamped metadata — a crashed run still
+                # releases its burst slot and clears its watch.
                 result = await tl_db.finalize_run_idempotent(
                     run_id=run_id,
                     thread_id=thread_id,
@@ -308,6 +317,8 @@ class TurnCoordinator:
                     f"[TurnCoordinator] failed to sweep stale run {run_id}",
                     exc_info=True,
                 )
+        if swept:
+            self._nudge_hook_drainer()
         return swept
 
     # ------------------------------------------------------------------ utils
@@ -363,6 +374,16 @@ class TurnCoordinator:
                 exc_info=True,
             )
             return None
+
+    def _nudge_hook_drainer(self) -> None:
+        """Post-commit hint only — the drainer's poll is the delivery
+        guarantee, so a failed nudge is never an error."""
+        try:
+            from src.server.services.hook_outbox import HookOutboxDrainer
+
+            HookOutboxDrainer.get_instance().nudge()
+        except Exception:
+            logger.warning("[TurnCoordinator] hook drainer nudge failed", exc_info=True)
 
     def _schedule_projection_refresh(self, thread_id: str) -> None:
         try:

@@ -33,6 +33,7 @@ vi.mock('../../utils/api', async () => (await import('./chatHookHarness')).apiMo
 import { getWorkflowStatus, getReportBackStatus, replayThreadHistory, reconnectToWorkflowStream, watchThread, sendChatMessageStream } from '../../utils/api';
 import { useChatMessages } from '../useChatMessages';
 import { REPORT_BACK_IDLE_MAX_REARMS, REPORT_BACK_MAX_POLLS } from '../useReportBackWatch';
+import { queryKeys } from '@/lib/queryKeys';
 
 /** One captured reconnect reader: the run it targeted, its onEvent sink, its signal. */
 interface CapturedReconnect {
@@ -173,6 +174,29 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
     expect(mockReconnect.mock.calls[0][0]).toBe('th-rb');
     expect(mockReconnect.mock.calls[0][1]).toBe('rb-run-1');
     expect(mockReconnect.mock.calls[0][2]).toBeNull();
+  });
+
+  it('needs_input wake refetches dispatch liveness instead of attaching a run', async () => {
+    // A dispatched PTC hitting a HITL interrupt wakes with {needs_input} —
+    // no report-back run exists (the PTC hasn't completed), so the watch must
+    // NOT attach; it invalidates the batched dispatch-liveness query so the
+    // PTC card flips to needs_input without waiting for the next slow poll.
+    mockStatus.mockResolvedValue(threadStatus({ pending_report_back: true }));
+    const watchCalls = captureWatch();
+
+    const { queryClient } = renderHookWithProviders(() => useChatMessages('ws-rb', 'th-rb'));
+    await waitFor(() => expect(mockWatch).toHaveBeenCalledTimes(1));
+    await settleMountEffect();
+
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    await act(async () => {
+      await watchCalls[0].cb({ run_id: null, needs_input: 'ptc-tid-1' });
+    });
+
+    expect(mockReconnect).not.toHaveBeenCalled();
+    expect(invalidateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: queryKeys.threads.dispatchLivenessAll() }),
+    );
   });
 
   it('does NOT duplicate the transcript when a staleness reload follows a live-streamed report-back', async () => {
