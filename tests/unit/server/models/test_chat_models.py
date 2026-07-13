@@ -273,6 +273,43 @@ class TestChatRequest:
         with pytest.raises(ValidationError):
             ChatRequest(fork_from_turn=-1)
 
+    @pytest.mark.parametrize(
+        "platform",
+        [
+            "web",
+            "market_view",
+            "telegram",
+            "market_view:AAPL",  # US, letter-first
+            "market_view:BRK.B",  # US, dotted class share
+            "market_view:BRK-B",  # US, hyphenated class share
+            "market_view:002851.SZ",  # Shenzhen A-share (digit-first)
+            "market_view:600519.SH",  # Shanghai A-share
+            "market_view:300750.SZ",  # ChiNext
+            "market_view:688981.SH",  # STAR board
+            "market_view:430047.BJ",  # Beijing exchange
+            "market_view:0700.HK",  # Hong Kong (Tencent), digit-first
+        ],
+    )
+    def test_platform_accepts_real_market_symbols(self, platform):
+        # Regression: the suffix must not require a leading [A-Z] — every CN
+        # A-share and HK ticker is digit-first, which the old pattern rejected
+        # and 422'd the whole market-view chat send.
+        assert ChatRequest(platform=platform).platform == platform
+
+    @pytest.mark.parametrize(
+        "platform",
+        [
+            "Web",  # prefix must be lowercase
+            "market view:AAPL",  # space not allowed in prefix
+            "market_view:",  # empty suffix
+            "market_view:.SZ",  # suffix must start alnum, not `.`
+            "market_view:aapl",  # suffix is uppercased upstream; lowercase invalid
+        ],
+    )
+    def test_platform_rejects_malformed(self, platform):
+        with pytest.raises(ValidationError):
+            ChatRequest(platform=platform)
+
 
 # ---------------------------------------------------------------------------
 # Utility request models
