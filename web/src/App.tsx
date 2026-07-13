@@ -3,25 +3,25 @@ import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-
 import Sidebar from './components/Sidebar/Sidebar';
 import BottomTabBar from './components/BottomTabBar/BottomTabBar';
 import Main from './components/Main/Main';
-import LoginPage from './pages/Login/LoginPage';
+import PageLoading from './components/PageLoading/PageLoading';
+import AuthConfirm from './pages/Login/AuthConfirm';
 import SharedChatView from './pages/SharedChat/SharedChatView';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from './contexts/AuthContext';
 import { useIsMobile } from './hooks/useIsMobile';
 import { useSetupGate } from './hooks/useSetupGate';
-import { isPlatformMode } from './config/hostMode';
-import { OAUTH_BROADCAST_CHANNEL, type OAuthPopupMessage } from './lib/oauthPopup';
+import { isPlatformMode, APP_ENTRY_PATH } from './config/hostMode';
+import { AUTH_BROADCAST_CHANNEL, type AuthBroadcastMessage } from './lib/oauthPopup';
 import { OnboardingProvider, OnboardingHostGate } from './pages/Onboarding';
 import './App.css';
 
+// Login carries the market-tape canvas subsystem (~2k lines that only a
+// logged-out visitor ever renders) — split it out of the main bundle.
+const LoginPage = React.lazy(() => import('./pages/Login/LoginPage'));
 const SetupWizard = React.lazy(() => import('./pages/Setup/SetupWizard'));
 const PrivacyPolicy = React.lazy(() => import('./pages/Legal/PrivacyPolicy'));
 const Legal = React.lazy(() => import('./pages/Legal/Legal'));
-
-// In platform mode, `/` is served externally (marketing landing via nginx) and
-// the SPA owns `/app` for the login/entry screen. In OSS mode, the SPA owns `/`
-// directly. Anywhere we redirect an unauthenticated user, route via this.
-const APP_ENTRY_PATH = isPlatformMode ? '/app' : '/';
+const ResetPassword = React.lazy(() => import('./pages/Login/ResetPassword'));
 
 /**
  * Handles the OAuth redirect from Supabase. Two modes:
@@ -39,8 +39,8 @@ function AuthCallback() {
     const isPopup = typeof window !== 'undefined' && !!window.opener && window.opener !== window;
     if (isPopup) {
       try {
-        const channel = new BroadcastChannel(OAUTH_BROADCAST_CHANNEL);
-        const msg: OAuthPopupMessage = { type: 'oauth-complete' };
+        const channel = new BroadcastChannel(AUTH_BROADCAST_CHANNEL);
+        const msg: AuthBroadcastMessage = { type: 'oauth-complete' };
         channel.postMessage(msg);
         channel.close();
       } catch {
@@ -70,9 +70,10 @@ function AuthCallback() {
 // Rejects protocol-relative URLs (`//evil.com/x`) and cross-origin absolutes —
 // both would let `?redirect=` be weaponized for phishing after OAuth.
 function isSafeRedirect(target: string): boolean {
-  if (target.startsWith('/') && !target.startsWith('//')) return true;
+  // Resolving against the current origin normalizes backslash tricks
+  // (`/\evil.com` -> `//evil.com`) that a prefix test would admit.
   try {
-    return new URL(target).origin === window.location.origin;
+    return new URL(target, window.location.origin).origin === window.location.origin;
   } catch {
     return false;
   }
@@ -98,16 +99,11 @@ function AuthenticatedShell() {
   const location = useLocation();
   const hideTabBar = isMobile && location.pathname.startsWith('/chat/t/');
   const { isLoading, needsSetup } = useSetupGate();
-  const { t } = useTranslation();
 
-  // While the user profile is loading, show a neutral loading state
-  // to avoid flashing protected content before the gate check completes.
+  // While the user profile is loading, show the loading state to avoid
+  // flashing protected content before the gate check completes.
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen" style={{ backgroundColor: 'var(--color-bg-page)' }}>
-        <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{t('common.loading')}</p>
-      </div>
-    );
+    return <PageLoading />;
   }
 
   if (needsSetup) {
@@ -130,17 +126,18 @@ function AuthenticatedShell() {
 
 function App() {
   const { isLoggedIn, isInitialized } = useAuth();
-  const { t } = useTranslation();
 
   if (!isInitialized) {
-    return (
-        <div className="flex items-center justify-center min-h-screen" style={{ backgroundColor: 'var(--color-bg-page)' }}>
-        <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{t('common.loading')}</p>
-      </div>
-    );
+    return <PageLoading />;
   }
 
-  const appEntryElement = isLoggedIn ? <RootRedirect /> : <LoginPage />;
+  const appEntryElement = isLoggedIn ? (
+    <RootRedirect />
+  ) : (
+    <Suspense fallback={<PageLoading />}>
+      <LoginPage />
+    </Suspense>
+  );
 
   return (
     <Routes>
@@ -150,32 +147,28 @@ function App() {
         <Route path="/" element={appEntryElement} />
       )}
       <Route path="/callback" element={<AuthCallback />} />
+      {/* Supabase email-link landing (signup confirm, magic link, recovery).
+          Static import so verification starts without a chunk-fetch flash. */}
+      <Route path="/auth/confirm" element={<AuthConfirm />} />
+      <Route path="/reset-password" element={
+        <Suspense fallback={<PageLoading />}>
+          <ResetPassword />
+        </Suspense>
+      } />
       <Route path="/s/:shareToken" element={<SharedChatView />} />
       <Route path="/privacy" element={
-        <Suspense fallback={
-          <div className="flex items-center justify-center min-h-screen" style={{ backgroundColor: 'var(--color-bg-page)' }}>
-            <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{t('common.loading')}</p>
-          </div>
-        }>
+        <Suspense fallback={<PageLoading />}>
           <PrivacyPolicy />
         </Suspense>
       } />
       <Route path="/legal" element={
-        <Suspense fallback={
-          <div className="flex items-center justify-center min-h-screen" style={{ backgroundColor: 'var(--color-bg-page)' }}>
-            <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{t('common.loading')}</p>
-          </div>
-        }>
+        <Suspense fallback={<PageLoading />}>
           <Legal />
         </Suspense>
       } />
       <Route path="/setup/*" element={
         isLoggedIn ? (
-          <Suspense fallback={
-            <div className="flex items-center justify-center min-h-screen" style={{ backgroundColor: 'var(--color-bg-page)' }}>
-              <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>{t('common.loading')}</p>
-            </div>
-          }>
+          <Suspense fallback={<PageLoading />}>
             <SetupWizard />
           </Suspense>
         ) : (
