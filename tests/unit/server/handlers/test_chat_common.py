@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import psycopg
 import pytest
 
+from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
 from src.server.models.additional_context import SkillContext
 
 COMMON = "src.server.handlers.chat._common"
@@ -104,6 +105,20 @@ class TestClassifyError:
         result = self._classify(err)
         assert result["is_recoverable"] is True
         assert result["error_type"] == "connection_error"
+
+    def test_recoverable_sandbox_transient_error(self):
+        result = self._classify(
+            SandboxTransientError(
+                "Transient sandbox transport error; operation failed after retries"
+            )
+        )
+        assert result["is_recoverable"] is True
+        assert result["error_type"] == "transient_error"
+
+    def test_recoverable_sandbox_gone_error(self):
+        result = self._classify(SandboxGoneError("sandbox-placeholder", "not found"))
+        assert result["is_recoverable"] is True
+        assert result["error_type"] == "transient_error"
 
     def test_generic_runtime_error_not_recoverable(self):
         result = self._classify(RuntimeError("something went wrong"))

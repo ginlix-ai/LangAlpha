@@ -169,24 +169,37 @@ async def test_get_thread_by_id_found(mock_db_connection, mock_cursor):
     """get_thread_by_id returns dict when thread exists."""
     from src.server.database.conversation import get_thread_by_id
 
-    row = _thread_row(thread_id="t-1")
+    thread_id = str(uuid.uuid4())
+    row = _thread_row(thread_id=thread_id)
     mock_cursor.fetchone.return_value = row
 
-    result = await get_thread_by_id("t-1")
+    result = await get_thread_by_id(thread_id)
 
     assert result is not None
-    assert result["conversation_thread_id"] == "t-1"
+    assert result["conversation_thread_id"] == thread_id
 
 
 @pytest.mark.asyncio
 async def test_get_thread_by_id_not_found(mock_db_connection, mock_cursor):
-    """get_thread_by_id returns None when thread does not exist."""
+    """get_thread_by_id returns None when a valid id does not exist."""
     from src.server.database.conversation import get_thread_by_id
 
     mock_cursor.fetchone.return_value = None
 
-    result = await get_thread_by_id("nonexistent")
+    result = await get_thread_by_id(str(uuid.uuid4()))
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_thread_by_id_malformed_id_skips_database(
+    mock_db_connection, mock_cursor
+):
+    from src.server.database.conversation import get_thread_by_id
+
+    result = await get_thread_by_id("results")
+
+    assert result is None
+    mock_cursor.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -566,20 +579,33 @@ async def test_replay_data_excludes_subagent_usage_rows(
     task billing rows that share its response id."""
     from src.server.database.conversation import get_replay_thread_data
 
+    thread_id = str(uuid.uuid4())
     mock_cursor.fetchone.side_effect = [
         {"user_id": "user-1"},
         {
-            "conversation_thread_id": "thread-1",
+            "conversation_thread_id": thread_id,
             "latest_checkpoint_id": "cp-1",
         },
     ]
     mock_cursor.fetchall.side_effect = [[], [], [], []]
 
-    await get_replay_thread_data("thread-1")
+    await get_replay_thread_data(thread_id)
 
     usage_sql = mock_cursor.execute.call_args_list[4].args[0]
     assert "SELECT conversation_response_id, msg_type" in usage_sql
     assert "msg_type <> 'task'" in usage_sql
+
+
+@pytest.mark.asyncio
+async def test_get_replay_thread_data_malformed_id_skips_database(
+    mock_db_connection, mock_cursor
+):
+    from src.server.database.conversation import get_replay_thread_data
+
+    result = await get_replay_thread_data("results")
+
+    assert result == (None, None, [], [], [], [])
+    mock_cursor.execute.assert_not_awaited()
 
 
 # ===========================================================================

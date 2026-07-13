@@ -17,6 +17,7 @@ import RightPanel from './RightPanel';
 import { clampPanelWidth as clampPanelWidthUtil } from '@/lib/panelUtils';
 import SandboxSettingsPanel from './SandboxSettingsPanel';
 import { getWorkspaceThreads, deleteThread, updateThreadTitle } from '../utils/api';
+import { isValidUuid } from '../utils/uuid';
 import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
 import { removeStoredThreadId } from '../hooks/utils/threadStorage';
 import { saveChatSession } from '../hooks/utils/chatSessionRestore';
@@ -333,7 +334,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
 
       // If the deleted thread is currently active, navigate back to thread gallery
       if (currentThreadId === threadId) {
-        navigate(`/chat/${workspaceId}`);
+        navigate(isValidUuid(workspaceId) ? `/chat/${workspaceId}` : '/chat');
       }
 
       // Close modal

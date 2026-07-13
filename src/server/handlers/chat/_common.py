@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Optional
 import psycopg
 from fastapi import HTTPException
 
+from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientError
 from src.config.settings import (
     get_langsmith_metadata,
     get_langsmith_tags,
@@ -256,6 +257,8 @@ def classify_error(e: Exception) -> dict:
     is_non_recoverable = isinstance(e, non_recoverable_types)
 
     # Recoverable error patterns (transient issues)
+    is_sandbox_error = isinstance(e, (SandboxTransientError, SandboxGoneError))
+
     is_postgres_connection = isinstance(
         e, psycopg.OperationalError
     ) and "server closed the connection" in str(e)
@@ -300,12 +303,18 @@ def classify_error(e: Exception) -> dict:
     )
 
     is_recoverable = (
-        is_postgres_connection or is_timeout or is_network_issue or is_api_error
+        is_sandbox_error
+        or is_postgres_connection
+        or is_timeout
+        or is_network_issue
+        or is_api_error
     ) and not is_non_recoverable
 
     # Determine specific error_type label
     if is_recoverable:
-        if is_postgres_connection or is_network_issue:
+        if is_sandbox_error:
+            error_type = "transient_error"
+        elif is_postgres_connection or is_network_issue:
             error_type = "connection_error"
         elif is_timeout:
             error_type = "timeout_error"

@@ -38,3 +38,11 @@ async def test_thread_status_malformed_id_returns_404(threads_client):
         "/api/v1/threads/my_notes.md/status"
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_thread_replay_malformed_id_returns_404(threads_client):
+    resp = await threads_client.get(
+        "/api/v1/threads/results/messages/replay"
+    )
+    assert resp.status_code == 404
