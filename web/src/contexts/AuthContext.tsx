@@ -1,14 +1,23 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../lib/supabase';
 import { setTokenGetter, setTokenRefresher } from '../api/client';
 import { queryKeys } from '../lib/queryKeys';
-import { OAUTH_BROADCAST_CHANNEL, OAUTH_POPUP_WINDOW_NAME, OAUTH_POPUP_FEATURES } from '../lib/oauthPopup';
+import { AUTH_BROADCAST_CHANNEL, OAUTH_POPUP_WINDOW_NAME, OAUTH_POPUP_FEATURES } from '../lib/oauthPopup';
 import { clearFlashWorkspaceCache } from '@/pages/MarketView/utils/flashWorkspace';
 import { resetNavPanelExpansion } from '@/pages/ChatAgent/components/navExpansionStore';
 import { resetStableNavOrder, resetSharedWorkspaceThreads } from '@/pages/ChatAgent/hooks/useNavigationData';
 
-import type { AuthResponse, OAuthResponse, Provider, Session } from '@supabase/supabase-js';
+import type {
+  AuthError,
+  AuthOtpResponse,
+  AuthResponse,
+  EmailOtpType,
+  OAuthResponse,
+  Provider,
+  Session,
+  UserResponse,
+} from '@supabase/supabase-js';
 
 export interface AuthContextValue {
   userId: string | null;
@@ -18,6 +27,16 @@ export interface AuthContextValue {
   signupWithEmail: (email: string, password: string, name: string) => Promise<AuthResponse | void>;
   loginWithProvider: (provider: Provider) => Promise<OAuthResponse | void>;
   logout: () => Promise<void>;
+  /** Emails a magic sign-in link; creates the account if the email is new. */
+  sendMagicLink: (email: string) => Promise<AuthOtpResponse | void>;
+  /** Emails a password-recovery link. */
+  sendPasswordReset: (email: string) => Promise<{ data: object | null; error: AuthError | null } | void>;
+  /** Re-sends the signup confirmation email (server-limited to one per 60s). */
+  resendConfirmation: (email: string) => Promise<AuthOtpResponse | void>;
+  /** Verifies a token_hash from an email link, establishing a session. */
+  verifyEmailOtp: (tokenHash: string, type: EmailOtpType) => Promise<AuthResponse | void>;
+  /** Sets a new password on the current (e.g. recovery) session. */
+  updatePassword: (password: string) => Promise<UserResponse | void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -40,7 +59,20 @@ const _localDevValue: AuthContextValue = {
   signupWithEmail: () => Promise.resolve(),
   loginWithProvider: () => Promise.resolve(),
   logout: () => Promise.resolve(),
+  sendMagicLink: () => Promise.resolve(),
+  sendPasswordReset: () => Promise.resolve(),
+  resendConfirmation: () => Promise.resolve(),
+  verifyEmailOtp: () => Promise.resolve(),
+  updatePassword: () => Promise.resolve(),
 };
+
+// Landing routes for Supabase email links. Both must be in the Supabase
+// redirect-URL allow-list. Recovery links land directly on the reset form:
+// the PKCE `?code=` a default email template produces is auto-exchanged and
+// stripped from the URL before any component can read it, so the landing
+// path is the only reliable carrier of the "reset password" intent.
+const emailConfirmUrl = () => window.location.origin + '/auth/confirm';
+const passwordResetUrl = () => window.location.origin + '/reset-password';
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Skip all Supabase logic in OSS mode.
@@ -61,6 +93,9 @@ function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
   const sb = supabase!;
   const [session, setSession] = useState<Session | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
+  // Tracks the signed-in user across auth events so an account switch (e.g.
+  // an email link for account B opened while A is logged in) can be detected.
+  const lastUserIdRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
 
   /** Wire up the axios token getter immediately when we have a session. */
@@ -127,11 +162,26 @@ function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
         queryClient.invalidateQueries({ queryKey: queryKeys.user.all });
       }
       setIsInitialized(true);
+    }).catch((err) => {
+      // A corrupt/undecryptable session cookie can reject here — surface it but
+      // still initialize so the app renders the login screen instead of wedging.
+      console.error('[auth] getSession bootstrap failed:', err);
+      setIsInitialized(true);
     });
 
     const {
       data: { subscription },
     } = sb.auth.onAuthStateChange((event, sess) => {
+      // Switching accounts without a sign-out in between must not render the
+      // new user against the old user's cached data.
+      if (sess?.user && lastUserIdRef.current && sess.user.id !== lastUserIdRef.current) {
+        queryClient.clear();
+        clearFlashWorkspaceCache();
+        resetNavPanelExpansion();
+        resetStableNavOrder();
+        resetSharedWorkspaceThreads();
+      }
+      lastUserIdRef.current = sess?.user?.id ?? null;
       setSession(sess);
       if (sess) {
         wireTokenGetter();
@@ -168,7 +218,41 @@ function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
 
   const signupWithEmail = useCallback(
     (email: string, password: string, name: string) =>
-      sb.auth.signUp({ email, password, options: { data: { name } } }),
+      sb.auth.signUp({
+        email,
+        password,
+        options: { data: { name }, emailRedirectTo: emailConfirmUrl() },
+      }),
+    [sb.auth]
+  );
+
+  const sendMagicLink = useCallback(
+    (email: string) =>
+      sb.auth.signInWithOtp({
+        email,
+        options: { shouldCreateUser: true, emailRedirectTo: emailConfirmUrl() },
+      }),
+    [sb.auth]
+  );
+
+  const sendPasswordReset = useCallback(
+    (email: string) => sb.auth.resetPasswordForEmail(email, { redirectTo: passwordResetUrl() }),
+    [sb.auth]
+  );
+
+  const resendConfirmation = useCallback(
+    (email: string) =>
+      sb.auth.resend({ type: 'signup', email, options: { emailRedirectTo: emailConfirmUrl() } }),
+    [sb.auth]
+  );
+
+  const verifyEmailOtp = useCallback(
+    (tokenHash: string, type: EmailOtpType) => sb.auth.verifyOtp({ token_hash: tokenHash, type }),
+    [sb.auth]
+  );
+
+  const updatePassword = useCallback(
+    (password: string) => sb.auth.updateUser({ password }),
     [sb.auth]
   );
 
@@ -194,6 +278,9 @@ function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
       } else if (url) {
         // Popup was blocked — fall back to same-tab navigation.
         window.location.href = url;
+      } else if (popup) {
+        // No auth URL came back — don't strand a blank popup.
+        popup.close();
       }
       return result;
     },
@@ -206,7 +293,7 @@ function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
   // we ask.
   useEffect(() => {
     if (typeof BroadcastChannel === 'undefined') return;
-    const channel = new BroadcastChannel(OAUTH_BROADCAST_CHANNEL);
+    const channel = new BroadcastChannel(AUTH_BROADCAST_CHANNEL);
     const onMessage = (event: MessageEvent) => {
       if (event.data?.type === 'oauth-complete') {
         sb.auth.getSession();
@@ -232,6 +319,11 @@ function SupabaseAuthProvider({ children }: { children: React.ReactNode }) {
     signupWithEmail,
     loginWithProvider,
     logout,
+    sendMagicLink,
+    sendPasswordReset,
+    resendConfirmation,
+    verifyEmailOtp,
+    updatePassword,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
