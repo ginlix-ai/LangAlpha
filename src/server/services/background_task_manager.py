@@ -1227,6 +1227,16 @@ class BackgroundTaskManager:
             cache = get_cache_client()
             if not cache.enabled or not cache.client:
                 return
+            # Atomic exactly-once gate: the owner (possibly alive but
+            # fence-lost) and a recovery scanner can both reach this after
+            # the same finalize CAS — SETNX picks one emitter, so the
+            # stream never carries two run_end frames.
+            gate_key = f"workflow:run_end_gate:{thread_id}:{run_id}"
+            acquired = await cache.client.set(
+                gate_key, "1", nx=True, ex=self.redis_event_ttl
+            )
+            if not acquired:
+                return
             stream_k = stream_key(thread_id, run_id)
             data = json.dumps(
                 {"thread_id": thread_id, "run_id": run_id, "outcome": outcome},
@@ -1235,6 +1245,12 @@ class BackgroundTaskManager:
             payload = f"event: {WORKFLOW_RUN_END_EVENT}\ndata: {data}\n\n".encode(
                 "utf-8"
             )
+            # A pipeline failure here is AMBIGUOUS (the XADD may have landed
+            # with its reply lost) and the gate is deliberately NOT released
+            # — even a tail recheck can't rule out an in-flight XADD landing
+            # after it. At-most-once beats retryability: run_end is
+            # best-effort by contract, and the consumer's two-empty-round
+            # terminal handshake covers a missing frame.
             async with cache.client.pipeline(transaction=False) as pipe:
                 pipe.xadd(
                     stream_k,
@@ -1242,8 +1258,8 @@ class BackgroundTaskManager:
                     maxlen=self.max_stored_messages,
                     approximate=True,
                 )
-                # Refresh TTL so a run_end landing on an expired/cleared key
-                # can't recreate it without an expiry.
+                # Refresh TTL so a run_end landing on an expired/cleared
+                # key can't recreate it without an expiry.
                 pipe.expire(stream_k, self.redis_event_ttl)
                 await pipe.execute()
         except Exception as exc:

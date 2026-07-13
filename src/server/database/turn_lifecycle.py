@@ -296,7 +296,14 @@ async def finalize_run(
                         warnings = %s,
                         errors = %s,
                         execution_time = %s,
-                        sse_events = %s
+                        -- Merge, never replace: mid-run appenders
+                        -- (append_sse_event, e.g. manual compact/offload
+                        -- context_window persists) may have durably written
+                        -- to the open row already.
+                        sse_events = CASE
+                            WHEN %s::jsonb IS NULL THEN sse_events
+                            ELSE COALESCE(sse_events, '[]'::jsonb) || %s::jsonb
+                        END
                     WHERE conversation_response_id = %s AND status = 'in_progress'
                     RETURNING *
                     """,
@@ -308,6 +315,7 @@ async def finalize_run(
                         warnings or [],
                         errors or [],
                         execution_time,
+                        SafeJson(sse_events) if sse_events else None,
                         SafeJson(sse_events) if sse_events else None,
                         run_id,
                     ),
@@ -344,7 +352,10 @@ async def finalize_run(
                 conversation_response_id=run_id,
                 conversation_thread_id=thread_id,
                 turn_index=run_row["turn_index"],
-                sse_events=sse_events,
+                # The RETURNING row carries the MERGED archive (pre-existing
+                # mid-run appends || this finalize's events) — provenance
+                # must derive from what was actually persisted.
+                sse_events=run_row.get("sse_events"),
                 strict=True,
             )
 
@@ -500,6 +511,38 @@ async def list_open_runs() -> List[Dict[str, Any]]:
             )
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
+
+
+async def heal_stale_thread_projections() -> int:
+    """Reset thread projections stuck on a live spelling with no open run
+    (pre-v4 leftovers, or a projection write that raced a crash) to the
+    latest attempt's terminal status. Returns rows healed."""
+    async with qr_db.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE conversation_threads ct
+                SET current_status = COALESCE(
+                        (
+                            SELECT cr.status FROM conversation_responses cr
+                            WHERE cr.conversation_thread_id
+                                = ct.conversation_thread_id
+                            ORDER BY cr.turn_index DESC, cr.attempt_no DESC
+                            LIMIT 1
+                        ),
+                        'completed'
+                    ),
+                    updated_at = NOW()
+                WHERE ct.current_status IN ('in_progress', 'active')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM conversation_responses cr2
+                      WHERE cr2.conversation_thread_id
+                          = ct.conversation_thread_id
+                        AND cr2.status = 'in_progress'
+                  )
+                """
+            )
+            return cur.rowcount
 
 
 async def find_run_by_request_key(request_key: str) -> Optional[Dict[str, Any]]:

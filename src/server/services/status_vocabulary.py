@@ -76,3 +76,22 @@ def to_public_terminal(raw: Any) -> Optional[str]:
     if value is None or str(value) not in _TERMINAL_INTERNAL:
         return None
     return to_public(value)
+
+
+def classify_interrupt_reason(interrupts: Any) -> str:
+    """Classify HITL interrupt payloads: user question vs plan review.
+
+    One authority for the ``interrupt_reason`` column spelling — the live
+    streaming path and the recovery scanner must never drift apart on it.
+    Accepts Interrupt objects or their dict form.
+    """
+    for intr in interrupts:
+        value = getattr(intr, "value", None)
+        if value is None and isinstance(intr, dict):
+            value = intr.get("value")
+        if isinstance(value, dict):
+            requests = value.get("action_requests", [])
+            if requests and isinstance(requests[0], dict):
+                if requests[0].get("type") == "ask_user_question":
+                    return "user_question"
+    return "plan_review_required"

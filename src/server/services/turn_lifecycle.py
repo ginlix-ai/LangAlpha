@@ -293,7 +293,7 @@ class TurnCoordinator:
                         f"run={handle.run_id}",
                         exc_info=True,
                     )
-            self._post_finalize_tail(handle.thread_id)
+            self.post_finalize_tail(handle.thread_id)
         return result
 
     async def fail_open_run(
@@ -337,101 +337,6 @@ class TurnCoordinator:
                 exc_info=True,
             )
             return None
-
-    async def sweep_stale_runs(self) -> int:
-        """Startup sweep: finalize open runs whose executor is provably dead —
-        cancelled if durable cancel intent was recorded, else
-        error(worker_lost). With the WriterGuard active, "provably dead"
-        means the run's root guard is acquirable: a sibling worker's live
-        run holds its N(root) and is skipped. Phase 2.2 extends this into
-        the periodic recovery scanner.
-        """
-        try:
-            open_runs = await tl_db.list_open_runs()
-        except Exception:
-            logger.error("[TurnCoordinator] stale-run sweep query failed", exc_info=True)
-            return 0
-        if not open_runs:
-            return 0
-
-        from src.server.services import writer_guard as wg
-
-        if wg.guard_enabled():
-            try:
-                async with wg.get_writer_pool().connection() as lock_conn:
-                    # The pool's reset callback runs unlock_all on the way out.
-                    return await self._sweep_runs(open_runs, lock_conn)
-            except Exception:
-                logger.error(
-                    "[TurnCoordinator] guarded sweep session failed", exc_info=True
-                )
-                return 0
-        return await self._sweep_runs(open_runs, None)
-
-    async def _sweep_runs(self, open_runs: List[Dict[str, Any]], lock_conn) -> int:
-        from src.server.services import writer_guard as wg
-
-        swept = 0
-        for run in open_runs:
-            run_id = str(run["conversation_response_id"])
-            thread_id = str(run["conversation_thread_id"])
-            status = "cancelled" if run.get("cancel_requested_at") else "error"
-            root_key = None
-            if lock_conn is not None:
-                root_key = wg.namespace_key(thread_id, wg.ROOT_NS)
-                try:
-                    cur = await lock_conn.execute(
-                        "SELECT pg_try_advisory_lock(%s)", (root_key,)
-                    )
-                    acquired = (await cur.fetchone())[0]
-                except Exception:
-                    logger.error(
-                        f"[TurnCoordinator] sweep lock probe failed for {run_id}",
-                        exc_info=True,
-                    )
-                    continue
-                if not acquired:
-                    logger.info(
-                        f"[TurnCoordinator] sweep skipping run {run_id}: root "
-                        f"guard held (live owner on another worker)"
-                    )
-                    continue
-            try:
-                # finalize_run's default derives the terminal hooks from the
-                # row's START-stamped metadata — a crashed run still
-                # releases its burst slot and clears its watch.
-                result = await tl_db.finalize_run_idempotent(
-                    run_id=run_id,
-                    thread_id=thread_id,
-                    status=status,
-                    metadata={"recovery": "startup_sweep"},
-                    errors=(
-                        None
-                        if status == "cancelled"
-                        else ["worker_lost: server restarted while run was in progress"]
-                    ),
-                )
-                if result.applied:
-                    swept += 1
-                    self._post_finalize_tail(thread_id)
-                    logger.warning(
-                        f"[TurnCoordinator] swept stale run {run_id} "
-                        f"(thread={thread_id}) -> {status}"
-                    )
-            except Exception:
-                logger.error(
-                    f"[TurnCoordinator] failed to sweep stale run {run_id}",
-                    exc_info=True,
-                )
-            finally:
-                if lock_conn is not None and root_key is not None:
-                    try:
-                        await lock_conn.execute(
-                            "SELECT pg_advisory_unlock(%s)", (root_key,)
-                        )
-                    except Exception:
-                        pass
-        return swept
 
     async def reconcile_orphaned_dispatch(
         self,
@@ -505,7 +410,7 @@ class TurnCoordinator:
                         if result.run:
                             terminal_status = result.run.get("status")
                         if result.applied:
-                            self._post_finalize_tail(thread_id)
+                            self.post_finalize_tail(thread_id)
                     except Exception:
                         logger.critical(
                             f"[{label}] last-resort finalize failed for "
@@ -693,7 +598,7 @@ class TurnCoordinator:
             )
             return None
 
-    def _post_finalize_tail(self, thread_id: str) -> None:
+    def post_finalize_tail(self, thread_id: str) -> None:
         """The uniform after-a-won-CAS tail: every site that applies a
         terminal transition schedules the projection refresh and nudges the
         drainer, so the two never drift apart per call site."""

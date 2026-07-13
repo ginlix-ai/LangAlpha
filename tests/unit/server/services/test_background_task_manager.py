@@ -1347,10 +1347,20 @@ class _FakePipeline:
         return []
 
 
-def _sentinel_cache(calls: list, fail: bool = False) -> MagicMock:
+def _sentinel_cache(
+    calls: list, fail: bool = False, gate_acquired: bool = True
+) -> MagicMock:
     cache = MagicMock()
     cache.enabled = True
     cache.client = MagicMock()
+    cache.client.set = AsyncMock(
+        side_effect=lambda *a, **kw: (
+            calls.append(("set", a, kw)) or (True if gate_acquired else None)
+        )
+    )
+    cache.client.delete = AsyncMock(
+        side_effect=lambda *a: calls.append(("delete",) + a)
+    )
     cache.client.pipeline = MagicMock(
         return_value=_FakePipeline(calls, fail=fail)
     )
@@ -1373,11 +1383,15 @@ class TestAppendRunEndEvent:
         ):
             await btm.append_run_end_event("t-1", "r-1", "completed")
 
-        assert calls[0][0] == "xadd"
-        assert calls[0][1] == "workflow:stream:t-1:r-1"
+        # Exactly-once gate taken first (SET NX with TTL), then the frame.
+        assert calls[0][0] == "set"
+        assert calls[0][1][0] == "workflow:run_end_gate:t-1:r-1"
+        assert calls[0][2].get("nx") is True
+        assert calls[1][0] == "xadd"
+        assert calls[1][1] == "workflow:stream:t-1:r-1"
         # Pre-rendered SSE wire string — the consumer passes it through and
         # close-matches on the "event: run_end" prefix.
-        wire = calls[0][2][b"event"].decode("utf-8")
+        wire = calls[1][2][b"event"].decode("utf-8")
         assert wire.startswith("event: run_end\ndata: ")
         assert wire.endswith("\n\n")
         assert _json.loads(wire.split("data: ", 1)[1]) == {
@@ -1387,6 +1401,40 @@ class TestAppendRunEndEvent:
         }
         # TTL refreshed so a run_end landing on an expired key can't leak it.
         assert ("expire", "workflow:stream:t-1:r-1", btm.redis_event_ttl) in calls
+
+    @pytest.mark.asyncio
+    async def test_run_end_gate_blocks_duplicate_emitter(self):
+        btm = _make_btm()
+        btm.event_storage_backend = "redis"
+        calls: list = []
+
+        with patch(
+            "src.server.services.background_task_manager.get_cache_client",
+            return_value=_sentinel_cache(calls, gate_acquired=False),
+        ):
+            await btm.append_run_end_event("t-1", "r-1", "completed")
+
+        # Gate held by another emitter (owner vs recovery scanner racing
+        # after the same finalize CAS) — no second run_end frame.
+        assert not any(c[0] == "xadd" for c in calls)
+
+    @pytest.mark.asyncio
+    async def test_run_end_gate_kept_on_ambiguous_pipeline_failure(self):
+        btm = _make_btm()
+        btm.event_storage_backend = "redis"
+        calls: list = []
+
+        with patch(
+            "src.server.services.background_task_manager.get_cache_client",
+            return_value=_sentinel_cache(calls, fail=True),
+        ):
+            await btm.append_run_end_event("t-1", "r-1", "error")
+
+        # A failed pipeline is ambiguous (the XADD may have landed with its
+        # reply lost) — the gate is NEVER released, choosing at-most-once
+        # over retryability. A missing frame falls back to the consumer's
+        # terminal handshake.
+        assert not any(c[0] == "delete" for c in calls)
 
     @pytest.mark.asyncio
     async def test_append_failure_swallowed(self):

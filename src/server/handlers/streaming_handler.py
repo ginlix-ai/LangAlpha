@@ -1071,15 +1071,13 @@ class WorkflowStreamHandler:
 
     def _derive_interrupt_reason(self) -> str:
         """Classify the buffered interrupt: user question vs plan review."""
-        for event_data in self._pending_interrupts:
-            for intr in event_data.get("__interrupt__", ()):
-                value = getattr(intr, "value", None)
-                if isinstance(value, dict):
-                    action_requests = value.get("action_requests", [])
-                    if action_requests and isinstance(action_requests[0], dict):
-                        if action_requests[0].get("type") == "ask_user_question":
-                            return "user_question"
-        return "plan_review_required"
+        from src.server.services.status_vocabulary import classify_interrupt_reason
+
+        return classify_interrupt_reason(
+            intr
+            for event_data in self._pending_interrupts
+            for intr in event_data.get("__interrupt__", ())
+        )
 
     def _handle_interrupt(self, event_data: dict) -> Optional[str]:
         """Format an ``__interrupt__`` event as an SSE string."""

@@ -401,16 +401,21 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to start HookOutboxDrainer: {e}")
 
-    # Sweep stale in_progress runs (turn lifecycle v4, Phase 1). Single-worker:
-    # this process restarting proves any open run's executor is dead.
+    # Recovery scanner (turn lifecycle v4, Phase 2.2): one startup pass
+    # (assume_dead covers the unfenced single-worker case — this process
+    # restarting proves any open run's executor is dead), one-time thread
+    # projection heal, then the periodic guarded loop when the fence is up.
     try:
-        from src.server.services.turn_lifecycle import TurnCoordinator
+        from src.server.services.recovery_scanner import RecoveryScanner
 
-        swept = await TurnCoordinator.get_instance().sweep_stale_runs()
-        if swept:
-            logger.warning(f"Startup sweep finalized {swept} stale run(s)")
+        scanner = RecoveryScanner.get_instance()
+        recovered = await scanner.scan_once(assume_dead=True)
+        if recovered:
+            logger.warning(f"Startup recovery finalized {recovered} stale run(s)")
+        await scanner.heal_thread_projections()
+        scanner.start()
     except Exception as e:
-        logger.warning(f"Stale-run startup sweep failed: {e}")
+        logger.warning(f"Recovery scanner startup failed: {e}")
 
     # Start MarketDataFeed (shared upstream WS to ginlix-data)
     try:
@@ -477,6 +482,15 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Application shutdown started...")
+
+    # 0.0. Stop the recovery scanner first — no new recovery work while the
+    # process drains (live runs hold their guards and are skipped anyway).
+    try:
+        from src.server.services.recovery_scanner import RecoveryScanner
+
+        await RecoveryScanner.get_instance().stop()
+    except Exception as e:
+        logger.warning(f"Error stopping RecoveryScanner: {e}")
 
     # 0.1. Shutdown ProvenanceGCService
     try:

@@ -1,0 +1,480 @@
+"""Recovery scanner v4 Phase 2.2 — guarded finalize of orphaned runs.
+
+Finds in_progress runs whose owner is provably dead — the run's N(thread,
+root) advisory lock is acquirable, and an owner holds that lock from before
+START to after finalize — classifies them exactly as the owner would have
+(durable cancel intent → cancelled; a durable run-matching ``__interrupt__``
+at the checkpoint tip → interrupted; anything else → error worker_lost),
+salvages the run's Redis stream into the sse_events archive, and finalizes
+through the same CAS as every other path. Concurrent scanners on sibling
+workers are safe without leadership: the lock probe serializes them per run
+and the CAS is single-winner regardless.
+
+Runs periodically only when the WriterGuard fence is active. Without the
+fence there is no liveness oracle, so scanning is startup-only (this
+process restarting is the proof of death) — exactly Phase 1's sweep.
+"""
+
+import asyncio
+import json
+import logging
+import random
+from typing import Any, Dict, List, Optional, Tuple
+
+from src.config.settings import get_recovery_scan_interval
+from src.server.database import turn_lifecycle as tl_db
+
+logger = logging.getLogger(__name__)
+
+# Salvage reads at most this many stream entries; a run that produced more
+# archives a truncated prefix (recovery_quality says so) rather than letting
+# one huge dead run stall the scan.
+SALVAGE_MAX_EVENTS = 5000
+
+# Graceful-stop grace period: a scan pass in flight gets this long to finish
+# its current run's commit-to-emission section before being cancelled.
+STOP_GRACE = 30.0
+
+
+class RecoveryScanner:
+    _instance: Optional["RecoveryScanner"] = None
+
+    def __init__(self) -> None:
+        self._loop_task: Optional[asyncio.Task] = None
+        self._stop_event = asyncio.Event()
+
+    @classmethod
+    def get_instance(cls) -> "RecoveryScanner":
+        if cls._instance is None:
+            cls._instance = RecoveryScanner()
+        return cls._instance
+
+    # ------------------------------------------------------------ lifecycle
+
+    def start(self) -> None:
+        """Start the periodic scan loop (guard-fenced deployments only)."""
+        from src.server.services import writer_guard as wg
+
+        if self._loop_task is not None and not self._loop_task.done():
+            return
+        if not wg.guard_enabled():
+            logger.info(
+                "[RecoveryScanner] fence inactive; recovery is startup-only"
+            )
+            return
+        self._stop_event = asyncio.Event()
+        self._loop_task = asyncio.create_task(
+            self._loop(), name="recovery-scanner"
+        )
+        logger.info(
+            f"[RecoveryScanner] started (interval={get_recovery_scan_interval()}s)"
+        )
+
+    async def stop(self) -> None:
+        """Cooperative stop: a recovery in flight finishes its committed
+        CAS through terminal emission (cancelling between them would strand
+        a terminal row with no run_end); only a pass overrunning STOP_GRACE
+        gets cancelled."""
+        if self._loop_task is None:
+            return
+        self._stop_event.set()
+        try:
+            await asyncio.wait_for(self._loop_task, timeout=STOP_GRACE)
+        except TimeoutError:
+            logger.warning(
+                "[RecoveryScanner] scan pass exceeded stop grace; cancelling"
+            )
+            self._loop_task.cancel()
+            try:
+                await self._loop_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        except Exception:
+            pass
+        self._loop_task = None
+        # Fresh unset event: a later lifespan in this process runs its
+        # startup scan_once() BEFORE start() — a still-set event would
+        # silently skip every run in that pass.
+        self._stop_event = asyncio.Event()
+
+    async def _loop(self) -> None:
+        interval = get_recovery_scan_interval()
+        while not self._stop_event.is_set():
+            # Jitter desynchronizes sibling workers' scans so they don't
+            # probe the same runs in lockstep every cycle.
+            jitter = interval * (0.8 + 0.4 * random.random())
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=jitter)
+                return
+            except TimeoutError:
+                pass
+            try:
+                await self.scan_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.error("[RecoveryScanner] scan failed", exc_info=True)
+
+    # ----------------------------------------------------------------- scan
+
+    async def scan_once(self, *, assume_dead: bool = False) -> int:
+        """One pass over open runs. ``assume_dead`` (startup, single worker,
+        no fence) finalizes without a lock probe — this process restarting
+        is the proof no executor exists."""
+        from src.server.services import writer_guard as wg
+
+        try:
+            open_runs = await tl_db.list_open_runs()
+        except Exception:
+            logger.error("[RecoveryScanner] open-run query failed", exc_info=True)
+            return 0
+        if not open_runs:
+            return 0
+
+        if wg.guard_enabled():
+            try:
+                async with wg.get_writer_pool().connection() as lock_conn:
+                    # The pool's reset callback re-runs unlock_all on the way
+                    # out, backstopping any probe lock this scan leaks.
+                    return await self._scan(open_runs, lock_conn)
+            except Exception:
+                logger.error(
+                    "[RecoveryScanner] guarded scan session failed", exc_info=True
+                )
+                return 0
+        if not assume_dead:
+            # No fence, no liveness oracle: a periodic scan here would reap
+            # LIVE runs of this very process.
+            return 0
+        return await self._scan(open_runs, None)
+
+    async def _scan(
+        self, open_runs: List[Dict[str, Any]], lock_conn
+    ) -> int:
+        from src.server.services import writer_guard as wg
+
+        recovered = 0
+        for run in open_runs:
+            if self._stop_event.is_set():
+                # Shutting down: current run finished cleanly; leave the
+                # rest to sibling workers or the next startup scan.
+                break
+            run_id = str(run["conversation_response_id"])
+            thread_id = str(run["conversation_thread_id"])
+            root_key = None
+            if lock_conn is not None:
+                root_key = wg.namespace_key(thread_id, wg.ROOT_NS)
+                try:
+                    cur = await lock_conn.execute(
+                        "SELECT pg_try_advisory_lock(%s)", (root_key,)
+                    )
+                    acquired = (await cur.fetchone())[0]
+                except Exception:
+                    logger.error(
+                        f"[RecoveryScanner] lock probe failed for {run_id}",
+                        exc_info=True,
+                    )
+                    continue
+                if not acquired:
+                    logger.debug(
+                        f"[RecoveryScanner] run {run_id} fenced by a live "
+                        "owner; skipping"
+                    )
+                    continue
+            inner = asyncio.ensure_future(
+                self._recover_run(run, run_id, thread_id)
+            )
+            try:
+                # Shield: a last-resort cancel (STOP_GRACE overrun, process
+                # teardown) must not split the commit-to-emission section —
+                # a committed CAS with no run_end strands reconnected
+                # clients until stream TTL.
+                if await asyncio.shield(inner):
+                    recovered += 1
+            except asyncio.CancelledError:
+                try:
+                    await inner
+                except BaseException:
+                    pass
+                raise
+            except Exception:
+                logger.error(
+                    f"[RecoveryScanner] recovery failed for run {run_id}",
+                    exc_info=True,
+                )
+            finally:
+                if lock_conn is not None and root_key is not None:
+                    try:
+                        await lock_conn.execute(
+                            "SELECT pg_advisory_unlock(%s)", (root_key,)
+                        )
+                    except Exception:
+                        pass
+        return recovered
+
+    async def _recover_run(
+        self, run: Dict[str, Any], run_id: str, thread_id: str
+    ) -> bool:
+        status, interrupt_reason, errors, checkpoint_id = await self._classify(
+            run, run_id, thread_id
+        )
+        sse_events, quality = await self._salvage_stream(thread_id, run_id)
+
+        result = await tl_db.finalize_run_idempotent(
+            run_id=run_id,
+            thread_id=thread_id,
+            status=status,
+            interrupt_reason=interrupt_reason,
+            metadata={"recovery": "scanner", "recovery_quality": quality},
+            errors=errors,
+            sse_events=sse_events,
+            checkpoint_id=checkpoint_id,
+        )
+        if not result.applied:
+            # Lost the CAS to the owner — but the owner may have died
+            # between ITS commit and its run_end append, and no later scan
+            # revisits a terminal row. Ensure the stream closes with the
+            # owner's adopted outcome; the run_end gate + tail check keep
+            # this exactly-once against a still-alive owner. No error
+            # frame: the owner told its own story.
+            survivor_status = (result.run or {}).get("status")
+            if survivor_status:
+                await self._emit_terminal_frames(
+                    thread_id, run_id, survivor_status, include_error_frame=False
+                )
+            return False
+
+        final_status = (result.run or {}).get("status", status)
+        logger.warning(
+            f"[RecoveryScanner] recovered run {run_id} (thread={thread_id}) "
+            f"-> {final_status} (quality={quality})"
+        )
+        from src.server.services.turn_lifecycle import TurnCoordinator
+
+        TurnCoordinator.get_instance().post_finalize_tail(thread_id)
+        await self._emit_terminal_frames(thread_id, run_id, final_status)
+        return True
+
+    # --------------------------------------------------------- classification
+
+    async def _classify(
+        self, run: Dict[str, Any], run_id: str, thread_id: str
+    ) -> Tuple[str, Optional[str], Optional[List[str]], Optional[str]]:
+        """(status, interrupt_reason, errors, checkpoint_id) for a dead run.
+
+        `interrupted` demands a pending ``__interrupt__`` on a checkpoint
+        CREATED BY this run (CheckpointMetadata.run_id, stamped from the
+        workflow's graph_config) — a predecessor's stale pending interrupt
+        must not lend false resumability to a run that died pre-graph (I8).
+        """
+        tip_id: Optional[str] = None
+        tip_matches = False
+        pending_interrupts: List[Any] = []
+        try:
+            from src.server.app import setup
+
+            saver = setup.checkpointer
+            cp = (
+                await saver.aget_tuple(
+                    {"configurable": {"thread_id": thread_id}}
+                )
+                if saver
+                else None
+            )
+            if cp is not None:
+                tip_matches = (cp.metadata or {}).get("run_id") == run_id
+                if tip_matches:
+                    tip_id = cp.config["configurable"].get("checkpoint_id")
+                    for _task, channel, value in cp.pending_writes or ():
+                        if channel != "__interrupt__":
+                            continue
+                        pending_interrupts.extend(
+                            value if isinstance(value, list) else [value]
+                        )
+        except Exception:
+            logger.error(
+                f"[RecoveryScanner] checkpoint read failed for {thread_id}; "
+                f"classifying without it",
+                exc_info=True,
+            )
+
+        if run.get("cancel_requested_at"):
+            # The CAS adopts cancelled from the durable intent regardless;
+            # requesting it just keeps the log honest.
+            return "cancelled", None, None, tip_id
+
+        if pending_interrupts:
+            from src.server.services.status_vocabulary import (
+                classify_interrupt_reason,
+            )
+
+            return (
+                "interrupted",
+                classify_interrupt_reason(pending_interrupts),
+                None,
+                tip_id,
+            )
+
+        return (
+            "error",
+            None,
+            ["worker_lost: no live executor holds this run's writer fence"],
+            tip_id,
+        )
+
+    # --------------------------------------------------------------- salvage
+
+    async def _salvage_stream(
+        self, thread_id: str, run_id: str
+    ) -> Tuple[Optional[List[Dict[str, Any]]], str]:
+        """Parse the run's Redis stream into the persisted sse_events shape.
+
+        Best-effort archive (I7): the dead run's events would otherwise
+        evaporate at stream TTL. Uses the same accumulator as live
+        persistence so chunk merging matches owner-persisted turns.
+        """
+        try:
+            from src.server.handlers.streaming_handler import StreamEventAccumulator
+            from src.server.services.background_task_manager import stream_key
+            from src.utils.cache.redis_cache import get_cache_client
+
+            cache = get_cache_client()
+            if not (cache.enabled and cache.client):
+                return None, "redis_unavailable"
+            # +1 proves truncation instead of inferring it from an exact
+            # SALVAGE_MAX_EVENTS-length stream.
+            entries = await cache.client.xrange(
+                stream_key(thread_id, run_id), count=SALVAGE_MAX_EVENTS + 1
+            )
+        except Exception:
+            logger.warning(
+                f"[RecoveryScanner] stream salvage read failed for {run_id}",
+                exc_info=True,
+            )
+            return None, "redis_unavailable"
+
+        if not entries:
+            return None, "empty_stream"
+        truncated = len(entries) > SALVAGE_MAX_EVENTS
+        if truncated:
+            entries = entries[:SALVAGE_MAX_EVENTS]
+
+        acc = StreamEventAccumulator()
+        parsed = 0
+        for _entry_id, fields in entries:
+            wire = fields.get(b"event") or fields.get("event")
+            frame = self._parse_wire_frame(wire)
+            if frame is not None:
+                acc.add(frame[0], frame[1])
+                parsed += 1
+        events = acc.get_events()
+        if not events:
+            return None, "unparseable_stream"
+        if truncated:
+            quality = "salvaged_truncated"
+        elif parsed != len(entries):
+            quality = "salvaged_partial"
+        else:
+            quality = "salvaged"
+        logger.info(
+            f"[RecoveryScanner] salvaged {parsed}/{len(entries)} stream "
+            f"entries for run {run_id}"
+        )
+        return events, quality
+
+    @staticmethod
+    def _parse_wire_frame(wire: Any) -> Optional[Tuple[str, Dict[str, Any]]]:
+        if wire is None:
+            return None
+        try:
+            text = (
+                wire.decode("utf-8", errors="replace")
+                if isinstance(wire, (bytes, bytearray))
+                else str(wire)
+            )
+            event_type: Optional[str] = None
+            data: Optional[Dict[str, Any]] = None
+            for line in text.splitlines():
+                if event_type is None and line.startswith("event: "):
+                    event_type = line[7:].strip()
+                elif data is None and line.startswith("data: "):
+                    parsed = json.loads(line[6:])
+                    if isinstance(parsed, dict):
+                        data = parsed
+            if event_type and data is not None:
+                return event_type, data
+        except Exception:
+            return None
+        return None
+
+    # -------------------------------------------------------------- emission
+
+    async def _emit_terminal_frames(
+        self,
+        thread_id: str,
+        run_id: str,
+        final_status: str,
+        *,
+        include_error_frame: bool = True,
+    ) -> None:
+        """Close the run's live stream for any reconnected client (I6):
+        commit-then-run_end, an error frame first for a real failure.
+        Best-effort — the archive row is already durable."""
+        try:
+            from src.server.services.background_task_manager import (
+                BackgroundTaskManager,
+                stream_key,
+            )
+            from src.utils.cache.redis_cache import get_cache_client
+
+            cache = get_cache_client()
+            if not (cache.enabled and cache.client):
+                return
+            skey = stream_key(thread_id, run_id)
+            tail = await cache.client.xrevrange(skey, count=1)
+            if tail:
+                wire = tail[0][1].get(b"event") or tail[0][1].get("event") or b""
+                if isinstance(wire, str):
+                    wire = wire.encode("utf-8")
+                if wire.startswith(b"event: run_end"):
+                    return
+            if include_error_frame and final_status == "error":
+                payload = {
+                    "thread_id": thread_id,
+                    "content": "the worker running this turn was lost",
+                    "error_type": "worker_lost",
+                    "error": "worker_lost",
+                }
+                frame = (
+                    f"event: error\n"
+                    f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                )
+                await cache.client.xadd(skey, {b"event": frame.encode("utf-8")})
+            await BackgroundTaskManager.get_instance().append_run_end_event(
+                thread_id, run_id, final_status
+            )
+        except Exception:
+            logger.warning(
+                f"[RecoveryScanner] terminal frame emission failed for "
+                f"{run_id}",
+                exc_info=True,
+            )
+
+    # ------------------------------------------------------------ legacy heal
+
+    async def heal_thread_projections(self) -> int:
+        """One-time startup heal of stale live-spelling thread projections
+        (SQL lives in the database layer)."""
+        try:
+            healed = await tl_db.heal_stale_thread_projections()
+            if healed:
+                logger.warning(
+                    f"[RecoveryScanner] healed {healed} stale thread "
+                    f"projection(s)"
+                )
+            return healed
+        except Exception:
+            logger.error(
+                "[RecoveryScanner] thread projection heal failed", exc_info=True
+            )
+            return 0
