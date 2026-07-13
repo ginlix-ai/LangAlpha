@@ -346,12 +346,19 @@ function ChatBody(props: ChatBodyProps): React.ReactElement {
     setDialogPayload(null);
   }, []);
 
-  // Origin tag — symbol uppercased so AAPL/aapl collapse. Validated server-side
-  // against ^[a-z_]+(:[A-Z][A-Z0-9.]*)?$ — only A-Z, digits, and `.` allowed in
-  // the suffix, so strip anything else from the user-typed symbol.
+  // Origin tag — symbol uppercased so AAPL/aapl collapse. Server validates
+  // `platform` against ^[a-z_]+(:[A-Z0-9][A-Z0-9.-]*)?$ with max_length 50.
+  // Only tag the origin with the symbol when the uppercased symbol already
+  // satisfies that suffix shape (CN/HK symbols like 002851.SZ are digit-first)
+  // AND fits the length budget (`market_view:` is 12 chars, so <=38 left).
+  // Anything else — stray chars, over-long — falls back to the bare namespace
+  // rather than mangling the symbol into a wrong, colliding tag or overflowing
+  // the cap and 422ing the send.
   const platformValue = useMemo(() => {
-    const cleaned = (symbol || '').trim().toUpperCase().replace(/[^A-Z0-9.]/g, '');
-    return cleaned ? `market_view:${cleaned}` : 'market_view';
+    const s = (symbol || '').trim().toUpperCase();
+    return /^[A-Z0-9][A-Z0-9.-]*$/.test(s) && s.length <= 38
+      ? `market_view:${s}`
+      : 'market_view';
   }, [symbol]);
 
   const chat = useChatMessages(
