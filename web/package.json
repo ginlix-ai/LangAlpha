@@ -28,7 +28,7 @@
     "@radix-ui/react-toast": "^1.2.5",
     "@radix-ui/react-tooltip": "^1.2.9",
     "@supabase/ssr": "^0.10.3",
-    "@supabase/supabase-js": "^2.106.1",
+    "@supabase/supabase-js": "^2.110.1",
     "@tanstack/react-query": "^5.90.21",
     "axios": "^1.7.0",
     "class-variance-authority": "^0.7.1",
