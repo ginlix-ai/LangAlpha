@@ -71,6 +71,13 @@ class Session:
                         self.sandbox.normalize_path("agent.md")
                     )
                 except Exception:
+                    # A missing agent.md is a silent None from aread_file_text;
+                    # reaching here means the read itself failed.
+                    logger.warning(
+                        "Failed to read agent.md",
+                        conversation_id=self.conversation_id,
+                        exc_info=True,
+                    )
                     self._agent_md_cache = None
             else:
                 self._agent_md_cache = None
