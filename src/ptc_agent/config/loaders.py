@@ -255,11 +255,17 @@ def load_from_dict(
         llm_name = llm_data.get("name", "")
         if not llm_name:
             raise ValueError("llm.name is required in agent_config.yaml when llm is a dict")
+        # Blank compaction/fetch inherit the flash model, so leaving them empty
+        # in agent_config.yaml means "reuse flash for these cheaper roles".
+        # `... or None` folds "" to None when flash is itself unset, so the
+        # downstream fall-back-to-main path (resolve_compaction_client) still
+        # engages instead of resolving an empty model name.
+        flash_model = llm_data.get("flash") or None
         llm_config = LLMConfig(
             name=llm_name,
             flash=llm_data.get("flash"),
-            compaction=llm_data.get("compaction"),
-            fetch=llm_data.get("fetch"),
+            compaction=llm_data.get("compaction") or flash_model,
+            fetch=llm_data.get("fetch") or flash_model,
             fallback=llm_data.get("fallback"),
         )
     elif llm_data is not None:

@@ -7,15 +7,13 @@
 
 llm:
   # Model name from src/llms/manifest/models.json
-  name: "qwen3.5-plus"
-  flash: "qwen3.6-flash"
-  compaction: "qwen3.6-flash" # defaults to flash model
-  fetch: "qwen3.6-flash"         # defaults to flash model
+  name: "claude-opus-4-8"
+  flash: "claude-sonnet-5"
+  compaction: "" # blank → same model as flash
+  fetch: ""         # blank → same model as flash
   fallback:
-    - "kimi-k2.5"
-    - "minimax-m3"
-    - "minimax-m2.7"
-    - "glm-5-turbo"
+    - "deepseek-v4-pro"
+    - "glm-5.2"
 
 sandbox:
   # Provider selection: "daytona" (cloud) or "docker" (local).
@@ -100,7 +98,7 @@ mcp:
       enabled: true
       description: "Options contracts chain, historical OHLCV, and real-time snapshots"
       instruction: "Use for in-depth options analysis: list contracts/chain (get_options_chain), historical OHLCV bars (get_options_prices), and real-time bid/ask snapshots (get_options_snapshot). Returns raw JSON for programmatic analysis, charting, and strategy modeling. Options tickers use format O:AAPL251219C00150000."
-      tool_exposure_mode: "detailed"
+      tool_exposure_mode: "summary"
       transport: "stdio"
       command: "uv"
       args: ["run", "python", "mcp_servers/options_mcp_server.py"]
