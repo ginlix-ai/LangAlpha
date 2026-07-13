@@ -41,6 +41,13 @@ module_log_levels:
   group:third_party_libraries: WARNING
   group:langchain_libraries: WARNING
 
+  # yfinance logs a normal no-data soft-miss at ERROR (and never raises), but the
+  # provider chain treats an empty result as a designed fallthrough — so every
+  # symbol Yahoo can't serve (bare CN/HK codes, fund codes, ^ index aliases) spams
+  # the ERROR stream from the last-resort fallback. CRITICAL (not WARNING) is
+  # required: the "possibly delisted" line is emitted at ERROR.
+  yfinance: CRITICAL
+
   # Application modules (hierarchical - parent loggers affect all children)
   src.tools: INFO
   src.deep_research: INFO
