@@ -327,16 +327,20 @@ class ChatRequest(BaseModel):
         description="Stable external thread identifier (e.g. 'chat_id:topic_id'). "
         "When provided with platform, langalpha resolves to an existing thread or creates a new one.",
     )
-    # Format: lowercase prefix (a-z, underscore), optionally `:<UPPERCASE_TOKEN>`
-    # where the suffix accepts A-Z 0-9 and `.` (for tickers like BRK.B).
+    # Format: lowercase prefix (a-z, underscore), optionally `:<SYMBOL>` where the
+    # suffix is a market ticker — it starts with a letter OR digit and accepts
+    # A-Z, 0-9, `.` and `-`. Digit-first symbols are real and common: CN A-shares
+    # (002851.SZ, 600519.SH) and HK tickers (0700.HK) all begin with a digit, not
+    # a letter, so the suffix must not require a leading [A-Z].
     # Current namespace: 'web', 'market_view:<SYMBOL>', 'telegram', 'slack',
     # 'discord', 'feishu'. Reserved prefixes shouldn't be reused for other origins.
     platform: Optional[str] = Field(
         default=None,
-        pattern=r"^[a-z_]+(:[A-Z][A-Z0-9.]*)?$",
+        pattern=r"^[a-z_]+(:[A-Z0-9][A-Z0-9.-]*)?$",
         max_length=50,
         description="Origin/platform identifier. Examples: 'web', "
-        "'market_view:AAPL', 'telegram', 'slack', 'discord', 'feishu'.",
+        "'market_view:AAPL', 'market_view:002851.SZ', 'telegram', 'slack', "
+        "'discord', 'feishu'.",
     )
 
 
