@@ -10,6 +10,7 @@ import { getChatSession } from './hooks/utils/chatSessionRestore';
 import { useChatViewCache } from './hooks/useChatViewCache';
 import { useWarmWorkspaceSandbox } from './hooks/useWarmWorkspaceSandbox';
 import { warmWorkspace } from './utils/warmWorkspace';
+import { isValidUuid } from './utils/uuid';
 import ChatView from './components/ChatView';
 import './ChatAgent.css';
 
@@ -60,12 +61,17 @@ interface ThreadErrorResponse {
  * Uses React Router to determine which view to display.
  */
 function ChatAgent(): React.ReactElement | null {
-  const { workspaceId: urlWorkspaceId, threadId, taskId } = useParams<{ workspaceId?: string; threadId?: string; taskId?: string }>();
+  const { workspaceId: rawUrlWorkspaceId, threadId, taskId } = useParams<{ workspaceId?: string; threadId?: string; taskId?: string }>();
   const navigate = useNavigate();
   const location = useLocation();
   const { t } = useTranslation();
   const isMobile = useIsMobile();
   const state = location.state as LocationState | null;
+
+  // Malformed workspace ids from the URL or navigation state are treated as
+  // absent so they never reach workspace routes or API calls.
+  const urlWorkspaceId = isValidUuid(rawUrlWorkspaceId) ? rawUrlWorkspaceId : undefined;
+  const stateWorkspaceId = state?.workspaceId && isValidUuid(state.workspaceId) ? state.workspaceId : null;
 
   // Detect browser-initiated navigation (iOS swipe-back, Android back button).
   // When popstate triggers navigation, iOS Safari already shows its own page
@@ -105,20 +111,20 @@ function ChatAgent(): React.ReactElement | null {
     const session = pendingSessionRef.current;
     pendingSessionRef.current = null;
     if (!session) return;
-    if (session.threadId) {
+    if (session.threadId && isValidUuid(session.threadId)) {
       navigate(`/chat/t/${session.threadId}`, {
-        state: { workspaceId: session.workspaceId },
+        state: { workspaceId: isValidUuid(session.workspaceId) ? session.workspaceId : null },
       });
-    } else {
+    } else if (isValidUuid(session.workspaceId)) {
       navigate(`/chat/${session.workspaceId}`);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Resolve workspaceId: URL param (thread gallery) > location state (navigated from app) > API lookup
   const [resolvedWorkspaceId, setResolvedWorkspaceId] = useState<string | null>(
-    urlWorkspaceId || state?.workspaceId || null
+    urlWorkspaceId || stateWorkspaceId || null
   );
-  const needsThreadLookup = !!threadId && threadId !== '__default__' && !urlWorkspaceId && !state?.workspaceId;
+  const needsThreadLookup = !!threadId && threadId !== '__default__' && !urlWorkspaceId && !stateWorkspaceId;
 
   const { data: resolvedThread, error: threadError } = useQuery({
     queryKey: queryKeys.threads.detail(threadId!),
@@ -152,7 +158,7 @@ function ChatAgent(): React.ReactElement | null {
 
   // Sync resolvedWorkspaceId when URL params or location state change
   // Use synchronous update to avoid stale workspace on first render after navigation
-  const incomingWsId = urlWorkspaceId || state?.workspaceId || null;
+  const incomingWsId = urlWorkspaceId || stateWorkspaceId || null;
   if (incomingWsId && incomingWsId !== resolvedWorkspaceId) {
     setResolvedWorkspaceId(incomingWsId);
   }
@@ -233,6 +239,7 @@ function ChatAgent(): React.ReactElement | null {
    * Passes workspace name via route state to avoid refetching all workspaces
    */
   const handleWorkspaceSelect = useCallback((selectedWorkspaceId: string, workspaceName?: string, workspaceStatus?: string) => {
+    if (!isValidUuid(selectedWorkspaceId)) return;
     if (workspaceStatus === 'stopped') {
       void warmWorkspace(selectedWorkspaceId, queryClient);
     }

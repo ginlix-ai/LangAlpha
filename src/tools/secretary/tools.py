@@ -427,10 +427,9 @@ async def ptc_agent(
         from src.server.database.conversation import get_thread_by_id
         from src.server.utils.pg_sanitize import normalize_uuid
 
-        # Normalize once so the owner check and the fetch bind the same canonical
-        # UUID. get_thread_owner_id normalizes internally; get_thread_by_id binds
-        # raw, so a non-canonical id (e.g. urn:uuid:...) would pass the owner
-        # check yet 22P02 on the fetch. None means not a UUID -> not found.
+        # Normalize once so the owner check and every downstream bind use the
+        # same canonical UUID (get_thread_owner_id and get_thread_by_id also
+        # normalize internally). None means not a UUID -> not found.
         normalized_id = normalize_uuid(thread_id)
         if normalized_id is None:
             return _error_command(

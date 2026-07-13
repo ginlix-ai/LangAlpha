@@ -2007,6 +2007,10 @@ async def get_thread_by_id(conversation_thread_id: str) -> Optional[Dict[str, An
     Returns:
         Thread dict or None if not found
     """
+    conversation_thread_id = normalize_uuid(conversation_thread_id)
+    if conversation_thread_id is None:
+        return None
+
     try:
         async with get_db_connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -2944,6 +2948,10 @@ async def get_replay_thread_data(
     Returns:
         (owner_user_id, thread_summary, queries, responses, usages, provenance)
     """
+    thread_id = normalize_uuid(thread_id)
+    if thread_id is None:
+        return None, None, [], [], [], []
+
     async with get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             # 1. Owner check (join threads -> workspaces)

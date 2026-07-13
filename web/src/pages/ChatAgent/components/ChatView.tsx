@@ -25,6 +25,7 @@ import { clampPanelWidth as clampPanelWidthUtil } from '@/lib/panelUtils';
 import { useCardState } from '../hooks/useCardState';
 import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
 import { classifyAgentPath, computeAgentArtifactRouting, type MemoryTier } from '../utils/agentPaths';
+import { isValidUuid } from '../utils/uuid';
 import {
   routeStopAction,
   compactionErrorCode,
@@ -1499,6 +1500,10 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
    */
   const handleOpenAgentArtifactFromChat = useCallback((rawPath: string, targetWorkspaceId?: string) => {
     const r = computeAgentArtifactRouting(rawPath, targetWorkspaceId);
+    if (r.setWorkspaceId && !isValidUuid(r.setWorkspaceId)) {
+      console.warn('[ChatView] ignoring artifact ref with invalid workspace id', r.setWorkspaceId);
+      return;
+    }
 
     setFilePanelTargetDir(null);
     setFilePanelTargetFile(r.targetFile);

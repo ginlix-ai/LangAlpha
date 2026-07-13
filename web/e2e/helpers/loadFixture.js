@@ -15,10 +15,10 @@ const fixturesDir = join(__dirname, '..', 'fixtures');
  * Load a fixture JSON file and enrich each event with replay metadata.
  * @param {string} filename - Fixture filename (e.g., 'turn0_steer.json')
  * @param {number} turnIndex - The turn_index to inject
- * @param {string} [threadId='th-1'] - Thread ID override
+ * @param {string} [threadId='b0000001-0000-4000-8000-000000000001'] - Thread ID override
  * @returns {Array<Object>} Enriched SSE events ready for configureSSE
  */
-export function loadFixture(filename, turnIndex, threadId = 'th-1') {
+export function loadFixture(filename, turnIndex, threadId = 'b0000001-0000-4000-8000-000000000001') {
   const raw = JSON.parse(readFileSync(join(fixturesDir, filename), 'utf8'));
   return raw.map((event) => ({
     ...event,

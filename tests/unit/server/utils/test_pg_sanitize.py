@@ -13,7 +13,12 @@ import time
 
 import pytest
 
-from src.server.utils.pg_sanitize import SafeJson, _safe_dumps, strip_pg_nul_str
+from src.server.utils.pg_sanitize import (
+    SafeJson,
+    _safe_dumps,
+    normalize_uuid,
+    strip_pg_nul_str,
+)
 
 
 class TestStripPgNulStr:
@@ -94,3 +99,37 @@ def test_safe_dumps_performance_smoke(size_mb: int):
     _safe_dumps(blob)
     elapsed = time.perf_counter() - start
     assert elapsed < 5.0, f"_safe_dumps too slow: {elapsed:.2f}s for {size_mb} MB"
+
+
+CANONICAL = "123e4567-e89b-12d3-a456-426614174000"
+
+
+class TestNormalizeUuid:
+    def test_canonical_passthrough(self):
+        assert normalize_uuid(CANONICAL) == CANONICAL
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "123E4567-E89B-12D3-A456-426614174000",
+            "urn:uuid:123e4567-e89b-12d3-a456-426614174000",
+            "123e4567e89b12d3a456426614174000",
+            "{123e4567-e89b-12d3-a456-426614174000}",
+        ],
+    )
+    def test_non_canonical_forms_normalize(self, value):
+        assert normalize_uuid(value) == CANONICAL
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "results",
+            "notes.md",
+            "",
+            None,
+            12345,
+            "123e4567-e89b-12d3-a456",
+        ],
+    )
+    def test_non_uuid_returns_none(self, value):
+        assert normalize_uuid(value) is None
