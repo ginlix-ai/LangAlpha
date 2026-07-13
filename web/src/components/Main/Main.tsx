@@ -1,6 +1,7 @@
 import React, { Suspense } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import PageLoading from '@/components/PageLoading/PageLoading';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { useSyncUserLocale } from '@/hooks/useSyncUserLocale';
 import { ContextOverflowPill } from '@/components/ui/ContextOverflowPill';
@@ -20,7 +21,7 @@ function Main() {
   const pageKey = location.pathname.split('/')[1] || 'dashboard';
 
   const routes = (
-    <Suspense fallback={null}>
+    <Suspense fallback={<PageLoading variant="pane" />}>
       <Routes location={location}>
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/chat" element={<ChatAgent />} />

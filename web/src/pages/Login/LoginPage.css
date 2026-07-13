@@ -1,5 +1,9 @@
 /*
- * Login page - full viewport, centered card, wavy lines background.
+ * Login page. Two layouts share this file:
+ *  - LoginPage: split screen (.login-page--split) — market chart visual left,
+ *    auth pane right.
+ *  - AuthConfirm / ResetPassword: centered card over the waves background
+ *    (the base .login-page + .login-page__card rules).
  *
  * TO CHANGE WAVE COLORS: edit the two variables below inside .login-page
  *
@@ -9,6 +13,21 @@
 .login-page {
   --login-waves-bg: var(--color-bg-page);
   --login-waves-stroke: var(--color-border-muted);
+  /* The only accent on the auth side: the ember the chart ball burns with.
+     Single source of truth — MarketScanlines and EdgeGrain read this variable
+     at runtime (via derivePalette in loginPaper), so the canvases and the CSS
+     never drift. */
+  --login-ember: rgb(255, 168, 92);
+  /* Opaque composition: the muted/loss tokens are translucent, so compose each
+     over the page color — the dune's stray dots (see EdgeGrain) never print
+     through a field, button, or error box. Referenced by the input, buttons,
+     and error box below. */
+  --login-opaque-muted:
+    linear-gradient(var(--color-border-muted), var(--color-border-muted)),
+    var(--color-bg-page);
+  --login-opaque-loss:
+    linear-gradient(var(--color-loss-soft), var(--color-loss-soft)),
+    var(--color-bg-page);
 
   position: relative;
   min-height: 100vh;
@@ -17,6 +36,13 @@
   justify-content: center;
   padding: 1.5rem;
   overflow: hidden;
+  /* Pinned here so the login renders the same face in every host app —
+     without it, text inherits whatever body font the app's tokens set. */
+  font-family: 'Golos Text', 'Inter', system-ui, sans-serif;
+}
+
+[data-theme='light'] .login-page {
+  --login-ember: rgb(178, 82, 38);
 }
 
 .login-page__card {
@@ -34,12 +60,12 @@
     0 0 20px rgba(255, 255, 255, 0.04),
     0 0 40px rgba(255, 255, 255, 0.02),
     0 4px 24px rgba(0, 0, 0, 0.15);
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'Golos Text', 'Inter', system-ui, sans-serif;
 }
 
 .login-page__card-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 0.875rem;
   margin-bottom: 1.75rem;
 }
@@ -62,46 +88,6 @@
   color: var(--color-text-primary);
 }
 
-.login-page__subtitle {
-  font-size: 0.875rem;
-  font-weight: 400;
-  letter-spacing: 0.01em;
-  margin: 0.25rem 0 0 0;
-  color: var(--color-text-secondary);
-}
-
-.login-page__tabs {
-  display: flex;
-  gap: 0.25rem;
-  margin-bottom: 1.5rem;
-  padding: 0.25rem;
-  background: var(--color-border-muted);
-  border-radius: 0.625rem;
-}
-
-.login-page__tab {
-  flex: 1;
-  padding: 0.5625rem 0.875rem;
-  font-size: 0.875rem;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  background: none;
-  border: none;
-  border-radius: 0.5rem;
-  color: var(--color-text-tertiary);
-  cursor: pointer;
-  transition: background-color 0.2s ease, color 0.2s ease;
-}
-
-.login-page__tab:hover {
-  color: var(--color-text-primary);
-}
-
-.login-page__tab[data-active='true'] {
-  background-color: var(--color-border-muted);
-  color: var(--color-text-primary);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-}
 
 .login-page__form {
   display: flex;
@@ -130,7 +116,7 @@
   letter-spacing: 0.01em;
   line-height: 1.4;
   border-radius: 0.625rem;
-  background-color: var(--color-border-muted);
+  background: var(--login-opaque-muted);
   border: 1px solid var(--color-border-muted);
   color: var(--color-text-primary);
   transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
@@ -148,8 +134,18 @@
 .login-page__input:focus {
   outline: none;
   border-color: var(--color-border-muted);
-  background-color: var(--color-border-muted);
+  /* Swaps only the shorthand's bottom layer; the muted gradient layer above
+     it still paints, so the composite stays opaque under stray dune dots. */
+  background-color: var(--color-bg-page);
   box-shadow: 0 0 0 3px var(--color-border-muted);
+}
+
+/* Keyboard/assistive focus only (:focus-visible never matches mouse clicks):
+   trade the muted halo for the ember so tab position is unmissable. The extra
+   .login-page ancestor outranks the shared Input's Tailwind focus-visible ring. */
+.login-page .login-page__input:focus-visible {
+  border-color: var(--login-ember);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--login-ember) 35%, transparent);
 }
 
 .login-page__error {
@@ -158,22 +154,13 @@
   font-size: 0.875rem;
   font-weight: 400;
   line-height: 1.4;
-  background-color: var(--color-loss-soft);
+  background: var(--login-opaque-loss);
   border: 1px solid var(--color-border-loss);
   color: var(--color-loss);
 }
 
-.login-page__success {
-  padding: 0.75rem 1rem;
-  border-radius: 0.625rem;
-  font-size: 0.875rem;
-  font-weight: 400;
-  line-height: 1.4;
-  background-color: var(--color-success-soft);
-  border: 1px solid var(--color-success);
-  color: var(--color-success);
-}
-
+/* Ink on paper, like the chart: the button prints in the page's ink and only
+   takes color — the ember — when it's about to act. */
 .login-page__submit {
   width: 100%;
   padding: 0.75rem 1.25rem;
@@ -181,87 +168,40 @@
   font-weight: 600;
   letter-spacing: 0.02em;
   line-height: 1.4;
-  border-radius: 999px;
-  border: none;
-  background: var(--color-accent-primary);
-  color: var(--color-text-on-accent);
+  border-radius: 0.625rem;
+  border: 1px solid var(--color-text-primary);
+  background: var(--color-text-primary);
+  color: var(--color-bg-page);
   cursor: pointer;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
-  transition: transform 0.15s ease, box-shadow 0.2s ease, filter 0.2s ease;
+  transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
 }
 
-.login-page__submit:hover:not(:disabled) {
-  filter: brightness(1.03);
-  transform: translateY(-1px);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5);
+/* Ember on hover, but only for pointers that can hover: on touch screens
+   :hover sticks after a tap, leaving the button orange at rest. */
+@media (hover: hover) {
+  .login-page__submit:hover:not(:disabled) {
+    background: var(--login-ember);
+    border-color: var(--login-ember);
+    transform: translateY(-1px);
+  }
 }
 
 .login-page__submit:active:not(:disabled) {
   transform: translateY(0);
-  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.35);
 }
 
 .login-page__submit:disabled {
-  background: var(--color-accent-disabled);
   cursor: not-allowed;
-  opacity: 0.9;
-  box-shadow: none;
+  opacity: 0.55;
   transform: none;
 }
 
-.login-page__divider {
-  display: flex;
-  align-items: center;
-  margin: 1.5rem 0 1.25rem;
-}
-
-.login-page__divider::before,
-.login-page__divider::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--color-border-muted);
-}
-
-.login-page__divider-text {
-  padding: 0 0.75rem;
-  font-size: 0.8125rem;
-  font-weight: 400;
-  color: var(--color-text-tertiary);
-  white-space: nowrap;
-}
-
-.login-page__oauth-buttons {
-  display: flex;
-  gap: 0.75rem;
-}
-
-.login-page__oauth-btn {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  padding: 0.625rem 1rem;
-  font-size: 0.875rem;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  border-radius: 0.625rem;
-  border: 1px solid var(--color-border-muted);
-  background: var(--color-border-muted);
-  color: var(--color-text-primary);
-  cursor: pointer;
-  transition: background-color 0.2s ease, border-color 0.2s ease;
-}
-
-.login-page__oauth-btn:hover:not(:disabled) {
-  background: var(--color-border-muted);
-  border-color: var(--color-border-muted);
-}
-
-.login-page__oauth-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+/* Keyboard focus takes the ember, not the browser default. Mouse focus on
+   inputs keeps the soft halo; their keyboard ring lives with the input rules. */
+.login-page button:focus-visible,
+.login-page a:focus-visible {
+  outline: 2px solid var(--login-ember);
+  outline-offset: 2px;
 }
 
 .login-page__legal {
@@ -280,4 +220,538 @@
 
 .login-page__legal a:hover {
   color: var(--color-text-primary);
+}
+
+/* --- Auxiliary auth views (forgot password, magic link, check inbox) --- */
+
+.login-page__label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.login-page__forgot {
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: 0.8125rem;
+  font-weight: 400;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.login-page__forgot:hover {
+  color: var(--color-text-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.login-page__resend-btn {
+  width: 100%;
+  padding: 0.625rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  border-radius: 0.625rem;
+  border: 1px solid var(--color-border-muted);
+  background: var(--login-opaque-muted);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.login-page__resend-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.login-page__back {
+  align-self: center;
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.login-page__back:hover {
+  color: var(--color-text-primary);
+}
+
+.login-page__view-title {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-text-primary);
+}
+
+.login-page__view-subtitle {
+  margin: 0.25rem 0 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+
+.login-page__password-wrap {
+  position: relative;
+}
+
+.login-page__password-wrap .login-page__input {
+  padding-right: 3rem;
+}
+
+.login-page__password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 0.25rem;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 44px touch target (WCAG 2.5.8); the icon stays small, the hit area doesn't. */
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.login-page__password-toggle:hover {
+  color: var(--color-text-primary);
+}
+
+/* Live strength meter: burns ember while weak, sets to ink at full strength. */
+.login-page__strength {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.login-page__strength-track {
+  flex: 1;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--color-border-muted);
+  overflow: hidden;
+}
+
+.login-page__strength-fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: var(--login-ember);
+  transition: width 0.25s ease, background-color 0.25s ease;
+}
+
+.login-page__strength[data-score='0'] .login-page__strength-fill {
+  width: 15%;
+}
+
+.login-page__strength[data-score='1'] .login-page__strength-fill {
+  width: 40%;
+}
+
+.login-page__strength[data-score='2'] .login-page__strength-fill {
+  width: 70%;
+}
+
+.login-page__strength[data-score='3'] .login-page__strength-fill {
+  width: 100%;
+  background: var(--color-text-primary);
+}
+
+.login-page__strength-label {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+}
+
+/* Requirements checklist: on screen before anything is typed, each item
+   checks off as the password meets it. Unmet items hold full ink; met ones
+   settle back and take the check. */
+.login-page__reqs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.875rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.login-page__req {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  transition: color 0.2s ease;
+}
+
+.login-page__req-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--color-text-tertiary);
+  border-radius: 3px;
+  font-size: 9px;
+  line-height: 1;
+  color: transparent;
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+
+.login-page__req[data-met] {
+  color: var(--color-text-tertiary);
+}
+
+.login-page__req[data-met] .login-page__req-mark {
+  color: var(--color-text-primary);
+  border-color: var(--color-border-muted);
+}
+
+.login-page__error-hint {
+  margin: 0.375rem 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.login-page__error-link {
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: inherit;
+  font-weight: 500;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.login-page__inline-resend {
+  display: block;
+  margin-top: 0.5rem;
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-loss);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.login-page__inline-resend:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.login-page__inbox {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.login-page__inbox-icon {
+  width: 2.25rem;
+  height: 2.25rem;
+  color: var(--color-text-primary);
+  opacity: 0.9;
+}
+
+.login-page__inbox-title {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-text-primary);
+}
+
+.login-page__inbox-body {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+
+.login-page__inbox-body strong {
+  font-weight: 600;
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+}
+
+.login-page__status {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.login-page__status-text {
+  margin: 0;
+  font-size: 0.875rem;
+  text-align: center;
+  color: var(--color-text-secondary);
+}
+
+/* --- Split layout: market-tape visual left, auth pane right --- */
+
+.login-page--split {
+  /* Plate frame: the composition sits inset on the paper, ruled by four
+     full-bleed hairlines that cross at square corners and run on past them,
+     fading out toward the viewport edges. Margin and line both derive from
+     the page's own tokens. */
+  --login-frame-gap: clamp(1.25rem, 3vw, 2.75rem);
+  --login-frame-line: color-mix(in srgb, var(--color-text-primary) 14%, transparent);
+  display: block;
+  padding: var(--login-frame-gap);
+}
+
+/* The frame rules, drawn edge to edge: each line holds full strength between
+   the corners and thins to nothing as it runs off toward the boundary. */
+.login-page--split::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, transparent, var(--login-frame-line) var(--login-frame-gap), var(--login-frame-line) calc(100% - var(--login-frame-gap)), transparent),
+    linear-gradient(to right, transparent, var(--login-frame-line) var(--login-frame-gap), var(--login-frame-line) calc(100% - var(--login-frame-gap)), transparent),
+    linear-gradient(to bottom, transparent, var(--login-frame-line) var(--login-frame-gap), var(--login-frame-line) calc(100% - var(--login-frame-gap)), transparent),
+    linear-gradient(to bottom, transparent, var(--login-frame-line) var(--login-frame-gap), var(--login-frame-line) calc(100% - var(--login-frame-gap)), transparent);
+  background-repeat: no-repeat;
+  background-size: 100% 1px, 100% 1px, 1px 100%, 1px 100%;
+  background-position:
+    left 0 top var(--login-frame-gap),
+    left 0 bottom var(--login-frame-gap),
+    left var(--login-frame-gap) top 0,
+    right var(--login-frame-gap) top 0;
+}
+
+/* The frame, not the page, is the positioning context for the split grid,
+   so the seam-tracking formulas below keep measuring the framed width. */
+.login-page__frame {
+  position: relative;
+  display: grid;
+  /* 65/35 split: the chart pane runs wide enough to hand off into the grain
+     ramp along the frame's right edge (see MarketScanlines + EdgeGrain). */
+  grid-template-columns: 1fr minmax(420px, 35%);
+  align-items: stretch;
+  min-height: calc(100vh - 2 * var(--login-frame-gap));
+  overflow: hidden;
+  /* One vertical wash across the whole plate: the page's ink lifted into the
+     page color at the top, settling to plain page at the bottom. Both panes
+     share it (the canvas paints grain and art only, no field of its own), so
+     the background carries no left-to-right step. */
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--color-text-primary) 4%, var(--color-bg-page)),
+    var(--color-bg-page)
+  );
+}
+
+/* The page's only background texture: a static dot field condensing toward
+   the frame's right border, thinning right to left (see EdgeGrain). Sits
+   above the wash, below both panes - opaque form surfaces stop it. */
+.login-page__edge-grain {
+  position: absolute;
+  inset: 0;
+  /* Explicit size: a canvas is a replaced element, so opposing insets alone
+     leave it at its intrinsic 300x150. */
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  display: block;
+  pointer-events: none;
+}
+
+/* Paint order is DOM order (grain, auth, visual): the visual pane comes
+   last, so the market canvas - which spans the whole frame - plays the
+   ember ball's breakout and burst OVER the form. The canvas takes no
+   pointer events, and the chart art itself never prints past the seam. */
+.login-page--split .login-page__auth-pane {
+  position: relative;
+}
+
+.login-page__auth-pane {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem 2.5rem;
+}
+
+.login-page__auth-inner {
+  width: 100%;
+  max-width: 22rem;
+}
+
+.login-page__visual-pane {
+  /* Auth pane stays first in the DOM (tab/reading order); the visual only
+     moves left visually. No background: the canvas paints its own field,
+     derived from the page so the art prints on the page's paper in both
+     themes (see MarketScanlines). No overflow clip: the canvas runs on
+     past the seam and the frame does the clipping. */
+  order: -1;
+  position: relative;
+}
+
+.login-page__scanlines {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* Runs from the pane to beyond the frame's far edge (the frame clips it)
+     so the breakout and its burst never cut off at a canvas boundary.
+     Pointer events live on the pane (see MarketScanlines), so the overlay
+     never blocks the form. */
+  width: 100vw;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+}
+
+/* Edge melt (vignette + the dithered dissolve into the auth pane) is drawn
+   inside the canvas itself - see MarketScanlines. */
+
+.login-page__method-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.login-page__method-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.625rem;
+  width: 100%;
+  padding: 0.6875rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  border-radius: 0.625rem;
+  border: 1px solid var(--color-border-muted);
+  background: var(--login-opaque-muted);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
+}
+
+.login-page__method-btn:hover:not(:disabled) {
+  border-color: var(--color-text-tertiary);
+  transform: translateY(-1px);
+}
+
+.login-page__method-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.login-page__method-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Email is the primary route; OAuth and the magic link stay quiet. */
+.login-page__method-btn--primary {
+  background: var(--color-text-primary);
+  border-color: var(--color-text-primary);
+  color: var(--color-bg-page);
+}
+
+@media (hover: hover) {
+  .login-page__method-btn--primary:hover:not(:disabled) {
+    background: var(--login-ember);
+    border-color: var(--login-ember);
+  }
+}
+
+.login-page__method-btn svg {
+  flex-shrink: 0;
+}
+
+.login-page__method .login-page__error {
+  margin-bottom: 1rem;
+}
+
+.login-page__switch {
+  margin: 0.25rem 0 0;
+  text-align: center;
+  font-size: 0.8125rem;
+  color: var(--color-text-tertiary);
+}
+
+.login-page__method .login-page__switch {
+  margin-top: 1.25rem;
+}
+
+.login-page__switch-link {
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: inherit;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.login-page__switch-link:hover {
+  color: var(--color-text-primary);
+}
+
+.login-page--split .login-page__legal {
+  margin-top: 2rem;
+}
+
+/* Typographic anchor in the visual pane's sky. The canvas field follows the
+   page's paper in both themes, so standard text tokens read correctly here.
+   pointer-events stays off so the canvas crosshair keeps working underneath. */
+.login-page__visual-copy {
+  position: absolute;
+  top: clamp(2.5rem, 6vh, 4.5rem);
+  left: clamp(2rem, 4vw, 4rem);
+  max-width: min(34rem, 60%);
+  pointer-events: none;
+}
+
+.login-page__visual-title {
+  margin: 0;
+  font-family: 'Golos Text', 'Inter', system-ui, sans-serif;
+  font-size: clamp(1.625rem, 2.2vw, 2.5rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  color: var(--color-text-primary);
+  text-wrap: balance;
+}
+
+.login-page__visual-subtitle {
+  margin: 1rem 0 0;
+  max-width: 26rem;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+
+@media (max-width: 900px) {
+  .login-page__frame {
+    grid-template-columns: 1fr;
+  }
+
+  .login-page__visual-pane {
+    display: none;
+  }
+
+  .login-page__auth-pane {
+    padding: 2.5rem 1.5rem;
+  }
 }

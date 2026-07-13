@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
     <script>
       (function(){
         var t = localStorage.getItem('theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
@@ -11,14 +12,17 @@
     </script>
     <style>
       @view-transition { navigation: auto; }
-      html { background: #000000; }
-      html[data-theme="light"] { background: hsl(30 25% 93%); }
+      /* color-scheme drives the browser's pre-paint clear color: without it a
+         reload flashes the UA's white canvas before the dark page paints. */
+      html { background: #000000; color-scheme: dark; }
+      html[data-theme="light"] { background: hsl(30 25% 93%); color-scheme: light; }
     </style>
     <link rel="icon" type="image/svg+xml" href="/logo-favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
+    <!-- ONE font request for every family (alphabetical, as css2 requires),
+         loaded non-blocking via the media="print" swap. -->
+    <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400..600&family=JetBrains+Mono:wght@400;500;600&family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
     <title>LangAlpha</title>
   </head>
   <body>
