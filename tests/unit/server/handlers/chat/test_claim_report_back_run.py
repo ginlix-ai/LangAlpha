@@ -229,24 +229,50 @@ class _RaisingCache(_Cache):
 
 
 @pytest.mark.asyncio
-async def test_claim_fails_open_when_script_fails():
-    """A Redis hiccup at the claim must not 500 the admission -> degrade to
-    (run_id, True) so the dispatch still proceeds (a lost claim must not
-    stall a completed analysis at the admission gate)."""
+async def test_claim_fails_closed_when_script_fails():
+    """Codex round-6 F1: the old fail-open here (fabricating claimed=True on
+    a Redis error) let a route reach START with NO pointer and NO membership
+    check — invisible to the drop teardown's pointer fence, and blind to a
+    pair the clear had already settled. The claim now fails closed to the
+    unknown shape: not claimed, no winner, nothing written."""
     cache = _RaisingCache()
     result = await claim_report_back_run(cache, "flash-1", "ptc-1", "run-1")
-    assert (result.winning_run_id, result.claimed) == ("run-1", True)
-    # Nothing persisted — we degraded to claimed without writing a bogus pointer.
+    assert (result.winning_run_id, result.claimed) == (None, False)
+    assert not result.pair_gone
     assert cache.kv == {}
 
 
 @pytest.mark.asyncio
-async def test_claim_when_cache_disabled_proceeds_without_write():
+async def test_claim_when_cache_disabled_fails_closed():
+    """Config-off cache: same fail-closed shape — a report-back POST only
+    ever originates from an executor that has Redis, so an unavailable cache
+    here is a degraded worker, not a supported mode."""
     cache = _Cache(enabled=False)
     result = await claim_report_back_run(cache, "flash-1", "ptc-1", "run-1")
-    # No idempotency available, but the dispatch must still proceed.
-    assert (result.winning_run_id, result.claimed) == ("run-1", True)
+    assert (result.winning_run_id, result.claimed) == (None, False)
     assert cache.kv == {}
+
+
+@pytest.mark.asyncio
+async def test_cm_script_failure_defers_as_in_flight():
+    """The prerequisite pin for the drop-clear pointer fence: a claim-script
+    failure surfaces as ``in_flight`` (route 503s BEFORE advancing the flash
+    generator — threads.py returns at the in_flight branch, so no run can
+    start unfenced), never as a won claim. Covers both orders of the round-6
+    interleaving: blip before the clear, and blip after membership fell."""
+    cache = _RaisingCache()
+    async with rb.claim(cache, "flash-1", "ptc-1", "run-1") as handle:
+        assert handle.in_flight
+        assert handle.incumbent is None and not handle.pair_gone
+    assert cache.kv == {}
+
+    cleared = _RaisingCache()
+    cleared.sets[rb.flash_watch_key("flash-1")].discard("ptc-1")
+    async with rb.claim(cleared, "flash-1", "ptc-1", "run-1") as handle:
+        # Membership already fell, but the failed script can't prove it:
+        # defer (retriable) rather than misreading the pair as live or gone.
+        assert handle.in_flight and not handle.pair_gone
+    assert cleared.kv == {}
 
 
 @pytest.mark.asyncio
@@ -509,3 +535,54 @@ async def test_cm_surfaces_pair_gone_when_membership_fell_before_takeover():
         ) as handle:
             assert handle.pair_gone
             assert not handle.in_flight and handle.incumbent is None
+
+
+def test_priming_lease_and_budget_fit_the_admission_lifecycle():
+    """Rounds 2+3 F1: the executor's retry budget must fit (a) the priming
+    lease — so a rowless crashed pointer becomes takeover-eligible while
+    retries are still coming — AND (b) one full post-takeover admission
+    attempt (longest legitimate pre-START hold + response/backoff slack) —
+    so the drop deadline can't land while the route legitimately holds the
+    POST pre-START. Both must hold for ANY configured workflow_timeout
+    (the admission holds derive from different config knobs), or the job
+    is dropped and acked with no run row: summary permanently lost."""
+    hold = rb._admission_hold_bound()
+    assert rb._RB_POINTER_PRIMING_LEASE_S <= rb._RB_BUSY_WAIT_CAP / 2
+    assert rb._RB_POINTER_PRIMING_LEASE_S <= 900.0
+    # Post-lease retry window covers one full admission hold plus slack.
+    assert (
+        rb._RB_BUSY_WAIT_CAP - rb._RB_POINTER_PRIMING_LEASE_S
+        >= hold + rb._RB_ADMISSION_MARGIN_S
+    )
+    # The floor binds even when workflow_timeout is configured tiny.
+    assert rb._RB_BUSY_WAIT_CAP >= 2.0 * (hold + rb._RB_ADMISSION_MARGIN_S)
+    # The derivation itself: small budgets scale the lease down; large
+    # budgets cap it at the admission-wait ceiling.
+    assert rb._derive_priming_lease(600.0) == 300.0
+    assert rb._derive_priming_lease(7200.0) == 900.0
+
+
+def test_admission_hold_bound_mirrors_btm_margins():
+    """_admission_hold_bound re-derives wait_for_admission's two waits from
+    settings (importing BTM would be circular); this pins the mirrored +2/+20
+    margins to BTM's class constants so they can't silently drift. The bound
+    is the SUM of the two waits — one admission call runs the compaction
+    backstop and then the stop-drain sequentially (Codex round-4 F1; the
+    composition itself is pinned in test_background_task_manager)."""
+    from src.config.settings import (
+        get_admission_compaction_wait_timeout,
+        get_checkpoint_flush_timeout,
+        get_compaction_timeout,
+    )
+    from src.server.services.background_task_manager import BackgroundTaskManager
+
+    stopping = (
+        get_checkpoint_flush_timeout()
+        + BackgroundTaskManager._ADMISSION_TEARDOWN_MARGIN_S
+    )
+    compaction = max(
+        get_admission_compaction_wait_timeout(),
+        get_compaction_timeout()
+        + BackgroundTaskManager._COMPACTION_ADMISSION_MARGIN_S,
+    )
+    assert rb._admission_hold_bound() == compaction + stopping

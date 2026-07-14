@@ -1296,6 +1296,31 @@ class TestMutationAdmissionGuard:
         runner.wait_until_idle.assert_awaited_once_with("thread-1", timeout=1.5)
 
     @pytest.mark.asyncio
+    async def test_admission_composes_mutation_wait_then_stop_drain(self):
+        """One admission call can lawfully consume BOTH waits in sequence —
+        the compaction backstop, then the stop-drain when the freed slot
+        carries cancel intent (a user cancel landing near a compaction
+        window's close chains them). report_back._admission_hold_bound()
+        SUMS the two bounds for exactly this path (Codex round-4 F1); this
+        pin keeps the sequential control flow honest against that sum."""
+        btm = _make_btm()
+        runner = self._runner(mutating=True, idle_within_wait=True)
+        ledger = AsyncMock(
+            side_effect=[_stopping_row("r-stop"), None, None]
+        )
+
+        with patch(self.RUNNER, return_value=runner), patch(
+            _GET_ACTIVE_RUN, ledger
+        ):
+            result = await btm.wait_for_admission("thread-1")
+
+        assert result == ("fresh", None)
+        runner.wait_until_idle.assert_awaited_once()  # compaction wait ran
+        # slot read (stopping) → stop-drain poll → post-drain re-read: the
+        # stopping wait ran IN THE SAME CALL after the mutation wait.
+        assert ledger.await_count >= 3
+
+    @pytest.mark.asyncio
     async def test_no_mutation_admits_normally(self):
         """No mutation in progress → admission falls straight through to the
         ledger scan without waiting on the runner."""

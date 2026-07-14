@@ -555,6 +555,32 @@ async def test_execute_drop_clears_member_so_chain_advances():
 
 
 @pytest.mark.asyncio
+async def test_drop_refused_by_live_pointer_nacks():
+    """Codex round-5 F1: the last POST's server route can outlive the client
+    socket timeout and still be pre-START inside a lawful admission hold when
+    the busy-wait cap expires — its live pointer claim must fence the drop's
+    teardown (nack, retry adopts/takes over/finds released), never be cleared
+    out from under it. The chain lease binds the executor, not that route."""
+    cache = _FakeCache()
+    flash, ptc = "flash-1", "ptc-1"
+    _seed_dispatched(cache, flash, [ptc])
+    # A route mid-admission holds the pointer claim for this pair.
+    cache.kv[report_back.flash_rb_run_key(flash, ptc)] = {
+        "run_id": "rt-run",
+        "claimed_at": 12345.0,
+    }
+
+    h = _ExecHarness(cache, post_result=("drop", None))
+    with pytest.raises(RuntimeError, match="live run pointer"):
+        await h.run(_job(ptc))
+
+    # Everything intact: membership, origin, and the claim itself.
+    assert ptc in cache.client.sets[report_back.flash_watch_key(flash)]
+    assert f"ptc_origin:{ptc}" in cache.kv
+    assert report_back.flash_rb_run_key(flash, ptc) in cache.kv
+
+
+@pytest.mark.asyncio
 async def test_execute_deleted_discards_whole_flash_thread():
     cache = _FakeCache()
     flash = "flash-1"

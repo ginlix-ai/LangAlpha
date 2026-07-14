@@ -37,13 +37,6 @@ from src.server.handlers.chat.report_back_keys import (
 # TTL for report-back Redis state (run pointers, watch SET, queue); 24h.
 _FLASH_RB_RUN_TTL = 86400
 
-# Priming lease (seconds) on a run pointer whose run has NO ledger row yet:
-# an incumbent younger than this may still be mid-priming (admission wait +
-# START txn) on another worker, so a retry defers instead of adopting or
-# taking over. Must comfortably exceed the longest legitimate pre-START
-# admission wait (compaction backstop / stop-drain).
-_RB_POINTER_PRIMING_LEASE_S = 900
-
 # TTL for the recently-drained run-id list (flash_rb_done); 15 min.
 _FLASH_RB_DONE_TTL = 900
 
@@ -197,13 +190,70 @@ RB_REQUEST_NS = uuid.UUID("6f7a2b1c-9d3e-4f50-8a61-c2d4e5f60718")
 # dispatched report-back run's terminal.
 _RB_TERMINAL_POLL = 5.0
 
+def _admission_hold_bound() -> float:
+    """Longest legitimate server-side pre-START hold of one dispatched POST.
+
+    ``wait_for_admission`` runs its waits SEQUENTIALLY in one call — the
+    compaction backstop first, then (when the freed slot carries cancel
+    intent) the stop-drain — so the bound is their SUM, not their max
+    (round-4 F1: a cancel landing near a compaction window's close chains
+    both). The +2/+20 margins mirror
+    BackgroundTaskManager._ADMISSION_TEARDOWN_MARGIN_S /
+    _COMPACTION_ADMISSION_MARGIN_S (importing BTM here would be circular;
+    unit pins guard the mirror and the sequential composition against
+    drift)."""
+    from src.config.settings import (
+        get_admission_compaction_wait_timeout,
+        get_checkpoint_flush_timeout,
+        get_compaction_timeout,
+    )
+
+    stopping = get_checkpoint_flush_timeout() + 2.0
+    compaction = max(
+        get_admission_compaction_wait_timeout(), get_compaction_timeout() + 20.0
+    )
+    return compaction + stopping
+
+
+# Response/backoff slack per admission attempt (30s sock-read + 5s backoff + margin).
+_RB_ADMISSION_MARGIN_S = 60.0
+
 # Cap (seconds) on retrying a 409 (flash thread busy with the user's own turn)
-# for one item; derived from the workflow timeout so a long user turn is waited out.
-_RB_BUSY_WAIT_CAP = float(get_workflow_timeout())
+# for one item; derived from the workflow timeout so a long user turn is
+# waited out, FLOORED so the budget structurally fits the priming lease plus
+# one full post-takeover admission attempt (round-3 F1): the drop deadline
+# must never land while the route is still inside a legitimate pre-START hold
+# entered after takeover became legal — the admission holds derive from
+# DIFFERENT config knobs than workflow_timeout, so no timeout value may be
+# trusted to cover them.
+_RB_BUSY_WAIT_CAP = max(
+    float(get_workflow_timeout()),
+    2.0 * (_admission_hold_bound() + _RB_ADMISSION_MARGIN_S),
+)
 
 # Cap (seconds) on waiting for a POSTed report-back to reach terminal before
 # force-clearing it, so a crashed run can't wedge the whole flash queue.
 _RB_TERMINAL_WAIT_CAP = _RB_BUSY_WAIT_CAP
+
+
+def _derive_priming_lease(retry_budget: float) -> float:
+    """Priming lease on a run pointer whose run has NO ledger row yet.
+
+    Half the (floored) budget: the lease itself covers the longest legitimate
+    pre-START admission wait, and the remaining half guarantees post-takeover
+    retries — one full admission hold plus slack — before the drop deadline.
+    A rowless crashed pointer therefore always becomes takeover-eligible AND
+    completable while 503 retries are still coming; the cost of a small lease
+    (takeover racing an unusually slow priming) is bounded by the per-thread
+    in_progress slot — one live run per flash thread.
+    """
+    return min(900.0, retry_budget / 2)
+
+
+# An incumbent pointer younger than this may still be mid-priming (admission
+# wait + START txn) on another worker: retries defer instead of adopting or
+# taking over.
+_RB_POINTER_PRIMING_LEASE_S = _derive_priming_lease(_RB_BUSY_WAIT_CAP)
 
 # Statuses the report-back POST DEFERS on (retry with backoff) beyond the
 # always-retried 409/>=500: 402 payment, 403 access gate, 429 rate-limit — the
@@ -966,11 +1016,16 @@ async def claim_report_back_run(
     upstream backstops a double-start). ``pair_gone`` means the watch
     membership no longer exists — a resolution or terminal clear settled the
     pair after this POST was enqueued — and the script refused to resurrect
-    the pointer behind it; the caller must not schedule a summary. Degrades
-    to claimed when the cache is unavailable, so the dispatch still proceeds.
+    the pointer behind it; the caller must not schedule a summary. FAILS
+    CLOSED when the cache is unavailable or the script errors: the pointer
+    is the fence the drop-path teardown checks before settling the pair
+    (round-6 F1) — a route allowed to proceed without it (or without the
+    membership check) can be pre-START, invisible, when the executor clears.
+    The unknown shape maps to ``in_flight`` → 503, inside the executor's
+    always-retried set.
     """
     if not (cache.enabled and cache.client):
-        return PointerClaim(run_id, True)
+        return PointerClaim(None, False)
     try:
         state, incumbent = await cache.client.eval(
             _CLAIM_POINTER_LUA,
@@ -984,14 +1039,12 @@ async def claim_report_back_run(
             dispatch_gen or "",
         )
     except Exception:
-        # A Redis hiccup here must not 500 the admission (the POST retry loop
-        # would eventually drop a completed analysis); degrade to claimed.
         logger.warning(
             f"[FLASH_REPORT_BACK] Run-claim failed for {flash_thread_id}/"
-            f"{ptc_thread_id}; degrading to claimed",
+            f"{ptc_thread_id}; failing closed (retriable)",
             exc_info=True,
         )
-        return PointerClaim(run_id, True)
+        return PointerClaim(None, False)
     state = int(state)
     if state == 0:
         raw = _decode(incumbent)
@@ -1161,7 +1214,9 @@ async def claim(
             yield handle
             return
         if not row_known or result.incumbent_raw is None:
-            # Can't prove the incumbent either way — defer, never ack.
+            # Can't prove the pair's state — a failed ledger probe, or a
+            # failed/unavailable claim script (fail-closed: no pointer
+            # written, membership unchecked) — defer, never ack.
             handle.in_flight = True
             yield handle
             return
@@ -1677,11 +1732,26 @@ async def execute_report_back(job: dict) -> None:
                     # Terminal rejection or exhausted defer-wait. Clear this
                     # member so the chain advances; otherwise the next
                     # report-back on this flash thread would wait behind a
-                    # summary turn that never starts.
-                    await clear_flash_report_back(
+                    # summary turn that never starts. Pointer-gated: a POST's
+                    # server route can outlive the client's socket timeout and
+                    # still sit pre-START inside a lawful admission hold — the
+                    # chain lease serializes THIS executor, not that in-flight
+                    # route (round-5 F1). Its live claim fences the teardown
+                    # atomically (and a route that has not claimed yet is
+                    # refused by the claim script's membership gate once the
+                    # clear lands); on refusal we nack, and the retry adopts
+                    # the claim's run row, takes over its corpse, or finds
+                    # the claim released.
+                    cleared = await clear_flash_report_back(
                         cache, ptc_thread_id, flash_thread_id, user_id=user_id,
-                        expected_gen=dispatch_gen,
+                        expected_gen=dispatch_gen, refuse_if_pointer=True,
                     )
+                    if not cleared and cleared.fencer_gen is None:
+                        raise RuntimeError(
+                            f"report-back drop for {ptc_thread_id} refused: a "
+                            f"live run pointer on flash thread {flash_thread_id} "
+                            f"may still be mid-admission; nacking to retry"
+                        )
             return
 
         # outcome == "dispatched"
@@ -1959,12 +2029,6 @@ async def _post_report_back(
                     f"{flash_thread_id}: {e}"
                 )
 
-            if asyncio.get_running_loop().time() >= deadline:
-                logger.warning(
-                    f"[FLASH_REPORT_BACK] Busy-wait cap hit for {ptc_thread_id} on flash "
-                    f"thread {flash_thread_id}; dropping"
-                )
-                return "drop", None
             if heartbeat is not None and not await heartbeat():
                 logger.warning(
                     f"[FLASH_REPORT_BACK] Outbox lease lost while deferring the "
@@ -1973,6 +2037,17 @@ async def _post_report_back(
                 return "lost", None
             await asyncio.sleep(min(backoff, 5.0))
             backoff = min(backoff * 2, 5.0)
+            # The deadline gates the NEXT launch (checked after the sleep,
+            # immediately before the loop re-POSTs): an attempt must never
+            # start past the deadline — a post-deadline takeover could still
+            # be holding admission when the drop clears the pair, orphaning
+            # the summary it then starts (round-4 F1).
+            if asyncio.get_running_loop().time() >= deadline:
+                logger.warning(
+                    f"[FLASH_REPORT_BACK] Busy-wait cap hit for {ptc_thread_id} on flash "
+                    f"thread {flash_thread_id}; dropping"
+                )
+                return "drop", None
 
 
 async def _discard_flash_thread(cache, flash_thread_id: str) -> None:
