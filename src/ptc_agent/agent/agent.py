@@ -98,11 +98,12 @@ from src.tools.search import get_web_search_tool
 from src.tools.fetch import web_fetch_tool
 from src.tools.sec.tool import get_sec_filing
 from src.tools.market_data.tool import (
-    get_stock_daily_prices,
+    get_adanos_market_sentiment,
     get_company_overview,
     get_market_indices,
     get_options_chain,
     get_sector_performance,
+    get_stock_daily_prices,
     screen_stocks,
 )
 from ptc_agent.config import AgentConfig
@@ -458,6 +459,7 @@ class PTCAgent:
             get_sec_filing,  # SEC filing extraction (10-K, 10-Q, 8-K)
             get_stock_daily_prices,  # Stock OHLCV price data
             get_company_overview,  # Company investment analysis (includes real-time quote)
+            get_adanos_market_sentiment,  # Optional Adanos sentiment for US equities
             get_market_indices,  # Market indices data
             get_options_chain,  # Options contracts chain with snapshot pricing
             get_sector_performance,  # Sector performance metrics

@@ -40,11 +40,12 @@ from src.tools.search import get_web_search_tool
 from src.tools.fetch import web_fetch_tool
 from src.tools.sec.tool import get_sec_filing
 from src.tools.market_data.tool import (
-    get_stock_daily_prices,
+    get_adanos_market_sentiment,
     get_company_overview,
     get_market_indices,
     get_options_chain,
     get_sector_performance,
+    get_stock_daily_prices,
     screen_stocks,
 )
 
@@ -136,6 +137,7 @@ class FlashAgent:
                 get_sec_filing,
                 get_stock_daily_prices,
                 get_company_overview,
+                get_adanos_market_sentiment,
                 get_market_indices,
                 get_options_chain,
                 get_sector_performance,

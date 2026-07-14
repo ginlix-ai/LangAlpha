@@ -184,6 +184,7 @@ LangAlpha supports a three-tier data provider hierarchy. Each tier is optional â
 | 1    | **ginlix-data** (hosted proxy)    | `GINLIX_DATA_URL` | Real-time WebSocket price feed, intraday data, extended trading hour data, options data    |
 | 2    | **FMP** (Financial Modeling Prep) | `FMP_API_KEY`     | High-quality fundamentals, financial statements, macro data, analyst data                  |
 | 3    | **Yahoo Finance** (yfinance)      | *None â€” free*     | Price history, basic fundamentals, earnings, holdings, insider transactions, ESG, screener |
+| Optional | **Adanos Market Sentiment** | `ADANOS_API_KEY` | US-equity sentiment from Reddit, X / FinTwit, news, and Polymarket via the native `get_adanos_market_sentiment` tool |
 
 
 All tiers are enabled by default. To run with **free data only** (Yahoo Finance), run `make config` with prompted selection. You can also edit `agent_config.yaml` manually.
