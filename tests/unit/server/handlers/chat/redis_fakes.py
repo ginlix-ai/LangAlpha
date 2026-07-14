@@ -141,46 +141,39 @@ class FakeClient:
         return current
 
     async def eval(self, script, numkeys, *args):
-        """Emulates the report-back + workflow-tracker Lua scripts by identity."""
-        from src.server.services import workflow_tracker
-
+        """Emulates the report-back Lua scripts by identity."""
         keys, argv = args[:numkeys], args[numkeys:]
-        if script is workflow_tracker._CAS_STATUS_LUA:
-            (key,) = keys
-            rid_arg, patch_json, ttl, tid, started_at, expected_status = argv
-            blob = self._decoded(key)
-            if not isinstance(blob, dict):
-                blob = {"thread_id": tid, "started_at": started_at}
-            rid = blob.get("run_id")
-            if rid_arg != "" and rid is not None and rid != rid_arg:
+        if script is report_back._ADMISSION_GATE_LUA:
+            receipt_key, origin_key = keys
+            gen, run_id = argv
+            if gen in self.sets.get(receipt_key, set()):
                 return 0
-            if expected_status != "" and blob.get("status") != expected_status:
-                return 0
-            patch = json.loads(patch_json)
-            meta = patch.pop("metadata", None)
-            blob.update(patch)
-            if meta:
-                merged = blob.get("metadata") or {}
-                merged.update(meta)
-                blob["metadata"] = merged
-            self.kv[key] = blob
-            self.ttls[key] = int(ttl)
-            return 1
-        if script is workflow_tracker._ADMISSION_MARK_LUA:
-            marker_key, receipt_key, origin_key = keys
-            blob_json, member, ttl = argv
-            if member in self.sets.get(receipt_key, set()):
-                return 0
-            self.kv[marker_key] = json.loads(blob_json)
-            self.ttls[marker_key] = int(ttl)
             origin_blob = self._decoded(origin_key)
             if (
                 isinstance(origin_blob, dict)
-                and origin_blob.get("dispatch_gen") == member
+                and origin_blob.get("dispatch_gen") == gen
+                and origin_blob.get("admitted_gen") != gen
             ):
                 # KEEPTTL: value replaced, self.ttls entry untouched.
-                origin_blob["admitted_gen"] = member
+                origin_blob["admitted_gen"] = gen
+                origin_blob["admitted_run"] = run_id
                 self.kv[origin_key] = origin_blob
+            return 1
+        if script is report_back._ADMISSION_RETRACT_LUA:
+            (origin_key,) = keys
+            gen, run_id = argv
+            origin_blob = self._decoded(origin_key)
+            if not isinstance(origin_blob, dict):
+                return 0
+            if (
+                origin_blob.get("dispatch_gen") != gen
+                or origin_blob.get("admitted_gen") != gen
+                or origin_blob.get("admitted_run") != run_id
+            ):
+                return 0
+            origin_blob.pop("admitted_gen", None)
+            origin_blob.pop("admitted_run", None)
+            self.kv[origin_key] = origin_blob
             return 1
         if script is report_back._GATED_POINTER_SET_LUA:
             watch_key, run_key = keys
@@ -259,7 +252,6 @@ class FakeClient:
         if script is report_back._ORPHAN_RESOLVE_LUA:
             (
                 origin_key,
-                marker_key,
                 watch_key,
                 user_key,
                 run_key,
@@ -276,22 +268,6 @@ class FakeClient:
                 return [0, "origin_moved"]
             if origin_blob.get("admitted_gen") == fencer_gen:
                 return [0, "admitted"]
-            if self.kv.get(marker_key) is not None:
-                marker = self._decoded(marker_key)
-                if not isinstance(marker, dict):
-                    return [0, "marker_unreadable"]
-                meta = marker.get("metadata")
-                if (
-                    isinstance(meta, dict)
-                    and meta.get("origin_dispatch_gen") == fencer_gen
-                ):
-                    return [0, "admitted"]
-                if marker.get("status") not in (
-                    "completed",
-                    "failed",
-                    "cancelled",
-                ):
-                    return [0, "live_run"]
             surrogate = job_gen != "" and job_gen in (
                 origin_blob.get("prev_gen"),
                 origin_blob.get("owner_gen"),

@@ -22,7 +22,6 @@ from ptc_agent.core.sandbox.runtime import SandboxGoneError, SandboxTransientErr
 from src.config.settings import get_max_workflow_retries
 from src.server.database import conversation as qr_db
 from src.server.dependencies.usage_limits import release_burst_slot
-from src.server.services.workflow_tracker import WorkflowTracker
 
 from .admission import ADMISSION_CONFLICT_CODES, admission_conflict_detail
 
@@ -203,10 +202,9 @@ async def handle_workflow_error(
 
         Returns True when the durable cancel intent won inside the CAS (or
         the lost-race survivor is cancelled): the user asked this run to
-        stop, so the caller must present no failure surface — no FAILED
-        tracker mark, no error/retry SSE (the error detail stays on the
-        row). The tracker's cancelled mark is pushed here. False = the run
-        is terminally errored (or nothing was finalized) — proceed with the
+        stop, so the caller must present no failure surface — no error/retry
+        SSE (the error detail stays on the row). False = the run is
+        terminally errored (or nothing was finalized) — proceed with the
         failure surface.
 
         Runs via ``protected_finalize``: this generator lives on the
@@ -244,29 +242,19 @@ async def handle_workflow_error(
             return False
         if (result.run or {}).get("status") != "cancelled":
             return False
-        # Redis /status follows a finalize the durable cancel intent won.
-        try:
-            tracker = WorkflowTracker.get_instance()
-            await tracker.mark_cancelled(thread_id, run_id=run_handle.run_id)
-        except Exception as tracker_err:
-            logger.warning(
-                f"[{log_prefix}] tracker.mark_cancelled failed for "
-                f"{thread_id}: {tracker_err}"
-            )
         return True
 
     # An admission-conflict 409 is a deliberate protocol response (raised
     # in-generator by ``wait_or_steer`` for both the foreground and dispatched
     # paths), not a workflow execution failure. Surface it to the client as an
-    # SSE error, but never persist it as a conversation error or call
-    # ``mark_failed``: this path runs with ``run_id=None``, the run_id guard is
-    # skipped when run_id is None, so marking failed would clobber a
-    # concurrently-running peer turn's status (defeating the guard). Keyed on
-    # the structured admission CODE, not the bare
-    # 409 status: every admission 409 now carries ``detail={"code", ...}`` (see
+    # SSE error, but never finalize it as a conversation error: this path
+    # runs with ``run_handle=None`` — the open run (if any) belongs to a
+    # concurrently-running peer turn, and failing it would clobber that
+    # peer. Keyed on the structured admission CODE, not the bare 409 status:
+    # every admission 409 now carries ``detail={"code", ...}`` (see
     # ``admission_conflict_detail`` / ``wait_or_steer``), so any other
     # HTTPException — a 503, or even a future non-admission 409 from middleware —
-    # falls through to the persist + mark_failed + classify path below.
+    # falls through to the finalize + classify path below.
     if (
         isinstance(e, HTTPException)
         and e.status_code == 409
@@ -381,7 +369,7 @@ async def handle_workflow_error(
     # creation lost the ``idx_conversation_threads_external`` check. Surface it
     # as a clean SSE error carrying the same structured ``error_type`` as the
     # stamp API's HTTP 409, and (like the admission-conflict path above) never
-    # persist it or call ``mark_failed``. Thread creation runs inside the
+    # finalize it as a turn failure. Thread creation runs inside the
     # already-started stream, so this is the response surface — a synchronous
     # HTTP 409 status is not reachable from here.
     if isinstance(e, qr_db.ExternalIdConflictError):
@@ -458,22 +446,6 @@ async def handle_workflow_error(
             ):
                 return  # durable cancel won — no failure surface
 
-            # Push terminal status to Redis so /status reports FAILED with
-            # bounded TTL instead of leaving the key as ACTIVE. The setup-
-            # error path runs outside BackgroundTaskManager's _finalize_run,
-            # so this is the only chance to update tracker.
-            try:
-                tracker = WorkflowTracker.get_instance()
-                _expected = run_handle.run_id if run_handle else None
-                await tracker.mark_failed(
-                    thread_id, error=error_msg, run_id=_expected
-                )
-            except Exception as tracker_err:
-                logger.warning(
-                    f"[{log_prefix}] tracker.mark_failed failed for "
-                    f"{thread_id}: {tracker_err}"
-                )
-
             error_data = {
                 "message": f"Workflow failed after {MAX_RETRIES} retry attempts",
                 "error_type": error_type,
@@ -533,20 +505,6 @@ async def handle_workflow_error(
             },
         ):
             return  # durable cancel won — no failure surface
-
-        # Mirror the recoverable max-retries branch: push FAILED to Redis with
-        # bounded TTL. Without this, /status keeps reporting ACTIVE for the
-        # full mark_active TTL window after a non-recoverable workflow error.
-        try:
-            tracker = WorkflowTracker.get_instance()
-            await tracker.mark_failed(
-                thread_id, error=f"{type(e).__name__}: {str(e)}"
-            )
-        except Exception as tracker_err:
-            logger.warning(
-                f"[{log_prefix}] tracker.mark_failed failed for "
-                f"{thread_id}: {tracker_err}"
-            )
 
         error_payload = {
             "thread_id": thread_id,

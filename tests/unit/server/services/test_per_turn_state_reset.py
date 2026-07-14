@@ -48,26 +48,6 @@ def _make_btm() -> BackgroundTaskManager:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_pre_register_uses_per_run_key():
-    """Each ``(thread_id, run_id)`` gets its own slot — same thread, two
-    runs coexist in the cache."""
-    btm = _make_btm()
-    assert await btm.pre_register("thread-X", "run-A") is True
-    assert await btm.pre_register("thread-X", "run-B") is True
-    assert ("thread-X", "run-A") in btm.tasks
-    assert ("thread-X", "run-B") in btm.tasks
-
-
-@pytest.mark.asyncio
-async def test_pre_register_rejects_duplicate_run():
-    """Re-registering the exact same ``(thread_id, run_id)`` is a no-op
-    that returns False."""
-    btm = _make_btm()
-    assert await btm.pre_register("thread-X", "run-A") is True
-    assert await btm.pre_register("thread-X", "run-A") is False
-
-
 def test_event_buffer_is_never_deleted_at_finalize():
     """1.5 retention contract: streams live to redis_event_ttl so reconnects
     can replay terminal runs — no code path DELs them at finalize. The old
@@ -97,7 +77,7 @@ async def test_get_task_info_with_run_id_targets_specific_run():
     """``get_task_info(tid, rid)`` targets exactly that run."""
     btm = _make_btm()
     ti_a = _new_task_info("thread-X", "run-A", TaskStatus.RUNNING)
-    ti_b = _new_task_info("thread-X", "run-B", TaskStatus.QUEUED)
+    ti_b = _new_task_info("thread-X", "run-B", TaskStatus.RUNNING)
     btm.tasks[("thread-X", "run-A")] = ti_a
     btm.tasks[("thread-X", "run-B")] = ti_b
 

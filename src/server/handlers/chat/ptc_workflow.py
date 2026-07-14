@@ -27,7 +27,6 @@ from src.server.models.chat import (
 )
 from src.server.services.background_registry_store import BackgroundRegistryStore
 from src.server.services.background_task_manager import BackgroundTaskManager
-from src.server.services.workflow_tracker import WorkflowTracker
 from src.server.services.workspace_manager import WorkspaceManager
 from src.observability import (
     chat_turn_phase_duration_ms,
@@ -734,34 +733,6 @@ async def astream_ptc_workflow(
 
         # Track steering messages injected mid-workflow for post-completion backfill
         setup_steering_tracking(handler)
-
-        tracker = WorkflowTracker.get_instance()
-        _fire_and_forget(
-            tracker.mark_active(
-                thread_id=thread_id,
-                workspace_id=workspace_id,
-                user_id=user_id,
-                run_id=run_id,
-                metadata={
-                    "type": "ptc_agent",
-                    "sandbox_id": sandbox_id,
-                    "locale": request.locale,
-                    "timezone": timezone_str,
-                    # Carry the admission stamp forward from the RESOLVED
-                    # origin meta (sticky across follow-up turns), not the raw
-                    # request field: this re-mark replaces the endpoint's
-                    # blob, and a lost-reply dispatcher may still be probing
-                    # for its generation — while a public HITL resume carries
-                    # no origin fields and would wipe the stamp to None,
-                    # making the live admitted run read as unadmitted. (None
-                    # on genuinely origin-less turns reads as foreign —
-                    # correct: no prober's request was admitted.)
-                    "dispatched": dispatched,
-                    "origin_dispatch_gen": origin_meta.get("origin_dispatch_gen"),
-                },
-            ),
-            name=f"mark_active_{thread_id[:8]}",
-        )
 
         # =====================================================================
         # Background Execution with Completion Callback

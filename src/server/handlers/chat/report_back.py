@@ -482,22 +482,138 @@ def _cap_error_user() -> str:
 # for a generation that old is dead many times over.
 _RESOLVED_RECEIPT_TTL = 3600
 
+# Phantom-refusal admission gate + pre-START intent stamp, ONE script: the
+# orphan resolver receipts a generation it resolved as never-admitted — if
+# that generation's own HTTP admission then landed, it would run with its
+# watch state already erased and its report-back silently dropped. Receipt
+# check and stamp are one Redis-side step, so resolution vs late admission
+# is a race exactly one side can win.
+# The stamp (``admitted_gen`` + the claiming ``admitted_run``) lives on the
+# exact-gen origin blob (KEEPTTL — the identity's lifetime): it is the
+# PRE-START INTENT marker the resolver defers to; the durable admission
+# record is the ledger row's ``origin_dispatch_gen`` metadata, which
+# ``resolve_orphaned_watch`` checks caller-side. First stamp wins per
+# generation — a same-gen retransmit must not re-token the stamp under its
+# sibling, so the retract CAS can only release the exact (gen, run) that
+# stamped. A moved/absent origin skips the stamp (that lifecycle isn't
+# ours to write) but still admits: the run then executes as an ordinary
+# turn whose report-back finds the pair settled.
+# KEYS: 1=resolved-receipt set 2=origin key
+# ARGV: 1=this dispatch generation 2=this admission's run_id
+_ADMISSION_GATE_LUA = """
+if redis.call('sismember', KEYS[1], ARGV[1]) == 1 then return 0 end
+local o = redis.call('get', KEYS[2])
+if o then
+  local ok, origin = pcall(cjson.decode, o)
+  if ok and type(origin) == 'table' and origin['dispatch_gen'] == ARGV[1]
+     and origin['admitted_gen'] ~= ARGV[1] then
+    origin['admitted_gen'] = ARGV[1]
+    origin['admitted_run'] = ARGV[2]
+    redis.call('set', KEYS[2], cjson.encode(origin), 'KEEPTTL')
+  end
+end
+return 1
+"""
+
+# Intent-stamp release after a priming failure, CAS'd to the exact
+# (generation, run) this admission stamped: without it the resolver would
+# read the failed gen as admitted until the origin TTL and the phantom
+# never settles; with an UNSCOPED release a failing same-gen retransmit
+# could strip the stamp from under its live sibling.
+# KEYS: 1=origin key  ARGV: 1=generation 2=run_id
+_ADMISSION_RETRACT_LUA = """
+local o = redis.call('get', KEYS[1])
+if not o then return 0 end
+local ok, origin = pcall(cjson.decode, o)
+if not ok or type(origin) ~= 'table' then return 0 end
+if origin['dispatch_gen'] ~= ARGV[1] or origin['admitted_gen'] ~= ARGV[1]
+   or origin['admitted_run'] ~= ARGV[2] then
+  return 0
+end
+origin['admitted_gen'] = nil
+origin['admitted_run'] = nil
+redis.call('set', KEYS[1], cjson.encode(origin), 'KEEPTTL')
+return 1
+"""
+
+
+async def admit_dispatch_gen(
+    ptc_thread_id: str, dispatch_gen: str, run_id: str
+) -> bool:
+    """Phantom-refusal gate for a dispatched PTC admission, pre-START.
+
+    Refuses a generation the orphan resolver already receipted (its watch
+    state is gone — admitting would run a turn whose report-back silently
+    drops) and stamps pre-START intent on the origin. Fails CLOSED: an
+    unverifiable gate refuses, the caller 503s, and the dispatcher's
+    lost-reply probe re-drives it.
+    """
+    from src.utils.cache.redis_cache import get_cache_client
+
+    cache = get_cache_client()
+    if not (cache.enabled and cache.client):
+        return False
+    try:
+        res = await cache.client.eval(
+            _ADMISSION_GATE_LUA,
+            2,
+            ptc_rb_resolved_key(ptc_thread_id),
+            ptc_origin_key(ptc_thread_id),
+            dispatch_gen,
+            run_id,
+        )
+        return bool(int(res))
+    except Exception:
+        logger.warning(
+            f"[FLASH_REPORT_BACK] Admission gate failed for {ptc_thread_id} "
+            f"(gen {dispatch_gen}); refusing (retriable)",
+            exc_info=True,
+        )
+        return False
+
+
+async def retract_dispatch_gen(
+    ptc_thread_id: str, dispatch_gen: str, run_id: str
+) -> None:
+    """Release the pre-START intent stamp after a priming failure.
+
+    Best-effort: a lingering stamp degrades to an origin-TTL-bounded
+    'admitted' read (pair waits out the TTL), never to destroying live
+    state. Must NOT run on a retransmit-adopt — the adopted run IS this
+    generation admitted.
+    """
+    from src.utils.cache.redis_cache import get_cache_client
+
+    cache = get_cache_client()
+    if not (cache.enabled and cache.client):
+        return
+    try:
+        await cache.client.eval(
+            _ADMISSION_RETRACT_LUA,
+            1,
+            ptc_origin_key(ptc_thread_id),
+            dispatch_gen,
+            run_id,
+        )
+    except Exception:
+        logger.warning(
+            f"[FLASH_REPORT_BACK] Intent-stamp retract failed for "
+            f"{ptc_thread_id} (gen {dispatch_gen}); stamp decays at origin TTL",
+            exc_info=True,
+        )
+
 # Atomic phantom-fence resolution — decide + resolve + receipt in ONE script.
 # A separate probe-then-resolve pair races both a newer reservation replacing
 # the origin AND the fencer's own late admission; each hazard is closed here:
 #   - the origin must still carry EXACTLY the generation that fenced the
 #     caller (ARGV[2]) — a moved origin belongs to a newer reservation's
 #     lifecycle and is left alone;
-#   - the origin's own ``admitted_gen`` stamp (written by the admission Lua,
-#     lives as long as the origin) is the DURABLE admission identity: the
-#     workflow marker's terminal TTL (1h) is 23h shorter than the origin's,
-#     so an admitted-and-completed generation whose marker already expired
-#     must still read as admitted here, never as phantom;
-#   - the admission marker covers the rest: metadata gen == fencer means
-#     admitted (suppress); an unreadable marker suppresses (never fail open
-#     into erasing a possibly-live lineage's membership); a non-terminal
-#     marker means a live/resumable run owns the thread and ITS hooks will
-#     settle the pair (suppress); otherwise the fencer is a phantom;
+#   - the origin's own ``admitted_gen`` stamp (written by the admission
+#     gate, lives as long as the origin) is the PRE-START INTENT check:
+#     a stamped generation is mid-priming or running — never phantom. The
+#     DURABLE admission record (a ledger row carrying the generation) is
+#     checked by the caller before this script runs; the stamp covers only
+#     the pre-START window where no row exists yet;
 #   - the phantom's generation goes into the resolved-receipt SET FIRST —
 #     the endpoint's admission-marker write atomically refuses receipted
 #     generations, so resolution vs late admission is a race exactly one
@@ -526,8 +642,8 @@ _RESOLVED_RECEIPT_TTL = 3600
 #     forever on a crash between the two (the retry finds the pointer
 #     already gone).
 #     The origin is spared — only a gen-authorized teardown destroys it.
-# KEYS: 1=origin 2=admission marker 3=watch set|'' 4=user set|''
-#       5=run pointer|'' 6=resolved-receipt set 7=flash_rb_done|''
+# KEYS: 1=origin 2=watch set|'' 3=user set|''
+#       4=run pointer|'' 5=resolved-receipt set 6=flash_rb_done|''
 # ARGV: 1=ptc_thread_id 2=fencer gen 3=receipt ttl 4=done max 5=done ttl
 #       6=the fenced clear's own generation ('' = unknown)
 # Returns {1, ptr_json|''} on resolve; {0, reason} on suppress.
@@ -538,34 +654,19 @@ local ok, origin = pcall(cjson.decode, o)
 if not ok or type(origin) ~= 'table' then return {0, 'origin_unreadable'} end
 if origin['dispatch_gen'] ~= ARGV[2] then return {0, 'origin_moved'} end
 if origin['admitted_gen'] == ARGV[2] then return {0, 'admitted'} end
-local m = redis.call('get', KEYS[2])
-if m then
-  local mok, marker = pcall(cjson.decode, m)
-  if not mok or type(marker) ~= 'table' then
-    return {0, 'marker_unreadable'}
-  end
-  local meta = marker['metadata']
-  if type(meta) == 'table' and meta['origin_dispatch_gen'] == ARGV[2] then
-    return {0, 'admitted'}
-  end
-  local st = marker['status']
-  if st ~= 'completed' and st ~= 'failed' and st ~= 'cancelled' then
-    return {0, 'live_run'}
-  end
-end
 local surrogate = (ARGV[6] ~= ''
   and (origin['prev_gen'] == ARGV[6] or origin['owner_gen'] == ARGV[6]))
-redis.call('sadd', KEYS[6], ARGV[2])
-redis.call('expire', KEYS[6], tonumber(ARGV[3]))
-if KEYS[3] ~= '' and (origin['owns_watch'] == true or surrogate) then
+redis.call('sadd', KEYS[5], ARGV[2])
+redis.call('expire', KEYS[5], tonumber(ARGV[3]))
+if KEYS[2] ~= '' and (origin['owns_watch'] == true or surrogate) then
+  redis.call('srem', KEYS[2], ARGV[1])
+end
+if KEYS[3] ~= '' and (origin['owns_user'] == true or surrogate) then
   redis.call('srem', KEYS[3], ARGV[1])
 end
-if KEYS[4] ~= '' and (origin['owns_user'] == true or surrogate) then
-  redis.call('srem', KEYS[4], ARGV[1])
-end
 local ptr = ''
-if KEYS[5] ~= '' then
-  local p = redis.call('get', KEYS[5])
+if KEYS[4] ~= '' then
+  local p = redis.call('get', KEYS[4])
   if p then
     local pok, pt = pcall(cjson.decode, p)
     if not surrogate and pok and type(pt) == 'table'
@@ -573,14 +674,14 @@ if KEYS[5] ~= '' then
        and pt['dispatch_gen'] ~= ARGV[2] then
       ptr = ''
     else
-      redis.call('del', KEYS[5])
+      redis.call('del', KEYS[4])
       ptr = p
       if pok and type(pt) == 'table' and type(pt['run_id']) == 'string'
-         and KEYS[7] ~= '' then
-        redis.call('lrem', KEYS[7], 0, pt['run_id'])
-        redis.call('lpush', KEYS[7], pt['run_id'])
-        redis.call('ltrim', KEYS[7], 0, tonumber(ARGV[4]) - 1)
-        redis.call('expire', KEYS[7], tonumber(ARGV[5]))
+         and KEYS[6] ~= '' then
+        redis.call('lrem', KEYS[6], 0, pt['run_id'])
+        redis.call('lpush', KEYS[6], pt['run_id'])
+        redis.call('ltrim', KEYS[6], 0, tonumber(ARGV[4]) - 1)
+        redis.call('expire', KEYS[6], tonumber(ARGV[5]))
       end
     end
   end
@@ -607,19 +708,45 @@ async def resolve_orphaned_watch(
     discovery record); and the phantom generation is receipted so its late
     admission is refused. Pair state inherited from an INTERMEDIATE lineage
     is left intact (its delivery may still be queued), and the origin is
-    deliberately spared. The whole decision runs atomically against the
-    CURRENT origin (including its durable ``admitted_gen`` stamp) and the
-    admission marker, so a live/admitted owner is never resolved.
+    deliberately spared. Admission is judged twice: the ledger row carrying
+    this generation (the durable record, checked here first — fails CLOSED
+    on a DB error, never resolving on a guess) and the origin's
+    ``admitted_gen`` intent stamp (checked atomically in the script,
+    covering the pre-START window where no row exists yet).
     Idempotent; does not swallow Redis errors (the drainer nacks and
     retries). Returns ``(resolved, drained_run_id)``.
     """
-    from src.server.services.workflow_tracker import WorkflowTracker
+    from src.server.database import turn_lifecycle as tl_db
+
+    try:
+        admitted = await tl_db.thread_has_dispatch_gen(ptc_thread_id, fencer_gen)
+        # A live run on the PTC thread — any lineage — suppresses too: its
+        # own hooks settle the pair, and a surrogate resolution could drop
+        # a membership that live delivery still needs (round-13 P0, ledger
+        # translation of the old live-marker check).
+        live = (
+            False if admitted
+            else await tl_db.get_active_run(ptc_thread_id) is not None
+        )
+    except Exception:
+        logger.warning(
+            f"[FLASH_REPORT_BACK] Ledger probe for phantom-fence resolution of "
+            f"{ptc_thread_id} (gen {fencer_gen}) failed; suppressing",
+            exc_info=True,
+        )
+        return False, None
+    if admitted or live:
+        logger.info(
+            f"[FLASH_REPORT_BACK] Phantom-fence resolution for "
+            f"{ptc_thread_id} (gen {fencer_gen}) suppressed: "
+            f"{'admitted' if admitted else 'live run'} (ledger)"
+        )
+        return False, None
 
     res = await cache.client.eval(
         _ORPHAN_RESOLVE_LUA,
-        7,
+        6,
         ptc_origin_key(ptc_thread_id),
-        f"{WorkflowTracker.STATUS_PREFIX}{ptc_thread_id}",
         flash_watch_key(flash_thread_id) if flash_thread_id else "",
         flash_user_pending_key(user_id) if user_id else "",
         flash_rb_run_key(flash_thread_id, ptc_thread_id)
@@ -1459,76 +1586,6 @@ async def watch_wakes(cache, flash_thread_id: str):
     finally:
         await pubsub.unsubscribe(channel)
         await pubsub.aclose()
-
-
-async def clear_on_crash(
-    thread_id: str,
-    report_back_ptc_thread_id: str | None = None,
-    user_id: str | None = None,
-    run_id: str | None = None,
-    dispatch_gen: str | None = None,
-) -> None:
-    """Tear down the report-back watch for a ROWLESS crashed background run.
-    Best-effort.
-
-    Called from ``threads._consume_background_gen``'s except branch, and only
-    when the crashed run has NO durable row — a row's finalize enqueues the
-    watch_clear outbox job on the flash ordering chain, which owns the pair
-    teardown there; this direct clear runs OFF-CHAIN and may not race it
-    (round-19 P1). The origin
-    is keyed by the *PTC* thread id, so: a PTC_DISPATCH crash hits directly
-    (thread_id IS the ptc thread); a report-back run crash resolves via
-    ``report_back_ptc_thread_id``; an ordinary flash-dispatch crash misses the
-    origin and no-ops — a still-running dispatched PTC's keys survive for
-    reload recovery. The clear is scoped to the crashed run's dispatch
-    generation — ``dispatch_gen`` (in-band from the crashed request) first,
-    else resolved from the run row's START-stamped metadata — so it can't
-    destroy a re-dispatched pair's state. Unresolvable (crash before START,
-    read failure, legacy run) degrades to a legacy-only clear: a generated
-    origin is then left to its own lifecycle or TTL, never destroyed on a
-    guess. Being off-chain, the teardown atomically REFUSES while a
-    report-back run pointer is live — a gen-matched crash clear must not
-    drain a pair whose summary admission another lineage already claimed.
-    """
-    try:
-        from src.utils.cache.redis_cache import get_cache_client
-
-        cache = get_cache_client()
-        if not (cache.enabled and cache.client):
-            return
-        ptc_thread_id = report_back_ptc_thread_id or thread_id
-        origin = await cache.get(ptc_origin_key(ptc_thread_id))
-        if not origin:
-            return
-        flash_tid = origin.get("flash_thread_id")
-        expected_gen = dispatch_gen
-        if not expected_gen and run_id:
-            try:
-                from src.server.database import turn_lifecycle as tl_db
-
-                run = await tl_db.get_run(run_id)
-                if run is not None:
-                    expected_gen = (run.get("metadata") or {}).get(
-                        "origin_dispatch_gen"
-                    )
-            except Exception:
-                pass
-        # Pass the known owner so the per-user cap slot is released even if
-        # ptc_origin TTL-expired before this crash.
-        cleared = await clear_flash_report_back(
-            cache, ptc_thread_id, flash_tid,
-            user_id=user_id or origin.get("user_id"),
-            expected_gen=expected_gen,
-            refuse_if_pointer=True,
-        )
-        if flash_tid and cleared:
-            await publish_wake(cache, flash_tid, error="background_workflow_failed")
-    except Exception:
-        logger.warning(
-            f"[FLASH_REPORT_BACK] Crash teardown after failure also failed for "
-            f"thread_id={thread_id}",
-            exc_info=True,
-        )
 
 
 # ---------------------------------------------------------------------------

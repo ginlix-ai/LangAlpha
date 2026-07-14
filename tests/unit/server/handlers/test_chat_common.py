@@ -1142,9 +1142,8 @@ class TestHandleWorkflowErrorHTTPException:
     protocol response (e.g. a 409 admission conflict raised in-generator by
     wait_or_steer / the dispatched gate), not an execution failure. It must
     surface to the client as an SSE error but never finalize the run as an
-    error or call mark_failed — the admission path runs with run_handle=None
-    here, and marking failed would clobber a concurrently-running peer turn's
-    status to FAILED.
+    error — the admission path runs with run_handle=None here, and failing
+    the thread's open run would clobber a concurrently-running peer turn.
 
     v4: the durable terminal write moved off ``ConversationPersistenceService``
     onto ``TurnCoordinator.finalize_turn`` (driven by the STARTed ``run_handle``),
@@ -1172,9 +1171,7 @@ class TestHandleWorkflowErrorHTTPException:
         return request
 
     @pytest.mark.asyncio
-    async def test_http_exception_surfaces_error_but_skips_persist_and_mark_failed(
-        self,
-    ):
+    async def test_http_exception_surfaces_error_but_skips_finalize(self):
         from fastapi import HTTPException
 
         from src.server.handlers.chat.error_handling import handle_workflow_error
@@ -1184,20 +1181,15 @@ class TestHandleWorkflowErrorHTTPException:
             detail={"code": "compacting", "message": "compacting; retry shortly"},
         )
 
-        tracker = AsyncMock()
         coordinator = AsyncMock()
 
         with (
-            patch(
-                "src.server.handlers.chat.error_handling.WorkflowTracker"
-            ) as mock_tracker_cls,
             patch(
                 "src.server.handlers.chat.error_handling.release_burst_slot",
                 new_callable=AsyncMock,
             ),
             patch(self.TC) as mock_coord_cls,
         ):
-            mock_tracker_cls.get_instance.return_value = tracker
             mock_coord_cls.get_instance.return_value = coordinator
             events = [
                 ev
@@ -1220,18 +1212,17 @@ class TestHandleWorkflowErrorHTTPException:
         # The client still sees a clean error event...
         assert any("event: error" in ev for ev in events)
         assert any("compacting" in ev for ev in events)
-        # ...but the conflict is never finalized as a turn failure and never
-        # clobbers the (possibly peer-owned) tracker status.
+        # ...but the conflict is never finalized as a turn failure — the
+        # (possibly peer-owned) open run is untouched.
         coordinator.finalize_turn.assert_not_awaited()
         coordinator.fail_open_run.assert_not_awaited()
-        tracker.mark_failed.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_not_running_conflict_skips_persist_and_mark_failed(self):
+    async def test_not_running_conflict_skips_finalize(self):
         """not_running (steer_only probe on an idle thread) is an admission
         outcome: it must reach the client as an SSE error but never be
-        finalized as an error or mark a (possibly peer-owned) turn failed. Pins
-        the ADMISSION_CONFLICT_CODES membership added for steer_only."""
+        finalized as an error on a (possibly peer-owned) turn. Pins the
+        ADMISSION_CONFLICT_CODES membership added for steer_only."""
         from fastapi import HTTPException
 
         from src.server.handlers.chat.error_handling import handle_workflow_error
@@ -1241,20 +1232,15 @@ class TestHandleWorkflowErrorHTTPException:
             detail={"code": "not_running", "message": "no workflow to steer"},
         )
 
-        tracker = AsyncMock()
         coordinator = AsyncMock()
 
         with (
-            patch(
-                "src.server.handlers.chat.error_handling.WorkflowTracker"
-            ) as mock_tracker_cls,
             patch(
                 "src.server.handlers.chat.error_handling.release_burst_slot",
                 new_callable=AsyncMock,
             ),
             patch(self.TC) as mock_coord_cls,
         ):
-            mock_tracker_cls.get_instance.return_value = tracker
             mock_coord_cls.get_instance.return_value = coordinator
             events = [
                 ev
@@ -1278,23 +1264,20 @@ class TestHandleWorkflowErrorHTTPException:
         assert any("not_running" in ev for ev in events)
         coordinator.finalize_turn.assert_not_awaited()
         coordinator.fail_open_run.assert_not_awaited()
-        tracker.mark_failed.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_non_409_http_exception_is_persisted_and_marked_failed(self):
+    async def test_non_409_http_exception_is_finalized_as_error(self):
         """The skip path is scoped to the 409 admission/cancellation contract.
         A non-409 HTTPException (e.g. a 503 raised because the agent isn't
         initialized) is a genuine failure: it must flow through the normal
-        failure path — finalize the run as error, mark the turn failed, and be
-        labeled as a real workflow error, NOT mislabeled as an admission
-        conflict."""
+        failure path — finalize the run as error and be labeled as a real
+        workflow error, NOT mislabeled as an admission conflict."""
         from fastapi import HTTPException
 
         from src.server.handlers.chat.error_handling import handle_workflow_error
 
         exc = HTTPException(status_code=503, detail="backend not ready")
 
-        tracker = AsyncMock()
         coordinator = AsyncMock()
         run_handle = MagicMock(
             finalized=False, run_id="r-1", workspace_id="w-1", user_id="u-1"
@@ -1302,15 +1285,11 @@ class TestHandleWorkflowErrorHTTPException:
 
         with (
             patch(
-                "src.server.handlers.chat.error_handling.WorkflowTracker"
-            ) as mock_tracker_cls,
-            patch(
                 "src.server.handlers.chat.error_handling.release_burst_slot",
                 new_callable=AsyncMock,
             ),
             patch(self.TC) as mock_coord_cls,
         ):
-            mock_tracker_cls.get_instance.return_value = tracker
             mock_coord_cls.get_instance.return_value = coordinator
             events = [
                 ev
@@ -1330,19 +1309,17 @@ class TestHandleWorkflowErrorHTTPException:
                 )
             ]
 
-        # A genuine 503 is finalized as error and marked failed (real failure
-        # path)...
+        # A genuine 503 is finalized as error (real failure path)...
         coordinator.finalize_turn.assert_awaited()
-        tracker.mark_failed.assert_awaited()
         # ...and is never mislabeled as a transient admission conflict.
         assert not any("admission_conflict" in ev for ev in events)
 
     @pytest.mark.asyncio
-    async def test_409_without_admission_code_is_persisted_and_marked_failed(self):
+    async def test_409_without_admission_code_is_finalized_as_error(self):
         """The skip path is keyed on the admission-conflict CODE, not the bare
         409 status. A 409 raised elsewhere in the generator (no structured
-        admission code) is a genuine failure: it must finalize + mark_failed, not
-        silently skip them — otherwise a future non-admission 409 would clobber a
+        admission code) is a genuine failure: it must finalize as error, not
+        silently skip it — otherwise a future non-admission 409 would clobber a
         peer turn the same way the original bug #2 did."""
         from fastapi import HTTPException
 
@@ -1352,7 +1329,6 @@ class TestHandleWorkflowErrorHTTPException:
         # by middleware — must NOT be treated as an admission conflict.
         exc = HTTPException(status_code=409, detail="some unrelated conflict")
 
-        tracker = AsyncMock()
         coordinator = AsyncMock()
         run_handle = MagicMock(
             finalized=False, run_id="r-1", workspace_id="w-1", user_id="u-1"
@@ -1360,15 +1336,11 @@ class TestHandleWorkflowErrorHTTPException:
 
         with (
             patch(
-                "src.server.handlers.chat.error_handling.WorkflowTracker"
-            ) as mock_tracker_cls,
-            patch(
                 "src.server.handlers.chat.error_handling.release_burst_slot",
                 new_callable=AsyncMock,
             ),
             patch(self.TC) as mock_coord_cls,
         ):
-            mock_tracker_cls.get_instance.return_value = tracker
             mock_coord_cls.get_instance.return_value = coordinator
             events = [
                 ev
@@ -1389,7 +1361,6 @@ class TestHandleWorkflowErrorHTTPException:
             ]
 
         coordinator.finalize_turn.assert_awaited()
-        tracker.mark_failed.assert_awaited()
         assert not any("admission_conflict" in ev for ev in events)
 
 

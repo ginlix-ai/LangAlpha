@@ -148,9 +148,6 @@ async def _consume_background_gen(
     label: str,
     thread_id: str,
     run_id: str,
-    report_back_ptc_thread_id: str | None = None,
-    user_id: str | None = None,
-    dispatch_gen: str | None = None,
 ) -> bool:
     """Drain an async generator in the background, cleaning up Redis on failure."""
     _ok = True
@@ -168,10 +165,10 @@ async def _consume_background_gen(
     finally:
         # Ownership check: if BTM still drives this exact run's workflow
         # task, this generator was only a dead tail (e.g. the stream
-        # consumer failed after handoff). The executor owns the ledger row,
-        # the tracker, and all terminal transport — finalizing here would
-        # terminalize a row whose graph is still checkpointing, and BTM
-        # would later lose its own CAS.
+        # consumer failed after handoff). The executor owns the ledger row
+        # and all terminal transport — finalizing here would terminalize a
+        # row whose graph is still checkpointing, and BTM would later lose
+        # its own CAS.
         _btm_live = False
         try:
             from src.server.services.background_task_manager import (
@@ -195,84 +192,20 @@ async def _consume_background_gen(
         # navigated to workflow:stream:{tid}:{rid} — but no events will
         # ever land. The coordinator is the last-resort owner (I6): it
         # settles a still-in_progress row and writes the terminal frames a
-        # reconnected client needs; it never raises, so the placeholder/
-        # tracker cleanup below always runs.
-        terminal_status = None
+        # reconnected client needs; it never raises.
         if not _ok and not _btm_live:
-            # Report-back crash teardown is business logic owned by
-            # report_back — it fetches its own cache client and swallows its
-            # own failures. Must not run while the executor is alive: a live
-            # dispatched run's watch keys are still in use. And only for a
-            # ROWLESS crash (died before START committed): a run row means a
-            # finalize — the reconcile below, or the real owner's — enqueues
-            # the durable watch_clear on the flash ordering chain, which owns
-            # the pair teardown there; a direct clear here runs OFF-CHAIN and
-            # can drain a summary admission's just-claimed pointer mid-flight
-            # (round-19 P1). Unknown row state leaves the pair to its owner
-            # or the origin TTL rather than tearing down on a guess.
-            from src.server.database import turn_lifecycle as tl_db
-            from src.server.handlers.chat.report_back import clear_on_crash
+            # This generator was already primed past START (2.4c) — the run
+            # row exists, so the coordinator's reconcile (here, or the real
+            # owner's finalize) enqueues the durable watch_clear on the
+            # flash ordering chain, which owns any pair teardown. No direct
+            # report-back clear here: it would run OFF-CHAIN against a live
+            # admission (round-19 P1).
             from src.server.services.turn_lifecycle import TurnCoordinator
 
-            run_row_missing = False
-            try:
-                run_row_missing = await tl_db.get_run(run_id) is None
-            except Exception:
-                pass
-            if run_row_missing:
-                await clear_on_crash(
-                    thread_id,
-                    report_back_ptc_thread_id,
-                    user_id,
-                    run_id=run_id,
-                    dispatch_gen=dispatch_gen,
-                )
-            terminal_status = await (
-                TurnCoordinator.get_instance().reconcile_orphaned_dispatch(
-                    thread_id, run_id, error_text=_error_text, label=label
-                )
+            await TurnCoordinator.get_instance().reconcile_orphaned_dispatch(
+                thread_id, run_id, error_text=_error_text, label=label
             )
 
-        try:
-            from src.server.services.background_task_manager import (
-                BackgroundTaskManager,
-                TaskStatus,
-            )
-            from src.server.services.workflow_tracker import WorkflowTracker
-
-            manager = BackgroundTaskManager.get_instance()
-            key = (thread_id, run_id)
-            async with manager.task_lock:
-                task_info = manager.tasks.get(key)
-                if task_info and task_info.status == TaskStatus.QUEUED and task_info.task is None:
-                    del manager.tasks[key]
-                    logger.info(
-                        f"[{label}] Cleaned up pre-registered placeholder "
-                        f"for {key} (workflow never started)"
-                    )
-
-            tracker = WorkflowTracker.get_instance()
-            status = await tracker.get_status(thread_id)
-            if status and status.get("status") == "active":
-                meta = status.get("metadata", {})
-                if meta.get("dispatched") and status.get("run_id") == run_id:
-                    if _ok:
-                        await tracker.mark_completed(thread_id, run_id=run_id)
-                    elif _btm_live or terminal_status in (
-                        "completed",
-                        "interrupted",
-                    ):
-                        # A live or victorious executor marks its own tracker
-                        # terminal; relabeling here would misreport the run.
-                        pass
-                    elif terminal_status == "cancelled":
-                        await tracker.mark_cancelled(thread_id, run_id=run_id)
-                    else:
-                        await tracker.mark_failed(
-                            thread_id, error=_error_text, run_id=run_id
-                        )
-        except Exception:
-            pass
     return _ok
 
 
@@ -876,8 +809,6 @@ async def _handle_send_message(
         if is_flash_dispatch:
             from src.server.database.turn_lifecycle import DuplicateRequestError
             from src.server.handlers.chat._common import DISPATCH_STARTED_MARKER
-            from src.server.services.background_task_manager import BackgroundTaskManager
-            manager = BackgroundTaskManager.get_instance()
             # Report-back idempotency: a lost-response retry of the drainer's
             # POST must NOT start a second summary run. The claim CM SET-NXs
             # the per-(flash, ptc) run pointer (atomic on its own — no outer
@@ -978,7 +909,6 @@ async def _handle_send_message(
                         status_code=500,
                         detail="Dispatch priming yielded an unexpected event.",
                     )
-                await manager.pre_register(thread_id, run_id)
                 rb_claim.consummate()
             _track_task(asyncio.create_task(
                 observe_background_chat_turn(
@@ -987,9 +917,6 @@ async def _handle_send_message(
                         "FLASH_DISPATCH",
                         thread_id,
                         run_id,
-                        report_back_ptc_thread_id=request.report_back_ptc_thread_id,
-                        user_id=user_id,
-                        dispatch_gen=request.origin_dispatch_gen,
                     ),
                     mode="flash",
                     model=_model,
@@ -1041,66 +968,44 @@ async def _handle_send_message(
 
     if is_ptc_dispatch:
         from src.server.database.turn_lifecycle import DuplicateRequestError
+        from src.server.handlers.chat import report_back
         from src.server.handlers.chat._common import DISPATCH_STARTED_MARKER
-        from src.server.services.background_task_manager import BackgroundTaskManager
-        from src.server.services.workflow_tracker import WorkflowTracker
 
-        tracker = WorkflowTracker.get_instance()
-        manager = BackgroundTaskManager.get_instance()
-        # Phantom-refusal gate BEFORE the START txn: the marker write
-        # atomically refuses generations the orphan resolver already
-        # receipted (their watch state is gone; admitting would run a turn
-        # whose report-back silently drops), so it must precede priming — a
-        # receipted gen must never reach START. Since 2.4b the blob is
-        # report-back plumbing only; admission truth is the ledger row the
-        # priming below commits.
-        from src.server.handlers.chat.report_back_keys import (
-            ptc_rb_resolved_key,
-        )
-
-        marked = await tracker.mark_active(
-            thread_id=thread_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            run_id=run_id,
-            metadata={
-                "type": "ptc_agent",
-                "dispatched": True,
-                "origin_dispatch_gen": request.origin_dispatch_gen,
-            },
-            refuse_receipt_key=(
-                ptc_rb_resolved_key(thread_id)
-                if request.origin_dispatch_gen
-                else None
-            ),
-            receipt_member=request.origin_dispatch_gen,
-        )
-        if not marked:
-            await release_burst_slot(user_id, auth.burst_slot_id)
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "Dispatch admission was refused or the marker write "
-                    "failed; not scheduled."
-                ),
+        # Phantom-refusal gate BEFORE the START txn: it atomically refuses
+        # generations the orphan resolver already receipted (their watch
+        # state is gone; admitting would run a turn whose report-back
+        # silently drops) and stamps pre-START intent on the origin, so it
+        # must precede priming — a receipted gen must never reach START.
+        # Admission truth is the ledger row the priming below commits (its
+        # metadata carries the generation); the stamp only covers the
+        # pre-START window for the resolver. Gen-less dispatches skip the
+        # gate — there is nothing to receipt against.
+        if request.origin_dispatch_gen:
+            admitted = await report_back.admit_dispatch_gen(
+                thread_id, request.origin_dispatch_gen, run_id
             )
+            if not admitted:
+                await release_burst_slot(user_id, auth.burst_slot_id)
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Dispatch admission was refused or the gate was "
+                        "unavailable; not scheduled."
+                    ),
+                )
 
         # Durable receipt (v4 2.4c): drive the generator through its own
         # admission (per-thread lock, dedup, wait_or_steer, START txn) to
         # the post-START marker; the 202 is returned only once the
         # in_progress row is committed. Pre-START failures surface here raw
-        # as HTTP errors; the CAS'd mark_failed keeps the refusal marker
-        # from lingering as a live-looking blob for a run that never
-        # started (it cannot clobber a newer run's marker).
+        # as HTTP errors and retract the intent stamp (CAS'd to this
+        # admission's run — a same-gen sibling's stamp is never stripped);
+        # a retransmit-adopt must NOT retract, the adopted run IS this
+        # generation admitted.
         try:
             first = await anext(ptc_gen)
         except DuplicateRequestError as dup:
             await release_burst_slot(user_id, auth.burst_slot_id)
-            await tracker.mark_failed(
-                thread_id,
-                error="dispatch retransmit adopted its existing run",
-                run_id=run_id,
-            )
             existing = str(dup.existing_run["conversation_response_id"])
             logger.info(
                 f"[PTC_DISPATCH] Retransmit adopted existing run {existing} "
@@ -1114,13 +1019,17 @@ async def _handle_send_message(
             })
         except HTTPException:
             await release_burst_slot(user_id, auth.burst_slot_id)
-            await tracker.mark_failed(
-                thread_id, error="dispatch admission refused", run_id=run_id
-            )
+            if request.origin_dispatch_gen:
+                await report_back.retract_dispatch_gen(
+                    thread_id, request.origin_dispatch_gen, run_id
+                )
             raise
         except Exception as e:
             await release_burst_slot(user_id, auth.burst_slot_id)
-            await tracker.mark_failed(thread_id, error=str(e), run_id=run_id)
+            if request.origin_dispatch_gen:
+                await report_back.retract_dispatch_gen(
+                    thread_id, request.origin_dispatch_gen, run_id
+                )
             raise HTTPException(
                 status_code=503,
                 detail=f"Dispatch could not start durably: {e}",
@@ -1132,13 +1041,11 @@ async def _handle_send_message(
                 status_code=500,
                 detail="Dispatch priming yielded an unexpected event.",
             )
-        await manager.pre_register(thread_id, run_id)
 
         _track_task(asyncio.create_task(
             observe_background_chat_turn(
                 _consume_background_gen(
-                    ptc_gen, "PTC_DISPATCH", thread_id, run_id, user_id=user_id,
-                    dispatch_gen=request.origin_dispatch_gen,
+                    ptc_gen, "PTC_DISPATCH", thread_id, run_id,
                 ),
                 mode="ptc",
                 model=_model,

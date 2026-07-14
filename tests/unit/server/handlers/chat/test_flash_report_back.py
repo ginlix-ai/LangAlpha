@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import uuid
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -988,15 +989,34 @@ def test_completed_flash_without_report_back_id_skips_clear():
 # ---------------------------------------------------------------------------
 # resolve_orphaned_watch — atomic decide+resolve+receipt for a pair whose
 # teardown was fenced by a never-admitted reservation (Codex 2.3 round-13
-# P0): the decision CASes on the EXACT fenced generation and the admission
-# marker, so a live or admitted owner is never resolved; a resolved phantom
-# is receipted so its late admission is refused.
+# P0): the caller probes the ledger (fencer's origin_dispatch_gen row, then
+# any live run on the thread) and the Lua CASes on the EXACT fenced
+# generation and the pre-START intent stamp, so a live or admitted owner is
+# never resolved; a resolved phantom is receipted so its late admission is
+# refused.
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _stub_ledger():
+    """resolve_orphaned_watch probes the ledger caller-side; default shape
+    here is an idle thread with no admitted row (the phantom baseline)."""
+    with (
+        patch(
+            "src.server.database.turn_lifecycle.thread_has_dispatch_gen",
+            AsyncMock(return_value=False),
+        ) as has_gen,
+        patch(
+            "src.server.database.turn_lifecycle.get_active_run",
+            AsyncMock(return_value=None),
+        ) as active,
+    ):
+        yield SimpleNamespace(has_gen=has_gen, active=active)
+
+
 def _seed_phantom(cache, gen: str = "g-PHANTOM", ptr: dict | None = None):
-    """Dispatched pair whose origin carries ``gen`` and has no admission
-    marker — the lost-409 phantom shape."""
+    """Dispatched pair whose origin carries ``gen`` with no admission stamp
+    and no ledger row — the lost-409 phantom shape."""
     _seed_dispatched(cache, "flash-1", ["ptc-1"])
     cache.kv[report_back.ptc_origin_key("ptc-1")]["dispatch_gen"] = gen
     if ptr is not None:
@@ -1073,40 +1093,38 @@ async def test_resolve_suppressed_when_origin_moved():
 
 
 @pytest.mark.asyncio
-async def test_resolve_suppressed_when_fencer_was_admitted():
+async def test_resolve_suppressed_when_fencer_was_admitted(_stub_ledger):
     """The fencing generation admitted between the fenced clear and this
-    resolve: it legitimately owns the pair — suppress, no receipt (its
-    admission already happened; a receipt would be a lie)."""
+    resolve: its START stamped ``origin_dispatch_gen`` on a ledger row, the
+    durable admission record — it legitimately owns the pair. Suppress, no
+    receipt (its admission already happened; a receipt would be a lie)."""
     cache = _FakeCache()
     _seed_phantom(cache, gen="g-2")
-    cache.kv["workflow:status:ptc-1"] = {
-        "status": "active",
-        "run_id": "run-2",
-        "metadata": {"origin_dispatch_gen": "g-2"},
-    }
+    _stub_ledger.has_gen.return_value = True
 
     resolved, _ = await report_back.resolve_orphaned_watch(
         cache, "ptc-1", "flash-1", "u-1", fencer_gen="g-2"
     )
 
     assert resolved is False
+    _stub_ledger.has_gen.assert_awaited_once_with("ptc-1", "g-2")
     assert "ptc-1" in cache.client.sets[report_back.flash_watch_key("flash-1")]
     assert report_back.ptc_rb_resolved_key("ptc-1") not in cache.client.sets
 
 
 @pytest.mark.asyncio
-async def test_resolve_suppressed_by_live_foreign_run():
-    """THE round-13 P0 pin: origin carries the fenced generation but the
-    thread's marker shows a LIVE run of another lineage (active, foreign
-    gen). That lineage's own hooks settle the pair — resolving here would
-    erase the watch membership a live run's report-back depends on
-    (execute_report_back acks WITHOUT posting when membership is gone)."""
+async def test_resolve_suppressed_by_live_foreign_run(_stub_ledger):
+    """THE round-13 P0 pin (ledger form): origin carries the fenced
+    generation but the ledger shows a LIVE run of another lineage on the
+    thread. That lineage's own hooks settle the pair — a surrogate
+    resolution here could erase the watch membership a live run's
+    report-back depends on (execute_report_back acks WITHOUT posting when
+    membership is gone)."""
     cache = _FakeCache()
     _seed_phantom(cache, gen="g-2", ptr={"run_id": "rb-9"})
-    cache.kv["workflow:status:ptc-1"] = {
-        "status": "active",
-        "run_id": "run-1",
-        "metadata": {"origin_dispatch_gen": "g-1"},
+    _stub_ledger.active.return_value = {
+        "conversation_response_id": "run-1",
+        "status": "in_progress",
     }
 
     resolved, drained = await report_back.resolve_orphaned_watch(
@@ -1121,16 +1139,16 @@ async def test_resolve_suppressed_by_live_foreign_run():
 
 
 @pytest.mark.asyncio
-async def test_resolve_suppressed_by_durable_admitted_stamp_after_marker_expiry():
-    """Codex round-14 P0 pin: an admitted generation's terminal marker TTLs
-    out after 1h while its origin lives 24h. The origin's ``admitted_gen``
-    stamp (written by the admission Lua) must keep the resolver suppressing
-    with the marker ABSENT — else a stale fenced clear resolves a completed
-    lineage whose report-back is still queued, and it acks without posting."""
+async def test_resolve_suppressed_by_pre_start_intent_stamp():
+    """Codex round-14 P0 pin, 2.4d form: the admission gate stamps
+    ``admitted_gen`` on the origin BEFORE the run STARTs. In the gate→START
+    window there is no ledger row and no live run yet, so the Lua's stamp
+    check is the only thing standing between a stale fenced clear and
+    resolving a generation that is about to legitimately own the pair."""
     cache = _FakeCache()
     _seed_phantom(cache, gen="g-2", ptr={"run_id": "rb-9"})
     cache.kv[report_back.ptc_origin_key("ptc-1")]["admitted_gen"] = "g-2"
-    # No marker at all — it expired after the run finished.
+    # No ledger row, no active run — mid-window between gate and START.
 
     resolved, drained = await report_back.resolve_orphaned_watch(
         cache, "ptc-1", "flash-1", "u-1", fencer_gen="g-2"
@@ -1144,13 +1162,13 @@ async def test_resolve_suppressed_by_durable_admitted_stamp_after_marker_expiry(
 
 
 @pytest.mark.asyncio
-async def test_resolve_suppressed_by_unreadable_marker():
-    """Codex round-14 P2: an existing-but-undecodable marker must fail CLOSED
-    (suppress) — falling through to resolution could erase a live admitted
-    lineage's membership on corrupted data."""
+async def test_resolve_suppressed_when_ledger_probe_fails(_stub_ledger):
+    """A failing ledger probe must fail CLOSED (suppress) — resolving blind
+    could erase a live admitted lineage's membership. Nothing falls, nothing
+    is receipted; the pair waits for a later, informed pass."""
     cache = _FakeCache()
-    _seed_phantom(cache)
-    cache.kv["workflow:status:ptc-1"] = "not json {"
+    _seed_phantom(cache, ptr={"run_id": "rb-9"})
+    _stub_ledger.has_gen.side_effect = RuntimeError("ledger unavailable")
 
     resolved, drained = await report_back.resolve_orphaned_watch(
         cache, "ptc-1", "flash-1", "u-1", fencer_gen="g-PHANTOM"
@@ -1158,6 +1176,7 @@ async def test_resolve_suppressed_by_unreadable_marker():
 
     assert (resolved, drained) == (False, None)
     assert "ptc-1" in cache.client.sets[report_back.flash_watch_key("flash-1")]
+    assert report_back.flash_rb_run_key("flash-1", "ptc-1") in cache.kv
     assert report_back.ptc_rb_resolved_key("ptc-1") not in cache.client.sets
 
 
@@ -1183,22 +1202,21 @@ async def test_resolve_records_drained_run_inside_the_script():
 
 
 @pytest.mark.asyncio
-async def test_resolve_proceeds_over_terminal_foreign_marker():
-    """A terminal marker from a PREVIOUS lineage (completed/failed/cancelled,
-    foreign gen) is not a live owner — the phantom still resolves."""
+async def test_resolve_consults_both_ledger_probes(_stub_ledger):
+    """The resolver must ask the ledger both questions — fencer admitted?
+    any live run? — before touching pair state. A terminal prior lineage
+    (rows exist, none in_progress) is exactly this default shape and does
+    not suppress: the phantom still resolves."""
     cache = _FakeCache()
     _seed_phantom(cache, ptr={"run_id": "rb-9"})
-    cache.kv["workflow:status:ptc-1"] = {
-        "status": "completed",
-        "run_id": "run-0",
-        "metadata": {"origin_dispatch_gen": "g-0"},
-    }
 
     resolved, drained = await report_back.resolve_orphaned_watch(
         cache, "ptc-1", "flash-1", "u-1", fencer_gen="g-PHANTOM"
     )
 
     assert (resolved, drained) == (True, "rb-9")
+    _stub_ledger.has_gen.assert_awaited_once_with("ptc-1", "g-PHANTOM")
+    _stub_ledger.active.assert_awaited_once_with("ptc-1")
     assert "g-PHANTOM" in cache.client.sets[report_back.ptc_rb_resolved_key("ptc-1")]
 
 
@@ -1215,11 +1233,6 @@ async def test_resolve_leaves_memberships_inherited_from_intermediate_lineage():
     cache.kv[report_back.ptc_origin_key("ptc-1")].update(
         dispatch_gen="g-3", owns_watch=False, owns_user=False, prev_gen="g-2"
     )
-    cache.kv["workflow:status:ptc-1"] = {
-        "status": "completed",
-        "run_id": "run-2",
-        "metadata": {"origin_dispatch_gen": "g-2"},
-    }
     cache.kv[report_back.flash_rb_run_key("flash-1", "ptc-1")] = {
         "run_id": "rb-2",
         "dispatch_gen": "g-2",
@@ -1410,11 +1423,6 @@ async def test_refresh_reservation_phantom_resolution_spares_predecessor_deliver
     cache.kv[report_back.ptc_origin_key(ptc)].update(
         dispatch_gen="g-2", admitted_gen="g-2"
     )
-    cache.kv["workflow:status:ptc-1"] = {
-        "status": "completed",
-        "run_id": "run-2",
-        "metadata": {"origin_dispatch_gen": "g-2"},
-    }
 
     with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
         async with report_back.reserve(flash, ptc, "ws-1", "fws-1", user) as slot:
@@ -1453,6 +1461,101 @@ async def test_resolve_suppressed_when_origin_gone():
 
     assert (resolved, drained) == (False, None)
     assert report_back.ptc_rb_resolved_key("ptc-1") not in cache.client.sets
+
+
+# ---------------------------------------------------------------------------
+# admit_dispatch_gen / retract_dispatch_gen — the pre-START phantom-refusal
+# gate (2.4d): ONE Lua refuses generations the orphan resolver receipted and
+# stamps pre-START intent on the origin (first stamp wins per generation);
+# the retract CAS releases only the exact (gen, run) that stamped.
+# ---------------------------------------------------------------------------
+
+
+def _gate_cache(gen: str = "g-1"):
+    cache = _FakeCache()
+    _seed_dispatched(cache, "flash-1", ["ptc-1"])
+    cache.kv[report_back.ptc_origin_key("ptc-1")]["dispatch_gen"] = gen
+    return cache
+
+
+@pytest.mark.asyncio
+async def test_admit_stamps_pre_start_intent():
+    cache = _gate_cache()
+    with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
+        assert await report_back.admit_dispatch_gen("ptc-1", "g-1", "run-1") is True
+    origin = cache.kv[report_back.ptc_origin_key("ptc-1")]
+    assert origin["admitted_gen"] == "g-1"
+    assert origin["admitted_run"] == "run-1"
+
+
+@pytest.mark.asyncio
+async def test_admit_refuses_receipted_gen():
+    """A generation the orphan resolver receipted as phantom must never
+    admit late — its watch state is gone; the turn's report-back would
+    silently drop."""
+    cache = _gate_cache()
+    cache.client.sets[report_back.ptc_rb_resolved_key("ptc-1")] = {"g-1"}
+    with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
+        assert await report_back.admit_dispatch_gen("ptc-1", "g-1", "run-1") is False
+    assert "admitted_gen" not in cache.kv[report_back.ptc_origin_key("ptc-1")]
+
+
+@pytest.mark.asyncio
+async def test_admit_first_stamp_wins_for_same_gen_retransmit():
+    """A same-gen retransmit racing its sibling still admits (the START-txn
+    dedup decides the winner) but must not re-token the stamp — else the
+    loser's retract could strip it from under the live winner."""
+    cache = _gate_cache()
+    cache.kv[report_back.ptc_origin_key("ptc-1")]["admitted_gen"] = "g-1"
+    cache.kv[report_back.ptc_origin_key("ptc-1")]["admitted_run"] = "run-A"
+    with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
+        assert await report_back.admit_dispatch_gen("ptc-1", "g-1", "run-B") is True
+    assert cache.kv[report_back.ptc_origin_key("ptc-1")]["admitted_run"] == "run-A"
+
+
+@pytest.mark.asyncio
+async def test_admit_moved_origin_admits_without_stamping():
+    """A newer reservation displaced this generation: that lifecycle isn't
+    ours to write, so no stamp — but the dispatch still admits and runs as
+    an ordinary turn whose report-back finds the pair settled."""
+    cache = _gate_cache(gen="g-2")
+    with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
+        assert await report_back.admit_dispatch_gen("ptc-1", "g-1", "run-1") is True
+    assert "admitted_gen" not in cache.kv[report_back.ptc_origin_key("ptc-1")]
+
+
+@pytest.mark.asyncio
+async def test_admit_fails_closed_when_gate_unavailable():
+    disabled = _FakeCache()
+    disabled.enabled = False
+    with patch("src.utils.cache.redis_cache.get_cache_client", return_value=disabled):
+        assert await report_back.admit_dispatch_gen("ptc-1", "g-1", "run-1") is False
+
+    broken = _gate_cache()
+    broken.client.eval = AsyncMock(side_effect=ConnectionError("redis down"))
+    with patch("src.utils.cache.redis_cache.get_cache_client", return_value=broken):
+        assert await report_back.admit_dispatch_gen("ptc-1", "g-1", "run-1") is False
+
+
+@pytest.mark.asyncio
+async def test_retract_releases_only_the_exact_stamp():
+    """The retract CAS is scoped to the exact (gen, run) that stamped: a
+    foreign run or foreign generation never strips a live sibling's stamp."""
+    origin_key = report_back.ptc_origin_key("ptc-1")
+    cache = _gate_cache()
+    cache.kv[origin_key]["admitted_gen"] = "g-1"
+    cache.kv[origin_key]["admitted_run"] = "run-1"
+
+    with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
+        await report_back.retract_dispatch_gen("ptc-1", "g-1", "run-2")
+        assert cache.kv[origin_key]["admitted_run"] == "run-1"
+        await report_back.retract_dispatch_gen("ptc-1", "g-2", "run-1")
+        assert cache.kv[origin_key]["admitted_run"] == "run-1"
+        await report_back.retract_dispatch_gen("ptc-1", "g-1", "run-1")
+
+    assert "admitted_gen" not in cache.kv[origin_key]
+    assert "admitted_run" not in cache.kv[origin_key]
+    assert cache.kv[origin_key]["dispatch_gen"] == "g-1"
 
 
 @pytest.mark.asyncio

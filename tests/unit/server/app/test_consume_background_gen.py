@@ -1,10 +1,12 @@
 """Crash-path cleanup for `_consume_background_gen`.
 
-When a dispatched background generator raises, the except branch tears down the
-report-back watch keyed by the *PTC* thread id. Regression: the FLASH_DISPATCH
-site (a report-back run) used the flash thread id as the origin key, so a
-report-back run that crashed before its terminal handler fired left the durable
-watch/pointer alive until TTL and `/status` kept reporting a stale pending run.
+When a dispatched background generator raises, the crash branch hands the
+orphaned run to ``TurnCoordinator.reconcile_orphaned_dispatch`` — every
+generator is primed past START (2.4c), so a ledger row always exists and the
+reconcile (or the real owner's finalize) enqueues any watch_clear on the
+flash ordering chain. The consumer itself never touches report-back state:
+an off-chain clear can drain a summary admission's just-claimed pointer
+mid-flight (round-19 P1).
 """
 
 from unittest.mock import AsyncMock, patch
@@ -46,134 +48,49 @@ def _patched(cache, clear):
         patch(
             "src.server.handlers.chat.report_back.clear_flash_report_back", clear
         ),
-        # Default: no ledger row — watch-clear tests stay hermetic (no DB).
-        # The ledger-focused tests below re-patch get_run inside this scope.
+        # Default: no ledger row — keeps tests hermetic (no DB). The
+        # ledger-focused tests below re-patch get_run inside this scope.
         patch.object(tl_db, "get_run", AsyncMock(return_value=None)),
     )
 
 
 @pytest.mark.asyncio
-async def test_report_back_crash_clears_watch_via_ptc_thread_id():
-    # report-back run: thread_id is the flash thread, but the origin lives under
-    # the completed PTC thread named by report_back_ptc_thread_id.
-    cache = _FakeCache({"ptc_origin:ptc-1": {"flash_thread_id": "flash-1"}})
-    clear = AsyncMock()
-    p1, p2, p3 = _patched(cache, clear)
-    with p1, p2, p3:
-        ok = await _consume_background_gen(
-            _crashing_gen(),
-            "FLASH_DISPATCH",
-            "flash-1",
-            "run-1",
-            report_back_ptc_thread_id="ptc-1",
-            user_id="user-1",
-        )
-    assert ok is False
-    # The known owner is threaded through so the per-user cap slot is released
-    # even when ptc_origin carries no user_id (would TTL-leak otherwise).
-    clear.assert_awaited_once_with(
-        cache, "ptc-1", "flash-1", user_id="user-1", expected_gen=None,
-        refuse_if_pointer=True,
-    )
-    cache.client.publish.assert_awaited_once()
-    assert cache.client.publish.call_args[0][0] == "thread:wake:flash-1"
-
-
-@pytest.mark.asyncio
-async def test_ordinary_flash_dispatch_crash_preserves_watch():
-    # No report_back id: the origin lookup uses the flash thread id, misses, and
-    # leaves a still-running dispatched PTC's keys intact for reload recovery.
-    cache = _FakeCache({})  # ptc_origin:flash-1 absent
-    clear = AsyncMock()
-    p1, p2, p3 = _patched(cache, clear)
-    with p1, p2, p3:
-        ok = await _consume_background_gen(
-            _crashing_gen(), "FLASH_DISPATCH", "flash-1", "run-1"
-        )
-    assert ok is False
-    clear.assert_not_awaited()
-    cache.client.publish.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_ptc_dispatch_crash_clears_via_thread_id():
-    # PTC_DISPATCH: thread_id IS the ptc thread, so the default origin key hits.
-    cache = _FakeCache({"ptc_origin:ptc-9": {"flash_thread_id": "flash-9"}})
-    clear = AsyncMock()
-    p1, p2, p3 = _patched(cache, clear)
-    with p1, p2, p3:
-        ok = await _consume_background_gen(
-            _crashing_gen(), "PTC_DISPATCH", "ptc-9", "run-9", user_id="user-9"
-        )
-    assert ok is False
-    clear.assert_awaited_once_with(
-        cache, "ptc-9", "flash-9", user_id="user-9", expected_gen=None,
-        refuse_if_pointer=True,
-    )
-    assert cache.client.publish.call_args[0][0] == "thread:wake:flash-9"
-
-
-@pytest.mark.asyncio
-async def test_crash_clear_uses_the_requests_in_band_dispatch_gen():
-    """The crashed request's own origin_dispatch_gen scopes the clear — no DB
-    read needed, and a run-row read failure can never widen the clear to an
-    incarnation the request didn't dispatch."""
-    cache = _FakeCache({"ptc_origin:ptc-9": {"flash_thread_id": "flash-9"}})
-    clear = AsyncMock()
-    p1, p2, p3 = _patched(cache, clear)
-    with p1, p2, p3:
-        ok = await _consume_background_gen(
-            _crashing_gen(), "PTC_DISPATCH", "ptc-9", "run-9",
-            user_id="user-9", dispatch_gen="g-req",
-        )
-    assert ok is False
-    clear.assert_awaited_once_with(
-        cache, "ptc-9", "flash-9", user_id="user-9", expected_gen="g-req",
-        refuse_if_pointer=True,
-    )
-
-
-@pytest.mark.asyncio
-async def test_crash_with_a_ledger_row_skips_the_direct_watch_clear():
-    """Round-19 P1: a run row means a finalize — the reconcile below, or the
-    real owner's — enqueues the durable watch_clear on the flash ordering
-    chain, which owns the pair teardown there. The direct clear runs
-    OFF-CHAIN and can drain a summary admission's just-claimed pointer
-    mid-flight, so it is reserved for ROWLESS crashes."""
+async def test_crash_never_clears_report_back_off_chain():
+    """Round-19 P1, 2.4d form: the crash path performs NO direct report-back
+    teardown — regardless of ledger state, pair teardown belongs to the
+    durable watch_clear on the flash ordering chain (enqueued by reconcile
+    or the owner's finalize). An off-chain clear here can drain a summary
+    admission's just-claimed pointer mid-flight."""
+    from src.server.database import turn_lifecycle as tl_db
     from src.server.database.turn_lifecycle import FinalizeResult
 
-    cache = _FakeCache({"ptc_origin:ptc-1": {"flash_thread_id": "flash-1"}})
-    clear = AsyncMock()
-    p1, p2, _default_rowless = _patched(cache, clear)
-    p3, p4 = _ledger_patches(
-        _row("in_progress"),
-        FinalizeResult(applied=False, run={"status": "error"}),
-    )
-    with p1, p2, p3, p4:
-        ok = await _consume_background_gen(
-            _crashing_gen(), "PTC_DISPATCH", "ptc-1", "run-1", user_id="u-1"
-        )
-    assert ok is False
-    clear.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_crash_with_unreadable_ledger_skips_the_direct_watch_clear():
-    """Row state unknown -> leave the pair to its owner or the origin TTL;
-    never tear down off-chain on a guess."""
-    from src.server.database import turn_lifecycle as tl_db
-
-    cache = _FakeCache({"ptc_origin:ptc-1": {"flash_thread_id": "flash-1"}})
-    clear = AsyncMock()
-    p1, p2, _default_rowless = _patched(cache, clear)
-    with p1, p2, patch.object(
-        tl_db, "get_run", AsyncMock(side_effect=ConnectionError("db down"))
+    for ledger in (
+        patch.object(tl_db, "get_run", AsyncMock(return_value=None)),
+        patch.object(
+            tl_db,
+            "get_run",
+            AsyncMock(return_value=_row("in_progress")),
+        ),
+        patch.object(
+            tl_db, "get_run", AsyncMock(side_effect=ConnectionError("db down"))
+        ),
     ):
-        ok = await _consume_background_gen(
-            _crashing_gen(), "PTC_DISPATCH", "ptc-1", "run-1", user_id="u-1"
+        cache = _FakeCache({"ptc_origin:ptc-1": {"flash_thread_id": "flash-1"}})
+        clear = AsyncMock()
+        p1, p2, _default = _patched(cache, clear)
+        finalize = patch.object(
+            tl_db,
+            "finalize_run_idempotent",
+            AsyncMock(
+                return_value=FinalizeResult(applied=False, run={"status": "error"})
+            ),
         )
-    assert ok is False
-    clear.assert_not_awaited()
+        with p1, p2, ledger, finalize:
+            ok = await _consume_background_gen(
+                _crashing_gen(), "PTC_DISPATCH", "ptc-1", "run-1"
+            )
+        assert ok is False
+        clear.assert_not_awaited()
 
 
 # --- last-resort finalize + verified run_end (I6) ---------------------------
@@ -364,7 +281,7 @@ async def test_live_btm_executor_blocks_last_resort_finalize():
         classmethod(lambda cls: fake_manager),
     ):
         ok = await _consume_background_gen(
-            _crashing_gen(), "PTC_DISPATCH", "ptc-1", "run-1", user_id="user-1"
+            _crashing_gen(), "PTC_DISPATCH", "ptc-1", "run-1"
         )
 
     assert ok is False

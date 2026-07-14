@@ -46,7 +46,6 @@ from src.config.settings import (
 )
 from src.utils.cache.redis_cache import get_cache_client
 from src.server.dependencies.usage_limits import release_burst_slot
-from src.server.services.workflow_tracker import WorkflowTracker
 from src.server.utils.persistence_utils import (
     get_token_usage_from_callback,
     get_tool_usage_from_handler,
@@ -313,7 +312,7 @@ class BackgroundTaskManager:
 
         ``exclude_run_id`` skips a specific run — used by dispatched flows
         that want to check for OTHER active runs on the thread while
-        ignoring their own pre-registered placeholder.
+        ignoring their own already-registered run.
         """
         best: Optional[TaskInfo] = None
         live = (TaskStatus.QUEUED, TaskStatus.RUNNING)
@@ -509,14 +508,6 @@ class BackgroundTaskManager:
                                 f"RUNNING task {key} (task settled without finalize)"
                             )
 
-                elif info.status == TaskStatus.QUEUED and info.task is None:
-                    if info.created_at < abandoned_threshold:
-                        to_remove.append(key)
-                        logger.warning(
-                            f"[BackgroundTaskManager] Cleanup: removing orphaned QUEUED "
-                            f"placeholder {key} (age: {now - info.created_at})"
-                        )
-
             for key in to_remove:
                 del self.tasks[key]
 
@@ -560,38 +551,6 @@ class BackgroundTaskManager:
 
     # ---------- workflow lifecycle ----------
 
-    async def pre_register(
-        self,
-        thread_id: str,
-        run_id: str,
-    ) -> bool:
-        """Pre-register a turn as QUEUED before the workflow generator starts.
-
-        Used by background dispatch (X-Dispatch: background) to close the
-        timing gap between dispatcher return and ``start_workflow``.
-        Reconnecting clients see a QUEUED TaskInfo and attach to the per-run
-        stream key (initially empty) instead of a 404.
-
-        Returns True if the placeholder was created, False if a record for
-        this exact ``(thread_id, run_id)`` already existed.
-        """
-        async with self.task_lock:
-            key = (thread_id, run_id)
-            if key in self.tasks:
-                return False
-
-            self.tasks[key] = TaskInfo(
-                thread_id=thread_id,
-                run_id=run_id,
-                status=TaskStatus.QUEUED,
-                created_at=datetime.now(),
-            )
-            logger.info(
-                f"[BackgroundTaskManager] Pre-registered dispatch placeholder "
-                f"for thread_id={thread_id} run_id={run_id}"
-            )
-            return True
-
     async def start_workflow(
         self,
         thread_id: str,
@@ -603,146 +562,57 @@ class BackgroundTaskManager:
     ) -> TaskInfo:
         """Start a workflow as a background task."""
         key = (thread_id, run_id)
-        cancelled_placeholder: Optional[TaskInfo] = None
-        cancelled_uid: Optional[str] = None
-        started: Optional[TaskInfo] = None
         async with self.task_lock:
             if key in self.tasks:
-                existing = self.tasks[key]
-                if existing.status == TaskStatus.QUEUED and existing.task is None:
-                    if existing.cancel_event.is_set():
-                        # Cancelled in the pre_register → start_workflow window
-                        # (dispatched flow). Do NOT resurrect it into a RUNNING
-                        # task: wait_for_admission returns "fresh" for a
-                        # task-less cancelled placeholder, so a new turn may
-                        # already be RUNNING on this thread. A resurrected run
-                        # would tear down on its first cancel-event check —
-                        # flushing a stale checkpoint and marking the thread
-                        # CANCELLED over the new turn. Settle the placeholder
-                        # terminally; its burst slot is released after the lock
-                        # (no task is created, so the BTM finalizer that normally
-                        # releases it never runs).
-                        existing.status = TaskStatus.CANCELLED
-                        existing.completed_at = datetime.now()
-                        existing.persistence_complete.set()
-                        cancelled_placeholder = existing
-                        cancelled_uid = (metadata or {}).get("user_id")
-                        logger.info(
-                            f"[BackgroundTaskManager] Placeholder {key} cancelled "
-                            "before start; settled without resurrecting"
-                        )
-                    else:
-                        # Upgrade pre-registered placeholder in-place.
-                        existing.metadata = metadata or {}
-                        existing.completion_callback = completion_callback
-                        existing.graph = graph
-                        existing.task = asyncio.create_task(
-                            self._run_workflow(
-                                thread_id, run_id, workflow_generator,
-                                cancel_event=existing.cancel_event,
-                            )
-                        )
-                        existing.status = TaskStatus.RUNNING
-                        existing.started_at = datetime.now()
-                        logger.info(
-                            f"[BackgroundTaskManager] Upgraded pre-registered "
-                            f"workflow thread_id={thread_id} run_id={run_id} to RUNNING"
-                        )
-                        started = existing
-                else:
-                    raise RuntimeError(
-                        f"Workflow {key} already exists with status {existing.status}"
-                    )
-            else:
-                running_count = sum(
-                    1 for t in self.tasks.values()
-                    if t.status in [TaskStatus.QUEUED, TaskStatus.RUNNING]
-                )
-                if running_count >= self.max_concurrent:
-                    raise ValueError(
-                        f"Max concurrent workflows reached ({self.max_concurrent}). "
-                        f"Currently running: {running_count}"
-                    )
-
-                task_info = TaskInfo(
-                    thread_id=thread_id,
-                    run_id=run_id,
-                    status=TaskStatus.QUEUED,
-                    created_at=datetime.now(),
-                    metadata=metadata or {},
-                    completion_callback=completion_callback,
-                    graph=graph,
+                raise RuntimeError(
+                    f"Workflow {key} already exists with status "
+                    f"{self.tasks[key].status}"
                 )
 
-                task_info.task = asyncio.create_task(
-                    self._run_workflow(
-                        thread_id, run_id, workflow_generator,
-                        cancel_event=task_info.cancel_event,
-                    )
-                )
-                task_info.status = TaskStatus.RUNNING
-                task_info.started_at = datetime.now()
-
-                self.tasks[key] = task_info
-
-                logger.info(
-                    f"[BackgroundTaskManager] Started workflow thread_id={thread_id} "
-                    f"run_id={run_id} (running: {running_count + 1}/{self.max_concurrent})"
+            running_count = sum(
+                1 for t in self.tasks.values()
+                if t.status in [TaskStatus.QUEUED, TaskStatus.RUNNING]
+            )
+            if running_count >= self.max_concurrent:
+                raise ValueError(
+                    f"Max concurrent workflows reached ({self.max_concurrent}). "
+                    f"Currently running: {running_count}"
                 )
 
-                started = task_info
+            task_info = TaskInfo(
+                thread_id=thread_id,
+                run_id=run_id,
+                status=TaskStatus.RUNNING,
+                created_at=datetime.now(),
+                metadata=metadata or {},
+                completion_callback=completion_callback,
+                graph=graph,
+            )
+            task_info.task = asyncio.create_task(
+                self._run_workflow(
+                    thread_id, run_id, workflow_generator,
+                    cancel_event=task_info.cancel_event,
+                )
+            )
+            task_info.started_at = datetime.now()
+
+            self.tasks[key] = task_info
+
+            logger.info(
+                f"[BackgroundTaskManager] Started workflow thread_id={thread_id} "
+                f"run_id={run_id} (running: {running_count + 1}/{self.max_concurrent})"
+            )
+
+            started = task_info
 
         run_handle = (metadata or {}).get("run_handle")
 
-        if cancelled_placeholder is not None:
-            # Cancelled-before-start placeholder: release its burst slot OUTSIDE
-            # the lock, mirroring every other release_burst_slot in this file.
-            # Holding task_lock across the Redis DECR would delay a concurrent
-            # /cancel, which also needs the lock.
-            if cancelled_uid:
-                await release_burst_slot(
-                    cancelled_uid, (metadata or {}).get("burst_slot_id")
-                )
-            # The caller STARTed this run and flips slot_owned=False on return, so
-            # no executor and no generator path will ever finalize it — settle the
-            # durable row here or the thread slot leaks until the startup sweep.
-            if run_handle is not None:
-                from src.server.database import turn_lifecycle as tl_db
-                from src.server.services.turn_lifecycle import TurnCoordinator
-
-                # Intent and the cancelled_by_user flag both mean "a user
-                # asked": a system cancel (graceful shutdown, stale-workflow
-                # recovery) stamps neither and relies on the finalize
-                # timestamp backfill alone.
-                user_stop = bool(cancelled_placeholder.user_stop)
-                if user_stop:
-                    # Stamp durable intent before finalizing: a crash between
-                    # here and the finalize must sweep this row as cancelled
-                    # (the user asked for it), not error(worker_lost).
-                    try:
-                        await tl_db.request_run_cancel(
-                            run_handle.run_id, thread_id=thread_id
-                        )
-                    except Exception:
-                        logger.warning(
-                            f"[BackgroundTaskManager] could not stamp cancel "
-                            f"intent on cancelled placeholder {key}",
-                            exc_info=True,
-                        )
-                await TurnCoordinator.get_instance().fail_open_run(
-                    run_handle,
-                    "cancelled before start (dispatched placeholder)",
-                    status="cancelled",
-                    # Explicit provenance: if the intent stamp failed, the
-                    # finalize CAS can't infer it from the (absent) intent.
-                    metadata={"cancelled_by_user": True} if user_stop else None,
-                )
-            return cancelled_placeholder
-
         # Handoff intent recheck: a /cancel between START and this registration
-        # stamped durable intent on the row but found no TaskInfo to signal.
-        # The row is the authority — re-derive the local signal from it now
-        # that a task exists, closing the foreground setup window.
+        # stamped durable intent on the row but found no TaskInfo to signal
+        # (the QUEUED placeholder that used to fill this gap is gone — the
+        # in_progress row committed by priming is the only pre-registration
+        # identity). The row is the authority — re-derive the local signal
+        # from it now that a task exists.
         if run_handle is not None:
             from src.server.database import turn_lifecycle as tl_db
 
@@ -2031,37 +1901,6 @@ class BackgroundTaskManager:
                         exc_info=True,
                     )
 
-            # Legacy parallel store; readers are one-release compat shims.
-            # TODO(v4-P2): delete with WorkflowTracker (plan 2.4).
-            try:
-                tracker = WorkflowTracker.get_instance()
-                if status == "completed":
-                    await tracker.mark_completed(
-                        thread_id=thread_id,
-                        metadata={
-                            "completed_at": datetime.now().isoformat(),
-                            "execution_time": execution_time,
-                        },
-                        run_id=run_id,
-                    )
-                elif status == "interrupted":
-                    await tracker.mark_interrupted(
-                        thread_id=thread_id,
-                        run_id=run_id,
-                        metadata={"interrupt_reason": interrupt_reason},
-                    )
-                elif status == "cancelled":
-                    await tracker.mark_cancelled(thread_id, run_id=run_id)
-                else:
-                    await tracker.mark_failed(
-                        thread_id, error=error or "workflow failed", run_id=run_id
-                    )
-            except Exception as tracker_err:
-                logger.warning(
-                    f"[BackgroundTaskManager] tracker update failed for {key}: "
-                    f"{tracker_err}"
-                )
-
             # Collection follows the ADOPTED status: only a run that
             # actually ended completed/interrupted gets a collector. A
             # terminal error or (adopted) cancel instead kills this run's
@@ -2442,8 +2281,8 @@ class BackgroundTaskManager:
         """Cancel a stale workflow on the given thread.
 
         ``exclude_run_id`` skips that run when locating the stale task, so a
-        dispatched flow can pass its own pre-registered placeholder's run_id and
-        not cancel the very run it is about to start.
+        dispatched flow can pass its own run_id and not cancel the very run
+        it is about to start.
         """
         async with self.task_lock:
             task_info = self._find_active_for_thread(

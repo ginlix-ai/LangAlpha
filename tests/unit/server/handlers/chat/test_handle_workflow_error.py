@@ -1,10 +1,12 @@
-"""Tests for ``handle_workflow_error`` tracker wiring.
+"""Tests for ``handle_workflow_error`` terminal wiring (v4).
 
 Pins the contract that both terminal branches (max-retries-exceeded and
-non-recoverable) push ``WorkflowStatus.FAILED`` to Redis via
-``WorkflowTracker.mark_failed``. Without these tests a future refactor that
-drops the tracker call would silently restore the original "ACTIVE for the
-full TTL window" bug after a setup-error workflow dies.
+non-recoverable) terminal-write the open run through
+``TurnCoordinator.finalize_turn`` — and that a finalize failure or a
+deterministic protocol conflict never suppresses the client-facing SSE
+error. Without these tests a future refactor that drops the finalize call
+would silently restore the original "in_progress forever" zombie after a
+setup-error workflow dies.
 """
 
 from __future__ import annotations
@@ -34,36 +36,43 @@ def _make_request():
     )
 
 
-@pytest.fixture
-def patch_tracker():
-    """Patch WorkflowTracker.get_instance to return a recordable mock."""
-    mock_tracker = MagicMock()
-    mock_tracker.mark_failed = AsyncMock(return_value=True)
-    with patch.object(
-        error_handling.WorkflowTracker, "get_instance", return_value=mock_tracker
-    ):
-        yield mock_tracker
-
-
-@pytest.mark.asyncio
-async def test_max_retries_branch_marks_failed(patch_tracker):
-    # Recoverable error past MAX_RETRIES → marks tracker FAILED with the
-    # retry-limit error message. v4: the retry count is the run's attempt_no
-    # (the Redis increment_retry_count counter is gone), so drive the
-    # max-retries branch via run_handle.attempt_no > MAX_RETRIES. finalized=True
-    # short-circuits _finalize_error so no TurnCoordinator mock is needed.
-    run_handle = SimpleNamespace(
-        run_id="r-max",
-        attempt_no=99,  # > MAX_RETRIES
-        finalized=True,
+def _run_handle(attempt_no: int = 1):
+    return SimpleNamespace(
+        run_id="r-1",
+        attempt_no=attempt_no,
+        finalized=False,
         workspace_id=None,
         user_id=None,
     )
 
-    err = ConnectionError("connection refused")
+
+def _handler():
     handler = MagicMock()
     handler.get_tool_usage.return_value = None
     handler.get_sse_events.return_value = None
+    handler._format_sse_event.side_effect = (
+        lambda ev, data: f"event: {ev}\ndata: {data}\n\n"
+    )
+    return handler
+
+
+@pytest.fixture
+def coordinator():
+    """Patch TurnCoordinator.get_instance to return a recordable mock."""
+    coord = AsyncMock()
+    coord.finalize_turn.return_value = SimpleNamespace(run={"status": "error"})
+    with patch("src.server.services.turn_lifecycle.TurnCoordinator") as coord_cls:
+        coord_cls.get_instance.return_value = coord
+        yield coord
+
+
+@pytest.mark.asyncio
+async def test_max_retries_branch_finalizes_error(coordinator):
+    # Recoverable error past MAX_RETRIES → terminal-writes the run as error
+    # with the retry-limit message. v4: the retry count is the run's
+    # attempt_no, so the branch is driven via run_handle.attempt_no > MAX_RETRIES.
+    run_handle = _run_handle(attempt_no=99)
+    err = ConnectionError("connection refused")
 
     with patch.object(error_handling, "release_burst_slot", new=AsyncMock()), \
          patch.object(error_handling, "get_max_workflow_retries", return_value=3):
@@ -72,7 +81,7 @@ async def test_max_retries_branch_marks_failed(patch_tracker):
             thread_id="t-max-retry",
             user_id="u-1",
             workspace_id="ws-1",
-            handler=handler,
+            handler=_handler(),
             token_callback=None,
             run_handle=run_handle,
             start_time=0.0,
@@ -82,22 +91,19 @@ async def test_max_retries_branch_marks_failed(patch_tracker):
             log_prefix="CHAT",
         ))
 
-    patch_tracker.mark_failed.assert_awaited_once()
-    call = patch_tracker.mark_failed.await_args
-    assert call.args[0] == "t-max-retry"
-    assert "Max retries exceeded" in call.kwargs["error"]
-    assert "ConnectionError" in call.kwargs["error"]
+    coordinator.finalize_turn.assert_awaited_once()
+    handle, outcome = coordinator.finalize_turn.await_args.args
+    assert handle is run_handle
+    assert outcome.status == "error"
+    assert "Max retries exceeded" in outcome.errors[0]
+    assert "ConnectionError" in outcome.errors[0]
 
 
 @pytest.mark.asyncio
-async def test_non_recoverable_branch_marks_failed(patch_tracker):
-    # Non-recoverable error (AttributeError) → marks tracker FAILED with the
-    # raw "ErrorType: message" string.
+async def test_non_recoverable_branch_finalizes_error(coordinator):
+    # Non-recoverable error (AttributeError) → terminal-writes the run with
+    # the error's message.
     err = AttributeError("'NoneType' has no attribute 'foo'")
-    handler = MagicMock()
-    handler.get_tool_usage.return_value = None
-    handler.get_sse_events.return_value = None
-    handler._format_sse_event.return_value = "event: error\ndata: {}\n\n"
 
     with patch.object(error_handling, "release_burst_slot", new=AsyncMock()), \
          patch.object(error_handling, "get_max_workflow_retries", return_value=3):
@@ -106,9 +112,9 @@ async def test_non_recoverable_branch_marks_failed(patch_tracker):
             thread_id="t-non-recov",
             user_id="u-1",
             workspace_id="ws-1",
-            handler=handler,
+            handler=_handler(),
             token_callback=None,
-            run_handle=None,
+            run_handle=_run_handle(),
             start_time=0.0,
             request=_make_request(),
             is_byok=False,
@@ -116,24 +122,20 @@ async def test_non_recoverable_branch_marks_failed(patch_tracker):
             log_prefix="CHAT",
         ))
 
-    patch_tracker.mark_failed.assert_awaited_once()
-    call = patch_tracker.mark_failed.await_args
-    assert call.args[0] == "t-non-recov"
-    assert call.kwargs["error"].startswith("AttributeError:")
+    coordinator.finalize_turn.assert_awaited_once()
+    _, outcome = coordinator.finalize_turn.await_args.args
+    assert outcome.status == "error"
+    assert outcome.errors == ["'NoneType' has no attribute 'foo'"]
 
 
 @pytest.mark.asyncio
-async def test_tracker_failure_does_not_break_error_flow(patch_tracker):
-    # If tracker.mark_failed itself raises, the handler must still emit the
-    # SSE error event — Redis write failures are non-fatal.
-    patch_tracker.mark_failed.side_effect = RuntimeError("redis down")
+async def test_finalize_failure_does_not_break_error_flow(coordinator):
+    # If the terminal write itself raises, the handler logs CRITICAL (the row
+    # stays in_progress for recovery) but must still emit the SSE error event.
+    coordinator.finalize_turn.side_effect = RuntimeError("db down")
 
     err = AttributeError("boom")
-    handler = MagicMock()
-    handler.get_tool_usage.return_value = None
-    handler.get_sse_events.return_value = None
-    sse = "event: error\ndata: {\"thread_id\": \"t-fail\"}\n\n"
-    handler._format_sse_event.return_value = sse
+    handler = _handler()
 
     with patch.object(error_handling, "release_burst_slot", new=AsyncMock()), \
          patch.object(error_handling, "get_max_workflow_retries", return_value=3):
@@ -144,7 +146,7 @@ async def test_tracker_failure_does_not_break_error_flow(patch_tracker):
             workspace_id="ws-1",
             handler=handler,
             token_callback=None,
-            run_handle=None,
+            run_handle=_run_handle(),
             start_time=0.0,
             request=_make_request(),
             is_byok=False,
@@ -152,16 +154,16 @@ async def test_tracker_failure_does_not_break_error_flow(patch_tracker):
             log_prefix="CHAT",
         ))
 
-    assert sse in events
+    assert any(ev.startswith("event: error\n") for ev in events)
 
 
 @pytest.mark.asyncio
-async def test_external_id_conflict_branch_emits_conflict_and_skips_mark_failed(
-    patch_tracker,
+async def test_external_id_conflict_branch_emits_conflict_and_skips_finalize(
+    coordinator,
 ):
     # A cross-user (platform, external_id) create race surfaces as a clean SSE
     # error carrying error_type=external_id_conflict, and (like the admission-
-    # conflict path) must NOT mark the thread failed or persist an error.
+    # conflict path) must NOT finalize anything as a turn failure.
     import json as _json
 
     from src.server.database.conversation import ExternalIdConflictError
@@ -193,4 +195,5 @@ async def test_external_id_conflict_branch_emits_conflict_and_skips_mark_failed(
     assert payload["platform"] == "telegram"
     assert payload["external_id"] == "chat:42"
     # Deterministic protocol conflict — not a workflow failure.
-    patch_tracker.mark_failed.assert_not_awaited()
+    coordinator.finalize_turn.assert_not_awaited()
+    coordinator.fail_open_run.assert_not_awaited()

@@ -554,6 +554,24 @@ async def get_latest_attempt(thread_id: str) -> Optional[Dict[str, Any]]:
             return dict(row) if row else None
 
 
+async def thread_has_dispatch_gen(thread_id: str, dispatch_gen: str) -> bool:
+    """True if any attempt on this thread was admitted under this dispatch
+    generation (``origin_dispatch_gen`` is stamped into run metadata at
+    START) — the durable admission record the orphan resolver defers to."""
+    async with qr_db.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT 1 FROM conversation_responses
+                WHERE conversation_thread_id = %s
+                  AND metadata->>'origin_dispatch_gen' = %s
+                LIMIT 1
+                """,
+                (thread_id, dispatch_gen),
+            )
+            return await cur.fetchone() is not None
+
+
 async def list_open_runs() -> List[Dict[str, Any]]:
     """All in_progress runs, oldest first (Phase-1 startup sweep input)."""
     async with qr_db.get_db_connection() as conn:

@@ -30,7 +30,6 @@ from src.server.models.chat import (
 )
 from src.server.services.background_task_manager import BackgroundTaskManager
 from src.server.services.turn_lifecycle import TurnCoordinator
-from src.server.services.workflow_tracker import WorkflowTracker
 from src.server.utils.directive_context import (
     build_directive_reminder,
     parse_directive_contexts,
@@ -465,22 +464,8 @@ async def astream_flash_workflow(
         # support)
         # =================================================================
 
-        tracker = WorkflowTracker.get_instance()
         # ``manager`` was acquired at the top of this handler for the early
         # steering-routing check; reuse it here.
-
-        await tracker.mark_active(
-            thread_id=thread_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            run_id=run_id,
-            metadata={
-                "started_at": datetime.now().isoformat(),
-                "msg_type": "flash",
-                "locale": request.locale,
-                "timezone": timezone_str,
-            },
-        )
 
         try:
             await manager.start_workflow(

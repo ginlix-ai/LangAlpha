@@ -252,42 +252,36 @@ class TestCancelStaleWorkflowTimeout:
 
 
 # ---------------------------------------------------------------------------
-# cancel_stale_workflow — excludes the caller's own pre-registered placeholder
+# cancel_stale_workflow — excludes the caller's own run
 # ---------------------------------------------------------------------------
 
 class TestCancelStaleWorkflowExcludesOwnRun:
-    """Regression: a dispatched cold-start must not cancel its own placeholder.
+    """Regression: a dispatched cold-start must not cancel its own run.
 
-    On the dispatched path threads.py pre-registers (thread_id, run_id) as a
-    QUEUED placeholder before astream_ptc_workflow runs. When the sandbox is
-    cold, astream calls cancel_stale_workflow to clear a stale prior run — and
-    without exclude_run_id it found and cancelled its OWN placeholder, so
-    start_workflow later settled it "cancelled before start" and the run
-    silently never executed.
+    When the sandbox is cold, astream_ptc_workflow calls
+    cancel_stale_workflow to clear a stale prior run — without
+    exclude_run_id it could find and cancel the caller's OWN run, so the
+    dispatch silently never executed.
     """
 
     @pytest.mark.asyncio
-    async def test_excluded_own_placeholder_not_cancelled(self):
-        """With exclude_run_id naming the only (placeholder) run, nothing is cancelled."""
+    async def test_excluded_own_run_not_cancelled(self):
+        """With exclude_run_id naming the only run, nothing is cancelled."""
         btm = _make_btm()
-        placeholder = _make_task_info(
-            status=TaskStatus.QUEUED, run_id="run-self", task=None, inner_task=None
-        )
-        btm.tasks[("thread-1", "run-self")] = placeholder
+        own = _make_task_info(status=TaskStatus.RUNNING, run_id="run-self")
+        btm.tasks[("thread-1", "run-self")] = own
 
         result = await btm.cancel_stale_workflow("thread-1", exclude_run_id="run-self")
 
         assert result is False
-        assert not placeholder.cancel_event.is_set()
+        assert not own.cancel_event.is_set()
 
     @pytest.mark.asyncio
     async def test_other_stale_run_still_cancelled_when_excluding_own(self):
         """A genuinely stale OTHER run is still cancelled despite the exclusion."""
         btm = _make_btm()
         stale = _make_task_info(status=TaskStatus.RUNNING, run_id="run-stale")
-        own = _make_task_info(
-            status=TaskStatus.QUEUED, run_id="run-self", task=None, inner_task=None
-        )
+        own = _make_task_info(status=TaskStatus.RUNNING, run_id="run-self")
         btm.tasks[("thread-1", "run-stale")] = stale
         btm.tasks[("thread-1", "run-self")] = own
 
@@ -564,9 +558,7 @@ class TestMarkCancelledUserLabeling:
              patch(f"{mod}.get_sse_events_from_handler", return_value=[]), \
              patch(f"{mod}.calculate_execution_time", return_value=1.0), \
              patch(f"{mod}.release_burst_slot", new_callable=AsyncMock), \
-             patch(f"{mod}.WorkflowTracker") as mock_tracker_cls, \
              patch("src.server.services.turn_lifecycle.TurnCoordinator") as mock_coord_cls:
-            mock_tracker_cls.get_instance.return_value.mark_cancelled = AsyncMock()
             mock_coord_cls.get_instance.return_value = coordinator
             await btm._finalize_run(task_info.thread_id, task_info.run_id, kind="cancelled")
 
@@ -1133,74 +1125,78 @@ class TestWaitForAdmission:
             assert await btm.wait_for_admission("t-done") == ("fresh", None)
 
 
-class TestStartWorkflowCancelledPlaceholder:
-    """A dispatched placeholder cancelled in the pre_register → start_workflow
-    window must NOT be resurrected into a RUNNING task. wait_for_admission
-    returns 'fresh' for a task-less cancelled placeholder, so a new turn can
-    already be RUNNING on the thread; resurrecting would flush a stale
-    checkpoint and mark the thread CANCELLED over that new turn."""
+class TestStartWorkflowHandoffCancelIntent:
+    """A /cancel in the START → start_workflow gap stamps durable intent on
+    the run row but finds no local TaskInfo to signal (the QUEUED placeholder
+    that used to fill this gap is gone — the in_progress row is the only
+    pre-registration identity). start_workflow must re-read the row after
+    registering the task and re-derive the local cancel signal, so the run
+    tears down as a user cancel instead of running to completion."""
 
     @pytest.mark.asyncio
-    async def test_cancelled_placeholder_not_resurrected(self):
+    async def test_durable_intent_found_at_handoff_signals_cancel(self):
         btm = _make_btm()
-        thread_id, run_id = "t-zombie", "run-zombie"
-
-        # Dispatched pre-register: QUEUED, task=None.
-        await btm.pre_register(thread_id, run_id)
-        # User cancels before the generator reaches start_workflow.
-        assert await btm.cancel_workflow(thread_id, run_id) is True
-
-        consumed = False
+        blocker = asyncio.Event()
 
         async def gen():
-            nonlocal consumed
-            consumed = True
+            await blocker.wait()
             yield {}
 
-        mod = "src.server.services.background_task_manager"
-        with patch(f"{mod}.release_burst_slot", new_callable=AsyncMock) as rel:
+        run_handle = MagicMock(run_id="run-gap", guard=None)
+        row = {
+            "conversation_response_id": "run-gap",
+            "status": "in_progress",
+            "cancel_requested_at": "2026-01-01T00:00:00Z",
+        }
+        with patch(
+            "src.server.database.turn_lifecycle.get_run",
+            new_callable=AsyncMock,
+            return_value=row,
+        ), patch.object(btm, "_finalize_run", new=AsyncMock()):
             ti = await btm.start_workflow(
-                thread_id=thread_id,
-                run_id=run_id,
+                thread_id="t-gap",
+                run_id="run-gap",
                 workflow_generator=gen(),
-                metadata={"user_id": "u-1", "burst_slot_id": "slot-1"},
+                metadata={"user_id": "u-1", "run_handle": run_handle},
             )
-
-        # Settled terminally; no resurrected task; generator never consumed.
-        assert ti.status == TaskStatus.CANCELLED
-        assert ti.task is None
-        assert consumed is False
-        # Burst slot released here — no BTM task will finalize to release it.
-        rel.assert_awaited_once_with("u-1", "slot-1")
-        # The cancelled placeholder never trips admission (no ledger row —
-        # the generator never reached its START txn).
-        with patch(_GET_ACTIVE_RUN, new_callable=AsyncMock, return_value=None):
-            assert await btm.wait_for_admission(thread_id) == ("fresh", None)
+            try:
+                assert ti.cancel_event.is_set()
+                assert ti.user_stop is True
+            finally:
+                blocker.set()
+                if ti.task and not ti.task.done():
+                    with suppress(asyncio.CancelledError, asyncio.TimeoutError):
+                        await asyncio.wait_for(ti.task, timeout=2)
 
     @pytest.mark.asyncio
-    async def test_uncancelled_placeholder_still_upgrades(self):
-        """Negative case: a normal (uncancelled) placeholder still upgrades to
-        RUNNING — the guard must not break the happy path."""
+    async def test_no_intent_leaves_run_unsignalled(self):
+        """Negative case: an in_progress row without intent must not signal —
+        the recheck is a cancel relay, not a liveness probe."""
         btm = _make_btm()
-        thread_id, run_id = "t-ok", "run-ok"
-        await btm.pre_register(thread_id, run_id)
-
-        started = asyncio.Event()
 
         async def gen():
-            started.set()
             yield {}
-            await asyncio.sleep(0)
 
-        ti = await btm.start_workflow(
-            thread_id=thread_id,
-            run_id=run_id,
-            workflow_generator=gen(),
-            metadata={"user_id": "u-1"},
-        )
+        run_handle = MagicMock(run_id="run-clean", guard=None)
+        row = {
+            "conversation_response_id": "run-clean",
+            "status": "in_progress",
+            "cancel_requested_at": None,
+        }
+        with patch(
+            "src.server.database.turn_lifecycle.get_run",
+            new_callable=AsyncMock,
+            return_value=row,
+        ):
+            ti = await btm.start_workflow(
+                thread_id="t-clean",
+                run_id="run-clean",
+                workflow_generator=gen(),
+                metadata={"user_id": "u-1", "run_handle": run_handle},
+            )
         try:
+            assert not ti.cancel_event.is_set()
             assert ti.status == TaskStatus.RUNNING
-            assert ti.task is not None
         finally:
             if ti.task and not ti.task.done():
                 ti.task.cancel()
