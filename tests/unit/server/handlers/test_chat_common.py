@@ -741,13 +741,32 @@ class TestBuildGraphConfig:
 # ---------------------------------------------------------------------------
 
 
+_LIVE_ROW = {"conversation_response_id": "run-live", "cancel_requested_at": None}
+_STOPPING_ROW = {
+    "conversation_response_id": "run-live",
+    "cancel_requested_at": "2026-07-14T00:00:00+00:00",
+}
+
+
 class TestWaitOrSteer:
+    @pytest.fixture(autouse=True)
+    def ledger_slot(self):
+        """The ledger slot read behind wait_or_steer's accept-after-exit
+        reclaim (v4 2.4c — worker-agnostic, replaces the local task check).
+        Defaults to a live row (no reclaim); exit-race tests set it None."""
+        with patch(
+            "src.server.database.turn_lifecycle.get_active_run",
+            new_callable=AsyncMock,
+            return_value=_LIVE_ROW,
+        ) as slot:
+            yield slot
+
     @pytest.mark.asyncio
     async def test_fresh_returns_true(self):
         from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
-        manager.wait_for_admission = AsyncMock(return_value="fresh")
+        manager.wait_for_admission = AsyncMock(return_value=("fresh", None))
 
         ready, event = await wait_or_steer(manager, "t-1", "hello", "u-1")
         assert ready is True
@@ -764,7 +783,7 @@ class TestWaitOrSteer:
         from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
-        manager.wait_for_admission = AsyncMock(return_value="fresh")
+        manager.wait_for_admission = AsyncMock(return_value=("fresh", None))
 
         with pytest.raises(HTTPException) as exc_info:
             await wait_or_steer(
@@ -784,9 +803,8 @@ class TestWaitOrSteer:
         from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
-        manager.wait_for_admission = AsyncMock(return_value="running")
-        # Live task present → no accept-after-exit reclaim; steer straight through.
-        manager.has_active_task_for_thread = AsyncMock(return_value=True)
+        manager.wait_for_admission = AsyncMock(return_value=("running", _LIVE_ROW))
+        # Live slot (fixture default) → no accept-after-exit reclaim.
 
         with patch(
             "src.server.handlers.chat.steering.steer_thread",
@@ -801,7 +819,7 @@ class TestWaitOrSteer:
         assert "steering_accepted" in event
 
     @pytest.mark.asyncio
-    async def test_steer_accept_racing_exit_reclaims_and_admits_fresh(self):
+    async def test_steer_accept_racing_exit_reclaims_and_admits_fresh(self, ledger_slot):
         """The admission snapshot said "running" but the workflow exited before
         the Redis push landed: the message must be reclaimed and the POST
         routed as a fresh turn — never a false steering_accepted for a
@@ -809,8 +827,8 @@ class TestWaitOrSteer:
         from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
-        manager.wait_for_admission = AsyncMock(return_value="running")
-        manager.has_active_task_for_thread = AsyncMock(return_value=False)
+        manager.wait_for_admission = AsyncMock(return_value=("running", _LIVE_ROW))
+        ledger_slot.return_value = None  # slot emptied between snapshot and push
 
         with (
             patch(
@@ -831,7 +849,9 @@ class TestWaitOrSteer:
         mock_unsteer.assert_awaited_once_with("t-1", "QUEUED_JSON")
 
     @pytest.mark.asyncio
-    async def test_steer_accept_racing_exit_steer_only_raises_not_running(self):
+    async def test_steer_accept_racing_exit_steer_only_raises_not_running(
+        self, ledger_slot
+    ):
         """Same race under steer_only: a reclaimed accept surfaces as
         not_running so the gateway resubmits — not as a fresh admission."""
         from fastapi import HTTPException
@@ -839,8 +859,8 @@ class TestWaitOrSteer:
         from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
-        manager.wait_for_admission = AsyncMock(return_value="running")
-        manager.has_active_task_for_thread = AsyncMock(return_value=False)
+        manager.wait_for_admission = AsyncMock(return_value=("running", _LIVE_ROW))
+        ledger_slot.return_value = None
 
         with (
             patch(
@@ -863,7 +883,9 @@ class TestWaitOrSteer:
         assert exc_info.value.detail["code"] == "not_running"
 
     @pytest.mark.asyncio
-    async def test_steer_accept_drained_by_exit_still_reports_accepted(self):
+    async def test_steer_accept_drained_by_exit_still_reports_accepted(
+        self, ledger_slot
+    ):
         """If the reclaim misses, the exiting workflow's final drain got the
         message first and steering_returned already carried it back on the
         turn stream — the POST keeps the queue contract and reports
@@ -871,8 +893,8 @@ class TestWaitOrSteer:
         from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
-        manager.wait_for_admission = AsyncMock(return_value="running")
-        manager.has_active_task_for_thread = AsyncMock(return_value=False)
+        manager.wait_for_admission = AsyncMock(return_value=("running", _LIVE_ROW))
+        ledger_slot.return_value = None
 
         with (
             patch(
@@ -899,9 +921,8 @@ class TestWaitOrSteer:
         from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
-        manager.wait_for_admission = AsyncMock(return_value="running")
-        # Live task present → no accept-after-exit reclaim; steer straight through.
-        manager.has_active_task_for_thread = AsyncMock(return_value=True)
+        manager.wait_for_admission = AsyncMock(return_value=("running", _LIVE_ROW))
+        # Live slot (fixture default) → no accept-after-exit reclaim.
 
         with patch(
             "src.server.handlers.chat.steering.steer_thread",
@@ -916,7 +937,9 @@ class TestWaitOrSteer:
         assert event is not None
         assert "steering_accepted" in event
         assert '"position": 1' in event
-        mock_steer.assert_awaited_once()
+        # Stamped with the live run so the middleware's own-run filter
+        # delivers it (v4 2.4c).
+        mock_steer.assert_awaited_once_with("t-1", "hello", "u-1", run_id="run-live")
         # No wait helper exists anymore — admission decided immediately.
         manager.wait_for_admission.assert_awaited_once()
 
@@ -929,7 +952,7 @@ class TestWaitOrSteer:
         from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
-        manager.wait_for_admission = AsyncMock(return_value="stopping")
+        manager.wait_for_admission = AsyncMock(return_value=("stopping", _STOPPING_ROW))
 
         with (
             patch(
@@ -955,7 +978,7 @@ class TestWaitOrSteer:
         from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
-        manager.wait_for_admission = AsyncMock(return_value="running")
+        manager.wait_for_admission = AsyncMock(return_value=("running", _LIVE_ROW))
 
         with (
             patch(
@@ -982,7 +1005,7 @@ class TestWaitOrSteer:
         from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
-        manager.wait_for_admission = AsyncMock(return_value="compacting")
+        manager.wait_for_admission = AsyncMock(return_value=("compacting", None))
 
         with (
             patch(
@@ -1012,7 +1035,7 @@ class TestWaitOrSteer:
         from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
-        manager.wait_for_admission = AsyncMock(return_value="running")
+        manager.wait_for_admission = AsyncMock(return_value=("running", _LIVE_ROW))
 
         with (
             patch(
@@ -1034,7 +1057,7 @@ class TestWaitOrSteer:
         from src.server.handlers.chat.admission import wait_or_steer
 
         manager = AsyncMock()
-        manager.wait_for_admission = AsyncMock(return_value="fresh")
+        manager.wait_for_admission = AsyncMock(return_value=("fresh", None))
 
         ready, event = await wait_or_steer(
             manager, "t-1", "hi", "u-1", exclude_run_id="r-9"

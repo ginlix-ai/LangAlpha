@@ -6,16 +6,20 @@ start a second summary run. One Lua claims the per-(flash, ptc) run pointer;
 identity is the POST's deterministic request_key — a prior admission of the SAME
 POST makes the retry return that run, while ANY other job's pointer (a stale
 incarnation's leftover, or a newer incarnation's terminal pointer a legacy job
-must not adopt) is replaced.
+must not adopt) is replaced. An incumbent surfaces its RAW pointer bytes and
+claimed_at so the caller can gate adoption on run durability (review F1);
+``takeover_report_back_run`` CAS-replaces a stale provisional pointer.
 
-The fake faithfully models the contract the helper depends on: the RAW client
-holds JSON strings, and the claim/release scripts decode them — exactly how
-RedisCache splits raw writes from decoded reads.
+The fake faithfully models the contract the helpers depend on: the RAW client
+holds JSON strings, and the claim/release/takeover scripts decode or compare
+them — exactly how RedisCache splits raw writes from decoded reads.
 """
 
 from __future__ import annotations
 
 import json
+import time
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -24,6 +28,7 @@ from src.server.handlers.chat.report_back import (
     claim_report_back_run,
     flash_rb_run_key,
     release_report_back_run,
+    takeover_report_back_run,
 )
 
 
@@ -65,17 +70,27 @@ class _Cache:
             if isinstance(data, dict) and isinstance(data.get("run_id"), str):
                 if isinstance(data.get("request_key"), str):
                     if request_key == "" or data["request_key"] == request_key:
-                        return [0, data["run_id"]]
+                        return [0, self.kv[run_key]]
                 elif (request_key == "" and gen == "") or (
                     gen != ""
                     and isinstance(data.get("dispatch_gen"), str)
                     and data["dispatch_gen"] == gen
                 ):
-                    return [0, data["run_id"]]
+                    return [0, self.kv[run_key]]
             if ptc_id not in self.sets.get(watch_key, set()):
                 return [2, ""]
             self.kv[run_key] = value
             return [1, ""]
+        if script is rb._POINTER_TAKEOVER_LUA:
+            watch_key, run_key = keys
+            ptc_id, expected, value, ttl = argv
+            current = self.kv.get(run_key)
+            if current is None or current != expected:
+                return 0
+            if ptc_id not in self.sets.get(watch_key, set()):
+                return 2
+            self.kv[run_key] = value
+            return 1
         if script is rb._POINTER_COMPARE_DELETE_LUA:
             data = self._decoded(keys[0])
             if isinstance(data, dict) and data.get("run_id") == argv[0]:
@@ -88,11 +103,13 @@ class _Cache:
 @pytest.mark.asyncio
 async def test_claim_when_no_incumbent_claims_and_writes_pointer():
     cache = _Cache()
-    won, claimed, _ = await claim_report_back_run(cache, "flash-1", "ptc-1", "run-1")
-    assert (won, claimed) == ("run-1", True)
-    # Pointer persisted in the shape the drain gate reads ({"run_id": ...}).
+    result = await claim_report_back_run(cache, "flash-1", "ptc-1", "run-1")
+    assert (result.winning_run_id, result.claimed) == ("run-1", True)
+    # Pointer persisted in the shape the drain gate reads ({"run_id": ...})
+    # plus the priming-lease timestamp.
     stored = json.loads(cache.kv[flash_rb_run_key("flash-1", "ptc-1")])
-    assert stored == {"run_id": "run-1"}
+    assert stored["run_id"] == "run-1"
+    assert isinstance(stored["claimed_at"], float)
 
 
 @pytest.mark.asyncio
@@ -101,9 +118,13 @@ async def test_fully_legacy_claim_adopts_fully_legacy_incumbent():
     cache = _Cache()
     key = flash_rb_run_key("flash-1", "ptc-1")
     cache.kv[key] = json.dumps({"run_id": "run-A"})
-    won, claimed, _ = await claim_report_back_run(cache, "flash-1", "ptc-1", "run-B")
-    assert (won, claimed) == ("run-A", False)
+    result = await claim_report_back_run(cache, "flash-1", "ptc-1", "run-B")
+    assert (result.winning_run_id, result.claimed) == ("run-A", False)
     assert json.loads(cache.kv[key]) == {"run_id": "run-A"}
+    # A pointer predating claimed_at surfaces None — the CM treats unknown
+    # age as stale (takeover-eligible) rather than wedging retries.
+    assert result.incumbent_claimed_at is None
+    assert result.incumbent_raw == cache.kv[key]
 
 
 @pytest.mark.asyncio
@@ -117,20 +138,19 @@ async def test_claim_scopes_idempotency_to_the_request_key():
         {"run_id": "run-A", "dispatch_gen": "g-1", "request_key": "rk-A"}
     )
 
-    won, claimed, _ = await claim_report_back_run(
+    result = await claim_report_back_run(
         cache, "flash-1", "ptc-1", "run-A-retry", "g-1", "rk-A"
     )
-    assert (won, claimed) == ("run-A", False)
+    assert (result.winning_run_id, result.claimed) == ("run-A", False)
 
-    won, claimed, _ = await claim_report_back_run(
+    result = await claim_report_back_run(
         cache, "flash-1", "ptc-1", "run-B", "g-2", "rk-B"
     )
-    assert (won, claimed) == ("run-B", True)
-    assert json.loads(cache.kv[key]) == {
-        "run_id": "run-B",
-        "dispatch_gen": "g-2",
-        "request_key": "rk-B",
-    }
+    assert (result.winning_run_id, result.claimed) == ("run-B", True)
+    stored = json.loads(cache.kv[key])
+    assert stored["run_id"] == "run-B"
+    assert stored["dispatch_gen"] == "g-2"
+    assert stored["request_key"] == "rk-B"
 
 
 @pytest.mark.asyncio
@@ -143,10 +163,10 @@ async def test_legacy_job_never_adopts_another_jobs_pointer():
     cache.kv[key] = json.dumps(
         {"run_id": "run-G2-done", "dispatch_gen": "g-2", "request_key": "rk-G2"}
     )
-    won, claimed, _ = await claim_report_back_run(
+    result = await claim_report_back_run(
         cache, "flash-1", "ptc-1", "run-legacy", None, "rk-legacy"
     )
-    assert (won, claimed) == ("run-legacy", True)
+    assert (result.winning_run_id, result.claimed) == ("run-legacy", True)
     assert json.loads(cache.kv[key])["request_key"] == "rk-legacy"
 
 
@@ -159,10 +179,10 @@ async def test_claimer_without_request_key_adopts_any_incumbent():
     cache.kv[key] = json.dumps(
         {"run_id": "run-A", "dispatch_gen": "g-1", "request_key": "rk-A"}
     )
-    won, claimed, _ = await claim_report_back_run(
+    result = await claim_report_back_run(
         cache, "flash-1", "ptc-1", "run-X", None, None
     )
-    assert (won, claimed) == ("run-A", False)
+    assert (result.winning_run_id, result.claimed) == ("run-A", False)
 
 
 @pytest.mark.asyncio
@@ -174,17 +194,17 @@ async def test_old_format_pointer_falls_back_to_generation_scoping():
     key = flash_rb_run_key("flash-1", "ptc-1")
     cache.kv[key] = json.dumps({"run_id": "run-G1", "dispatch_gen": "g-1"})
 
-    won, claimed, _ = await claim_report_back_run(
+    result = await claim_report_back_run(
         cache, "flash-1", "ptc-1", "run-retry", "g-1", "rk-1"
     )
-    assert (won, claimed) == ("run-G1", False)
+    assert (result.winning_run_id, result.claimed) == ("run-G1", False)
 
     # Legacy claimer WITH a request_key vs a generated old-format pointer:
     # replace (adopting an unrelated generated pointer is the F3 hole).
-    won, claimed, _ = await claim_report_back_run(
+    result = await claim_report_back_run(
         cache, "flash-1", "ptc-1", "run-legacy", None, "rk-legacy"
     )
-    assert (won, claimed) == ("run-legacy", True)
+    assert (result.winning_run_id, result.claimed) == ("run-legacy", True)
 
 
 @pytest.mark.asyncio
@@ -194,10 +214,10 @@ async def test_claim_replaces_a_stale_incarnations_pointer():
     cache = _Cache()
     key = flash_rb_run_key("flash-1", "ptc-1")
     cache.kv[key] = json.dumps({"run_id": "run-G1", "dispatch_gen": "g-1"})
-    won, claimed, _ = await claim_report_back_run(
+    result = await claim_report_back_run(
         cache, "flash-1", "ptc-1", "run-G2", "g-2", "rk-2"
     )
-    assert (won, claimed) == ("run-G2", True)
+    assert (result.winning_run_id, result.claimed) == ("run-G2", True)
     assert json.loads(cache.kv[key])["run_id"] == "run-G2"
 
 
@@ -214,8 +234,8 @@ async def test_claim_fails_open_when_script_fails():
     (run_id, True) so the dispatch still proceeds (a lost claim must not
     stall a completed analysis at the admission gate)."""
     cache = _RaisingCache()
-    won, claimed, _ = await claim_report_back_run(cache, "flash-1", "ptc-1", "run-1")
-    assert (won, claimed) == ("run-1", True)
+    result = await claim_report_back_run(cache, "flash-1", "ptc-1", "run-1")
+    assert (result.winning_run_id, result.claimed) == ("run-1", True)
     # Nothing persisted — we degraded to claimed without writing a bogus pointer.
     assert cache.kv == {}
 
@@ -223,9 +243,9 @@ async def test_claim_fails_open_when_script_fails():
 @pytest.mark.asyncio
 async def test_claim_when_cache_disabled_proceeds_without_write():
     cache = _Cache(enabled=False)
-    won, claimed, _ = await claim_report_back_run(cache, "flash-1", "ptc-1", "run-1")
+    result = await claim_report_back_run(cache, "flash-1", "ptc-1", "run-1")
     # No idempotency available, but the dispatch must still proceed.
-    assert (won, claimed) == ("run-1", True)
+    assert (result.winning_run_id, result.claimed) == ("run-1", True)
     assert cache.kv == {}
 
 
@@ -243,8 +263,9 @@ async def test_claim_refuses_to_resurrect_a_pointer_after_the_pair_fell():
         cache, "flash-1", "ptc-1", "run-late", "g-2", "rk-late"
     )
 
-    assert result == (None, False, True)
     assert result.pair_gone is True
+    assert result.claimed is False
+    assert result.winning_run_id is None
     assert cache.kv == {}  # nothing written behind the settled pair
 
     # A lost-response retry of a PRIOR admission still finds its run: adoption
@@ -253,10 +274,14 @@ async def test_claim_refuses_to_resurrect_a_pointer_after_the_pair_fell():
     cache.kv[key] = json.dumps(
         {"run_id": "run-A", "dispatch_gen": "g-1", "request_key": "rk-A"}
     )
-    won, claimed, pair_gone = await claim_report_back_run(
+    result = await claim_report_back_run(
         cache, "flash-1", "ptc-1", "run-A-retry", "g-1", "rk-A"
     )
-    assert (won, claimed, pair_gone) == ("run-A", False, False)
+    assert (result.winning_run_id, result.claimed, result.pair_gone) == (
+        "run-A",
+        False,
+        False,
+    )
 
 
 @pytest.mark.asyncio
@@ -272,3 +297,215 @@ async def test_release_deletes_only_when_pointer_is_ours():
     # Our own release removes it (so a later retry isn't short-circuited).
     await release_report_back_run(cache, "flash-1", "ptc-1", "run-A")
     assert key not in cache.kv
+
+
+# ---------------------------------------------------------------------------
+# Stale-provisional-pointer takeover (review F1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_takeover_cas_replaces_exact_incumbent_bytes():
+    cache = _Cache()
+    key = flash_rb_run_key("flash-1", "ptc-1")
+    stale = json.dumps({"run_id": "run-dead", "request_key": "rk-A"})
+    cache.kv[key] = stale
+
+    outcome = await takeover_report_back_run(
+        cache, "flash-1", "ptc-1", stale, "run-B", "g-1", "rk-A"
+    )
+    assert outcome == "claimed"
+    stored = json.loads(cache.kv[key])
+    assert stored["run_id"] == "run-B"
+    assert isinstance(stored["claimed_at"], float)
+
+
+@pytest.mark.asyncio
+async def test_takeover_loses_when_pointer_changed_under_us():
+    """A rival takeover (or re-claim) between probe and CAS wins; we must not
+    stomp its pointer — 'lost' surfaces retriable and the retry re-probes."""
+    cache = _Cache()
+    key = flash_rb_run_key("flash-1", "ptc-1")
+    cache.kv[key] = json.dumps({"run_id": "run-rival", "request_key": "rk-A"})
+
+    outcome = await takeover_report_back_run(
+        cache,
+        "flash-1",
+        "ptc-1",
+        json.dumps({"run_id": "run-dead", "request_key": "rk-A"}),
+        "run-B",
+        "g-1",
+        "rk-A",
+    )
+    assert outcome == "lost"
+    assert json.loads(cache.kv[key])["run_id"] == "run-rival"
+
+
+@pytest.mark.asyncio
+async def test_takeover_refuses_when_pair_membership_fell():
+    cache = _Cache()
+    cache.sets[rb.flash_watch_key("flash-1")].discard("ptc-1")
+    key = flash_rb_run_key("flash-1", "ptc-1")
+    stale = json.dumps({"run_id": "run-dead", "request_key": "rk-A"})
+    cache.kv[key] = stale
+
+    outcome = await takeover_report_back_run(
+        cache, "flash-1", "ptc-1", stale, "run-B", "g-1", "rk-A"
+    )
+    assert outcome == "pair_gone"
+    assert cache.kv[key] == stale  # nothing written behind the settled pair
+
+
+@pytest.mark.asyncio
+async def test_takeover_surfaces_lost_on_redis_failure():
+    cache = _RaisingCache()
+    outcome = await takeover_report_back_run(
+        cache, "flash-1", "ptc-1", "{}", "run-B", None, None
+    )
+    assert outcome == "lost"
+
+
+# ---------------------------------------------------------------------------
+# claim() CM — incumbent durability gate (review F1)
+# ---------------------------------------------------------------------------
+
+_GET_RUN = "src.server.database.turn_lifecycle.get_run"
+
+
+def _seed_incumbent(cache: _Cache, claimed_at: float | None) -> str:
+    key = flash_rb_run_key("flash-1", "ptc-1")
+    value: dict = {"run_id": "run-A", "request_key": "rk-A"}
+    if claimed_at is not None:
+        value["claimed_at"] = claimed_at
+    cache.kv[key] = json.dumps(value)
+    return key
+
+
+@pytest.mark.asyncio
+async def test_cm_adopts_incumbent_backed_by_a_ledger_row():
+    """A durable incumbent (START committed) is the idempotent answer: the
+    retry returns that run, starts nothing, and leaves the pointer alone."""
+    cache = _Cache()
+    key = _seed_incumbent(cache, time.time())
+    row = {"conversation_response_id": "run-A", "status": "in_progress"}
+    with patch(_GET_RUN, AsyncMock(return_value=row)):
+        async with rb.claim(
+            cache, "flash-1", "ptc-1", "run-B", "g-1", "rk-A"
+        ) as handle:
+            assert handle.incumbent == "run-A"
+            assert not handle.in_flight and not handle.pair_gone
+    assert json.loads(cache.kv[key])["run_id"] == "run-A"
+
+
+@pytest.mark.asyncio
+async def test_cm_defers_on_rowless_incumbent_inside_priming_lease():
+    """No ledger row + a young pointer: the prior admission may still be
+    priming on another worker. Adopting would ack a run that may never
+    exist; taking over would race its START — surface retriable instead."""
+    cache = _Cache()
+    key = _seed_incumbent(cache, time.time())
+    with patch(_GET_RUN, AsyncMock(return_value=None)):
+        async with rb.claim(
+            cache, "flash-1", "ptc-1", "run-B", "g-1", "rk-A"
+        ) as handle:
+            assert handle.in_flight
+            assert handle.incumbent is None and not handle.pair_gone
+    assert json.loads(cache.kv[key])["run_id"] == "run-A"  # untouched
+
+
+@pytest.mark.asyncio
+async def test_cm_takes_over_stale_rowless_incumbent():
+    """Past the lease with still no row, the prior claim's worker died before
+    START (the review F1 scenario): this POST takes the pointer and runs the
+    summary itself instead of adopting a run that will never terminate."""
+    cache = _Cache()
+    key = _seed_incumbent(
+        cache, time.time() - rb._RB_POINTER_PRIMING_LEASE_S - 5
+    )
+    with patch(_GET_RUN, AsyncMock(return_value=None)):
+        async with rb.claim(
+            cache, "flash-1", "ptc-1", "run-B", "g-1", "rk-A"
+        ) as handle:
+            assert handle.incumbent is None
+            assert not handle.in_flight and not handle.pair_gone
+            assert json.loads(cache.kv[key])["run_id"] == "run-B"
+            handle.consummate()
+    assert json.loads(cache.kv[key])["run_id"] == "run-B"
+
+
+@pytest.mark.asyncio
+async def test_cm_takeover_releases_pointer_on_non_consummated_exit():
+    """A takeover whose admission then fails must not strand ITS pointer
+    either — the release compensates exactly like a fresh claim's."""
+    cache = _Cache()
+    key = _seed_incumbent(
+        cache, time.time() - rb._RB_POINTER_PRIMING_LEASE_S - 5
+    )
+    with patch(_GET_RUN, AsyncMock(return_value=None)):
+        async with rb.claim(
+            cache, "flash-1", "ptc-1", "run-B", "g-1", "rk-A"
+        ) as handle:
+            assert handle.incumbent is None and not handle.in_flight
+    assert key not in cache.kv  # compare-deleted on exit
+
+
+@pytest.mark.asyncio
+async def test_cm_treats_undated_rowless_pointer_as_stale():
+    """A pointer predating claimed_at gives no lease to wait out; with no
+    ledger row it must be takeover-eligible, not wedge retries for 24h."""
+    cache = _Cache()
+    key = _seed_incumbent(cache, None)
+    with patch(_GET_RUN, AsyncMock(return_value=None)):
+        async with rb.claim(
+            cache, "flash-1", "ptc-1", "run-B", "g-1", "rk-A"
+        ) as handle:
+            assert handle.incumbent is None and not handle.in_flight
+            handle.consummate()
+    assert json.loads(cache.kv[key])["run_id"] == "run-B"
+
+
+@pytest.mark.asyncio
+async def test_cm_defers_when_ledger_probe_fails():
+    """DB unreachable: the incumbent can't be proven either way — never ack
+    (adopt) on unknown; surface retriable and leave the pointer alone."""
+    cache = _Cache()
+    key = _seed_incumbent(cache, time.time())
+    with patch(_GET_RUN, AsyncMock(side_effect=RuntimeError("db down"))):
+        async with rb.claim(
+            cache, "flash-1", "ptc-1", "run-B", "g-1", "rk-A"
+        ) as handle:
+            assert handle.in_flight
+    assert json.loads(cache.kv[key])["run_id"] == "run-A"
+
+
+@pytest.mark.asyncio
+async def test_cm_defers_when_takeover_is_lost_to_a_rival():
+    """The CAS token no longer matches (a rival re-claimed between probe and
+    takeover): defer retriable; the retry re-probes the new pointer."""
+    cache = _Cache()
+    _seed_incumbent(cache, time.time() - rb._RB_POINTER_PRIMING_LEASE_S - 5)
+    with (
+        patch(_GET_RUN, AsyncMock(return_value=None)),
+        patch(
+            "src.server.handlers.chat.report_back.takeover_report_back_run",
+            AsyncMock(return_value="lost"),
+        ),
+    ):
+        async with rb.claim(
+            cache, "flash-1", "ptc-1", "run-B", "g-1", "rk-A"
+        ) as handle:
+            assert handle.in_flight
+            assert handle.incumbent is None and not handle.pair_gone
+
+
+@pytest.mark.asyncio
+async def test_cm_surfaces_pair_gone_when_membership_fell_before_takeover():
+    cache = _Cache()
+    _seed_incumbent(cache, time.time() - rb._RB_POINTER_PRIMING_LEASE_S - 5)
+    cache.sets[rb.flash_watch_key("flash-1")].discard("ptc-1")
+    with patch(_GET_RUN, AsyncMock(return_value=None)):
+        async with rb.claim(
+            cache, "flash-1", "ptc-1", "run-B", "g-1", "rk-A"
+        ) as handle:
+            assert handle.pair_gone
+            assert not handle.in_flight and handle.incumbent is None

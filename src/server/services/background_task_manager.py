@@ -2503,29 +2503,35 @@ class BackgroundTaskManager:
         self,
         thread_id: str,
         exclude_run_id: Optional[str] = None,
-    ) -> Literal["fresh", "running", "stopping", "compacting"]:
+    ) -> tuple[
+        Literal["fresh", "running", "stopping", "compacting"],
+        Optional[Dict[str, Any]],
+    ]:
         """Decide whether a new turn can start on ``thread_id``.
 
-        Returns one of:
-        - ``"fresh"``  — no active task (or a cancelled one finished winding
-          down within the wait): start a new turn.
-        - ``"running"`` — a turn is genuinely running: the caller should steer
-          it (or 409 if steering fails).
-        - ``"stopping"`` — a turn was explicitly cancelled and is still tearing
-          down past the wait: 409 "stopping, retry" (never start a second
-          writer while ``_flush_checkpoint`` may still be writing this thread).
-        - ``"compacting"`` — a compaction was in progress and did not finish
-          within the wait window: 409 "compacting, retry".
+        Ledger-driven (v4 2.4c): the thread's in_progress row decides, so
+        the answer is identical on every worker — a run live on a peer must
+        route to steering, never to a doomed START. The local task registry
+        is consulted only as a fast path for awaiting a stopping run's
+        teardown. Returns ``(state, active_row)``:
 
-        ``exclude_run_id`` lets dispatched callers ignore their own
-        pre-registered placeholder while checking for OTHER active runs.
+        - ``("fresh", None)`` — no live run: start a new turn.
+        - ``("running", row)`` — a run is live (any worker): steer it
+          (or 409 if steering fails). The row lets the caller run-stamp.
+        - ``("stopping", row)`` — durable cancel intent whose teardown
+          outlived the wait: 409 "stopping, retry" (never start a second
+          writer while the checkpoint flush may still be running).
+        - ``("compacting", None)`` — a thread mutation outlived the wait:
+          409 "compacting, retry".
+
+        ``exclude_run_id`` lets a caller ignore its own already-committed
+        run while checking for OTHER live runs.
         """
         # Hold the new turn until any in-progress mutation finishes (a local
-        # op's done-Event, or another worker's advertised op key), then run
-        # the normal scan: an auto compaction leaves the turn RUNNING (caller
-        # steers); a manual mutation leaves no task (caller starts fresh).
-        # This MUST happen before acquiring task_lock — the running turn
-        # buffers the SSE events under task_lock during an auto compaction.
+        # op's done-Event, or another worker's advertised op key), then read
+        # the slot: an auto compaction leaves the turn's row in_progress
+        # (caller steers); a manual mutation leaves no row (caller starts
+        # fresh).
         from src.server.services.thread_mutation import ThreadMutationRunner
 
         runner = ThreadMutationRunner.get_instance()
@@ -2543,49 +2549,64 @@ class BackgroundTaskManager:
                     f"did not finish within admission wait; rejecting new turn "
                     f"with 409 (compacting)"
                 )
-                return "compacting"
+                return "compacting", None
 
+        from src.server.database import turn_lifecycle as tl_db
+
+        def _relevant(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+            if (
+                row is not None
+                and exclude_run_id
+                and str(row["conversation_response_id"]) == exclude_run_id
+            ):
+                return None
+            return row
+
+        row = _relevant(await tl_db.get_active_run(thread_id))
+        if row is None:
+            return "fresh", None
+        if row["cancel_requested_at"] is None:
+            return "running", row
+
+        # Stopping: durable cancel intent on the live row. Wait for the
+        # teardown to settle — awaiting the local task when this worker
+        # hosts the run (NEVER bare-await: it ends via CancelledError, and
+        # ``asyncio.wait`` swallows it), else polling the slot until a
+        # peer's finalize or the recovery scanner clears it.
+        run_id = str(row["conversation_response_id"])
         async with self.task_lock:
-            task_info = self._find_active_for_thread(
-                thread_id, exclude_run_id=exclude_run_id
-            )
-            if not task_info:
-                return "fresh"
-            if task_info.status not in (TaskStatus.QUEUED, TaskStatus.RUNNING):
-                return "fresh"
-            explicit = bool(task_info.explicit_cancel)
-            task = task_info.task
-            key = (task_info.thread_id, task_info.run_id)
-
-        if not explicit:
-            # Genuinely running — caller routes to steering.
-            return "running"
-
-        if task is None:
-            return "fresh"
-
-        # Explicitly cancelled and winding down. NEVER bare-await the task: it
-        # ends via ``raise CancelledError``, and a bare await would re-raise
-        # that into this (new) request handler. ``asyncio.wait`` swallows the
-        # task's exception so the caller is unaffected.
+            info = self.tasks.get((thread_id, run_id))
+            local_task = info.task if info else None
         timeout = get_checkpoint_flush_timeout() + self._ADMISSION_TEARDOWN_MARGIN_S
         logger.info(
-            f"[BackgroundTaskManager] Waiting for stopping workflow {key} "
-            f"to finish teardown (timeout={timeout}s)"
+            f"[BackgroundTaskManager] Waiting for stopping run "
+            f"({thread_id}, {run_id}) to finish teardown (timeout={timeout}s)"
         )
-        done, _ = await asyncio.wait({task}, timeout=timeout)
-        if done:
-            async with self.task_lock:
-                ti = self.tasks.get(key)
-                if ti and ti.status in (TaskStatus.CANCELLED, TaskStatus.COMPLETED):
-                    del self.tasks[key]
-            return "fresh"
+        if local_task is not None:
+            await asyncio.wait({local_task}, timeout=timeout)
+        else:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + timeout
+            while loop.time() < deadline:
+                current = await tl_db.get_active_run(thread_id)
+                if (
+                    current is None
+                    or str(current["conversation_response_id"]) != run_id
+                ):
+                    break
+                await asyncio.sleep(1.0)
 
+        row = _relevant(await tl_db.get_active_run(thread_id))
+        if row is None:
+            return "fresh", None
+        if row["cancel_requested_at"] is None:
+            # A new run raced in while the stopped one drained.
+            return "running", row
         logger.warning(
-            f"[BackgroundTaskManager] Stopping workflow {key} still tearing "
-            f"down after {timeout}s; rejecting new turn with 409"
+            f"[BackgroundTaskManager] Stopping run on {thread_id} still live "
+            f"after {timeout}s; rejecting new turn with 409"
         )
-        return "stopping"
+        return "stopping", row
 
     async def get_stats(self) -> Dict[str, Any]:
         async with self.task_lock:

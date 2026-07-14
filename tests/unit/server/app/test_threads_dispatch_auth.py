@@ -38,10 +38,16 @@ def _make_config():
     return cfg
 
 
-def _empty_async_gen():
+def _stub_ptc_workflow(**kwargs):
+    """Stand-in for ``astream_ptc_workflow``: a dispatched generator yields the
+    post-START marker first (v4 2.4c — the handler primes to it before its
+    202), a foreground one streams nothing."""
+
     async def _gen():
-        if False:
-            yield ""
+        if kwargs.get("dispatched"):
+            from src.server.handlers.chat._common import DISPATCH_STARTED_MARKER
+
+            yield DISPATCH_STARTED_MARKER
 
     return _gen()
 
@@ -79,11 +85,12 @@ def _stub_workflow(release_burst=None, mark_active=None):
 
     btm = MagicMock()
     btm.get_admission_lock = AsyncMock(return_value=asyncio.Lock())
-    btm.wait_for_admission = AsyncMock(return_value="fresh")
+    btm.wait_for_admission = AsyncMock(return_value=("fresh", None))
     btm.pre_register = AsyncMock()
 
     tracker = MagicMock()
     tracker.mark_active = mark_active if mark_active is not None else AsyncMock()
+    tracker.mark_failed = AsyncMock()
 
     with (
         patch(
@@ -109,7 +116,7 @@ def _stub_workflow(release_burst=None, mark_active=None):
         ),
         patch(
             "src.server.handlers.chat.astream_ptc_workflow",
-            return_value=_empty_async_gen(),
+            new=_stub_ptc_workflow,
         ),
         patch(
             "src.server.app.threads.observe_chat_stream",
@@ -286,6 +293,43 @@ async def test_dispatch_gen_threads_receipt_gate_into_admission(monkeypatch):
     kwargs = stubs.tracker.mark_active.await_args.kwargs
     assert kwargs["refuse_receipt_key"] is None
     assert kwargs["receipt_member"] is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_retransmit_race_adopts_existing_run(monkeypatch):
+    """A retransmit that slips past the route-level dedup probe (the first
+    copy's START had not committed at probe time) surfaces in-generator as
+    DuplicateRequestError during priming; the dispatch handler adopts the
+    existing run in its ack instead of orphaning the caller (v4 2.4c)."""
+    monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+    monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", TOKEN)
+    app = _app()
+
+    def _dup_gen(**kwargs):
+        async def _gen():
+            from src.server.database.turn_lifecycle import DuplicateRequestError
+
+            raise DuplicateRequestError(
+                {"conversation_response_id": "run-existing"}
+            )
+            yield  # unreachable; makes this a generator function
+
+        return _gen()
+
+    with _stub_workflow() as stubs, patch(
+        "src.server.handlers.chat.astream_ptc_workflow", new=_dup_gen
+    ):
+        resp = await _post(
+            app, headers={"X-Dispatch": "background", "X-Service-Token": TOKEN}
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "dispatched"
+    assert body["run_id"] == "run-existing"
+    # The loser's own run never schedules — no placeholder, marker cleaned.
+    stubs.btm.pre_register.assert_not_awaited()
+    stubs.tracker.mark_failed.assert_awaited_once()
 
 
 @pytest.mark.asyncio

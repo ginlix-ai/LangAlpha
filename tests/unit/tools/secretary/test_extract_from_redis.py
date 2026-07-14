@@ -1,9 +1,10 @@
 """Regression coverage for the secretary's active-thread Redis reader.
 
 The reader consumes the per-run Redis Stream
-``workflow:stream:{tid}:{run_id}``; the run_id resolves from the
-in-process BTM first, then the ledger (v4 2.4). These tests pin the
-ledger-resolved path (no local TaskInfo) plus the SSE decode rules.
+``workflow:stream:{tid}:{run_id}`` for the caller-resolved run_id — the
+ledger-active row, authoritative on every worker (v4 2.4c review F6: a
+local-BTM resolution could prefer a stale terminal TaskInfo over the live
+remote run). These tests pin the key shape plus the SSE decode rules.
 """
 
 from __future__ import annotations
@@ -14,15 +15,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.tools.secretary.utils import _extract_from_redis
-
-LEDGER_ACTIVE = "src.server.database.turn_lifecycle.get_active_run"
-
-
-def _ledger_run(run_id: str = "run-1"):
-    return patch(
-        LEDGER_ACTIVE,
-        new=AsyncMock(return_value={"conversation_response_id": run_id}),
-    )
 
 
 def _sse(seq: int, text: str) -> bytes:
@@ -37,7 +29,8 @@ def _sse(seq: int, text: str) -> bytes:
 
 @pytest.mark.asyncio
 async def test_reads_text_chunks_from_stream_in_chronological_order():
-    """XREVRANGE returns newest-first; reader must reverse to chronological."""
+    """XREVRANGE returns newest-first; reader must reverse to chronological —
+    and the key is the caller-passed run's per-run stream."""
     cache = MagicMock()
     cache.enabled = True
     cache.client = MagicMock()
@@ -50,10 +43,10 @@ async def test_reads_text_chunks_from_stream_in_chronological_order():
         ]
     )
 
-    with _ledger_run(), patch(
+    with patch(
         "src.utils.cache.redis_cache.get_cache_client", return_value=cache
     ):
-        text = await _extract_from_redis("thread-1")
+        text = await _extract_from_redis("thread-1", "run-1")
 
     assert text == "hello world!"
     cache.client.xrevrange.assert_awaited_once_with(
@@ -74,10 +67,10 @@ async def test_skips_entries_without_event_field():
         ]
     )
 
-    with _ledger_run(), patch(
+    with patch(
         "src.utils.cache.redis_cache.get_cache_client", return_value=cache
     ):
-        text = await _extract_from_redis("thread-1")
+        text = await _extract_from_redis("thread-1", "run-1")
 
     assert text == "kept"
 
@@ -95,10 +88,10 @@ async def test_filters_non_text_events():
         ]
     )
 
-    with _ledger_run(), patch(
+    with patch(
         "src.utils.cache.redis_cache.get_cache_client", return_value=cache
     ):
-        text = await _extract_from_redis("thread-1")
+        text = await _extract_from_redis("thread-1", "run-1")
 
     assert text == "only this"
 
@@ -112,56 +105,9 @@ async def test_cache_disabled_returns_empty():
     with patch(
         "src.utils.cache.redis_cache.get_cache_client", return_value=cache
     ):
-        text = await _extract_from_redis("thread-1")
+        text = await _extract_from_redis("thread-1", "run-1")
 
     assert text == ""
-
-
-@pytest.mark.asyncio
-async def test_extract_from_redis_uses_per_run_key_when_taskinfo_present():
-    """When BTM has a TaskInfo for the thread, read the per-run stream
-    (``workflow:stream:{tid}:{run_id}``) — not the legacy thread-only key."""
-    import asyncio
-    from datetime import datetime
-
-    from src.server.services.background_task_manager import (
-        BackgroundTaskManager,
-        TaskInfo,
-        TaskStatus,
-    )
-
-    info = TaskInfo(
-        thread_id="t-test",
-        run_id="r-test-123",
-        status=TaskStatus.RUNNING,
-        created_at=datetime.now(),
-    )
-    stub_btm = MagicMock()
-    stub_btm.task_lock = asyncio.Lock()
-    stub_btm._find_latest_for_thread = MagicMock(return_value=info)
-
-    cache = MagicMock()
-    cache.enabled = True
-    cache.client = MagicMock()
-    cache.client.xrevrange = AsyncMock(
-        return_value=[(b"1-0", {b"event": _sse(1, "per-run hit")})]
-    )
-
-    BackgroundTaskManager._instance = None
-    try:
-        with patch.object(
-            BackgroundTaskManager, "get_instance", return_value=stub_btm
-        ), patch(
-            "src.utils.cache.redis_cache.get_cache_client", return_value=cache
-        ):
-            text = await _extract_from_redis("t-test")
-    finally:
-        BackgroundTaskManager._instance = None
-
-    assert text == "per-run hit"
-    cache.client.xrevrange.assert_awaited_once_with(
-        "workflow:stream:t-test:r-test-123", count=500
-    )
 
 
 @pytest.mark.asyncio
@@ -174,6 +120,6 @@ async def test_xrevrange_failure_returns_empty():
     with patch(
         "src.utils.cache.redis_cache.get_cache_client", return_value=cache
     ):
-        text = await _extract_from_redis("thread-1")
+        text = await _extract_from_redis("thread-1", "run-1")
 
     assert text == ""

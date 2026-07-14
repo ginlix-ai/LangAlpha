@@ -122,6 +122,12 @@ async def _run_to_sentinel(request, workspace_manager):
             return_value=("Q", None),
         ),
         patch(f"{PTC}.begin_turn", new_callable=AsyncMock) as mock_begin_turn,
+        # Admission is ledger-driven (v4 2.4c) and not under test here.
+        patch(
+            f"{PTC}.wait_or_steer",
+            new_callable=AsyncMock,
+            return_value=(True, None),
+        ),
         patch(f"{PTC}._resolve_timezone", return_value="UTC"),
         patch(f"{PTC}.init_tracking", return_value=(MagicMock(), MagicMock())),
         patch(f"{PTC}.apply_fetch_override"),

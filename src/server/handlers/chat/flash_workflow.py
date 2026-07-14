@@ -59,6 +59,7 @@ from ptc_agent.agent.flash import build_flash_graph
 from ptc_agent.agent.graph import get_user_profile_for_prompt
 
 from ._common import (
+    DISPATCH_STARTED_MARKER,
     _append_to_last_user_message,
     _resolve_fork,
     _resolve_timezone,
@@ -291,6 +292,12 @@ async def astream_flash_workflow(
             f"[FLASH_CHAT] Run started: workspace_id={workspace_id} "
             f"turn_index={run_handle.turn_index}"
         )
+
+        if dispatched:
+            # Durable receipt (v4 2.4c): the dispatch handler is priming this
+            # generator and returns its 202 only once the START txn above has
+            # committed. The marker never reaches the SSE stream.
+            yield DISPATCH_STARTED_MARKER
 
         # =================================================================
         # Token and Tool Tracking
@@ -585,6 +592,12 @@ async def astream_flash_workflow(
         raise
 
     except Exception as e:
+        # Pre-START on the dispatched path: the primer at the HTTP boundary
+        # is still driving this generator, so admission/dedup failures must
+        # surface raw as HTTP errors — never SSE frames into a stream whose
+        # run was never dispatched (nothing durable exists yet).
+        if dispatched and run_handle is None:
+            raise
         # run_handle only while this generator still owns the run — after
         # handoff, BTM's _finalize_run owns the terminal write.
         async for event in handle_workflow_error(

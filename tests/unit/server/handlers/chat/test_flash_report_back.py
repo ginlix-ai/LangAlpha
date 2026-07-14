@@ -404,24 +404,25 @@ async def test_claim_replaces_a_stale_incarnations_pointer():
     cache.client.sets.setdefault(report_back.flash_watch_key(flash), set()).add(ptc)
 
     # New incarnation: stale pointer replaced, claim won.
-    run, claimed, _ = await report_back.claim_report_back_run(
+    result = await report_back.claim_report_back_run(
         cache, flash, ptc, "rb-G2", "g-2"
     )
-    assert (run, claimed) == ("rb-G2", True)
-    assert cache.kv[key] == {"run_id": "rb-G2", "dispatch_gen": "g-2"}
+    assert (result.winning_run_id, result.claimed) == ("rb-G2", True)
+    assert cache.kv[key]["run_id"] == "rb-G2"
+    assert cache.kv[key]["dispatch_gen"] == "g-2"
 
     # Same-incarnation retry: incumbent honored, no second run.
-    run, claimed, _ = await report_back.claim_report_back_run(
+    result = await report_back.claim_report_back_run(
         cache, flash, ptc, "rb-G2-retry", "g-2"
     )
-    assert (run, claimed) == ("rb-G2", False)
+    assert (result.winning_run_id, result.claimed) == ("rb-G2", False)
 
     # A legacy (gen-less) claimer keeps today's semantics: adopt whatever is
     # there — it cannot prove the pointer stale.
-    run, claimed, _ = await report_back.claim_report_back_run(
+    result = await report_back.claim_report_back_run(
         cache, flash, ptc, "rb-legacy", None
     )
-    assert (run, claimed) == ("rb-G2", False)
+    assert (result.winning_run_id, result.claimed) == ("rb-G2", False)
 
 
 @pytest.mark.asyncio
@@ -526,10 +527,11 @@ async def test_execute_dispatches_with_deterministic_request_key_and_holds_open(
     )
     # /status reattach pointer re-asserted while membership held, scoped to
     # this job's request identity.
-    assert cache.kv[report_back.flash_rb_run_key(flash, ptc)] == {
-        "run_id": "rb-run",
-        "request_key": str(uuid.uuid5(report_back.RB_REQUEST_NS, "job-42")),
-    }
+    pointer = cache.kv[report_back.flash_rb_run_key(flash, ptc)]
+    assert pointer["run_id"] == "rb-run"
+    assert pointer["request_key"] == str(
+        uuid.uuid5(report_back.RB_REQUEST_NS, "job-42")
+    )
     # Wake published with the run id.
     assert any('"run_id": "rb-run"' in msg for _, msg in cache.client.published)
     # Held open until terminal: fence-extend precedes every poll, so three
@@ -761,11 +763,12 @@ async def test_reassert_replaces_a_stale_incarnations_pointer():
     h = _ExecHarness(cache, run_statuses=("completed",))
     await h.run(_job(ptc, dispatch_gen="g-2"))
 
-    assert cache.kv[report_back.flash_rb_run_key(flash, ptc)] == {
-        "run_id": "rb-run",
-        "dispatch_gen": "g-2",
-        "request_key": str(uuid.uuid5(report_back.RB_REQUEST_NS, "job-1")),
-    }
+    pointer = cache.kv[report_back.flash_rb_run_key(flash, ptc)]
+    assert pointer["run_id"] == "rb-run"
+    assert pointer["dispatch_gen"] == "g-2"
+    assert pointer["request_key"] == str(
+        uuid.uuid5(report_back.RB_REQUEST_NS, "job-1")
+    )
     assert any('"run_id": "rb-run"' in msg for _, msg in cache.client.published)
 
 

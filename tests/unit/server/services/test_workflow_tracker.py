@@ -66,7 +66,9 @@ async def _call_get_workflow_status(active_row, latest_row) -> dict:
     ), patch.object(
         tl_db, "get_active_run", new=AsyncMock(return_value=active_row)
     ), patch.object(
-        tl_db, "get_latest_attempt", new=AsyncMock(return_value=latest_row)
+        # A live in_progress slot always sorts as the latest attempt (review
+        # F7 collapsed /status to this single read).
+        tl_db, "get_latest_attempt", new=AsyncMock(return_value=active_row or latest_row)
     ), patch(
         "src.server.services.background_task_manager.BackgroundTaskManager.get_instance",
         return_value=bg_manager,

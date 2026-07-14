@@ -100,41 +100,34 @@ _DISPATCH_CONFIRM_POLL_S = 0.5
 async def _confirm_dispatch_admission(
     thread_id: str, expected_gen: str | None
 ) -> bool:
-    """Probe the endpoint's admission marker after an ambiguous dispatch
-    exchange. The dispatched branch writes its WorkflowTracker blob — stamped
-    with the POST's dispatch generation — BEFORE scheduling the run and
-    replying, aborts if that write fails, and every rejection path exits
-    before it. The marker is a POSITIVE-ONLY oracle: True means the marker
-    provably belongs to THIS dispatch — an exact generation match when the
-    dispatch carries one, or any blob when it doesn't (callers pass
-    ``expected_gen=None`` only for a thread id minted by this very call, so
-    nobody else can have triggered a marker on it). False settles NOTHING:
-    a foreign blob may be a stale terminal our own admission is about to
-    replace (so it keeps polling to the deadline, never returns early), and
-    no finite absence proves a delivered, still-processing request won't
-    admit later. The caller must treat False as unproven and retain. 2.4
-    removes the WorkflowTracker; this probe moves to the durable attempt
-    row then.
-    """
-    from src.server.services.workflow_tracker import WorkflowTracker
-    from src.utils.cache.redis_cache import get_cache_client
+    """Probe the durable run ledger after an ambiguous dispatch exchange.
 
-    cache = get_cache_client()
-    if not (cache.enabled and cache.client):
-        return False
-    key = f"{WorkflowTracker.STATUS_PREFIX}{thread_id}"
+    The dispatched branch commits the run's in_progress row — its metadata
+    stamped with the POST's dispatch generation — BEFORE replying (v4 2.4c
+    eager START), and every rejection path exits without a row. POSITIVE-
+    ONLY oracle: True means an attempt row provably belongs to THIS
+    dispatch — an exact generation match when the dispatch carries one, or
+    any attempt when it doesn't (callers pass ``expected_gen=None`` only
+    for a thread id minted by this very call, so nobody else can have run
+    on it). False settles NOTHING: a foreign row may predate our own
+    admission (so it keeps polling to the deadline, never returns early),
+    and no finite absence proves a delivered, still-processing request
+    won't admit later. The caller must treat False as unproven and retain.
+    """
+    from src.server.database import turn_lifecycle as tl_db
+
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _DISPATCH_CONFIRM_GRACE_S
     while True:
         try:
-            blob = await cache.get_strict(key)
+            row = await tl_db.get_latest_attempt(thread_id)
         except Exception:
-            blob = None
-        if isinstance(blob, dict):
+            row = None
+        if row is not None:
             if expected_gen is None:
                 return True
-            marker_gen = (blob.get("metadata") or {}).get("origin_dispatch_gen")
-            if marker_gen == expected_gen:
+            row_gen = (row.get("metadata") or {}).get("origin_dispatch_gen")
+            if row_gen == expected_gen:
                 return True
         if loop.time() >= deadline:
             return False
@@ -933,8 +926,33 @@ async def _threads_delete(
 
     try:
         from src.server.database.conversation import delete_thread
+        from src.server.services.thread_mutation import (
+            MutationConflict,
+            MutationUnavailable,
+            ThreadMutationRunner,
+        )
 
-        await delete_thread(thread_id)
+        # Guarded delete, same fence as the HTTP endpoint (v4 2.4a): an
+        # unfenced delete here would cascade away a live run's ledger rows
+        # out from under a writer on any worker.
+        try:
+            async with ThreadMutationRunner.get_instance().exclusive(
+                thread_id, "delete"
+            ) as mutation:
+                await delete_thread(thread_id, conn=mutation.conn)
+        except MutationConflict as e:
+            detail = e.detail if isinstance(e.detail, dict) else {}
+            return _error_command(
+                detail.get("message")
+                or "Thread is busy (a run or mutation is in progress); "
+                "stop it first, then retry the delete.",
+                tool_call_id,
+            )
+        except MutationUnavailable:
+            return _error_command(
+                "Thread deletion is temporarily unavailable; retry shortly.",
+                tool_call_id,
+            )
 
         # Invalidate thread existence cache (matches HTTP delete endpoint)
         try:

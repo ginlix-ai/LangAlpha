@@ -78,7 +78,7 @@ async def drain_pending_steerings(thread_id: str) -> list[dict] | None:
 
 
 async def steer_thread(
-    thread_id: str, content: str, user_id: str
+    thread_id: str, content: str, user_id: str, run_id: str | None = None
 ) -> dict | None:
     """Steer a running workflow by injecting a user message via Redis.
 
@@ -88,6 +88,11 @@ async def steer_thread(
         thread_id: The thread with an active workflow
         content: The user's message text
         user_id: User identifier
+        run_id: The live run this steer targets (v4 2.4c). The consuming
+            middleware delivers only payloads stamped with its own run (or
+            legacy unstamped ones), so a message steered into a run that
+            died un-drained is returned by the next turn's end-of-run drain
+            instead of leaking into its context. None = unstamped.
 
     Returns:
         Dict with queue position and the exact queued payload (for a
@@ -102,9 +107,10 @@ async def steer_thread(
 
     try:
         key = f"workflow:steering:{thread_id}"
-        message = json.dumps(
-            {"content": content, "user_id": user_id, "timestamp": time.time()}
-        )
+        payload = {"content": content, "user_id": user_id, "timestamp": time.time()}
+        if run_id is not None:
+            payload["run_id"] = run_id
+        message = json.dumps(payload)
         pipe = cache.client.pipeline()
         pipe.rpush(key, message)
         pipe.llen(key)

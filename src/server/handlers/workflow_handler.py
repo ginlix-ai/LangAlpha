@@ -250,33 +250,37 @@ async def get_workflow_status(
         except Exception as e:
             logger.debug(f"Could not fetch checkpoint info for {thread_id}: {e}")
 
-        # The ledger decides (v4 2.4): the active slot speaks the live
-        # vocabulary (stopping = durable cancel intent), else the latest
-        # attempt's terminal status, else idle. Same answer on every worker —
-        # the tracker blob, the checkpoint status fallback, and the stale-
-        # ACTIVE heal are gone from this path (the recovery scanner owns
-        # orphan convergence now).
+        # The ledger decides (v4 2.4): ONE read of the latest attempt. The
+        # in_progress slot ALWAYS sorts latest (turn_index DESC, attempt_no
+        # DESC — a live run is the newest attempt of the newest turn), so a
+        # single row answers live and settled alike; a get_active_run +
+        # get_latest_attempt pair reads two snapshots and a START committing
+        # between them yields status="running" with run_id=None and reconnect
+        # disabled (review F7). Live rows speak the live vocabulary
+        # (stopping = durable cancel intent), terminal rows their terminal
+        # status, no row = idle. Same answer on every worker — the tracker
+        # blob, the checkpoint status fallback, and the stale-ACTIVE heal are
+        # gone from this path (the recovery scanner owns orphan convergence).
         from src.server.database import turn_lifecycle as tl_db
         from src.server.services.status_vocabulary import to_public
 
         run_id = None
         can_reconnect = False
         row_ts = None
-        active_run = await tl_db.get_active_run(thread_id)
-        if active_run is not None:
-            run_id = str(active_run["conversation_response_id"])
+        latest = await tl_db.get_latest_attempt(thread_id)
+        if latest is not None and latest["status"] == "in_progress":
+            run_id = str(latest["conversation_response_id"])
             status = to_public(
-                active_run["status"],
-                cancel_requested_at=active_run.get("cancel_requested_at"),
+                latest["status"],
+                cancel_requested_at=latest.get("cancel_requested_at"),
             )
             # Reconnect attaches to the shared Redis stream, so it is
             # worker-agnostic: no local-executor requirement. A crashed
             # owner's stream still terminates — the scanner's finalize
             # appends the visible run_end.
             can_reconnect = status in ("running", "stopping")
-            row_ts = active_run.get("created_at")
+            row_ts = latest.get("created_at")
         else:
-            latest = await tl_db.get_latest_attempt(thread_id)
             status = to_public(latest["status"]) if latest is not None else "idle"
             row_ts = latest.get("created_at") if latest is not None else None
         last_update = row_ts.isoformat() if row_ts is not None else None

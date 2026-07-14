@@ -874,26 +874,16 @@ async def _handle_send_message(
         )
 
         if is_flash_dispatch:
+            from src.server.database.turn_lifecycle import DuplicateRequestError
+            from src.server.handlers.chat._common import DISPATCH_STARTED_MARKER
             from src.server.services.background_task_manager import BackgroundTaskManager
             manager = BackgroundTaskManager.get_instance()
-            # Fail-fast admission at the HTTP boundary: if another run is
-            # still active (running or stopping) on this thread, return 409
-            # here rather than dispatching a doomed background task.
-            #
-            # The admission_lock is held across wait_for_admission +
-            # pre_register so two concurrent dispatched POSTs on the same
-            # thread can't both pass the gate and start workflows on the
-            # same LangGraph thread_id (the foreground branch acquires
-            # this same lock inside its handler via wait_or_steer; the
-            # dispatched branch must do it here because it skips
-            # wait_or_steer entirely). Released before _track_task
-            # schedules the background workflow.
-            #
             # Report-back idempotency: a lost-response retry of the drainer's
-            # POST must NOT start a second summary run. The claim CM SET-NXs the
-            # per-(flash, ptc) run pointer under the lock; a prior admission's
-            # incumbent run_id is returned instead, and a non-consummated exit
-            # (e.g. a 409 from the gate) releases the claim. No-op unless
+            # POST must NOT start a second summary run. The claim CM SET-NXs
+            # the per-(flash, ptc) run pointer (atomic on its own — no outer
+            # lock needed); a prior admission's incumbent run_id is returned
+            # instead, and a non-consummated exit (e.g. a priming failure
+            # below) releases the claim. No-op unless
             # report_back_ptc_thread_id is set.
             rb_ptc = request.report_back_ptc_thread_id
             rb_cache = None
@@ -901,8 +891,7 @@ async def _handle_send_message(
                 from src.utils.cache.redis_cache import get_cache_client
                 rb_cache = get_cache_client()
             from src.server.handlers.chat import report_back
-            admission_lock = await manager.get_admission_lock(thread_id)
-            async with admission_lock, report_back.claim(
+            async with report_back.claim(
                 rb_cache, thread_id, rb_ptc, run_id,
                 request.origin_dispatch_gen,
                 request.request_key,
@@ -936,17 +925,58 @@ async def _handle_send_message(
                             "scheduled."
                         ),
                     )
-                state = await manager.wait_for_admission(
-                    thread_id, exclude_run_id=run_id
-                )
-                if state != "fresh":
+                if rb_claim.in_flight:
+                    await release_burst_slot(user_id, auth.burst_slot_id)
+                    logger.info(
+                        f"[FLASH_DISPATCH] Report-back for ptc={rb_ptc} on "
+                        f"flash thread {thread_id} has a rowless incumbent "
+                        "inside its priming lease; deferring (503 retriable)"
+                    )
+                    # 503 is inside the executor's always-retried set: the
+                    # retry re-probes once the prior admission either commits
+                    # its START (adopt) or its pointer goes stale (takeover).
+                    raise HTTPException(
+                        status_code=503,
+                        detail=(
+                            "A prior admission of this report-back may still "
+                            "be starting; retry shortly."
+                        ),
+                    )
+                # Durable receipt (v4 2.4c): drive the generator through its
+                # own admission (per-thread lock, dedup, wait_or_steer, START
+                # txn) to the post-START marker. The 202 below is returned
+                # only once the in_progress row is committed — a 202 whose
+                # run then vanishes rowlessly can no longer happen. Pre-START
+                # failures surface here raw as HTTP errors.
+                try:
+                    first = await anext(flash_gen)
+                except DuplicateRequestError as dup:
+                    await release_burst_slot(user_id, auth.burst_slot_id)
+                    existing = str(dup.existing_run["conversation_response_id"])
+                    logger.info(
+                        f"[FLASH_DISPATCH] Retransmit adopted existing run "
+                        f"{existing} for thread {thread_id}"
+                    )
+                    return JSONResponse({
+                        "status": "dispatched",
+                        "thread_id": thread_id,
+                        "run_id": existing,
+                    })
+                except HTTPException:
+                    await release_burst_slot(user_id, auth.burst_slot_id)
+                    raise
+                except Exception as e:
                     await release_burst_slot(user_id, auth.burst_slot_id)
                     raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            f"Workflow {thread_id} is still running; dispatched "
-                            "follow-up could not be admitted."
-                        ),
+                        status_code=503,
+                        detail=f"Dispatch could not start durably: {e}",
+                    )
+                if first != DISPATCH_STARTED_MARKER:
+                    await flash_gen.aclose()
+                    await release_burst_slot(user_id, auth.burst_slot_id)
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Dispatch priming yielded an unexpected event.",
                     )
                 await manager.pre_register(thread_id, run_id)
                 rb_claim.consummate()
@@ -1010,77 +1040,99 @@ async def _handle_send_message(
     )
 
     if is_ptc_dispatch:
+        from src.server.database.turn_lifecycle import DuplicateRequestError
+        from src.server.handlers.chat._common import DISPATCH_STARTED_MARKER
         from src.server.services.background_task_manager import BackgroundTaskManager
         from src.server.services.workflow_tracker import WorkflowTracker
 
         tracker = WorkflowTracker.get_instance()
         manager = BackgroundTaskManager.get_instance()
-        # Fail-fast admission at the HTTP boundary: if another run is still
-        # active (running or stopping) on this thread, return 409 here rather
-        # than dispatching a doomed background task.
-        #
-        # The admission_lock is held across wait_for_admission +
-        # mark_active + pre_register so two concurrent dispatched POSTs on
-        # the same thread can't both pass the gate and start workflows on
-        # the same LangGraph thread_id (the foreground branch acquires
-        # this same lock inside its handler via wait_or_steer; the
-        # dispatched branch must do it here because it skips
-        # wait_or_steer entirely). Released before _track_task schedules
-        # the background workflow.
-        admission_lock = await manager.get_admission_lock(thread_id)
-        async with admission_lock:
-            state = await manager.wait_for_admission(
-                thread_id, exclude_run_id=run_id
-            )
-            if state != "fresh":
-                await release_burst_slot(user_id, auth.burst_slot_id)
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"Workflow {thread_id} is still running; dispatched "
-                        "follow-up could not be admitted."
-                    ),
-                )
-            # The marker doubles as the dispatcher's admission oracle: its
-            # metadata carries the caller's dispatch generation so an
-            # ambiguous (lost-reply) dispatch can positively identify ITS
-            # admission, and a failed write aborts BEFORE anything is
-            # scheduled — a scheduled run with no marker would make the
-            # oracle's absence reading a lie. The write atomically refuses
-            # generations the orphan resolver already receipted as phantom
-            # (their watch state is gone; admitting would run a turn whose
-            # report-back silently drops).
-            from src.server.handlers.chat.report_back_keys import (
-                ptc_rb_resolved_key,
+        # Phantom-refusal gate BEFORE the START txn: the marker write
+        # atomically refuses generations the orphan resolver already
+        # receipted (their watch state is gone; admitting would run a turn
+        # whose report-back silently drops), so it must precede priming — a
+        # receipted gen must never reach START. Since 2.4b the blob is
+        # report-back plumbing only; admission truth is the ledger row the
+        # priming below commits.
+        from src.server.handlers.chat.report_back_keys import (
+            ptc_rb_resolved_key,
+        )
+
+        marked = await tracker.mark_active(
+            thread_id=thread_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            run_id=run_id,
+            metadata={
+                "type": "ptc_agent",
+                "dispatched": True,
+                "origin_dispatch_gen": request.origin_dispatch_gen,
+            },
+            refuse_receipt_key=(
+                ptc_rb_resolved_key(thread_id)
+                if request.origin_dispatch_gen
+                else None
+            ),
+            receipt_member=request.origin_dispatch_gen,
+        )
+        if not marked:
+            await release_burst_slot(user_id, auth.burst_slot_id)
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Dispatch admission was refused or the marker write "
+                    "failed; not scheduled."
+                ),
             )
 
-            marked = await tracker.mark_active(
-                thread_id=thread_id,
-                workspace_id=workspace_id,
-                user_id=user_id,
+        # Durable receipt (v4 2.4c): drive the generator through its own
+        # admission (per-thread lock, dedup, wait_or_steer, START txn) to
+        # the post-START marker; the 202 is returned only once the
+        # in_progress row is committed. Pre-START failures surface here raw
+        # as HTTP errors; the CAS'd mark_failed keeps the refusal marker
+        # from lingering as a live-looking blob for a run that never
+        # started (it cannot clobber a newer run's marker).
+        try:
+            first = await anext(ptc_gen)
+        except DuplicateRequestError as dup:
+            await release_burst_slot(user_id, auth.burst_slot_id)
+            await tracker.mark_failed(
+                thread_id,
+                error="dispatch retransmit adopted its existing run",
                 run_id=run_id,
-                metadata={
-                    "type": "ptc_agent",
-                    "dispatched": True,
-                    "origin_dispatch_gen": request.origin_dispatch_gen,
-                },
-                refuse_receipt_key=(
-                    ptc_rb_resolved_key(thread_id)
-                    if request.origin_dispatch_gen
-                    else None
-                ),
-                receipt_member=request.origin_dispatch_gen,
             )
-            if not marked:
-                await release_burst_slot(user_id, auth.burst_slot_id)
-                raise HTTPException(
-                    status_code=503,
-                    detail=(
-                        "Dispatch admission was refused or the marker write "
-                        "failed; not scheduled."
-                    ),
-                )
-            await manager.pre_register(thread_id, run_id)
+            existing = str(dup.existing_run["conversation_response_id"])
+            logger.info(
+                f"[PTC_DISPATCH] Retransmit adopted existing run {existing} "
+                f"for thread {thread_id}"
+            )
+            return JSONResponse({
+                "status": "dispatched",
+                "thread_id": thread_id,
+                "run_id": existing,
+                "workspace_id": workspace_id,
+            })
+        except HTTPException:
+            await release_burst_slot(user_id, auth.burst_slot_id)
+            await tracker.mark_failed(
+                thread_id, error="dispatch admission refused", run_id=run_id
+            )
+            raise
+        except Exception as e:
+            await release_burst_slot(user_id, auth.burst_slot_id)
+            await tracker.mark_failed(thread_id, error=str(e), run_id=run_id)
+            raise HTTPException(
+                status_code=503,
+                detail=f"Dispatch could not start durably: {e}",
+            )
+        if first != DISPATCH_STARTED_MARKER:
+            await ptc_gen.aclose()
+            await release_burst_slot(user_id, auth.burst_slot_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Dispatch priming yielded an unexpected event.",
+            )
+        await manager.pre_register(thread_id, run_id)
 
         _track_task(asyncio.create_task(
             observe_background_chat_turn(

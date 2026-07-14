@@ -63,6 +63,7 @@ from src.server.dependencies.usage_limits import release_burst_slot
 from ptc_agent.agent.graph import build_ptc_graph_with_session
 
 from ._common import (
+    DISPATCH_STARTED_MARKER,
     _append_to_last_user_message,
     _is_plan_interrupt_pending,
     _resolve_fork,
@@ -329,6 +330,12 @@ async def astream_ptc_workflow(
                 f"thread_id={thread_id} query_type={query_type} "
                 f"turn_index={run_handle.turn_index}"
             )
+
+        if dispatched:
+            # Durable receipt (v4 2.4c): the dispatch handler is priming this
+            # generator and returns its 202 only once the START txn above has
+            # committed. The marker never reaches the SSE stream.
+            yield DISPATCH_STARTED_MARKER
 
         # =====================================================================
         # Timezone and Locale Validation
@@ -896,6 +903,12 @@ async def astream_ptc_workflow(
         raise
 
     except Exception as e:
+        # Pre-START on the dispatched path: the primer at the HTTP boundary
+        # is still driving this generator, so admission/dedup failures must
+        # surface raw as HTTP errors — never SSE frames into a stream whose
+        # run was never dispatched (nothing durable exists yet).
+        if dispatched and run_handle is None:
+            raise
         # =====================================================================
         # Error Recovery with Retry Logic
         # =====================================================================

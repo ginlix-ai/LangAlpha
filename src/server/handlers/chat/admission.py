@@ -122,7 +122,9 @@ async def wait_or_steer(
     # Deferred: steering imports chat-handler modules at module level.
     from src.server.handlers.chat.steering import steer_thread, unsteer_thread
 
-    state = await manager.wait_for_admission(thread_id, exclude_run_id=exclude_run_id)
+    state, active_row = await manager.wait_for_admission(
+        thread_id, exclude_run_id=exclude_run_id
+    )
     if state == "fresh":
         if steer_only:
             raise HTTPException(
@@ -139,8 +141,16 @@ async def wait_or_steer(
             status_code=409, detail=admission_conflict_detail(state)
         )
 
-    # state == "running" and steerable → steer the running workflow immediately.
-    result = await steer_thread(thread_id, user_input, user_id)
+    # state == "running" and steerable → steer the running workflow
+    # immediately, stamped with the run it targets (v4 2.4c): the consuming
+    # middleware delivers only own-run payloads, so a message steered into a
+    # run that then died can never leak into a later turn's context.
+    active_run_id = (
+        str(active_row["conversation_response_id"]) if active_row else None
+    )
+    result = await steer_thread(
+        thread_id, user_input, user_id, run_id=active_run_id
+    )
     if not result:
         # Steering failed (e.g. Redis unavailable) on a running turn.
         raise HTTPException(
@@ -149,14 +159,17 @@ async def wait_or_steer(
 
     # Close the accept-after-exit race: the admission snapshot said "running",
     # but the workflow may have exited — and run its final steering drain —
-    # between that snapshot and the Redis push. If the thread has no live task
-    # anymore, try to reclaim the message: a successful reclaim proves nothing
+    # between that snapshot and the Redis push. If the slot has no live run
+    # anymore (worker-agnostic: the ledger row, not the local registry),
+    # try to reclaim the message: a successful reclaim proves nothing
     # consumed it, so route as if admission had said "fresh". Reclaim failure is
     # the best-effort branch: almost always the exit drain got there first and
     # ``steering_returned`` carried the text back on the turn stream, so report
     # accepted — but a Redis fault on the reclaim also lands here, so "accepted"
     # is the graceful default, not a hard delivery guarantee.
-    if not await manager.has_active_task_for_thread(thread_id):
+    from src.server.database import turn_lifecycle as tl_db
+
+    if await tl_db.get_active_run(thread_id) is None:
         reclaimed = await unsteer_thread(thread_id, result["payload"])
         if reclaimed:
             if steer_only:

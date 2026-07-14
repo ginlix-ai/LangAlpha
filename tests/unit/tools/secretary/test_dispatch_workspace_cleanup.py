@@ -220,12 +220,12 @@ async def test_dispatch_error_status_deletes_auto_created_workspace(cache):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_timeout_with_probe_down_keeps_workspace_and_reservation(cache):
+async def test_dispatch_timeout_with_probe_down_keeps_workspace_and_reservation(cache, ledger):
     """A timed-out dispatch may have started the run server-side; when the
     admission-marker probe can't answer either (Redis blip), both the
     workspace and the report-back reservation must survive."""
     mgr = _manager()
-    _marker_probe_raises(cache)
+    _ledger_probe_raises(ledger)
     with patch(
         "src.tools.secretary.tools._hitl_confirm", return_value=(True, {})
     ), patch(
@@ -267,47 +267,44 @@ def _reservation(cache) -> str | None:
     return ptc
 
 
-def _marker_present(cache) -> None:
-    """Make the admission-marker probe see OUR request's blob: the endpoint
-    stamps the POST's origin_dispatch_gen into the marker, so emulate it by
-    reading the generation off the origin the reservation just wrote (the
-    dispatched thread id is minted inside the tool)."""
-    real = cache.get_strict
-
-    async def _blobbed(key):
-        if key.startswith("workflow:status:"):
-            tid = key.removeprefix("workflow:status:")
-            o = cache.kv.get(rb.ptc_origin_key(tid))
-            gen = o.get("dispatch_gen") if isinstance(o, dict) else None
-            return {"status": "active", "metadata": {"origin_dispatch_gen": gen}}
-        return await real(key)
-
-    cache.get_strict = _blobbed
+@pytest.fixture(autouse=True)
+def ledger():
+    """The durable-run-ledger probe behind ``_confirm_dispatch_admission``
+    (v4 2.4c: dispatched runs commit their attempt row — metadata stamped
+    with the POST's dispatch generation — before replying). Default: no
+    attempt row (nothing admitted)."""
+    with patch(
+        "src.server.database.turn_lifecycle.get_latest_attempt",
+        new_callable=AsyncMock,
+        return_value=None,
+    ) as probe:
+        yield probe
 
 
-def _marker_with_gen(cache, gen: str) -> None:
-    """Marker probe sees a blob stamped with a FIXED foreign generation —
-    another run's admission (e.g. a still-active predecessor), not ours."""
-    real = cache.get_strict
+def _attempt_with_our_gen(cache, ledger) -> None:
+    """Ledger probe sees the attempt row OUR dispatch committed: emulate the
+    endpoint's gen-stamping by reading the generation off the origin the
+    reservation just wrote (the dispatched thread id is minted inside the
+    tool)."""
 
-    async def _blobbed(key):
-        if key.startswith("workflow:status:"):
-            return {"status": "active", "metadata": {"origin_dispatch_gen": gen}}
-        return await real(key)
+    async def _row(thread_id):
+        o = cache.kv.get(rb.ptc_origin_key(thread_id))
+        gen = o.get("dispatch_gen") if isinstance(o, dict) else None
+        return {"metadata": {"origin_dispatch_gen": gen}}
 
-    cache.get_strict = _blobbed
+    ledger.side_effect = _row
 
 
-def _marker_probe_raises(cache) -> None:
-    """Make the admission-marker probe fail (Redis blip) — verdict unknown."""
-    real = cache.get_strict
+def _attempt_with_gen(ledger, gen: str) -> None:
+    """Ledger probe sees an attempt row stamped with a FIXED foreign
+    generation — another run's admission (e.g. a still-active predecessor),
+    not ours."""
+    ledger.return_value = {"metadata": {"origin_dispatch_gen": gen}}
 
-    async def _boom(key):
-        if key.startswith("workflow:status:"):
-            raise ConnectionError("redis blip")
-        return await real(key)
 
-    cache.get_strict = _boom
+def _ledger_probe_raises(ledger) -> None:
+    """Make the ledger probe fail (DB blip) — verdict unknown."""
+    ledger.side_effect = ConnectionError("db blip")
 
 
 class _LostBodyResp(_FakeResp):
@@ -341,12 +338,12 @@ async def test_success_status_with_lost_body_commits_and_reports_dispatched(cach
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_loss_with_admission_marker_reports_success(cache):
+async def test_ambiguous_loss_with_admission_marker_reports_success(cache, ledger):
     """Codex round-8 F1: a lost exchange whose admission marker appears is a
     DELIVERED dispatch — the tool reports plain success (no unknown_retained
     ambiguity for the model to mis-handle)."""
     mgr = _manager()
-    _marker_present(cache)
+    _attempt_with_our_gen(cache, ledger)
     with patch(
         "src.tools.secretary.tools._hitl_confirm", return_value=(True, {})
     ), patch(
@@ -398,12 +395,12 @@ async def test_ambiguous_loss_with_no_marker_on_fresh_pair_retains(cache):
 
 
 @pytest.mark.asyncio
-async def test_foreign_marker_on_fresh_pair_is_not_success(cache):
+async def test_foreign_marker_on_fresh_pair_is_not_success(cache, ledger):
     """Codex round-9 F3: gen-scoping — a marker that doesn't carry OUR
     generation no longer confirms the dispatch. On a fresh pair it retains
     as unknown instead of claiming success."""
     mgr = _manager()
-    _marker_with_gen(cache, "someone-elses-gen")
+    _attempt_with_gen(ledger, "someone-elses-gen")
     with patch(
         "src.tools.secretary.tools._hitl_confirm", return_value=(True, {})
     ), patch(
@@ -427,12 +424,12 @@ async def test_foreign_marker_on_fresh_pair_is_not_success(cache):
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_loss_with_probe_down_retains_unknown(cache):
+async def test_ambiguous_loss_with_probe_down_retains_unknown(cache, ledger):
     """When the marker probe itself fails, the outcome stays unknown — keep
     the reservation (TTL-bounded) and surface the retained thread id so the
     model can check agent_output instead of blind-re-dispatching."""
     mgr = _manager()
-    _marker_probe_raises(cache)
+    _ledger_probe_raises(ledger)
     with patch(
         "src.tools.secretary.tools._hitl_confirm", return_value=(True, {})
     ), patch(
@@ -512,13 +509,13 @@ async def test_non_200_success_status_is_not_scheduling_proof(cache):
 
 
 @pytest.mark.asyncio
-async def test_non_dict_200_body_reconciles_without_raising(cache):
+async def test_non_dict_200_body_reconciles_without_raising(cache, ledger):
     """Codex round-8 F3: a 200 carrying valid non-dict JSON (``[]``/``null``)
     must not AttributeError out of the tool — the 200 keeps the reservation
     committed (status proof stands) and the outcome reconciles as unknown
     when the marker can't confirm."""
     mgr = _manager()
-    _marker_probe_raises(cache)
+    _ledger_probe_raises(ledger)
     with patch(
         "src.tools.secretary.tools._hitl_confirm", return_value=(True, {})
     ), patch(
@@ -700,13 +697,13 @@ async def test_continuation_ambiguous_no_marker_retains_provisional(cache):
 
 
 @pytest.mark.asyncio
-async def test_continuation_foreign_marker_is_not_success(cache):
+async def test_continuation_foreign_marker_is_not_success(cache, ledger):
     """Codex round-9 F3 + round-10 F2: the still-active predecessor's own
     marker must NOT confirm our provisional generation (no false success) —
     but it is not a rejection receipt either, so the provisional reservation
     retains rather than rolling back (our own stamp may land next)."""
     _seed_predecessor(cache)
-    _marker_with_gen(cache, PRIOR_GEN)
+    _attempt_with_gen(ledger, PRIOR_GEN)
     payload = await _continuation_dispatch(aiohttp.ServerDisconnectedError())
 
     assert payload["success"] is False
@@ -716,11 +713,11 @@ async def test_continuation_foreign_marker_is_not_success(cache):
 
 
 @pytest.mark.asyncio
-async def test_unwired_continuation_never_reads_a_marker_as_ours(cache):
+async def test_unwired_continuation_never_reads_a_marker_as_ours(cache, ledger):
     """Codex round-10 F1: an unwired dispatch carries no generation, so a
     marker on a continuation thread proves only that SOME run held it — a
     prior run's blob must not upgrade a lost 409 into plain success."""
-    _marker_with_gen(cache, "prior-runs-gen")
+    _attempt_with_gen(ledger, "prior-runs-gen")
     import contextlib
 
     with contextlib.ExitStack() as stack:
@@ -743,11 +740,11 @@ async def test_unwired_continuation_never_reads_a_marker_as_ours(cache):
 
 
 @pytest.mark.asyncio
-async def test_continuation_our_marker_reports_success(cache):
+async def test_continuation_our_marker_reports_success(cache, ledger):
     """Continuation + a marker carrying OUR generation: the lost reply was a
     real acceptance — commit the new incarnation and report plain success."""
     _seed_predecessor(cache)
-    _marker_present(cache)
+    _attempt_with_our_gen(cache, ledger)
     payload = await _continuation_dispatch(aiohttp.ServerDisconnectedError())
 
     assert payload["success"] is True
@@ -757,12 +754,12 @@ async def test_continuation_our_marker_reports_success(cache):
 
 
 @pytest.mark.asyncio
-async def test_continuation_probe_down_retains_unknown(cache):
+async def test_continuation_probe_down_retains_unknown(cache, ledger):
     """Continuation + unanswerable probe: can't tell our admission from the
     predecessor's — retain the provisional generation as unknown rather than
     guess a rollback that could erase a live run's wiring."""
     _seed_predecessor(cache)
-    _marker_probe_raises(cache)
+    _ledger_probe_raises(ledger)
     payload = await _continuation_dispatch(aiohttp.ServerDisconnectedError())
 
     assert payload["success"] is False

@@ -46,6 +46,12 @@ _sse_logger = logging.getLogger("sse_events")
 
 _SSE_LOG_ENABLED = is_sse_event_log_enabled()
 
+# Yielded exactly once by a dispatched workflow generator immediately after
+# its START txn commits (v4 2.4c). The dispatch handler primes the generator
+# to this marker before returning 202, making the 202 a durable receipt —
+# the primer consumes it, so it never enters the SSE stream.
+DISPATCH_STARTED_MARKER = "__dispatch_run_started__"
+
 
 # ---------------------------------------------------------------------------
 # Private helpers (moved as-is from original chat_handler.py)

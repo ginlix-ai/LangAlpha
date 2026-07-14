@@ -13,7 +13,10 @@ import structlog
 from langchain_core.tools import StructuredTool
 from langgraph.config import get_config
 
-from ptc_agent.agent.middleware.background_subagent.utils import build_message_checker
+from ptc_agent.agent.middleware.background_subagent.utils import (
+    build_message_checker,
+    config_own_run_id,
+)
 
 if TYPE_CHECKING:
     from ptc_agent.agent.middleware.background_subagent.middleware import (
@@ -112,8 +115,11 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
                 task_id=task_id,
                 timeout=timeout,
             )
-            thread_id = get_config().get("configurable", {}).get("thread_id")
-            checker = await build_message_checker(thread_id)
+            cfg = get_config()
+            thread_id = cfg.get("configurable", {}).get("thread_id")
+            checker = await build_message_checker(
+                thread_id, own_run_id=config_own_run_id(cfg)
+            )
             result = await registry.wait_for_specific(
                 task_id, timeout, message_checker=checker
             )
@@ -176,8 +182,11 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
 
         # Blocking: wait for all tasks
         logger.info("Waiting for all background tasks", timeout=timeout)
-        thread_id = get_config().get("configurable", {}).get("thread_id")
-        checker = await build_message_checker(thread_id)
+        cfg = get_config()
+        thread_id = cfg.get("configurable", {}).get("thread_id")
+        checker = await build_message_checker(
+            thread_id, own_run_id=config_own_run_id(cfg)
+        )
         results = await registry.wait_for_all(timeout=timeout, message_checker=checker)
 
         if not results:

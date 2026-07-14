@@ -168,14 +168,24 @@ async def reconnect_to_workflow_stream(
         yield event
 
     # After the workflow ends, return any unconsumed steering messages so the
-    # client can re-render them instead of silently dropping them.
-    steering_event = await drain_steering_return_event(thread_id)
-    if steering_event:
-        logger.info(
-            f"[PTC_RECONNECT] Returning unconsumed steering message(s) "
-            f"to client: thread_id={thread_id}"
-        )
-        yield steering_event
+    # client can re-render them instead of silently dropping them — but only
+    # when NO run is active on the thread. A stale reconnect to an old
+    # terminal run must not drain a newer live run's stamped payloads out
+    # from under SteeringMiddleware (v4 2.4c review F4).
+    try:
+        from src.server.database import turn_lifecycle as tl_db
+
+        thread_is_idle = await tl_db.get_active_run(thread_id) is None
+    except Exception:
+        thread_is_idle = False  # unknown ledger state: don't consume
+    if thread_is_idle:
+        steering_event = await drain_steering_return_event(thread_id)
+        if steering_event:
+            logger.info(
+                f"[PTC_RECONNECT] Returning unconsumed steering message(s) "
+                f"to client: thread_id={thread_id}"
+            )
+            yield steering_event
 
 
 # ---------------------------------------------------------------------------

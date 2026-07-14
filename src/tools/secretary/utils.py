@@ -207,8 +207,13 @@ async def extract_text_from_thread(
     # Qualify relative file paths with workspace context so the flash agent
     # (and its frontend) can resolve them across workspaces, then cap length.
     if active_run is not None:
-        # The active stream is always a single live turn.
-        text = await _extract_from_redis(thread_id)
+        # The active stream is always a single live turn — read the ledger
+        # row's run stream directly. Resolving through local BTM state can
+        # pick a retained terminal TaskInfo from a prior run on this worker
+        # while the live run executes elsewhere (v4 2.4c review F6).
+        text = await _extract_from_redis(
+            thread_id, str(active_run["conversation_response_id"])
+        )
         text = _truncate_single(_qualify_file_paths(text, workspace_id))
     else:
         turn_texts = await _extract_from_db(thread_id, turns)
@@ -223,55 +228,21 @@ async def extract_text_from_thread(
     }
 
 
-async def _extract_from_redis(thread_id: str) -> str:
+async def _extract_from_redis(thread_id: str, run_id: str) -> str:
     """Extract text content from Redis SSE event buffer.
 
     Reads the tail of the per-run Redis Stream
-    (``workflow:stream:{tid}:{run_id}``) and decodes the pre-rendered SSE
-    wire string from each entry's ``b"event"`` field. The run_id is
-    resolved from the in-process ``BackgroundTaskManager`` for the most
-    recent turn on the thread, falling back to the ledger (v4 2.4) so the
-    read works from any worker. XREVRANGE with COUNT yields the
-    most-recent 500 entries cheaply, then we reverse to chronological
-    order to mirror the old RPUSH semantics.
+    (``workflow:stream:{tid}:{run_id}``) for the caller-resolved *run_id*
+    (the ledger-active row — authoritative on every worker). XREVRANGE
+    with COUNT yields the most-recent 500 entries cheaply, then we
+    reverse to chronological order to mirror the old RPUSH semantics.
     """
-    # Local imports to avoid load-order coupling with the server package
+    # Local import to avoid load-order coupling with the server package
     # at agent import time.
-    from src.server.services.background_task_manager import (
-        BackgroundTaskManager,
-        stream_key,
-    )
+    from src.server.services.background_task_manager import stream_key
     from src.utils.cache.redis_cache import get_cache_client
 
-    resolved_run_id: str | None = None
-    try:
-        manager = BackgroundTaskManager.get_instance()
-        async with manager.task_lock:
-            info = manager._find_latest_for_thread(thread_id)
-        if info is not None and getattr(info, "run_id", None):
-            resolved_run_id = info.run_id
-    except Exception as e:
-        logger.warning(
-            f"Failed to resolve run_id from BTM for thread {thread_id}: {e}"
-        )
-
-    if resolved_run_id is None:
-        try:
-            from src.server.database import turn_lifecycle as tl_db
-
-            row = await tl_db.get_active_run(thread_id)
-            if row is None:
-                row = await tl_db.get_latest_attempt(thread_id)
-            if row is not None:
-                resolved_run_id = str(row["conversation_response_id"])
-        except Exception as e:
-            logger.warning(
-                f"Failed to resolve run_id from ledger for thread {thread_id}: {e}"
-            )
-
-    if resolved_run_id is None:
-        return ""
-    key = stream_key(thread_id, resolved_run_id)
+    key = stream_key(thread_id, run_id)
 
     try:
         cache = get_cache_client()

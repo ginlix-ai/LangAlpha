@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 import uuid
 from typing import NamedTuple
 
@@ -35,6 +36,13 @@ from src.server.handlers.chat.report_back_keys import (
 
 # TTL for report-back Redis state (run pointers, watch SET, queue); 24h.
 _FLASH_RB_RUN_TTL = 86400
+
+# Priming lease (seconds) on a run pointer whose run has NO ledger row yet:
+# an incumbent younger than this may still be mid-priming (admission wait +
+# START txn) on another worker, so a retry defers instead of adopting or
+# taking over. Must comfortably exceed the longest legitimate pre-START
+# admission wait (compaction backstop / stop-drain).
+_RB_POINTER_PRIMING_LEASE_S = 900
 
 # TTL for the recently-drained run-id list (flash_rb_done); 15 min.
 _FLASH_RB_DONE_TTL = 900
@@ -257,6 +265,9 @@ return 1
 # tells the route to refuse the dispatch outright (non-retriable). Adoption
 # stays ungated: it writes nothing, and a lost-response retry must still
 # find its prior run even if the pair has since fallen.
+# An incumbent match returns the RAW pointer value (not just run_id): the
+# caller needs claimed_at to judge whether a rowless incumbent is still
+# mid-priming, and the exact bytes as the CAS token for a stale takeover.
 # KEYS: 1=flash_watch 2=flash_rb_run
 # ARGV: 1=ptc_id 2=json_value 3=ttl 4=request_key ('' = unknown)
 #       5=dispatch_gen ('' = legacy)
@@ -267,13 +278,13 @@ if v then
   if ok and type(t) == 'table' and type(t['run_id']) == 'string' then
     if type(t['request_key']) == 'string' then
       if ARGV[4] == '' or t['request_key'] == ARGV[4] then
-        return {0, t['run_id']}
+        return {0, v}
       end
     else
       if (ARGV[4] == '' and ARGV[5] == '')
          or (ARGV[5] ~= '' and type(t['dispatch_gen']) == 'string'
              and t['dispatch_gen'] == ARGV[5]) then
-        return {0, t['run_id']}
+        return {0, v}
       end
     end
   end
@@ -281,6 +292,21 @@ end
 if redis.call('sismember', KEYS[1], ARGV[1]) == 0 then return {2, ''} end
 redis.call('set', KEYS[2], ARGV[2], 'EX', ARGV[3])
 return {1, ''}
+"""
+
+# Stale-incumbent takeover: replace the pointer iff it still holds EXACTLY
+# the bytes the claim probe returned (a rival takeover or re-claim changes
+# them → lost), membership-gated like every pointer write. Closes review F1:
+# a provisional pointer whose worker died pre-START would otherwise be
+# adopted forever and its summary silently dropped at the terminal-wait cap.
+# KEYS: 1=flash_watch 2=flash_rb_run
+# ARGV: 1=ptc_id 2=expected_current_value 3=new_json_value 4=ttl
+_POINTER_TAKEOVER_LUA = """
+local v = redis.call('get', KEYS[2])
+if not v or v ~= ARGV[2] then return 0 end
+if redis.call('sismember', KEYS[1], ARGV[1]) == 0 then return 2 end
+redis.call('set', KEYS[2], ARGV[3], 'EX', ARGV[4])
+return 1
 """
 
 # Orphan-membership reap: SREM a member iff its ptc_origin key no longer
@@ -895,8 +921,10 @@ def _pointer_value(
     run_id: str, dispatch_gen: str | None, request_key: str | None = None
 ) -> str:
     """Serialized run-pointer value; unknown keys are OMITTED — a JSON null
-    would read as a truthy cjson value in the Lua identity checks."""
-    value: dict = {"run_id": run_id}
+    would read as a truthy cjson value in the Lua identity checks.
+    ``claimed_at`` dates the write so a retry can judge whether a rowless
+    incumbent is still inside its priming lease."""
+    value: dict = {"run_id": run_id, "claimed_at": time.time()}
     if dispatch_gen:
         value["dispatch_gen"] = dispatch_gen
     if request_key:
@@ -905,11 +933,18 @@ def _pointer_value(
 
 
 class PointerClaim(NamedTuple):
-    """Outcome of a dispatched-admission pointer claim."""
+    """Outcome of a dispatched-admission pointer claim.
+
+    On an incumbent (``claimed=False``, not ``pair_gone``),
+    ``incumbent_raw`` holds the pointer's exact bytes (the CAS token for a
+    stale takeover) and ``incumbent_claimed_at`` its write time (None on
+    pointers predating the field)."""
 
     winning_run_id: str | None
     claimed: bool
     pair_gone: bool = False
+    incumbent_raw: str | None = None
+    incumbent_claimed_at: float | None = None
 
 
 async def claim_report_back_run(
@@ -959,10 +994,69 @@ async def claim_report_back_run(
         return PointerClaim(run_id, True)
     state = int(state)
     if state == 0:
-        return PointerClaim(_decode(incumbent), False)
+        raw = _decode(incumbent)
+        incumbent_run: str | None = None
+        claimed_at: float | None = None
+        try:
+            t = json.loads(raw)
+            incumbent_run = t.get("run_id")
+            if t.get("claimed_at") is not None:
+                claimed_at = float(t["claimed_at"])
+        except (ValueError, TypeError):
+            pass  # Lua validated run_id before returning; belt-and-suspenders
+        return PointerClaim(
+            incumbent_run,
+            False,
+            incumbent_raw=raw,
+            incumbent_claimed_at=claimed_at,
+        )
     if state == 2:
         return PointerClaim(None, False, pair_gone=True)
     return PointerClaim(run_id, True)
+
+
+async def takeover_report_back_run(
+    cache,
+    flash_thread_id: str,
+    ptc_thread_id: str,
+    expected_raw: str,
+    run_id: str,
+    dispatch_gen: str | None = None,
+    request_key: str | None = None,
+) -> str:
+    """CAS-replace a stale provisional run pointer with this claim's.
+
+    ``'claimed'`` = we own the pointer now; ``'pair_gone'`` = membership fell
+    (a resolution settled the pair) so no summary may be scheduled;
+    ``'lost'`` = the pointer changed under us (or Redis failed) — the caller
+    surfaces retriable and the retry re-probes.
+    """
+    if not (cache.enabled and cache.client):
+        return "claimed"
+    try:
+        state = await cache.client.eval(
+            _POINTER_TAKEOVER_LUA,
+            2,
+            flash_watch_key(flash_thread_id),
+            flash_rb_run_key(flash_thread_id, ptc_thread_id),
+            ptc_thread_id,
+            expected_raw,
+            _pointer_value(run_id, dispatch_gen, request_key),
+            _FLASH_RB_RUN_TTL,
+        )
+    except Exception:
+        logger.warning(
+            f"[FLASH_REPORT_BACK] Pointer takeover failed for "
+            f"{flash_thread_id}/{ptc_thread_id}; surfacing retriable",
+            exc_info=True,
+        )
+        return "lost"
+    state = int(state)
+    if state == 1:
+        return "claimed"
+    if state == 2:
+        return "pair_gone"
+    return "lost"
 
 
 async def release_report_back_run(
@@ -995,13 +1089,16 @@ class _ReportBackClaim:
     starting no new run) or None (caller proceeds). ``pair_gone`` means the
     pair was settled after this POST was enqueued — the caller must refuse
     the dispatch (non-retriable) instead of scheduling a summary nobody is
-    watching for. ``consummate()`` keeps the just-made claim once the run
-    actually starts.
+    watching for. ``in_flight`` means a prior admission's run may still be
+    priming (no ledger row yet, pointer inside its lease) — the caller must
+    surface RETRIABLE (503), never adopt or start a second run.
+    ``consummate()`` keeps the just-made claim once the run actually starts.
     """
 
     def __init__(self) -> None:
         self.incumbent: str | None = None
         self.pair_gone = False
+        self.in_flight = False
         self._consummated = False
 
     def consummate(self) -> None:
@@ -1035,13 +1132,73 @@ async def claim(
     result = await claim_report_back_run(
         cache, flash_thread_id, ptc_thread_id, run_id, dispatch_gen, request_key
     )
-    if not result.claimed:
-        if result.pair_gone:
-            handle.pair_gone = True
-        else:
-            handle.incumbent = result.winning_run_id
+    if result.pair_gone:
+        handle.pair_gone = True
         yield handle
         return
+    if not result.claimed:
+        # Durability gate (review F1): adopt an incumbent ONLY when its run
+        # has a ledger row. A rowless pointer is a provisional claim whose
+        # priming never reached START — adopting it would ack this POST
+        # against a run that doesn't exist, and the terminal-wait cap would
+        # eventually clear the pair and drop the summary permanently.
+        row = None
+        row_known = False
+        if result.winning_run_id:
+            try:
+                from src.server.database import turn_lifecycle as tl_db
+
+                row = await tl_db.get_run(result.winning_run_id)
+                row_known = True
+            except Exception:
+                logger.warning(
+                    f"[FLASH_REPORT_BACK] Ledger probe for incumbent "
+                    f"{result.winning_run_id} failed; deferring adoption",
+                    exc_info=True,
+                )
+        if row is not None:
+            handle.incumbent = result.winning_run_id
+            yield handle
+            return
+        if not row_known or result.incumbent_raw is None:
+            # Can't prove the incumbent either way — defer, never ack.
+            handle.in_flight = True
+            yield handle
+            return
+        age = time.time() - (result.incumbent_claimed_at or 0.0)
+        if (
+            result.incumbent_claimed_at is not None
+            and age < _RB_POINTER_PRIMING_LEASE_S
+        ):
+            # Plausibly mid-priming on another worker; the retry re-probes.
+            handle.in_flight = True
+            yield handle
+            return
+        # Stale (or undated) rowless pointer: its worker died pre-START.
+        # Take the pointer over and run the summary ourselves.
+        outcome = await takeover_report_back_run(
+            cache,
+            flash_thread_id,
+            ptc_thread_id,
+            result.incumbent_raw,
+            run_id,
+            dispatch_gen,
+            request_key,
+        )
+        if outcome == "pair_gone":
+            handle.pair_gone = True
+            yield handle
+            return
+        if outcome != "claimed":
+            handle.in_flight = True
+            yield handle
+            return
+        logger.info(
+            f"[FLASH_REPORT_BACK] Took over stale provisional pointer for "
+            f"ptc={ptc_thread_id} on flash thread {flash_thread_id} "
+            f"(rowless incumbent {result.winning_run_id}, age {age:.0f}s)"
+        )
+        # Fall through: we own the pointer now, same as a won claim.
     try:
         yield handle
     finally:

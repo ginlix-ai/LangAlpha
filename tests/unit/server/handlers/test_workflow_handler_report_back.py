@@ -271,3 +271,85 @@ async def test_status_latest_turn_index_none_when_thread_has_no_turns():
 
     assert "latest_turn_index" in resp
     assert resp["latest_turn_index"] is None
+
+
+# ---------------------------------------------------------------------------
+# Live-slot resolution is ONE ledger read (review F7)
+# ---------------------------------------------------------------------------
+
+
+def _live_patches(cache: _FakeCache, row: dict) -> list:
+    """Like ``_patches`` but the latest attempt is a LIVE in_progress row —
+    and ``get_active_run`` is a tripwire: the status path must resolve live
+    state from the single latest-attempt read (a second snapshot can race a
+    concurrent START into status='running' with run_id=None)."""
+    from src.server.database import turn_lifecycle as tl_db
+
+    manager = MagicMock()
+    manager.get_live_task_info = AsyncMock(
+        return_value={"live": False, "active_tasks": [], "run_id": None}
+    )
+    return [
+        patch.object(
+            workflow_handler, "get_checkpoint_tuple", AsyncMock(return_value=None)
+        ),
+        patch.object(
+            tl_db,
+            "get_active_run",
+            AsyncMock(side_effect=AssertionError("split read — must not be called")),
+        ),
+        patch.object(tl_db, "get_latest_attempt", AsyncMock(return_value=row)),
+        patch(
+            "src.server.services.background_task_manager.BackgroundTaskManager.get_instance",
+            return_value=manager,
+        ),
+        patch(
+            "src.server.database.conversation.get_thread_by_id",
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            "src.server.database.conversation.get_latest_turn_index",
+            AsyncMock(return_value=3),
+        ),
+        patch(
+            "src.utils.cache.redis_cache.get_cache_client", return_value=cache
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_status_live_slot_resolves_from_single_latest_attempt_read():
+    row = {
+        "conversation_response_id": "run-live",
+        "status": "in_progress",
+        "cancel_requested_at": None,
+        "created_at": None,
+    }
+    with contextlib.ExitStack() as stack:
+        for p in _live_patches(_FakeCache(), row):
+            stack.enter_context(p)
+        resp = await workflow_handler.get_workflow_status("t-1")
+
+    assert resp["status"] == "running"
+    assert resp["run_id"] == "run-live"
+    assert resp["can_reconnect"] is True
+
+
+@pytest.mark.asyncio
+async def test_status_live_slot_with_cancel_intent_reads_stopping():
+    from datetime import datetime, timezone
+
+    row = {
+        "conversation_response_id": "run-live",
+        "status": "in_progress",
+        "cancel_requested_at": datetime.now(timezone.utc),
+        "created_at": None,
+    }
+    with contextlib.ExitStack() as stack:
+        for p in _live_patches(_FakeCache(), row):
+            stack.enter_context(p)
+        resp = await workflow_handler.get_workflow_status("t-1")
+
+    assert resp["status"] == "stopping"
+    assert resp["run_id"] == "run-live"
+    assert resp["can_reconnect"] is True

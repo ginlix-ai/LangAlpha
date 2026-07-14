@@ -50,31 +50,50 @@ class SteeringMiddleware(AgentMiddleware):
 
             key = f"workflow:steering:{thread_id}"
 
-            # Atomically read all steering messages and delete the key
-            pipe = cache.client.pipeline()
-            pipe.lrange(key, 0, -1)
-            pipe.delete(key)
-            results = await pipe.execute()
-
-            raw_messages = results[0]
+            # Peek, partition, then LREM exactly what we consume (v4 2.4c
+            # review F3). Foreign-stamped payloads (a run that died without
+            # draining) are never touched — this run's end-of-run drain
+            # returns them to the user. A pop-and-requeue cycle would open
+            # a crash window per model call in which the only copy of an
+            # accepted user message vanishes.
+            raw_messages = await cache.client.lrange(key, 0, -1)
             if not raw_messages:
                 return None
 
+            own_run_id = (config.get("metadata") or {}).get("run_id")
+
             # Parse steering messages (handle both str and dict payloads)
             parsed: list[dict] = []
+            consumed: list[Any] = []
             for raw in raw_messages:
                 try:
-                    data = json.loads(
-                        raw.decode("utf-8") if isinstance(raw, bytes) else raw
-                    )
-                    if isinstance(data, str):
-                        parsed.append({"content": data})
-                    elif isinstance(data, dict):
-                        parsed.append(data)
-                    else:
-                        parsed.append({"content": str(data)})
+                    text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+                    data = json.loads(text)
                 except (json.JSONDecodeError, UnicodeDecodeError) as e:
                     logger.warning(f"[Steering] Failed to parse steering message: {e}")
+                    consumed.append(raw)  # drop garbage from the queue
+                    continue
+                if (
+                    isinstance(data, dict)
+                    and own_run_id
+                    and data.get("run_id") not in (None, own_run_id)
+                ):
+                    continue
+                consumed.append(raw)
+                if isinstance(data, str):
+                    parsed.append({"content": data})
+                elif isinstance(data, dict):
+                    parsed.append(data)
+                else:
+                    parsed.append({"content": str(data)})
+
+            if consumed:
+                # LREM by exact value: identical duplicates are covered
+                # because one LREM count=1 is issued per read instance.
+                pipe = cache.client.pipeline()
+                for raw in consumed:
+                    pipe.lrem(key, 1, raw)
+                await pipe.execute()
 
             if not parsed:
                 return None

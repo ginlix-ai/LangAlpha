@@ -14,7 +14,10 @@ from ptc_agent.agent.state import ensure_message_ids
 from ptc_agent.agent.middleware.background_subagent.middleware import (
     BackgroundSubagentMiddleware,
 )
-from ptc_agent.agent.middleware.background_subagent.utils import build_message_checker
+from ptc_agent.agent.middleware.background_subagent.utils import (
+    build_message_checker,
+    config_own_run_id,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -123,7 +126,9 @@ class BackgroundSubagentOrchestrator:
             # If there are still pending background tasks, wait for them.
             if self.middleware.registry.has_pending_tasks():
                 thread_id = (config.get("configurable") or {}).get("thread_id")
-                checker = await build_message_checker(thread_id)
+                checker = await build_message_checker(
+                    thread_id, own_run_id=config_own_run_id(config)
+                )
                 logger.info(
                     "Waiting for pending background tasks",
                     pending_count=self.middleware.registry.pending_count,
@@ -278,7 +283,9 @@ class BackgroundSubagentOrchestrator:
 
             # Wait for all background tasks to complete
             thread_id = (config.get("configurable") or {}).get("thread_id")
-            checker = await build_message_checker(thread_id)
+            checker = await build_message_checker(
+                thread_id, own_run_id=config_own_run_id(config)
+            )
             logger.info(
                 "Waiting for pending background tasks after stream",
                 pending_count=self.middleware.registry.pending_count,
@@ -386,9 +393,11 @@ class BackgroundSubagentOrchestrator:
         return self.middleware.registry.has_pending_tasks()
 
     async def _has_pending_steering(self, config: dict[str, Any]) -> bool:
-        """Check if there are pending steering messages in Redis."""
+        """Check if there are pending steering messages this run would consume."""
         thread_id = (config.get("configurable") or {}).get("thread_id")
-        checker = await build_message_checker(thread_id)
+        checker = await build_message_checker(
+            thread_id, own_run_id=config_own_run_id(config)
+        )
         if checker is None:
             return False
         try:

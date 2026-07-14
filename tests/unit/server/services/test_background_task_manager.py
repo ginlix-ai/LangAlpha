@@ -1011,24 +1011,58 @@ class TestDrainReasoningClose:
 # wait_for_admission decisions (decision 2A)
 # ---------------------------------------------------------------------------
 
+# Ledger slot read behind wait_for_admission (v4 2.4c): the in_progress row
+# decides admission, worker-agnostically. Patched at the source module —
+# BTM resolves it as ``tl_db.get_active_run`` at call time.
+_GET_ACTIVE_RUN = "src.server.database.turn_lifecycle.get_active_run"
+
+
+def _live_row(run_id: str = "run-1") -> dict:
+    return {"conversation_response_id": run_id, "cancel_requested_at": None}
+
+
+def _stopping_row(run_id: str = "run-1") -> dict:
+    return {
+        "conversation_response_id": run_id,
+        "cancel_requested_at": "2026-07-14T00:00:00+00:00",
+    }
+
+
 class TestWaitForAdmission:
+    """Ledger-driven admission (v4 2.4c): the thread's in_progress row decides;
+    the local registry is consulted only to await a stopping run's teardown
+    when this worker hosts it."""
 
     @pytest.mark.asyncio
-    async def test_no_active_task_is_fresh(self):
+    async def test_no_slot_row_is_fresh(self):
         btm = _make_btm()
-        assert await btm.wait_for_admission("t-none") == "fresh"
+        with patch(_GET_ACTIVE_RUN, new_callable=AsyncMock, return_value=None):
+            assert await btm.wait_for_admission("t-none") == ("fresh", None)
 
     @pytest.mark.asyncio
-    async def test_running_task_is_running(self):
+    async def test_live_row_is_running_with_row(self):
+        """A live row means running regardless of which worker hosts the run;
+        the row rides back so the caller can run-stamp its steer."""
         btm = _make_btm()
-        ti = _make_task_info(thread_id="t-run", status=TaskStatus.RUNNING)
-        btm.tasks[("t-run", ti.run_id)] = ti
-        assert await btm.wait_for_admission("t-run") == "running"
+        row = _live_row()
+        with patch(_GET_ACTIVE_RUN, new_callable=AsyncMock, return_value=row):
+            assert await btm.wait_for_admission("t-run") == ("running", row)
 
     @pytest.mark.asyncio
-    async def test_cancelled_completing_within_wait_is_fresh(self):
-        """An explicitly-cancelled task that finishes winding down within the
-        wait → fresh turn, and no CancelledError reaches the caller."""
+    async def test_own_excluded_row_is_fresh(self):
+        """A dispatched caller's own committed row must not read as a peer."""
+        btm = _make_btm()
+        with patch(
+            _GET_ACTIVE_RUN, new_callable=AsyncMock, return_value=_live_row("r-mine")
+        ):
+            state = await btm.wait_for_admission("t-run", exclude_run_id="r-mine")
+        assert state == ("fresh", None)
+
+    @pytest.mark.asyncio
+    async def test_stopping_local_teardown_within_wait_is_fresh(self):
+        """Stopping row hosted by THIS worker: the local task finishes winding
+        down within the wait and the slot clears → fresh; the task's
+        CancelledError never reaches the caller."""
         btm = _make_btm()
 
         async def dies():
@@ -1038,38 +1072,65 @@ class TestWaitForAdmission:
         with suppress(asyncio.CancelledError):
             await asyncio.sleep(0)  # let it schedule
         ti = _make_task_info(thread_id="t-stop", status=TaskStatus.RUNNING, task=task)
-        ti.explicit_cancel = True
         btm.tasks[("t-stop", ti.run_id)] = ti
 
-        # Caller is unaffected by the task's CancelledError.
-        state = await btm.wait_for_admission("t-stop")
-        assert state == "fresh"
-        # Terminal-marked task evicted so a fresh turn proceeds.
+        with patch(
+            _GET_ACTIVE_RUN,
+            new_callable=AsyncMock,
+            side_effect=[_stopping_row(ti.run_id), None],
+        ):
+            assert await btm.wait_for_admission("t-stop") == ("fresh", None)
 
     @pytest.mark.asyncio
-    async def test_cancelled_still_winding_down_is_stopping(self):
-        """An explicitly-cancelled task still tearing down past the wait → 409
-        'stopping'."""
+    async def test_stopping_still_winding_down_is_stopping(self):
+        """Teardown outlives the wait → 409 'stopping' (never start a second
+        writer while the checkpoint flush may still be running)."""
         btm = _make_btm()
 
         never = asyncio.get_event_loop().create_future()
         ti = _make_task_info(thread_id="t-slow", status=TaskStatus.RUNNING, task=never)
-        ti.explicit_cancel = True
         btm.tasks[("t-slow", ti.run_id)] = ti
+        row = _stopping_row(ti.run_id)
 
         with patch(
             "src.server.services.background_task_manager.get_checkpoint_flush_timeout",
             return_value=0.01,
-        ):
-            state = await btm.wait_for_admission("t-slow")
-        assert state == "stopping"
+        ), patch(_GET_ACTIVE_RUN, new_callable=AsyncMock, return_value=row):
+            assert await btm.wait_for_admission("t-slow") == ("stopping", row)
 
     @pytest.mark.asyncio
-    async def test_terminal_task_is_fresh(self):
+    async def test_stopping_foreign_run_polls_slot_until_cleared(self):
+        """No local task (the run lives on a peer): the wait polls the slot;
+        the peer's finalize clearing it within the window → fresh."""
+        btm = _make_btm()
+        with patch(
+            _GET_ACTIVE_RUN,
+            new_callable=AsyncMock,
+            side_effect=[_stopping_row(), None, None],
+        ):
+            assert await btm.wait_for_admission("t-peer") == ("fresh", None)
+
+    @pytest.mark.asyncio
+    async def test_new_run_raced_in_while_stopping_drained(self):
+        """The stopped run drained and a NEW run took the slot during the
+        wait → running with the new row, so the caller steers the winner."""
+        btm = _make_btm()
+        new_row = _live_row("r-new")
+        with patch(
+            _GET_ACTIVE_RUN,
+            new_callable=AsyncMock,
+            side_effect=[_stopping_row("r-old"), None, new_row],
+        ):
+            assert await btm.wait_for_admission("t-race") == ("running", new_row)
+
+    @pytest.mark.asyncio
+    async def test_local_registry_not_the_decision_source(self):
+        """A stale local entry is irrelevant — the ledger decides."""
         btm = _make_btm()
         ti = _make_task_info(thread_id="t-done", status=TaskStatus.COMPLETED)
         btm.tasks[("t-done", ti.run_id)] = ti
-        assert await btm.wait_for_admission("t-done") == "fresh"
+        with patch(_GET_ACTIVE_RUN, new_callable=AsyncMock, return_value=None):
+            assert await btm.wait_for_admission("t-done") == ("fresh", None)
 
 
 class TestStartWorkflowCancelledPlaceholder:
@@ -1111,8 +1172,10 @@ class TestStartWorkflowCancelledPlaceholder:
         assert consumed is False
         # Burst slot released here — no BTM task will finalize to release it.
         rel.assert_awaited_once_with("u-1", "slot-1")
-        # No second workflow lingers active on the thread.
-        assert await btm.wait_for_admission(thread_id) == "fresh"
+        # The cancelled placeholder never trips admission (no ledger row —
+        # the generator never reached its START txn).
+        with patch(_GET_ACTIVE_RUN, new_callable=AsyncMock, return_value=None):
+            assert await btm.wait_for_admission(thread_id) == ("fresh", None)
 
     @pytest.mark.asyncio
     async def test_uncancelled_placeholder_still_upgrades(self):
@@ -1169,29 +1232,33 @@ class TestMutationAdmissionGuard:
     @pytest.mark.asyncio
     async def test_admission_waits_then_returns_running(self):
         """A running turn that is compacting → admission waits out the
-        mutation, then the normal scan returns 'running' so the caller
+        mutation, then the ledger scan returns 'running' so the caller
         steers."""
         btm = _make_btm()
-        btm.tasks[("thread-1", "run-1")] = _make_task_info(status=TaskStatus.RUNNING)
+        row = _live_row()
         runner = self._runner(mutating=True, idle_within_wait=True)
 
-        with patch(self.RUNNER, return_value=runner):
+        with patch(self.RUNNER, return_value=runner), patch(
+            _GET_ACTIVE_RUN, new_callable=AsyncMock, return_value=row
+        ):
             result = await btm.wait_for_admission("thread-1")
 
-        assert result == "running"
+        assert result == ("running", row)
         runner.wait_until_idle.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_admission_waits_then_returns_fresh(self):
-        """Manual mutation (no active task) → once the runner reports idle the
+        """Manual mutation (no slot row) → once the runner reports idle the
         admission returns 'fresh' so a new turn starts."""
         btm = _make_btm()
         runner = self._runner(mutating=True, idle_within_wait=True)
 
-        with patch(self.RUNNER, return_value=runner):
+        with patch(self.RUNNER, return_value=runner), patch(
+            _GET_ACTIVE_RUN, new_callable=AsyncMock, return_value=None
+        ):
             result = await btm.wait_for_admission("thread-1")
 
-        assert result == "fresh"
+        assert result == ("fresh", None)
 
     @pytest.mark.asyncio
     async def test_admission_timeout_returns_compacting(self):
@@ -1202,7 +1269,7 @@ class TestMutationAdmissionGuard:
         with patch(self.RUNNER, return_value=runner):
             result = await btm.wait_for_admission("thread-1")
 
-        assert result == "compacting"
+        assert result == ("compacting", None)
 
     @pytest.mark.asyncio
     async def test_admission_wait_floored_at_compaction_timeout(self):
@@ -1221,7 +1288,9 @@ class TestMutationAdmissionGuard:
         ), patch(
             "src.server.services.background_task_manager.get_compaction_timeout",
             return_value=0.5,  # floor: 0.5 + 1.0 margin governs
-        ), patch(self.RUNNER, return_value=runner):
+        ), patch(self.RUNNER, return_value=runner), patch(
+            _GET_ACTIVE_RUN, new_callable=AsyncMock, return_value=None
+        ):
             await btm.wait_for_admission("thread-1")
 
         runner.wait_until_idle.assert_awaited_once_with("thread-1", timeout=1.5)
@@ -1229,14 +1298,16 @@ class TestMutationAdmissionGuard:
     @pytest.mark.asyncio
     async def test_no_mutation_admits_normally(self):
         """No mutation in progress → admission falls straight through to the
-        normal task scan without waiting on the runner."""
+        ledger scan without waiting on the runner."""
         btm = _make_btm()
         runner = self._runner(mutating=False)
 
-        with patch(self.RUNNER, return_value=runner):
+        with patch(self.RUNNER, return_value=runner), patch(
+            _GET_ACTIVE_RUN, new_callable=AsyncMock, return_value=None
+        ):
             result = await btm.wait_for_admission("thread-1")
 
-        assert result == "fresh"
+        assert result == ("fresh", None)
         runner.wait_until_idle.assert_not_awaited()
 
 

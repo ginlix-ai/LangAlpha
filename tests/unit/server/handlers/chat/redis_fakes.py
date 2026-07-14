@@ -214,20 +214,38 @@ class FakeClient:
             ptc_id, value, ttl, request_key, gen = argv
             current = self._decoded(run_key)
             if isinstance(current, dict) and isinstance(current.get("run_id"), str):
+                # The real script returns the RAW pointer bytes; the fake's kv
+                # may hold parsed dicts, so re-serialize like real Redis would.
+                raw = self.kv.get(run_key)
+                raw = raw if isinstance(raw, str) else json.dumps(current)
                 if isinstance(current.get("request_key"), str):
                     if request_key == "" or current["request_key"] == request_key:
-                        return [0, current["run_id"]]
+                        return [0, raw]
                 elif (request_key == "" and gen == "") or (
                     gen != ""
                     and isinstance(current.get("dispatch_gen"), str)
                     and current.get("dispatch_gen") == gen
                 ):
-                    return [0, current["run_id"]]
+                    return [0, raw]
             if ptc_id not in self.sets.get(watch_key, set()):
                 return [2, ""]
             self.kv[run_key] = json.loads(value)
             self.ttls[run_key] = int(ttl)
             return [1, ""]
+        if script is report_back._POINTER_TAKEOVER_LUA:
+            watch_key, run_key = keys
+            ptc_id, expected, value, ttl = argv
+            raw = self.kv.get(run_key)
+            if raw is None:
+                return 0
+            raw = raw if isinstance(raw, str) else json.dumps(raw)
+            if raw != expected:
+                return 0
+            if ptc_id not in self.sets.get(watch_key, set()):
+                return 2
+            self.kv[run_key] = json.loads(value)
+            self.ttls[run_key] = int(ttl)
+            return 1
         if script is report_back._REAP_ORPHANS_LUA:
             set_key, origin_keys = keys[0], keys[1:]
             removed = 0
