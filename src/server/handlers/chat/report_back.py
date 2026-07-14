@@ -983,7 +983,9 @@ async def check_dispatch_capacity(flash_thread_id: str | None, user_id: str) -> 
 # predecessor later rolled back). Same-pair overlap is a degenerate case
 # (duplicate dispatch tool call), so serializing whole lifecycles is cheap;
 # cross-process overlap remains the documented accepted residual
-# (last-writer-wins), revisited with the rest of 2.4's distribution work.
+# (last-writer-wins) — reviewed and left standing when 2.4 distributed the
+# rest: the gen CAS bounds the damage to the degenerate duplicate-dispatch
+# shape, and a resurrected unbacked reservation decays at the origin TTL.
 _pair_locks: dict[str, tuple[asyncio.Lock, int]] = {}
 
 
