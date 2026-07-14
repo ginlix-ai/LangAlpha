@@ -44,24 +44,16 @@ def _make_tracker(enabled=True):
         return tracker, mock_cache
 
 
-async def _call_get_workflow_status(status: WorkflowStatus, bg_status: str) -> dict:
-    """Drive workflow_handler.get_workflow_status with the supplied tracker
-    status, stubbing every other dependency. Returns the response dict."""
+async def _call_get_workflow_status(active_row, latest_row) -> dict:
+    """Drive workflow_handler.get_workflow_status with the supplied ledger
+    rows (v4 2.4 — the run row decides), stubbing every other dependency."""
+    from src.server.database import turn_lifecycle as tl_db
     from src.server.handlers import workflow_handler
-
-    tracker = MagicMock()
-    tracker.get_status = AsyncMock(return_value={
-        "status": status,
-        "last_update": None,
-        "workspace_id": "ws-1",
-        "user_id": "u-1",
-    })
-    tracker.mark_completed = AsyncMock(return_value=True)
-    tracker.delete_status = AsyncMock(return_value=True)
 
     bg_manager = MagicMock()
     bg_manager.get_live_task_info = AsyncMock(return_value={
-        "live": bg_status != "not_found",
+        "live": False,
+        "run_id": None,
         "active_tasks": [],
     })
 
@@ -69,16 +61,20 @@ async def _call_get_workflow_status(status: WorkflowStatus, bg_status: str) -> d
     cache.enabled = False
     cache.client = None
 
-    with patch(
-        "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-        return_value=tracker,
-    ), patch.object(
+    with patch.object(
         workflow_handler, "get_checkpoint_tuple", new=AsyncMock(return_value=None)
+    ), patch.object(
+        tl_db, "get_active_run", new=AsyncMock(return_value=active_row)
+    ), patch.object(
+        tl_db, "get_latest_attempt", new=AsyncMock(return_value=latest_row)
     ), patch(
         "src.server.services.background_task_manager.BackgroundTaskManager.get_instance",
         return_value=bg_manager,
     ), patch(
         "src.server.database.conversation.get_thread_by_id",
+        new=AsyncMock(return_value=None),
+    ), patch(
+        "src.server.database.conversation.get_latest_turn_index",
         new=AsyncMock(return_value=None),
     ), patch(
         "src.utils.cache.redis_cache.get_cache_client",
@@ -459,25 +455,64 @@ class TestStatusSetInvariants:
         assert set(WorkflowStatus) == partition
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("status", sorted(RECONNECTABLE_STATUSES))
-    async def test_get_workflow_status_reconnectable(self, status):
-        # Reconnectable statuses must surface ``can_reconnect=True`` so the
-        # frontend retries the SSE stream. Pins the actual decision. The wire
-        # status is the public vocabulary (1.6).
-        from src.server.services.status_vocabulary import to_public
-
-        result = await _call_get_workflow_status(status, bg_status="active")
+    async def test_get_workflow_status_live_run_reconnectable(self):
+        # An active ledger slot surfaces ``can_reconnect=True`` so the
+        # frontend retries the SSE stream — worker-agnostic (no local
+        # executor consulted for the decision).
+        result = await _call_get_workflow_status(
+            active_row={
+                "conversation_response_id": "r-1",
+                "status": "in_progress",
+                "cancel_requested_at": None,
+                "created_at": None,
+            },
+            latest_row=None,
+        )
         assert result["can_reconnect"] is True
-        assert result["status"] == to_public(status)
+        assert result["status"] == "running"
+        assert result["run_id"] == "r-1"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("status", sorted(TERMINAL_STATUSES))
-    async def test_get_workflow_status_terminal_blocks_reconnect(self, status):
-        # Terminal statuses must surface ``can_reconnect=False`` so the
-        # frontend stops attempting to reattach.
-        result = await _call_get_workflow_status(status, bg_status="completed")
+    async def test_get_workflow_status_stopping_still_reconnectable(self):
+        # Durable cancel intent refines to 'stopping'; the stream stays
+        # attachable until the finalize lands.
+        from datetime import datetime, timezone
+
+        result = await _call_get_workflow_status(
+            active_row={
+                "conversation_response_id": "r-1",
+                "status": "in_progress",
+                "cancel_requested_at": datetime.now(timezone.utc),
+                "created_at": None,
+            },
+            latest_row=None,
+        )
+        assert result["can_reconnect"] is True
+        assert result["status"] == "stopping"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ledger_status,public", [
+        ("completed", "completed"),
+        ("error", "failed"),
+        ("cancelled", "cancelled"),
+        ("interrupted", "interrupted"),
+    ])
+    async def test_get_workflow_status_terminal_blocks_reconnect(
+        self, ledger_status, public
+    ):
+        # Terminal latest attempts surface ``can_reconnect=False`` (and the
+        # public vocabulary spelling) so the frontend stops reattaching.
+        result = await _call_get_workflow_status(
+            active_row=None,
+            latest_row={
+                "conversation_response_id": "r-1",
+                "status": ledger_status,
+                "created_at": None,
+            },
+        )
         assert result["can_reconnect"] is False
-        assert result["status"] == status
+        assert result["status"] == public
+        assert result["run_id"] is None
 
 
 # ---------------------------------------------------------------------------

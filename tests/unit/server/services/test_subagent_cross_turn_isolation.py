@@ -321,120 +321,126 @@ class TestRegistryRemoveTask:
 
 
 # ---------------------------------------------------------------------------
-# A4 — legacy stream_from_log fallback polls WorkflowTracker
+# A4 — run_id-less stream_from_log resolves from the ledger (v4 2.4)
 # ---------------------------------------------------------------------------
 
 
-class TestLegacyFallbackTerminalCheck:
-    """The pre-deploy reconnect path (run_id absent from request, no
-    TaskInfo in process) must NOT eager-exit on the first terminal-check
-    — it should wait until WorkflowTracker reports a terminal status."""
+class TestLedgerFallbackTerminalCheck:
+    """A run_id-less reconnect with no in-process TaskInfo resolves the run
+    from the ledger and polls the run row for terminality — worker-agnostic:
+    a peer's live run keeps the watcher attached, and the terminal row
+    (owner finalize or recovery scanner) releases it. No ledger row at all
+    means nothing durable to stream."""
+
+    @staticmethod
+    def _manager():
+        manager = MagicMock()
+        manager._find_latest_for_thread = MagicMock(return_value=None)
+        manager.task_lock = asyncio.Lock()
+        manager.tasks = {}  # no local record → terminal_check asks the ledger
+        manager.increment_connection = AsyncMock()
+        manager.decrement_connection = AsyncMock()
+        return manager
 
     @pytest.mark.asyncio
-    async def test_terminal_when_tracker_reports_completed(self):
+    async def test_resolves_run_from_ledger_and_drains_per_run_stream(self):
         from src.server.handlers.chat import stream_from_log as sfl
 
         cache = MagicMock()
         cache.enabled = True
         cache.client = MagicMock()
-        # First xread yields events; second is empty; tracker says
-        # completed so the loop exits cleanly.
+        # One batch on the PER-RUN key, then two empty rounds; the terminal
+        # ledger row lets the two-empty-round handshake exit.
         cache.client.xread = AsyncMock(side_effect=[
-            [(b"workflow:stream:t-leg", [
+            [(b"workflow:stream:t-leg:run-9", [
                 (b"1-0", {b"event": b"id: 1\nevent: x\ndata: a\n\n"}),
             ])],
             [],
             [],
         ])
 
-        tracker = MagicMock()
-        tracker.get_status = AsyncMock(return_value={"status": "completed"})
-
-        manager = MagicMock()
-        manager._find_latest_for_thread = MagicMock(return_value=None)
-        manager.task_lock = asyncio.Lock()
-
         with patch.object(sfl, "get_cache_client", return_value=cache), \
-             patch.object(sfl.WorkflowTracker, "get_instance", return_value=tracker), \
-             patch.object(sfl.BackgroundTaskManager, "get_instance", return_value=manager):
+             patch.object(sfl.BackgroundTaskManager, "get_instance",
+                          return_value=self._manager()), \
+             patch("src.server.database.turn_lifecycle.get_active_run",
+                   AsyncMock(return_value=None)), \
+             patch("src.server.database.turn_lifecycle.get_latest_attempt",
+                   AsyncMock(return_value={
+                       "conversation_response_id": "run-9",
+                       "status": "completed",
+                   })), \
+             patch("src.server.database.turn_lifecycle.get_run",
+                   AsyncMock(return_value={"status": "completed"})) as get_run:
             collected: list[str] = []
             async for event in sfl.stream_from_log("t-leg", run_id=None, last_event_id=None):
                 collected.append(event)
 
-        # The actual event was yielded — proves we didn't exit before draining.
+        # The event was yielded — we didn't exit before draining — and the
+        # XREAD attached to the ledger-resolved per-run key.
         assert any("event: x" in e for e in collected)
-        # And we DID consult the tracker.
-        assert tracker.get_status.await_count >= 1
+        xread_key = next(iter(cache.client.xread.await_args.args[0]))
+        assert xread_key == b"workflow:stream:t-leg:run-9"
+        assert get_run.await_count >= 1
 
     @pytest.mark.asyncio
-    async def test_not_terminal_when_tracker_reports_active(self):
-        """Active per the tracker ⇒ terminal_check returns False, so the
-        consumer keeps polling. We bound the test by limiting the xread
-        sequence and switching the tracker to terminal mid-flight."""
+    async def test_in_progress_row_keeps_polling_until_terminal(self):
+        """A live ledger row (any worker's) ⇒ terminal_check False, so the
+        consumer keeps polling; the row flipping terminal releases it."""
         from src.server.handlers.chat import stream_from_log as sfl
 
         cache = MagicMock()
         cache.enabled = True
         cache.client = MagicMock()
-        # Two empty rounds while the tracker says active, then tracker
-        # flips to completed and we exit.
-        cache.client.xread = AsyncMock(side_effect=[
-            [],  # empty round 1
-            [],  # empty round 2
-            [],  # empty round 3 — exits after tracker now says completed
-        ])
+        cache.client.xread = AsyncMock(side_effect=[[], [], [], []])
 
-        states = iter([
-            {"status": "active"},
-            {"status": "active"},
+        rows = iter([
+            {"status": "in_progress"},
+            {"status": "in_progress"},
             {"status": "completed"},
             {"status": "completed"},
         ])
-        tracker = MagicMock()
-        tracker.get_status = AsyncMock(side_effect=lambda _tid: next(states))
-
-        manager = MagicMock()
-        manager._find_latest_for_thread = MagicMock(return_value=None)
-        manager.task_lock = asyncio.Lock()
 
         with patch.object(sfl, "get_cache_client", return_value=cache), \
-             patch.object(sfl.WorkflowTracker, "get_instance", return_value=tracker), \
-             patch.object(sfl.BackgroundTaskManager, "get_instance", return_value=manager):
+             patch.object(sfl.BackgroundTaskManager, "get_instance",
+                          return_value=self._manager()), \
+             patch("src.server.database.turn_lifecycle.get_active_run",
+                   AsyncMock(return_value={
+                       "conversation_response_id": "run-9",
+                       "status": "in_progress",
+                   })), \
+             patch("src.server.database.turn_lifecycle.get_run",
+                   AsyncMock(side_effect=lambda _rid: next(rows))) as get_run:
             collected: list[str] = []
             async for event in sfl.stream_from_log("t-leg", run_id=None, last_event_id=None):
                 collected.append(event)
                 if len(collected) > 10:
                     break  # safety
 
-        # Multiple polls — at least the two while active and the terminal ones.
-        assert tracker.get_status.await_count >= 2
+        # Polled through the live rounds and past the terminal flip.
+        assert get_run.await_count >= 3
 
     @pytest.mark.asyncio
-    async def test_terminal_when_tracker_returns_none(self):
-        """No status record at all ⇒ nothing to wait for; the consumer
-        falls through after draining whatever is in the stream."""
+    async def test_no_ledger_row_yields_nothing(self):
+        """No TaskInfo + no ledger row: nothing durable names a run, so the
+        consumer exits without ever touching Redis (the legacy thread-only
+        stream key died with the tracker cutover)."""
         from src.server.handlers.chat import stream_from_log as sfl
 
         cache = MagicMock()
         cache.enabled = True
         cache.client = MagicMock()
-        cache.client.xread = AsyncMock(side_effect=[[], []])
-
-        tracker = MagicMock()
-        tracker.get_status = AsyncMock(return_value=None)
-
-        manager = MagicMock()
-        manager._find_latest_for_thread = MagicMock(return_value=None)
-        manager.task_lock = asyncio.Lock()
+        cache.client.xread = AsyncMock(return_value=[])
 
         with patch.object(sfl, "get_cache_client", return_value=cache), \
-             patch.object(sfl.WorkflowTracker, "get_instance", return_value=tracker), \
-             patch.object(sfl.BackgroundTaskManager, "get_instance", return_value=manager):
+             patch.object(sfl.BackgroundTaskManager, "get_instance",
+                          return_value=self._manager()), \
+             patch("src.server.database.turn_lifecycle.get_active_run",
+                   AsyncMock(return_value=None)), \
+             patch("src.server.database.turn_lifecycle.get_latest_attempt",
+                   AsyncMock(return_value=None)):
             collected: list[str] = []
             async for event in sfl.stream_from_log("t-leg", run_id=None, last_event_id=None):
                 collected.append(event)
-                if len(collected) > 5:
-                    break
 
-        # We polled the tracker, and exit happens after empty rounds.
-        assert tracker.get_status.await_count >= 1
+        assert collected == []
+        cache.client.xread.assert_not_awaited()

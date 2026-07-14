@@ -13,7 +13,6 @@ import uuid
 from fastapi import HTTPException
 
 from src.server.services.background_task_manager import BackgroundTaskManager
-from src.server.services.workflow_tracker import WorkflowTracker
 
 from ._common import logger
 from .steering import drain_steering_return_event
@@ -73,17 +72,21 @@ async def classify_reconnect(
 
     Must run BEFORE the StreamingResponse is built: a raise inside the SSE
     generator lands after HTTP 200 + headers are already on the wire.
-    Returns the effective run_id to stream (None = legacy thread-key
-    fallback inside ``stream_from_log``), or raises:
+    Returns the effective run_id to stream, or raises:
 
-    - 404: run not on this thread / no runs and no local activity at all
-    - 409 ``recovering``: durable in_progress row but no local executor
-      (crashed worker; the startup sweep or Phase-2 scanner will settle it)
+    - 404: run not on this thread / no runs and no local executor at all
     - 410 ``stream_expired``: terminal run whose retained stream is CONFIRMED
       gone — the archived replay endpoint is the only remaining source
     - 503 ``transport_unavailable``: Redis is configured but unreachable, so
       stream absence cannot be distinguished from a transient outage (I6
       tri-state: absence ≠ terminal). Retryable, unlike the 410.
+
+    An in_progress row admits the attach with NO local-executor requirement
+    (v4 2.4): the watch is an XREAD on the shared Redis stream, so it works
+    from any worker, and a crashed owner's stream still terminates — the
+    recovery scanner's finalize appends the visible run_end. The old 409
+    ``recovering`` (in_progress + no local task) is gone with it; it would
+    misclassify every healthy foreign-worker run.
     """
     from src.server.database import turn_lifecycle as tl_db
 
@@ -107,41 +110,19 @@ async def classify_reconnect(
             run_id = str(run["conversation_response_id"])
 
     if run is None:
-        # No ledger row (pre-v4 turn, or nothing durable yet): fall back to
-        # local task / tracker knowledge, mirroring the pre-1.5 behavior.
-        # An explicit run_id must be corroborated by that knowledge — the
-        # task registry is keyed by (thread, run) already, and the tracker
-        # blob only vouches for its OWN run_id (an unrelated blob must not
-        # admit a made-up run id onto an empty stream key).
+        # No ledger row: only a local task record (the pre-START placeholder
+        # window) may vouch for the attach — the registry is keyed by
+        # (thread, run) already. The tracker-blob corroboration is gone
+        # (v4 2.4): every post-Phase-1 run has a row, so a rowless reconnect
+        # with no local task has nothing durable to attach to.
         task_info = await manager.get_task_info(thread_id, run_id)
         if task_info is not None:
             return run_id or task_info.run_id
-        tracker_status = await WorkflowTracker.get_instance().get_status(thread_id)
-        if tracker_status is not None:
-            if run_id is not None and tracker_status.get("run_id") != run_id:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Run {run_id} not found on thread {thread_id}",
-                )
-            return run_id  # stream_from_log resolves via tracker/legacy key
         raise HTTPException(
             status_code=404, detail=f"Workflow {thread_id} not found"
         )
 
     if run["status"] == "in_progress":
-        task_info = await manager.get_task_info(thread_id, run_id)
-        if task_info is None:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "recovering",
-                    "message": (
-                        "The run is recorded as in progress but has no live "
-                        "executor; recovery will settle it. Retry shortly."
-                    ),
-                    "run_id": run_id,
-                },
-            )
         # Live run: the stream key may legitimately not exist yet (no event
         # buffered so far — False is fine), but the transport itself must be
         # reachable or the committed 200 would attach to a stream that can

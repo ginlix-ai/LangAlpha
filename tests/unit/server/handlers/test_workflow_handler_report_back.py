@@ -35,29 +35,32 @@ def _seed(cache: _FakeCache, flash: str, members: list[str], run_pointers: dict[
 
 
 def _patches(cache: _FakeCache, latest_turn: int | None = None) -> list:
-    """Stub everything get_workflow_status touches except the report-back block."""
-    tracker = MagicMock()
-    # COMPLETED is terminal (not reconnectable) -> can_reconnect False.
-    tracker.get_status = AsyncMock(
-        return_value={
-            "status": "completed",
-            "last_update": None,
-            "workspace_id": "ws-1",
-            "user_id": "u-1",
-        }
-    )
+    """Stub everything get_workflow_status touches except the report-back block.
+
+    The ledger speaks status truth (v4 2.4): no active slot, latest attempt
+    'completed' — a settled terminal thread (can_reconnect False).
+    """
+    from src.server.database import turn_lifecycle as tl_db
+
     manager = MagicMock()
-    # A live bg task skips the stale-clear branch regardless of can_reconnect.
     manager.get_live_task_info = AsyncMock(
-        return_value={"live": True, "active_tasks": [], "run_id": "r1"}
+        return_value={"live": False, "active_tasks": [], "run_id": None}
     )
     return [
         patch.object(
             workflow_handler, "get_checkpoint_tuple", AsyncMock(return_value=None)
         ),
-        patch(
-            "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
-            return_value=tracker,
+        patch.object(tl_db, "get_active_run", AsyncMock(return_value=None)),
+        patch.object(
+            tl_db,
+            "get_latest_attempt",
+            AsyncMock(
+                return_value={
+                    "conversation_response_id": "r1",
+                    "status": "completed",
+                    "created_at": None,
+                }
+            ),
         ),
         patch(
             "src.server.services.background_task_manager.BackgroundTaskManager.get_instance",
@@ -268,36 +271,3 @@ async def test_status_latest_turn_index_none_when_thread_has_no_turns():
 
     assert "latest_turn_index" in resp
     assert resp["latest_turn_index"] is None
-
-
-# --- Liveness read-model (the cheap dispatch-status primitive) ---------------
-
-
-def test_liveness_from_blob_active_is_reconnectable():
-    # Wire status is the PUBLIC vocabulary (1.6): tracker 'active' -> 'running'.
-    out = workflow_handler.liveness_from_blob(
-        "t-1", {"status": "active", "run_id": "r-1", "user_id": "u-1"}
-    )
-    assert out == {
-        "thread_id": "t-1",
-        "status": "running",
-        "run_id": "r-1",
-        "can_reconnect": True,
-    }
-
-
-def test_liveness_from_blob_completed_is_not_reconnectable():
-    out = workflow_handler.liveness_from_blob(
-        "t-2", {"status": "completed", "run_id": "r-2"}
-    )
-    assert out["can_reconnect"] is False
-    assert out["run_id"] == "r-2"
-
-
-def test_liveness_from_blob_missing_blob_is_idle():
-    # Tracker's 'unknown' placeholder maps to public 'idle' — the internal
-    # spelling never crosses the wire.
-    out = workflow_handler.liveness_from_blob("t-3", None)
-    assert out["status"] == "idle"
-    assert out["run_id"] is None
-    assert out["can_reconnect"] is False

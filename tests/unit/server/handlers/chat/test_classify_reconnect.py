@@ -6,8 +6,12 @@ Pins the admission contract of ``classify_reconnect``:
 - Redis reachable + confirmed missing  -> 410 stream_expired (permanent)
 - Redis configured but unreachable     -> 503 transport_unavailable (I6:
   absence must never be asserted from an outage)
-- explicit run_id without a ledger row -> only admitted when the local task
-  registry or the tracker blob vouches for that EXACT run id
+- in_progress row                      -> admits with NO local-executor
+  requirement (v4 2.4: the attach is an XREAD on the shared stream, so a
+  foreign worker's healthy run must admit, never 409)
+- no ledger row                        -> only the local task registry (the
+  pre-START placeholder window) may vouch; otherwise 404. The tracker-blob
+  corroboration path is deleted.
 """
 
 from __future__ import annotations
@@ -20,7 +24,6 @@ from fastapi import HTTPException
 from src.server.handlers.chat import stream_reconnect
 
 RUN_ID = "11111111-1111-4111-8111-111111111111"
-OTHER_RUN = "22222222-2222-4222-8222-222222222222"
 TID = "thread-1"
 
 
@@ -34,19 +37,16 @@ def _patches(
     *,
     run_row,
     task_info=None,
-    tracker_status=None,
     cache=None,
     backend="redis",
 ):
     from src.server.database import turn_lifecycle as tl_db
     from src.server.services import background_task_manager as btm_mod
-    from src.server.services.workflow_tracker import WorkflowTracker
 
     manager = MagicMock()
     manager.get_task_info = AsyncMock(return_value=task_info)
     manager.event_storage_backend = backend
-    tracker = MagicMock()
-    tracker.get_status = AsyncMock(return_value=tracker_status)
+    manager.enable_storage = backend == "redis"
     return (
         patch.object(tl_db, "get_run", AsyncMock(return_value=run_row)),
         patch.object(tl_db, "get_latest_attempt", AsyncMock(return_value=run_row)),
@@ -54,9 +54,6 @@ def _patches(
             btm_mod.BackgroundTaskManager,
             "get_instance",
             classmethod(lambda cls: manager),
-        ),
-        patch.object(
-            WorkflowTracker, "get_instance", classmethod(lambda cls: tracker)
         ),
         patch(
             "src.utils.cache.redis_cache.get_cache_client",
@@ -67,7 +64,7 @@ def _patches(
 
 async def _classify(run_id=RUN_ID, **kw):
     ps = _patches(**kw)
-    with ps[0], ps[1], ps[2], ps[3], ps[4]:
+    with ps[0], ps[1], ps[2], ps[3]:
         return await stream_reconnect.classify_reconnect(TID, run_id)
 
 
@@ -123,17 +120,31 @@ async def test_terminal_with_memory_backend_is_410():
     assert exc.value.status_code == 410
 
 
+def _live_row():
+    return {"conversation_thread_id": TID, "status": "in_progress"}
+
+
 @pytest.mark.asyncio
-async def test_live_run_with_executor_and_redis_down_is_503():
+async def test_live_run_without_local_executor_admits():
+    """v4 2.4: a healthy foreign-worker run must admit the attach — the watch
+    is an XREAD on the shared Redis stream, so executor locality is
+    irrelevant. The old 409 ``recovering`` for in_progress + no local task
+    would misclassify every peer-owned run."""
+    client = MagicMock()
+    client.exists = AsyncMock(return_value=1)
+    got = await _classify(
+        run_row=_live_row(), task_info=None, cache=_Cache(client=client)
+    )
+    assert got == RUN_ID
+
+
+@pytest.mark.asyncio
+async def test_live_run_with_redis_down_is_503():
     """A committed 200 must not attach to a stream that can never be read."""
     client = MagicMock()
     client.exists = AsyncMock(side_effect=ConnectionError("redis down"))
     with pytest.raises(HTTPException) as exc:
-        await _classify(
-            run_row={"conversation_thread_id": TID, "status": "in_progress"},
-            task_info=MagicMock(run_id=RUN_ID),
-            cache=_Cache(client=client),
-        )
+        await _classify(run_row=_live_row(), cache=_Cache(client=client))
     assert exc.value.status_code == 503
 
 
@@ -143,31 +154,24 @@ async def test_live_run_with_memory_backend_is_503():
     live run can never deliver, so admission must be refused — never a 200
     to a stream nothing will ever write."""
     with pytest.raises(HTTPException) as exc:
-        await _classify(
-            run_row={"conversation_thread_id": TID, "status": "in_progress"},
-            task_info=MagicMock(run_id=RUN_ID),
-            backend="memory",
-        )
+        await _classify(run_row=_live_row(), backend="memory")
     assert exc.value.status_code == 503
     assert exc.value.detail["code"] == "transport_unavailable"
 
 
 @pytest.mark.asyncio
-async def test_legacy_fallback_requires_tracker_run_id_match():
-    """No ledger row + no task: an unrelated tracker blob must not admit a
-    made-up explicit run id onto an empty stream key."""
+async def test_no_row_and_no_local_task_is_404():
+    """No ledger row + no local task record: nothing durable vouches for the
+    run id, so the attach is refused — no tracker blob can admit it."""
     with pytest.raises(HTTPException) as exc:
-        await _classify(
-            run_row=None,
-            tracker_status={"status": "active", "run_id": OTHER_RUN},
-        )
+        await _classify(run_row=None, task_info=None)
     assert exc.value.status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_legacy_fallback_admits_matching_tracker_run_id():
-    got = await _classify(
-        run_row=None,
-        tracker_status={"status": "active", "run_id": RUN_ID},
-    )
+async def test_no_row_with_local_task_admits():
+    """The pre-START placeholder window: the local registry is keyed by
+    (thread, run), so its record may vouch for the attach before the START
+    txn lands the row."""
+    got = await _classify(run_row=None, task_info=MagicMock(run_id=RUN_ID))
     assert got == RUN_ID

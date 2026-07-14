@@ -7,7 +7,6 @@ Extracted from src/server/app/workflow.py to separate business logic from route 
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
 from typing import Optional
 
 from fastapi import HTTPException
@@ -213,111 +212,6 @@ async def cancel_workflow(thread_id: str, run_id: Optional[str] = None) -> dict:
         )
 
 
-def liveness_from_blob(thread_id: str, blob: Optional[dict]) -> dict:
-    """Cheap ``{status, run_id, can_reconnect}`` slice from a tracker status blob.
-
-    No checkpoint deserialize, DB read, or BTM call. Shared by
-    ``/dispatches/liveness`` and ``get_workflow_status`` so both agree on the
-    reconnectability rule. ``status`` is the PUBLIC vocabulary (1.6);
-    ``can_reconnect`` is decided on the raw tracker value before mapping.
-    """
-    from src.server.services.status_vocabulary import to_public
-    from src.server.services.workflow_tracker import (
-        RECONNECTABLE_STATUSES,
-        WorkflowStatus,
-    )
-
-    status = blob.get("status", WorkflowStatus.UNKNOWN) if blob else WorkflowStatus.UNKNOWN
-    return {
-        "thread_id": thread_id,
-        "status": to_public(status),
-        "run_id": blob.get("run_id") if blob else None,
-        "can_reconnect": status in RECONNECTABLE_STATUSES,
-    }
-
-
-_HEAL_MIN_BLOB_AGE_S = 30.0
-
-# The tracker's Lua CAS deliberately lets a gated write through when the
-# STORED blob has no run_id (legacy blobs predate run stamping). A healer
-# that observed a run_id-less blob must therefore gate on a value that can
-# never name a real run — the heal then lands only while the blob is still
-# run_id-less, and is refused the moment any run stamps it.
-_GENLESS_HEAL_GATE = "__healer_observed_no_run_id__"
-
-
-def _blob_age_seconds(blob: Optional[dict]) -> float:
-    """Age per the blob's own ``last_update``; unparseable reads as ancient."""
-    raw = (blob or {}).get("last_update")
-    if not raw:
-        return float("inf")
-    try:
-        return (datetime.now() - datetime.fromisoformat(raw)).total_seconds()
-    except (ValueError, TypeError):
-        return float("inf")
-
-
-async def crosscheck_btm_liveness(
-    thread_id: str, tracker, reconnectable: bool, blob: Optional[dict] = None
-) -> dict:
-    """Cross-check a tracker blob against the in-process BTM, healing stale ACTIVE.
-
-    The in-process BackgroundTaskManager is authoritative for liveness
-    (single-worker invariant, see ``server.py``). No task for a blob claiming a
-    reconnectable status means a restart orphan (``mark_active`` writes no TTL) —
-    heal it to COMPLETED so status reads stop reporting a zombie.
-
-    The heal must not race a fresh admission (marker stamped, ``pre_register``
-    not yet visible): it is age-gated (a restart orphan is old by definition),
-    re-checks liveness under the same per-thread admission lock that covers
-    that window, and CAS-gates the write on the observed run_id so a newer
-    run's marker can never be overwritten. ``healed`` is True only when the
-    gated write actually landed. Returns ``{"live", "healed", "run_id",
-    "active_tasks"}``.
-    """
-    from src.server.services.background_task_manager import BackgroundTaskManager
-
-    def _live(bg: dict) -> dict:
-        return {
-            "live": True,
-            "healed": False,
-            "run_id": bg.get("run_id"),
-            "active_tasks": bg.get("active_tasks", []),
-        }
-
-    manager = BackgroundTaskManager.get_instance()
-    bg_status = await manager.get_live_task_info(thread_id)
-    if bg_status.get("live"):
-        return _live(bg_status)
-    healed = False
-    if reconnectable and _blob_age_seconds(blob) >= _HEAL_MIN_BLOB_AGE_S:
-        admission_lock = await manager.get_admission_lock(thread_id)
-        async with admission_lock:
-            bg_status = await manager.get_live_task_info(thread_id)
-            if bg_status.get("live"):
-                return _live(bg_status)
-            logger.info(
-                f"Stale workflow status for {thread_id}: Redis says active but "
-                f"BackgroundTaskManager has no task info. Healing to completed."
-            )
-            from src.server.services.workflow_tracker import WorkflowStatus
-
-            try:
-                # Gated on BOTH the observed run_id and the observed ACTIVE
-                # status: the same run can have gone terminal (INTERRUPTED —
-                # HITL resumability — or failed/cancelled) between the read
-                # and this write, and run_id alone cannot see that.
-                healed = await tracker.mark_completed(
-                    thread_id,
-                    run_id=(blob or {}).get("run_id") or _GENLESS_HEAL_GATE,
-                    metadata={"healed": "stale_active_no_task"},
-                    expected_status=WorkflowStatus.ACTIVE,
-                )
-            except Exception:
-                healed = False
-    return {"live": False, "healed": healed, "run_id": None, "active_tasks": []}
-
-
 async def get_workflow_status(
     thread_id: str, is_shared: Optional[bool] = None
 ) -> dict:
@@ -334,18 +228,9 @@ async def get_workflow_status(
         Dict with current status, reconnectability, and progress info
     """
     try:
-        from src.server.services.workflow_tracker import (
-            RECONNECTABLE_STATUSES,
-            WorkflowStatus,
-            WorkflowTracker,
-        )
-
-        tracker = WorkflowTracker.get_instance()
-
-        # Get status from Redis
-        redis_status = await tracker.get_status(thread_id)
-
-        # Check checkpoint for additional info
+        # Checkpoint read feeds only the payload's `progress` garnish — never
+        # status truth (a checkpoint with no pending sends says nothing about
+        # whether a run is live).
         checkpoint_info = None
         try:
             checkpoint_tuple = await get_checkpoint_tuple(thread_id)
@@ -365,84 +250,55 @@ async def get_workflow_status(
         except Exception as e:
             logger.debug(f"Could not fetch checkpoint info for {thread_id}: {e}")
 
-        # Determine overall status; the blob-present path uses the shared
-        # read-model (liveness_from_blob) so the heavy and light paths never
-        # diverge on can_reconnect.
-        if redis_status:
-            base = liveness_from_blob(thread_id, redis_status)
-            status = base["status"]
-            can_reconnect = base["can_reconnect"]
-            last_update = redis_status.get("last_update")
-            workspace_id = redis_status.get("workspace_id")
-            user_id = redis_status.get("user_id")
-        elif checkpoint_info and checkpoint_info.get("completed"):
-            # Found in checkpoint but not in Redis = old completed workflow
-            status = WorkflowStatus.COMPLETED
-            can_reconnect = status in RECONNECTABLE_STATUSES
-            last_update = None
-            workspace_id = None
-            user_id = None
-        else:
-            # Not in Redis, not in checkpoint = unknown
-            status = WorkflowStatus.UNKNOWN
-            can_reconnect = status in RECONNECTABLE_STATUSES
-            last_update = None
-            workspace_id = None
-            user_id = None
+        # The ledger decides (v4 2.4): the active slot speaks the live
+        # vocabulary (stopping = durable cancel intent), else the latest
+        # attempt's terminal status, else idle. Same answer on every worker —
+        # the tracker blob, the checkpoint status fallback, and the stale-
+        # ACTIVE heal are gone from this path (the recovery scanner owns
+        # orphan convergence now).
+        from src.server.database import turn_lifecycle as tl_db
+        from src.server.services.status_vocabulary import to_public
 
-        # Get subagent info from background task manager
-        active_tasks = []
         run_id = None
-
-        try:
-            # A live task yields active_tasks + run_id; a stale ACTIVE blob
-            # surviving a restart is healed to COMPLETED so a reconnect doesn't
-            # 404 on /messages/stream.
-            result = await crosscheck_btm_liveness(
-                thread_id, tracker, can_reconnect, blob=redis_status
+        can_reconnect = False
+        row_ts = None
+        active_run = await tl_db.get_active_run(thread_id)
+        if active_run is not None:
+            run_id = str(active_run["conversation_response_id"])
+            status = to_public(
+                active_run["status"],
+                cancel_requested_at=active_run.get("cancel_requested_at"),
             )
-            if result["live"]:
-                active_tasks = result["active_tasks"]
-                run_id = result["run_id"]
-            elif result["healed"]:
-                can_reconnect = False
-                status = WorkflowStatus.COMPLETED
+            # Reconnect attaches to the shared Redis stream, so it is
+            # worker-agnostic: no local-executor requirement. A crashed
+            # owner's stream still terminates — the scanner's finalize
+            # appends the visible run_end.
+            can_reconnect = status in ("running", "stopping")
+            row_ts = active_run.get("created_at")
+        else:
+            latest = await tl_db.get_latest_attempt(thread_id)
+            status = to_public(latest["status"]) if latest is not None else "idle"
+            row_ts = latest.get("created_at") if latest is not None else None
+        last_update = row_ts.isoformat() if row_ts is not None else None
+
+        # Local executor garnish: subagent ids for the frontend's task
+        # reattach — populated only when THIS worker executes the run
+        # (empty on peers; per-task streams re-resolve on their own).
+        active_tasks = []
+        try:
+            from src.server.services.background_task_manager import (
+                BackgroundTaskManager,
+            )
+
+            live = await BackgroundTaskManager.get_instance().get_live_task_info(
+                thread_id
+            )
+            if live.get("live") and live.get("run_id") == run_id:
+                active_tasks = live.get("active_tasks", [])
         except Exception as e:
             logger.debug(
                 f"Could not get background task status for {thread_id}: {e}"
             )
-
-        # 1.6 ledger-first: a durable in_progress slot outranks the tracker
-        # blob — it can say stopping (durable cancel intent) or recovering
-        # (no local executor), which no blob state expresses. Absent a slot,
-        # map whatever the blob/checkpoint fallback produced to the public
-        # vocabulary so internal spellings (e.g. "unknown") never leak.
-        from src.server.services.status_vocabulary import to_public
-
-        try:
-            from src.server.database import turn_lifecycle as tl_db
-
-            active_run = await tl_db.get_active_run(thread_id)
-        except Exception as e:
-            logger.debug(f"Could not read active run for {thread_id}: {e}")
-            active_run = None
-        if active_run is not None:
-            # Derive run identity, executor presence, and reconnectability
-            # together: the executor only counts if it is executing THIS run,
-            # and a live slot with a matching executor must advertise
-            # can_reconnect even when the tracker blob is gone (e.g. after a
-            # Redis flush) — the attach path needs no blob.
-            ledger_run_id = str(active_run["conversation_response_id"])
-            has_executor = run_id == ledger_run_id
-            status = to_public(
-                active_run["status"],
-                cancel_requested_at=active_run.get("cancel_requested_at"),
-                has_executor=has_executor,
-            )
-            run_id = ledger_run_id
-            can_reconnect = has_executor and status in ("running", "stopping")
-        else:
-            status = to_public(status)
 
         # Include share status so the UI can show the correct icon without an
         # extra API call. The ``/status`` route resolves this while authorizing
@@ -481,8 +337,6 @@ async def get_workflow_status(
             "can_reconnect": can_reconnect,
             "latest_turn_index": latest_turn_index,
             "last_update": last_update,
-            "workspace_id": workspace_id,
-            "user_id": user_id,
             "progress": checkpoint_info,
             "active_tasks": active_tasks,
             "is_shared": is_shared,

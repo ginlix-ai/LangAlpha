@@ -23,7 +23,7 @@ from src.server.database.hook_outbox import (
     build_finalize_jobs_from_run_row,
     enqueue_hooks,
 )
-from src.server.utils.pg_sanitize import SafeJson
+from src.server.utils.pg_sanitize import SafeJson, normalize_uuid
 
 logger = logging.getLogger(__name__)
 
@@ -599,6 +599,41 @@ async def heal_stale_thread_projections() -> int:
                 """
             )
             return cur.rowcount
+
+
+async def get_latest_attempts_for_threads(
+    thread_ids: List[str], user_id: str
+) -> Dict[str, Dict[str, Any]]:
+    """Latest attempt row per thread, ownership-filtered — one query.
+
+    Feeds batched liveness reads: ownership comes from the thread row (no
+    per-thread authorization round-trips), threads with no attempts are
+    simply absent from the result. Non-UUID ids are dropped pre-bind — one
+    malformed client id must not 22P02 the whole batch.
+    """
+    normalized = [nid for nid in (normalize_uuid(t) for t in thread_ids) if nid]
+    if not normalized:
+        return {}
+    async with qr_db.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT DISTINCT ON (cr.conversation_thread_id)
+                    cr.conversation_thread_id, cr.conversation_response_id,
+                    cr.status, cr.cancel_requested_at
+                FROM conversation_responses cr
+                JOIN conversation_threads ct
+                    ON ct.conversation_thread_id = cr.conversation_thread_id
+                JOIN workspaces w ON w.workspace_id = ct.workspace_id
+                WHERE cr.conversation_thread_id = ANY(%s)
+                  AND w.user_id = %s
+                ORDER BY cr.conversation_thread_id,
+                         cr.turn_index DESC, cr.attempt_no DESC
+                """,
+                (normalized, user_id),
+            )
+            rows = await cur.fetchall()
+            return {str(r["conversation_thread_id"]): dict(r) for r in rows}
 
 
 async def find_run_by_request_key(request_key: str) -> Optional[Dict[str, Any]]:

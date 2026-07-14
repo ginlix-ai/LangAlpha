@@ -180,7 +180,6 @@ async def extract_text_from_thread(
     from src.server.database.conversation import (
         get_thread_by_id,
     )
-    from src.server.services.workflow_tracker import WorkflowTracker
 
     # Look up thread
     thread = await get_thread_by_id(thread_id)
@@ -194,20 +193,20 @@ async def extract_text_from_thread(
 
     workspace_id = str(thread.get("workspace_id", ""))
 
-    # Check workflow status
-    tracker = WorkflowTracker.get_instance()
-    status_info = await tracker.get_status(thread_id)
+    # The ledger routes live-vs-settled (v4 2.4): an in_progress row means
+    # the turn is still streaming into Redis on SOME worker; anything else
+    # reads the finalized turns from the DB.
+    from src.server.database import turn_lifecycle as tl_db
 
-    if status_info:
-        status = status_info.get("status", "unknown")
+    active_run = await tl_db.get_active_run(thread_id)
+    if active_run is not None:
+        status = "running"
     else:
         status = thread.get("current_status", "unknown")
 
-    # Determine if running (read from Redis) or completed (read from DB).
     # Qualify relative file paths with workspace context so the flash agent
     # (and its frontend) can resolve them across workspaces, then cap length.
-    active_statuses = {"running", "active", "streaming", "pending"}
-    if status in active_statuses:
+    if active_run is not None:
         # The active stream is always a single live turn.
         text = await _extract_from_redis(thread_id)
         text = _truncate_single(_qualify_file_paths(text, workspace_id))
@@ -231,12 +230,10 @@ async def _extract_from_redis(thread_id: str) -> str:
     (``workflow:stream:{tid}:{run_id}``) and decodes the pre-rendered SSE
     wire string from each entry's ``b"event"`` field. The run_id is
     resolved from the in-process ``BackgroundTaskManager`` for the most
-    recent turn on the thread. When no in-process TaskInfo exists (process
-    restart, all entries TTL'd out), falls back to the legacy
-    ``workflow:stream:{tid}`` key for backward compat during the deploy
-    window. XREVRANGE with COUNT yields the most-recent 500 entries
-    cheaply, then we reverse to chronological order to mirror the old
-    RPUSH semantics.
+    recent turn on the thread, falling back to the ledger (v4 2.4) so the
+    read works from any worker. XREVRANGE with COUNT yields the
+    most-recent 500 entries cheaply, then we reverse to chronological
+    order to mirror the old RPUSH semantics.
     """
     # Local imports to avoid load-order coupling with the server package
     # at agent import time.
@@ -246,11 +243,6 @@ async def _extract_from_redis(thread_id: str) -> str:
     )
     from src.utils.cache.redis_cache import get_cache_client
 
-    # Resolve the per-run stream key: prefer in-process BTM, then the
-    # cross-process WorkflowTracker blob, then fall back to the legacy
-    # thread-only key. The tracker path covers post-restart reconnects
-    # where BTM is empty but the active run's run_id is still in Redis.
-    key = f"workflow:stream:{thread_id}"
     resolved_run_id: str | None = None
     try:
         manager = BackgroundTaskManager.get_instance()
@@ -265,19 +257,21 @@ async def _extract_from_redis(thread_id: str) -> str:
 
     if resolved_run_id is None:
         try:
-            from src.server.services.workflow_tracker import WorkflowTracker
+            from src.server.database import turn_lifecycle as tl_db
 
-            tracker = WorkflowTracker.get_instance()
-            status_obj = await tracker.get_status(thread_id)
-            if status_obj is not None:
-                resolved_run_id = status_obj.get("run_id")
+            row = await tl_db.get_active_run(thread_id)
+            if row is None:
+                row = await tl_db.get_latest_attempt(thread_id)
+            if row is not None:
+                resolved_run_id = str(row["conversation_response_id"])
         except Exception as e:
             logger.warning(
-                f"Failed to resolve run_id from tracker for thread {thread_id}: {e}"
+                f"Failed to resolve run_id from ledger for thread {thread_id}: {e}"
             )
 
-    if resolved_run_id is not None:
-        key = stream_key(thread_id, resolved_run_id)
+    if resolved_run_id is None:
+        return ""
+    key = stream_key(thread_id, resolved_run_id)
 
     try:
         cache = get_cache_client()

@@ -209,6 +209,20 @@ class AutomationExecutor:
             manager = BackgroundTaskManager.get_instance()
             await manager.wait_for_persistence(thread_id, run_id)
 
+            # A drained generator is transport, not truth — it ends the same
+            # way for success, a streamed error event, or a cancelled run.
+            # The ledger's terminal row decides the outcome (v4 2.4); any
+            # non-completed outcome routes through the failure branch below.
+            from src.server.database import turn_lifecycle as tl_db
+
+            run_row = await tl_db.get_run(run_id)
+            run_outcome = run_row["status"] if run_row else None
+            if run_outcome != "completed":
+                raise RuntimeError(
+                    f"workflow run finished as '{run_outcome or 'no run row'}'"
+                    f" (run_id={run_id})"
+                )
+
             # ─── Success ───────────────────────────────────────────
             await auto_db.update_execution_status(
                 execution_id,

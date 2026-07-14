@@ -1395,10 +1395,13 @@ async def get_dispatches_liveness(
 ):
     """Batched, client-keyed dispatch liveness — N cards in one round-trip.
 
-    Reads the cheap ``workflow:status`` blobs via a single MGET (no checkpoint
-    deserialize) and returns only threads owned by the caller — ownership comes
-    from each blob's ``user_id``, so there's no per-thread DB read and no IDOR.
-    Unknown or unowned ids are silently omitted.
+    Reads the durable ledger (latest attempt per thread, ownership-filtered
+    in the same query — no IDOR, no per-thread reads) instead of the tracker
+    blobs (v4 2.4): the answer is identical on every worker, terminal rows
+    never expire like the ~1h blob TTL did, and the in-process zombie-heal
+    crosscheck is obsolete — the recovery scanner converges orphaned
+    in_progress rows. Threads with no attempt row yet (a dispatch still
+    pre-START) are silently omitted so the card keeps polling as 'starting'.
     """
     seen: set[str] = set()
     deduped: list[str] = []
@@ -1418,70 +1421,25 @@ async def get_dispatches_liveness(
     if not deduped:
         return {"liveness": []}
 
-    from src.server.services.workflow_tracker import WorkflowTracker
-    from src.server.handlers.workflow_handler import (
-        crosscheck_btm_liveness,
-        liveness_from_blob,
-    )
+    from src.server.database import turn_lifecycle as tl_db
+    from src.server.services.status_vocabulary import to_public
 
-    tracker = WorkflowTracker.get_instance()
-    blobs = await tracker.get_statuses(deduped)
+    rows = await tl_db.get_latest_attempts_for_threads(deduped, x_user_id)
 
     liveness = []
-    for tid, blob in blobs.items():
-        if blob.get("user_id") != x_user_id:
-            continue
-        slice_ = liveness_from_blob(tid, blob)
-        # A no-TTL ACTIVE blob can survive a process restart that killed its run,
-        # leaving the card a zombie ({running, can_reconnect}) forever. Cross-check
-        # the in-process BTM (authoritative under the single-worker invariant); a
-        # stale ACTIVE with no live task heals to a terminal slice. INTERRUPTED is
-        # resumable-by-design with no live task, so it is left untouched.
-        # slice_ speaks the public vocabulary (1.6): live == "running".
-        if slice_["status"] == "running":
-            result = await crosscheck_btm_liveness(tid, tracker, True, blob=blob)
-            # Substitute a terminal slice only when the gated heal actually
-            # landed. live=False alone can be a heal refused by the age/CAS
-            # gate — e.g. a dispatch mid-admission whose task isn't visible
-            # yet — and freezing that card on 'completed' would misreport a
-            # run that is about to stream. It stays 'running' for one more
-            # poll instead.
-            if result["healed"]:
-                slice_ = {
-                    "thread_id": tid,
-                    "status": "completed",
-                    "run_id": None,
-                    "can_reconnect": False,
-                }
-        liveness.append(slice_)
-
-    # A terminal run's status blob has a ~1h TTL; once it expires the blob pass
-    # omits the thread and the client re-freezes the card on 'starting'. Fall
-    # back to the durable current_status so terminal cards stay resolved. A
-    # still-in_progress row is left absent on purpose — its blob just hasn't been
-    # written yet, so the card should keep polling as 'starting'.
-    resolved = {slice_["thread_id"] for slice_ in liveness}
-    absent = [tid for tid in deduped if tid not in resolved]
-    if absent:
-        from src.server.database.conversation import get_threads_terminal_status
-        from src.server.services.status_vocabulary import to_public_terminal
-
-        statuses = await get_threads_terminal_status(absent, x_user_id)
-        for tid, current_status in statuses.items():
-            # Public vocabulary so the frontend mapStatus resolves it (a raw
-            # 'error' would hit its default -> 'starting' and re-freeze);
-            # 'in_progress' / anything else is intentionally omitted.
-            status = to_public_terminal(current_status)
-            if status is None:
-                continue
-            liveness.append(
-                {
-                    "thread_id": tid,
-                    "status": status,
-                    "run_id": None,
-                    "can_reconnect": False,
-                }
-            )
+    for tid, row in rows.items():
+        status = to_public(
+            row["status"], cancel_requested_at=row.get("cancel_requested_at")
+        )
+        live = status in ("running", "stopping")
+        liveness.append(
+            {
+                "thread_id": tid,
+                "status": status,
+                "run_id": str(row["conversation_response_id"]) if live else None,
+                "can_reconnect": live,
+            }
+        )
 
     return {"liveness": liveness}
 

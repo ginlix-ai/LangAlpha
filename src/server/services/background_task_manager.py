@@ -2471,9 +2471,9 @@ class BackgroundTaskManager:
     async def get_live_task_info(self, thread_id: str) -> Dict[str, Any]:
         """Liveness snapshot ``{"live", "run_id", "active_tasks"}`` for a thread's latest run.
 
-        ``live`` is True when the in-process manager still holds a task record —
-        the single-worker authority for whether a Redis ACTIVE blob is a real run
-        vs a restart orphan (``crosscheck_btm_liveness`` heals the latter).
+        ``live`` is True when the in-process manager still holds a task record.
+        Since the reader cutover (v4 2.4) this is executor-locality garnish
+        (subagent ids for reattach), never lifecycle truth — the ledger row is.
         Exposes no status string: a task record's lifecycle state is not a
         workflow status.
         """

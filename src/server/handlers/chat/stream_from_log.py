@@ -29,10 +29,6 @@ from src.server.services.background_task_manager import (
     BackgroundTaskManager,
     TaskStatus,
 )
-from src.server.services.workflow_tracker import (
-    TERMINAL_STATUSES,
-    WorkflowTracker,
-)
 from src.utils.cache.redis_cache import get_cache_client
 
 from ._common import logger
@@ -335,9 +331,11 @@ async def stream_from_log(
 
     The stream is keyed by ``(thread_id, run_id)``. Callers without a
     ``run_id`` fall back to the most recent run on the thread (status
-    endpoint convenience). A legacy ``workflow:stream:{thread_id}``
-    fallback covers reconnects to a workflow that started before the
-    run_id refactor was deployed; remove after one release window.
+    endpoint convenience) — resolved locally first, then from the ledger
+    (v4 2.4), so the resolution works on any worker and after a restart.
+    With no ledger row at all there is nothing durable to stream: yield
+    nothing (the legacy thread-only stream key died with the tracker
+    cutover).
     """
     manager = BackgroundTaskManager.get_instance()
 
@@ -350,52 +348,35 @@ async def stream_from_log(
             run_id = info.run_id
 
     if run_id is None:
-        # In-process TaskInfo gone (process restart). Before falling back to
-        # the legacy thread-only key, consult WorkflowTracker — the status
-        # blob is cross-process and now carries the active turn's run_id.
-        # Lets a post-restart reconnect still resolve to the per-run stream
-        # key without false-routing to the empty legacy key.
-        tracker = WorkflowTracker.get_instance()
-        status_obj = await tracker.get_status(thread_id)
-        if status_obj is not None:
-            run_id = status_obj.get("run_id")
+        # No in-process TaskInfo (restart, or the run lives on another
+        # worker): the ledger names the thread's most recent run — its
+        # retained stream is the replay source even when terminal.
+        from src.server.database import turn_lifecycle as tl_db
+
+        row = await tl_db.get_active_run(thread_id)
+        if row is None:
+            row = await tl_db.get_latest_attempt(thread_id)
+        if row is not None:
+            run_id = str(row["conversation_response_id"])
 
     if run_id is None:
-        # Fall back to the legacy thread-only key. Compat shim for reconnects
-        # to a pre-deploy in-flight workflow whose TaskInfo was lost on
-        # restart. Drop in the next deploy once no in-flight workflows are
-        # running on the old key.
-        legacy_key = f"workflow:stream:{thread_id}"
-        tracker = WorkflowTracker.get_instance()
-
-        async def _terminal_legacy() -> bool:
-            # WorkflowTracker.status is the cross-process source of truth
-            # when the in-process TaskInfo is gone. Eager-True here would
-            # exit immediately, dropping a reconnect during a rolling deploy.
-            status_obj = await tracker.get_status(thread_id)
-            if status_obj is None:
-                # No tracker record either — nothing to wait for; let the
-                # two-empty-round handshake drain whatever is in the stream
-                # and exit.
-                return True
-            status_val = status_obj.get("status")
-            return status_val in {s.value for s in TERMINAL_STATUSES}
-
-        async for event in _stream_from_redis_log(
-            stream_key=legacy_key,
-            terminal_check=_terminal_legacy,
-            last_event_id=last_event_id,
-        ):
-            yield event
         return
 
     async def terminal_check() -> bool:
+        # Local record answers cheaply; otherwise the ledger row decides —
+        # a foreign worker's live run must keep this watcher attached, and
+        # its terminal row (owner finalize or recovery scanner) releases it.
         info = manager.tasks.get((thread_id, run_id))
-        if info is None:
+        if info is not None:
+            return info.status in (
+                TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED
+            )
+        from src.server.database import turn_lifecycle as tl_db
+
+        row = await tl_db.get_run(run_id)
+        if row is None:
             return True
-        return info.status in (
-            TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED
-        )
+        return row["status"] != "in_progress"
 
     async def on_attach() -> None:
         await manager.increment_connection(thread_id, run_id)
