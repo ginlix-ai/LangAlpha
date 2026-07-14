@@ -277,29 +277,10 @@ class BackgroundTaskManager:
         # the user has stopped the turn.
         self._orphan_collectors: Dict[str, dict[asyncio.Task, str]] = {}
 
-        # Per-thread compaction guard. An entry means a compaction (auto Tier-2
-        # summarize or manual /compact|/offload) is in progress on the thread;
-        # its Event stays UNSET until the compaction finishes, then is .set() so
-        # admission waiters proceed. Admission blocks on this BEFORE acquiring
-        # task_lock (the running turn buffers SSE events under task_lock, and
-        # those events are what eventually clear this flag).
-        #
-        # SINGLE-PROCESS ASSUMPTION: this guard is in-process only (like
-        # task_lock / admission_lock). The AUTO path is also tracked cross-process
-        # via WorkflowTracker (Redis), but the MANUAL /compact|/offload checkpoint
-        # race is closed SOLELY by this in-memory guard — so it holds only under a
-        # single uvicorn worker (see server.py's single-worker rationale). Scaling
-        # out requires a Redis-backed guard (mirror WorkflowTracker).
-        self._compacting: Dict[str, asyncio.Event] = {}
-
-        # Per-thread MANUAL compaction task registry. A manual /compact|/offload
-        # registers no BackgroundTaskManager task (it runs inside its own HTTP
-        # request handler), so a user Stop has nothing to cancel via the normal
-        # inner_task path. We record the request's asyncio.Task here so
-        # cancel_compaction can interrupt the in-flight LLM call; the cancelled
-        # task's finally releases the admission guard. AUTO compaction runs
-        # inside the turn's own task and is interrupted via cancel_workflow.
-        self._compaction_tasks: Dict[str, asyncio.Task] = {}
+        # Compaction/mutation admission gating is owned by ThreadMutationRunner
+        # (v4 Phase 2.4): exclusive T(thread) + a Redis op-liveness key replace
+        # the old in-memory _compacting/_compaction_tasks maps, so the guard
+        # holds across workers, not just this process.
 
     @classmethod
     def get_instance(cls) -> 'BackgroundTaskManager':
@@ -2518,55 +2499,6 @@ class BackgroundTaskManager:
 
         return {"live": True, "run_id": run_id, "active_tasks": active_tasks}
 
-    # ---------- compaction admission guard ----------
-
-    def begin_compaction(self, thread_id: str) -> bool:
-        """Mark ``thread_id`` as compacting. Atomic check-and-set (synchronous,
-        so no other coroutine runs between the check and the assignment).
-
-        Returns ``True`` if this call opened the window, ``False`` if one was
-        already open — manual callers treat ``False`` as "already compacting".
-        """
-        if thread_id in self._compacting:
-            return False
-        self._compacting[thread_id] = asyncio.Event()
-        return True
-
-    def end_compaction(self, thread_id: str) -> None:
-        """Close ``thread_id``'s compaction window and release any admission
-        waiters. Idempotent — safe to call from a finally safety net."""
-        ev = self._compacting.pop(thread_id, None)
-        if ev is not None:
-            ev.set()
-
-    def compaction_event(self, thread_id: str) -> Optional[asyncio.Event]:
-        """Return the in-progress compaction Event for ``thread_id``, or None."""
-        return self._compacting.get(thread_id)
-
-    def set_compaction_task(self, thread_id: str, task: asyncio.Task) -> None:
-        """Register the asyncio Task running a MANUAL compaction so a user Stop
-        (/cancel) can interrupt the in-flight LLM call."""
-        self._compaction_tasks[thread_id] = task
-
-    def clear_compaction_task(self, thread_id: str) -> None:
-        """Unregister the manual-compaction task. Idempotent — safe from a
-        finally block."""
-        self._compaction_tasks.pop(thread_id, None)
-
-    def cancel_compaction(self, thread_id: str) -> bool:
-        """Cancel an in-flight MANUAL compaction on ``thread_id``.
-
-        Returns True if a live task was registered and ``cancel()`` was issued.
-        The cancelled task's finally releases the admission guard
-        (``end_compaction``); we do not pop here so that finally stays the
-        single owner of cleanup.
-        """
-        task = self._compaction_tasks.get(thread_id)
-        if task is not None and not task.done():
-            task.cancel()
-            return True
-        return False
-
     async def wait_for_admission(
         self,
         thread_id: str,
@@ -2588,25 +2520,26 @@ class BackgroundTaskManager:
         ``exclude_run_id`` lets dispatched callers ignore their own
         pre-registered placeholder while checking for OTHER active runs.
         """
-        # Hold the new turn until any in-progress compaction finishes, then run
+        # Hold the new turn until any in-progress mutation finishes (a local
+        # op's done-Event, or another worker's advertised op key), then run
         # the normal scan: an auto compaction leaves the turn RUNNING (caller
-        # steers); a manual compaction leaves no task (caller starts fresh).
-        # This MUST happen before acquiring task_lock — the running turn buffers
-        # the SSE events that clear this flag under task_lock.
-        ev = self.compaction_event(thread_id)
-        if ev is not None:
+        # steers); a manual mutation leaves no task (caller starts fresh).
+        # This MUST happen before acquiring task_lock — the running turn
+        # buffers the SSE events under task_lock during an auto compaction.
+        from src.server.services.thread_mutation import ThreadMutationRunner
+
+        runner = ThreadMutationRunner.get_instance()
+        if await runner.is_mutating(thread_id):
             # Floor the wait at compaction_timeout + margin so a healthy
             # compaction is never 409'd before its own call budget self-
-            # terminates and the except-handler cleanup sets this Event.
+            # terminates and the runner's finally closes the op.
             backstop = max(
                 get_admission_compaction_wait_timeout(),
                 get_compaction_timeout() + self._COMPACTION_ADMISSION_MARGIN_S,
             )
-            try:
-                await asyncio.wait_for(ev.wait(), timeout=backstop)
-            except asyncio.TimeoutError:
+            if not await runner.wait_until_idle(thread_id, timeout=backstop):
                 logger.warning(
-                    f"[BackgroundTaskManager] Compaction on thread {thread_id} "
+                    f"[BackgroundTaskManager] Mutation on thread {thread_id} "
                     f"did not finish within admission wait; rejecting new turn "
                     f"with 409 (compacting)"
                 )

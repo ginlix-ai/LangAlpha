@@ -216,11 +216,7 @@ async def astream_flash_workflow(
             initial_query=user_input,
         )
 
-        query_type, is_fork = await _resolve_fork(
-            request=request,
-            thread_id=thread_id,
-            log_prefix="FLASH_FORK",
-        )
+        query_type, fork = _resolve_fork(request=request)
         is_checkpoint_replay = bool(request.checkpoint_id and not request.messages)
 
         # Persist query start (with attachment and context metadata for display
@@ -279,7 +275,7 @@ async def astream_flash_workflow(
             query_type=query_type,
             feedback_action=feedback_action,
             query_metadata=query_metadata,
-            is_fork=is_fork,
+            fork=fork,
             is_checkpoint_replay=is_checkpoint_replay,
             extra_run_metadata={
                 "report_back_ptc_thread_id": getattr(

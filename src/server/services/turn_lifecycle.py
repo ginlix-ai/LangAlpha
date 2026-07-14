@@ -23,6 +23,7 @@ from src.server.database.turn_lifecycle import (  # re-exported for callers
     AttemptConflictError,
     DuplicateRequestError,
     FinalizeResult,
+    ForkSpec,
     QuerySpec,
     RunSlotBusyError,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "RunHandle",
     "TurnOutcome",
     "QuerySpec",
+    "ForkSpec",
     "FinalizeResult",
     "RunSlotBusyError",
     "DuplicateRequestError",
@@ -152,6 +154,7 @@ class TurnCoordinator:
         user_id: Optional[str] = None,
         is_byok: bool = False,
         query: Optional[QuerySpec] = None,
+        fork: Optional[ForkSpec] = None,
         turn_index: Optional[int] = None,
         attempt_no: int = 1,
         retry_of_run_id: Optional[str] = None,
@@ -185,6 +188,7 @@ class TurnCoordinator:
                     attempt_no=attempt_no,
                     retry_of_run_id=retry_of_run_id,
                     query=query,
+                    fork=fork,
                     metadata=metadata,
                     conn=guard.conn if guard is not None else None,
                 )

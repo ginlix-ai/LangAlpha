@@ -481,34 +481,32 @@ class WorkflowStreamHandler:
 
     def _open_compaction_window(self, ns_key: tuple) -> None:
         """Track a newly-opened compaction window. The FIRST window on this
-        thread opens the BackgroundTaskManager admission guard, so a concurrent
-        message POST waits the summarize out instead of steering into the
-        mid-flight context rewrite. Overlapping windows (main + subgraph) keep
-        the guard open until all have closed."""
+        thread opens the ThreadMutationRunner admission window, so a
+        concurrent message POST waits the summarize out instead of steering
+        into the mid-flight context rewrite. Overlapping windows (main +
+        subgraph) keep the window open until all have closed."""
         was_empty = not self._compaction_windows
         self._compaction_windows.add(ns_key)
         if was_empty:
-            from src.server.services.background_task_manager import (
-                BackgroundTaskManager,
-            )
+            from src.server.services.thread_mutation import ThreadMutationRunner
             # Honor the return value: only take ownership (and thus only later
-            # end_compaction) when THIS handler actually opened the guard. A
-            # False return means another path (e.g. a manual /compact) already
-            # holds the thread — releasing it on our close would clobber it.
-            # Mirrors the manual paths' ``started_compaction`` flag.
+            # close_window) when THIS handler actually opened it. A False
+            # return means another op (e.g. a manual /compact) already holds
+            # the thread — closing it on our exit would clobber it. Mirrors
+            # the manual paths' ownership flag.
             self._compaction_active = (
-                BackgroundTaskManager.get_instance().begin_compaction(self.thread_id)
+                ThreadMutationRunner.get_instance().open_window(self.thread_id)
             )
 
     def _close_compaction_window(self, ns_key: tuple) -> None:
-        """Close one compaction window. When the LAST window closes, release the
-        admission guard so a waiting POST is admitted (and steered / started)."""
+        """Close one compaction window. When the LAST window closes, release
+        the admission window so a waiting POST is admitted (and steered /
+        started)."""
         self._compaction_windows.discard(ns_key)
         if not self._compaction_windows and self._compaction_active:
-            from src.server.services.background_task_manager import (
-                BackgroundTaskManager,
-            )
-            BackgroundTaskManager.get_instance().end_compaction(self.thread_id)
+            from src.server.services.thread_mutation import ThreadMutationRunner
+
+            ThreadMutationRunner.get_instance().close_window(self.thread_id)
             self._compaction_active = False
 
     async def stream_workflow(
@@ -1001,14 +999,15 @@ class WorkflowStreamHandler:
         finally:
             # Safety net: if the stream ends (timeout / error / CancelledError /
             # aclose()) while a compaction window is still open, release the
-            # admission guard so a queued POST is never blocked forever.
-            # end_compaction is idempotent w.r.t. the normal close path above.
+            # admission window so a queued POST is never blocked forever.
+            # close_window is idempotent w.r.t. the normal close path above.
             if self._compaction_active:
                 try:
-                    from src.server.services.background_task_manager import (
-                        BackgroundTaskManager,
+                    from src.server.services.thread_mutation import (
+                        ThreadMutationRunner,
                     )
-                    BackgroundTaskManager.get_instance().end_compaction(
+
+                    ThreadMutationRunner.get_instance().close_window(
                         self.thread_id
                     )
                 except Exception:

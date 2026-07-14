@@ -76,6 +76,18 @@ class QuerySpec:
 
 
 @dataclass
+class ForkSpec:
+    """Edit/regenerate cleanup folded into the START txn (v4 2.4): truncation,
+    checkpoint pin, and the new attempt commit or roll back together — a slot
+    conflict or duplicate retransmit can no longer leave a half-truncated
+    thread behind."""
+
+    from_turn: int
+    checkpoint_id: str
+    preserve_query_at_fork: bool = False
+
+
+@dataclass
 class FinalizeResult:
     applied: bool  # False = run was already terminal (idempotent no-op)
     run: Optional[Dict[str, Any]] = None
@@ -123,11 +135,13 @@ async def start_run(
     attempt_no: int = 1,
     retry_of_run_id: Optional[str] = None,
     query: Optional[QuerySpec] = None,
+    fork: Optional[ForkSpec] = None,
     metadata: Optional[Dict[str, Any]] = None,
     created_at: Optional[datetime] = None,
     conn=None,
 ) -> Dict[str, Any]:
-    """The START transaction: query row + in_progress run row + thread projection.
+    """The START transaction: fork cleanup + query row + in_progress run row +
+    thread projection.
 
     Returns the run row. Raises DuplicateRequestError / RunSlotBusyError /
     AttemptConflictError — each backed by a DB constraint, so two workers
@@ -142,7 +156,9 @@ async def start_run(
         async with _lifecycle_connection(conn) as conn:
             async with conn.transaction():
                 # Fast-path dedup probe. The unique index below is the
-                # race-safe backstop; this just avoids burning a turn_index.
+                # race-safe backstop; this just avoids burning a turn_index
+                # (and, on a fork, re-truncating rows the first transmit's
+                # run already rebuilt).
                 async with conn.cursor(row_factory=dict_row) as cur:
                     await cur.execute(
                         "SELECT * FROM conversation_responses WHERE request_key = %s",
@@ -151,6 +167,46 @@ async def start_run(
                     existing = await cur.fetchone()
                     if existing:
                         raise DuplicateRequestError(dict(existing))
+
+                if fork is not None:
+                    # Truncation would DELETE any in_progress row at/after the
+                    # fork turn — silently freeing the slot under a live run —
+                    # so a fork refuses while ANY run is open on the thread.
+                    # The slot index still backstops the read: a run admitted
+                    # after this check conflicts on insert below and rolls the
+                    # truncation back with the transaction.
+                    async with conn.cursor(row_factory=dict_row) as cur:
+                        await cur.execute(
+                            """
+                            SELECT * FROM conversation_responses
+                            WHERE conversation_thread_id = %s
+                              AND status = 'in_progress'
+                            """,
+                            (thread_id,),
+                        )
+                        live = await cur.fetchone()
+                        if live:
+                            raise RunSlotBusyError(thread_id, dict(live))
+                    deleted = await qr_db.truncate_thread_from_turn(
+                        thread_id,
+                        fork.from_turn,
+                        preserve_query_at_fork=fork.preserve_query_at_fork,
+                        conn=conn,
+                    )
+                    # update_thread_checkpoint_id swallows failures into
+                    # False; inside this transaction that must abort loudly,
+                    # not commit a truncation with an unpinned checkpoint.
+                    if not await qr_db.update_thread_checkpoint_id(
+                        thread_id, fork.checkpoint_id, conn=conn
+                    ):
+                        raise TurnLifecycleError(
+                            f"fork checkpoint pin failed for thread={thread_id}"
+                        )
+                    logger.info(
+                        f"[turn_lifecycle] fork truncated {deleted} rows from "
+                        f"turn>={fork.from_turn} thread={thread_id} "
+                        f"checkpoint={fork.checkpoint_id}"
+                    )
 
                 if turn_index is None:
                     turn_index = await allocate_turn_index(conn, thread_id)

@@ -9,7 +9,6 @@ classification and the terminal error funnel live in ``error_handling``.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -35,6 +34,7 @@ from src.server.dependencies.usage_limits import release_burst_slot
 
 if TYPE_CHECKING:
     from src.server.models.chat import ChatRequest
+    from src.server.services.turn_lifecycle import ForkSpec
 
 # ---------------------------------------------------------------------------
 # Module-level constants
@@ -100,19 +100,18 @@ def _resolve_timezone(request_timezone: Optional[str], locale: Optional[str]) ->
     return locale_config.get("timezone", "UTC")
 
 
-async def _resolve_fork(
-    *,
-    request: ChatRequest,
-    thread_id: str,
-    log_prefix: str = "FORK",
-) -> tuple[str, bool]:
-    """Compute query_type and apply fork cleanup (truncation + checkpoint pin).
+def _resolve_fork(*, request: ChatRequest) -> tuple[str, Optional[ForkSpec]]:
+    """Compute query_type and the fork cleanup spec (truncation + checkpoint
+    pin), shared by flash and PTC handlers.
 
-    Shared by flash and PTC handlers; returns ``(query_type, is_fork)``.
-    Truncation happens here so the START txn's MAX+1 turn allocation sees
-    the post-fork row set. The v4 TurnCoordinator replaces the old per-run
-    persistence-service init this helper used to perform.
+    The cleanup itself executes INSIDE the START transaction (v4 2.4,
+    ``start_run(fork=...)``): truncation, checkpoint pin, and the new attempt
+    commit or roll back together, so a slot conflict or a duplicate
+    retransmit can no longer leave a half-truncated thread behind — and the
+    MAX+1 turn allocation still sees the post-fork row set.
     """
+    from src.server.services.turn_lifecycle import ForkSpec
+
     is_checkpoint_replay = bool(request.checkpoint_id and not request.messages)
     if request.query_type:
         query_type = request.query_type
@@ -123,25 +122,15 @@ async def _resolve_fork(
     else:
         query_type = "initial"
 
-    is_fork = request.fork_from_turn is not None and request.checkpoint_id
-    if is_fork:
-        deleted, _ = await asyncio.gather(
-            qr_db.truncate_thread_from_turn(
-                thread_id,
-                request.fork_from_turn,
-                preserve_query_at_fork=is_checkpoint_replay,
-            ),
-            qr_db.update_thread_checkpoint_id(thread_id, request.checkpoint_id),
+    fork = None
+    if request.fork_from_turn is not None and request.checkpoint_id:
+        fork = ForkSpec(
+            from_turn=request.fork_from_turn,
+            checkpoint_id=request.checkpoint_id,
+            preserve_query_at_fork=is_checkpoint_replay,
         )
-        logger.info(
-            f"[{log_prefix}] Truncated {deleted} rows from turn_index>={request.fork_from_turn} "
-            f"thread_id={thread_id} checkpoint_id={request.checkpoint_id}"
-        )
-        # Fork buffer clearing now happens once the run starts emitting under
-        # the new per-run key; pre-clearing the legacy thread-keyed buffer
-        # is unnecessary because the new key didn't exist yet.
 
-    return query_type, is_fork
+    return query_type, fork
 
 
 async def _is_plan_interrupt_pending(thread_id: str) -> bool:
@@ -601,7 +590,7 @@ async def begin_turn(
     query_type,
     feedback_action,
     query_metadata: dict,
-    is_fork: bool,
+    fork,
     is_checkpoint_replay: bool,
     extra_run_metadata: Optional[dict] = None,
 ):
@@ -609,7 +598,8 @@ async def begin_turn(
     attempt chain — retries chain onto the failed run's turn, forked
     checkpoint replays pin their turn and reuse the preserved query row,
     everything else allocates MAX+1 — so the derivation can never drift
-    between agent modes."""
+    between agent modes. ``fork`` (a ForkSpec) executes its truncation +
+    checkpoint pin inside the same transaction."""
     from uuid import uuid4
 
     from src.server.services.turn_lifecycle import QuerySpec, TurnCoordinator
@@ -634,11 +624,12 @@ async def begin_turn(
                 metadata=query_metadata,
             )
         ),
+        fork=fork,
         turn_index=(
             retry_of["turn_index"]
             if retry_of is not None
             else request.fork_from_turn
-            if (is_fork and is_checkpoint_replay)
+            if (fork is not None and is_checkpoint_replay)
             else None
         ),
         attempt_no=(retry_of["attempt_no"] + 1 if retry_of is not None else 1),

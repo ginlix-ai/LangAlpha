@@ -413,9 +413,27 @@ async def delete_thread_endpoint(thread_id: str, x_user_id: CurrentUserId):
 
     Permanently deletes the thread and all associated data due to CASCADE constraints.
     """
+    from src.server.services.thread_mutation import (
+        MutationConflict,
+        MutationUnavailable,
+        ThreadMutationRunner,
+    )
+
     try:
         await require_thread_owner(thread_id, x_user_id)
-        await delete_thread(thread_id)
+        # Guarded delete (v4 2.4): exclusive T(thread) refuses while a fenced
+        # run or tail writer is live on ANY worker; the ledger gate refuses on
+        # an in_progress row (cancel the run first). The delete statement runs
+        # on the locked session so fence and effect die together.
+        try:
+            async with ThreadMutationRunner.get_instance().exclusive(
+                thread_id, "delete"
+            ) as mutation:
+                await delete_thread(thread_id, conn=mutation.conn)
+        except MutationConflict as e:
+            raise HTTPException(status_code=409, detail=e.detail)
+        except MutationUnavailable as e:
+            raise HTTPException(status_code=503, detail=str(e))
 
         # Invalidate existence cache + the thread's market-watch list, so a
         # recreated thread id can't inherit the old symbols within the TTL.

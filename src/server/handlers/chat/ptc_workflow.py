@@ -250,11 +250,7 @@ async def astream_ptc_workflow(
             initial_query=user_input,
         )
 
-        query_type, is_fork = await _resolve_fork(
-            request=request,
-            thread_id=thread_id,
-            log_prefix="PTC_FORK",
-        )
+        query_type, fork = _resolve_fork(request=request)
         is_checkpoint_replay = bool(request.checkpoint_id and not request.messages)
 
         # Persist query start
@@ -323,7 +319,7 @@ async def astream_ptc_workflow(
             query_type=query_type,
             feedback_action=feedback_action,
             query_metadata=query_metadata,
-            is_fork=is_fork,
+            fork=fork,
             is_checkpoint_replay=is_checkpoint_replay,
             extra_run_metadata=origin_meta,
         )

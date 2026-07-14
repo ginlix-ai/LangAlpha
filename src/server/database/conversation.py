@@ -1967,22 +1967,30 @@ async def truncate_thread_from_turn(
         raise
 
 
-async def delete_thread(conversation_thread_id: str) -> bool:
-    """Delete thread (CASCADE to queries, responses)."""
+async def delete_thread(conversation_thread_id: str, conn=None) -> bool:
+    """Delete thread (CASCADE to queries, responses).
+
+    ``conn`` pins the delete to the caller's session — the mutation fence's
+    locked connection, so the destructive statement dies with the lock."""
+
+    async def _execute(conn) -> bool:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                DELETE FROM conversation_threads
+                WHERE conversation_thread_id = %s
+            """,
+                (conversation_thread_id,),
+            )
+
+            logger.info(f"Deleted thread: {conversation_thread_id}")
+            return True
+
     try:
+        if conn:
+            return await _execute(conn)
         async with get_db_connection() as conn:
-            async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(
-                    """
-                    DELETE FROM conversation_threads
-                    WHERE conversation_thread_id = %s
-                """,
-                    (conversation_thread_id,),
-                )
-
-                logger.info(f"Deleted thread: {conversation_thread_id}")
-                return True
-
+            return await _execute(conn)
     except Exception as e:
         logger.error(f"Error deleting thread: {e}")
         raise

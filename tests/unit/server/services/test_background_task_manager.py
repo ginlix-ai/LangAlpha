@@ -1150,91 +1150,69 @@ class TestStartWorkflowCancelledPlaceholder:
 # ---------------------------------------------------------------------------
 
 
-class TestCompactionAdmissionGuard:
-    """begin/end_compaction hold a new turn at admission until an in-progress
-    compaction (auto Tier-2 summarize or manual /compact|/offload) finishes,
-    so a concurrent POST is never steered mid-summarize and never races the
-    manual checkpoint read-modify-write."""
+class TestMutationAdmissionGuard:
+    """wait_for_admission holds a new turn until any in-progress thread
+    mutation (auto Tier-2 summarize window or manual /compact|/offload|delete)
+    finishes — now delegated to ThreadMutationRunner (v4 2.4) so the hold
+    covers ops owned by OTHER workers, not just this process."""
 
-    def test_begin_compaction_is_atomic_check_and_set(self):
-        btm = _make_btm()
-        assert btm.compaction_event("t1") is None
-        # First begin starts a window and reports it.
-        assert btm.begin_compaction("t1") is True
-        ev = btm.compaction_event("t1")
-        assert ev is not None and not ev.is_set()
-        # Second begin while in progress is a no-op (manual-vs-manual guard).
-        assert btm.begin_compaction("t1") is False
-        assert btm.compaction_event("t1") is ev
+    RUNNER = (
+        "src.server.services.thread_mutation.ThreadMutationRunner.get_instance"
+    )
 
-    def test_end_compaction_releases_and_is_idempotent(self):
-        btm = _make_btm()
-        btm.begin_compaction("t1")
-        ev = btm.compaction_event("t1")
-        btm.end_compaction("t1")
-        assert ev.is_set()
-        assert btm.compaction_event("t1") is None
-        # Idempotent: a second end (e.g. the finally safety net) must not raise.
-        btm.end_compaction("t1")
+    def _runner(self, mutating: bool, idle_within_wait: bool = True):
+        runner = MagicMock()
+        runner.is_mutating = AsyncMock(return_value=mutating)
+        runner.wait_until_idle = AsyncMock(return_value=idle_within_wait)
+        return runner
 
     @pytest.mark.asyncio
     async def test_admission_waits_then_returns_running(self):
-        """A running turn that is compacting → a concurrent admission blocks
-        until end_compaction, then returns 'running' so the caller steers."""
+        """A running turn that is compacting → admission waits out the
+        mutation, then the normal scan returns 'running' so the caller
+        steers."""
         btm = _make_btm()
         btm.tasks[("thread-1", "run-1")] = _make_task_info(status=TaskStatus.RUNNING)
-        btm.begin_compaction("thread-1")
+        runner = self._runner(mutating=True, idle_within_wait=True)
 
-        admission = asyncio.create_task(btm.wait_for_admission("thread-1"))
-        await asyncio.sleep(0.05)
-        assert not admission.done()  # held by the compaction guard
+        with patch(self.RUNNER, return_value=runner):
+            result = await btm.wait_for_admission("thread-1")
 
-        btm.end_compaction("thread-1")
-        result = await asyncio.wait_for(admission, timeout=1.0)
         assert result == "running"
+        runner.wait_until_idle.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_admission_waits_then_returns_fresh(self):
-        """Manual compaction (no active task) → after end_compaction the
+        """Manual mutation (no active task) → once the runner reports idle the
         admission returns 'fresh' so a new turn starts."""
         btm = _make_btm()
-        btm.begin_compaction("thread-1")
+        runner = self._runner(mutating=True, idle_within_wait=True)
 
-        admission = asyncio.create_task(btm.wait_for_admission("thread-1"))
-        await asyncio.sleep(0.05)
-        assert not admission.done()
+        with patch(self.RUNNER, return_value=runner):
+            result = await btm.wait_for_admission("thread-1")
 
-        btm.end_compaction("thread-1")
-        result = await asyncio.wait_for(admission, timeout=1.0)
         assert result == "fresh"
 
     @pytest.mark.asyncio
     async def test_admission_timeout_returns_compacting(self):
-        """No end_compaction within the wait window → 'compacting' (→ 409)."""
+        """Mutation still live past the wait window → 'compacting' (→ 409)."""
         btm = _make_btm()
-        # Zero the floor margin and compaction budget so the patched admission
-        # timeout (not the compaction_timeout floor) governs this case.
-        btm._COMPACTION_ADMISSION_MARGIN_S = 0.0
-        btm.begin_compaction("thread-1")
-        with patch(
-            "src.server.services.background_task_manager."
-            "get_admission_compaction_wait_timeout",
-            return_value=0.05,
-        ), patch(
-            "src.server.services.background_task_manager.get_compaction_timeout",
-            return_value=0.0,
-        ):
+        runner = self._runner(mutating=True, idle_within_wait=False)
+
+        with patch(self.RUNNER, return_value=runner):
             result = await btm.wait_for_admission("thread-1")
+
         assert result == "compacting"
 
     @pytest.mark.asyncio
-    async def test_admission_floored_at_compaction_timeout(self):
+    async def test_admission_wait_floored_at_compaction_timeout(self):
         """Admission must not 409 a healthy compaction before its call budget
-        self-terminates: the wait is floored at compaction_timeout + margin even
-        when the configured admission timeout is shorter."""
+        self-terminates: the wait passed to the runner is floored at
+        compaction_timeout + margin even when the configured admission
+        timeout is shorter."""
         btm = _make_btm()
-        btm._COMPACTION_ADMISSION_MARGIN_S = 0.0
-        btm.begin_compaction("thread-1")
+        btm._COMPACTION_ADMISSION_MARGIN_S = 1.0
+        runner = self._runner(mutating=True, idle_within_wait=True)
 
         with patch(
             "src.server.services.background_task_manager."
@@ -1242,76 +1220,24 @@ class TestCompactionAdmissionGuard:
             return_value=0.05,  # would 409 almost immediately WITHOUT the floor
         ), patch(
             "src.server.services.background_task_manager.get_compaction_timeout",
-            return_value=0.5,  # floor: admission holds at least this long
-        ):
-            admission = asyncio.create_task(btm.wait_for_admission("thread-1"))
-            # Past the configured 0.05 but inside the 0.5 floor: still waiting.
-            await asyncio.sleep(0.2)
-            assert not admission.done()
+            return_value=0.5,  # floor: 0.5 + 1.0 margin governs
+        ), patch(self.RUNNER, return_value=runner):
+            await btm.wait_for_admission("thread-1")
 
-            # Compaction releases before the floor expires → admit, don't 409.
-            btm.end_compaction("thread-1")
-            result = await asyncio.wait_for(admission, timeout=1.0)
+        runner.wait_until_idle.assert_awaited_once_with("thread-1", timeout=1.5)
+
+    @pytest.mark.asyncio
+    async def test_no_mutation_admits_normally(self):
+        """No mutation in progress → admission falls straight through to the
+        normal task scan without waiting on the runner."""
+        btm = _make_btm()
+        runner = self._runner(mutating=False)
+
+        with patch(self.RUNNER, return_value=runner):
+            result = await btm.wait_for_admission("thread-1")
+
         assert result == "fresh"
-
-    @pytest.mark.asyncio
-    async def test_no_compaction_admits_normally(self):
-        """No compaction in progress → admission falls straight through to the
-        normal task scan."""
-        btm = _make_btm()
-        result = await btm.wait_for_admission("thread-1")
-        assert result == "fresh"
-
-
-class TestCancelCompaction:
-    """A user Stop during a MANUAL compaction must interrupt the in-flight call.
-    The compaction's request task is registered so /cancel can cancel it; the
-    cancelled task's finally releases the admission guard (end_compaction)."""
-
-    @pytest.mark.asyncio
-    async def test_cancel_compaction_cancels_registered_task(self):
-        btm = _make_btm()
-        started = asyncio.Event()
-
-        async def _hang():
-            started.set()
-            await asyncio.sleep(60)
-
-        task = asyncio.create_task(_hang())
-        await started.wait()
-        btm.set_compaction_task("thread-1", task)
-
-        assert btm.cancel_compaction("thread-1") is True
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert task.cancelled()
-
-    @pytest.mark.asyncio
-    async def test_cancel_compaction_no_task_returns_false(self):
-        btm = _make_btm()
-        assert btm.cancel_compaction("absent-thread") is False
-
-    @pytest.mark.asyncio
-    async def test_clear_compaction_task_unregisters(self):
-        btm = _make_btm()
-        started = asyncio.Event()
-
-        async def _hang():
-            started.set()
-            await asyncio.sleep(60)
-
-        task = asyncio.create_task(_hang())
-        await started.wait()
-        btm.set_compaction_task("thread-1", task)
-        btm.clear_compaction_task("thread-1")
-        # Once cleared, a Stop can no longer reach the (now finished) task.
-        assert btm.cancel_compaction("thread-1") is False
-        # Idempotent — clearing again must not raise.
-        btm.clear_compaction_task("thread-1")
-
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+        runner.wait_until_idle.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

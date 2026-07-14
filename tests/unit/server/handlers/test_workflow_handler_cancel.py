@@ -14,7 +14,8 @@ Covers the behaviors that survived the cutover:
   ``cancel_and_clear``); intent is recorded, no eager terminal write;
 - safety-net ``cancel_and_clear`` only when NO active task exists;
 - run-targeted miss with another active task skips the safety net;
-- manual-compaction shortcut returns early and stamps no run intent;
+- manual-mutation stop (ThreadMutationRunner.request_stop, v4 2.4) returns
+  early and stamps no run intent — local cancel and cross-worker signal alike;
 - idle thread (no active run) stamps no intent — thread not mislabeled;
 - an already-terminal run answers an honest "already finished".
 """
@@ -33,27 +34,31 @@ def _patch_common(
     *,
     manager_cancel_returns: bool,
     has_active_returns: bool = False,
-    manual_compaction_returns: bool = False,
+    mutation_stop_returns: str = "none",
     active_run: dict | None = None,
     intent_state: str = "requested",
 ):
     """Patch the collaborators of workflow_handler.cancel_workflow.
 
-    Returns the patch list plus the mocked registry_store, manager, and the
-    ``get_active_run`` / ``request_run_cancel`` AsyncMocks (patched at their
-    source module — cancel_workflow imports ``turn_lifecycle`` inside the
-    function) so tests can assert on the durable-intent path.
+    Returns the patch list plus the mocked registry_store, manager, mutation
+    runner, and the ``get_active_run`` / ``request_run_cancel`` AsyncMocks
+    (patched at their source module — cancel_workflow imports
+    ``turn_lifecycle`` inside the function) so tests can assert on the
+    durable-intent path.
 
-    ``manual_compaction_returns`` drives ``manager.cancel_compaction`` — when a
-    manual /compact is in flight (and no workflow is active) the handler stops
-    that compaction and returns early, skipping the run-intent path.
-    ``active_run`` is what ``get_active_run`` resolves for the thread (None =
-    idle). ``intent_state`` is the state ``request_run_cancel`` reports.
+    ``mutation_stop_returns`` drives ``ThreadMutationRunner.request_stop`` —
+    "cancelled" (local op cancelled) or "signalled" (stop key flagged for a
+    foreign worker) makes the handler return early, skipping the run-intent
+    path; "none" (no mutation in flight) falls through. ``active_run`` is what
+    ``get_active_run`` resolves for the thread (None = idle). ``intent_state``
+    is the state ``request_run_cancel`` reports.
     """
     manager = MagicMock()
     manager.cancel_workflow = AsyncMock(return_value=manager_cancel_returns)
     manager.has_active_task_for_thread = AsyncMock(return_value=has_active_returns)
-    manager.cancel_compaction = MagicMock(return_value=manual_compaction_returns)
+
+    runner = MagicMock()
+    runner.request_stop = AsyncMock(return_value=mutation_stop_returns)
 
     registry_store = MagicMock()
     registry_store.cancel_and_clear = AsyncMock(return_value=0)
@@ -70,6 +75,10 @@ def _patch_common(
             return_value=manager,
         ),
         patch(
+            "src.server.services.thread_mutation.ThreadMutationRunner.get_instance",
+            return_value=runner,
+        ),
+        patch(
             "src.server.services.background_registry_store.BackgroundRegistryStore.get_instance",
             return_value=registry_store,
         ),
@@ -82,7 +91,7 @@ def _patch_common(
             new=request_run_cancel,
         ),
     ]
-    return patches, registry_store, manager, get_active_run, request_run_cancel
+    return patches, registry_store, manager, runner, get_active_run, request_run_cancel
 
 
 @pytest.mark.asyncio
@@ -93,7 +102,7 @@ async def test_cancel_with_active_task_is_signal_only():
     a terminal 'cancelled' status eagerly (that's the finalize CAS's job)."""
     from src.server.handlers.workflow_handler import cancel_workflow
 
-    patches, registry_store, manager, get_active_run, request_run_cancel = (
+    patches, registry_store, manager, runner, get_active_run, request_run_cancel = (
         _patch_common(manager_cancel_returns=True, active_run=_active_run())
     )
     for p in patches:
@@ -122,7 +131,7 @@ async def test_cancel_with_no_active_task_runs_safety_net():
     in_progress run row still accepts durable intent."""
     from src.server.handlers.workflow_handler import cancel_workflow
 
-    patches, registry_store, _manager, _get_active_run, request_run_cancel = (
+    patches, registry_store, _manager, _runner, _get_active_run, request_run_cancel = (
         _patch_common(
             manager_cancel_returns=False,
             has_active_returns=False,
@@ -150,7 +159,7 @@ async def test_run_targeted_miss_with_other_active_task_skips_safety_net():
     directly (no get_active_run lookup)."""
     from src.server.handlers.workflow_handler import cancel_workflow
 
-    patches, registry_store, manager, get_active_run, request_run_cancel = (
+    patches, registry_store, manager, runner, get_active_run, request_run_cancel = (
         _patch_common(manager_cancel_returns=False, has_active_returns=True)
     )
     for p in patches:
@@ -172,18 +181,27 @@ async def test_run_targeted_miss_with_other_active_task_skips_safety_net():
 
 
 @pytest.mark.asyncio
-async def test_cancel_stops_manual_compaction_when_no_active_workflow():
-    """A user Stop during a MANUAL compaction (no active workflow) cancels the
-    in-flight compaction and returns early — it must NOT stamp cancel intent on
-    a run row or run any workflow-cancel machinery (which would mislabel the
-    thread as a stopped turn)."""
+@pytest.mark.parametrize(
+    "stopped, message",
+    [
+        ("cancelled", "Compaction stopped."),
+        ("signalled", "Compaction stop signalled to its worker."),
+    ],
+)
+async def test_cancel_stops_manual_mutation_when_no_active_workflow(stopped, message):
+    """A user Stop during a MANUAL compact/offload/delete (no active workflow)
+    stops the in-flight mutation via ThreadMutationRunner.request_stop and
+    returns early — it must NOT stamp cancel intent on a run row or run any
+    workflow-cancel machinery (which would mislabel the thread as a stopped
+    turn). Covers both the locally-owned op ("cancelled") and the
+    foreign-worker stop-key path ("signalled")."""
     from src.server.handlers.workflow_handler import cancel_workflow
 
-    patches, registry_store, manager, get_active_run, request_run_cancel = (
+    patches, registry_store, manager, runner, get_active_run, request_run_cancel = (
         _patch_common(
             manager_cancel_returns=False,
             has_active_returns=False,
-            manual_compaction_returns=True,
+            mutation_stop_returns=stopped,
         )
     )
     for p in patches:
@@ -195,8 +213,8 @@ async def test_cancel_stops_manual_compaction_when_no_active_workflow():
             p.stop()
 
     assert result["cancelled"] is True
-    assert result["message"] == "Compaction stopped."
-    manager.cancel_compaction.assert_called_once_with("t-1")
+    assert result["message"] == message
+    runner.request_stop.assert_awaited_once_with("t-1")
     # Early return: none of the run-intent / workflow-cancel machinery runs.
     manager.cancel_workflow.assert_not_awaited()
     get_active_run.assert_not_awaited()
@@ -207,17 +225,17 @@ async def test_cancel_stops_manual_compaction_when_no_active_workflow():
 @pytest.mark.asyncio
 async def test_cancel_idle_thread_stamps_no_intent_but_runs_safety_net():
     """A /cancel that lands on an idle thread (no BTM task, no in-flight
-    compaction, no active run) — e.g. a Stop click racing a compaction that
+    mutation, no active run) — e.g. a Stop click racing a compaction that
     JUST finished — must stamp NO cancel intent (there is no run to stamp, so
     the thread isn't mislabeled) but must still run the orphan-registry safety
     net. With nothing to cancel, the honest answer is cancelled=False."""
     from src.server.handlers.workflow_handler import cancel_workflow
 
-    patches, registry_store, manager, get_active_run, request_run_cancel = (
+    patches, registry_store, manager, runner, get_active_run, request_run_cancel = (
         _patch_common(
             manager_cancel_returns=False,
             has_active_returns=False,
-            manual_compaction_returns=False,  # compaction already finished/cleared
+            mutation_stop_returns="none",  # mutation already finished/cleared
             active_run=None,  # idle thread: no in_progress run
         )
     )
@@ -246,7 +264,7 @@ async def test_cancel_active_run_records_durable_intent():
     The terminal 'cancelled' state is written later by the finalize CAS."""
     from src.server.handlers.workflow_handler import cancel_workflow
 
-    patches, registry_store, manager, get_active_run, request_run_cancel = (
+    patches, registry_store, manager, runner, get_active_run, request_run_cancel = (
         _patch_common(
             manager_cancel_returns=True,
             has_active_returns=False,
@@ -275,7 +293,7 @@ async def test_cancel_already_terminal_run_returns_already_finished():
     recorded losing cancel."""
     from src.server.handlers.workflow_handler import cancel_workflow
 
-    patches, registry_store, manager, get_active_run, request_run_cancel = (
+    patches, registry_store, manager, runner, get_active_run, request_run_cancel = (
         _patch_common(
             manager_cancel_returns=False,
             has_active_returns=False,
@@ -297,17 +315,17 @@ async def test_cancel_already_terminal_run_returns_already_finished():
 
 
 @pytest.mark.asyncio
-async def test_active_workflow_skips_compaction_cancel_shortcircuit():
+async def test_active_workflow_skips_mutation_stop_shortcircuit():
     """When a workflow is active (auto compaction runs inside the turn), the
-    handler must NOT take the manual-compaction shortcut — the normal
-    workflow-cancel path interrupts the turn (and its in-flight summarize)."""
+    handler must NOT consult the mutation runner — the normal workflow-cancel
+    path interrupts the turn (and its in-flight summarize)."""
     from src.server.handlers.workflow_handler import cancel_workflow
 
-    patches, registry_store, manager, _get_active_run, _request_run_cancel = (
+    patches, registry_store, manager, runner, _get_active_run, _request_run_cancel = (
         _patch_common(
             manager_cancel_returns=True,
             has_active_returns=True,
-            manual_compaction_returns=True,  # would early-return if reached
+            mutation_stop_returns="cancelled",  # would early-return if reached
             active_run=_active_run(),
         )
     )
@@ -320,6 +338,6 @@ async def test_active_workflow_skips_compaction_cancel_shortcircuit():
             p.stop()
 
     assert result["cancelled"] is True
-    # has_active short-circuits the `and` before cancel_compaction is evaluated.
-    manager.cancel_compaction.assert_not_called()
+    # has_active gates the runner: request_stop is never consulted.
+    runner.request_stop.assert_not_awaited()
     manager.cancel_workflow.assert_awaited_once_with("t-1", "run-A")

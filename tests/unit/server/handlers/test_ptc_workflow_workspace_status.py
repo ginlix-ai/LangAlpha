@@ -119,8 +119,7 @@ async def _run_to_sentinel(request, workspace_manager):
         patch(f"{PTC}.ensure_thread", new_callable=AsyncMock),
         patch(
             f"{PTC}._resolve_fork",
-            new_callable=AsyncMock,
-            return_value=("Q", False),
+            return_value=("Q", None),
         ),
         patch(f"{PTC}.begin_turn", new_callable=AsyncMock) as mock_begin_turn,
         patch(f"{PTC}._resolve_timezone", return_value="UTC"),
