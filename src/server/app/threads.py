@@ -150,6 +150,7 @@ async def _consume_background_gen(
     run_id: str,
     report_back_ptc_thread_id: str | None = None,
     user_id: str | None = None,
+    dispatch_gen: str | None = None,
 ) -> bool:
     """Drain an async generator in the background, cleaning up Redis on failure."""
     _ok = True
@@ -201,11 +202,31 @@ async def _consume_background_gen(
             # Report-back crash teardown is business logic owned by
             # report_back — it fetches its own cache client and swallows its
             # own failures. Must not run while the executor is alive: a live
-            # dispatched run's watch keys are still in use.
+            # dispatched run's watch keys are still in use. And only for a
+            # ROWLESS crash (died before START committed): a run row means a
+            # finalize — the reconcile below, or the real owner's — enqueues
+            # the durable watch_clear on the flash ordering chain, which owns
+            # the pair teardown there; a direct clear here runs OFF-CHAIN and
+            # can drain a summary admission's just-claimed pointer mid-flight
+            # (round-19 P1). Unknown row state leaves the pair to its owner
+            # or the origin TTL rather than tearing down on a guess.
+            from src.server.database import turn_lifecycle as tl_db
             from src.server.handlers.chat.report_back import clear_on_crash
             from src.server.services.turn_lifecycle import TurnCoordinator
 
-            await clear_on_crash(thread_id, report_back_ptc_thread_id, user_id)
+            run_row_missing = False
+            try:
+                run_row_missing = await tl_db.get_run(run_id) is None
+            except Exception:
+                pass
+            if run_row_missing:
+                await clear_on_crash(
+                    thread_id,
+                    report_back_ptc_thread_id,
+                    user_id,
+                    run_id=run_id,
+                    dispatch_gen=dispatch_gen,
+                )
             terminal_status = await (
                 TurnCoordinator.get_instance().reconcile_orphaned_dispatch(
                     thread_id, run_id, error_text=_error_text, label=label
@@ -794,6 +815,10 @@ async def _handle_send_message(
                 internal_overrides["query_type"] = None
             if request.report_back_ptc_thread_id:
                 internal_overrides["report_back_ptc_thread_id"] = None
+            if request.origin_flash_thread_id:
+                internal_overrides["origin_flash_thread_id"] = None
+            if request.origin_dispatch_gen:
+                internal_overrides["origin_dispatch_gen"] = None
             if internal_overrides:
                 request = request.model_copy(update=internal_overrides)
     except BaseException:
@@ -860,7 +885,9 @@ async def _handle_send_message(
             from src.server.handlers.chat import report_back
             admission_lock = await manager.get_admission_lock(thread_id)
             async with admission_lock, report_back.claim(
-                rb_cache, thread_id, rb_ptc, run_id
+                rb_cache, thread_id, rb_ptc, run_id,
+                request.origin_dispatch_gen,
+                request.request_key,
             ) as rb_claim:
                 if rb_claim.incumbent is not None:
                     await release_burst_slot(user_id, auth.burst_slot_id)
@@ -874,6 +901,23 @@ async def _handle_send_message(
                         "thread_id": thread_id,
                         "run_id": rb_claim.incumbent,
                     })
+                if rb_claim.pair_gone:
+                    await release_burst_slot(user_id, auth.burst_slot_id)
+                    logger.warning(
+                        f"[FLASH_DISPATCH] Report-back pair for ptc={rb_ptc} on "
+                        f"flash thread {thread_id} was already settled; refusing "
+                        "to schedule an orphan summary"
+                    )
+                    # 410 is deliberately outside the executor's retry set: the
+                    # job drops (acks) instead of re-POSTing a summary whose
+                    # pair a resolution or terminal clear has already settled.
+                    raise HTTPException(
+                        status_code=410,
+                        detail=(
+                            "Report-back pair already resolved; summary not "
+                            "scheduled."
+                        ),
+                    )
                 state = await manager.wait_for_admission(
                     thread_id, exclude_run_id=run_id
                 )
@@ -897,6 +941,7 @@ async def _handle_send_message(
                         run_id,
                         report_back_ptc_thread_id=request.report_back_ptc_thread_id,
                         user_id=user_id,
+                        dispatch_gen=request.origin_dispatch_gen,
                     ),
                     mode="flash",
                     model=_model,
@@ -978,19 +1023,52 @@ async def _handle_send_message(
                         "follow-up could not be admitted."
                     ),
                 )
-            await tracker.mark_active(
+            # The marker doubles as the dispatcher's admission oracle: its
+            # metadata carries the caller's dispatch generation so an
+            # ambiguous (lost-reply) dispatch can positively identify ITS
+            # admission, and a failed write aborts BEFORE anything is
+            # scheduled — a scheduled run with no marker would make the
+            # oracle's absence reading a lie. The write atomically refuses
+            # generations the orphan resolver already receipted as phantom
+            # (their watch state is gone; admitting would run a turn whose
+            # report-back silently drops).
+            from src.server.handlers.chat.report_back_keys import (
+                ptc_rb_resolved_key,
+            )
+
+            marked = await tracker.mark_active(
                 thread_id=thread_id,
                 workspace_id=workspace_id,
                 user_id=user_id,
                 run_id=run_id,
-                metadata={"type": "ptc_agent", "dispatched": True},
+                metadata={
+                    "type": "ptc_agent",
+                    "dispatched": True,
+                    "origin_dispatch_gen": request.origin_dispatch_gen,
+                },
+                refuse_receipt_key=(
+                    ptc_rb_resolved_key(thread_id)
+                    if request.origin_dispatch_gen
+                    else None
+                ),
+                receipt_member=request.origin_dispatch_gen,
             )
+            if not marked:
+                await release_burst_slot(user_id, auth.burst_slot_id)
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Dispatch admission was refused or the marker write "
+                        "failed; not scheduled."
+                    ),
+                )
             await manager.pre_register(thread_id, run_id)
 
         _track_task(asyncio.create_task(
             observe_background_chat_turn(
                 _consume_background_gen(
-                    ptc_gen, "PTC_DISPATCH", thread_id, run_id, user_id=user_id
+                    ptc_gen, "PTC_DISPATCH", thread_id, run_id, user_id=user_id,
+                    dispatch_gen=request.origin_dispatch_gen,
                 ),
                 mode="ptc",
                 model=_model,
@@ -1343,8 +1421,14 @@ async def get_dispatches_liveness(
         # resumable-by-design with no live task, so it is left untouched.
         # slice_ speaks the public vocabulary (1.6): live == "running".
         if slice_["status"] == "running":
-            result = await crosscheck_btm_liveness(tid, tracker, True)
-            if not result["live"]:
+            result = await crosscheck_btm_liveness(tid, tracker, True, blob=blob)
+            # Substitute a terminal slice only when the gated heal actually
+            # landed. live=False alone can be a heal refused by the age/CAS
+            # gate — e.g. a dispatch mid-admission whose task isn't visible
+            # yet — and freezing that card on 'completed' would misreport a
+            # run that is about to stream. It stays 'running' for one more
+            # poll instead.
+            if result["healed"]:
                 slice_ = {
                     "thread_id": tid,
                     "status": "completed",

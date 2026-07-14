@@ -17,21 +17,8 @@ import pytest
 from src.server.handlers.chat import report_back
 from tests.unit.server.handlers.chat.redis_fakes import (
     FakeCache as _FakeCache,
-    drain as _drain,
     seed_dispatched as _seed_dispatched,
 )
-
-
-@pytest.fixture(autouse=True)
-def _reset_consumer_state():
-    """Module-global consumer registries must not leak across tests."""
-    report_back._rb_consumers.clear()
-    report_back._rb_terminal_events.clear()
-    yield
-    for task in list(report_back._rb_consumers.values()):
-        task.cancel()
-    report_back._rb_consumers.clear()
-    report_back._rb_terminal_events.clear()
 
 
 def _seed_pointer(cache: _FakeCache, flash: str, ptc: str, run_id: str) -> None:
@@ -144,31 +131,6 @@ async def test_mass_discard_of_deleted_flash_thread_records_nothing():
 
     assert not cache.client.lists.get(report_back.flash_rb_done_key(flash))
     assert not cache.client.sets.get(report_back.flash_watch_key(flash))
-
-
-@pytest.mark.asyncio
-async def test_consumer_drain_records_each_run_newest_first():
-    """End-to-end: each drained report-back's run id lands on the done list in
-    drain order (newest first), mirroring claim-at-admission + terminal clear."""
-    cache = _FakeCache()
-    flash = "flash-1"
-    _seed_dispatched(cache, flash, ["ptc-1", "ptc-2"])
-
-    async def fake_post(c, f, ptc, origin):
-        # Admission claims the run pointer; the terminal clear then drains it.
-        _seed_pointer(c, f, ptc, f"rb-run-{ptc}")
-        await report_back.clear_flash_report_back(c, ptc, f)
-        return "dispatched", f"rb-run-{ptc}"
-
-    with patch(
-        "src.utils.cache.redis_cache.get_cache_client", return_value=cache
-    ), patch.object(report_back, "_post_report_back", side_effect=fake_post):
-        await report_back._flash_report_back("ptc-1")
-        await report_back._flash_report_back("ptc-2")
-        await _drain(flash)
-
-    done = cache.client.lists[report_back.flash_rb_done_key(flash)]
-    assert done == ["rb-run-ptc-2", "rb-run-ptc-1"]
 
 
 # ---------------------------------------------------------------------------

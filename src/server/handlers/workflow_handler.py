@@ -6,6 +6,7 @@ Extracted from src/server/app/workflow.py to separate business logic from route 
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Optional
 
 from fastapi import HTTPException
@@ -221,41 +222,85 @@ def liveness_from_blob(thread_id: str, blob: Optional[dict]) -> dict:
     }
 
 
+_HEAL_MIN_BLOB_AGE_S = 30.0
+
+# The tracker's Lua CAS deliberately lets a gated write through when the
+# STORED blob has no run_id (legacy blobs predate run stamping). A healer
+# that observed a run_id-less blob must therefore gate on a value that can
+# never name a real run — the heal then lands only while the blob is still
+# run_id-less, and is refused the moment any run stamps it.
+_GENLESS_HEAL_GATE = "__healer_observed_no_run_id__"
+
+
+def _blob_age_seconds(blob: Optional[dict]) -> float:
+    """Age per the blob's own ``last_update``; unparseable reads as ancient."""
+    raw = (blob or {}).get("last_update")
+    if not raw:
+        return float("inf")
+    try:
+        return (datetime.now() - datetime.fromisoformat(raw)).total_seconds()
+    except (ValueError, TypeError):
+        return float("inf")
+
+
 async def crosscheck_btm_liveness(
-    thread_id: str, tracker, reconnectable: bool
+    thread_id: str, tracker, reconnectable: bool, blob: Optional[dict] = None
 ) -> dict:
     """Cross-check a tracker blob against the in-process BTM, healing stale ACTIVE.
 
     The in-process BackgroundTaskManager is authoritative for liveness
     (single-worker invariant, see ``server.py``). No task for a blob claiming a
     reconnectable status means a restart orphan (``mark_active`` writes no TTL) —
-    heal it to COMPLETED so status reads stop reporting a zombie. Returns
-    ``{"live", "healed", "run_id", "active_tasks"}``.
+    heal it to COMPLETED so status reads stop reporting a zombie.
+
+    The heal must not race a fresh admission (marker stamped, ``pre_register``
+    not yet visible): it is age-gated (a restart orphan is old by definition),
+    re-checks liveness under the same per-thread admission lock that covers
+    that window, and CAS-gates the write on the observed run_id so a newer
+    run's marker can never be overwritten. ``healed`` is True only when the
+    gated write actually landed. Returns ``{"live", "healed", "run_id",
+    "active_tasks"}``.
     """
     from src.server.services.background_task_manager import BackgroundTaskManager
+
+    def _live(bg: dict) -> dict:
+        return {
+            "live": True,
+            "healed": False,
+            "run_id": bg.get("run_id"),
+            "active_tasks": bg.get("active_tasks", []),
+        }
 
     manager = BackgroundTaskManager.get_instance()
     bg_status = await manager.get_live_task_info(thread_id)
     if bg_status.get("live"):
-        return {
-            "live": True,
-            "healed": False,
-            "run_id": bg_status.get("run_id"),
-            "active_tasks": bg_status.get("active_tasks", []),
-        }
+        return _live(bg_status)
     healed = False
-    if reconnectable:
-        logger.info(
-            f"Stale workflow status for {thread_id}: Redis says active but "
-            f"BackgroundTaskManager has no task info. Healing to completed."
-        )
-        try:
-            await tracker.mark_completed(
-                thread_id, metadata={"healed": "stale_active_no_task"}
+    if reconnectable and _blob_age_seconds(blob) >= _HEAL_MIN_BLOB_AGE_S:
+        admission_lock = await manager.get_admission_lock(thread_id)
+        async with admission_lock:
+            bg_status = await manager.get_live_task_info(thread_id)
+            if bg_status.get("live"):
+                return _live(bg_status)
+            logger.info(
+                f"Stale workflow status for {thread_id}: Redis says active but "
+                f"BackgroundTaskManager has no task info. Healing to completed."
             )
-        except Exception:
-            pass
-        healed = True
+            from src.server.services.workflow_tracker import WorkflowStatus
+
+            try:
+                # Gated on BOTH the observed run_id and the observed ACTIVE
+                # status: the same run can have gone terminal (INTERRUPTED —
+                # HITL resumability — or failed/cancelled) between the read
+                # and this write, and run_id alone cannot see that.
+                healed = await tracker.mark_completed(
+                    thread_id,
+                    run_id=(blob or {}).get("run_id") or _GENLESS_HEAL_GATE,
+                    metadata={"healed": "stale_active_no_task"},
+                    expected_status=WorkflowStatus.ACTIVE,
+                )
+            except Exception:
+                healed = False
     return {"live": False, "healed": healed, "run_id": None, "active_tasks": []}
 
 
@@ -339,7 +384,9 @@ async def get_workflow_status(
             # A live task yields active_tasks + run_id; a stale ACTIVE blob
             # surviving a restart is healed to COMPLETED so a reconnect doesn't
             # 404 on /messages/stream.
-            result = await crosscheck_btm_liveness(thread_id, tracker, can_reconnect)
+            result = await crosscheck_btm_liveness(
+                thread_id, tracker, can_reconnect, blob=redis_status
+            )
             if result["live"]:
                 active_tasks = result["active_tasks"]
                 run_id = result["run_id"]

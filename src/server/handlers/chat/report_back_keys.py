@@ -23,16 +23,6 @@ def flash_rb_done_key(flash_thread_id: str) -> str:
     return f"flash_rb_done:{flash_thread_id}"
 
 
-def flash_rb_queue_key(flash_thread_id: str) -> str:
-    """Durable FIFO (Redis list) of PTC thread ids awaiting report-back, completion order."""
-    return f"flash_rb_queue:{flash_thread_id}"
-
-
-def flash_rb_queued_key(flash_thread_id: str) -> str:
-    """Dedup marker SET mirroring queue membership (survives a duplicate completion event)."""
-    return f"flash_rb_queued:{flash_thread_id}"
-
-
 def flash_user_pending_key(user_id: str) -> str:
     """Per-user SET of pending dispatched PTC thread ids, gating the per-user cap."""
     return f"flash_user_pending:{user_id}"
@@ -41,6 +31,20 @@ def flash_user_pending_key(user_id: str) -> str:
 def ptc_origin_key(ptc_thread_id: str) -> str:
     """Dispatch origin metadata (flash thread, user, workspaces, report_back flag) for a PTC thread."""
     return f"ptc_origin:{ptc_thread_id}"
+
+
+def ptc_teardown_tombstone_key(ptc_thread_id: str) -> str:
+    """Records a teardown fenced out by a provisional (uncommitted) dispatch
+    generation, so that generation's rollback honors it instead of resurrecting
+    the already-torn-down predecessor."""
+    return f"ptc_rb_tombstone:{ptc_thread_id}"
+
+
+def ptc_rb_resolved_key(ptc_thread_id: str) -> str:
+    """Redis SET of dispatch generations resolved as phantom (never admitted,
+    fence honored no further): the admission marker write refuses these, so
+    resolution vs late admission is a race exactly one side can win."""
+    return f"ptc_rb_resolved:{ptc_thread_id}"
 
 
 def thread_wake_key(flash_thread_id: str) -> str:

@@ -1,10 +1,9 @@
 """Coverage for ``get_workflow_status``'s flash report-back resolution.
 
 A flash thread polling ``/status`` must surface which report-back run to attach
-to (``report_back_run_id``) and re-nudge the in-process consumer after a process
-restart. The run is resolved from a live per-(flash, ptc) pointer — preferring
-the head of the durable queue (the report-back currently being drained), then
-any pending watch member with a pointer.
+to (``report_back_run_id``), resolved from a live per-(flash, ptc) pointer of
+any pending watch member. Execution progress lives in the durable outbox — no
+in-process consumer remains to nudge.
 """
 
 from __future__ import annotations
@@ -20,9 +19,14 @@ from src.server.handlers.chat import report_back
 from tests.unit.server.handlers.chat.redis_fakes import FakeCache as _FakeCache
 
 
-def _seed(cache: _FakeCache, flash: str, queue: list[str], run_pointers: dict[str, str]) -> None:
-    cache.client.sets[report_back.flash_watch_key(flash)] = set(queue)
-    cache.client.lists[report_back.flash_rb_queue_key(flash)] = list(queue)
+def _seed(cache: _FakeCache, flash: str, members: list[str], run_pointers: dict[str, str]) -> None:
+    cache.client.sets[report_back.flash_watch_key(flash)] = set(members)
+    # A live member always carries an origin (reserve writes both atomically);
+    # the status read treats originless members as orphans and reaps them.
+    for ptc in members:
+        cache.client.kv[report_back.ptc_origin_key(ptc)] = json.dumps(
+            {"flash_thread_id": flash, "report_back": True}
+        )
     # Pointers are read via client.mget (raw serialized JSON), matching prod.
     for ptc, run_id in run_pointers.items():
         cache.client.kv[report_back.flash_rb_run_key(flash, ptc)] = json.dumps(
@@ -30,9 +34,7 @@ def _seed(cache: _FakeCache, flash: str, queue: list[str], run_pointers: dict[st
         )
 
 
-def _patches(
-    cache: _FakeCache, ensure: MagicMock, latest_turn: int | None = None
-) -> list:
+def _patches(cache: _FakeCache, latest_turn: int | None = None) -> list:
     """Stub everything get_workflow_status touches except the report-back block."""
     tracker = MagicMock()
     # COMPLETED is terminal (not reconnectable) -> can_reconnect False.
@@ -72,69 +74,55 @@ def _patches(
         patch(
             "src.utils.cache.redis_cache.get_cache_client", return_value=cache
         ),
-        patch.object(report_back, "ensure_rb_consumer", ensure),
     ]
 
 
 @pytest.mark.asyncio
-async def test_status_prefers_queue_head_run_id_and_nudges_consumer():
+async def test_status_surfaces_member_pointer_and_recent_runs():
     cache = _FakeCache()
     flash = "flash-1"
-    # Both head and member carry a pointer; the head's must win.
-    _seed(
-        cache,
-        flash,
-        ["ptc-head", "ptc-other"],
-        {"ptc-head": "rb-head", "ptc-other": "rb-other"},
-    )
+    _seed(cache, flash, ["ptc-1"], {"ptc-1": "rb-1"})
     # A previously drained run rides along in the same status payload.
     cache.client.lists[report_back.flash_rb_done_key(flash)] = ["rb-done-1"]
-    ensure = MagicMock()
 
     with contextlib.ExitStack() as stack:
-        for p in _patches(cache, ensure):
+        for p in _patches(cache):
             stack.enter_context(p)
         resp = await workflow_handler.get_workflow_status(flash)
 
     assert resp["pending_report_back"] is True
-    assert resp["report_back_run_id"] == "rb-head"
+    assert resp["report_back_run_id"] == "rb-1"
     assert resp["recent_report_back_run_ids"] == ["rb-done-1"]
-    # Durable queue is non-empty -> restart-nudge the consumer.
-    ensure.assert_called_once_with(flash)
 
 
 @pytest.mark.asyncio
-async def test_status_falls_back_to_member_pointer_when_head_has_none():
+async def test_status_falls_back_to_any_member_with_a_pointer():
     cache = _FakeCache()
     flash = "flash-1"
-    # Head has no pointer yet; resolution falls through to the member that does.
-    _seed(cache, flash, ["ptc-head", "ptc-other"], {"ptc-other": "rb-other"})
-    ensure = MagicMock()
+    # One member has no pointer yet (not dispatched); the one that does wins.
+    _seed(cache, flash, ["ptc-pending", "ptc-live"], {"ptc-live": "rb-live"})
 
     with contextlib.ExitStack() as stack:
-        for p in _patches(cache, ensure):
+        for p in _patches(cache):
             stack.enter_context(p)
         resp = await workflow_handler.get_workflow_status(flash)
 
     assert resp["pending_report_back"] is True
-    assert resp["report_back_run_id"] == "rb-other"
-    ensure.assert_called_once_with(flash)
+    assert resp["report_back_run_id"] == "rb-live"
 
 
 @pytest.mark.asyncio
-async def test_status_no_pending_report_back_does_not_nudge():
-    cache = _FakeCache()  # empty watch SET + empty queue
-    ensure = MagicMock()
+async def test_status_no_pending_report_back():
+    cache = _FakeCache()  # empty watch SET
 
     with contextlib.ExitStack() as stack:
-        for p in _patches(cache, ensure):
+        for p in _patches(cache):
             stack.enter_context(p)
         resp = await workflow_handler.get_workflow_status("flash-x")
 
     assert resp["pending_report_back"] is False
     assert resp["report_back_run_id"] is None
     assert resp["recent_report_back_run_ids"] == []
-    ensure.assert_not_called()
 
 
 class _BoomClient:
@@ -178,13 +166,72 @@ async def test_report_back_status_success_returns_real_bool():
     # Pending: a watch member with a live run pointer -> explicit True + run id.
     pending = _FakeCache()
     _seed(pending, "flash-pending", ["ptc-1"], {"ptc-1": "rb-1"})
-    with (
-        patch("src.utils.cache.redis_cache.get_cache_client", return_value=pending),
-        patch.object(report_back, "ensure_rb_consumer", MagicMock()),
+    with patch(
+        "src.utils.cache.redis_cache.get_cache_client", return_value=pending
     ):
         live = await report_back.read_report_back_status("flash-pending")
     assert live["pending_report_back"] is True
     assert live["report_back_run_id"] == "rb-1"
+
+
+# --- Orphan members in the status read (Codex round-6 F1) --------------------
+
+
+@pytest.mark.asyncio
+async def test_status_excludes_and_reaps_originless_members():
+    """An under-cap orphan (member whose origin lapsed) must not keep /status
+    pending forever — reserve()'s cap-pressure reaper never fires below the
+    cap while successful reserves keep refreshing the shared SET's TTL, so
+    the read path itself filters and reaps."""
+    cache = _FakeCache()
+    flash = "flash-1"
+    _seed(cache, flash, ["ptc-live", "ptc-orphan"], {"ptc-live": "rb-live"})
+    del cache.client.kv[report_back.ptc_origin_key("ptc-orphan")]
+
+    with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
+        resp = await report_back.read_report_back_status(flash)
+
+    assert resp["pending_report_back"] is True
+    assert resp["report_back_run_id"] == "rb-live"
+    # The orphan was reaped from the watch set, not just skipped.
+    assert cache.client.sets[report_back.flash_watch_key(flash)] == {"ptc-live"}
+
+
+@pytest.mark.asyncio
+async def test_status_with_only_orphans_reads_drained():
+    cache = _FakeCache()
+    flash = "flash-1"
+    _seed(cache, flash, ["ptc-orphan"], {})
+    del cache.client.kv[report_back.ptc_origin_key("ptc-orphan")]
+
+    with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
+        resp = await report_back.read_report_back_status(flash)
+
+    assert resp["pending_report_back"] is False
+    assert resp["report_back_run_id"] is None
+    assert not cache.client.sets.get(report_back.flash_watch_key(flash))
+
+
+@pytest.mark.asyncio
+async def test_status_orphan_reap_failure_still_filters_the_derivation():
+    """The reap is best-effort: an eval failure must not degrade the read to
+    unknown — the origin MGET already established the truth."""
+    cache = _FakeCache()
+    flash = "flash-1"
+    _seed(cache, flash, ["ptc-orphan"], {})
+    del cache.client.kv[report_back.ptc_origin_key("ptc-orphan")]
+
+    async def _boom(*_a, **_k):
+        raise RuntimeError("eval failed")
+
+    cache.client.eval = _boom
+
+    with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
+        resp = await report_back.read_report_back_status(flash)
+
+    assert resp["pending_report_back"] is False  # filtered, not None/unknown
+    # The unreaped member stays for a later reap attempt.
+    assert "ptc-orphan" in cache.client.sets[report_back.flash_watch_key(flash)]
 
 
 # --- latest_turn_index (the cached-view terminal-staleness signal) -----------
@@ -199,10 +246,8 @@ async def test_status_includes_latest_turn_index_for_terminal_thread():
     turns completed while it was hidden.
     """
     cache = _FakeCache()
-    ensure = MagicMock()
-
     with contextlib.ExitStack() as stack:
-        for p in _patches(cache, ensure, latest_turn=3):
+        for p in _patches(cache, latest_turn=3):
             stack.enter_context(p)
         resp = await workflow_handler.get_workflow_status("thread-1")
 
@@ -216,10 +261,8 @@ async def test_status_includes_latest_turn_index_for_terminal_thread():
 async def test_status_latest_turn_index_none_when_thread_has_no_turns():
     """No persisted turns (or a failed read) surfaces as an explicit None."""
     cache = _FakeCache()
-    ensure = MagicMock()
-
     with contextlib.ExitStack() as stack:
-        for p in _patches(cache, ensure, latest_turn=None):
+        for p in _patches(cache, latest_turn=None):
             stack.enter_context(p)
         resp = await workflow_handler.get_workflow_status("thread-1")
 

@@ -23,6 +23,91 @@ from src.config.settings import get_redis_ttl_workflow_status
 logger = logging.getLogger(__name__)
 
 
+# Atomic read-gate-merge-write for status transitions. The pre-v4 Python
+# read-modify-write let a stale terminal writer (run G1) pass the run_id
+# check before a newer run G2's mark_active and then clobber G2's blob —
+# erasing the admission stamp the dispatch oracle relies on. The gate and
+# the write must be one Redis-side step.
+#
+# Blob constraint: because the blob round-trips through Lua cjson here,
+# metadata values (from mark_active onward) must stay flat scalars —
+# cjson does not preserve the empty-array/object distinction and floats
+# transit through Lua-number precision. Deep/collection metadata needs a
+# schema decision first (or the CAS identity moved off the JSON blob).
+# KEYS: 1=status key
+# ARGV: 1=expected run_id ('' = ungated) 2=patch JSON (metadata merged,
+#       other fields replaced) 3=ttl seconds 4=thread_id 5=started_at
+#       6=expected stored status ('' = ungated) — a healer-style writer
+#         gates on the exact state it observed, so a same-run transition
+#         (ACTIVE→INTERRUPTED) between its read and this write refuses the
+#         CAS instead of being overwritten. An absent blob has no status
+#         and refuses any status-gated write.
+_CAS_STATUS_LUA = """
+local t
+local v = redis.call('get', KEYS[1])
+if v then
+  local ok, dec = pcall(cjson.decode, v)
+  if ok and type(dec) == 'table' then t = dec end
+end
+if t == nil then
+  t = {}
+  t['thread_id'] = ARGV[4]
+  t['started_at'] = ARGV[5]
+end
+local rid = t['run_id']
+if rid == cjson.null then rid = nil end
+if ARGV[1] ~= '' and rid ~= nil and rid ~= ARGV[1] then
+  return 0
+end
+if ARGV[6] ~= nil and ARGV[6] ~= '' and t['status'] ~= ARGV[6] then
+  return 0
+end
+local patch = cjson.decode(ARGV[2])
+for k, pv in pairs(patch) do
+  if k == 'metadata' then
+    local m = t['metadata']
+    if type(m) ~= 'table' then m = {} end
+    for mk, mv in pairs(pv) do m[mk] = mv end
+    t['metadata'] = m
+  else
+    t[k] = pv
+  end
+end
+redis.call('set', KEYS[1], cjson.encode(t), 'EX', tonumber(ARGV[3]))
+return 1
+"""
+
+
+# Admission marker write, refused for phantom-receipted generations: the
+# orphan resolver receipts a generation it resolved as never-admitted
+# (memberships dropped, pending state cleared client-side) — if that
+# generation's own HTTP admission then landed, it would run with its watch
+# state already erased and its report-back silently dropped. Receipt check
+# and marker write are ONE Redis-side step, making resolution vs late
+# admission a race exactly one side can win.
+# The admission is ALSO stamped as ``admitted_gen`` on the exact-gen origin
+# blob (KEEPTTL — the origin's lifetime is the identity's lifetime): the
+# marker's terminal TTL (1h) is 23h shorter than the origin's, so the
+# marker alone would let an admitted-and-finished generation read as
+# phantom to the resolver once its marker expired. A moved/absent origin
+# skips the stamp — that lifecycle isn't ours to write.
+# KEYS: 1=status key 2=resolved-receipt set 3=origin key
+# ARGV: 1=status blob JSON 2=this dispatch generation 3=ttl seconds
+_ADMISSION_MARK_LUA = """
+if redis.call('sismember', KEYS[2], ARGV[2]) == 1 then return 0 end
+redis.call('set', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[3]))
+local o = redis.call('get', KEYS[3])
+if o then
+  local ok, origin = pcall(cjson.decode, o)
+  if ok and type(origin) == 'table' and origin['dispatch_gen'] == ARGV[2] then
+    origin['admitted_gen'] = ARGV[2]
+    redis.call('set', KEYS[3], cjson.encode(origin), 'KEEPTTL')
+  end
+end
+return 1
+"""
+
+
 class WorkflowStatus(str, Enum):
     """Workflow execution status."""
     ACTIVE = "active"
@@ -105,49 +190,51 @@ class WorkflowTracker:
         metadata: Optional[Dict[str, Any]] = None,
         ttl: Optional[int] = None,
         run_id: Optional[str] = None,
+        expected_status: Optional[WorkflowStatus] = None,
     ) -> bool:
         """
         Helper to update workflow status with metadata preservation.
 
-        When ``run_id`` is provided, the update is skipped if the
-        stored blob's ``run_id`` doesn't match — prevents a late terminal
-        from run A overwriting active status set by run B.
+        When ``run_id`` is provided, the update is skipped if the stored
+        blob's ``run_id`` doesn't match; ``expected_status`` additionally
+        gates on the exact stored status the caller observed (healer-style
+        writers — a same-run ACTIVE→terminal transition between read and
+        write must refuse, run_id alone can't see it). Gate + merge + write
+        run as ONE Lua eval — a separate read-then-write let a stale
+        terminal writer pass the gate before a newer run's mark_active and
+        then clobber its blob.
         """
         try:
             key = f"{self.STATUS_PREFIX}{thread_id}"
-
-            # Get existing status to preserve metadata
-            existing = await self.cache.get(key)
-            if not existing:
-                existing = {
-                    "thread_id": thread_id,
-                    "started_at": datetime.now().isoformat()
-                }
-
-            if run_id is not None:
-                stored_run_id = existing.get("run_id")
-                if stored_run_id is not None and stored_run_id != run_id:
-                    logger.debug(
-                        f"[WorkflowTracker] Skipping {new_status} update for "
-                        f"thread_id={thread_id}: stored run_id={stored_run_id} "
-                        f"!= expected={run_id}"
-                    )
-                    return False
-
-            # Update status and timestamp
-            existing["status"] = new_status
-            existing[timestamp_field] = datetime.now().isoformat()
-            existing["last_update"] = datetime.now().isoformat()
-
-            # Merge metadata if provided
+            now = datetime.now().isoformat()
+            patch: Dict[str, Any] = {
+                "status": new_status,
+                timestamp_field: now,
+                "last_update": now,
+            }
             if metadata:
-                existing_meta = existing.get("metadata", {})
-                existing_meta.update(metadata)
-                existing["metadata"] = existing_meta
+                patch["metadata"] = metadata
 
-            # Save with optional TTL
-            success = await self.cache.set(key, existing, ttl=ttl)
-            return success
+            from src.utils.cache.redis_cache import SAFETY_TTL
+
+            res = await self.cache.client.eval(
+                _CAS_STATUS_LUA,
+                1,
+                key,
+                run_id or "",
+                json.dumps(patch, ensure_ascii=False),
+                ttl if ttl and ttl > 0 else SAFETY_TTL,
+                thread_id,
+                now,
+                expected_status.value if expected_status else "",
+            )
+            if not int(res):
+                logger.debug(
+                    f"[WorkflowTracker] Skipping {new_status} update for "
+                    f"thread_id={thread_id}: stored run_id != {run_id}"
+                )
+                return False
+            return True
 
         except Exception as e:
             logger.error(
@@ -162,6 +249,8 @@ class WorkflowTracker:
         user_id: str,
         metadata: Optional[Dict[str, Any]] = None,
         run_id: Optional[str] = None,
+        refuse_receipt_key: Optional[str] = None,
+        receipt_member: Optional[str] = None,
     ) -> bool:
         """
         Mark workflow as active (currently executing with connection).
@@ -172,6 +261,11 @@ class WorkflowTracker:
             user_id: User identifier
             metadata: Optional additional metadata
             run_id: Current turn's LangGraph run_id (== conversation_response_id)
+            refuse_receipt_key: Redis SET of phantom-resolved dispatch
+                generations; when set (with receipt_member), the marker
+                write atomically refuses if the member was receipted, and
+                stamps ``admitted_gen`` on the exact-gen origin blob
+            receipt_member: this run's dispatch generation to check
 
         Returns:
             True if successfully marked, False otherwise
@@ -194,7 +288,32 @@ class WorkflowTracker:
 
             # Cleaned up on completion; the cache client's safety TTL (7d)
             # backstops a crash that skips the cleanup.
-            success = await self.cache.set(key, status_obj)
+            if refuse_receipt_key and receipt_member:
+                from src.server.handlers.chat.report_back_keys import (
+                    ptc_origin_key,
+                )
+                from src.utils.cache.redis_cache import SAFETY_TTL
+
+                admitted = await self.cache.client.eval(
+                    _ADMISSION_MARK_LUA,
+                    3,
+                    key,
+                    refuse_receipt_key,
+                    ptc_origin_key(thread_id),
+                    json.dumps(status_obj, ensure_ascii=False),
+                    receipt_member,
+                    SAFETY_TTL,
+                )
+                if not int(admitted):
+                    logger.warning(
+                        f"[WorkflowTracker] Refusing admission for "
+                        f"{thread_id}: generation {receipt_member} was "
+                        f"already resolved as phantom"
+                    )
+                    return False
+                success = True
+            else:
+                success = await self.cache.set(key, status_obj)
 
             if success:
                 logger.debug(f"[WorkflowTracker] Marked workflow as active: {thread_id}")
@@ -210,13 +329,16 @@ class WorkflowTracker:
         thread_id: str,
         metadata: Optional[Dict[str, Any]] = None,
         run_id: Optional[str] = None,
+        expected_status: Optional[WorkflowStatus] = None,
     ) -> bool:
         """
         Mark workflow as completed (finished executing).
 
         Sets TTL per redis.ttl.workflow_status config (keeps brief history).
         Pass ``run_id`` to no-op the write when the active run has
-        already advanced to a different turn.
+        already advanced to a different turn; ``expected_status`` to
+        additionally no-op when the stored status left the state the
+        caller observed (healer-style CAS).
         """
         if not self.enabled:
             return False
@@ -229,6 +351,7 @@ class WorkflowTracker:
             metadata=metadata,
             ttl=ttl,
             run_id=run_id,
+            expected_status=expected_status,
         )
 
         if success:

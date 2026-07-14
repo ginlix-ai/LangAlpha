@@ -285,6 +285,9 @@ async def astream_flash_workflow(
                 "report_back_ptc_thread_id": getattr(
                     request, "report_back_ptc_thread_id", None
                 ),
+                "origin_dispatch_gen": getattr(
+                    request, "origin_dispatch_gen", None
+                ),
             },
         )
 
@@ -504,6 +507,9 @@ async def astream_flash_workflow(
                     # on error/cancelled (1.7; no in-process hook remains).
                     "report_back_ptc_thread_id": getattr(
                         request, "report_back_ptc_thread_id", None
+                    ),
+                    "origin_dispatch_gen": getattr(
+                        request, "origin_dispatch_gen", None
                     ),
                 },
                 graph=flash_graph,

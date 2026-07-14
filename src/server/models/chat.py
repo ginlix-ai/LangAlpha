@@ -342,6 +342,26 @@ class ChatRequest(BaseModel):
         "Internal use only.",
     )
 
+    # Internal: the flash thread watching this dispatched PTC run. Stamped
+    # into the run's START metadata so finalize can build report-back hook
+    # ordering keys (all completions reporting into one flash thread
+    # serialize) without I/O. An ordering hint only — executors re-resolve
+    # the authoritative origin from Redis at execution time.
+    origin_flash_thread_id: Optional[str] = Field(
+        default=None,
+        description="Flash thread watching this dispatched PTC run. "
+        "Internal use only.",
+    )
+
+    # Internal: dispatch-incarnation token for the report-back pair, minted
+    # per reserve(). Stamped into START metadata; terminal teardowns compare
+    # it against the live origin so a stale clear can never destroy a
+    # re-dispatched pair's watch state.
+    origin_dispatch_gen: Optional[str] = Field(
+        default=None,
+        description="Report-back dispatch generation token. Internal use only.",
+    )
+
     # Server-stamped: the burst-guard ZSET member held by this request's
     # admission. The route overwrites whatever a client sent (a forged value
     # could only orphan the caller's own slot until reap, but stamping keeps

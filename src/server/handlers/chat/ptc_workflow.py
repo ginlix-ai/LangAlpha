@@ -92,6 +92,35 @@ from .stream_from_log import stream_from_log
 from .tasks import fire_and_forget as _fire_and_forget
 
 
+async def _resolve_origin_meta(request, thread_id: str) -> dict:
+    """The watching flash thread (+ dispatch generation) for this run's hooks.
+
+    The dispatch POST carries them; follow-up turns (HITL resume, user
+    continuation) inherit them from the previous attempt — the origin is a
+    THREAD property, so the stamp must stay sticky or later completions
+    would fall out of the flash thread's serialization chain (and their
+    gen-fenced teardowns out of their dispatch incarnation).
+    """
+    supplied = getattr(request, "origin_flash_thread_id", None)
+    if supplied:
+        return {
+            "origin_flash_thread_id": supplied,
+            "origin_dispatch_gen": getattr(request, "origin_dispatch_gen", None),
+        }
+    from src.server.database import turn_lifecycle as tl_db
+
+    # A read failure must PROPAGATE (failing the turn start): stamping None
+    # on a transient error wouldn't just mis-key this run — inheritance is
+    # sticky, so every later turn would inherit the None and the thread
+    # would fall out of its flash chain permanently.
+    prev = await tl_db.get_latest_attempt(thread_id)
+    meta = (prev.get("metadata") or {}) if prev is not None else {}
+    return {
+        "origin_flash_thread_id": meta.get("origin_flash_thread_id"),
+        "origin_dispatch_gen": meta.get("origin_dispatch_gen"),
+    }
+
+
 async def astream_ptc_workflow(
     request: ChatRequest,
     thread_id: str,
@@ -276,6 +305,12 @@ async def astream_ptc_workflow(
         # START txn (v4): query row + in_progress run row + thread projection
         # in one transaction (begin_turn owns the attempt-chain derivation).
         # =====================================================================
+        # Resolved ONCE and reused by the tracker re-mark below: the raw
+        # request field is empty on public follow-ups (HITL resume, user
+        # continuation), and stamping the durable row with the inherited gen
+        # while re-marking the tracker with None would make a live admitted
+        # run read as unadmitted to the fenced-teardown probe.
+        origin_meta = await _resolve_origin_meta(request, thread_id)
         run_handle = await begin_turn(
             request,
             thread_id=thread_id,
@@ -290,6 +325,7 @@ async def astream_ptc_workflow(
             query_metadata=query_metadata,
             is_fork=is_fork,
             is_checkpoint_replay=is_checkpoint_replay,
+            extra_run_metadata=origin_meta,
         )
         if not is_checkpoint_replay:
             logger.debug(
@@ -708,6 +744,17 @@ async def astream_ptc_workflow(
                     "sandbox_id": sandbox_id,
                     "locale": request.locale,
                     "timezone": timezone_str,
+                    # Carry the admission stamp forward from the RESOLVED
+                    # origin meta (sticky across follow-up turns), not the raw
+                    # request field: this re-mark replaces the endpoint's
+                    # blob, and a lost-reply dispatcher may still be probing
+                    # for its generation — while a public HITL resume carries
+                    # no origin fields and would wipe the stamp to None,
+                    # making the live admitted run read as unadmitted. (None
+                    # on genuinely origin-less turns reads as foreign —
+                    # correct: no prober's request was admitted.)
+                    "dispatched": dispatched,
+                    "origin_dispatch_gen": origin_meta.get("origin_dispatch_gen"),
                 },
             ),
             name=f"mark_active_{thread_id[:8]}",

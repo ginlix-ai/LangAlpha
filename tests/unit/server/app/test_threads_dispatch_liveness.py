@@ -5,8 +5,10 @@ blobs, ownership filtered by each blob's ``user_id`` (no per-thread DB read), so
 N dispatch cards cost one round-trip instead of N heavy ``/status`` polls.
 """
 
+import asyncio
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -39,6 +41,7 @@ def _btm_not_found():
     manager.get_live_task_info = AsyncMock(
         return_value={"live": False, "run_id": None, "active_tasks": []}
     )
+    manager.get_admission_lock = AsyncMock(return_value=asyncio.Lock())
     return manager
 
 
@@ -351,6 +354,139 @@ async def test_active_blob_healed_when_btm_has_no_task(threads_client):
     }
     tracker.mark_completed.assert_awaited_once()
     assert tracker.mark_completed.await_args.args[0] == tid
+    # The heal is CAS-gated on the run AND the ACTIVE status the healer
+    # OBSERVED — neither a newer run's marker nor the same run's later
+    # terminal state (interrupted/failed/cancelled) can be overwritten.
+    assert tracker.mark_completed.await_args.kwargs["run_id"] == "r-1"
+    from src.server.services.workflow_tracker import WorkflowStatus
+
+    assert (
+        tracker.mark_completed.await_args.kwargs["expected_status"]
+        == WorkflowStatus.ACTIVE
+    )
+
+
+@pytest.mark.asyncio
+async def test_active_blob_fresh_is_not_healed_mid_admission(threads_client):
+    """A young ACTIVE blob with no visible task can be a dispatch between
+    mark_active and pre_register — the age gate must leave it running for
+    another poll instead of stamping a just-admitted run completed."""
+    tid = str(uuid.uuid4())
+    tracker = _tracker_returning(
+        {
+            tid: {
+                "status": "active",
+                "run_id": "r-2",
+                "user_id": CALLER,
+                "last_update": datetime.now().isoformat(),
+            }
+        }
+    )
+    with patch(
+        "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
+        return_value=tracker,
+    ), _patch_btm(_btm_not_found()):
+        resp = await threads_client.get(
+            "/api/v1/threads/dispatches/liveness", params={"ids": tid}
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "liveness": [
+            {
+                "thread_id": tid,
+                "status": "running",
+                "run_id": "r-2",
+                "can_reconnect": True,
+            }
+        ]
+    }
+    tracker.mark_completed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_heal_lost_cas_keeps_running_slice(threads_client):
+    """A heal whose CAS was refused (a newer run stamped the blob between the
+    read and the write) must not resolve the card as completed."""
+    tid = str(uuid.uuid4())
+    tracker = _tracker_returning(
+        {tid: {"status": "active", "run_id": "r-1", "user_id": CALLER}}
+    )
+    tracker.mark_completed = AsyncMock(return_value=False)
+    with patch(
+        "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
+        return_value=tracker,
+    ), _patch_btm(_btm_not_found()):
+        resp = await threads_client.get(
+            "/api/v1/threads/dispatches/liveness", params={"ids": tid}
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "liveness": [
+            {
+                "thread_id": tid,
+                "status": "running",
+                "run_id": "r-1",
+                "can_reconnect": True,
+            }
+        ]
+    }
+    tracker.mark_completed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_liveness_regained_under_admission_lock_skips_heal(threads_client):
+    """The heal re-checks liveness under the per-thread admission lock: a task
+    that became visible while waiting for the lock (admission completing)
+    aborts the heal entirely."""
+    tid = str(uuid.uuid4())
+    tracker = _tracker_returning(
+        {tid: {"status": "active", "run_id": "r-1", "user_id": CALLER}}
+    )
+    manager = MagicMock()
+    manager.get_live_task_info = AsyncMock(
+        side_effect=[
+            {"live": False, "run_id": None, "active_tasks": []},
+            {"live": True, "run_id": "r-1", "active_tasks": []},
+        ]
+    )
+    manager.get_admission_lock = AsyncMock(return_value=asyncio.Lock())
+    with patch(
+        "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
+        return_value=tracker,
+    ), _patch_btm(manager):
+        resp = await threads_client.get(
+            "/api/v1/threads/dispatches/liveness", params={"ids": tid}
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["liveness"][0]["status"] == "running"
+    tracker.mark_completed.assert_not_awaited()
+    assert manager.get_live_task_info.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_genless_blob_heal_gates_on_never_matching_run_id(threads_client):
+    """A run_id-less (legacy) blob heals gated on a sentinel that can never
+    name a real run — the write lands only while the blob stays run_id-less."""
+    from src.server.handlers.workflow_handler import _GENLESS_HEAL_GATE
+
+    tid = str(uuid.uuid4())
+    tracker = _tracker_returning(
+        {tid: {"status": "active", "user_id": CALLER}}
+    )
+    with patch(
+        "src.server.services.workflow_tracker.WorkflowTracker.get_instance",
+        return_value=tracker,
+    ), _patch_btm(_btm_not_found()):
+        resp = await threads_client.get(
+            "/api/v1/threads/dispatches/liveness", params={"ids": tid}
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["liveness"][0]["status"] == "completed"
+    assert tracker.mark_completed.await_args.kwargs["run_id"] == _GENLESS_HEAL_GATE
 
 
 @pytest.mark.asyncio

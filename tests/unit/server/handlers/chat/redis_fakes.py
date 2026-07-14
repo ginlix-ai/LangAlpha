@@ -1,12 +1,11 @@
 """Shared stateful fake Redis for report-back tests.
 
-Models the SET / LIST / KV / pipeline / EVAL ops the report-back path uses so
-the consumer's keep-until-terminal queue draining is exercised for real.
+Models the SET / LIST / KV / pipeline ops the report-back path uses so the
+outbox executor's dispatch/clear flow is exercised for real.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 
 from src.server.handlers.chat import report_back
@@ -116,27 +115,331 @@ class FakeClient:
     async def expire(self, key, ttl) -> None:
         self.ttls[key] = ttl
 
-    async def delete(self, key) -> None:
-        self.sets.pop(key, None)
-        self.lists.pop(key, None)
-        self.kv.pop(key, None)
+    async def delete(self, *keys) -> None:
+        for key in keys:
+            self.sets.pop(key, None)
+            self.lists.pop(key, None)
+            self.kv.pop(key, None)
+
+    async def scan_iter(self, match=None):
+        import fnmatch
+
+        for key in list(set(self.kv) | set(self.sets) | set(self.lists)):
+            if match is None or fnmatch.fnmatch(key, match):
+                yield key
 
     async def publish(self, channel, message) -> None:
         self.published.append((channel, message))
 
-    async def eval(self, script, numkeys, *keys_and_args):
-        """Emulate the report-back enqueue EVAL (_ENQUEUE_REPORT_BACK_LUA):
-        membership gate -> dedup SADD -> RPUSH. Returns 1 when newly enqueued."""
-        keys = keys_and_args[:numkeys]
-        args = keys_and_args[numkeys:]
-        watch_key, queued_key, queue_key = keys
-        member = args[0]
-        if member not in self.sets.get(watch_key, set()):
+    def _decoded(self, key):
+        current = self.kv.get(key)
+        if isinstance(current, (str, bytes)):
+            try:
+                return json.loads(current)
+            except (TypeError, ValueError):
+                return None
+        return current
+
+    async def eval(self, script, numkeys, *args):
+        """Emulates the report-back + workflow-tracker Lua scripts by identity."""
+        from src.server.services import workflow_tracker
+
+        keys, argv = args[:numkeys], args[numkeys:]
+        if script is workflow_tracker._CAS_STATUS_LUA:
+            (key,) = keys
+            rid_arg, patch_json, ttl, tid, started_at, expected_status = argv
+            blob = self._decoded(key)
+            if not isinstance(blob, dict):
+                blob = {"thread_id": tid, "started_at": started_at}
+            rid = blob.get("run_id")
+            if rid_arg != "" and rid is not None and rid != rid_arg:
+                return 0
+            if expected_status != "" and blob.get("status") != expected_status:
+                return 0
+            patch = json.loads(patch_json)
+            meta = patch.pop("metadata", None)
+            blob.update(patch)
+            if meta:
+                merged = blob.get("metadata") or {}
+                merged.update(meta)
+                blob["metadata"] = merged
+            self.kv[key] = blob
+            self.ttls[key] = int(ttl)
+            return 1
+        if script is workflow_tracker._ADMISSION_MARK_LUA:
+            marker_key, receipt_key, origin_key = keys
+            blob_json, member, ttl = argv
+            if member in self.sets.get(receipt_key, set()):
+                return 0
+            self.kv[marker_key] = json.loads(blob_json)
+            self.ttls[marker_key] = int(ttl)
+            origin_blob = self._decoded(origin_key)
+            if (
+                isinstance(origin_blob, dict)
+                and origin_blob.get("dispatch_gen") == member
+            ):
+                # KEEPTTL: value replaced, self.ttls entry untouched.
+                origin_blob["admitted_gen"] = member
+                self.kv[origin_key] = origin_blob
+            return 1
+        if script is report_back._GATED_POINTER_SET_LUA:
+            watch_key, run_key = keys
+            ptc_id, run_id, value, ttl, request_key, gen = argv
+            if ptc_id not in self.sets.get(watch_key, set()):
+                return 0
+            current = self._decoded(run_key)
+            if self.kv.get(run_key) is not None and not isinstance(current, dict):
+                return 0
+            if isinstance(current, dict) and current.get("run_id") != run_id:
+                # A different run owns the pointer: replace only another
+                # job's pointer (request-key scoped; old-format pointers
+                # fall back to the generation rule).
+                if isinstance(current.get("request_key"), str):
+                    if request_key == "" or current["request_key"] == request_key:
+                        return 0
+                else:
+                    if gen == "":
+                        return 0
+                    if (
+                        isinstance(current.get("dispatch_gen"), str)
+                        and current.get("dispatch_gen") == gen
+                    ):
+                        return 0
+            # Store decoded, matching how the wrapper's kv holds parsed values.
+            self.kv[run_key] = json.loads(value)
+            self.ttls[run_key] = int(ttl)
+            return 1
+        if script is report_back._CLAIM_POINTER_LUA:
+            watch_key, run_key = keys
+            ptc_id, value, ttl, request_key, gen = argv
+            current = self._decoded(run_key)
+            if isinstance(current, dict) and isinstance(current.get("run_id"), str):
+                if isinstance(current.get("request_key"), str):
+                    if request_key == "" or current["request_key"] == request_key:
+                        return [0, current["run_id"]]
+                elif (request_key == "" and gen == "") or (
+                    gen != ""
+                    and isinstance(current.get("dispatch_gen"), str)
+                    and current.get("dispatch_gen") == gen
+                ):
+                    return [0, current["run_id"]]
+            if ptc_id not in self.sets.get(watch_key, set()):
+                return [2, ""]
+            self.kv[run_key] = json.loads(value)
+            self.ttls[run_key] = int(ttl)
+            return [1, ""]
+        if script is report_back._REAP_ORPHANS_LUA:
+            set_key, origin_keys = keys[0], keys[1:]
+            removed = 0
+            for origin_key, member in zip(origin_keys, argv):
+                if origin_key not in self.kv and member in self.sets.get(
+                    set_key, set()
+                ):
+                    self.sets[set_key].discard(member)
+                    removed += 1
+            return removed
+        if script is report_back._ORPHAN_RESOLVE_LUA:
+            (
+                origin_key,
+                marker_key,
+                watch_key,
+                user_key,
+                run_key,
+                receipt_key,
+                done_key,
+            ) = keys
+            ptc_id, fencer_gen, receipt_ttl, done_max, done_ttl, job_gen = argv
+            if self.kv.get(origin_key) is None:
+                return [0, "origin_gone"]
+            origin_blob = self._decoded(origin_key)
+            if not isinstance(origin_blob, dict):
+                return [0, "origin_unreadable"]
+            if origin_blob.get("dispatch_gen") != fencer_gen:
+                return [0, "origin_moved"]
+            if origin_blob.get("admitted_gen") == fencer_gen:
+                return [0, "admitted"]
+            if self.kv.get(marker_key) is not None:
+                marker = self._decoded(marker_key)
+                if not isinstance(marker, dict):
+                    return [0, "marker_unreadable"]
+                meta = marker.get("metadata")
+                if (
+                    isinstance(meta, dict)
+                    and meta.get("origin_dispatch_gen") == fencer_gen
+                ):
+                    return [0, "admitted"]
+                if marker.get("status") not in (
+                    "completed",
+                    "failed",
+                    "cancelled",
+                ):
+                    return [0, "live_run"]
+            surrogate = job_gen != "" and job_gen in (
+                origin_blob.get("prev_gen"),
+                origin_blob.get("owner_gen"),
+            )
+            self.sets.setdefault(receipt_key, set()).add(fencer_gen)
+            self.ttls[receipt_key] = int(receipt_ttl)
+            if watch_key and (
+                origin_blob.get("owns_watch") is True or surrogate
+            ):
+                self.sets.get(watch_key, set()).discard(ptc_id)
+            if user_key and (
+                origin_blob.get("owns_user") is True or surrogate
+            ):
+                self.sets.get(user_key, set()).discard(ptc_id)
+            ptr = ""
+            if run_key and self.kv.get(run_key) is not None:
+                current = self._decoded(run_key)
+                if (
+                    not surrogate
+                    and isinstance(current, dict)
+                    and isinstance(current.get("dispatch_gen"), str)
+                    and current["dispatch_gen"] != fencer_gen
+                ):
+                    ptr = ""  # foreign generation's pointer — spared
+                else:
+                    raw = self.kv.pop(run_key)
+                    ptr = raw if isinstance(raw, str) else json.dumps(raw)
+                    run_id = (
+                        current.get("run_id")
+                        if isinstance(current, dict)
+                        else None
+                    )
+                    if isinstance(run_id, str) and done_key:
+                        lst = self.lists.setdefault(done_key, [])
+                        self.lists[done_key] = [
+                            run_id,
+                            *[x for x in lst if x != run_id],
+                        ][: int(done_max)]
+                        self.ttls[done_key] = int(done_ttl)
+            return [1, ptr]
+        if script is report_back._GATED_TEARDOWN_LUA:
+            origin_key, run_key, watch_key, user_key, tomb_key = keys
+            expected_gen, ptc_id, tomb_ttl, refuse_if_pointer = argv
+            # Off-chain caller + live run pointer: refuse everything — only
+            # that admission's serialized lifecycle may drain the pair.
+            if refuse_if_pointer == "1" and run_key and run_key in self.kv:
+                return [0, ""]
+            current = self._decoded(origin_key)
+            if isinstance(current, dict) and isinstance(
+                current.get("dispatch_gen"), str
+            ):
+                # A generated origin falls only to a caller presenting ITS gen.
+                if expected_gen == "" or current["dispatch_gen"] != expected_gen:
+                    # Every fenced-out teardown records its identity in the
+                    # tombstone SET ('__legacy__' for gen-less callers) so a
+                    # later rollback of the fencing provisional generation
+                    # honors this clear instead of restoring its target.
+                    self.sets.setdefault(tomb_key, set()).add(
+                        expected_gen or "__legacy__"
+                    )
+                    self.ttls[tomb_key] = int(tomb_ttl)
+                    return [0, current["dispatch_gen"]]
+            self.kv.pop(origin_key, None)
+            self.sets.pop(tomb_key, None)
+            if run_key:
+                self.kv.pop(run_key, None)
+            if watch_key:
+                self.sets.get(watch_key, set()).discard(ptc_id)
+            if user_key:
+                self.sets.get(user_key, set()).discard(ptc_id)
+            return 1
+        if script is report_back._POINTER_COMPARE_DELETE_LUA:
+            (run_key,), (run_id,) = keys, argv
+            current = self._decoded(run_key)
+            if current is None and self.kv.get(run_key) is not None:
+                return 0
+            if isinstance(current, dict) and current.get("run_id") == run_id:
+                self.kv.pop(run_key, None)
+                return 1
             return 0
-        if await self.sadd(queued_key, member) == 0:
-            return 0
-        await self.rpush(queue_key, member)
-        return 1
+        if script is report_back._RESERVE_LUA:
+            watch_key, user_key, origin_key = keys
+            ptc_id, flash_id, max_flash, max_user, ttl, origin_json = argv
+            prev = self._decoded(origin_key)
+            if isinstance(prev, dict) and prev.get("flash_thread_id") not in (
+                None,
+                flash_id,
+            ):
+                return ["cross", 0, 0, ""]
+            in_watch = ptc_id in self.sets.get(watch_key, set())
+            in_user = ptc_id in self.sets.get(user_key, set())
+            if not in_watch and len(self.sets.get(watch_key, set())) >= int(max_flash):
+                return ["cap_flash", 0, 0, ""]
+            if not in_user and len(self.sets.get(user_key, set())) >= int(max_user):
+                return ["cap_user", 0, 0, ""]
+            if not in_watch:
+                self.sets.setdefault(watch_key, set()).add(ptc_id)
+            self.ttls[watch_key] = int(ttl)
+            if not in_user:
+                self.sets.setdefault(user_key, set()).add(ptc_id)
+            self.ttls[user_key] = int(ttl)
+            og = json.loads(origin_json)
+            og["owns_watch"] = not in_watch
+            og["owns_user"] = not in_user
+            if isinstance(prev, dict) and isinstance(
+                prev.get("dispatch_gen"), str
+            ):
+                og["prev_gen"] = prev["dispatch_gen"]
+                if (
+                    prev.get("admitted_gen") == prev["dispatch_gen"]
+                    or prev.get("owns_watch") is True
+                    or prev.get("owns_user") is True
+                    or "owns_watch" not in prev
+                ):
+                    og["owner_gen"] = prev["dispatch_gen"]
+                elif isinstance(prev.get("owner_gen"), str):
+                    og["owner_gen"] = prev["owner_gen"]
+            self.kv[origin_key] = og
+            self.ttls[origin_key] = int(ttl)
+            prev_raw = json.dumps(prev) if isinstance(prev, dict) else ""
+            return ["ok", 0 if in_watch else 1, 0 if in_user else 1, prev_raw]
+        if script is report_back._ROLLBACK_RESERVE_LUA:
+            watch_key, user_key, origin_key, tomb_key, run_key = keys
+            ptc_id, minted_gen, prev_json, added_watch, added_user, ttl = argv
+            current = self._decoded(origin_key)
+            if not (
+                isinstance(current, dict)
+                and current.get("dispatch_gen") == minted_gen
+            ):
+                return 0
+            if prev_json:
+                tombs = self.sets.get(tomb_key, set())
+                prev = json.loads(prev_json)
+                if isinstance(prev, dict) and isinstance(
+                    prev.get("dispatch_gen"), str
+                ):
+                    dead = prev["dispatch_gen"] in tombs
+                else:
+                    # Legacy predecessor: ANY fenced clear would have been
+                    # authorized against a gen-less origin.
+                    dead = bool(tombs)
+                if dead:
+                    # The stashed predecessor's teardown was fenced out while
+                    # our provisional gen held the origin — honor it: clear
+                    # the whole pair instead of resurrecting torn-down state,
+                    # handing back the consumed run pointer for recording.
+                    ptr = ""
+                    if run_key:
+                        pv = self.kv.pop(run_key, None)
+                        if pv is not None:
+                            ptr = json.dumps(pv) if isinstance(pv, dict) else pv
+                    self.kv.pop(origin_key, None)
+                    self.sets.pop(tomb_key, None)
+                    self.sets.get(watch_key, set()).discard(ptc_id)
+                    self.sets.get(user_key, set()).discard(ptc_id)
+                    return [2, ptr]
+                self.kv[origin_key] = prev
+                self.ttls[origin_key] = int(ttl)
+            else:
+                self.kv.pop(origin_key, None)
+            if added_watch == "1":
+                self.sets.get(watch_key, set()).discard(ptc_id)
+            if added_user == "1":
+                self.sets.get(user_key, set()).discard(ptc_id)
+            return 1
+        raise AssertionError(f"unknown Lua script: {script[:60]!r}")
 
     def pipeline(self, transaction: bool = True) -> FakePipeline:
         return FakePipeline(self)
@@ -179,20 +482,14 @@ def origin(ptc: str, flash: str = "flash-1", user: str = "u-1") -> dict:
 
 
 def seed_dispatched(cache: FakeCache, flash: str, ptcs: list[str], user: str = "u-1") -> None:
-    """Mirror what reservation + origin recording leave behind for each dispatch."""
+    """Mirror what reservation + origin recording leave behind for each FRESH
+    dispatch (the reserve script created both memberships, so the origin
+    carries ownership of them)."""
     for ptc in ptcs:
         cache.client.sets.setdefault(report_back.flash_watch_key(flash), set()).add(ptc)
         cache.client.sets.setdefault(report_back.flash_user_pending_key(user), set()).add(ptc)
-        cache.kv[report_back.ptc_origin_key(ptc)] = origin(ptc, flash, user)
-
-
-async def drain(flash: str, *, ticks: int = 200) -> None:
-    """Yield to the event loop until the flash consumer task finishes."""
-    for _ in range(ticks):
-        await asyncio.sleep(0)
-        task = report_back._rb_consumers.get(flash)
-        if task is not None and task.done():
-            return
-    task = report_back._rb_consumers.get(flash)
-    if task is not None:
-        await asyncio.wait_for(task, timeout=2.0)
+        cache.kv[report_back.ptc_origin_key(ptc)] = {
+            **origin(ptc, flash, user),
+            "owns_watch": True,
+            "owns_user": True,
+        }

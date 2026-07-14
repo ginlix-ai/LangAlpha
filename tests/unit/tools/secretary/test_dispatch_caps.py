@@ -1,15 +1,15 @@
 """Coverage for the report-back dispatch caps (per-flash + per-user).
 
 A flash thread can fan out many background PTC analyses, but unbounded fan-out
-would overload the single backend. ``report_back._reserve_slot_membership``
-atomically admits a dispatch under both caps *before* the dispatch POST (rolled
-back on failure), so racing calls can't both pass the check then overshoot.
+would overload the single backend. ``report_back.reserve()`` admits a dispatch
+under both caps as ONE atomic Redis script *before* the dispatch POST (rolled
+back gen-gated on failure), so racing calls can't both pass the check then
+overshoot, and no concurrent teardown can observe a half-applied reservation.
 """
 
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -18,9 +18,11 @@ from tests.unit.server.handlers.chat.redis_fakes import FakeCache as _FakeCache
 
 
 async def _reserve_err(flash, ptc, user) -> str | None:
-    """Reserve a slot and return the cap-error string (None if admitted)."""
-    err, _added, _watch = await T._reserve_slot_membership(flash, ptc, user)
-    return err
+    """Reserve a slot like a successful dispatch; return the cap error."""
+    async with T.reserve(flash, ptc, f"ws-{ptc}", "fws-1", user) as slot:
+        if slot.error is None:
+            slot.commit()
+        return slot.error
 
 
 @pytest.fixture
@@ -75,54 +77,165 @@ async def test_idempotent_redispatch_does_not_count_against_cap(cache):
 
 
 @pytest.mark.asyncio
-async def test_release_rolls_back_both_sets(cache):
+async def test_uncommitted_reserve_rolls_back_both_sets_and_origin(cache):
     flash, user, ptc = "flash-1", "u-1", "p0"
-    cmd, added, watch_member = await T._reserve_slot_membership(flash, ptc, user)
-    assert cmd is None
-    assert added == {"watch": True, "user": True}
-    # Membership durably in place -> report-back is wired.
-    assert watch_member is True
-    assert ptc in cache.client.sets[f"flash_watch:{flash}"]
-    assert ptc in cache.client.sets[f"flash_user_pending:{user}"]
-
-    await T._release_slot_membership(flash, ptc, user, added)
+    async with T.reserve(flash, ptc, "ws-1", "fws-1", user) as slot:
+        assert slot.error is None
+        assert slot.wired is True
+        assert slot.dispatch_gen
+        assert ptc in cache.client.sets[f"flash_watch:{flash}"]
+        assert ptc in cache.client.sets[f"flash_user_pending:{user}"]
+        assert cache.kv[T.ptc_origin_key(ptc)]["dispatch_gen"] == slot.dispatch_gen
+        # ...exit WITHOUT commit -> rollback
 
     assert ptc not in cache.client.sets[f"flash_watch:{flash}"]
     assert ptc not in cache.client.sets[f"flash_user_pending:{user}"]
+    assert T.ptc_origin_key(ptc) not in cache.kv
     # A freed slot is reusable.
     assert await _reserve_err(flash, "p-new", user) is None
 
 
 @pytest.mark.asyncio
-async def test_precise_rollback_keeps_first_dispatch_membership(cache):
-    """A second (idempotent) reserve for the same PTC adds nothing, so releasing
-    it must not remove the first dispatch's membership."""
+async def test_refresh_rollback_restores_prev_origin_and_memberships(cache):
+    """A continuation reserve of an existing pair stashes the previous origin;
+    its uncommitted exit restores that incarnation and srems NOTHING it did
+    not add — the live pair keeps its membership and its own generation."""
     flash, user, ptc = "flash-1", "u-1", "T"
 
-    cmd1, added1, watch1 = await T._reserve_slot_membership(flash, ptc, user)
-    assert cmd1 is None
-    assert added1 == {"watch": True, "user": True}
-    assert watch1 is True
-    assert ptc in cache.client.sets[f"flash_watch:{flash}"]
+    assert await _reserve_err(flash, ptc, user) is None  # committed incarnation
+    first_gen = cache.kv[T.ptc_origin_key(ptc)]["dispatch_gen"]
+    assert first_gen
 
-    # Second reserve for the SAME ptc is idempotent — newly added nothing, but
-    # membership is still durably in place, so it stays wired (watch_member True
-    # despite added all-False).
-    cmd2, added2, watch2 = await T._reserve_slot_membership(flash, ptc, user)
-    assert cmd2 is None
-    assert added2 == {"watch": False, "user": False}
-    assert watch2 is True
+    async with T.reserve(flash, ptc, "ws-T", "fws-1", user) as slot:
+        assert slot.error is None
+        assert slot.wired is True
+        assert slot._added == {"watch": False, "user": False}
+        # The refresh bumped the generation in place...
+        assert cache.kv[T.ptc_origin_key(ptc)]["dispatch_gen"] == slot.dispatch_gen
+        assert slot.dispatch_gen != first_gen
 
-    # Releasing the second reservation srems nothing it didn't add: the first
-    # dispatch's membership survives.
-    await T._release_slot_membership(flash, ptc, user, added2)
+    # ...and the uncommitted exit restored the previous incarnation wholesale.
+    assert cache.kv[T.ptc_origin_key(ptc)]["dispatch_gen"] == first_gen
     assert ptc in cache.client.sets[f"flash_watch:{flash}"]
     assert ptc in cache.client.sets[f"flash_user_pending:{user}"]
 
-    # Releasing with the owning reservation's dict frees the membership.
-    await T._release_slot_membership(flash, ptc, user, added1)
-    assert ptc not in cache.client.sets[f"flash_watch:{flash}"]
-    assert ptc not in cache.client.sets[f"flash_user_pending:{user}"]
+
+@pytest.mark.asyncio
+async def test_rollback_is_noop_after_a_rival_rewrote_the_origin(cache):
+    """Codex round-4 race, cross-process form: another WORKER (no shared
+    pair lock) refreshes the origin while A's dispatch is in flight, then A
+    fails. A's rollback must not srem the membership the rival's live
+    dispatch depends on, nor touch its origin — the gen CAS makes it a
+    no-op. (The in-process interleaving is now impossible: same-pair
+    lifecycles serialize on the pair lock.)"""
+    flash, user, ptc = "flash-1", "u-1", "p-race"
+
+    async with T.reserve(flash, ptc, "ws-1", "fws-1", user) as slot_a:
+        assert slot_a._added == {"watch": True, "user": True}
+        # A rival worker's reserve commits mid-flight: same memberships,
+        # origin rewritten under ITS generation (Redis-side state is what
+        # the rollback CAS sees; the asyncio lock doesn't span processes).
+        rival = dict(cache.kv[T.ptc_origin_key(ptc)])
+        rival["dispatch_gen"] = "g-rival"
+        cache.kv[T.ptc_origin_key(ptc)] = rival
+        # A exits without commit -> its rollback runs against the rival's gen.
+
+    assert ptc in cache.client.sets[f"flash_watch:{flash}"]
+    assert ptc in cache.client.sets[f"flash_user_pending:{user}"]
+    assert cache.kv[T.ptc_origin_key(ptc)]["dispatch_gen"] == "g-rival"
+
+
+@pytest.mark.asyncio
+async def test_cross_flash_reserve_proceeds_unwired_touching_nothing(cache):
+    """A PTC whose origin belongs to a DIFFERENT flash thread can't be wired
+    twice: the reserve returns unwired without mutating any state."""
+    other_origin = {
+        "origin": "flash",
+        "report_back": True,
+        "flash_thread_id": "flash-OTHER",
+        "user_id": "u-2",
+        "dispatch_gen": "gen-other",
+    }
+    cache.kv[T.ptc_origin_key("p1")] = other_origin
+    async with T.reserve("flash-1", "p1", "ws-1", "fws-1", "u-1") as slot:
+        assert slot.error is None
+        assert slot.wired is False
+        assert slot.dispatch_gen is None
+
+    assert cache.kv[T.ptc_origin_key("p1")] == other_origin
+    assert "p1" not in cache.client.sets.get("flash_watch:flash-1", set())
+    assert "p1" not in cache.client.sets.get("flash_user_pending:u-1", set())
+
+
+@pytest.mark.asyncio
+async def test_over_cap_reserve_reaps_orphaned_members_and_retries(cache):
+    """Codex round-5 F1: a member stranded WITHOUT an origin (lost reserve
+    reply — fail-closed keeps state, nothing else removes it, and every
+    later reserve refreshes the shared SET's TTL) must not wedge the cap
+    forever. An over-cap reserve reaps originless members once and retries."""
+    flash, user = "flash-1", "u-1"
+    for i in range(T.MAX_DISPATCH_PER_FLASH):
+        assert await _reserve_err(flash, f"p{i}", user) is None
+    # Strand two members: their origins vanish (TTL expiry of a lost-reply
+    # reservation) but the memberships remain.
+    for ptc in ("p0", "p1"):
+        del cache.kv[T.ptc_origin_key(ptc)]
+
+    assert await _reserve_err(flash, "p-new", user) is None
+    assert "p0" not in cache.client.sets[f"flash_watch:{flash}"]
+    assert "p1" not in cache.client.sets[f"flash_watch:{flash}"]
+    assert "p-new" in cache.client.sets[f"flash_watch:{flash}"]
+    # Members with live origins were untouched by the reap.
+    assert "p2" in cache.client.sets[f"flash_watch:{flash}"]
+
+
+@pytest.mark.asyncio
+async def test_over_cap_precheck_reaps_and_admits(cache):
+    flash, user = "flash-1", "u-1"
+    for i in range(T.MAX_DISPATCH_PER_FLASH):
+        assert await _reserve_err(flash, f"p{i}", user) is None
+    del cache.kv[T.ptc_origin_key("p0")]
+    assert await T.check_dispatch_capacity(flash, user) is None
+
+
+@pytest.mark.asyncio
+async def test_same_pair_lifecycles_serialize_no_resurrection(cache):
+    """Codex round-5 F2: A reserves fresh, B refreshes stashing A's origin as
+    prev, A fails, B fails -> B's rollback would restore A's already-failed
+    incarnation. The per-pair lock serializes whole lifecycles, so B only
+    starts after A's rollback settled and the interleaving cannot exist."""
+    flash, user, ptc = "flash-1", "u-1", "p-race"
+    a_inside = asyncio.Event()
+    a_release = asyncio.Event()
+
+    async def cycle_a():
+        async with T.reserve(flash, ptc, "ws-1", "fws-1", user) as slot:
+            assert slot.error is None
+            a_inside.set()
+            await a_release.wait()
+            # exit WITHOUT commit -> rollback (A failed)
+
+    async def cycle_b():
+        await a_inside.wait()
+        async with T.reserve(flash, ptc, "ws-1", "fws-1", user) as slot:
+            # B could only enter after A's whole lifecycle (incl. rollback)
+            # finished: A's state is gone, B reserves FRESH (no prev stash).
+            assert slot._prev_origin_raw is None
+            assert slot._added == {"watch": True, "user": True}
+            # B also fails uncommitted.
+
+    task_b = asyncio.create_task(cycle_b())
+    task_a = asyncio.create_task(cycle_a())
+    await a_inside.wait()
+    await asyncio.sleep(0)  # let B reach the pair lock and block
+    a_release.set()
+    await asyncio.gather(task_a, task_b)
+
+    # No resurrected incarnation: everything rolled back clean.
+    assert T.ptc_origin_key(ptc) not in cache.kv
+    assert ptc not in cache.client.sets.get(f"flash_watch:{flash}", set())
+    assert ptc not in cache.client.sets.get(f"flash_user_pending:{user}", set())
+    assert T._pair_locks == {}
 
 
 @pytest.mark.asyncio
@@ -134,145 +247,67 @@ async def test_reserve_is_noop_when_cache_disabled(monkeypatch):
     monkeypatch.setattr(
         "src.utils.cache.redis_cache.get_cache_client", lambda: _Disabled()
     )
-    # No Redis -> best-effort admit (never block the dispatch), added all-False,
-    # and unwired: no flash_watch member means the completion-time gate can't
-    # deliver a report-back, so watch_member is False.
-    cmd, added, watch_member = await T._reserve_slot_membership("f", "p", "u")
-    assert cmd is None
-    assert added == {"watch": False, "user": False}
-    assert watch_member is False
+    # No Redis by config -> no report-back system at all: admit the dispatch
+    # unwired (the completion-time gate can't deliver a report-back).
+    async with T.reserve("f", "p", "ws", "fws", "u") as slot:
+        assert slot.error is None
+        assert slot.wired is False
+        assert slot.dispatch_gen is None
 
 
 @pytest.mark.asyncio
-async def test_reserve_fails_open_unwired_on_redis_exception(monkeypatch):
-    """A Redis hiccup mid-reserve admits the dispatch (no cap error) but leaves
-    no flash_watch member, so it reports unwired (watch_member False) — the
-    caller must not then promise an undeliverable report-back."""
-    class _Boom:
-        enabled = True
+async def test_reserve_fails_closed_on_script_failure(monkeypatch):
+    """A reserve-script failure leaves UNKNOWN state: the dispatch must abort
+    (slot.error == 'dispatch_failed') and the exit must NOT attempt a blind
+    rollback — destroying a possibly live incarnation is worse than a
+    TTL-bounded leak."""
+    evals: list = []
 
-        class client:  # noqa: N801 - stub namespace
-            @staticmethod
-            async def sismember(*_a, **_k):
-                raise RuntimeError("redis down")
+    class _BoomClient:
+        async def eval(self, *args):
+            evals.append(args)
+            raise RuntimeError("redis down")
+
+    class _BoomCache:
+        enabled = True
+        client = _BoomClient()
 
     monkeypatch.setattr(
-        "src.utils.cache.redis_cache.get_cache_client", lambda: _Boom()
+        "src.utils.cache.redis_cache.get_cache_client", lambda: _BoomCache()
     )
-    cmd, added, watch_member = await T._reserve_slot_membership("f", "p", "u")
-    assert cmd is None
-    assert added == {"watch": False, "user": False}
-    assert watch_member is False
+    async with T.reserve("f", "p", "ws", "fws", "u") as slot:
+        assert slot.error == "dispatch_failed"
+        assert slot.wired is False
+
+    # Exactly one eval (the reserve attempt); no rollback script fired.
+    assert len(evals) == 1
 
 
 # ---------------------------------------------------------------------------
-# reserve() context manager — fail-closed on an owning origin-write failure
-# ---------------------------------------------------------------------------
-
-
-class _OriginWriteFailCache:
-    """Cache whose origin GET is empty and origin SET fails (returns False).
-
-    Records deletes so the rollback (origin-owner cleanup) can be asserted.
-    """
-
-    enabled = True
-    client = object()  # truthy
-
-    def __init__(self) -> None:
-        self.deleted: list[str] = []
-
-    async def get(self, key):
-        return None  # no existing origin -> not cross-flash
-
-    async def set(self, key, value, ttl=None):
-        return False  # owning origin write fails -> dispatch_failed
-
-    async def delete(self, key):
-        self.deleted.append(key)
-        return True
-
-
-@pytest.mark.asyncio
-async def test_reserve_cm_fails_closed_when_origin_write_fails():
-    """reserve() owns the origin write for a freshly-added watch member; a write
-    failure must fail CLOSED (slot.error == 'dispatch_failed'), and the
-    non-committed exit must roll the reservation back — releasing exactly what it
-    reserved and deleting the origin it owns (no half-written record stranded)."""
-    flash, ptc, user = "flash-1", "ptc-1", "u-1"
-    fresh_slot = (None, {"watch": True, "user": True}, True)  # cap ok, wired
-    fake_cache = _OriginWriteFailCache()
-    release = AsyncMock()
-
-    with patch.object(
-        T, "_reserve_slot_membership", AsyncMock(return_value=fresh_slot)
-    ), patch.object(
-        T, "_release_slot_membership", release
-    ), patch(
-        "src.utils.cache.redis_cache.get_cache_client", return_value=fake_cache
-    ):
-        async with T.reserve(flash, ptc, "ptc-ws-1", "flash-ws-1", user) as slot:
-            # Owning origin write failed -> the dispatch must abort (never commit).
-            assert slot.error == "dispatch_failed"
-
-    # Rollback released exactly the reservation this dispatch made...
-    release.assert_awaited_once_with(flash, ptc, user, {"watch": True, "user": True})
-    # ...and deleted the origin it owned (fail-closed cleanup, no strand).
-    assert T.ptc_origin_key(ptc) in fake_cache.deleted
-
-
-# ---------------------------------------------------------------------------
-# Concurrency — _dispatch_reserve_lock serializes the cap check + the add
+# Concurrency — the single reserve script serializes the cap check + the add
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_concurrent_reserves_cannot_overshoot_per_flash_cap(cache):
-    """Two racing reserves for the last free per-flash slot can't both win.
-
-    ``scard`` yields mid-check so, absent the lock, both reserves would read the
-    same under-cap count then both add (overshoot to cap+1). ``_dispatch_reserve_lock``
-    must keep the check-through-add critical section atomic: exactly one is
-    admitted, and the watch SET never exceeds ``MAX_DISPATCH_PER_FLASH``."""
+    """Two racing reserves for the last free per-flash slot can't both win:
+    the whole check-through-add runs as one Redis script, so rivals see each
+    other's writes regardless of event-loop interleaving."""
     flash, user = "flash-1", "u-1"
-    # Fill to one below the per-flash cap (the binding cap here; per-user stays low).
     for i in range(T.MAX_DISPATCH_PER_FLASH - 1):
         assert await _reserve_err(flash, f"p{i}", user) is None
-    watch_key = f"flash_watch:{flash}"
-
-    orig_scard = cache.client.scard
-    orig_sadd = cache.client.sadd
-    peak = 0
-
-    async def slow_scard(key):
-        await asyncio.sleep(0)  # force the two reserves to interleave mid-check
-        return await orig_scard(key)
-
-    async def tracking_sadd(key, member):
-        nonlocal peak
-        result = await orig_sadd(key, member)
-        if key == watch_key:
-            peak = max(peak, len(cache.client.sets.get(key, set())))
-        return result
-
-    cache.client.scard = slow_scard
-    cache.client.sadd = tracking_sadd
 
     results = await asyncio.gather(
-        T._reserve_slot_membership(flash, "p-new-1", user),
-        T._reserve_slot_membership(flash, "p-new-2", user),
+        _reserve_err(flash, "p-new-1", user),
+        _reserve_err(flash, "p-new-2", user),
     )
-
-    cap_errors = [err for err, _added, _watch in results]
-    admitted = [e for e in cap_errors if e is None]
-    rejected = [e for e in cap_errors if e is not None]
+    admitted = [e for e in results if e is None]
+    rejected = [e for e in results if e is not None]
     assert len(admitted) == 1  # exactly one winner
     assert len(rejected) == 1  # the other is capped out
     assert "on this thread" in rejected[0]  # rejected by the per-flash cap
     assert str(T.MAX_DISPATCH_PER_FLASH) in rejected[0]
-    # The SET never overshot: the serialized check-then-add filled exactly one slot.
-    assert peak == T.MAX_DISPATCH_PER_FLASH
-    assert len(cache.client.sets[watch_key]) == T.MAX_DISPATCH_PER_FLASH
+    assert len(cache.client.sets[f"flash_watch:{flash}"]) == T.MAX_DISPATCH_PER_FLASH
 
 
 # ---------------------------------------------------------------------------

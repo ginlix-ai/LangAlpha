@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.tools.secretary.tools import ptc_agent
+from tests.unit.server.handlers.chat.redis_fakes import FakeCache as _FakeCache
 
 USER_ID = "user-1"
 PTC_THREAD_ID = "11111111-1111-1111-1111-111111111111"
@@ -169,26 +170,6 @@ async def test_continuation_normalizes_noncanonical_thread_id():
     by_id.assert_awaited_once_with(PTC_THREAD_ID)
 
 
-class _FakeOriginCache:
-    """Minimal cache stub exercising only the origin get/set/delete path."""
-
-    enabled = True
-    client = object()  # truthy so the report_back branch runs
-
-    def __init__(self, store: dict) -> None:
-        self._store = store
-
-    async def get(self, key):
-        return self._store.get(key)
-
-    async def set(self, key, value, ttl=None):
-        self._store[key] = value
-        return True
-
-    async def delete(self, key):
-        return bool(self._store.pop(key, None))
-
-
 def _f1_origin() -> dict:
     return {
         "origin": "flash",
@@ -201,13 +182,11 @@ def _f1_origin() -> dict:
     }
 
 
-_WIRED_SLOT = (None, {"watch": True, "user": True}, True)
-
-
 @contextlib.contextmanager
-def _dispatch_env(store: dict, *, reserve=_WIRED_SLOT, resp: _FakeResp | None = None):
-    """Patch the continuation dispatch's collaborators; yields the release mock."""
-    release = AsyncMock()
+def _dispatch_env(store: dict, *, resp: _FakeResp | None = None):
+    """Patch the continuation dispatch's collaborators; yields the fake cache."""
+    cache = _FakeCache()
+    cache.kv.update(store)
     with patch(
         "src.server.database.conversation.get_thread_owner_id",
         AsyncMock(return_value=USER_ID),
@@ -220,17 +199,12 @@ def _dispatch_env(store: dict, *, reserve=_WIRED_SLOT, resp: _FakeResp | None = 
     ), patch(
         "src.tools.secretary.tools._hitl_confirm", return_value=(True, {})
     ), patch(
-        "src.server.handlers.chat.report_back._reserve_slot_membership",
-        AsyncMock(return_value=reserve),
-    ), patch(
-        "src.server.handlers.chat.report_back._release_slot_membership", release
-    ), patch(
         "src.utils.cache.redis_cache.get_cache_client",
-        return_value=_FakeOriginCache(store),
+        return_value=cache,
     ), patch(
         "aiohttp.ClientSession", return_value=_FakeSession(resp or _FakeResp())
     ):
-        yield release
+        yield cache
 
 
 async def _dispatch_from(flash: str) -> dict:
@@ -250,43 +224,48 @@ async def test_cross_flash_reuse_does_not_strand_other_flashs_origin():
     """A second flash's failed dispatch must not clobber/delete F1's origin."""
     store = {f"ptc_origin:{PTC_THREAD_ID}": _f1_origin()}
 
-    with _dispatch_env(store, resp=_FakeResp(status=500)):
+    with _dispatch_env(store, resp=_FakeResp(status=500)) as cache:
         payload = await _dispatch_from("flash-F2")
 
     assert payload.get("success") is False, payload  # dispatch failed -> rollback
     # F1's origin survives untouched: not overwritten to F2, not deleted.
-    assert store.get(f"ptc_origin:{PTC_THREAD_ID}") == _f1_origin()
+    assert cache.kv.get(f"ptc_origin:{PTC_THREAD_ID}") == _f1_origin()
 
 
 @pytest.mark.asyncio
-async def test_cross_flash_reuse_releases_its_own_reservation():
-    """A cross-flash reuse can't be wired, so it releases its own watch + cap
-    slot (no TTL leak), still dispatches, and leaves F1's origin untouched."""
+async def test_cross_flash_reuse_proceeds_unwired_touching_nothing():
+    """A cross-flash reuse can't be wired: the atomic reserve detects the
+    other flash's origin BEFORE adding anything, so there is no reservation
+    to leak, the dispatch still runs, and F1's origin is untouched."""
     store = {f"ptc_origin:{PTC_THREAD_ID}": _f1_origin()}
 
-    with _dispatch_env(store) as release:
+    with _dispatch_env(store) as cache:
         payload = await _dispatch_from("flash-F2")
 
     assert payload.get("success") is True, payload  # dispatch still succeeds
     # Unwired (another flash owns the origin): must not promise a report-back.
     assert payload.get("report_back") is False, payload
-    release.assert_awaited_once_with(
-        "flash-F2", PTC_THREAD_ID, USER_ID, {"watch": True, "user": True}
+    assert cache.kv.get(f"ptc_origin:{PTC_THREAD_ID}") == _f1_origin()
+    assert PTC_THREAD_ID not in cache.client.sets.get("flash_watch:flash-F2", set())
+    assert PTC_THREAD_ID not in cache.client.sets.get(
+        f"flash_user_pending:{USER_ID}", set()
     )
-    assert store.get(f"ptc_origin:{PTC_THREAD_ID}") == _f1_origin()
 
 
 @pytest.mark.asyncio
 async def test_same_flash_reuse_keeps_origin_ownership():
-    """A same-flash continuation still owns + refreshes its origin."""
+    """A same-flash continuation refreshes its origin with a NEW generation."""
     same = _f1_origin()
     same["flash_thread_id"] = "flash-F2"  # owned by the dispatching flash
     store = {f"ptc_origin:{PTC_THREAD_ID}": dict(same)}
 
-    with _dispatch_env(store):
+    with _dispatch_env(store) as cache:
         payload = await _dispatch_from("flash-F2")
 
     assert payload.get("success") is True, payload
+    refreshed = cache.kv.get(f"ptc_origin:{PTC_THREAD_ID}")
+    assert refreshed["flash_thread_id"] == "flash-F2"
+    assert refreshed.get("dispatch_gen")  # committed refresh keeps the new gen
     # Same flash owns the wired origin + watch member, so report-back is real.
     assert payload.get("report_back") is True, payload
     assert store[f"ptc_origin:{PTC_THREAD_ID}"]["flash_thread_id"] == "flash-F2"
@@ -294,11 +273,11 @@ async def test_same_flash_reuse_keeps_origin_ownership():
 
 @pytest.mark.asyncio
 async def test_unwired_reserve_reports_back_false_but_still_dispatches():
-    """A fail-open reserve (watch_member False) still dispatches but must not
+    """A fail-open reserve (Redis off by config) still dispatches but must not
     promise a report-back the completion gate would silently drop."""
-    store: dict = {}
-
-    with _dispatch_env(store, reserve=(None, {"watch": False, "user": False}, False)):
+    with _dispatch_env({}) as cache:
+        cache.enabled = False
+        cache.client = None
         payload = await _dispatch_from("flash-F1")
 
     assert payload.get("success") is True, payload

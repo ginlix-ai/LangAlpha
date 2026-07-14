@@ -56,6 +56,7 @@ class _FakeSession:
     def __init__(self, steps):
         self._steps = list(steps)
         self.post_calls = 0
+        self.last_json = None
 
     async def __aenter__(self):
         return self
@@ -65,6 +66,7 @@ class _FakeSession:
 
     def post(self, *args, **kwargs):
         self.post_calls += 1
+        self.last_json = kwargs.get("json")
         step = self._steps.pop(0)
         if isinstance(step, Exception):
             raise step
@@ -76,7 +78,7 @@ def _patch_session(steps):
     return session, patch("aiohttp.ClientSession", MagicMock(return_value=session))
 
 
-async def _run(steps):
+async def _run(steps, **kwargs):
     """Drive _post_report_back over ``steps`` with sleeps stubbed out."""
     session, sess_patch = _patch_session(steps)
     with sess_patch, patch("asyncio.sleep", new=AsyncMock()):
@@ -85,6 +87,7 @@ async def _run(steps):
             flash_thread_id="flash-1",
             ptc_thread_id="ptc-1",
             origin=_ORIGIN,
+            **kwargs,
         )
     return outcome, session
 
@@ -139,6 +142,95 @@ async def test_transient_then_dispatched_retries(first_step):
     )
     assert outcome == ("dispatched", "rid-2")
     assert session.post_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_request_key_rides_in_the_post_payload():
+    _, session = await _run(
+        [_FakeResp(200, json_data={"run_id": "rid-1"})], request_key="rk-1"
+    )
+    assert session.last_json["request_key"] == "rk-1"
+
+
+@pytest.mark.asyncio
+async def test_request_key_omitted_when_not_supplied():
+    _, session = await _run([_FakeResp(200, json_data={"run_id": "rid-1"})])
+    assert "request_key" not in session.last_json
+
+
+@pytest.mark.asyncio
+async def test_409_duplicate_request_adopts_existing_run():
+    """A crash-and-reclaim re-POST of the same request_key hits the route
+    dedup; adopt the original run instead of deferring behind it forever."""
+    outcome, session = await _run(
+        [
+            _FakeResp(
+                409,
+                json_data={
+                    "detail": {
+                        "code": "duplicate_request",
+                        "run_id": "rid-orig",
+                        "thread_id": "flash-1",
+                        "run_status": "in_progress",
+                    }
+                },
+            )
+        ],
+        request_key="rk-1",
+    )
+    assert outcome == ("dispatched", "rid-orig")
+    assert session.post_calls == 1  # adopted, not retried
+
+
+@pytest.mark.asyncio
+async def test_409_duplicate_request_without_run_id_still_defers():
+    """A cross-user duplicate (bare conflict, no run identity) can't be
+    adopted; it defers like any other 409."""
+    outcome, session = await _run(
+        [
+            _FakeResp(409, json_data={"detail": {"code": "duplicate_request"}}),
+            _FakeResp(200, json_data={"run_id": "rid-2"}),
+        ],
+        request_key="rk-1",
+    )
+    assert outcome == ("dispatched", "rid-2")
+    assert session.post_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_defer_heartbeat_lost_stands_down_as_lost():
+    """The fenced heartbeat runs every defer iteration; a lost lease means
+    another drainer owns the job — return "lost" with no retry."""
+    hb = AsyncMock(return_value=False)
+    outcome, session = await _run([_FakeResp(409, text_data="busy")], heartbeat=hb)
+    assert outcome == ("lost", None)
+    assert session.post_calls == 1  # never re-POSTed after the fence fell
+    hb.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_defer_heartbeat_held_keeps_retrying():
+    hb = AsyncMock(return_value=True)
+    outcome, session = await _run(
+        [
+            _FakeResp(409, text_data="busy"),
+            _FakeResp(200, json_data={"run_id": "rid-2"}),
+        ],
+        heartbeat=hb,
+    )
+    assert outcome == ("dispatched", "rid-2")
+    assert session.post_calls == 2
+    hb.assert_awaited_once()  # one defer iteration -> one heartbeat
+
+
+@pytest.mark.asyncio
+async def test_immediate_success_never_heartbeats():
+    hb = AsyncMock(return_value=True)
+    outcome, _ = await _run(
+        [_FakeResp(200, json_data={"run_id": "rid-1"})], heartbeat=hb
+    )
+    assert outcome == ("dispatched", "rid-1")
+    hb.assert_not_awaited()
 
 
 @pytest.mark.asyncio

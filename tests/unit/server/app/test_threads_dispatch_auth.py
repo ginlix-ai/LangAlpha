@@ -9,6 +9,7 @@ foreground SSE run that burns credits for an ack the caller can't parse.
 
 import asyncio
 from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -64,11 +65,12 @@ def _app():
 
 
 @contextmanager
-def _stub_workflow(release_burst=None):
+def _stub_workflow(release_burst=None, mark_active=None):
     """Patch everything past the dispatch-auth check, for both branches.
 
     The dispatched branch's admission/tracking singletons are mocked so a
     background dispatch returns its JSON ack without real Redis/task work.
+    Yields the singleton mocks for call-shape assertions.
     """
     from src.server.app import setup as setup_module
 
@@ -81,7 +83,7 @@ def _stub_workflow(release_burst=None):
     btm.pre_register = AsyncMock()
 
     tracker = MagicMock()
-    tracker.mark_active = AsyncMock()
+    tracker.mark_active = mark_active if mark_active is not None else AsyncMock()
 
     with (
         patch(
@@ -138,15 +140,17 @@ def _stub_workflow(release_burst=None):
             new=release_burst if release_burst is not None else AsyncMock(),
         ),
     ):
-        yield
+        yield SimpleNamespace(btm=btm, tracker=tracker)
 
 
-async def _post(app, *, headers=None):
+async def _post(app, *, headers=None, body=None):
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as c:
         resp = await c.post(
-            "/api/v1/threads/tid-dispatch/messages", json=_BODY, headers=headers or {}
+            "/api/v1/threads/tid-dispatch/messages",
+            json=body or _BODY,
+            headers=headers or {},
         )
     # Drain the dispatched branch's fire-and-forget task so it finishes while
     # the patches (and the test's event loop) are still alive.
@@ -225,6 +229,63 @@ async def test_platform_stray_dispatch_header_is_rejected(monkeypatch):
     assert resp.status_code == 403
     assert "INTERNAL_SERVICE_TOKEN" in resp.json()["detail"]
     release.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_admission_marker_write_aborts_dispatch(monkeypatch):
+    """Codex round-9 F1: ``mark_active`` returning False (a swallowed Redis
+    write failure) must abort with 503 BEFORE pre_register/create_task — a
+    scheduled run with no marker would falsify the dispatcher's gen-scoped
+    admission oracle."""
+    monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+    monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", TOKEN)
+    release = AsyncMock()
+    app = _app()
+    with _stub_workflow(
+        release_burst=release, mark_active=AsyncMock(return_value=False)
+    ) as stubs:
+        resp = await _post(
+            app, headers={"X-Dispatch": "background", "X-Service-Token": TOKEN}
+        )
+    assert resp.status_code == 503
+    stubs.btm.pre_register.assert_not_awaited()
+    release.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_gen_threads_receipt_gate_into_admission(monkeypatch):
+    """Codex round-13 P0: a gen-carrying dispatch admits through the
+    receipt-gated marker write (refuse key + its own generation as member),
+    so a generation the orphan resolver already receipted as phantom can
+    never admit late; a gen-less dispatch has nothing to receipt against
+    and skips the gate."""
+    monkeypatch.setattr("src.config.settings.HOST_MODE", "platform")
+    monkeypatch.setenv("INTERNAL_SERVICE_TOKEN", TOKEN)
+    app = _app()
+    with _stub_workflow() as stubs:
+        resp = await _post(
+            app,
+            body={
+                **_BODY,
+                "origin_flash_thread_id": "flash-1",
+                "origin_dispatch_gen": "g-1",
+            },
+            headers={"X-Dispatch": "background", "X-Service-Token": TOKEN},
+        )
+    assert resp.status_code == 200
+    kwargs = stubs.tracker.mark_active.await_args.kwargs
+    assert kwargs["refuse_receipt_key"] == "ptc_rb_resolved:tid-dispatch"
+    assert kwargs["receipt_member"] == "g-1"
+
+    app = _app()
+    with _stub_workflow() as stubs:
+        resp = await _post(
+            app, headers={"X-Dispatch": "background", "X-Service-Token": TOKEN}
+        )
+    assert resp.status_code == 200
+    kwargs = stubs.tracker.mark_active.await_args.kwargs
+    assert kwargs["refuse_receipt_key"] is None
+    assert kwargs["receipt_member"] is None
 
 
 @pytest.mark.asyncio
