@@ -12,7 +12,10 @@ old ``tracker.set_cancel_flag`` / ``tracker.mark_cancelled`` /
 Covers the behaviors that survived the cutover:
 - signal-only when a task is active (the except-handler teardown owns
   ``cancel_and_clear``); intent is recorded, no eager terminal write;
-- safety-net ``cancel_and_clear`` only when NO active task exists;
+- RUN-scoped safety net (``cancel_run_tasks``) only when NO active task
+  exists AND a target run resolved — never a thread-wide wipe, which would
+  destroy a terminal local run's live tail (or an unrelated registry) when
+  the target run lives on another worker;
 - run-targeted miss with another active task skips the safety net;
 - manual-mutation stop (ThreadMutationRunner.request_stop, v4 2.4) returns
   early and stamps no run intent — local cancel and cross-worker signal alike;
@@ -62,6 +65,7 @@ def _patch_common(
 
     registry_store = MagicMock()
     registry_store.cancel_and_clear = AsyncMock(return_value=0)
+    registry_store.cancel_run_tasks = AsyncMock(return_value=0)
 
     # v4 durable cancel intent lives on the run row, not a Redis flag.
     get_active_run = AsyncMock(return_value=active_run)
@@ -127,8 +131,11 @@ async def test_cancel_with_active_task_is_signal_only():
 @pytest.mark.asyncio
 async def test_cancel_with_no_active_task_runs_safety_net():
     """No active task (manager.cancel_workflow → False, none active) ⇒ the
-    safety-net cancel_and_clear runs to wipe any orphaned registry. An orphaned
-    in_progress run row still accepts durable intent."""
+    safety net cancels the TARGET RUN's leftover subagents only (its main task
+    may have settled while tail writers survive). Never a thread-wide wipe:
+    the registry may hold another terminal run's live tail whose guard drain
+    must keep seeing its writers. An orphaned in_progress run row still
+    accepts durable intent."""
     from src.server.handlers.workflow_handler import cancel_workflow
 
     patches, registry_store, _manager, _runner, _get_active_run, request_run_cancel = (
@@ -148,7 +155,10 @@ async def test_cancel_with_no_active_task_runs_safety_net():
 
     assert result["cancelled"] is True
     request_run_cancel.assert_awaited_once_with("run-A", thread_id="t-1")
-    registry_store.cancel_and_clear.assert_awaited_once_with("t-1", force=True)
+    registry_store.cancel_run_tasks.assert_awaited_once_with(
+        "t-1", "run-A", force=True
+    )
+    registry_store.cancel_and_clear.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -178,6 +188,7 @@ async def test_run_targeted_miss_with_other_active_task_skips_safety_net():
     manager.cancel_workflow.assert_awaited_once_with("t-1", "run-A")
     # Another turn owns the thread → safety net must be skipped.
     registry_store.cancel_and_clear.assert_not_awaited()
+    registry_store.cancel_run_tasks.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -227,8 +238,10 @@ async def test_cancel_idle_thread_stamps_no_intent_but_runs_safety_net():
     """A /cancel that lands on an idle thread (no BTM task, no in-flight
     mutation, no active run) — e.g. a Stop click racing a compaction that
     JUST finished — must stamp NO cancel intent (there is no run to stamp, so
-    the thread isn't mislabeled) but must still run the orphan-registry safety
-    net. With nothing to cancel, the honest answer is cancelled=False."""
+    the thread isn't mislabeled) and must touch NO registry state: with no
+    target run there is nothing to scope a cancel to, and a thread-wide wipe
+    could destroy a terminal run's still-live tail. With nothing to cancel,
+    the honest answer is cancelled=False."""
     from src.server.handlers.workflow_handler import cancel_workflow
 
     patches, registry_store, manager, runner, get_active_run, request_run_cancel = (
@@ -252,8 +265,9 @@ async def test_cancel_idle_thread_stamps_no_intent_but_runs_safety_net():
     # No mislabel: no run to stamp, so request_run_cancel is never called.
     get_active_run.assert_awaited_once_with("t-1")
     request_run_cancel.assert_not_awaited()
-    # Orphan-registry safety net still runs.
-    registry_store.cancel_and_clear.assert_awaited_once_with("t-1", force=True)
+    # No target run → no registry action at all (never a thread-wide wipe).
+    registry_store.cancel_and_clear.assert_not_awaited()
+    registry_store.cancel_run_tasks.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -341,3 +355,31 @@ async def test_active_workflow_skips_mutation_stop_shortcircuit():
     # has_active gates the runner: request_stop is never consulted.
     runner.request_stop.assert_not_awaited()
     manager.cancel_workflow.assert_awaited_once_with("t-1", "run-A")
+
+
+@pytest.mark.asyncio
+async def test_remote_run_cancel_never_wipes_local_registry():
+    """A targeted /cancel for a run owned by ANOTHER worker (no local task,
+    intent stamped remotely) must leave the local registry alone apart from
+    the run-scoped cancel (a no-op for a remote run's tasks) — the registry
+    may hold a terminal LOCAL run's live tail writers, whose guard drain
+    releases the session the moment their registry entries vanish."""
+    from src.server.handlers.workflow_handler import cancel_workflow
+
+    patches, registry_store, manager, runner, get_active_run, request_run_cancel = (
+        _patch_common(manager_cancel_returns=False, has_active_returns=False)
+    )
+    for p in patches:
+        p.start()
+    try:
+        result = await cancel_workflow("t-1", "run-REMOTE")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert result["cancelled"] is True
+    request_run_cancel.assert_awaited_once_with("run-REMOTE", thread_id="t-1")
+    registry_store.cancel_and_clear.assert_not_awaited()
+    registry_store.cancel_run_tasks.assert_awaited_once_with(
+        "t-1", "run-REMOTE", force=True
+    )

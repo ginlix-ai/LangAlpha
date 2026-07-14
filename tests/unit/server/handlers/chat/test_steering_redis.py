@@ -10,6 +10,7 @@ or a broken truthiness mapping fails here instead of silently in production.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -111,3 +112,180 @@ async def test_unsteer_false_on_redis_error(monkeypatch):
     monkeypatch.setattr(CACHE, lambda: cache)
 
     assert await unsteer_thread("t-1", "whatever") is False
+
+
+# ---------------------------------------------------------------------------
+# steer_subagent cross-worker resolution (v4 2.4e)
+# ---------------------------------------------------------------------------
+
+
+def _seed_meta(cache, thread_id: str, task_id: str, status: str) -> None:
+    cache.client.hashes[f"subagent:meta:{thread_id}:{task_id}"] = {
+        "tool_call_id": "tc-remote",
+        "status": status,
+        "subagent_type": "research",
+    }
+
+
+@pytest.mark.asyncio
+async def test_steer_subagent_resolves_foreign_task_via_meta(monkeypatch):
+    """No local registry entry (task owned by another worker): the Redis
+    task meta supplies the tool_call_id, and the follow-up lands on the
+    steering list the remote writer consumes."""
+    from src.server.handlers.chat.steering import steer_subagent
+
+    cache = FakeCache()
+    monkeypatch.setattr(CACHE, lambda: cache)
+    _seed_meta(cache, "t-foreign", "abc123", "running")
+
+    result = await steer_subagent("t-foreign", "abc123", "go left", "u-1")
+
+    assert result["success"] is True
+    assert result["tool_call_id"] == "tc-remote"
+    key = "subagent:steering:tc-remote"
+    assert cache.client.lists[key] == [json.dumps("go left")]
+    assert key in cache.client.ttls
+
+
+@pytest.mark.asyncio
+async def test_steer_subagent_meta_terminal_is_409(monkeypatch):
+    from fastapi import HTTPException
+
+    from src.server.handlers.chat.steering import steer_subagent
+
+    cache = FakeCache()
+    monkeypatch.setattr(CACHE, lambda: cache)
+    _seed_meta(cache, "t-foreign2", "abc123", "completed")
+
+    with pytest.raises(HTTPException) as exc:
+        await steer_subagent("t-foreign2", "abc123", "go", "u-1")
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_steer_subagent_unknown_everywhere_is_404(monkeypatch):
+    from fastapi import HTTPException
+
+    from src.server.handlers.chat.steering import steer_subagent
+
+    cache = FakeCache()
+    monkeypatch.setattr(CACHE, lambda: cache)
+
+    with pytest.raises(HTTPException) as exc:
+        await steer_subagent("t-nowhere", "zzz999", "go", "u-1")
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_steer_subagent_local_task_fast_path(monkeypatch):
+    """A locally-owned live task resolves from the registry (no meta needed)
+    and keys the steering list by its tool_call_id."""
+    from src.server.handlers.chat.steering import steer_subagent
+    from src.server.services.background_registry_store import (
+        BackgroundRegistryStore,
+    )
+
+    cache = FakeCache()
+    monkeypatch.setattr(CACHE, lambda: cache)
+
+    store = BackgroundRegistryStore.get_instance()
+    registry = await store.get_or_create_registry("t-steer-local")
+    task = await registry.register(
+        tool_call_id="tc-local",
+        description="d",
+        prompt="p",
+        subagent_type="general-purpose",
+    )
+    # A local WRITER handle is what makes the registry entry authoritative;
+    # without one the entry is a hydrated shadow and meta is consulted.
+    task.asyncio_task = asyncio.create_task(asyncio.sleep(30))
+    try:
+        result = await steer_subagent(
+            "t-steer-local", task.task_id, "hello", "u-1"
+        )
+    finally:
+        task.asyncio_task.cancel()
+        store._registries.pop("t-steer-local", None)
+
+    assert result["success"] is True
+    assert result["tool_call_id"] == "tc-local"
+    assert cache.client.lists["subagent:steering:tc-local"] == [
+        json.dumps("hello")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_done_local_handle_defers_to_fresh_running_meta(monkeypatch):
+    """A settled local task keeps its DONE handle until collector cleanup —
+    meanwhile a later turn on another worker may have resumed the task.
+    Local authority requires a LIVE writer: a done handle is history, so the
+    fresh 'running' meta (not a stale local 409) must route the steer to the
+    list the real writer consumes."""
+    from src.server.handlers.chat.steering import steer_subagent
+    from src.server.services.background_registry_store import (
+        BackgroundRegistryStore,
+    )
+
+    cache = FakeCache()
+    monkeypatch.setattr(CACHE, lambda: cache)
+
+    store = BackgroundRegistryStore.get_instance()
+    registry = await store.get_or_create_registry("t-steer-done")
+    task = await registry.register(
+        tool_call_id="tc-old-local",
+        description="d",
+        prompt="p",
+        subagent_type="general-purpose",
+    )
+    done = asyncio.create_task(asyncio.sleep(0))
+    await done
+    task.asyncio_task = done  # settled locally...
+    task.completed = True
+    _seed_meta(cache, "t-steer-done", task.task_id, "running")  # ...but live elsewhere
+
+    try:
+        result = await steer_subagent("t-steer-done", task.task_id, "go", "u-1")
+    finally:
+        store._registries.pop("t-steer-done", None)
+
+    assert result["success"] is True
+    assert result["tool_call_id"] == "tc-remote"  # meta identity, not tc-old-local
+    assert cache.client.lists["subagent:steering:tc-remote"] == [json.dumps("go")]
+
+
+@pytest.mark.asyncio
+async def test_stale_hydrated_shadow_defers_to_fresh_terminal_meta(monkeypatch):
+    """A registry entry with no local writer handle is a hydrated shadow of
+    another worker's task; it never updates when the real writer settles, so
+    the fresh terminal meta — not the forever-pending shadow — must answer.
+    (Trusting the shadow would 200 the steer into a dead task's list.)"""
+    from fastapi import HTTPException
+
+    from src.server.handlers.chat.steering import steer_subagent
+    from src.server.services.background_registry_store import (
+        BackgroundRegistryStore,
+    )
+
+    cache = FakeCache()
+    monkeypatch.setattr(CACHE, lambda: cache)
+
+    store = BackgroundRegistryStore.get_instance()
+    registry = await store.get_or_create_registry("t-steer-shadow")
+    task = await registry.register(
+        tool_call_id="tc-shadow",
+        description="d",
+        prompt="p",
+        subagent_type="general-purpose",
+    )
+    assert task.asyncio_task is None and not task.completed  # shadow shape
+    _seed_meta(cache, "t-steer-shadow", task.task_id, "completed")
+
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await steer_subagent("t-steer-shadow", task.task_id, "hello", "u-1")
+    finally:
+        store._registries.pop("t-steer-shadow", None)
+
+    assert exc.value.status_code == 409
+    assert "completed" in exc.value.detail
+    assert "subagent:steering:tc-shadow" not in cache.client.lists

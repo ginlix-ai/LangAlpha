@@ -221,6 +221,7 @@ class PTCAgent:
         llm: Any | None = None,
         operation_callback: Any | None = None,
         background_registry: BackgroundTaskRegistry | None = None,
+        namespace_owner: Any | None = None,
         user_profile: dict | None = None,
         plan_mode: bool = False,
         thread_id: str | None = None,
@@ -236,6 +237,9 @@ class PTCAgent:
 
         Key non-obvious parameters:
             checkpointer: Required for submit_plan interrupt/resume workflow.
+            namespace_owner: Writer fence for background-subagent checkpoint
+                namespaces (acquire_task_ns/release_task_ns, e.g. the run's
+                WriterGuard). None = no fence (single-writer deployment).
             thread_id: First 8 chars used as thread directory name under
                 ``.agents/threads/{id}/``.
             user_id: First component of memory-namespace tuples. When ``None``,
@@ -570,6 +574,7 @@ class PTCAgent:
             registry=_bg_registry,
             event_capture_middleware=event_capture_middleware,
             checkpointer=checkpointer,
+            namespace_owner=namespace_owner,
         )
         main_only_middleware.append(background_middleware)
         tools.extend(background_middleware.tools)

@@ -80,6 +80,18 @@ async def _get_pubsub_client(cache: RedisCacheClient) -> redis.Redis:
     return _pubsub_client
 
 
+async def get_shared_pubsub_client() -> Optional[redis.Redis]:
+    """Public accessor for the dedicated pubsub client so other long-lived
+    subscribers (e.g. the turn-cancel nudge listener) share the isolated
+    pool instead of holding connections from the general cache pool.
+    Returns None when Redis is disabled.
+    """
+    cache = get_cache_client()
+    if not cache.enabled or not cache.client:
+        return None
+    return await _get_pubsub_client(cache)
+
+
 async def close_status_pubsub_pool() -> None:
     """Tear down the dedicated pubsub pool on shutdown. Best-effort."""
     global _pubsub_client, _pubsub_pool, _pubsub_fallback

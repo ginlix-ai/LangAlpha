@@ -141,14 +141,21 @@ async def cancel_workflow(thread_id: str, run_id: Optional[str] = None) -> dict:
                 f"thread={thread_id}: {intent_state}"
             )
 
-        # Local execution signal (Phase 1, single worker: the executor is
-        # in-process; Phase 2 adds the pub/sub nudge for remote owners).
-        # Signal the SAME run the intent was stamped on: if the resolved
-        # run finalizes and a newer one starts between the stamp and this
-        # call, an untargeted (None) signal would cancel the newer run.
-        # None only when no ledger row exists — the pre-START placeholder
+        # Local execution signal. Signal the SAME run the intent was stamped
+        # on: if the resolved run finalizes and a newer one starts between
+        # the stamp and this call, an untargeted (None) signal would cancel
+        # the newer run. None only when no ledger row exists — the pre-START
         # window, where the manager's thread scan is the only handle.
         cancel_success = await manager.cancel_workflow(thread_id, target_run_id)
+
+        # F5 nudge: intent stamped but no local executor — the owner is
+        # (likely) another worker; nudge it to interrupt now. Best-effort:
+        # a lost nudge still converges via the finalize CAS adopting
+        # 'cancelled' from the durable intent.
+        if not cancel_success and intent_state in ("requested", "already_requested"):
+            from src.server.services.turn_cancel_pubsub import publish_cancel_nudge
+
+            await publish_cancel_nudge(thread_id, target_run_id)
 
         if not cancel_success and not await manager.has_active_task_for_thread(
             thread_id
@@ -157,17 +164,21 @@ async def cancel_workflow(thread_id: str, run_id: Optional[str] = None) -> dict:
                 f"Could not cancel background task for {thread_id} "
                 "(may be already completed or not found)"
             )
-            # Safety net: no active task owns the teardown, so wipe any
-            # orphaned registry left behind (e.g. after a crash). When a task
-            # IS active, its except-handler teardown owns cancel_and_clear and
-            # we must NOT race it here — nor wipe a *different* still-running
-            # turn's registry when a run-targeted cancel missed its run.
-            from src.server.services.background_registry_store import (
-                BackgroundRegistryStore,
-            )
+            # Safety net, RUN-scoped: cancel any local subagents the target
+            # run left behind (e.g. its main task settled but tail writers
+            # survive — an explicit cancel of that run stops its tail too).
+            # Never a thread-wide wipe: the target run may live on ANOTHER
+            # worker while this registry holds a terminal local run's live
+            # tail, whose guard drain must keep seeing its writers.
+            if target_run_id:
+                from src.server.services.background_registry_store import (
+                    BackgroundRegistryStore,
+                )
 
-            registry_store = BackgroundRegistryStore.get_instance()
-            await registry_store.cancel_and_clear(thread_id, force=True)
+                registry_store = BackgroundRegistryStore.get_instance()
+                await registry_store.cancel_run_tasks(
+                    thread_id, target_run_id, force=True
+                )
 
         if intent_state == "already_terminal":
             return {

@@ -23,16 +23,16 @@ class FakePipeline:
         self._ops: list = []
 
     def __getattr__(self, name):
-        def _queue(*args) -> "FakePipeline":
-            self._ops.append((name, *args))
+        def _queue(*args, **kwargs) -> "FakePipeline":
+            self._ops.append((name, args, kwargs))
             return self
 
         return _queue
 
     async def execute(self) -> list:
         results = []
-        for name, *args in self._ops:
-            results.append(await getattr(self._client, name)(*args))
+        for name, args, kwargs in self._ops:
+            results.append(await getattr(self._client, name)(*args, **kwargs))
         self._ops.clear()
         return results
 
@@ -44,6 +44,7 @@ class FakeClient:
         # Shared with FakeCache.kv so raw-client DELETE (pipeline) and the
         # wrapper's get/set/delete address one keyspace, as real Redis does.
         self.kv: dict[str, object] = {}
+        self.hashes: dict[str, dict] = {}
         self.published: list[tuple[str, str]] = []
         # Last TTL set per key, so tests can assert EXPIRE was issued.
         self.ttls: dict[str, int] = {}
@@ -112,6 +113,18 @@ class FakeClient:
             for v in (self.kv.get(k) for k in keys)
         ]
 
+    async def hset(self, key, mapping=None) -> int:
+        h = self.hashes.setdefault(key, {})
+        h.update({str(k): str(v) for k, v in (mapping or {}).items()})
+        return len(mapping or {})
+
+    async def hgetall(self, key) -> dict:
+        # The real client runs decode_responses=False → bytes in and out.
+        return {
+            k.encode(): str(v).encode()
+            for k, v in self.hashes.get(key, {}).items()
+        }
+
     async def expire(self, key, ttl) -> None:
         self.ttls[key] = ttl
 
@@ -120,6 +133,7 @@ class FakeClient:
             self.sets.pop(key, None)
             self.lists.pop(key, None)
             self.kv.pop(key, None)
+            self.hashes.pop(key, None)
 
     async def scan_iter(self, match=None):
         import fnmatch
@@ -152,11 +166,16 @@ class FakeClient:
             if (
                 isinstance(origin_blob, dict)
                 and origin_blob.get("dispatch_gen") == gen
-                and origin_blob.get("admitted_gen") != gen
             ):
                 # KEEPTTL: value replaced, self.ttls entry untouched.
-                origin_blob["admitted_gen"] = gen
-                origin_blob["admitted_run"] = run_id
+                if origin_blob.get("admitted_gen") != gen:
+                    origin_blob["admitted_gen"] = gen
+                    origin_blob["admitted_run"] = run_id
+                pending = origin_blob.get("pending_runs")
+                if not isinstance(pending, dict):
+                    pending = {}
+                    origin_blob["pending_runs"] = pending
+                pending[run_id] = True
                 self.kv[origin_key] = origin_blob
             return 1
         if script is report_back._ADMISSION_RETRACT_LUA:
@@ -165,14 +184,21 @@ class FakeClient:
             origin_blob = self._decoded(origin_key)
             if not isinstance(origin_blob, dict):
                 return 0
-            if (
-                origin_blob.get("dispatch_gen") != gen
-                or origin_blob.get("admitted_gen") != gen
-                or origin_blob.get("admitted_run") != run_id
-            ):
+            if origin_blob.get("dispatch_gen") != gen:
                 return 0
-            origin_blob.pop("admitted_gen", None)
-            origin_blob.pop("admitted_run", None)
+            dirty = False
+            if (
+                origin_blob.get("admitted_gen") == gen
+                and origin_blob.get("admitted_run") == run_id
+            ):
+                origin_blob.pop("admitted_gen", None)
+                origin_blob.pop("admitted_run", None)
+                dirty = True
+            pending = origin_blob.get("pending_runs")
+            if isinstance(pending, dict) and pending.pop(run_id, None):
+                dirty = True
+            if not dirty:
+                return 0
             self.kv[origin_key] = origin_blob
             return 1
         if script is report_back._GATED_POINTER_SET_LUA:
@@ -268,20 +294,29 @@ class FakeClient:
                 return [0, "origin_moved"]
             if origin_blob.get("admitted_gen") == fencer_gen:
                 return [0, "admitted"]
+            pending = origin_blob.get("pending_runs")
+            if isinstance(pending, dict) and pending:
+                return [0, "admitted"]
             surrogate = job_gen != "" and job_gen in (
                 origin_blob.get("prev_gen"),
                 origin_blob.get("owner_gen"),
             )
             self.sets.setdefault(receipt_key, set()).add(fencer_gen)
             self.ttls[receipt_key] = int(receipt_ttl)
+            watch_removed = 0
+            user_removed = 0
             if watch_key and (
                 origin_blob.get("owns_watch") is True or surrogate
             ):
-                self.sets.get(watch_key, set()).discard(ptc_id)
+                if ptc_id in self.sets.get(watch_key, set()):
+                    self.sets[watch_key].discard(ptc_id)
+                    watch_removed = 1
             if user_key and (
                 origin_blob.get("owns_user") is True or surrogate
             ):
-                self.sets.get(user_key, set()).discard(ptc_id)
+                if ptc_id in self.sets.get(user_key, set()):
+                    self.sets[user_key].discard(ptc_id)
+                    user_removed = 1
             ptr = ""
             if run_key and self.kv.get(run_key) is not None:
                 current = self._decoded(run_key)
@@ -307,7 +342,7 @@ class FakeClient:
                             *[x for x in lst if x != run_id],
                         ][: int(done_max)]
                         self.ttls[done_key] = int(done_ttl)
-            return [1, ptr]
+            return [1, ptr, watch_removed, user_removed]
         if script is report_back._GATED_TEARDOWN_LUA:
             origin_key, run_key, watch_key, user_key, tomb_key = keys
             expected_gen, ptc_id, tomb_ttl, refuse_if_pointer = argv

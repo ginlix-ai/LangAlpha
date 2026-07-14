@@ -488,14 +488,20 @@ _RESOLVED_RECEIPT_TTL = 3600
 # watch state already erased and its report-back silently dropped. Receipt
 # check and stamp are one Redis-side step, so resolution vs late admission
 # is a race exactly one side can win.
-# The stamp (``admitted_gen`` + the claiming ``admitted_run``) lives on the
-# exact-gen origin blob (KEEPTTL — the identity's lifetime): it is the
-# PRE-START INTENT marker the resolver defers to; the durable admission
-# record is the ledger row's ``origin_dispatch_gen`` metadata, which
-# ``resolve_orphaned_watch`` checks caller-side. First stamp wins per
-# generation — a same-gen retransmit must not re-token the stamp under its
-# sibling, so the retract CAS can only release the exact (gen, run) that
-# stamped. A moved/absent origin skips the stamp (that lifecycle isn't
+# The pre-START intent is PER CONTENDER: every admission of the generation
+# records its run in ``pending_runs`` on the exact-gen origin blob (KEEPTTL —
+# the identity's lifetime), and the resolver defers while ANY entry survives.
+# A single first-stamp-wins token is not enough — the Redis first stamper is
+# not necessarily the Postgres START winner, so its priming-failure retract
+# must not strip the only protection from a same-gen sibling still heading
+# to START. The ``admitted_gen``/``admitted_run`` first-stamp is still
+# written because ``_RESERVE_LUA`` derives displaced-owner lineage from it;
+# as a resolver suppressant it is redundant with ``pending_runs`` and NOT
+# sufficient alone (the holder's retract unstamps while siblings remain
+# pending) — no resolver may ever read only the stamp. The durable
+# admission record is the ledger row's
+# ``origin_dispatch_gen`` metadata, which ``resolve_orphaned_watch`` checks
+# caller-side. A moved/absent origin skips the intent (that lifecycle isn't
 # ours to write) but still admits: the run then executes as an ordinary
 # turn whose report-back finds the pair settled.
 # KEYS: 1=resolved-receipt set 2=origin key
@@ -505,33 +511,45 @@ if redis.call('sismember', KEYS[1], ARGV[1]) == 1 then return 0 end
 local o = redis.call('get', KEYS[2])
 if o then
   local ok, origin = pcall(cjson.decode, o)
-  if ok and type(origin) == 'table' and origin['dispatch_gen'] == ARGV[1]
-     and origin['admitted_gen'] ~= ARGV[1] then
-    origin['admitted_gen'] = ARGV[1]
-    origin['admitted_run'] = ARGV[2]
+  if ok and type(origin) == 'table' and origin['dispatch_gen'] == ARGV[1] then
+    if origin['admitted_gen'] ~= ARGV[1] then
+      origin['admitted_gen'] = ARGV[1]
+      origin['admitted_run'] = ARGV[2]
+    end
+    if type(origin['pending_runs']) ~= 'table' then
+      origin['pending_runs'] = {}
+    end
+    origin['pending_runs'][ARGV[2]] = true
     redis.call('set', KEYS[2], cjson.encode(origin), 'KEEPTTL')
   end
 end
 return 1
 """
 
-# Intent-stamp release after a priming failure, CAS'd to the exact
-# (generation, run) this admission stamped: without it the resolver would
-# read the failed gen as admitted until the origin TTL and the phantom
-# never settles; with an UNSCOPED release a failing same-gen retransmit
-# could strip the stamp from under its live sibling.
+# Intent release after a priming failure: removes ONLY this admission's own
+# ``pending_runs`` entry (per-contender — a failing same-gen retransmit can
+# never strip a live sibling's protection), plus the legacy stamp iff this
+# run holds it (exact CAS). Without the release the resolver would read the
+# failed gen as pending until the origin TTL and the phantom never settles.
 # KEYS: 1=origin key  ARGV: 1=generation 2=run_id
 _ADMISSION_RETRACT_LUA = """
 local o = redis.call('get', KEYS[1])
 if not o then return 0 end
 local ok, origin = pcall(cjson.decode, o)
 if not ok or type(origin) ~= 'table' then return 0 end
-if origin['dispatch_gen'] ~= ARGV[1] or origin['admitted_gen'] ~= ARGV[1]
-   or origin['admitted_run'] ~= ARGV[2] then
-  return 0
+if origin['dispatch_gen'] ~= ARGV[1] then return 0 end
+local dirty = false
+if origin['admitted_gen'] == ARGV[1] and origin['admitted_run'] == ARGV[2] then
+  origin['admitted_gen'] = nil
+  origin['admitted_run'] = nil
+  dirty = true
 end
-origin['admitted_gen'] = nil
-origin['admitted_run'] = nil
+if type(origin['pending_runs']) == 'table'
+   and origin['pending_runs'][ARGV[2]] then
+  origin['pending_runs'][ARGV[2]] = nil
+  dirty = true
+end
+if not dirty then return 0 end
 redis.call('set', KEYS[1], cjson.encode(origin), 'KEEPTTL')
 return 1
 """
@@ -608,12 +626,15 @@ async def retract_dispatch_gen(
 #   - the origin must still carry EXACTLY the generation that fenced the
 #     caller (ARGV[2]) — a moved origin belongs to a newer reservation's
 #     lifecycle and is left alone;
-#   - the origin's own ``admitted_gen`` stamp (written by the admission
-#     gate, lives as long as the origin) is the PRE-START INTENT check:
-#     a stamped generation is mid-priming or running — never phantom. The
-#     DURABLE admission record (a ledger row carrying the generation) is
-#     checked by the caller before this script runs; the stamp covers only
-#     the pre-START window where no row exists yet;
+#   - the origin's per-contender ``pending_runs`` entries (written by the
+#     admission gate, living as long as the origin) are the PRE-START
+#     INTENT check: any surviving entry is a same-gen admission mid-priming
+#     or running — never phantom. The redundant first-stamp
+#     (``admitted_gen``) is honored too, but ``pending_runs`` is the
+#     authority — the stamp holder's retract unstamps while siblings remain
+#     pending. The DURABLE admission record (a ledger row carrying the
+#     generation) is checked by the caller before this script runs; the
+#     intent covers only the pre-START window where no row exists yet;
 #   - the phantom's generation goes into the resolved-receipt SET FIRST —
 #     the endpoint's admission-marker write atomically refuses receipted
 #     generations, so resolution vs late admission is a race exactly one
@@ -646,7 +667,8 @@ async def retract_dispatch_gen(
 #       4=run pointer|'' 5=resolved-receipt set 6=flash_rb_done|''
 # ARGV: 1=ptc_thread_id 2=fencer gen 3=receipt ttl 4=done max 5=done ttl
 #       6=the fenced clear's own generation ('' = unknown)
-# Returns {1, ptr_json|''} on resolve; {0, reason} on suppress.
+# Returns {1, ptr_json|'', watch_removed, user_removed} on resolve;
+# {0, reason} on suppress.
 _ORPHAN_RESOLVE_LUA = """
 local o = redis.call('get', KEYS[1])
 if not o then return {0, 'origin_gone'} end
@@ -654,15 +676,21 @@ local ok, origin = pcall(cjson.decode, o)
 if not ok or type(origin) ~= 'table' then return {0, 'origin_unreadable'} end
 if origin['dispatch_gen'] ~= ARGV[2] then return {0, 'origin_moved'} end
 if origin['admitted_gen'] == ARGV[2] then return {0, 'admitted'} end
+if type(origin['pending_runs']) == 'table'
+   and next(origin['pending_runs']) ~= nil then
+  return {0, 'admitted'}
+end
 local surrogate = (ARGV[6] ~= ''
   and (origin['prev_gen'] == ARGV[6] or origin['owner_gen'] == ARGV[6]))
 redis.call('sadd', KEYS[5], ARGV[2])
 redis.call('expire', KEYS[5], tonumber(ARGV[3]))
+local watch_removed = 0
+local user_removed = 0
 if KEYS[2] ~= '' and (origin['owns_watch'] == true or surrogate) then
-  redis.call('srem', KEYS[2], ARGV[1])
+  watch_removed = redis.call('srem', KEYS[2], ARGV[1])
 end
 if KEYS[3] ~= '' and (origin['owns_user'] == true or surrogate) then
-  redis.call('srem', KEYS[3], ARGV[1])
+  user_removed = redis.call('srem', KEYS[3], ARGV[1])
 end
 local ptr = ''
 if KEYS[4] ~= '' then
@@ -686,7 +714,7 @@ if KEYS[4] ~= '' then
     end
   end
 end
-return {1, ptr}
+return {1, ptr, watch_removed, user_removed}
 """
 
 
@@ -708,13 +736,16 @@ async def resolve_orphaned_watch(
     discovery record); and the phantom generation is receipted so its late
     admission is refused. Pair state inherited from an INTERMEDIATE lineage
     is left intact (its delivery may still be queued), and the origin is
-    deliberately spared. Admission is judged twice: the ledger row carrying
-    this generation (the durable record, checked here first — fails CLOSED
-    on a DB error, never resolving on a guess) and the origin's
-    ``admitted_gen`` intent stamp (checked atomically in the script,
-    covering the pre-START window where no row exists yet).
-    Idempotent; does not swallow Redis errors (the drainer nacks and
-    retries). Returns ``(resolved, drained_run_id)``.
+    deliberately spared. Admission is judged three ways: the ledger row
+    carrying this generation (the durable record, checked first — fails
+    CLOSED on a DB error, never resolving on a guess), the origin's
+    per-contender ``pending_runs`` intent entries (checked atomically in
+    the script, covering every same-gen admission's pre-START window —
+    surviving its siblings' retracts), and a post-resolve ledger
+    revalidation that restores the dropped memberships if a START raced
+    the script (the pre-probe's negatives are not stable through the Redis
+    mutation). Idempotent; does not swallow Redis errors (the drainer
+    nacks and retries). Returns ``(resolved, drained_run_id)``.
     """
     from src.server.database import turn_lifecycle as tl_db
 
@@ -772,6 +803,19 @@ async def resolve_orphaned_watch(
             f"{ptc_thread_id} (gen {fencer_gen}) suppressed: {reason}"
         )
         return False, None
+
+    # Post-resolve revalidation: the pre-probe's negatives (no row, no live
+    # run) are point-in-time reads that are not stable through the Redis
+    # mutation — a START committing in the gap (a same-gen admission, or an
+    # ordinary continuation that never touches the gate) needs the
+    # memberships this script just dropped. Pair-consuming outbox jobs are
+    # serialized per flash thread by ordering key, so restoring them before
+    # this job completes closes the race; a run cannot reach its own
+    # terminal hook inside this gap.
+    if await _compensate_if_started(
+        cache, ptc_thread_id, flash_thread_id, user_id, fencer_gen, res
+    ):
+        return False, None
     run_id = None
     ptr_raw = res[1] if len(res) > 1 else None
     if ptr_raw:
@@ -782,6 +826,73 @@ async def resolve_orphaned_watch(
         except (TypeError, ValueError):
             run_id = None
     return True, run_id
+
+
+async def _compensate_if_started(
+    cache,
+    ptc_thread_id: str,
+    flash_thread_id: str | None,
+    user_id: str | None,
+    fencer_gen: str,
+    res,
+) -> bool:
+    """Detect a START that raced the resolve script and restore exactly the
+    memberships it removed. Returns True when compensation ran (the caller
+    must treat the resolution as suppressed). A probe/restore failure here is
+    a logged double-fault residual — the loss it would take requires the
+    START to land inside the probe→script gap AND this second read to fail
+    milliseconds after the first succeeded."""
+    from src.server.database import turn_lifecycle as tl_db
+
+    try:
+        admitted_now = await tl_db.thread_has_dispatch_gen(
+            ptc_thread_id, fencer_gen
+        )
+        live_now = (
+            True if admitted_now
+            else await tl_db.get_active_run(ptc_thread_id) is not None
+        )
+    except Exception:
+        logger.critical(
+            f"[FLASH_REPORT_BACK] Post-resolve ledger revalidation failed for "
+            f"{ptc_thread_id} (gen {fencer_gen}); if a START raced the "
+            f"resolution its report-back membership is lost",
+            exc_info=True,
+        )
+        return False
+    if not (admitted_now or live_now):
+        return False
+
+    watch_removed = len(res) > 2 and bool(int(res[2]))
+    user_removed = len(res) > 3 and bool(int(res[3]))
+    try:
+        pipe = cache.client.pipeline()
+        if watch_removed and flash_thread_id:
+            pipe.sadd(flash_watch_key(flash_thread_id), ptc_thread_id)
+            pipe.expire(flash_watch_key(flash_thread_id), PTC_ORIGIN_TTL)
+        if user_removed and user_id:
+            pipe.sadd(flash_user_pending_key(user_id), ptc_thread_id)
+            pipe.expire(flash_user_pending_key(user_id), PTC_ORIGIN_TTL)
+        if admitted_now:
+            # The racer was this very generation: un-receipt it so its
+            # retransmits aren't refused while its run lives.
+            pipe.srem(ptc_rb_resolved_key(ptc_thread_id), fencer_gen)
+        await pipe.execute()
+    except Exception:
+        logger.critical(
+            f"[FLASH_REPORT_BACK] Membership restore after raced resolution "
+            f"failed for {ptc_thread_id} (gen {fencer_gen}); report-back for "
+            f"the racing run may be lost",
+            exc_info=True,
+        )
+        return True
+    logger.warning(
+        f"[FLASH_REPORT_BACK] Phantom-fence resolution for {ptc_thread_id} "
+        f"(gen {fencer_gen}) raced a START; memberships restored "
+        f"(watch={watch_removed}, user={user_removed}, "
+        f"same_gen={admitted_now})"
+    )
+    return True
 
 
 async def _reap_listed_orphans(cache, set_key: str, members: list[str]) -> int:

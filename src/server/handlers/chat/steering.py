@@ -171,32 +171,54 @@ async def steer_subagent(
     """
     from src.utils.cache.redis_cache import get_cache_client
 
-    # 1. Look up the registry for this thread
+    # 1. Resolve the target: local registry first (this worker owns the
+    # writer), else the cross-worker Redis task meta (v4 2.4e) — the consume
+    # side (SubagentSteeringMiddleware) reads the steering list from Redis,
+    # so delivery already works across workers once the target resolves.
     registry_store = BackgroundRegistryStore.get_instance()
     registry = await registry_store.get_registry(thread_id)
-    if registry is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No active workflow for thread {thread_id}",
+    task = await registry.get_by_task_id(task_id) if registry else None
+
+    # A registry entry without a LIVE local writer is history: a hydrated
+    # shadow of another worker's task, or a settled local task whose
+    # namespace a later turn on another worker may since have re-acquired.
+    # Neither tracks what the real writer did next, so the fresh Redis meta
+    # (not the local object) is the authority.
+    if task is not None and (
+        task.asyncio_task is None or task.asyncio_task.done()
+    ):
+        task = None
+
+    if task is not None:
+        # 2a. Local task: reject if already completed or cancelled
+        if task.completed or task.cancelled:
+            status = "cancelled" if task.cancelled else "completed"
+            raise HTTPException(
+                status_code=409,
+                detail=f"Task-{task_id} has already {status}",
+            )
+        tool_call_id = task.tool_call_id
+    else:
+        # 2b. Foreign or lost task: the meta hash carries routing identity
+        # (tool_call_id) and writer liveness.
+        from ptc_agent.agent.middleware.background_subagent.registry import (
+            read_task_meta,
         )
 
-    # 2. Look up the task by ID
-    task = await registry.get_by_task_id(task_id)
-    if task is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Task-{task_id} not found in thread {thread_id}",
-        )
+        meta = await read_task_meta(thread_id, task_id)
+        if meta is None or not meta.get("tool_call_id"):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Task-{task_id} not found in thread {thread_id}",
+            )
+        if meta.get("status") != "running":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Task-{task_id} has already {meta.get('status')}",
+            )
+        tool_call_id = meta["tool_call_id"]
 
-    # 3. Reject if already completed or cancelled
-    if task.completed or task.cancelled:
-        status = "cancelled" if task.cancelled else "completed"
-        raise HTTPException(
-            status_code=409,
-            detail=f"Task-{task_id} has already {status}",
-        )
-
-    # 4. Queue to Redis (same pattern as _queue_followup_to_redis)
+    # 3. Queue to Redis (same pattern as _queue_followup_to_redis)
     cache = get_cache_client()
     if not cache.enabled or not cache.client:
         raise HTTPException(
@@ -205,7 +227,7 @@ async def steer_subagent(
         )
 
     try:
-        key = f"subagent:steering:{task.tool_call_id}"
+        key = f"subagent:steering:{tool_call_id}"
         payload = json.dumps(content)
         pipe = cache.client.pipeline()
         pipe.rpush(key, payload)
@@ -216,12 +238,13 @@ async def steer_subagent(
 
         logger.info(
             f"[SUBAGENT_MSG] Steering for subagent: "
-            f"thread_id={thread_id} task={task.display_id} position={position}"
+            f"thread_id={thread_id} task=Task-{task_id} position={position}"
+            f"{' (via task meta)' if task is None else ''}"
         )
         return {
             "success": True,
-            "tool_call_id": task.tool_call_id,
-            "display_id": task.display_id,
+            "tool_call_id": tool_call_id,
+            "display_id": f"Task-{task_id}",
             "queue_position": position,
         }
     except Exception as e:

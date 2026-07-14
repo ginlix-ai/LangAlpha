@@ -558,6 +558,48 @@ class BackgroundTaskRegistry:
                 error=str(exc),
             )
 
+    async def write_task_meta(self, task: BackgroundTask, status: str) -> None:
+        """Best-effort mirror of the task's routing identity + writer liveness
+        to Redis (``subagent:meta:{thread}:{task}``) so OTHER workers can
+        resolve steer/update targets and gate resumes.
+
+        ``status`` tracks the WRITER ("running" while an asyncio writer owns
+        the namespace, "completed"/"cancelled" once it settled), not result
+        availability. Advisory only — the N(thread, task:id) advisory lock,
+        not this hash, is the write fence.
+        """
+        if not self.thread_id:
+            return
+        try:
+            from src.config.settings import get_redis_ttl_workflow_events
+            from src.utils.cache.redis_cache import get_cache_client
+
+            cache = get_cache_client()
+            if not getattr(cache, "enabled", False) or not cache.client:
+                return
+            key = f"subagent:meta:{self.thread_id}:{task.task_id}"
+            pipe = cache.client.pipeline()
+            pipe.hset(
+                key,
+                mapping={
+                    "tool_call_id": task.tool_call_id,
+                    "status": status,
+                    "subagent_type": task.subagent_type,
+                    "description": (task.description or "")[:200],
+                    "spawned_run_id": task.spawned_run_id or "",
+                    "updated_at": str(time.time()),
+                },
+            )
+            pipe.expire(key, get_redis_ttl_workflow_events())
+            await asyncio.wait_for(pipe.execute(), timeout=_SPILL_TIMEOUT_SECONDS)
+        except Exception as exc:
+            logger.warning(
+                "task meta write failed",
+                task_id=task.task_id,
+                status=status,
+                error=str(exc),
+            )
+
     async def append_sentinel_to_stream(self, tool_call_id: str) -> None:
         """Write a stream-end sentinel to the per-task Redis Stream.
 
@@ -1093,3 +1135,35 @@ class BackgroundTaskRegistry:
     def pending_count(self) -> int:
         """Get the number of pending tasks."""
         return sum(1 for task in self._tasks.values() if task.is_pending)
+
+
+async def read_task_meta(thread_id: str, task_id: str) -> dict[str, str] | None:
+    """Read the cross-worker task meta hash written by ``write_task_meta``.
+
+    Returns a decoded str->str dict, or None when the key is absent, Redis is
+    unavailable, or the read fails (callers treat None as "no distributed
+    knowledge" and fall back to local/checkpoint state).
+    """
+    if not thread_id or not task_id:
+        return None
+    try:
+        from src.utils.cache.redis_cache import get_cache_client
+
+        cache = get_cache_client()
+        if not getattr(cache, "enabled", False) or not cache.client:
+            return None
+        raw = await cache.client.hgetall(f"subagent:meta:{thread_id}:{task_id}")
+        if not raw:
+            return None
+        return {
+            (k.decode() if isinstance(k, bytes) else str(k)): (
+                v.decode() if isinstance(v, bytes) else str(v)
+            )
+            for k, v in raw.items()
+        }
+    except Exception as exc:
+        logger.warning(
+            "task meta read failed", thread_id=thread_id, task_id=task_id,
+            error=str(exc),
+        )
+        return None

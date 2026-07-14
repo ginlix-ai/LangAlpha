@@ -112,10 +112,15 @@ async def _run_background_task(
     request: ToolCallRequest,
     tracker: "PerCallTokenTracker",
     label: str,
+    registry: BackgroundTaskRegistry | None = None,
+    namespace_owner: Any | None = None,
 ) -> dict[str, Any]:
     """Execute a subagent handler in a background asyncio.Task.
 
-    Shared by both the new-spawn and resume paths.
+    Shared by both the new-spawn and resume paths. On writer settle the
+    finally block releases the task's namespace lock and mirrors terminal
+    liveness to the Redis task meta — both only when the handler task is
+    actually done, so a shielded still-live writer is never unfenced.
     """
     from src.tools.decorators import ToolUsageTracker, set_tool_tracker
 
@@ -169,6 +174,36 @@ async def _run_background_task(
             error=str(e),
         )
         return {"success": False, "error": str(e), "error_type": type(e).__name__}
+    finally:
+        # A double-cancel can exit while the shielded handler still runs; in
+        # that case keep the fence (the guard's teardown unlock_all reclaims
+        # it) and leave the meta "running" until its TTL — never unfence a
+        # possibly-live writer.
+        # Terminal meta is written BEFORE the namespace releases: every meta
+        # write happens while holding N(task:id), so a successor (who can
+        # only acquire after the release) always writes "running" after this
+        # writer's terminal state — never under it.
+        if handler_task.done():
+            if registry is not None:
+                try:
+                    await registry.write_task_meta(
+                        task, "cancelled" if task.cancelled else "completed"
+                    )
+                except Exception:
+                    logger.warning(
+                        "terminal task-meta write failed",
+                        task_id=task.task_id,
+                        exc_info=True,
+                    )
+            if namespace_owner is not None:
+                try:
+                    await namespace_owner.release_task_ns(task.task_id)
+                except Exception:
+                    logger.warning(
+                        "task-ns release failed",
+                        task_id=task.task_id,
+                        exc_info=True,
+                    )
 
 
 class BackgroundSubagentMiddleware(AgentMiddleware):
@@ -188,11 +223,16 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         registry: BackgroundTaskRegistry | None = None,
         event_capture_middleware: "SubagentEventCaptureMiddleware | None" = None,
         checkpointer: Any | None = None,
+        namespace_owner: Any | None = None,
     ) -> None:
         """
         Args:
             checkpointer: LangGraph checkpointer used to hydrate tasks from stored
                 state when the in-memory registry loses them (e.g. server restart).
+            namespace_owner: optional writer fence for task checkpoint namespaces
+                (``acquire_task_ns(task_id) -> bool`` / ``release_task_ns``, e.g.
+                the run's WriterGuard). None = single-writer deployment; spawn and
+                resume skip the fence.
         """
         super().__init__()
         self.registry = registry or BackgroundTaskRegistry()
@@ -200,6 +240,13 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         self.enabled = enabled
         self.event_capture_middleware = event_capture_middleware
         self.checkpointer = checkpointer
+        self.namespace_owner = namespace_owner
+        # Task ids with a resume mid-flight: the liveness check and the
+        # writer spawn are separated by awaits, so two parallel resume calls
+        # in one model step could otherwise both pass and double-spawn (the
+        # per-session namespace fence is deliberately idempotent for one
+        # run and cannot arbitrate between coroutines sharing it).
+        self._resume_claims: set[str] = set()
 
         # Create native tools for this middleware
         # These allow the main agent to wait for and check on background tasks
@@ -233,6 +280,17 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         except Exception as e:
             logger.error(
                 "Failed to queue follow-up to Redis", task_id=task_id, error=str(e)
+            )
+            return False
+
+    async def _acquire_task_ns(self, task_id: str) -> bool:
+        """Fail-closed wrapper around the namespace fence: an acquire error
+        refuses the namespace rather than admitting an unfenced writer."""
+        try:
+            return bool(await self.namespace_owner.acquire_task_ns(task_id))
+        except Exception:
+            logger.warning(
+                "task-ns acquire raised; refusing", task_id=task_id, exc_info=True
             )
             return False
 
@@ -332,13 +390,31 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
     ) -> BackgroundTask | None:
         """Reconstruct a BackgroundTask from stored checkpoint metadata.
 
-        Called when the in-memory registry loses a task (e.g. server restart).
-        Returns a minimal BackgroundTask inserted into the registry, or None.
+        Called when the in-memory registry loses a task (e.g. another worker
+        owns it, or a server restart). The Redis task meta supplies routing
+        identity + writer liveness: when it says "running" and a namespace
+        fence is wired (multi-writer deployment), the task hydrates as LIVE
+        with its real tool_call_id, so 'update' routes follow-ups to the
+        steering list the remote writer actually consumes. Without a fence
+        this process is the only writer, so a "running" meta is necessarily
+        stale — keep the completed-shape hydration.
+        Returns the task inserted into the registry, or None.
         """
 
         if not self.checkpointer or not parent_thread_id:
             return None
         try:
+            from ptc_agent.agent.middleware.background_subagent.registry import (
+                read_task_meta,
+            )
+
+            meta = await read_task_meta(parent_thread_id, task_id)
+            running_elsewhere = (
+                self.namespace_owner is not None
+                and meta is not None
+                and meta.get("status") == "running"
+            )
+
             config = {
                 "configurable": {
                     "thread_id": parent_thread_id,
@@ -346,23 +422,50 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 }
             }
             checkpoint_tuple = await self.checkpointer.aget_tuple(config)
-            if not checkpoint_tuple:
+            if not checkpoint_tuple and not running_elsewhere:
                 return None
 
-            metadata = checkpoint_tuple.metadata or {}
-            subagent_type = metadata.get("subagent_type", "general-purpose")
+            metadata = (
+                checkpoint_tuple.metadata if checkpoint_tuple else None
+            ) or {}
+            subagent_type = metadata.get("subagent_type") or (meta or {}).get(
+                "subagent_type", "general-purpose"
+            )
+            description = metadata.get("description") or (meta or {}).get(
+                "description", "Restored subagent"
+            )
 
             # Reconstruct BackgroundTask and insert into registry
             task = BackgroundTask(
-                tool_call_id=f"hydrated-{task_id}",
+                tool_call_id=(
+                    (meta or {}).get("tool_call_id") or f"hydrated-{task_id}"
+                ),
                 task_id=task_id,
-                description=metadata.get("description", "Restored subagent"),
-                prompt=metadata.get("description", "Restored subagent"),
+                description=description,
+                prompt=description,
                 subagent_type=subagent_type,
-                completed=True,
-                result_seen=True,
+                completed=not running_elsewhere,
+                result_seen=not running_elsewhere,
+                spawned_run_id=(meta or {}).get("spawned_run_id") or None,
             )
             async with self.registry._lock:
+                # Publish-once CAS: two concurrent resolves of one lost task
+                # (parallel resume/update calls racing on the same task_id)
+                # both reach here with distinct fresh objects. Letting the
+                # later insert win would repoint the registry at an inert
+                # duplicate while the earlier object spawns the writer —
+                # drains and collectors would then see no writer and release
+                # the namespace under it. First insert wins; losers adopt.
+                published_tcid = self.registry._task_id_to_tool_call_id.get(
+                    task_id
+                )
+                published = (
+                    self.registry._tasks.get(published_tcid)
+                    if published_tcid
+                    else None
+                )
+                if published is not None:
+                    return published
                 self.registry._tasks[task.tool_call_id] = task
                 self.registry._task_id_to_tool_call_id[task_id] = task.tool_call_id
 
@@ -371,6 +474,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 task_id=task_id,
                 parent_thread_id=parent_thread_id,
                 subagent_type=subagent_type,
+                running_elsewhere=running_elsewhere,
             )
             return task
         except Exception:
@@ -525,58 +629,114 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                     name="Task",
                 )
 
-            if task.is_pending:
+            locally_live = (
+                task.asyncio_task is not None and not task.asyncio_task.done()
+            )
+            if locally_live:
                 return ToolMessage(
                     content=f"Error: Task-{target_task_id} is still running. Use action='update' to send instructions to a running task.",
                     tool_call_id=tool_call_id,
                     name="Task",
                 )
+            # Claim the resume before the first await: two parallel resume
+            # calls in one model step would otherwise both observe not-live
+            # and double-spawn writers for one namespace (the session fence
+            # is idempotent for this run and admits both).
+            if task.task_id in self._resume_claims:
+                return ToolMessage(
+                    content=f"Error: Task-{target_task_id} is already being resumed. Use action='update' to send instructions to it.",
+                    tool_call_id=tool_call_id,
+                    name="Task",
+                )
+            self._resume_claims.add(task.task_id)
+            try:
+                if self.namespace_owner is not None:
+                    # Not live in THIS process: the namespace lock is the
+                    # cluster-wide arbiter. Contended = a writer on another
+                    # worker (or a prior run's tail) still owns it; free =
+                    # safe to resume even if a stale meta/hydration said
+                    # "running".
+                    if not await self._acquire_task_ns(task.task_id):
+                        return ToolMessage(
+                            content=(
+                                f"Error: Task-{target_task_id} is still running "
+                                f"(its writer is live elsewhere). Use "
+                                f"action='update' to send instructions to it."
+                            ),
+                            tool_call_id=tool_call_id,
+                            name="Task",
+                        )
+                elif task.is_pending:
+                    # No fence available (single-writer deployment): a pending
+                    # task here means a registered-but-unstarted local writer.
+                    return ToolMessage(
+                        content=f"Error: Task-{target_task_id} is still running. Use action='update' to send instructions to a running task.",
+                        tool_call_id=tool_call_id,
+                        name="Task",
+                    )
 
-            logger.info(
-                "Resuming completed task in background",
-                task_id=target_task_id,
-                display_id=task.display_id,
-                checkpoint_ns=task.task_id,
-            )
+                logger.info(
+                    "Resuming completed task in background",
+                    task_id=target_task_id,
+                    display_id=task.display_id,
+                    checkpoint_ns=task.task_id,
+                )
 
-            await self._reset_task_for_resume(task)
+                await self._reset_task_for_resume(task)
 
-            # Clear stale namespace mappings so new ones can be registered
-            self.registry.clear_namespaces_for_task(task.tool_call_id)
+                # This run owns the writer now: rebind run ownership so its
+                # drain/stop teardown and collector account for the resumed
+                # writer (the original spawner may be another, long-finalized
+                # run — under whose id nothing would ever await it).
+                if current_run_id:
+                    task.spawned_run_id = current_run_id
 
-            # Allow re-emission of subagent_identity event
-            if self.event_capture_middleware:
-                self.event_capture_middleware.clear_identity(task.tool_call_id)
+                # Clear stale namespace mappings so new ones can be registered
+                self.registry.clear_namespaces_for_task(task.tool_call_id)
 
-            # Set ContextVars for the resumed task
-            current_background_tool_call_id.set(task.tool_call_id)
-            current_background_agent_id.set(task.agent_id)
+                # Allow re-emission of subagent_identity event
+                if self.event_capture_middleware:
+                    self.event_capture_middleware.clear_identity(task.tool_call_id)
 
-            # Update args with inferred subagent_type for the handler
-            if subagent_type is None:
-                args = {**args, "subagent_type": task.subagent_type}
-                tool_call = {**tool_call, "args": args}
-                request = request.override(tool_call=tool_call)
+                # Set ContextVars for the resumed task
+                current_background_tool_call_id.set(task.tool_call_id)
+                current_background_agent_id.set(task.agent_id)
 
-            # Create a dedicated token tracker for the resumed subagent
-            subagent_token_tracker = PerCallTokenTracker()
+                # Update args with inferred subagent_type for the handler
+                if subagent_type is None:
+                    args = {**args, "subagent_type": task.subagent_type}
+                    tool_call = {**tool_call, "args": args}
+                    request = request.override(tool_call=tool_call)
 
-            # Spawn resumed task in background. create_task_with_context
-            # propagates the current OTel context (via contextvars snapshot)
-            # so spans emitted inside the subagent inherit the launching
-            # chat.turn trace.
-            emit_subagent_launch(
-                task.subagent_type, action="resume", description_len=len(description),
-            )
-            asyncio_task = create_task_with_context(
-                _run_background_task(
-                    task, handler, request, subagent_token_tracker,
-                    "Resumed background subagent",
-                ),
-                name=f"background_subagent_resume_{task.display_id}",
-            )
-            task.asyncio_task = asyncio_task
-            asyncio_task.add_done_callback(_make_task_done_callback(task))
+                # Create a dedicated token tracker for the resumed subagent
+                subagent_token_tracker = PerCallTokenTracker()
+
+                # Spawn resumed task in background. create_task_with_context
+                # propagates the current OTel context (via contextvars
+                # snapshot) so spans emitted inside the subagent inherit the
+                # launching chat.turn trace.
+                emit_subagent_launch(
+                    task.subagent_type, action="resume", description_len=len(description),
+                )
+                # Meta before spawn: a fast writer's terminal meta (written at
+                # settle) must never be overwritten by a late "running".
+                await self.registry.write_task_meta(task, "running")
+                asyncio_task = create_task_with_context(
+                    _run_background_task(
+                        task, handler, request, subagent_token_tracker,
+                        "Resumed background subagent",
+                        registry=self.registry,
+                        namespace_owner=self.namespace_owner,
+                    ),
+                    name=f"background_subagent_resume_{task.display_id}",
+                )
+                task.asyncio_task = asyncio_task
+                asyncio_task.add_done_callback(_make_task_done_callback(task))
+            finally:
+                # Safe to drop once the writer is spawned (locally_live now
+                # gates), and must drop on refusal/error so a later resume
+                # can retry.
+                self._resume_claims.discard(task.task_id)
 
             short_description = _truncate_description(description, max_sentences=2)
             pseudo_result = (
@@ -628,6 +788,26 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 description=description[:100],
             )
 
+            if self.namespace_owner is not None and not await self._acquire_task_ns(
+                task.task_id
+            ):
+                # A fresh task_id is practically uncontended, so this is the
+                # fence itself being unusable (guard session dead) — refuse
+                # rather than spawn an unfenced writer, and leave the entry
+                # inert so no collector claims it.
+                task.completed = True
+                task.cancelled = True
+                task.result_seen = True
+                task.error = "namespace fence unavailable"
+                return ToolMessage(
+                    content=(
+                        f"Error: could not start {task.display_id} — its "
+                        f"checkpoint namespace could not be fenced. Try again."
+                    ),
+                    tool_call_id=tool_call_id,
+                    name="Task",
+                )
+
             current_background_tool_call_id.set(tool_call_id)
             current_background_agent_id.set(task.agent_id)
 
@@ -640,10 +820,15 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             emit_subagent_launch(
                 subagent_type, action="init", description_len=len(description),
             )
+            # Meta before spawn: a fast writer's terminal meta (written at
+            # settle) must never be overwritten by a late "running".
+            await self.registry.write_task_meta(task, "running")
             asyncio_task = create_task_with_context(
                 _run_background_task(
                     task, handler, request, subagent_token_tracker,
                     "Background subagent",
+                    registry=self.registry,
+                    namespace_owner=self.namespace_owner,
                 ),
                 name=f"background_subagent_{task.display_id}",
             )

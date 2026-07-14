@@ -417,6 +417,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Recovery scanner startup failed: {e}")
 
+    # Turn-cancel nudge listener (v4 Phase 2.4e): a /cancel landing on
+    # another worker signals this one's executor via pub/sub.
+    try:
+        from src.server.services.turn_cancel_pubsub import TurnCancelListener
+
+        TurnCancelListener.get_instance().start()
+        logger.info("TurnCancelListener started")
+    except Exception as e:
+        logger.warning(f"Failed to start TurnCancelListener: {e}")
+
     # Start MarketDataFeed (shared upstream WS to ginlix-data)
     try:
         from src.server.services.market_data_feed import DEFAULT_WS_FEEDS, MarketDataFeed
@@ -491,6 +501,14 @@ async def lifespan(app: FastAPI):
         await RecoveryScanner.get_instance().stop()
     except Exception as e:
         logger.warning(f"Error stopping RecoveryScanner: {e}")
+
+    # 0.0b. Stop the turn-cancel nudge listener.
+    try:
+        from src.server.services.turn_cancel_pubsub import TurnCancelListener
+
+        await TurnCancelListener.get_instance().stop()
+    except Exception as e:
+        logger.warning(f"Error stopping TurnCancelListener: {e}")
 
     # 0.1. Shutdown ProvenanceGCService
     try:

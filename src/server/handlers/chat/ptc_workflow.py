@@ -482,6 +482,10 @@ async def astream_ptc_workflow(
             # is active; the global pooled saver otherwise.
             checkpointer=run_handle.checkpointer,
             background_registry=background_registry,
+            # I2 (2.4e): the guard doubles as the task-namespace fence —
+            # each background subagent takes exclusive N(thread, task:id) on
+            # the run's pinned session before it may write.
+            namespace_owner=run_handle.guard,
             user_id=user_id,
             plan_mode=effective_plan_mode,
             thread_id=thread_id,

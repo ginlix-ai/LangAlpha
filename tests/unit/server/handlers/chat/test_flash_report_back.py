@@ -1215,8 +1215,13 @@ async def test_resolve_consults_both_ledger_probes(_stub_ledger):
     )
 
     assert (resolved, drained) == (True, "rb-9")
-    _stub_ledger.has_gen.assert_awaited_once_with("ptc-1", "g-PHANTOM")
-    _stub_ledger.active.assert_awaited_once_with("ptc-1")
+    # Both questions are asked twice: once before the destructive script and
+    # once after it (the post-resolve revalidation that catches a raced
+    # START — the pre-probe's negatives aren't stable through the mutation).
+    assert _stub_ledger.has_gen.await_count == 2
+    _stub_ledger.has_gen.assert_awaited_with("ptc-1", "g-PHANTOM")
+    assert _stub_ledger.active.await_count == 2
+    _stub_ledger.active.assert_awaited_with("ptc-1")
     assert "g-PHANTOM" in cache.client.sets[report_back.ptc_rb_resolved_key("ptc-1")]
 
 
@@ -1596,3 +1601,93 @@ async def test_resolve_without_flash_thread():
     assert "ptc-1" not in cache.client.sets.get(
         report_back.flash_user_pending_key("u-1"), set()
     )
+
+
+@pytest.mark.asyncio
+async def test_failing_stampers_retract_spares_same_gen_siblings_intent(
+    _stub_ledger,
+):
+    """Pre-START intent is per contender: same-gen admission B admits behind
+    first-stamper A; A's priming-failure retract removes only A's own
+    ``pending_runs`` entry, so the resolver still defers while B heads to
+    START — the Redis first stamper is not necessarily the Postgres START
+    winner. Only after B's own retract does the generation resolve as a
+    true phantom."""
+    cache = _gate_cache()
+    watch_key = report_back.flash_watch_key("flash-1")
+    with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
+        assert await report_back.admit_dispatch_gen("ptc-1", "g-1", "run-A") is True
+        assert await report_back.admit_dispatch_gen("ptc-1", "g-1", "run-B") is True
+        await report_back.retract_dispatch_gen("ptc-1", "g-1", "run-A")
+
+    origin = cache.kv[report_back.ptc_origin_key("ptc-1")]
+    assert "admitted_gen" not in origin  # A's stamp CAS-released
+    assert origin["pending_runs"] == {"run-B": True}  # B's protection survives
+
+    resolved, _ = await report_back.resolve_orphaned_watch(
+        cache, "ptc-1", "flash-1", "u-1", fencer_gen="g-1"
+    )
+    assert resolved is False
+    assert "ptc-1" in cache.client.sets[watch_key]
+
+    with patch("src.utils.cache.redis_cache.get_cache_client", return_value=cache):
+        await report_back.retract_dispatch_gen("ptc-1", "g-1", "run-B")
+    resolved, _ = await report_back.resolve_orphaned_watch(
+        cache, "ptc-1", "flash-1", "u-1", fencer_gen="g-1"
+    )
+    assert resolved is True
+    assert "ptc-1" not in cache.client.sets.get(watch_key, set())
+
+
+@pytest.mark.asyncio
+async def test_resolve_restores_memberships_when_same_gen_start_raced(
+    _stub_ledger,
+):
+    """Cross-store TOCTOU: the pre-probe's negatives are not stable through
+    the Redis mutation. When the fencer's own admission STARTs in the gap
+    (row visible only at the post-resolve revalidation), the resolution is
+    withdrawn: memberships restored with TTL, and the receipt un-receipted
+    so the live run's retransmits aren't refused."""
+    cache = _FakeCache()
+    _seed_phantom(cache, gen="g-1")
+    _stub_ledger.has_gen.side_effect = [False, True]  # pre-probe, revalidation
+
+    resolved, drained = await report_back.resolve_orphaned_watch(
+        cache, "ptc-1", "flash-1", "u-1", fencer_gen="g-1"
+    )
+
+    assert (resolved, drained) == (False, None)
+    watch_key = report_back.flash_watch_key("flash-1")
+    user_key = report_back.flash_user_pending_key("u-1")
+    assert "ptc-1" in cache.client.sets[watch_key]
+    assert "ptc-1" in cache.client.sets[user_key]
+    assert cache.client.ttls[watch_key] == report_back.PTC_ORIGIN_TTL
+    assert "g-1" not in cache.client.sets.get(
+        report_back.ptc_rb_resolved_key("ptc-1"), set()
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_restores_memberships_when_foreign_start_raced(
+    _stub_ledger,
+):
+    """An ordinary continuation (never touches the admission gate) STARTing
+    in the probe→script gap also withdraws the resolution — its report-back
+    needs the memberships the script just dropped. The phantom stays
+    receipted (it is still a phantom); the pair settles via the live run's
+    own terminal lifecycle."""
+    cache = _FakeCache()
+    _seed_phantom(cache, gen="g-1")
+    _stub_ledger.active.side_effect = [
+        None,
+        {"conversation_response_id": "run-LIVE"},
+    ]
+
+    resolved, drained = await report_back.resolve_orphaned_watch(
+        cache, "ptc-1", "flash-1", "u-1", fencer_gen="g-1"
+    )
+
+    assert (resolved, drained) == (False, None)
+    assert "ptc-1" in cache.client.sets[report_back.flash_watch_key("flash-1")]
+    assert "ptc-1" in cache.client.sets[report_back.flash_user_pending_key("u-1")]
+    assert "g-1" in cache.client.sets[report_back.ptc_rb_resolved_key("ptc-1")]
