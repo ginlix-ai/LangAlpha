@@ -1,6 +1,7 @@
 import copy
 import os
 import json
+import uuid
 from pathlib import Path
 from typing import Dict, Optional, Any
 from dotenv import load_dotenv
@@ -215,6 +216,30 @@ class ModelConfig:
 
 _UNSET = object()  # Sentinel to distinguish "no override" from "override to None"
 
+# Header spellings the first-party codex clients send — codex-rs:
+# session-id/thread-id, opencode/hermes: session_id.
+_CODEX_SESSION_HEADERS = ("session-id", "thread-id", "session_id")
+
+
+def _derive_codex_affinity(cache_key: str) -> str:
+    """UUID-normalize a cache key for codex session headers — pass-through for
+    UUID keys, uuid5 otherwise so raw key material never egresses in a header."""
+    try:
+        return str(uuid.UUID(str(cache_key)))
+    except ValueError:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"codex-session:{cache_key}"))
+
+
+def _merged_default_headers(params: dict, *bases: dict | None) -> dict:
+    """Merge header sources left-to-right (later wins), ending with any
+    ``parameters``-level ``default_headers`` already expanded into ``params``
+    so it augments the base headers instead of replacing the mapping."""
+    merged: dict = {}
+    for base in bases:
+        merged.update(base or {})
+    merged.update(params.get("default_headers") or {})
+    return merged
+
 # Name regex for custom models: alphanumeric start, then alphanumeric/./_/-/:
 # Colon allowed for Ollama-style name:tag format (e.g. gemma4:31b)
 CUSTOM_MODEL_NAME_RE = r"^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,62}$"
@@ -356,7 +381,8 @@ class LLM:
             api_key: Optional API key override (e.g. from BYOK).
             base_url_override: Override base URL. _UNSET = no override.
             cache_key: Session-stable key sent as ``prompt_cache_key`` on
-                OpenAI/Codex requests (always-on for Codex; opt-in for OpenAI).
+                OpenAI/Codex requests (always-on for Codex, which also derives
+                session-affinity headers from it; opt-in for OpenAI).
             **override_params: Additional parameters to override defaults.
 
         Returns:
@@ -426,8 +452,9 @@ class LLM:
 
         ``cache_key`` becomes ``prompt_cache_key`` on OpenAI/Codex requests via
         ``model_kwargs`` (not ``bind()``) so it survives ``bind_tools()`` and
-        ``with_structured_output()``. Codex always applies the key; regular
-        OpenAI applies it only when the provider opts in via providers.json.
+        ``with_structured_output()``. Codex always applies the key — and also
+        derives session-affinity headers from it — while regular OpenAI applies
+        it only when the provider opts in via providers.json.
         """
         effective_cache_key: str | None = None
         if cache_key and (
@@ -498,9 +525,6 @@ class LLM:
         }
         params.update(self._resolve_base_url("base_url"))
 
-        if self.default_headers:
-            params["default_headers"] = self.default_headers
-
         # Handle Response API if configured
         if self.use_response_api:
             params["output_version"] = "responses/v1"
@@ -511,6 +535,12 @@ class LLM:
 
         # Add all parameters from llm_config
         params.update(self.parameters)
+
+        # Merged after the parameters expansion so a parameters["default_headers"]
+        # entry augments the provider-level headers instead of clobbering them.
+        merged_headers = _merged_default_headers(params, self.default_headers)
+        if merged_headers:
+            params["default_headers"] = merged_headers
 
         # Explicit prompt caching is api.openai.com-only: strip the opt-in when
         # routed anywhere else (platform proxy, OpenAI-compatible endpoints) so
@@ -545,19 +575,33 @@ class LLM:
         }
         params.update(self._resolve_base_url("base_url"))
 
-        # The codex backend gates newer models (e.g. GPT-5.6 Luna) to first-party
-        # clients: without an originator naming a known client AND a User-Agent
-        # carrying the matching "<originator>/" prefix, it 404s "Model not found".
-        params["default_headers"] = {
-            "originator": "codex_cli_rs",
-            "User-Agent": "codex_cli_rs/0.46.0",
-            **(self.default_headers or {}),
-        }
-
         if self.use_response_api:
             params["output_version"] = "responses/v1"
 
         params.update(self.parameters)
+
+        # The codex backend gates newer models (e.g. GPT-5.6 Luna) to first-party
+        # clients: without an originator naming a known client AND a User-Agent
+        # carrying the matching "<originator>/" prefix, it 404s "Model not found".
+        # Built after the parameters merge so a parameters["default_headers"]
+        # entry augments the mapping instead of clobbering it.
+        params["default_headers"] = _merged_default_headers(
+            params,
+            {"originator": "codex_cli_rs", "User-Agent": "codex_cli_rs/0.46.0"},
+            self.default_headers,
+        )
+
+        # Cache affinity: the codex backend routes its prompt cache by session
+        # headers, not by prompt_cache_key (wire-tested ~3× fewer warm-chain
+        # misses). Pinned headers win over the derived value, checked
+        # case-insensitively so a differently-cased pin can't end up
+        # contradicting a derived duplicate on the wire.
+        if cache_key:
+            affinity = _derive_codex_affinity(cache_key)
+            present = {k.lower() for k in params["default_headers"]}
+            for header in _CODEX_SESSION_HEADERS:
+                if header not in present:
+                    params["default_headers"][header] = affinity
 
         # The codex backend 400s on explicit-caching params — never forward the opt-in.
         params.pop("prompt_cache_options", None)
@@ -660,14 +704,17 @@ class LLM:
         if self.base_url:
             params["base_url"] = self.base_url
 
-        if self.default_headers:
-            params["default_headers"] = self.default_headers
-
         # Add all parameters from llm_config, excluding enable_caching
         # (enable_caching is not a ChatAnthropic parameter, it's used by our caching logic)
         # This will override max_tokens if explicitly set in model config
         filtered_params = {k: v for k, v in self.parameters.items() if k != "enable_caching"}
         params.update(filtered_params)
+
+        # Merged after the parameters expansion so a parameters["default_headers"]
+        # entry augments the provider-level headers instead of clobbering them.
+        merged_headers = _merged_default_headers(params, self.default_headers)
+        if merged_headers:
+            params["default_headers"] = merged_headers
 
         # Pass extra_body via model_kwargs so ChatAnthropic's Pydantic validator
         # doesn't warn about an unknown field (extra_body isn't a declared field).
@@ -725,7 +772,8 @@ def create_llm(
         base_url: Override base URL. None = SDK default, str = custom URL.
         reasoning_effort: Optional reasoning effort level ("low", "medium", "high").
         cache_key: Session-stable key sent as ``prompt_cache_key`` on
-            OpenAI/Codex requests (always-on for Codex; opt-in for OpenAI).
+            OpenAI/Codex requests (always-on for Codex, which also derives
+            session-affinity headers from it; opt-in for OpenAI).
         **kwargs: Additional parameters to override
 
     Returns:
@@ -759,7 +807,8 @@ def create_llm_from_custom(
         api_key: Optional API key override (e.g. from BYOK).
         base_url: Override base URL. _UNSET = no override, None = SDK default.
         cache_key: Session-stable key sent as ``prompt_cache_key`` on
-            OpenAI/Codex requests (always-on for Codex; opt-in for OpenAI).
+            OpenAI/Codex requests (always-on for Codex, which also derives
+            session-affinity headers from it; opt-in for OpenAI).
         **kwargs: Additional parameters to override.
 
     Returns:
@@ -775,7 +824,11 @@ def narrow_prompt_cache_key(model: Any, suffix: str) -> Any:
 
     Used to namespace parallel sub-tasks (subagent fanout, compaction) onto
     separate OpenAI cache shards — OpenAI rate-limits at ~15 RPM per
-    (prefix + ``prompt_cache_key``) bucket. No-op when the model has no
+    (prefix + ``prompt_cache_key``) bucket. Codex session-affinity headers are
+    deliberately NOT narrowed: they pin a replica (not a cache scope), the
+    copy shares the parent's already-built HTTP clients so a field-level
+    header update never reaches the wire anyway, and riding the parent
+    thread's lane is what codex-rs itself does. No-op when the model has no
     ``prompt_cache_key`` set or ``suffix`` is empty.
     """
     if not suffix:
