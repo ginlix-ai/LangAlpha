@@ -224,7 +224,7 @@ async def cancel_workflow(thread_id: str, run_id: Optional[str] = None) -> dict:
 
 
 async def get_workflow_status(
-    thread_id: str, is_shared: Optional[bool] = None
+    thread_id: str, is_shared: Optional[bool] = None, msg_type: Optional[str] = None
 ) -> dict:
     """
     Get current workflow execution status.
@@ -234,6 +234,9 @@ async def get_workflow_status(
         is_shared: Pre-resolved share flag. When provided (e.g. the ``/status``
             route already read it while authorizing), skips a redundant thread
             lookup; when ``None``, this fetches it.
+        msg_type: Pre-resolved thread kind; picks the report-back read model
+            (``ptc`` → task outbox, else flash watch set). Fetched with the
+            thread row when ``None`` and the row is read anyway.
 
     Returns:
         Dict with current status, reconnectability, and progress info
@@ -324,14 +327,27 @@ async def get_workflow_status(
 
                 thread_row = await get_thread_by_id(thread_id)
                 is_shared = bool(thread_row.get("is_shared")) if thread_row else False
+                if msg_type is None and thread_row:
+                    msg_type = thread_row.get("msg_type")
             except Exception as e:
                 logger.debug(f"Could not fetch share status for {thread_id}: {e}")
                 is_shared = False
 
-        # Check if this flash thread has pending PTC report-backs.
-        from src.server.handlers.chat.report_back import read_report_back_status
+        # Pending report-backs, from the thread kind's own read model: a PTC
+        # thread's pendingness is its open task_report_back outbox row; a
+        # flash thread's is the Redis watch set.
+        if msg_type == "ptc":
+            from src.server.handlers.chat.task_report_back import (
+                read_task_report_back_status,
+            )
 
-        rb = await read_report_back_status(thread_id)
+            rb = await read_task_report_back_status(thread_id)
+        else:
+            from src.server.handlers.chat.report_back import (
+                read_report_back_status,
+            )
+
+            rb = await read_report_back_status(thread_id)
         pending_report_back = rb["pending_report_back"]
         report_back_run_id = rb["report_back_run_id"]
         recent_report_back_run_ids = rb.get("recent_report_back_run_ids", [])

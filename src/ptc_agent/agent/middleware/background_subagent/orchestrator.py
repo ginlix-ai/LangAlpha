@@ -320,17 +320,6 @@ class BackgroundSubagentOrchestrator:
             # NOTE: Do NOT clear registry here - agent needs to call TaskOutput()
             # to retrieve results in the next iteration.
 
-    def _format_notification(self) -> str:
-        """Format notification message for all completed background tasks.
-
-        Returns:
-            Notification string prompting agent to call TaskOutput()
-        """
-        completed_tasks = [
-            task for task in self.middleware.registry._tasks.values() if task.completed
-        ]
-        return self._format_notification_for_tasks(completed_tasks)
-
     def _format_notification_for_tasks(self, tasks: list) -> str:
         """Format notification message for specific tasks.
 
@@ -444,6 +433,14 @@ class BackgroundSubagentOrchestrator:
         Returns:
             Notification string if tasks completed, None otherwise
         """
+        # A disabled middleware means this turn has no TaskOutput tool (e.g.
+        # a disable_subagents notification turn): never point the agent at a
+        # tool it doesn't have. The shared per-thread registry may still hold
+        # completed tasks from other turns — they're not this turn's to
+        # announce.
+        if not self.middleware.enabled:
+            return None
+
         # Sync completion status first
         for task in self.middleware.registry._tasks.values():
             if not task.completed and task.asyncio_task and task.asyncio_task.done():
@@ -454,9 +451,15 @@ class BackgroundSubagentOrchestrator:
                     task.error = str(e)
                     task.result = {"success": False, "error": str(e)}
 
-        # Check for completed tasks whose results haven't been seen yet
+        # Completed tasks whose results the agent hasn't seen. A task claimed
+        # for a report-back notification turn is owned by the outbox pipeline
+        # — announcing it here would deliver it twice.
         all_tasks = list(self.middleware.registry._tasks.values())
-        unseen_tasks = [t for t in all_tasks if t.completed and not t.result_seen]
+        unseen_tasks = [
+            t
+            for t in all_tasks
+            if t.completed and not t.result_seen and not t.report_back_claimed
+        ]
 
         logger.debug(
             "check_and_get_notification",

@@ -453,9 +453,38 @@ class TestExecWatchClear:
         cache.client.publish.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_consumption_clear_skips_error_wake(self):
+    async def test_consumption_clear_publishes_cleared_wake(self):
+        """A landed consumption clear pushes the pending→idle transition so
+        watchers drop the chip now instead of riding the 60s backstop. No
+        error wake — the payload says ``cleared``, not ``error``."""
         cache = _cache_with_origin({"flash_thread_id": "flash-1", "user_id": "u-1"})
-        mock_clear = AsyncMock()
+        mock_clear = AsyncMock(return_value=ClearOutcome(True))
+        with _guard(), patch(
+            "src.utils.cache.redis_cache.get_cache_client", return_value=cache
+        ), patch(
+            "src.server.handlers.chat.report_back.clear_flash_report_back",
+            mock_clear,
+        ):
+            await hook_outbox._exec_watch_clear(
+                _job(
+                    hook_type="watch_clear",
+                    payload={"ptc_thread_id": "ptc-1", "user_id": "u-1", "error_wake": False},
+                    ordering_key="flash-1",
+                )
+            )
+
+        mock_clear.assert_awaited_once()
+        cache.client.publish.assert_awaited_once()
+        published = cache.client.publish.await_args.args[1]
+        assert '"cleared": true' in published
+        assert "error" not in published
+
+    @pytest.mark.asyncio
+    async def test_fenced_consumption_clear_stays_silent(self):
+        """Fenced (not cleared) = a newer incarnation owns the pair — the
+        watcher is still legitimately pending, so no wake of any kind."""
+        cache = _cache_with_origin({"flash_thread_id": "flash-1", "user_id": "u-1"})
+        mock_clear = AsyncMock(return_value=ClearOutcome(False, "g-NEW"))
         with _guard(), patch(
             "src.utils.cache.redis_cache.get_cache_client", return_value=cache
         ), patch(

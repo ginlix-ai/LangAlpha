@@ -3040,16 +3040,19 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                         </button>
                       </div>
                     )}
-                    {/* Report-back enabled: the dispatch turn ended and the agent
-                        is waiting to summarize the dispatched PTC thread(s) here. */}
-                    {awaitingReportBack && !isLoading && (
+                    {/* Report-back pending: a follow-up turn will land here —
+                        a flash summary of dispatched PTC thread(s), or a PTC
+                        notification for an unseen subagent result. Suppressed
+                        while the tail chip above already covers running
+                        subagents (they overlap only on PTC threads). */}
+                    {awaitingReportBack && !isLoading && !hasActiveSubagents && (
                       <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground"
                         role="status" aria-live="polite">
                         <span aria-hidden="true" className="relative flex h-2 w-2">
                           <span className="motion-safe:animate-ping absolute inline-flex h-full w-full rounded-full bg-primary/60 opacity-75" />
                           <span className="relative inline-flex rounded-full h-2 w-2 bg-primary/80" />
                         </span>
-                        {t('chat.reportBackPending')}
+                        {t(isFlashMode ? 'chat.reportBackPending' : 'chat.taskReportBackPending')}
                       </div>
                     )}
                     {displayWorkspaceStarting && (

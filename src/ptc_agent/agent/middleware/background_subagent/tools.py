@@ -51,6 +51,43 @@ def _sync_task_completion(task: BackgroundTask) -> None:
         task.result = {"success": False, "error": str(e)}
 
 
+async def _delivered_result_text(registry, task, result=None) -> str:
+    """Text handed to the model for a completed task.
+
+    Durable-first: the subagent's answer checkpointed under ``task:{id}`` is
+    the primary source (survives registry eviction/stop/restart/other-worker
+    reads); the in-memory handler result is the fallback (CLI, failures, or
+    a checkpoint that isn't readable yet).
+    """
+    result = task.result if result is None else result
+    success, _ = extract_result_content(result)
+    if success:
+        resolved = await registry.resolve_result_text(task.task_id)
+        if resolved:
+            return resolved
+    return _format_result(result)
+
+
+async def _missing_task_reply(registry, task_id: str) -> str:
+    """Reply for a task_id with no live registry entry.
+
+    The entry may be gone while the result is durably archived (evicted after
+    collection, wiped by a stop, lost to a restart, or held by another
+    worker) — recover from the archive first; only report cancelled when the
+    archive has nothing either.
+    """
+    recovered = await registry.resolve_result_text(task_id)
+    if recovered:
+        return (
+            f"**Task-{task_id}** completed (result recovered from the "
+            f"durable archive):\n\n{recovered}"
+        )
+    return (
+        f"Task-{task_id} was cancelled by a user stop (no result "
+        f"was produced). It is not running and cannot be resumed."
+    )
+
+
 def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> StructuredTool:
     """Create tool to get background task output.
 
@@ -85,14 +122,7 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
         if task_id is not None:
             task = await registry.get_by_task_id(task_id)
             if not task:
-                # The registry is wiped on a user stop, so a resumed turn that
-                # follows its own pseudo-result instruction and re-asks for a
-                # killed subagent lands here. Tell the agent it was cancelled
-                # rather than implying it never existed.
-                return (
-                    f"Task-{task_id} was cancelled by a user stop (no result "
-                    f"was produced). It is not running and cannot be resumed."
-                )
+                return await _missing_task_reply(registry, task_id)
 
             # Sync completion status from asyncio task
             _sync_task_completion(task)
@@ -101,9 +131,10 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
             # If already completed, return immediately regardless of timeout
             if task.completed:
                 task.result_seen = True
+                task.result_delivered = True
                 return (
                     f"**{task.display_id}** ({task.subagent_type}) completed:\n\n"
-                    f"{_format_result(task.result)}"
+                    f"{await _delivered_result_text(registry, task)}"
                 )
 
             if not blocking:
@@ -138,14 +169,12 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
                         f"(waited {timeout}s, task continues in background)"
                     )
                 task.result_seen = True
+                task.result_delivered = True
                 return (
                     f"**{task.display_id}** ({task.subagent_type}) completed:\n\n"
-                    f"{_format_result(result)}"
+                    f"{await _delivered_result_text(registry, task, result)}"
                 )
-            return (
-                f"Task-{task_id} was cancelled by a user stop (no result "
-                f"was produced). It is not running and cannot be resumed."
-            )
+            return await _missing_task_reply(registry, task_id)
 
         # --- All tasks ---
 
@@ -171,9 +200,10 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
             for task in sorted(all_tasks, key=lambda t: t.task_id):
                 if task.completed:
                     task.result_seen = True
+                    task.result_delivered = True
                     output += (
                         f"### {task.display_id} ({task.subagent_type})\n"
-                        f"{_format_result(task.result)}\n\n"
+                        f"{await _delivered_result_text(registry, task)}\n\n"
                     )
                 else:
                     output += _format_task_progress(task) + "\n"
@@ -209,9 +239,10 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
                 t = registry.get_by_tool_call_id(tcid)
                 if t and not (isinstance(r, dict) and r.get("status") == "interrupted"):
                     t.result_seen = True
+                    t.result_delivered = True
                     completed_parts.append(
                         f"### {t.display_id} ({t.subagent_type}) - completed\n"
-                        f"{_format_result(r)}\n"
+                        f"{await _delivered_result_text(registry, t, r)}\n"
                     )
             output = (
                 f"Wait interrupted: new user steering received. "
@@ -244,10 +275,11 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
                 )
                 if not is_running:
                     task.result_seen = True
+                    task.result_delivered = True
                 status = "still running" if is_running else "completed"
                 output += f"### {task.display_id} ({task.subagent_type}) - {status}\n"
                 if not is_running:
-                    output += _format_result(result) + "\n\n"
+                    output += await _delivered_result_text(registry, task, result) + "\n\n"
                 else:
                     output += "\n"
         return output

@@ -202,7 +202,11 @@ async def enqueue_hooks(
 
 
 async def claim_outbox_jobs(
-    limit: int = 10, lease_seconds: int = 60, *, max_attempts: int = 5
+    limit: int = 10,
+    lease_seconds: int = 60,
+    *,
+    max_attempts: int = 5,
+    excluded_hook_types: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Lease a batch of due jobs: pending-and-due, or claimed with an
     expired lease below the attempts ceiling (crash/stall recovery —
@@ -236,7 +240,12 @@ async def claim_outbox_jobs(
     under-claims and retries next poll instead of hoarding locks. The
     claim commits before execution; attempts counts leases handed out,
     not completions.
+
+    ``excluded_hook_types`` skips CLAIMING those types this pass (per-type
+    in-flight quotas) without disturbing chain discipline: an excluded head
+    still blocks its ordering key's later jobs, it just isn't leased.
     """
+    excluded = list(excluded_hook_types or [])
     async with qr_db.get_db_connection() as conn:
         async with conn.transaction():
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -245,6 +254,7 @@ async def claim_outbox_jobs(
                     SELECT o.ordering_key AS okey
                     FROM hook_outbox o
                     WHERE o.ordering_key IS NOT NULL
+                      AND o.hook_type <> ALL(%s::varchar[])
                       AND (
                         (o.status = 'pending'
                          AND (o.next_retry_at IS NULL
@@ -273,7 +283,7 @@ async def claim_outbox_jobs(
                     ORDER BY MIN(o.created_at)
                     LIMIT %s
                     """,
-                    (max_attempts, limit * 8),
+                    (excluded, max_attempts, limit * 8),
                 )
                 candidate_keys = [r["okey"] for r in await cur.fetchall()]
 
@@ -293,7 +303,8 @@ async def claim_outbox_jobs(
                     """
                     WITH due AS (
                         SELECT o.hook_outbox_id FROM hook_outbox o
-                        WHERE (
+                        WHERE o.hook_type <> ALL(%s::varchar[])
+                        AND (
                             (o.status = 'pending'
                              AND (o.next_retry_at IS NULL OR o.next_retry_at <= NOW()))
                             OR (o.status = 'claimed'
@@ -339,7 +350,7 @@ async def claim_outbox_jobs(
                     WHERE h.hook_outbox_id = due.hook_outbox_id
                     RETURNING h.*
                     """,
-                    (max_attempts, locked_keys, limit, float(lease_seconds)),
+                    (excluded, max_attempts, locked_keys, limit, float(lease_seconds)),
                 )
                 rows = await cur.fetchall()
                 return [dict(r) for r in rows]
@@ -622,14 +633,18 @@ async def enqueue_compensation_job(
     ordering_key: Optional[str],
     idempotency_key: str,
     backdate_seconds: Optional[float] = None,
+    defer: bool = False,
 ) -> None:
     """Insert a single follow-up job outside any finalize transaction.
 
     Used by the legacy-FIFO migration sweep (and any caller needing a
     durable one-off job). ``backdate_seconds`` shifts created_at into the
     past so a migrated entry keeps its chain position ahead of younger
-    pending rows. ON CONFLICT DO NOTHING: re-running the sweep never
-    double-registers.
+    pending rows. ``defer=True`` inserts the row with
+    ``next_retry_at='infinity'`` — durable but never claimable until
+    ``release_deferred_jobs`` flips it due (interrupted-root task
+    report-backs wait for the thread's next completed finalize). ON
+    CONFLICT DO NOTHING: re-running the sweep never double-registers.
     """
     async with qr_db.get_db_connection() as conn:
         async with conn.cursor() as cur:
@@ -637,11 +652,13 @@ async def enqueue_compensation_job(
                 """
                 INSERT INTO hook_outbox (
                     run_id, conversation_thread_id, hook_type,
-                    payload, ordering_key, idempotency_key, created_at
+                    payload, ordering_key, idempotency_key, created_at,
+                    next_retry_at
                 )
                 VALUES (
                     %s, %s, %s, %s, %s, %s,
-                    NOW() - make_interval(secs => %s)
+                    NOW() - make_interval(secs => %s),
+                    CASE WHEN %s THEN 'infinity'::timestamptz ELSE NULL END
                 )
                 ON CONFLICT (idempotency_key) DO NOTHING
                 """,
@@ -653,8 +670,105 @@ async def enqueue_compensation_job(
                     ordering_key,
                     idempotency_key,
                     float(backdate_seconds or 0.0),
+                    defer,
                 ),
             )
+
+
+async def release_deferred_jobs(
+    conn, thread_id: str, hook_type: str
+) -> int:
+    """Flip a thread's deferred (``next_retry_at='infinity'``) jobs due.
+
+    Runs on the caller's connection so the release commits atomically with
+    the finalize that makes posting safe again (a completed PTC run means
+    no pending HITL checkpoint to collide with).
+    """
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            UPDATE hook_outbox
+            SET next_retry_at = NOW()
+            WHERE conversation_thread_id = %s
+              AND hook_type = %s
+              AND status = 'pending'
+              AND next_retry_at = 'infinity'::timestamptz
+            """,
+            (thread_id, hook_type),
+        )
+        return cur.rowcount
+
+
+async def defer_claimed_job(
+    job_id: str, *, attempts: int, max_attempts: int = 5
+) -> Optional[str]:
+    """Park a CLAIMED job back to deferred (``next_retry_at='infinity'``).
+
+    For a task report-back whose thread turned interrupted between the
+    deferred release and this claim: posting would collide with the pending
+    HITL checkpoint, so the job re-parks until the next completed finalize
+    flips it due again. Fenced by ``attempts``. At the attempts ceiling the
+    job is parked dead instead — a pending row below the ceiling blocks its
+    ordering chain, so an unclaimable-forever deferred row would wedge every
+    later notification on the thread. Returns the new status ('pending' or
+    'dead'), or None if the fence was lost; the caller stops either way and
+    its fenced ack no-ops.
+    """
+    async with qr_db.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                UPDATE hook_outbox
+                SET status = CASE
+                        WHEN attempts >= %s THEN 'dead' ELSE 'pending'
+                    END,
+                    next_retry_at = CASE
+                        WHEN attempts >= %s THEN NOW()
+                        ELSE 'infinity'::timestamptz
+                    END,
+                    lease_expires_at = NULL,
+                    completed_at = CASE
+                        WHEN attempts >= %s THEN NOW() ELSE completed_at
+                    END
+                WHERE hook_outbox_id = %s AND status = 'claimed'
+                  AND attempts = %s
+                RETURNING status
+                """,
+                (max_attempts, max_attempts, max_attempts, job_id, attempts),
+            )
+            row = await cur.fetchone()
+            return row["status"] if row else None
+
+
+async def get_open_notification_job(
+    thread_id: str, hook_type: str
+) -> Optional[Dict[str, Any]]:
+    """Oldest open (pending-and-due or claimed) job of one type for a thread.
+
+    The read-model behind a watcher thread's ``pending_report_back`` when the
+    outbox rows ARE the pending-registry: a job's open lifetime — enqueue
+    through the executor's terminal wait — is exactly the pending window.
+    Deferred rows (``next_retry_at='infinity'``) are invisible: their work
+    is parked, not in progress.
+    """
+    async with qr_db.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT hook_outbox_id, payload, status
+                FROM hook_outbox
+                WHERE ordering_key = %s
+                  AND hook_type = %s
+                  AND status IN ('pending', 'claimed')
+                  AND (next_retry_at IS NULL
+                       OR next_retry_at != 'infinity'::timestamptz)
+                ORDER BY created_at, hook_outbox_id
+                LIMIT 1
+                """,
+                (thread_id, hook_type),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
 
 
 async def list_pending_jobs(hook_type: str) -> List[Dict[str, Any]]:
@@ -744,10 +858,15 @@ async def requeue_job_with_key(
             return row["status"] if row else None
 
 
-async def merge_job_payload(job_id: str, patch: Dict[str, Any]) -> bool:
+async def merge_job_payload(
+    job_id: str, patch: Dict[str, Any], *, remove: Optional[List[str]] = None
+) -> bool:
     """Durably merge keys into a job's payload (e.g. dispatched_run_id after
     the synthetic POST) so a reclaiming drainer resumes instead of re-doing
-    the effect. Deliberately unfenced: a stale owner's merge carries the same
+    the effect. ``remove`` drops keys in the SAME update (a task
+    report-back scrubs its inlined result text the moment the dispatched
+    run id lands — one atomic step, so a crash can never leave neither).
+    Deliberately unfenced: a stale owner's merge carries the same
     request-key-deduped run id the live owner would write — the information
     is true even after the lease was lost."""
     async with qr_db.get_db_connection() as conn:
@@ -755,9 +874,10 @@ async def merge_job_payload(job_id: str, patch: Dict[str, Any]) -> bool:
             await cur.execute(
                 """
                 UPDATE hook_outbox
-                SET payload = COALESCE(payload, '{}'::jsonb) || %s::jsonb
+                SET payload =
+                    (COALESCE(payload, '{}'::jsonb) || %s::jsonb) - %s::text[]
                 WHERE hook_outbox_id = %s
                 """,
-                (SafeJson(patch), job_id),
+                (SafeJson(patch), list(remove or []), job_id),
             )
             return cur.rowcount > 0

@@ -2,7 +2,7 @@
 
 Maps the HTTP result of the report-back POST to ``(outcome, run_id)``:
 2xx -> dispatched; 404 -> deleted (discard queue); other permanent 4xx -> drop;
-409/402/403/429/5xx/network error -> retry with backoff; busy-wait cap -> drop.
+409/402/403/429/5xx/network error -> retry with backoff; busy-wait cap -> cap.
 """
 
 from __future__ import annotations
@@ -234,8 +234,11 @@ async def test_immediate_success_never_heartbeats():
 
 
 @pytest.mark.asyncio
-async def test_busy_wait_cap_exhausted_returns_drop():
-    """A flash thread that never frees up -> give up at the busy-wait cap."""
+async def test_busy_wait_cap_exhausted_returns_cap():
+    """A flash thread that never frees up -> give up at the busy-wait cap.
+
+    The distinct ``cap`` outcome lets each caller pick its disposition
+    (flash drops the member; task report-backs re-park as deferred)."""
     session, sess_patch = _patch_session([_FakeResp(409, text_data="busy")])
     with (
         sess_patch,
@@ -249,7 +252,7 @@ async def test_busy_wait_cap_exhausted_returns_drop():
             ptc_thread_id="ptc-1",
             origin=_ORIGIN,
         )
-    assert outcome == ("drop", None)
+    assert outcome == ("cap", None)
     assert session.post_calls == 1
 
 

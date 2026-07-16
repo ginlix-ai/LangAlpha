@@ -1176,6 +1176,10 @@ class BackgroundTaskManager:
                     response_id, tasks, thread_id, workspace_id, user_id,
                     is_byok=is_byok,
                 )
+                await self._enqueue_task_report_backs(
+                    thread_id, response_id, tasks, workspace_id, user_id,
+                    all_settled=True,
+                )
                 await self._await_drain_and_cleanup_tasks(tasks, thread_id)
                 return
 
@@ -1247,6 +1251,10 @@ class BackgroundTaskManager:
                 response_id, collected_tasks, thread_id, workspace_id, user_id,
                 is_byok=is_byok,
             )
+            await self._enqueue_task_report_backs(
+                thread_id, response_id, collected_tasks, workspace_id, user_id,
+                all_settled=not pending,
+            )
             await self._await_drain_and_cleanup_tasks(collected_tasks, thread_id)
 
         except Exception as e:
@@ -1254,6 +1262,31 @@ class BackgroundTaskManager:
                 f"[SubagentCollector] Turn collector failed for {thread_id}: {e}",
                 exc_info=True,
             )
+
+    async def _enqueue_task_report_backs(
+        self,
+        thread_id: str,
+        response_id: str,
+        tasks: list,
+        workspace_id: str,
+        user_id: str,
+        *,
+        all_settled: bool,
+    ) -> None:
+        """Claim + enqueue report-back jobs BEFORE task cleanup evicts the
+        registry entries. Never raises (the helper swallows its own errors)."""
+        from src.server.handlers.chat.task_report_back import (
+            enqueue_task_report_backs,
+        )
+
+        await enqueue_task_report_backs(
+            thread_id=thread_id,
+            response_id=response_id,
+            tasks=tasks,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            all_settled=all_settled,
+        )
 
     async def _await_drain_and_cleanup_tasks(
         self, tasks: list, thread_id: str, timeout: float | None = None
@@ -1382,6 +1415,10 @@ class BackgroundTaskManager:
                     response_id, tasks, thread_id, workspace_id, user_id,
                     is_byok=is_byok,
                 )
+                await self._enqueue_task_report_backs(
+                    thread_id, response_id, tasks, workspace_id, user_id,
+                    all_settled=True,
+                )
                 await self._await_drain_and_cleanup_tasks(tasks, thread_id)
                 logger.info(
                     f"[OrphanCollector] All tasks already completed for "
@@ -1468,6 +1505,10 @@ class BackgroundTaskManager:
                 await self._persist_subagent_usage(
                     response_id, collected_tasks, thread_id, workspace_id, user_id,
                     is_byok=is_byok,
+                )
+                await self._enqueue_task_report_backs(
+                    thread_id, response_id, collected_tasks, workspace_id, user_id,
+                    all_settled=not pending,
                 )
                 await self._await_drain_and_cleanup_tasks(collected_tasks, thread_id)
 

@@ -3279,6 +3279,17 @@ export function useChatMessages(
     // when not awaiting): this turn's stream just ended, and the next ordered
     // report-back may already be queued.
     reportBackWatch.onStreamEnd();
+
+    // Tail mode on a PTC thread: the main turn ended with subagent streams
+    // still open. Each subagent that finishes unseen posts a notification
+    // turn into THIS thread (task report-back); arm the watch NOW so its
+    // dispatch wake attaches live. No poke: pendingness materializes only
+    // when a subagent completes — /status is legitimately idle right now,
+    // and the backend's `cleared` wake reconciles the chip if every tail
+    // task turns out to have been delivered already.
+    if (hasOpenStreams) {
+      reportBackWatch.arm(threadIdRef.current, null, null);
+    }
   };
 
   /**

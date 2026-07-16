@@ -362,6 +362,16 @@ class ChatRequest(BaseModel):
         description="Report-back dispatch generation token. Internal use only.",
     )
 
+    # Internal: structural recursion gate for synthetic notification turns.
+    # A task report-back turn is built WITHOUT the subagent machinery
+    # (no Task/TaskOutput tools), so it can never spawn background work
+    # whose completion would notify again.
+    disable_subagents: Optional[bool] = Field(
+        default=None,
+        description="Build this turn's agent without subagent tools. "
+        "Internal use only.",
+    )
+
     # Server-stamped: the burst-guard ZSET member held by this request's
     # admission. The route overwrites whatever a client sent (a forged value
     # could only orphan the caller's own slot until reap, but stamping keeps

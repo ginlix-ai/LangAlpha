@@ -1244,6 +1244,7 @@
     "modelSwitchFailed": "Couldn't update the default model",
     "backgroundTasksRunning": "Background tasks are still running",
     "reportBackPending": "Waiting for PTC Agent to report back",
+    "taskReportBackPending": "Waiting for subagent results to report back",
     "ptcCard": {
       "awaitingApproval": "Awaiting approval",
       "researchDeclined": "Research declined",

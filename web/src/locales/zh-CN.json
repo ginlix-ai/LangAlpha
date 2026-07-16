@@ -1243,6 +1243,7 @@
     "modelSwitchFailed": "默认模型更新失败",
     "backgroundTasksRunning": "后台任务仍在运行",
     "reportBackPending": "等待 PTC Agent 汇报结果",
+    "taskReportBackPending": "等待子代理结果汇报",
     "ptcCard": {
       "awaitingApproval": "等待批准",
       "researchDeclined": "已拒绝研究",

@@ -59,7 +59,7 @@ async def test_status_full_path_threads_is_shared(threads_client):
         resp = await threads_client.get(f"/api/v1/threads/{TID}/status")
 
     assert resp.status_code == 200
-    full.assert_awaited_once_with(TID, is_shared=True)
+    full.assert_awaited_once_with(TID, is_shared=True, msg_type=None)
 
 
 @pytest.mark.asyncio

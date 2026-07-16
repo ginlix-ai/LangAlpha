@@ -15,6 +15,40 @@ from ptc_agent.agent.middleware.background_subagent.registry import BackgroundTa
 logger = logging.getLogger(__name__)
 
 
+def _message_text(msg) -> str:
+    """Plain text of a LangChain message (string or block-list content)."""
+    content = getattr(msg, "content", "")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = [
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        return "\n".join(p for p in parts if p).strip()
+    return ""
+
+
+async def resolve_task_result_text(thread_id: str, task_id: str) -> str | None:
+    """Durable result derivation: the subagent's final answer, read from its
+    ``task:{task_id}`` checkpoint namespace. This is the primary delivery
+    source for TaskOutput — it survives registry eviction, user stops,
+    restarts, and other-worker reads, all of which lose the in-memory entry.
+    """
+    from src.server.services.history.reader import CheckpointHistoryReader
+
+    reader = CheckpointHistoryReader.get_instance()
+    messages = await reader.aget_task_messages(thread_id, task_id)
+    for msg in reversed(messages):
+        if getattr(msg, "type", None) != "ai":
+            continue
+        text = _message_text(msg)
+        if text:
+            return text
+    return None
+
+
 class BackgroundRegistryStore:
     """Singleton store for per-thread background registries."""
 
@@ -35,6 +69,7 @@ class BackgroundRegistryStore:
             registry = self._registries.get(thread_id)
             if registry is None:
                 registry = BackgroundTaskRegistry(thread_id=thread_id)
+                registry.result_resolver = resolve_task_result_text
                 self._registries[thread_id] = registry
                 logger.debug(
                     "Created background registry",

@@ -186,10 +186,6 @@ return 1
 # summary run instead of starting a second one.
 RB_REQUEST_NS = uuid.UUID("6f7a2b1c-9d3e-4f50-8a61-c2d4e5f60718")
 
-# Seconds between run-row polls (and lease heartbeats) while awaiting a
-# dispatched report-back run's terminal.
-_RB_TERMINAL_POLL = 5.0
-
 def _admission_hold_bound() -> float:
     """Longest legitimate server-side pre-START hold of one dispatched POST.
 
@@ -254,12 +250,6 @@ def _derive_priming_lease(retry_budget: float) -> float:
 # wait + START txn) on another worker: retries defer instead of adopting or
 # taking over.
 _RB_POINTER_PRIMING_LEASE_S = _derive_priming_lease(_RB_BUSY_WAIT_CAP)
-
-# Statuses the report-back POST DEFERS on (retry with backoff) beyond the
-# always-retried 409/>=500: 402 payment, 403 access gate, 429 rate-limit — the
-# flash thread momentarily can't admit but the analysis must still report back.
-# Any other 4xx is a request we built wrong, so it drops; 404 means "deleted".
-_RB_DEFER_STATUSES = frozenset({402, 403, 429})
 
 # Membership-gated pointer write as one EVAL: a separate SISMEMBER-then-SET
 # races a concurrent terminal clear and would resurrect a dead pointer.
@@ -1631,32 +1621,43 @@ WAKE_MAX_WATCH_DURATION = 30 * 60  # auto-close an abandoned watch after 30 min
 
 async def publish_wake(
     cache,
-    flash_thread_id: str,
+    thread_id: str,
     run_id: str | None = None,
     *,
     error: str | None = None,
     needs_input: str | None = None,
+    cleared: bool = False,
 ) -> None:
-    """Publish a report-back wake on a flash thread's channel. Best-effort.
+    """Publish a report-back wake on a watching thread's channel. Best-effort.
 
     Single home for the wire payload shape: a normal wake carries
     ``{thread_id, run_id}``; an error wake carries ``{error}``; a HITL pause
     on a dispatched PTC carries ``{needs_input: <ptc thread id>}`` (run_id-less,
-    so the client treats it as a /status-refresh nudge). Swallows publish
-    failures — a dropped nudge degrades to the client's ``/status`` poll.
+    so the client treats it as a /status-refresh nudge); a consumption clear
+    carries ``{thread_id, cleared: true}`` (the watcher reconciles and drops
+    its pending chip without waiting for the status backstop). Swallows
+    publish failures — a dropped nudge degrades to the client's ``/status``
+    poll.
     """
     if not (cache and getattr(cache, "client", None)):
+        logger.warning(
+            f"[RB_WAKE] No cache client; wake for thread {thread_id} not published"
+        )
         return
     if error:
         payload = {"error": error}
     elif needs_input:
         payload = {"needs_input": needs_input}
+    elif cleared:
+        payload = {"thread_id": thread_id, "cleared": True}
     else:
-        payload = {"thread_id": flash_thread_id, "run_id": run_id}
+        payload = {"thread_id": thread_id, "run_id": run_id}
     try:
-        await cache.client.publish(thread_wake_key(flash_thread_id), json.dumps(payload))
+        await cache.client.publish(thread_wake_key(thread_id), json.dumps(payload))
     except Exception:
-        pass
+        logger.warning(
+            f"[RB_WAKE] Wake publish failed for thread {thread_id}", exc_info=True
+        )
 
 
 async def watch_wakes(cache, flash_thread_id: str):
@@ -1885,7 +1886,7 @@ async def execute_report_back(job: dict) -> None:
             # (or will be) executing this job; do nothing further. The
             # drainer's fenced ack no-ops.
             return
-        if outcome in ("deleted", "drop"):
+        if outcome in ("deleted", "drop", "cap"):
             # Key-lock + row-lock fence held ACROSS the teardown (not just
             # checked before it): while held, no sibling claim on this
             # ordering key can be gated and this row can't be reclaimed — a
@@ -2005,53 +2006,38 @@ async def _await_run_terminal(
 
     Polls the durable run row (NOT watch membership — the member is removed by
     the summary run's own watch_clear job, which queues BEHIND this one on the
-    same ordering key; waiting on it would deadlock until the cap). Each
-    iteration first heartbeats the fenced lease — a lost fence means another
-    drainer owns the job and resumes via ``dispatched_run_id``, so stand down
-    with NO teardown. A missing run row is NOT treated as deletion: dispatched
-    admission returns the run id before the START transaction commits, so an
-    early poll legitimately sees nothing — a genuinely deleted thread's row
-    stays missing and the hard deadline force-clears it, same as a run that
-    never reaches terminal.
+    same ordering key; waiting on it would deadlock until the cap). On timeout
+    (never terminal, or the row vanished for good — thread deleted) it
+    force-clears the pair so the chain and dispatch caps can't stay wedged;
+    on a lost lease it stands down with NO teardown — the reclaiming owner
+    resumes via ``dispatched_run_id``.
     """
     from src.server.database import hook_outbox as outbox_db
-    from src.server.database import turn_lifecycle as tl_db
-    from src.server.services.hook_outbox import LEASE_SECONDS
+    from src.server.handlers.chat.notify_turn import await_run_terminal
     from src.utils.cache.redis_cache import get_cache_client
 
+    outcome = await await_run_terminal(
+        job_id,
+        attempts,
+        rb_run_id,
+        wait_cap=_RB_TERMINAL_WAIT_CAP,
+        log_prefix="[FLASH_REPORT_BACK]",
+    )
+    if outcome != "timeout":
+        return
+    # Row-lock fence held across the clear (see fenced_job_guard) — a
+    # heartbeat alone can't cover a pause between check and mutation.
+    logger.warning(
+        f"[FLASH_REPORT_BACK] Terminal wait cap hit for {ptc_thread_id} "
+        f"on flash thread {flash_thread_id}; clearing"
+    )
     cache = get_cache_client()
-    deadline = asyncio.get_running_loop().time() + _RB_TERMINAL_WAIT_CAP
-    while True:
-        if not await outbox_db.extend_job_lease(
-            job_id, LEASE_SECONDS, attempts=attempts
-        ):
-            logger.info(
-                f"[FLASH_REPORT_BACK] Lease lost on job {job_id} while awaiting "
-                f"run {rb_run_id}; standing down"
+    async with outbox_db.fenced_job_guard(job_id, attempts) as owned:
+        if owned:
+            await clear_flash_report_back(
+                cache, ptc_thread_id, flash_thread_id, user_id=user_id,
+                expected_gen=dispatch_gen,
             )
-            return
-        run = await tl_db.get_run(rb_run_id)
-        if run is not None and run.get("status") != "in_progress":
-            return
-        if asyncio.get_running_loop().time() >= deadline:
-            # Never reached terminal (or the row vanished for good — thread
-            # deleted): force-clear so the chain and dispatch caps can't stay
-            # wedged. Row-lock fence held across the clear (see
-            # fenced_job_guard) — a heartbeat alone can't cover a pause
-            # between check and mutation.
-            logger.warning(
-                f"[FLASH_REPORT_BACK] Terminal wait cap hit for {ptc_thread_id} "
-                f"on flash thread {flash_thread_id} (run row "
-                f"{'missing' if run is None else 'in_progress'}); clearing"
-            )
-            async with outbox_db.fenced_job_guard(job_id, attempts) as owned:
-                if owned:
-                    await clear_flash_report_back(
-                        cache, ptc_thread_id, flash_thread_id, user_id=user_id,
-                        expected_gen=dispatch_gen,
-                    )
-            return
-        await asyncio.sleep(_RB_TERMINAL_POLL)
 
 
 async def _post_report_back(
@@ -2066,37 +2052,14 @@ async def _post_report_back(
 ) -> tuple[str, str | None]:
     """POST the synthetic report-back message to the flash thread.
 
-    Returns ``(outcome, run_id)`` where outcome is ``"dispatched"`` (run_id set),
-    ``"drop"`` (terminal 4xx or exhausted defer-wait — caller clears the member),
-    ``"deleted"`` (flash thread 404 — caller discards the watch), or ``"lost"``
-    (the ``heartbeat`` fence failed — caller must stop with no teardown).
-    Defers (retries with backoff) on 409, >=500, and the capacity/credit/
-    rate-limit gates in ``_RB_DEFER_STATUSES``, bounded by ``_RB_BUSY_WAIT_CAP``
-    — except a 409 whose detail is ``duplicate_request``: that's a prior POST
-    of this same ``request_key`` that already started a run, adopted as
-    ``"dispatched"``. ``heartbeat`` (async -> bool) runs every defer iteration
-    so a long busy-wait can't outlive the caller's outbox lease.
+    Builds the flash-specific body (summary prompt, watch-member identity,
+    dispatch generation) and delegates the admission-aware defer loop to the
+    shared ``post_notification_turn``. Returns its ``(outcome, run_id)``:
+    ``"dispatched"`` / ``"drop"``/``"cap"`` (caller clears the member) /
+    ``"deleted"`` (caller discards the watch) / ``"lost"`` (caller stops,
+    no teardown).
     """
-    import os
-
-    import aiohttp
-
-    self_base_url = os.environ.get("GINLIXFLOW_BASE_URL", "http://localhost:8000")
-    service_token = os.environ.get("INTERNAL_SERVICE_TOKEN", "")
-
-    # With auth enabled, the endpoint rejects an unauthenticated background
-    # dispatch (403) — a defer status for this loop, so firing it anyway would
-    # busy-wait the whole cap. Drop immediately instead.
-    from src.config.settings import background_dispatch_requires_token
-
-    if background_dispatch_requires_token():
-        logger.error(
-            "[FLASH_REPORT_BACK] INTERNAL_SERVICE_TOKEN is not set; report-back "
-            "for PTC thread %s cannot be dispatched as background. Set it on "
-            "the backend service.",
-            ptc_thread_id,
-        )
-        return "drop", None
+    from src.server.handlers.chat.notify_turn import post_notification_turn
 
     ws_label = origin.get("ptc_workspace_id") or "an auto-created workspace"
     message = (
@@ -2106,7 +2069,7 @@ async def _post_report_back(
         f"summarize the results for the user.\n"
         "</system>"
     )
-    payload = {
+    body = {
         "messages": [{"role": "user", "content": message}],
         "agent_mode": "flash",
         "workspace_id": origin.get("flash_workspace_id"),
@@ -2119,105 +2082,16 @@ async def _post_report_back(
         "origin_dispatch_gen": dispatch_gen,
     }
     if request_key:
-        payload["request_key"] = request_key
-    headers = {
-        "X-Service-Token": service_token,
-        "X-User-Id": origin.get("user_id"),
-        "X-Dispatch": "background",
-    }
-    url = f"{self_base_url}/api/v1/threads/{flash_thread_id}/messages"
-
-    deadline = asyncio.get_running_loop().time() + _RB_BUSY_WAIT_CAP
-    backoff = 1.0
-    async with aiohttp.ClientSession() as session:
-        while True:
-            try:
-                async with session.post(
-                    url,
-                    json=payload,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(connect=10, sock_read=30),
-                ) as resp:
-                    if resp.status < 400:
-                        try:
-                            run_id = (await resp.json()).get("run_id")
-                        except Exception:
-                            run_id = None
-                        logger.info(
-                            f"[FLASH_REPORT_BACK] Dispatched report-back to flash "
-                            f"thread {flash_thread_id} for PTC thread {ptc_thread_id}"
-                        )
-                        return "dispatched", run_id
-                    if resp.status == 404:
-                        logger.warning(
-                            f"[FLASH_REPORT_BACK] Flash thread {flash_thread_id} gone "
-                            f"(404); discarding its report-back watch"
-                        )
-                        return "deleted", None
-                    if resp.status == 409:
-                        # A duplicate_request 409 is OUR earlier POST of this
-                        # same request_key (crash before the dispatched_run_id
-                        # merge landed): adopt its run instead of deferring
-                        # behind it forever.
-                        try:
-                            detail = (await resp.json()).get("detail")
-                        except Exception:
-                            detail = None
-                        if (
-                            isinstance(detail, dict)
-                            and detail.get("code") == "duplicate_request"
-                            and detail.get("run_id")
-                        ):
-                            logger.info(
-                                f"[FLASH_REPORT_BACK] Adopting existing report-back "
-                                f"run {detail['run_id']} for {ptc_thread_id} on flash "
-                                f"thread {flash_thread_id} (request_key dedup)"
-                            )
-                            return "dispatched", detail["run_id"]
-                    if (
-                        resp.status == 409
-                        or resp.status >= 500
-                        or resp.status in _RB_DEFER_STATUSES
-                    ):
-                        # Don't log the body here: a 429 (credit/burst) response can
-                        # carry the user's balance/limit figures. Status is enough.
-                        logger.info(
-                            f"[FLASH_REPORT_BACK] Flash thread {flash_thread_id} cannot "
-                            f"admit yet ({resp.status}); deferring report-back for "
-                            f"{ptc_thread_id}"
-                        )
-                    else:
-                        body = await resp.text()
-                        logger.warning(
-                            f"[FLASH_REPORT_BACK] Terminal {resp.status} POSTing to "
-                            f"flash thread {flash_thread_id}: {body[:200]}; dropping"
-                        )
-                        return "drop", None
-            except Exception as e:
-                logger.warning(
-                    f"[FLASH_REPORT_BACK] HTTP error POSTing to flash thread "
-                    f"{flash_thread_id}: {e}"
-                )
-
-            if heartbeat is not None and not await heartbeat():
-                logger.warning(
-                    f"[FLASH_REPORT_BACK] Outbox lease lost while deferring the "
-                    f"report-back POST for {ptc_thread_id}; standing down"
-                )
-                return "lost", None
-            await asyncio.sleep(min(backoff, 5.0))
-            backoff = min(backoff * 2, 5.0)
-            # The deadline gates the NEXT launch (checked after the sleep,
-            # immediately before the loop re-POSTs): an attempt must never
-            # start past the deadline — a post-deadline takeover could still
-            # be holding admission when the drop clears the pair, orphaning
-            # the summary it then starts (round-4 F1).
-            if asyncio.get_running_loop().time() >= deadline:
-                logger.warning(
-                    f"[FLASH_REPORT_BACK] Busy-wait cap hit for {ptc_thread_id} on flash "
-                    f"thread {flash_thread_id}; dropping"
-                )
-                return "drop", None
+        body["request_key"] = request_key
+    return await post_notification_turn(
+        thread_id=flash_thread_id,
+        body=body,
+        user_id=origin.get("user_id"),
+        wait_cap=_RB_BUSY_WAIT_CAP,
+        heartbeat=heartbeat,
+        log_prefix="[FLASH_REPORT_BACK]",
+        subject=f"PTC thread {ptc_thread_id}",
+    )
 
 
 async def _discard_flash_thread(cache, flash_thread_id: str) -> None:

@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.server.handlers.chat import report_back
+from src.server.handlers.chat import notify_turn, report_back
 from tests.unit.server.handlers.chat.redis_fakes import (
     FakeCache as _FakeCache,
     origin as _origin,
@@ -82,7 +82,7 @@ class _ExecHarness:
             patch("src.server.database.hook_outbox.merge_job_payload", self.merge_payload),
             patch("src.server.database.hook_outbox.requeue_job_with_key", self.requeue),
             patch("src.server.database.hook_outbox.fenced_job_guard", self.fenced_guard),
-            patch.object(report_back, "_RB_TERMINAL_POLL", 0.0),
+            patch.object(notify_turn, "_TERMINAL_POLL", 0.0),
         ]
 
     async def run(self, job: dict) -> None:

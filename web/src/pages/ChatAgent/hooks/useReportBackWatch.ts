@@ -269,6 +269,11 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
 
     let consumed = false;
     let inFlight = false;
+    // Latched when a reconcile arrives while another is in flight: the
+    // in-flight /status snapshot predates whatever the new signal announced,
+    // so dropping it would strand the update until the 60s backstop. The
+    // wrapper drains the latch with one follow-up pass.
+    let queuedReconcile: string | null = null;
     let polls = 0;
     let resubscribes = 0;
     // Per-run zero-content attach failures — see REPORT_BACK_MAX_ATTACH_ATTEMPTS.
@@ -312,7 +317,7 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
       return false;
     };
 
-    const reconcile = async (source: string, wakeRunId?: string | null) => {
+    const reconcileInner = async (source: string, wakeRunId?: string | null) => {
       // Stale generation (re-armed for another thread / hard-stopped / unmounted).
       if (reportBackWatchEpochRef.current !== epoch) return;
       if (consumed) return;
@@ -331,7 +336,13 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
       // identity check (real isolation is per-instance state + the
       // currentRunIdRef dedup); it only fires in the single-instance test
       // harness. isStreamingRef/inFlight prevent double-attaching.
-      if (threadIdRef.current !== tid || isStreamingRef.current || inFlight) return;
+      if (threadIdRef.current !== tid || isStreamingRef.current) return;
+      if (inFlight) {
+        // Don't drop this signal: the in-flight /status read predates it.
+        // Latch one follow-up pass for the wrapper to drain.
+        queuedReconcile = source;
+        return;
+      }
 
       // On the flash thread and idle: attach the queued head immediately. One
       // attach per reconcile; the attached stream's end pokes the next.
@@ -402,6 +413,22 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
       }
     };
 
+    // Public reconcile: one pass, then drain the queued-reconcile latch (a
+    // signal that arrived while a pass held `inFlight`). Bounded — each drain
+    // consumes the latch; only a genuinely new mid-pass signal re-sets it.
+    const reconcile = async (source: string, wakeRunId?: string | null) => {
+      await reconcileInner(source, wakeRunId);
+      while (
+        queuedReconcile !== null &&
+        !consumed &&
+        reportBackWatchEpochRef.current === epoch
+      ) {
+        const queued = queuedReconcile;
+        queuedReconcile = null;
+        await reconcileInner(queued);
+      }
+    };
+
     // Subscribe to the push wake stream. The backend caps it (~30 min) and
     // transient drops happen, so onClosed re-subscribes event-first and
     // reconciles once to recover the gap — bounded by `resubscribes` against a
@@ -424,6 +451,14 @@ export function useReportBackWatch(params: UseReportBackWatchParams): ReportBack
             void queryClient.invalidateQueries({
               queryKey: queryKeys.threads.dispatchLivenessAll(),
             });
+            return;
+          }
+          // Consumption clear: the backend affirmatively says pending state
+          // was just torn down. Reconcile NOW (no register-delay — nothing is
+          // coming); /status idle then drops the chip sub-second instead of
+          // riding the 60s backstop.
+          if (payload?.cleared) {
+            await reconcile('wake');
             return;
           }
           // Payload-less wake (older backend / malformed): /status reconcile

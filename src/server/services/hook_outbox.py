@@ -18,7 +18,7 @@ swallowed read — is the retry path.
 
 import asyncio
 import logging
-from typing import Any, Awaitable, Callable, Dict, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 from src.server.database import hook_outbox as outbox_db
 
@@ -32,6 +32,11 @@ MAX_ATTEMPTS = 5
 # never co-claimable (the claim query hides a job while an earlier open job
 # shares its key), so concurrency here never reorders a chain.
 MAX_CONCURRENT_JOBS = 10
+# task_report_back jobs hold their slot through an entire PTC notification
+# turn (sandbox bringup + a full agent run — tens of minutes); cap their
+# share so a burst of tail completions can't starve flash report-backs and
+# cheap wakes. Excluded types stay unclaimed but still head their chains.
+TASK_RB_INFLIGHT_QUOTA = 3
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +173,20 @@ async def _exec_watch_clear(job: Dict[str, Any]) -> None:
                     await publish_wake(
                         cache, flash_tid, error="background_workflow_failed"
                     )
+        elif flash_tid and result.cleared:
+            # Consumption clear (summary consumed, pair drained): push the
+            # pending→idle transition so watchers drop the chip now. Without
+            # this the error path is the only clear that wakes, and the
+            # frontend's 60s status backstop becomes the de-facto clear
+            # signal. A fenced (not cleared) consumption clear means a newer
+            # incarnation owns the pair — still pending, no wake.
+            await publish_wake(cache, flash_tid, cleared=True)
+
+
+async def _exec_task_report_back(job: Dict[str, Any]) -> None:
+    from src.server.handlers.chat.task_report_back import execute_task_report_back
+
+    await execute_task_report_back(job)
 
 
 _EXECUTORS: Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]] = {
@@ -175,6 +194,7 @@ _EXECUTORS: Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]] = {
     "report_back": _exec_report_back,
     "needs_input_wake": _exec_needs_input_wake,
     "watch_clear": _exec_watch_clear,
+    "task_report_back": _exec_task_report_back,
 }
 
 
@@ -317,7 +337,8 @@ class HookOutboxDrainer:
     def __init__(self) -> None:
         self._task: Optional[asyncio.Task] = None
         self._nudge = asyncio.Event()
-        self._inflight: Set[asyncio.Task] = set()
+        # task -> hook_type, so per-type quotas can count in-flight work.
+        self._inflight: Dict[asyncio.Task, str] = {}
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -408,11 +429,20 @@ class HookOutboxDrainer:
             free = MAX_CONCURRENT_JOBS - len(self._inflight)
             jobs = []
             if free > 0:
+                task_rb_inflight = sum(
+                    1 for ht in self._inflight.values() if ht == "task_report_back"
+                )
+                excluded = (
+                    ["task_report_back"]
+                    if task_rb_inflight >= TASK_RB_INFLIGHT_QUOTA
+                    else None
+                )
                 try:
                     jobs = await outbox_db.claim_outbox_jobs(
                         limit=min(CLAIM_BATCH, free),
                         lease_seconds=LEASE_SECONDS,
                         max_attempts=MAX_ATTEMPTS,
+                        excluded_hook_types=excluded,
                     )
                 except asyncio.CancelledError:
                     raise
@@ -424,8 +454,10 @@ class HookOutboxDrainer:
                         self._execute(job),
                         name=f"hook-outbox-{job.get('hook_type')}-{job.get('hook_outbox_id')}",
                     )
-                    self._inflight.add(task)
-                    task.add_done_callback(self._inflight.discard)
+                    self._inflight[task] = job.get("hook_type") or ""
+                    task.add_done_callback(
+                        lambda t: self._inflight.pop(t, None)
+                    )
 
                 if len(jobs) >= free:
                     continue  # claimed to capacity; more are likely due right now

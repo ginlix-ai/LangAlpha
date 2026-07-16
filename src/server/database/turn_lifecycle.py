@@ -22,6 +22,7 @@ from src.server.database import conversation as qr_db
 from src.server.database.hook_outbox import (
     build_finalize_jobs_from_run_row,
     enqueue_hooks,
+    release_deferred_jobs,
 )
 from src.server.utils.pg_sanitize import SafeJson, normalize_uuid
 
@@ -428,6 +429,20 @@ async def finalize_run(
                 await enqueue_hooks(
                     conn, run_id=run_id, thread_id=thread_id, jobs=jobs
                 )
+
+            # Deferred task report-backs wait for exactly this event: a
+            # completed finalize proves no pending HITL checkpoint can
+            # collide with their synthetic POST. Same transaction as the
+            # terminal CAS, so release and successor hooks commit together.
+            if final_status == "completed":
+                released = await release_deferred_jobs(
+                    conn, thread_id, "task_report_back"
+                )
+                if released:
+                    logger.info(
+                        f"[turn_lifecycle] released {released} deferred "
+                        f"task_report_back job(s) for thread={thread_id}"
+                    )
 
             if conn.info.transaction_status == psycopg.pq.TransactionStatus.INERROR:
                 raise RuntimeError(

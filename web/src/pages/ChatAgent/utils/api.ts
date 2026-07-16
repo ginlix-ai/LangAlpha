@@ -843,7 +843,7 @@ const REPORT_BACK_WAKE_EVENT = 'workflow_started';
 export function watchThread(
   threadId: string,
   onWorkflowStarted: (
-    payload?: { run_id?: string | null; needs_input?: string | null },
+    payload?: { run_id?: string | null; needs_input?: string | null; cleared?: boolean },
   ) => void | Promise<void>,
   onClosed?: () => void,
   onResubscribed?: () => void,
@@ -898,7 +898,11 @@ export function watchThread(
               // (mirroring streamFetch above) so a multi-line payload stays
               // parseable instead of truncating to the first line and corrupting
               // the JSON. The backend wake is single-line today; this is resilience.
-              let payload: { run_id?: string | null; needs_input?: string | null } = {};
+              let payload: {
+                run_id?: string | null;
+                needs_input?: string | null;
+                cleared?: boolean;
+              } = {};
               const dataLines: string[] = [];
               for (const raw of frame.split('\n')) {
                 if (raw.startsWith('data:')) dataLines.push(raw.slice(5).trim());
@@ -917,6 +921,7 @@ export function watchThread(
               await onWorkflowStarted({
                 run_id: payload.run_id ?? null,
                 needs_input: payload.needs_input ?? null,
+                cleared: payload.cleared === true,
               });
             }
           }

@@ -186,6 +186,7 @@ async def build_ptc_graph_with_session(
     store: Any | None = None,
     on_signed_url: Any | None = None,
     namespace_owner: Any | None = None,
+    disable_subagents: bool = False,
 ) -> Any:
     """Build a BackgroundSubagentOrchestrator from a pre-acquired session (WorkspaceManager path)."""
     workspace_id = session.conversation_id
@@ -215,6 +216,7 @@ async def build_ptc_graph_with_session(
         sandbox=session.sandbox,
         mcp_registry=session.mcp_registry,
         subagent_names=subagent_names or config.subagents.enabled,
+        disable_subagents=disable_subagents,
         operation_callback=operation_callback,
         checkpointer=checkpointer,
         background_registry=background_registry,

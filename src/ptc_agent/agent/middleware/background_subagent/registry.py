@@ -11,6 +11,7 @@ import json
 import secrets
 import time
 import uuid as uuid_mod
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -91,6 +92,16 @@ class BackgroundTask:
 
     result_seen: bool = False
     """Whether the agent has seen this task's result (via task_output, wait, or notification)."""
+
+    result_delivered: bool = False
+    """Whether the model actually RECEIVED the result content (TaskOutput or a
+    wait_* fetch) — unlike ``result_seen``, which also flips on a bare
+    completion notification the model may never have followed up on.
+    Report-back eligibility keys on this."""
+
+    report_back_claimed: bool = False
+    """Set under the registry lock by the collector that claims this task for
+    a task_report_back notification turn — at most one claim per task."""
 
     # Tool call tracking
     tool_call_counts: dict[str, int] = field(default_factory=dict)
@@ -219,6 +230,33 @@ class BackgroundTaskRegistry:
         self.current_turn_index: int = 0
         self.current_run_id: str | None = None
         self.thread_id: str = thread_id
+        # (thread_id, task_id) -> durable result text, injected by the server
+        # (checkpoint-backed). None in CLI/tests — delivery then falls back to
+        # the in-memory handler result.
+        self.result_resolver: (
+            Callable[[str, str], Awaitable[str | None]] | None
+        ) = None
+
+    async def resolve_result_text(self, task_id: str) -> str | None:
+        """Derive a task's result text from its durable archive.
+
+        The registry entry is volatile (evicted after collection, wiped on
+        stop/restart, absent on other workers) while the subagent's answer is
+        checkpointed under ``task:{task_id}`` — the resolver reads the latter,
+        so delivery survives the registry. Never raises; None means "nothing
+        archived / no resolver", and callers fall back to in-memory state.
+        """
+        if self.result_resolver is None:
+            return None
+        try:
+            return await self.result_resolver(self.thread_id, task_id)
+        except Exception:
+            logger.warning(
+                "Durable result resolve failed; falling back to in-memory",
+                task_id=task_id,
+                exc_info=True,
+            )
+            return None
 
     async def register(
         self,
@@ -317,6 +355,27 @@ class BackgroundTaskRegistry:
             if tool_call_id:
                 return self._tasks.get(tool_call_id)
             return None
+
+    async def claim_report_back(self, task: BackgroundTask) -> bool:
+        """Atomically claim a task for a report-back notification turn.
+
+        Eligible = completed with a successful handler result whose content
+        the model never actually received (``result_delivered``). Returns
+        True exactly once per task; the claim is what makes a collector
+        enqueue at most one notification job even when the run collector
+        and the orphan collector both observe the same completion.
+        """
+        async with self._lock:
+            if (
+                not task.completed
+                or task.cancelled
+                or task.result_delivered
+                or task.report_back_claimed
+                or not (isinstance(task.result, dict) and task.result.get("success"))
+            ):
+                return False
+            task.report_back_claimed = True
+            return True
 
     async def get_task_by_task_id(self, task_id: str) -> BackgroundTask | None:
         """Alias for get_by_task_id, used by the HTTP layer."""

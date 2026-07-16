@@ -770,6 +770,8 @@ async def _handle_send_message(
                 internal_overrides["origin_flash_thread_id"] = None
             if request.origin_dispatch_gen:
                 internal_overrides["origin_dispatch_gen"] = None
+            if request.disable_subagents:
+                internal_overrides["disable_subagents"] = None
             if internal_overrides:
                 request = request.model_copy(update=internal_overrides)
     except BaseException:
@@ -1328,13 +1330,26 @@ async def get_thread_status(
         raise HTTPException(status_code=403, detail="Forbidden")
 
     if fields == "report_back":
+        # Same JSON contract, different pending-registry per thread kind:
+        # flash pendingness lives in the Redis watch set, PTC task
+        # report-back pendingness IS the open outbox row.
+        if meta.get("msg_type") == "ptc":
+            from src.server.handlers.chat.task_report_back import (
+                read_task_report_back_status,
+            )
+
+            return await read_task_report_back_status(thread_id)
         from src.server.handlers.chat.report_back import read_report_back_status
 
         return await read_report_back_status(thread_id)
 
     from src.server.handlers.workflow_handler import get_workflow_status
 
-    return await get_workflow_status(thread_id, is_shared=bool(meta["is_shared"]))
+    return await get_workflow_status(
+        thread_id,
+        is_shared=bool(meta["is_shared"]),
+        msg_type=meta.get("msg_type"),
+    )
 
 
 # Upper bound on ids per liveness request — one MGET stays cheap. Ids past the
