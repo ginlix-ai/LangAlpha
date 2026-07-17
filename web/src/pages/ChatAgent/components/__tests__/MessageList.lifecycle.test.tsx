@@ -90,15 +90,21 @@ vi.mock('../Markdown', () => ({
 // MessageList, so the mocked card below is what a ready artifact renders as.
 vi.mock('../charts/InlineArtifactCards', async () => {
   const React = await vi.importActual<typeof import('react')>('react');
+  const InlineStockPriceCard = () => React.createElement('div', { 'data-testid': 'inline-chart' });
+  const NullCard = () => null;
   return {
     INLINE_ARTIFACT_TOOLS: new Set<string>(['fetch_sample_chart']),
-    InlineStockPriceCard: () => React.createElement('div', { 'data-testid': 'inline-chart' }),
-    InlineCompanyOverviewCard: () => null,
-    InlineMarketIndicesCard: () => null,
-    InlineSectorPerformanceCard: () => null,
-    InlineSecFilingCard: () => null,
-    InlineStockScreenerCard: () => null,
-    InlineWebSearchCard: () => null,
+    InlineStockPriceCard,
+    InlineCompanyOverviewCard: NullCard,
+    InlineMarketIndicesCard: NullCard,
+    InlineSectorPerformanceCard: NullCard,
+    InlineMarketOverviewCard: NullCard,
+    InlineSecFilingCard: NullCard,
+    InlineStockScreenerCard: NullCard,
+    InlineWebSearchCard: NullCard,
+    // MessageList imports the dispatch map from this module — a ready
+    // `stock_prices` artifact must resolve to the inline-chart card above.
+    INLINE_ARTIFACT_MAP: { stock_prices: InlineStockPriceCard },
   };
 });
 

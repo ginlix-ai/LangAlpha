@@ -100,7 +100,7 @@ def test_trace_writes_jsonl_matching_host_contract(tmp_path, monkeypatch) -> Non
     dict_result = {"b": 2, "a": [3, 2, 1], "nested": {"z": 9}}
     str_result = "a plain string result"
 
-    trace("market_data", "get_stock_daily_prices", {"symbol": "ACME"}, dict_result)
+    trace("market_data", "get_daily_prices", {"symbol": "ACME"}, dict_result)
     trace("market_data", "get_company_overview", {"symbol": "ACME"}, str_result)
 
     lines = trace_file.read_text(encoding="utf-8").splitlines()
@@ -109,7 +109,7 @@ def test_trace_writes_jsonl_matching_host_contract(tmp_path, monkeypatch) -> Non
     entry0 = json.loads(lines[0])
     sha, size, snippet = fingerprint_result(dict_result)
     assert entry0["server"] == "market_data"
-    assert entry0["tool"] == "get_stock_daily_prices"
+    assert entry0["tool"] == "get_daily_prices"
     assert entry0["args"] == {"symbol": "ACME"}
     assert entry0["result_sha256"] == sha
     assert entry0["result_size"] == size

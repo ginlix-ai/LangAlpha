@@ -741,6 +741,7 @@ from src.server.app.workspace_sandbox import preview_redirect_router
 from src.server.app.market_data import router as market_data_router
 from src.server.app.bars import router as bars_router
 from src.server.app.users import router as users_router
+from src.server.app.features import router as features_router
 from src.server.app.watchlist import router as watchlist_router
 from src.server.app.portfolio import router as portfolio_router
 from src.server.app.news import router as news_router
@@ -795,6 +796,7 @@ app.include_router(cache_router)  # /api/v1/cache/* - Cache management
 app.include_router(market_data_router)  # /api/v1/market-data/* - Market data proxy
 app.include_router(bars_router)  # /api/v1/market-data/bars/* - Protocol-native progressive bars
 app.include_router(users_router)  # /api/v1/users/* - User management
+app.include_router(features_router)  # /api/v1/features/* - Feature flags (per-user resolved)
 app.include_router(
     watchlist_router
 )  # /api/v1/users/me/watchlist/* - Watchlist management

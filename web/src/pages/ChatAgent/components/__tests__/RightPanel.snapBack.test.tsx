@@ -1,8 +1,8 @@
 /**
- * RightPanel snap-back precedence: when multiple target props are set in one
- * render, the panel must converge on memory > memo > file. The parent
- * (ChatView) clears siblings before setting one, but this effect is the
- * second line of defense.
+ * RightPanel target snapping: the panel snaps to the tab that owns the current
+ * `panelTarget.kind`. The union makes multiple simultaneous targets
+ * unrepresentable, so the former precedence ladder collapses to a single switch
+ * — each kind is tested in isolation here.
  */
 import { describe, it, expect, vi } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
@@ -51,20 +51,20 @@ const baseProps = {
   onClose: () => {},
 };
 
-describe('RightPanel snap-back precedence', () => {
-  it('starts on the initialTab when no targets are set', async () => {
+describe('RightPanel target snapping', () => {
+  it('starts on the initialTab when no target is set', async () => {
     renderWithProviders(<RightPanel {...baseProps} initialTab="memory" />);
     await waitFor(() => {
       expect(screen.getByTestId('tabs').getAttribute('data-active')).toBe('memory');
     });
   });
 
-  it('snaps to Files when targetFile is set', async () => {
+  it('snaps to Files when a file target is set', async () => {
     renderWithProviders(
       <RightPanel
         {...baseProps}
         initialTab="memory"
-        targetFile="work/notes.md"
+        panelTarget={{ kind: 'file', path: 'work/notes.md' }}
       />,
     );
     await waitFor(() => {
@@ -72,12 +72,25 @@ describe('RightPanel snap-back precedence', () => {
     });
   });
 
-  it('snaps to Memo when targetMemoKey is set', async () => {
+  it('snaps to Files when a directory-only file target is set', async () => {
+    renderWithProviders(
+      <RightPanel
+        {...baseProps}
+        initialTab="memory"
+        panelTarget={{ kind: 'file', dir: 'work/reports' }}
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('tabs').getAttribute('data-active')).toBe('files');
+    });
+  });
+
+  it('snaps to Memo when a memo target is set', async () => {
     renderWithProviders(
       <RightPanel
         {...baseProps}
         initialTab="files"
-        targetMemoKey="report.pdf"
+        panelTarget={{ kind: 'memo', key: 'report.pdf' }}
       />,
     );
     await waitFor(() => {
@@ -85,13 +98,12 @@ describe('RightPanel snap-back precedence', () => {
     });
   });
 
-  it('snaps to Memory when targetMemoryKey is set', async () => {
+  it('snaps to Memory when a memory target is set', async () => {
     renderWithProviders(
       <RightPanel
         {...baseProps}
         initialTab="files"
-        targetMemoryKey="risk-preferences.md"
-        targetMemoryTier="user"
+        panelTarget={{ kind: 'memory', key: 'risk-preferences.md', tier: 'user' }}
       />,
     );
     await waitFor(() => {
@@ -99,43 +111,13 @@ describe('RightPanel snap-back precedence', () => {
     });
   });
 
-  it('honors precedence (memory > memo > file) when all three are set', async () => {
-    renderWithProviders(
-      <RightPanel
-        {...baseProps}
-        initialTab="files"
-        targetFile="work/notes.md"
-        targetMemoKey="report.pdf"
-        targetMemoryKey="risk-preferences.md"
-        targetMemoryTier="user"
-      />,
-    );
-    await waitFor(() => {
-      expect(screen.getByTestId('tabs').getAttribute('data-active')).toBe('memory');
-    });
-  });
-
-  it('honors precedence (memo > file) when memory is null', async () => {
-    renderWithProviders(
-      <RightPanel
-        {...baseProps}
-        initialTab="files"
-        targetFile="work/notes.md"
-        targetMemoKey="report.pdf"
-      />,
-    );
-    await waitFor(() => {
-      expect(screen.getByTestId('tabs').getAttribute('data-active')).toBe('memo');
-    });
-  });
-
-  it('treats empty-string targetMemoKey as a memo-tab open (no entry)', async () => {
+  it('treats an empty-string memo key as a memo-tab open (no entry)', async () => {
     // Used by ChatView for memo-index routing.
     renderWithProviders(
       <RightPanel
         {...baseProps}
         initialTab="files"
-        targetMemoKey=""
+        panelTarget={{ kind: 'memo', key: '' }}
       />,
     );
     await waitFor(() => {
@@ -143,12 +125,12 @@ describe('RightPanel snap-back precedence', () => {
     });
   });
 
-  it('snaps to Sources when targetSources is set and shows the Sources tab', async () => {
+  it('snaps to Sources when a sources target is set and shows the Sources tab', async () => {
     renderWithProviders(
       <RightPanel
         {...baseProps}
         initialTab="files"
-        targetSources="msg-1"
+        panelTarget={{ kind: 'sources', messageId: 'msg-1' }}
         sourcesRecords={{}}
       />,
     );
@@ -161,27 +143,11 @@ describe('RightPanel snap-back precedence', () => {
     expect(await screen.findByTestId('sources-panel')).toBeInTheDocument();
   });
 
-  it('hides the Sources tab when no targetSources is set', async () => {
+  it('hides the Sources tab when no sources target is set', async () => {
     renderWithProviders(<RightPanel {...baseProps} initialTab="files" />);
     await waitFor(() => {
       expect(screen.getByTestId('tabs')).toBeInTheDocument();
     });
     expect(screen.queryByRole('button', { name: 'rightPanel.tabs.sources' })).not.toBeInTheDocument();
-  });
-
-  it('honors precedence (sources > memory) when both are set', async () => {
-    renderWithProviders(
-      <RightPanel
-        {...baseProps}
-        initialTab="files"
-        targetSources="msg-1"
-        sourcesRecords={{}}
-        targetMemoryKey="risk-preferences.md"
-        targetMemoryTier="user"
-      />,
-    );
-    await waitFor(() => {
-      expect(screen.getByTestId('tabs').getAttribute('data-active')).toBe('sources');
-    });
   });
 });

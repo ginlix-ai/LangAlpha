@@ -28,8 +28,8 @@ Scan for relevant events across coverage universe:
 - Analyst upgrades/downgrades
 
 **Market Context**
-- Use `get_sector_performance` tool for sector-level daily performance
-- Use `get_stock_daily_prices` tool for pre-market and overnight price moves
+- Use `get_market_overview` tool for index + sector-level daily performance
+- Use `get_daily_prices` tool for pre-market and overnight price moves
 - Use macro MCP: `get_economic_calendar(from_date, to_date)` for upcoming macro events
 - Relevant commodity or currency moves
 

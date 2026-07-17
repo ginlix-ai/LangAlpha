@@ -8,6 +8,7 @@ import { useNarrowContainer } from '@/hooks/useNarrowContainer';
 import { ScrollArea } from '../../../components/ui/scroll-area';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useUpdatePreferences } from '@/hooks/useUpdatePreferences';
+import { useFeatureEnabled } from '@/hooks/useFeatures';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { updateCurrentUser } from '../../Dashboard/utils/api';
@@ -24,7 +25,7 @@ import type { ProvenanceRecord } from '@/types/chat';
 import { clampPanelWidth as clampPanelWidthUtil } from '@/lib/panelUtils';
 import { useCardState } from '../hooks/useCardState';
 import { useWorkspaceFiles } from '../hooks/useWorkspaceFiles';
-import { classifyAgentPath, computeAgentArtifactRouting, type MemoryTier } from '../utils/agentPaths';
+import { classifyAgentPath, computeAgentArtifactRouting } from '../utils/agentPaths';
 import { isValidUuid } from '../utils/uuid';
 import {
   routeStopAction,
@@ -57,6 +58,8 @@ import ShareButton from './ShareButton';
 import { WorkspaceProvider } from '../contexts/WorkspaceContext';
 import SubagentStatusBar from './SubagentStatusBar';
 import TodoDrawer from './TodoDrawer';
+import MarketWatchChip from './MarketWatchChip';
+import PulseDot from '@/components/ui/pulse-dot';
 import { ErrorBanner } from '@/components/ui/error-banner';
 import { motion, AnimatePresence, type PanInfo } from 'framer-motion';
 import { MobileBottomSheet } from '@/components/ui/mobile-bottom-sheet';
@@ -75,6 +78,7 @@ function appendPathSuffix(baseUrl: string, path?: string): string {
 }
 
 const RightPanel = React.lazy(() => import('./RightPanel'));
+import type { PanelTarget } from './RightPanel';
 const DetailPanel = React.lazy(() => import('./DetailPanel'));
 const PreviewViewer = React.lazy(() => import('./viewers/PreviewViewer'));
 
@@ -190,6 +194,11 @@ interface SlashCommand {
 interface ModelOptions {
   model?: string | null;
   reasoningEffort?: string | null;
+  /**
+   * Per-message Watch-toggle state. When on, `handleSendWithAttachments`
+   * appends a `market-watch` skills item to `additional_context`.
+   */
+  marketWatch?: boolean | null;
   /**
    * Widget context snapshots from the chat input's deck rail. Serialized into
    * `additional_context` items (one widget directive + optional sibling image
@@ -349,6 +358,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   const navigate = useNavigate();
   const { preferences } = usePreferences();
   const { mutateAsync: updatePreferencesAsync } = useUpdatePreferences();
+  const marketWatchEnabled = useFeatureEnabled('market_watch');
   const queryClient = useQueryClient();
   const initialMessageSentRef = useRef(false);
   // Guards one-shot consumption of the ?file= deep link (report share / copy link).
@@ -367,25 +377,23 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // Live model selection reported by ChatInput (null until it reports in).
   const [inputModel, setInputModel] = useState<string | null>(null);
   const [workspaceName, setWorkspaceName] = useState(initialWorkspaceName || '');
-  const [filePanelTargetFile, setFilePanelTargetFile] = useState<string | null>(null);
-  const [filePanelTargetDir, setFilePanelTargetDir] = useState<string | null>(null);
-  const [filePanelTargetMemoryKey, setFilePanelTargetMemoryKey] = useState<string | null>(null);
-  const [filePanelTargetMemoryTier, setFilePanelTargetMemoryTier] = useState<MemoryTier | null>(null);
-  const [filePanelTargetMemoKey, setFilePanelTargetMemoKey] = useState<string | null>(null);
-  // Message id whose provenance the Sources tab shows. Stays set while the
-  // Sources tab is open so the tab chrome persists; cleared on panel close.
-  const [filePanelTargetSources, setFilePanelTargetSources] = useState<string | null>(null);
+  // Single source of truth for what the RightPanel is pointed at. Exactly one
+  // target is ever set (file/memory/memo/sources/status); the panel derives the
+  // active tab, tab visibility, and snap-back from `.kind`. Sources/status stay
+  // set while their tab is open (tab chrome persistence) and are cleared on
+  // panel close by the effect below; file/memory/memo self-clear once the child
+  // panel consumes the pre-select (the handled callbacks).
+  const [panelTarget, setPanelTarget] = useState<PanelTarget | null>(null);
   // Stable handlers — these land in useEffect deps in MemoryPanel/MemoPanel/
   // FilePanel. Inline arrows would create a new identity on every ChatView
   // render, re-triggering those effects on every streaming chunk (the
   // `targetKey == null` guard makes them no-ops, but the wakeup is wasted).
-  const handleTargetFileHandled = useCallback(() => setFilePanelTargetFile(null), []);
-  const handleTargetDirHandled = useCallback(() => setFilePanelTargetDir(null), []);
-  const handleTargetMemoryHandled = useCallback(() => {
-    setFilePanelTargetMemoryKey(null);
-    setFilePanelTargetMemoryTier(null);
-  }, []);
-  const handleTargetMemoHandled = useCallback(() => setFilePanelTargetMemoKey(null), []);
+  // Each clears the target only if it still matches the kind it consumed, so a
+  // fast follow-up open of a different kind isn't wiped by a late callback.
+  const handleTargetFileHandled = useCallback(() => setPanelTarget((pt) => (pt?.kind === 'file' ? null : pt)), []);
+  const handleTargetDirHandled = useCallback(() => setPanelTarget((pt) => (pt?.kind === 'file' ? null : pt)), []);
+  const handleTargetMemoryHandled = useCallback(() => setPanelTarget((pt) => (pt?.kind === 'memory' ? null : pt)), []);
+  const handleTargetMemoHandled = useCallback(() => setPanelTarget((pt) => (pt?.kind === 'memo' ? null : pt)), []);
   // Cross-workspace file panel: in flash mode, files live in PTC workspaces.
   // This tracks which workspace the file panel should fetch from.
   const [filePanelWorkspaceId, setFilePanelWorkspaceId] = useState<string | null>(null);
@@ -741,6 +749,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     threadId: currentThreadId,
     threadModels,
     lastThreadModel,
+    marketWatch,
     isShared: threadIsShared,
     insertNotification,
     handleEditMessage,
@@ -795,6 +804,12 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     if (hasActiveSubagents) return t('chat.placeholderSubagentsRunning');
     return t('chat.placeholderDefault');
   }, [pendingRejection, wasStopped, isLoading, pendingInterrupt, hasActiveSubagents, t]);
+
+  // Status-row visibility, hoisted so the wrapper condition and its two children
+  // share one source of truth. The chip self-hides on empty symbols; the tail
+  // shows when the main turn ended but a dispatched subagent is still running.
+  const showWatchChip = (marketWatch?.symbols?.length ?? 0) > 0;
+  const showBackgroundTail = hasActiveSubagents && !isLoading;
 
   // Restore steering text to input when agent finishes without consuming it
   useEffect(() => {
@@ -1115,6 +1130,18 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       }
     }
 
+    // Watch toggle activates the market-watch skill (re-sent every turn while
+    // on, like MarketView's chart-annotation). Dedup against a manually-typed
+    // /market-watch pill added by the loop above (SkillsMiddleware also dedups
+    // the body, but this keeps the context list clean).
+    if (modelOptions.marketWatch && marketWatchEnabled && !contexts.some((c) => c.type === 'skills' && c.name === 'market-watch')) {
+      contexts.push({
+        type: 'skills',
+        name: 'market-watch',
+        instruction: 'Market watch mode is on for this message. If the central tickers are not yet registered, register them with watch_market.',
+      });
+    }
+
     // Widget context snapshots from the deck rail. Each snapshot becomes one
     // `{type:"widget"}` item plus an optional sibling `{type:"image"}` item
     // (the existing MultimodalContext channel handles vision-vs-text-only
@@ -1127,7 +1154,7 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
 
     const additionalContext = contexts.length > 0 ? contexts : null;
     handleSendMessage(message, planMode, additionalContext, attachmentMeta, modelOptions);
-  }, [handleSendMessage]);
+  }, [handleSendMessage, marketWatchEnabled]);
 
   // Handle action-type slash commands (e.g. /compact, /compaction, /offload)
   const handleAction = useCallback((cmd: ActionCommand) => {
@@ -1505,12 +1532,18 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       return;
     }
 
-    setFilePanelTargetDir(null);
-    setFilePanelTargetFile(r.targetFile);
-    setFilePanelTargetMemoryKey(r.targetMemoryKey);
-    setFilePanelTargetMemoryTier(r.targetMemoryTier);
-    setFilePanelTargetMemoKey(r.targetMemoKey);
-    setFilePanelTargetSources(null);
+    // The routing result carries exactly one non-null target field; map it to
+    // the matching panel kind. `targetMemoKey` may legitimately be '' (memo
+    // index → LIST view), so test for null rather than truthiness.
+    let target: PanelTarget;
+    if (r.targetMemoryKey != null && r.targetMemoryTier != null) {
+      target = { kind: 'memory', key: r.targetMemoryKey, tier: r.targetMemoryTier };
+    } else if (r.targetMemoKey != null) {
+      target = { kind: 'memo', key: r.targetMemoKey };
+    } else {
+      target = { kind: 'file', path: r.targetFile };
+    }
+    setPanelTarget(target);
     if (r.clearWorkspaceId) {
       setFilePanelWorkspaceId(null);
     } else if (r.setWorkspaceId) {
@@ -1527,37 +1560,45 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
   // unified router does the path-aware classification on every call.
   const handleOpenFileFromChat = handleOpenAgentArtifactFromChat;
 
-  // Opens the Sources tab for a turn. Clears the sibling file/memory/memo
-  // targets first (so RightPanel's snap-back precedence converges on Sources)
-  // and pins the message id; the panel resolves live records from `messages`.
+  // Opens the Sources tab for a turn by pinning the message id — the single
+  // target replaces any prior file/memory/memo/status one, so the panel snaps
+  // to Sources; it resolves live records from `messages`.
   const handleOpenSourcesFromChat = useCallback((messageId: string) => {
-    setFilePanelTargetFile(null);
-    setFilePanelTargetDir(null);
-    setFilePanelTargetMemoryKey(null);
-    setFilePanelTargetMemoryTier(null);
-    setFilePanelTargetMemoKey(null);
-    setFilePanelTargetSources(messageId);
-
+    setPanelTarget({ kind: 'sources', messageId });
     setRightPanelWidth(clampPanelWidth(850));
     setRightPanelType('file');
     pushPanelHistory();
   }, [clampPanelWidth, pushPanelHistory]);
 
+  // Opens the Status tab (live market watch) from the persistent chip. The
+  // single 'status' target replaces any prior one, so the panel snaps to Status;
+  // it resolves live watch state from `marketWatch`.
+  const handleOpenStatusFromChat = useCallback(() => {
+    setPanelTarget({ kind: 'status' });
+    setRightPanelWidth(clampPanelWidth(850));
+    setRightPanelType('file');
+    pushPanelHistory();
+  }, [clampPanelWidth, pushPanelHistory]);
+
+  // The message id whose provenance the Sources tab shows, when a sources target
+  // is active. Drives the two provenance memos below.
+  const sourcesMessageId = panelTarget?.kind === 'sources' ? panelTarget.messageId : null;
+
   // Live provenance for the targeted turn — resolved from `messages` so the
   // Sources panel updates as records stream in (live) or replay re-delivers
   // them (reload). Recomputes on every `messages` change while the tab is open.
   const sourcesRecords = useMemo<Record<string, ProvenanceRecord> | undefined>(() => {
-    if (!filePanelTargetSources) return undefined;
-    const msg = messages.find((m) => (m as { id?: string }).id === filePanelTargetSources);
+    if (!sourcesMessageId) return undefined;
+    const msg = messages.find((m) => (m as { id?: string }).id === sourcesMessageId);
     return (msg as { provenanceRecords?: Record<string, ProvenanceRecord> } | undefined)?.provenanceRecords;
-  }, [filePanelTargetSources, messages]);
+  }, [sourcesMessageId, messages]);
 
   // Thread-wide provenance: every turn's records merged in chronological order.
   // The Sources panel dedups across turns (first occurrence wins) and offers a
   // "This turn / All sources" switch when this set is larger than the turn's.
   // Gated on an open Sources tab so we don't merge on every unrelated render.
   const allSourcesRecords = useMemo<Record<string, ProvenanceRecord> | undefined>(() => {
-    if (!filePanelTargetSources) return undefined;
+    if (!sourcesMessageId) return undefined;
     const merged: Record<string, ProvenanceRecord> = {};
     for (const m of messages) {
       const recs = (m as { provenanceRecords?: Record<string, ProvenanceRecord> }).provenanceRecords;
@@ -1569,16 +1610,18 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
       }
     }
     return merged;
-  }, [filePanelTargetSources, messages]);
+  }, [sourcesMessageId, messages]);
 
-  // Drop the Sources target whenever the right panel is closed or switches to a
-  // non-file view (detail/preview), so a later file/memory click doesn't reopen
-  // the Sources tab. The many close call sites all funnel through rightPanelType.
+  // Drop a sticky sources/status target whenever the right panel is closed or
+  // switches to a non-file view (detail/preview), so a later file/memory click
+  // doesn't reopen that tab. These two are the only kinds that persist while
+  // their tab is open; file/memory/memo self-clear via the handled callbacks.
+  // The many close call sites all funnel through rightPanelType.
   useEffect(() => {
-    if (rightPanelType !== 'file' && filePanelTargetSources != null) {
-      setFilePanelTargetSources(null);
+    if (rightPanelType !== 'file' && (panelTarget?.kind === 'sources' || panelTarget?.kind === 'status')) {
+      setPanelTarget(null);
     }
-  }, [rightPanelType, filePanelTargetSources]);
+  }, [rightPanelType, panelTarget]);
 
   // One-shot ?file= deep link: opens the file panel targeting that file. Gated
   // on isActive so only the visible ChatView consumes it (ChatAgent keeps cached
@@ -1601,17 +1644,13 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
     );
   }, [isActive, workspaceId, location.search, location.pathname, location.state, navigate, handleOpenFileFromChat]);
 
-  // Open file panel filtered to a specific directory. Clears every other
-  // target first — symmetric with handleOpenAgentArtifactFromChat — so a
-  // pending memory/memo pre-select can't snap-back hijack the dir click.
+  // Open file panel filtered to a specific directory. The single 'file' target
+  // (with `dir`) replaces any pending memory/memo/status pre-select, so nothing
+  // can snap-back hijack the dir click.
   const handleOpenDirFromChat = useCallback((dirPath: string) => {
     setRightPanelWidth(clampPanelWidth(850));
     setRightPanelType('file');
-    setFilePanelTargetFile(null);
-    setFilePanelTargetMemoryKey(null);
-    setFilePanelTargetMemoryTier(null);
-    setFilePanelTargetMemoKey(null);
-    setFilePanelTargetDir(dirPath);
+    setPanelTarget({ kind: 'file', dir: dirPath });
     pushPanelHistory();
   }, [clampPanelWidth, pushPanelHistory]);
 
@@ -2903,6 +2942,23 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                 {activeAgentId === 'main' ? (
                   <>
                     <TodoDrawer todoData={cards['todo-list-card']?.todoData ?? null} />
+                    {/* Watch chip + background-tasks notice share one line, chip
+                        first. Both are presentational; either may be absent (the
+                        chip self-hides when the watch list is empty). Matched pill
+                        height (py-1) keeps them vertically aligned. */}
+                    {(showWatchChip || showBackgroundTail) && (
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <MarketWatchChip symbols={marketWatch?.symbols} lastUpdate={marketWatch?.timestamp} onClick={handleOpenStatusFromChat} />
+                        {/* Tail mode: main turn finished but a dispatched subagent is
+                            still running in the backend. Independent of stop. */}
+                        {showBackgroundTail && (
+                          <div className="flex items-center gap-2 px-3 py-1 text-xs text-muted-foreground">
+                            <PulseDot color="hsl(var(--primary))" />
+                            {t('chat.backgroundTasksRunning')}
+                          </div>
+                        )}
+                      </div>
+                    )}
                     {pendingRejection && (
                       <div
                         className="flex items-center gap-2 px-3 py-2 rounded-md text-sm"
@@ -2982,17 +3038,6 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                         >
                           <X className="h-3.5 w-3.5" />
                         </button>
-                      </div>
-                    )}
-                    {/* Tail mode: main turn finished but a dispatched subagent is
-                        still running in the backend. Independent of stop. */}
-                    {hasActiveSubagents && !isLoading && (
-                      <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground">
-                        <span className="relative flex h-2 w-2">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary/60 opacity-75" />
-                          <span className="relative inline-flex rounded-full h-2 w-2 bg-primary/80" />
-                        </span>
-                        {t('chat.backgroundTasksRunning')}
                       </div>
                     )}
                     {/* Report-back enabled: the dispatch turn ended and the agent
@@ -3156,18 +3201,14 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                 <RightPanel
                   workspaceId={effectiveFileWorkspaceId || workspaceId}
                   onClose={() => { setRightPanelType(null); popPanelHistory(); }}
-                  targetFile={filePanelTargetFile}
+                  panelTarget={panelTarget}
                   onTargetFileHandled={handleTargetFileHandled}
-                  targetDirectory={filePanelTargetDir}
                   onTargetDirHandled={handleTargetDirHandled}
-                  targetMemoryKey={filePanelTargetMemoryKey}
-                  targetMemoryTier={filePanelTargetMemoryTier}
                   onTargetMemoryHandled={handleTargetMemoryHandled}
-                  targetMemoKey={filePanelTargetMemoKey}
                   onTargetMemoHandled={handleTargetMemoHandled}
-                  targetSources={filePanelTargetSources}
                   sourcesRecords={sourcesRecords}
                   allSourcesRecords={allSourcesRecords}
+                  marketWatch={marketWatch}
                   onOpenFile={handleOpenFileFromChat}
                   files={workspaceFiles}
                   filesLoading={filesLoading}
@@ -3219,18 +3260,14 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                     <RightPanel
                       workspaceId={effectiveFileWorkspaceId || workspaceId}
                       onClose={() => { setRightPanelType(null); popPanelHistory(); }}
-                      targetFile={filePanelTargetFile}
+                      panelTarget={panelTarget}
                       onTargetFileHandled={handleTargetFileHandled}
-                      targetDirectory={filePanelTargetDir}
                       onTargetDirHandled={handleTargetDirHandled}
-                      targetMemoryKey={filePanelTargetMemoryKey}
-                      targetMemoryTier={filePanelTargetMemoryTier}
                       onTargetMemoryHandled={handleTargetMemoryHandled}
-                      targetMemoKey={filePanelTargetMemoKey}
                       onTargetMemoHandled={handleTargetMemoHandled}
-                      targetSources={filePanelTargetSources}
                       sourcesRecords={sourcesRecords}
                       allSourcesRecords={allSourcesRecords}
+                      marketWatch={marketWatch}
                       onOpenFile={handleOpenFileFromChat}
                       files={workspaceFiles}
                       filesLoading={filesLoading}

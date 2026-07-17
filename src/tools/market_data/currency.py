@@ -57,19 +57,23 @@ def currency_symbol(code: Optional[str]) -> str:
 
 
 def fmt_price(
-    value: Optional[float], currency: CurrencyArg = None, decimals: Optional[int] = None
+    value: Optional[float],
+    currency: CurrencyArg = None,
+    decimals: Optional[int] = None,
+    group: bool = False,
 ) -> str:
     """Format a price with its currency prefix, e.g. "£0.99", "HK$318.20".
 
     ``currency`` is a :class:`DisplaySpec` (currency + protocol decimals) or a
     bare ISO 4217 code (2 decimals). ``decimals`` overrides the spec when given.
-    ``None`` value -> "N/A".
+    ``group=True`` adds thousands separators ("$6,120.50"). ``None`` value -> "N/A".
     """
     if value is None:
         return "N/A"
     spec = _spec(currency)
     dec = spec.decimals if decimals is None else decimals
-    return f"{currency_symbol(spec.currency)}{value:.{dec}f}"
+    grouping = "," if group else ""
+    return f"{currency_symbol(spec.currency)}{value:{grouping}.{dec}f}"
 
 
 def fmt_money(

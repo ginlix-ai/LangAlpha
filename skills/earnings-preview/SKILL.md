@@ -14,7 +14,7 @@ description: Build pre-earnings analysis with estimate models, scenario framewor
 
 - Identify the company and reporting quarter
 - Use `get_company_overview` tool — includes earnings history (actual vs estimate), analyst consensus, price targets, rating distribution
-- Use `get_stock_daily_prices` tool for recent price history and to identify the earnings date window
+- Use `get_daily_prices` tool for recent price history and to identify the earnings date window
 - Use `get_sec_filing` tool — auto-attaches earnings call transcript for 10-K/10-Q filings (review prior quarter for guidance or commentary)
 - Use `WebSearch` / `WebFetch` for recent news and sentiment heading into earnings
 

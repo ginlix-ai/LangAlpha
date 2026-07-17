@@ -110,3 +110,22 @@ async def test_explicit_sort_asc_is_passed_through_and_not_reversed():
     )
     assert transport.captured_params[0]["sort"] == "asc"
     assert [b["time"] for b in bars] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_get_snapshots_rejects_path_smuggling_asset_type():
+    """asset_type is interpolated into the request path next to the service
+    token — anything outside the known asset types must be refused outright."""
+    client = GinlixDataClient(base_url="http://ginlix-data.test")
+    with pytest.raises(ValueError):
+        await client.get_snapshots("../../admin", ["AAPL"])
+
+
+@pytest.mark.asyncio
+async def test_get_snapshots_accepts_options_asset_type():
+    """The options-chain pricing path calls get_snapshots("options", ...) —
+    the whitelist must not reject it (regression: pre-landing review P1)."""
+    pages = [{"results": [{"ticker": "O:AAPL260117C00200000", "price": 1.23}]}]
+    client, _ = await _client_with(pages)
+    snaps = await client.get_snapshots("options", ["O:AAPL260117C00200000"])
+    assert snaps == [{"ticker": "O:AAPL260117C00200000", "price": 1.23}]

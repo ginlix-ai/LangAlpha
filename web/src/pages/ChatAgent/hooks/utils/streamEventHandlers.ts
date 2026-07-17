@@ -20,12 +20,17 @@ import { provenanceMcpKey } from '@/types/chat';
  * result hash, see {@link provenanceMcpKey}) is appended too — otherwise two
  * calls to one tool with different args (get_stock_data for AAPL vs NVDA), or
  * even the same args returning different data (live market data), collide and
- * the last silently overwrites the first.
+ * the last silently overwrites the first. Market-watch stamps have the same
+ * problem with neither safeguard (`tool_call_id` is null by design and one
+ * symbol refreshes many times per turn), so they discriminate on
+ * `result_sha256` — each refresh is a distinct snapshot the agent reasoned
+ * over, while byte-identical throttled replays still collapse.
  */
 export function provenanceRecordKey(record: {
   tool_call_id?: string;
   source_type: string;
   identifier: string;
+  detail?: string | null;
   args_fingerprint?: Record<string, unknown> | null;
   result_sha256?: string | null;
 }): string {
@@ -33,7 +38,11 @@ export function provenanceRecordKey(record: {
   const mcp = provenanceMcpKey(
     record as Pick<ProvenanceRecord, 'source_type' | 'args_fingerprint' | 'result_sha256'>,
   );
-  return mcp ? `${base}:${mcp}` : base;
+  if (mcp) return `${base}:${mcp}`;
+  if (record.detail === 'market_watch' && record.result_sha256) {
+    return `${base}:${record.result_sha256}`;
+  }
+  return base;
 }
 
 /**
@@ -62,6 +71,48 @@ export function provenanceEventToRecord(event: ProvenanceEvent): ProvenanceRecor
 
 /** Callback to update a subagent card by task ID. */
 type UpdateSubagentCard = (taskId: string, patch: Record<string, unknown>) => void;
+
+/**
+ * Latest market-watch snapshot for a thread. Seeded from the GET
+ * `/market-watch` endpoint on thread load and overwritten live by
+ * `market_watch_update` SSE events; drives the persistent "Watching …" chip.
+ */
+export interface MarketWatchState {
+  symbols: string[];
+  content?: string;
+  timestamp?: number;
+}
+
+/**
+ * Coerce an untrusted `symbols` field (SSE event or GET response) to a
+ * `string[]`: a missing/non-array value becomes an empty list ("watch off")
+ * and non-string entries are dropped.
+ */
+export function coerceSymbols(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((s): s is string => typeof s === 'string')
+    : [];
+}
+
+/**
+ * Handles `market_watch_update` custom SSE events during streaming. Parses the
+ * live watch snapshot (symbols + content + timestamp) off the event and hands
+ * it to the caller's setter so the persistent watch chip stays current
+ * mid-turn. Non-string symbol entries are dropped and a missing/non-array
+ * `symbols` field coerces to an empty list (the "watch off" signal).
+ */
+export function handleMarketWatchUpdate({ event, setMarketWatch }: {
+  event: { symbols?: unknown; content?: unknown; timestamp?: unknown };
+  setMarketWatch: (next: MarketWatchState) => void;
+}): boolean {
+  const symbols = coerceSymbols(event.symbols);
+  setMarketWatch({
+    symbols,
+    content: typeof event.content === 'string' ? event.content : undefined,
+    timestamp: typeof event.timestamp === 'number' ? event.timestamp : undefined,
+  });
+  return true;
+}
 
 /** Per-task ref state created by getOrCreateTaskRefs. */
 interface TaskRefs {

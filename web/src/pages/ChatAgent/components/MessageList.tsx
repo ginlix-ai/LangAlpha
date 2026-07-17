@@ -14,17 +14,8 @@ import LissajousLoading from '@/components/ui/lissajous-loading';
 import ActivityBlock from './ActivityBlock';
 import {
   INLINE_ARTIFACT_TOOLS,
-  InlineStockPriceCard,
-  InlineCompanyOverviewCard,
-  InlineMarketIndicesCard,
-  InlineSectorPerformanceCard,
-  InlineSecFilingCard,
-  InlineStockScreenerCard,
-  InlineWebSearchCard,
+  INLINE_ARTIFACT_MAP,
 } from './charts/InlineArtifactCards';
-import { InlineAutomationCard } from './charts/InlineAutomationCards';
-import { InlinePreviewCard } from './charts/InlinePreviewCard';
-import { InlineChartAnnotationCard } from './charts/InlineChartAnnotationCard';
 import { chartInstanceKey, planChartAnnotationCards } from './chartAnnotationGrouping';
 import { extractFilePaths, FileMentionCards } from './FileCard';
 import { normalizeFileRefs } from '../utils/normalizeFileRefs';
@@ -169,20 +160,6 @@ export function normalizeSubagentText(content: string | null | undefined): strin
 function fmtSelectionPrice(n: number | null | undefined): string {
   return n == null || !Number.isFinite(n) ? '—' : n.toFixed(2);
 }
-
-/** Map artifact type -> inline artifact component */
-const INLINE_ARTIFACT_MAP: Record<string, React.ComponentType<{ artifact: Record<string, unknown>; onClick?: () => void }>> = {
-  stock_prices: InlineStockPriceCard,
-  company_overview: InlineCompanyOverviewCard,
-  market_indices: InlineMarketIndicesCard,
-  sector_performance: InlineSectorPerformanceCard,
-  sec_filing: InlineSecFilingCard,
-  stock_screener: InlineStockScreenerCard,
-  automations: InlineAutomationCard,
-  preview_url: InlinePreviewCard,
-  web_search: InlineWebSearchCard,
-  chart_annotation: InlineChartAnnotationCard,
-};
 
 /* --- Attachment helpers --- */
 const formatFileSize = (bytes: number | null | undefined): string => {

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from src.market_protocol import to_canonical
+from src.market_protocol import CARET_INDEX_REGIONS, to_canonical
 
 from .base import FetchResult, MarketDataSource
 
@@ -45,13 +45,18 @@ _SUFFIX_MAP: dict[str, str] = {
 def symbol_market(symbol: str) -> str:
     """Derive market region from a symbol's suffix (routing token).
 
-    Bare symbols (no dot) and ``.US`` suffixes are treated as US. Kept for
-    provider chain routing (``_market_matches``); timezone resolution moved to
-    the protocol (:func:`symbol_timezone`).
+    Bare symbols (no dot) and ``.US`` suffixes are treated as US. Known
+    caret-prefixed foreign indices are matched explicitly first, since they
+    carry no dot suffix for the suffix parser to key off of. Kept for provider
+    chain routing (``_market_matches``); timezone resolution moved to the
+    protocol (:func:`symbol_timezone`).
     """
+    symbol = symbol.upper()
+    if symbol in CARET_INDEX_REGIONS:
+        return CARET_INDEX_REGIONS[symbol]
     if "." not in symbol or symbol.endswith(".US"):
         return "us"
-    suffix = symbol.rsplit(".", 1)[-1].upper()
+    suffix = symbol.rsplit(".", 1)[-1]
     return _SUFFIX_MAP.get(suffix, "other")
 
 

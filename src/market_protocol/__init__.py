@@ -22,6 +22,7 @@ from .models import (
     SeriesHeader,
 )
 from .symbology import (
+    CARET_INDEX_REGIONS,
     display_decimals_for,
     parse_instrument_key,
     to_canonical,
@@ -31,6 +32,7 @@ from .symbology import (
 )
 
 __all__ = [
+    "CARET_INDEX_REGIONS",
     "OHLCV_SCHEMAS",
     "AssetClass",
     "Coverage",

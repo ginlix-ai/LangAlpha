@@ -112,6 +112,16 @@ for _f in _INDEX_FAMILIES.values():
     for _alias in (_f.family, _f.legacy, _f.polygon, f"^{_f.family}", f"^{_f.legacy}"):
         _INDEX_ALIASES[_alias.upper()] = _f.family
 
+# Region of each caret-prefixed foreign index (no dot suffix to parse). The
+# single source for provider-chain routing and the tool-level region baskets;
+# folds into _INDEX_FAMILIES seeding when Phase-1 adds these venues' calendars.
+CARET_INDEX_REGIONS: dict[str, str] = {
+    "^HSI": "hk", "^HSCE": "hk",
+    "^N225": "jp",
+    "^FTSE": "uk",
+    "^GDAXI": "eu", "^FCHI": "eu", "^STOXX50E": "eu",
+}
+
 # ---------------------------------------------------------------------------
 # Currency display defaults (ISO 4217 minor-unit digits)
 # ---------------------------------------------------------------------------

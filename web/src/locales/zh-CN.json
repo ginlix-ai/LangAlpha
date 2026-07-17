@@ -124,6 +124,10 @@
     "userInfo": "用户信息",
     "preferences": "偏好设置",
     "model": "模型",
+    "experiments": "实验功能",
+    "experimentsIntro": "仍在开发中的抢先体验功能。开启后即可为你的账户启用，随时都能关闭。",
+    "experimentsEmpty": "暂无可用的实验功能。",
+    "experimentTradeoff": "代价",
     "theme": "主题",
     "dark": "深色",
     "light": "浅色",
@@ -1190,6 +1194,12 @@
     "anyoneWithLink": "任何拥有此链接的人都可以查看对话。"
   },
   "chat": {
+    "pills": {
+      "plan": "计划",
+      "planTitle": "计划模式 — 智能体先生成计划，经确认后再执行",
+      "watch": "盯盘",
+      "watchTitle": "盯盘模式 — 实时跟踪智能体关注的股票价格"
+    },
     "widgetContext": {
       "inContext_one": "{{count}} 项上下文",
       "inContext_other": "{{count}} 项上下文",
@@ -1252,6 +1262,16 @@
       "ctaOpenThread": "打开对话",
       "ctaAnswerContinue": "回答并继续",
       "ctaViewThread": "查看对话"
+    },
+    "marketWatch": {
+      "watching": "正在监控 {{symbols}}",
+      "chipTitle": "正在为智能体监控的股票推送实时价格",
+      "chipTitleUpdated": "监控股票的实时价格 — 更新于 {{time}}",
+      "chipAction": "打开实时市场监控",
+      "panelTitle": "市场监控",
+      "panelUpdated": "更新于 {{time}}",
+      "panelWaiting": "智能体工作时，实时价格将显示在这里。",
+      "panelEmpty": "当前没有正在监控的股票。"
     },
     "missingWorkspaceOrThread": "缺少工作区或对话信息",
     "accessDeniedTitle": "你没有权限查看此对话",
@@ -1387,7 +1407,9 @@
         "company_overview": "公司概况",
         "daily_prices": "每日价格",
         "options_chain": "期权链",
-        "market_index": "市场指数"
+        "market_index": "市场指数",
+        "quote": "实时报价",
+        "market_overview": "市场概览"
       }
     },
     "a11y": {
@@ -1546,7 +1568,8 @@
       "files": "文件",
       "memory": "记忆",
       "memo": "备忘录",
-      "sources": "数据来源"
+      "sources": "数据来源",
+      "status": "状态"
     },
     "close": "关闭面板"
   },
@@ -1747,7 +1770,19 @@
     "high": "高",
     "low": "低",
     "vol": "量",
+    "liveQuotes": "实时报价",
+    "extendedHours": {
+      "preMarket": { "long": "盘前", "short": "盘前" },
+      "afterHours": { "long": "盘后", "short": "盘后" }
+    },
+    "marketStatus": {
+      "early_trading": "盘前",
+      "open": "盘中",
+      "late_trading": "盘后",
+      "closed": "休市"
+    },
     "marketIndices": "市场指数",
+    "marketOverview": "市场概览",
     "sectorPerformance": "板块表现",
     "stockScreener": "股票筛选",
     "pricePerformance": "价格表现",
@@ -1875,9 +1910,12 @@
     "tool": {
       "stockPrices": "股票价格",
       "companyOverview": "公司概况",
+      "liveQuotes": "实时报价",
       "marketIndices": "市场指数",
+      "marketOverview": "市场概览",
       "sectorPerformance": "板块表现",
       "stockScreener": "股票筛选",
+      "watchMarket": "行情监控",
       "secFiling": "SEC 报告",
       "entityNews": "实体新闻",
       "tickerSearch": "股票搜索",
@@ -1958,11 +1996,16 @@
       "updating_preference": "更新偏好...",
       "fetchingSymbolPrices": "获取 {{symbol}} 价格...",
       "fetchingPrices": "获取价格...",
+      "fetchingSymbolQuotes": "获取 {{symbols}} 报价...",
+      "fetchingQuotes": "获取报价...",
       "analyzingSymbol": "分析 {{symbol}}...",
       "analyzing": "分析中...",
       "fetchingMarketIndices": "获取市场指数...",
+      "fetchingMarketOverview": "获取市场概览...",
       "fetchingSectorData": "获取板块数据...",
       "screeningStocks": "筛选股票...",
+      "watchingMarket": "开始行情监控...",
+      "unwatchingMarket": "停止行情监控...",
       "fetchingSymbolFiling": "获取 {{symbol}} 报告...",
       "fetchingFiling": "获取报告...",
       "searchingPattern": "搜索 '{{pattern}}'...",

@@ -303,7 +303,7 @@ def test_market_data_body_shared_across_symbols(middleware):
     """One market call may yield several symbol rows; each carries the same
     fingerprinted body (the single result they all came from)."""
     artifact = {"indices": ["^AAA", "^BBB"], "data": [1, 2, 3]}
-    request = _make_request("get_market_indices", {"indices": ["^AAA", "^BBB"]})
+    request = _make_request("get_market_overview", {"indices": ["^AAA", "^BBB"]})
     sources = list(
         middleware._extract_market_data(request, _result(artifact=artifact))
     )

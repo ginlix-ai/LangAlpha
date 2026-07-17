@@ -161,7 +161,7 @@ async def test_sec_filing_body_hashes_to_sha():
 @pytest.mark.asyncio
 async def test_market_snapshot_body_hashes_to_sha():
     """A market-data snapshot (no secrets): stored body is the canonical artifact and hashes to `sha`."""
-    req = _make_request("get_stock_daily_prices", {"symbol": "AAPL"})
+    req = _make_request("get_daily_prices", {"symbol": "AAPL"})
     _, store = await _run(_armed_middleware(), req, _result(artifact=_MARKET_SNAPSHOT))
 
     sha, body, size, _ = _stored(store)[0]
@@ -228,7 +228,7 @@ async def test_dict_key_order_does_not_change_sha():
     """Canonicalization sorts keys, so the same snapshot with shuffled key order
     dedups to the same body — a real risk since upstream JSON ordering is unstable."""
     shuffled = dict(reversed(list(_MARKET_SNAPSHOT.items())))
-    req = _make_request("get_stock_daily_prices", {"symbol": "AAPL"})
+    req = _make_request("get_daily_prices", {"symbol": "AAPL"})
 
     _, s1 = await _run(_armed_middleware(), req, _result(artifact=_MARKET_SNAPSHOT))
     _, s2 = await _run(_armed_middleware(), req, _result(artifact=shuffled))

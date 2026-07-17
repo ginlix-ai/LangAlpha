@@ -25,6 +25,11 @@ from typing import Any
 from langchain.agents.middleware import AgentMiddleware
 from langgraph.config import get_stream_writer
 
+from ptc_agent.agent.middleware.provenance.body_store import (
+    drain_body_writes,
+    schedule_body_write,
+    store_bodies,
+)
 from ptc_agent.agent.provenance import (
     SNIPPET_MAX_CHARS,
     ProvenanceSource,
@@ -80,25 +85,28 @@ _MARKET_SYMBOL_ARGS = ("symbol", "underlying")
 # rows so the Sources panel can group by ticker yet still distinguish, in a
 # hover, which data products that ticker was accessed through (a single AAPL row
 # may cover both company_overview and daily_prices). The slug is i18n-mapped by
-# the frontend; symbol-less tools (screen_stocks, get_market_movers,
-# get_sector_performance) already surface their tool name as the identifier.
+# the frontend; symbol-less tools (screen_stocks, get_market_movers) already
+# surface their tool name as the identifier.
 _MARKET_DATA_KINDS = {
     "get_company_overview": "company_overview",
-    "get_stock_daily_prices": "daily_prices",
+    "get_daily_prices": "daily_prices",
     "get_options_chain": "options_chain",
-    "get_market_indices": "market_index",
+    "get_quote": "quote",
+    # Symbol-bearing only when the caller passes an explicit `indices` list;
+    # the no-arg form stays keyed by tool name (detail guard below).
+    "get_market_overview": "market_overview",
 }
 
 # Market-data tools that all share _extract_market_data. Superset of
-# _MARKET_DATA_KINDS — also covers the symbol-less ones (screen/movers/sector).
+# _MARKET_DATA_KINDS — also covers the symbol-less ones (screen/movers/overview).
 _MARKET_DATA_TOOLS = (
-    "get_stock_daily_prices",
+    "get_daily_prices",
     "get_company_overview",
-    "get_market_indices",
-    "get_sector_performance",
+    "get_market_overview",
     "screen_stocks",
     "get_options_chain",
     "get_market_movers",
+    "get_quote",
 )
 
 # Host-side bounds on the in-sandbox MCP trace (LLM-authored, untrusted): the
@@ -123,13 +131,6 @@ _TIMESTAMP_MAX_CHARS = 64
 # it (real maxima are low single-digit MB), but it keeps a fabricated exabyte size
 # out of the record/event.
 _RESULT_SIZE_MAX_BYTES = 256 * 1024 * 1024
-
-# Max concurrent in-flight background body-store writes per middleware instance.
-# A backpressure valve: once this many flushes are outstanding, awrap_tool_call
-# waits for one to finish before scheduling the next, so a burst of source-bearing
-# tool calls can't spawn unbounded tasks or exhaust the DB pool. Keep it below the
-# pool's comfortable concurrency.
-_BODY_FLUSH_TASK_LIMIT = 16
 
 # A tool result whose content begins with one of these is treated as failed, so
 # we don't record a "source accessed" for data the tool never actually returned.
@@ -281,9 +282,9 @@ class ProvenanceMiddleware(AgentMiddleware):
         super().__init__()
         self._redactor = redactor
         # Background body-store writes in flight (strong refs so they aren't GC'd
-        # mid-flush). Drained best-effort at agent end; see _schedule_body_flush.
+        # mid-flush), owned by this instance and drained best-effort at agent end.
+        # Bounded concurrency + exception consumption live in body_store.
         self._body_flush_tasks: set[asyncio.Task[None]] = set()
-        self._max_body_flush_tasks = _BODY_FLUSH_TASK_LIMIT
         # tool name -> extractor(request, result) -> Iterable[ProvenanceSource]
         self._extractors: dict[
             str, Callable[[Any, Any], Iterable[ProvenanceSource]]
@@ -369,7 +370,10 @@ class ProvenanceMiddleware(AgentMiddleware):
             # Scheduled OFF the tool-call critical path (background task, drained at
             # agent end) so a DB/object-store write never delays the tool result or
             # the next LLM step; the provenance events above already went out.
-            await self._schedule_body_flush(body_batch)
+            if body_batch:
+                await schedule_body_write(
+                    self._body_flush_tasks, store_bodies(body_batch)
+                )
         except Exception:
             # WARNING, not DEBUG: a broken extractor silently degrades the
             # feature to "no provenance"; surface it so it's observable.
@@ -468,92 +472,9 @@ class ProvenanceMiddleware(AgentMiddleware):
             "text/plain; charset=utf-8",
         )
 
-    async def _flush_bodies(self, items: list[tuple]) -> None:
-        """Batch-write a turn's redacted bodies to the store (best-effort).
-
-        Never raises (mirrors ``WorkspaceContextMiddleware._sync_front_matter_to_db``):
-        a lost body must not break the turn. ``store_result_bodies`` dedupes by sha
-        and upserts in one connection.
-        """
-        if not items:
-            return
-        try:
-            from src.server.database.provenance_bodies import store_result_bodies
-
-            await store_result_bodies(items)
-        except Exception as e:
-            logger.warning(
-                "[PROVENANCE] store_result_bodies failed (%d items): %s",
-                len(items),
-                e,
-            )
-
-    async def _schedule_body_flush(self, items: list[tuple]) -> None:
-        """Run one tool call's body flush OFF the tool-call critical path.
-
-        Schedules ``_flush_bodies`` as a tracked background task instead of
-        awaiting it inline, so the tool result returns without waiting on the DB /
-        object-store write. Bounded by ``_max_body_flush_tasks``: when saturated we
-        wait for one to drain before scheduling, which is the only inline wait on
-        the common path. The set is per-instance task ownership, NOT a per-run body
-        buffer, so concurrent subagents on this shared instance can't mix data.
-        """
-        if not items:
-            return
-        self._reap_body_flush_tasks()
-        while len(self._body_flush_tasks) >= self._max_body_flush_tasks:
-            done, _ = await asyncio.wait(
-                self._body_flush_tasks, return_when=asyncio.FIRST_COMPLETED
-            )
-            for task in done:
-                self._body_flush_tasks.discard(task)
-                self._consume_body_flush_task(task)
-        task = asyncio.create_task(
-            self._flush_bodies(items), name="provenance_body_flush"
-        )
-        self._body_flush_tasks.add(task)
-        task.add_done_callback(self._on_body_flush_done)
-
-    def _on_body_flush_done(self, task: asyncio.Task[None]) -> None:
-        self._body_flush_tasks.discard(task)
-        self._consume_body_flush_task(task)
-
-    def _consume_body_flush_task(self, task: asyncio.Task[None]) -> None:
-        """Retrieve a finished flush's result so its exception is never orphaned."""
-        try:
-            task.result()
-        except asyncio.CancelledError:
-            logger.debug("[PROVENANCE] background body flush cancelled")
-        except Exception:
-            # _flush_bodies already swallows; this is belt-and-suspenders so a
-            # background task can't surface as an "exception never retrieved" warning.
-            logger.warning("[PROVENANCE] background body flush failed", exc_info=True)
-
-    def _reap_body_flush_tasks(self) -> None:
-        for task in tuple(self._body_flush_tasks):
-            if task.done():
-                self._body_flush_tasks.discard(task)
-                self._consume_body_flush_task(task)
-
     async def _drain_body_flushes(self) -> None:
-        """Await body flushes already scheduled at entry (idempotent best-effort).
-
-        Snapshots the currently-tracked tasks and awaits them; writes a still-running
-        subagent schedules afterward stay tracked for the next drain. ``shield`` keeps
-        an in-flight DB write from being cancelled if this drain is itself cancelled
-        (e.g. a hard turn stop) mid-transaction.
-        """
-        self._reap_body_flush_tasks()
-        pending = tuple(self._body_flush_tasks)
-        if not pending:
-            return
-        try:
-            await asyncio.gather(
-                *(asyncio.shield(task) for task in pending),
-                return_exceptions=True,
-            )
-        finally:
-            self._reap_body_flush_tasks()
+        """Await body writes already scheduled at entry (idempotent best-effort)."""
+        await drain_body_writes(self._body_flush_tasks)
 
     async def aafter_agent(self, state: Any, runtime: Any) -> dict | None:
         """Drain background body writes at agent end (best-effort quiescence)."""
@@ -690,9 +611,13 @@ class ProvenanceMiddleware(AgentMiddleware):
             identifiers.extend(str(i) for i in indices if i)
         elif isinstance(indices, str) and indices:
             identifiers.append(indices)
+        symbols = args.get("symbols")
+        if isinstance(symbols, list):
+            identifiers.extend(str(s).upper() for s in symbols if s)
 
-        # No symbol arg (e.g. get_sector_performance, screen_stocks,
-        # get_market_movers) — record one source keyed by the tool name.
+        # No symbol arg (e.g. get_market_overview with no explicit indices,
+        # screen_stocks, get_market_movers) — record one source keyed by the
+        # tool name.
         if not identifiers:
             identifiers = [tool_name]
 

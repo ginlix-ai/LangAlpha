@@ -40,11 +40,11 @@ from src.tools.search import get_web_search_tool
 from src.tools.fetch import web_fetch_tool
 from src.tools.sec.tool import get_sec_filing
 from src.tools.market_data.tool import (
-    get_stock_daily_prices,
+    get_daily_prices,
     get_company_overview,
-    get_market_indices,
+    get_market_overview,
     get_options_chain,
-    get_sector_performance,
+    get_quote,
     screen_stocks,
 )
 
@@ -134,11 +134,11 @@ class FlashAgent:
         tools.extend(
             [
                 get_sec_filing,
-                get_stock_daily_prices,
+                get_quote,
+                get_daily_prices,
                 get_company_overview,
-                get_market_indices,
+                get_market_overview,
                 get_options_chain,
-                get_sector_performance,
                 screen_stocks,
             ]
         )

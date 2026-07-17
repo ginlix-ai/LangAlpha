@@ -12,9 +12,8 @@ from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from langchain_core.messages import SystemMessage
-from langchain_openai import ChatOpenAI
 
-from src.llms.endpoints import is_official_openai_endpoint
+from ptc_agent.agent.middleware.provider_cache import breakpoint_marker, tag_last_text_block
 
 # Explicit-breakpoint marker forwarded verbatim onto the wire content part.
 _BREAKPOINT: dict[str, Any] = {"mode": "explicit"}
@@ -34,12 +33,10 @@ class OpenAIPromptCachingMiddleware(AgentMiddleware):
 
     @staticmethod
     def _should_apply(request: ModelRequest) -> bool:
-        model = request.model
-        return (
-            isinstance(model, ChatOpenAI)
-            and getattr(model, "prompt_cache_options", None) is not None
-            and is_official_openai_endpoint(getattr(model, "openai_api_base", None))
-        )
+        # Reuse the shared provider gate: the OpenAI branch of breakpoint_marker
+        # is exactly this middleware's (ChatOpenAI + opted-in + official endpoint).
+        marker = breakpoint_marker(request.model)
+        return marker is not None and marker[0] == "prompt_cache_breakpoint"
 
     @staticmethod
     def _tag_system_message(
@@ -47,30 +44,10 @@ class OpenAIPromptCachingMiddleware(AgentMiddleware):
     ) -> SystemMessage | None:
         if system_message is None:
             return None
-        content = system_message.content
-        new_content: list[Any]
-        if isinstance(content, str):
-            if not content:
-                return system_message
-            new_content = [
-                {"type": "text", "text": content, "prompt_cache_breakpoint": dict(_BREAKPOINT)}
-            ]
-        elif isinstance(content, list):
-            if not content:
-                return system_message
-            new_content = list(content)
-            last = new_content[-1]
-            if isinstance(last, dict):
-                new_content[-1] = {**last, "prompt_cache_breakpoint": dict(_BREAKPOINT)}
-            elif isinstance(last, str):
-                new_content[-1] = {
-                    "type": "text",
-                    "text": last,
-                    "prompt_cache_breakpoint": dict(_BREAKPOINT),
-                }
-            else:
-                return system_message
-        else:
+        new_content = tag_last_text_block(
+            system_message.content, "prompt_cache_breakpoint", _BREAKPOINT
+        )
+        if new_content is None:
             return system_message
         return SystemMessage(content=new_content)
 

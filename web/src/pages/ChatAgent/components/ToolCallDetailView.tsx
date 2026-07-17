@@ -13,6 +13,7 @@ import {
 } from './charts/MarketDataCharts';
 import SecFilingViewer from './charts/SecFilingViewer';
 import { FaviconImg, googleFaviconUrl } from './charts/InlineArtifactCards';
+import { unwrapMarketOverview } from './charts/inlineCardsShared';
 import AutomationDetailPanel from './charts/AutomationDetailPanel';
 import Markdown, { CodeBlock } from './Markdown';
 import iconRobo from '../../../assets/img/icon-robo.png';
@@ -356,6 +357,22 @@ function ArtifactOrMarkdown({ artifact, content, toolName, toolCallProcess, onOp
         return <MarketIndicesChart data={artifact} />;
       case 'sector_performance':
         return <SectorPerformanceChart data={artifact} />;
+      case 'market_overview': {
+        // Composite artifact: legacy market_indices / sector_performance
+        // artifacts nested verbatim under `indices` / `sectors`.
+        const { indicesArtifact, sectorsArtifact, hasIndices, hasSectors } = unwrapMarketOverview(artifact);
+        if (hasIndices || hasSectors) {
+          return (
+            <div className="flex flex-col gap-4">
+              {hasIndices && <MarketIndicesChart data={indicesArtifact!} />}
+              {hasSectors && <SectorPerformanceChart data={sectorsArtifact!} />}
+            </div>
+          );
+        }
+        // Error-path artifact ({type, region} only) — fall through to the
+        // raw content/markdown rendering below.
+        break;
+      }
       case 'stock_screener':
         return <StockScreenerTable data={artifact} />;
       case 'sec_filing':

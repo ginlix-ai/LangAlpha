@@ -418,6 +418,16 @@ async def _fetch_platform_tier(user_id: str) -> int:
     return int(membership.get("access_tier", -1))
 
 
+async def get_platform_access_tier(user_id: str) -> int | None:
+    """Public access tier for plan gates: the tier, or None for no access.
+
+    Normalizes the ``-1`` no-access sentinel to None so callers can fail closed
+    on ``tier is None`` instead of leaking the sentinel into tier comparisons.
+    """
+    tier = await _fetch_platform_tier(user_id)
+    return tier if tier >= 0 else None
+
+
 # ---------------------------------------------------------------------------
 # Scope-based feature gating
 # ---------------------------------------------------------------------------

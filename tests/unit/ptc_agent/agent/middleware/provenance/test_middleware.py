@@ -171,7 +171,7 @@ async def test_market_data_identifier_from_symbol(middleware):
     emitted = []
     await _run(
         middleware,
-        _make_request("get_stock_daily_prices", {"symbol": "TST"}),
+        _make_request("get_daily_prices", {"symbol": "TST"}),
         _result(content="prices", artifact={"symbol": "TST"}),
         emitted,
     )
@@ -200,7 +200,7 @@ async def test_market_data_kind_distinguishes_tools_on_same_symbol(middleware):
     prices = []
     await _run(
         middleware,
-        _make_request("get_stock_daily_prices", {"symbol": "TST"}),
+        _make_request("get_daily_prices", {"symbol": "TST"}),
         _result(content="prices", artifact={"symbol": "TST"}),
         prices,
     )
@@ -214,14 +214,33 @@ async def test_market_data_one_event_per_index(middleware):
     emitted = []
     await _run(
         middleware,
-        _make_request("get_market_indices", {"indices": ["^AAA", "^BBB"]}),
+        _make_request("get_market_overview", {"indices": ["^AAA", "^BBB"]}),
         _result(content="indices"),
         emitted,
     )
 
     assert [e["identifier"] for e in emitted] == ["^AAA", "^BBB"]
     assert {e["source_type"] for e in emitted} == {"market_data"}
-    assert {e["detail"] for e in emitted} == {"market_index"}
+    # Explicit `indices` yields symbol-bearing rows, so they carry the
+    # data-kind slug; the no-arg form stays keyed by tool name (below).
+    assert {e["detail"] for e in emitted} == {"market_overview"}
+
+
+@pytest.mark.asyncio
+async def test_market_data_one_event_per_symbol_list(middleware):
+    """get_quote's `symbols` list arg gets the same per-ticker treatment as
+    get_market_overview's `indices` list arg."""
+    emitted = []
+    await _run(
+        middleware,
+        _make_request("get_quote", {"symbols": ["nvda", "tsla"]}),
+        _result(content="quotes"),
+        emitted,
+    )
+
+    assert [e["identifier"] for e in emitted] == ["NVDA", "TSLA"]
+    assert {e["source_type"] for e in emitted} == {"market_data"}
+    assert {e["detail"] for e in emitted} == {"quote"}
 
 
 @pytest.mark.asyncio
@@ -585,7 +604,7 @@ async def test_market_error_artifact_not_recorded(middleware):
     emitted = []
     await _run(
         middleware,
-        _make_request("get_stock_daily_prices", {"symbol": "TST"}),
+        _make_request("get_daily_prices", {"symbol": "TST"}),
         _result(content="", artifact={"error": "upstream 500"}),
         emitted,
     )
@@ -923,7 +942,7 @@ async def test_market_data_captures_redacted_args(middleware):
     await _run(
         middleware,
         _make_request(
-            "get_stock_daily_prices", {"symbol": "AAPL", "api_key": "sk-secret"}
+            "get_daily_prices", {"symbol": "AAPL", "api_key": "sk-secret"}
         ),
         _result(content="prices", artifact={"symbol": "AAPL"}),
         emitted,

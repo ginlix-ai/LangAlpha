@@ -124,6 +124,10 @@
     "userInfo": "User Info",
     "preferences": "Preferences",
     "model": "Model",
+    "experiments": "Experiments",
+    "experimentsIntro": "Early-access features still in development. Turn one on to enable it for your account — you can switch it off at any time.",
+    "experimentsEmpty": "No experiments are available right now.",
+    "experimentTradeoff": "Trade-off",
     "theme": "Theme",
     "dark": "Dark",
     "light": "Light",
@@ -1190,6 +1194,12 @@
     "anyoneWithLink": "Anyone with this link can view the conversation."
   },
   "chat": {
+    "pills": {
+      "plan": "Plan",
+      "planTitle": "Plan mode — agent creates a plan for approval before executing",
+      "watch": "Watch",
+      "watchTitle": "Market watch — live prices for tickers the agent tracks"
+    },
     "widgetContext": {
       "inContext_one": "{{count}} in context",
       "inContext_other": "{{count}} in context",
@@ -1253,6 +1263,16 @@
       "ctaOpenThread": "Open thread",
       "ctaAnswerContinue": "Answer & continue",
       "ctaViewThread": "View thread"
+    },
+    "marketWatch": {
+      "watching": "Watching {{symbols}}",
+      "chipTitle": "Live prices for the tickers the agent is watching",
+      "chipTitleUpdated": "Live prices for watched tickers — updated {{time}}",
+      "chipAction": "Open live market watch",
+      "panelTitle": "Market watch",
+      "panelUpdated": "Updated {{time}}",
+      "panelWaiting": "Live prices appear here while the agent is working.",
+      "panelEmpty": "No tickers are being watched."
     },
     "missingWorkspaceOrThread": "Missing workspace or thread information",
     "accessDeniedTitle": "You don't have access to this conversation",
@@ -1388,7 +1408,9 @@
         "company_overview": "Company overview",
         "daily_prices": "Daily prices",
         "options_chain": "Options chain",
-        "market_index": "Market index"
+        "market_index": "Market index",
+        "quote": "Quote",
+        "market_overview": "Market overview"
       }
     },
     "a11y": {
@@ -1548,7 +1570,8 @@
       "files": "Files",
       "memory": "Memory",
       "memo": "Memo",
-      "sources": "Sources"
+      "sources": "Sources",
+      "status": "Status"
     },
     "close": "Close panel"
   },
@@ -1750,7 +1773,19 @@
     "high": "H",
     "low": "L",
     "vol": "Vol",
+    "liveQuotes": "Live Quotes",
+    "extendedHours": {
+      "preMarket": { "long": "Pre-Mkt", "short": "Pre" },
+      "afterHours": { "long": "After-Hrs", "short": "AH" }
+    },
+    "marketStatus": {
+      "early_trading": "Pre-Market",
+      "open": "Regular",
+      "late_trading": "After-Hours",
+      "closed": "Closed"
+    },
     "marketIndices": "Market Indices",
+    "marketOverview": "Market Overview",
     "sectorPerformance": "Sector Performance",
     "stockScreener": "Stock Screener",
     "pricePerformance": "Price Performance",
@@ -1887,9 +1922,12 @@
     "tool": {
       "stockPrices": "Stock Prices",
       "companyOverview": "Company Overview",
+      "liveQuotes": "Live Quotes",
       "marketIndices": "Market Indices",
+      "marketOverview": "Market Overview",
       "sectorPerformance": "Sector Performance",
       "stockScreener": "Stock Screener",
+      "watchMarket": "Watch Market",
       "secFiling": "SEC Filing",
       "entityNews": "Entity News",
       "tickerSearch": "Ticker Search",
@@ -1970,11 +2008,16 @@
       "updating_preference": "updating preferences...",
       "fetchingSymbolPrices": "fetching {{symbol}} prices...",
       "fetchingPrices": "fetching prices...",
+      "fetchingSymbolQuotes": "quoting {{symbols}}...",
+      "fetchingQuotes": "fetching quotes...",
       "analyzingSymbol": "analyzing {{symbol}}...",
       "analyzing": "analyzing...",
       "fetchingMarketIndices": "fetching market indices...",
+      "fetchingMarketOverview": "fetching market overview...",
       "fetchingSectorData": "fetching sector data...",
       "screeningStocks": "screening stocks...",
+      "watchingMarket": "starting market watch...",
+      "unwatchingMarket": "stopping market watch...",
       "fetchingSymbolFiling": "fetching {{symbol}} filing...",
       "fetchingFiling": "fetching filing...",
       "searchingPattern": "searching '{{pattern}}'...",

@@ -15,7 +15,6 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from ptc_agent.config.file_utils import (
     AGENT_CONFIG_FILE,

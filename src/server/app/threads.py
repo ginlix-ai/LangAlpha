@@ -17,7 +17,9 @@ import os
 
 from fastapi import APIRouter, Header, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
+from src.server.services.features import user_feature_enabled
 from src.server.utils.api import (
     CurrentUserId,
     StampThreadAuth,
@@ -25,6 +27,7 @@ from src.server.utils.api import (
     require_workspace_owner,
     service_token_matches,
 )
+from src.utils.market_watch import get_watchlist
 from src.server.models.chat import ChatRequest, SubagentMessageRequest
 from src.server.models.conversation import (
     WorkspaceThreadListItem,
@@ -315,6 +318,21 @@ async def get_thread(thread_id: str, x_user_id: CurrentUserId):
     )
 
 
+class MarketWatchResponse(BaseModel):
+    thread_id: str
+    symbols: list[str]
+
+
+@router.get("/{thread_id}/market-watch", response_model=MarketWatchResponse)
+async def get_market_watch(thread_id: str, x_user_id: CurrentUserId):
+    """Current market-watch symbols for a thread (empty list when none)."""
+    await require_thread_owner(thread_id, x_user_id)
+    if not await user_feature_enabled(x_user_id, "market_watch"):
+        return MarketWatchResponse(thread_id=thread_id, symbols=[])
+    symbols = await get_watchlist(thread_id)
+    return MarketWatchResponse(thread_id=thread_id, symbols=symbols)
+
+
 @router.delete("/{thread_id}", response_model=ThreadDeleteResponse)
 async def delete_thread_endpoint(thread_id: str, x_user_id: CurrentUserId):
     """
@@ -326,14 +344,16 @@ async def delete_thread_endpoint(thread_id: str, x_user_id: CurrentUserId):
         await require_thread_owner(thread_id, x_user_id)
         await delete_thread(thread_id)
 
-        # Invalidate existence cache
+        # Invalidate existence cache + the thread's market-watch list, so a
+        # recreated thread id can't inherit the old symbols within the TTL.
         from src.server.database.conversation import thread_exists_key
         from src.utils.cache.redis_cache import get_cache_client
+        from src.utils.market_watch import watch_key
 
         cache = get_cache_client()
         if cache.enabled and cache.client:
             try:
-                await cache.client.delete(thread_exists_key(thread_id))
+                await cache.client.delete(thread_exists_key(thread_id), watch_key(thread_id))
             except Exception:
                 pass
 

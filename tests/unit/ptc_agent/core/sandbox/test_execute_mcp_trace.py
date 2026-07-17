@@ -34,7 +34,7 @@ WORK_DIR = "/home/workspace"
 _TRACE_LINES = [
     {
         "server": "market_data",
-        "tool": "get_stock_daily_prices",
+        "tool": "get_daily_prices",
         "args": {"symbol": "ACME"},
         "result_sha256": "a" * 64,
         "result_size": 42,
@@ -131,7 +131,7 @@ async def test_mcp_trace_populated_on_success(
 
     assert result.success is True
     assert [r["tool"] for r in result.mcp_trace] == [
-        "get_stock_daily_prices",
+        "get_daily_prices",
         "get_company_overview",
     ]
     assert result.mcp_trace[0]["result_sha256"] == "a" * 64
@@ -157,7 +157,7 @@ async def test_mcp_trace_populated_on_crash(
 
     assert result.success is False
     assert [r["tool"] for r in result.mcp_trace] == [
-        "get_stock_daily_prices",
+        "get_daily_prices",
         "get_company_overview",
     ]
     # The crash path still read the trace file back.
@@ -183,7 +183,7 @@ async def test_malformed_trace_lines_skipped(
     result = await sandbox.execute("print('hi')", auto_install=False)
 
     assert len(result.mcp_trace) == 2
-    assert result.mcp_trace[0]["tool"] == "get_stock_daily_prices"
+    assert result.mcp_trace[0]["tool"] == "get_daily_prices"
     assert result.mcp_trace[1]["tool"] == "get_company_overview"
 
 

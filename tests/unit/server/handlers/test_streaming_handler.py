@@ -225,6 +225,26 @@ class TestWorkflowStreamHandlerFormatting:
         parsed = json.loads(result.split("data: ", 1)[1].rstrip("\n"))
         assert "content" not in parsed
 
+    def test_format_sse_event_nan_becomes_null(self):
+        """NaN/Inf in event data must never reach the wire as bare `NaN` tokens.
+
+        Bare NaN is invalid JSON — browser JSON.parse throws and the whole SSE
+        frame (e.g. a tool_call_result) is silently dropped.
+        """
+        handler = self._make_handler()
+        result = handler._format_sse_event(
+            "tool_call_result",
+            {
+                "content": "ok",
+                "artifact": {"close": float("nan"), "series": [1.0, float("inf")]},
+            },
+        )
+        payload = result.split("data: ", 1)[1].rstrip("\n")
+        assert "NaN" not in payload and "Infinity" not in payload
+        parsed = json.loads(payload)
+        assert parsed["artifact"]["close"] is None
+        assert parsed["artifact"]["series"] == [1.0, None]
+
     def test_format_sse_event_accumulates_by_default(self):
         handler = self._make_handler()
         handler._format_sse_event("message_chunk", {"content": "hello"})

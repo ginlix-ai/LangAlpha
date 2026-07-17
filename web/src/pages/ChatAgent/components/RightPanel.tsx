@@ -4,36 +4,46 @@ import { useTranslation } from 'react-i18next';
 import { AnimatedTabs } from '@/components/ui/animated-tabs';
 import type { ContextPayload } from './FilePanel';
 import type { MemoryTier } from '../utils/agentPaths';
+import type { MarketWatchState } from '../hooks/utils/streamEventHandlers';
 import type { ProvenanceRecord } from '@/types/chat';
 
 const FilePanel = React.lazy(() => import('./FilePanel'));
 const MemoryPanel = React.lazy(() => import('./MemoryPanel'));
 const MemoPanel = React.lazy(() => import('./MemoPanel'));
 const SourcesPanel = React.lazy(() => import('./SourcesPanel'));
+const StatusPanel = React.lazy(() => import('./StatusPanel'));
 
-export type RightPanelTab = 'files' | 'memory' | 'memo' | 'sources';
+export type RightPanelTab = 'files' | 'memory' | 'memo' | 'sources' | 'status';
+
+/**
+ * What the panel is currently pointed at — one discriminated value replacing the
+ * former parallel `targetFile`/`…Dir`/`…MemoryKey`/`…MemoKey`/`…Sources`/`…Status`
+ * props. The active tab, tab visibility, and snap-back all derive from `.kind`,
+ * so exactly one target can be set at a time (no sibling-nulling dance).
+ */
+export type PanelTarget =
+  | { kind: 'file'; path?: string | null; dir?: string | null }
+  | { kind: 'memory'; key: string; tier: MemoryTier }
+  | { kind: 'memo'; key: string }
+  | { kind: 'sources'; messageId: string }
+  | { kind: 'status' };
 
 interface RightPanelProps {
   workspaceId: string;
   onClose: () => void;
-  targetFile?: string | null;
+  /** The panel's current target (file/memory/memo/sources/status), or null. */
+  panelTarget?: PanelTarget | null;
   onTargetFileHandled?: () => void;
-  targetDirectory?: string | null;
   onTargetDirHandled?: () => void;
-  /** Memory entry to pre-select when the Memory tab opens. */
-  targetMemoryKey?: string | null;
-  targetMemoryTier?: MemoryTier | null;
   onTargetMemoryHandled?: () => void;
-  /** Memo entry to pre-select when the Memo tab opens. */
-  targetMemoKey?: string | null;
   onTargetMemoHandled?: () => void;
-  /** Message id whose provenance to show; when set, snaps to the Sources tab. */
-  targetSources?: string | null;
   /** Live provenance records for the targeted message (keyed by record id). */
   sourcesRecords?: Record<string, ProvenanceRecord>;
   /** Provenance records merged across every turn in the thread (keyed by record
    * id). Powers the Sources panel's "All sources" scope. */
   allSourcesRecords?: Record<string, ProvenanceRecord>;
+  /** Live market-watch snapshot rendered by the Status tab. */
+  marketWatch?: MarketWatchState | null;
   /** Routes a clicked file/memory/memo path through ChatView's path-aware
    * router. Lets in-panel markdown links (e.g., a sibling memory entry
    * referenced from memory.md) jump to the right tab + entry. */
@@ -56,18 +66,14 @@ interface RightPanelProps {
 export default function RightPanel({
   workspaceId,
   onClose,
-  targetFile,
+  panelTarget = null,
   onTargetFileHandled,
-  targetDirectory,
   onTargetDirHandled,
-  targetMemoryKey,
-  targetMemoryTier,
   onTargetMemoryHandled,
-  targetMemoKey,
   onTargetMemoHandled,
-  targetSources,
   sourcesRecords,
   allSourcesRecords,
+  marketWatch,
   onOpenFile,
   files,
   filesLoading,
@@ -83,6 +89,16 @@ export default function RightPanel({
 }: RightPanelProps): React.ReactElement {
   const { t } = useTranslation();
   const [tab, setTab] = useState<RightPanelTab>(initialTab);
+  const watchSymbolCount = marketWatch?.symbols?.length ?? 0;
+
+  // Fan the single target back out to the per-panel pre-select props. Exactly
+  // one kind is ever set, so these are mutually exclusive by construction.
+  const kind = panelTarget?.kind;
+  const targetFile = panelTarget?.kind === 'file' ? panelTarget.path ?? null : null;
+  const targetDirectory = panelTarget?.kind === 'file' ? panelTarget.dir ?? null : null;
+  const targetMemoryKey = panelTarget?.kind === 'memory' ? panelTarget.key : null;
+  const targetMemoryTier = panelTarget?.kind === 'memory' ? panelTarget.tier : null;
+  const targetMemoKey = panelTarget?.kind === 'memo' ? panelTarget.key : null;
 
   const tabs = useMemo<{ id: RightPanelTab; label: string }[]>(
     () => {
@@ -91,33 +107,43 @@ export default function RightPanel({
         { id: 'memory', label: t('rightPanel.tabs.memory') },
         { id: 'memo', label: t('rightPanel.tabs.memo') },
       ];
+      // The Status tab surfaces the live market watch. Unlike Sources it also
+      // shows whenever a watch is active (symbols present) — so a user who
+      // opened Files by hand can still reach it — as well as on an explicit
+      // chip click (a 'status' target).
+      if (kind === 'status' || watchSymbolCount > 0) {
+        base.push({ id: 'status', label: t('rightPanel.tabs.status') });
+      }
       // The Sources tab is per-turn — only surface it when a turn's provenance
       // is being shown, so the chrome stays unchanged for file/memory/memo flows.
-      if (targetSources != null) {
+      if (kind === 'sources') {
         base.push({ id: 'sources', label: t('rightPanel.tabs.sources') });
       }
       return base;
     },
-    [t, targetSources],
+    [t, kind, watchSymbolCount],
   );
 
-  // Snap-back precedence: sources > memory > memo > file. The parent (ChatView)
-  // clears sibling targets before setting one, so in steady state only one
-  // branch fires; this effect is the second line of defense if multiple are set
-  // in the same render.
+  // Snap to the tab that owns the current target. Only one kind is ever set, so
+  // a single switch replaces the former precedence ladder; a null target leaves
+  // the tab where the user (or a prior snap) put it.
   React.useEffect(() => {
-    if (targetSources != null) setTab('sources');
-    else if (targetMemoryKey != null) setTab('memory');
-    else if (targetMemoKey != null) setTab('memo');
-    else if (targetFile || targetDirectory) setTab('files');
-  }, [targetSources, targetMemoryKey, targetMemoKey, targetFile, targetDirectory]);
+    switch (kind) {
+      case 'status': setTab('status'); break;
+      case 'sources': setTab('sources'); break;
+      case 'memory': setTab('memory'); break;
+      case 'memo': setTab('memo'); break;
+      case 'file': setTab('files'); break;
+    }
+  }, [panelTarget, kind]);
 
-  // The 'sources' tab only exists in `tabs` while targetSources is set. If it
-  // clears while Sources is open, `tab` would point at a tab no longer in the
-  // array (no active highlight + empty body); fall back so it always resolves.
+  // The Status/Sources tabs are conditional (see `tabs`). If the current tab
+  // disappears — Status when its target clears with no active watch, Sources
+  // when its target clears — fall back to Files so `tab` always resolves.
   React.useEffect(() => {
-    if (tab === 'sources' && targetSources == null) setTab('files');
-  }, [tab, targetSources]);
+    if (tab === 'status' && kind !== 'status' && watchSymbolCount === 0) setTab('files');
+    else if (tab === 'sources' && kind !== 'sources') setTab('files');
+  }, [tab, kind, watchSymbolCount]);
 
   return (
     <div
@@ -188,6 +214,7 @@ export default function RightPanel({
               onOpenFile={onOpenFile}
             />
           )}
+          {tab === 'status' && <StatusPanel marketWatch={marketWatch} />}
           {tab === 'sources' && (
             <SourcesPanel
               provenanceRecords={sourcesRecords}

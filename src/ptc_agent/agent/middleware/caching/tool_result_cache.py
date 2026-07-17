@@ -36,7 +36,7 @@ class ToolResultCacheMiddleware(AgentMiddleware):
     Example Usage:
         # Cache data retrieval tools
         data_cache = ToolResultCacheMiddleware(
-            monitored_tools={"get_stock_daily_prices", "get_company_overview"},
+            monitored_tools={"get_daily_prices", "get_company_overview"},
             cache_file_path="/data/raw.md",
             agent_types={"deep_research/data_agent"},
             cache_header="# Data Agent Tool Call Cache"

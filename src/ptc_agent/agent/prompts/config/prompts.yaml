@@ -28,6 +28,10 @@ defaults:
   # for Flash, which has no sandbox. PTC overrides to true at render time.
   sandbox_enabled: false
 
+  # Market watch (live price injection). Gates the watch_market row in
+  # tool_guide. Agent render overrides with the config.yaml master switch.
+  market_watch_enabled: true
+
 # System prompt template metadata (for documentation)
 system:
   description: Main system prompt for task coordination and sub-agent delegation

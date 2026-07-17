@@ -58,6 +58,7 @@ vi.mock('../../utils/api', () => ({
   removeFeedback: vi.fn(),
   getThreadFeedback: vi.fn().mockResolvedValue([]),
   watchThread: vi.fn(),
+  fetchMarketWatch: vi.fn().mockResolvedValue({ thread_id: 't', symbols: [] }),
 }));
 
 import { sendChatMessageStream, sendHitlResponse, replayThreadHistory } from '../../utils/api';

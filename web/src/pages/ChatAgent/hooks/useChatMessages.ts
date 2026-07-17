@@ -45,6 +45,7 @@ import {
   handleSubagentToolCalls,
   handleSubagentToolCallResult,
   handleTaskSteeringAccepted,
+  handleMarketWatchUpdate,
   getOrCreateTaskRefs,
 } from './utils/streamEventHandlers';
 import {
@@ -60,6 +61,7 @@ import {
   handleHistorySteeringDelivered,
   isSubagentHistoryEvent,
 } from './utils/historyEventHandlers';
+import { useMarketWatch } from './useMarketWatch';
 // Chart-annotation live bridge: writes agent-drawn annotations into the
 // shared MarketView store so the desktop MarketView chat panel (which uses
 // this engine for both flash and PTC) renders them live. Harmless on the
@@ -893,6 +895,11 @@ export function useChatMessages(
   const offloadBatchRef = useRef<OffloadBatch>({ args: 0, reads: 0, timer: null });
   // Track reconnection state for UI indicator
   const [isReconnecting, setIsReconnecting] = useState(false);
+
+  // Market-watch chip lifecycle: seed on thread load/switch + refetch on turn
+  // completion. Live mid-turn overwrites arrive via `market_watch_update` SSE
+  // events, which forward `setMarketWatch` (see processEvent below).
+  const { marketWatch, setMarketWatch } = useMarketWatch(threadId, isLoading, threadIdRef);
 
   // Track if this is a new conversation (for todo list card management)
   const isNewConversationRef = useRef(false);
@@ -3555,6 +3562,13 @@ export function useChatMessages(
         return;
       }
 
+      // (b) Live market-watch stamp — keep the persistent watch chip current
+      // mid-turn. Swallowed here so it never leaks into the message stream.
+      if (eventType === 'market_watch_update') {
+        handleMarketWatchUpdate({ event, setMarketWatch });
+        return;
+      }
+
       // Check if this is a subagent event - filter it out from main chat view
       const isSubagent = isSubagentEvent(event);
 
@@ -5874,6 +5888,7 @@ export function useChatMessages(
     threadModels,
     lastThreadModel,
     isLoading,
+    marketWatch,
     hasActiveSubagents,
     awaitingReportBack,
     workspaceStarting,

@@ -3,7 +3,7 @@ import {
   TrendingUp, Building2, BarChart3, PieChart, Search, Globe,
   FilePlus, FileText, FilePen, FolderSearch, SquareChevronRight, Wrench,
   Newspaper, Brain, User, FileBarChart, Clock, ClipboardList, Zap, Settings, Terminal,
-  Sparkles, BookText, BookMarked, BookPlus, PenLine,
+  Sparkles, BookText, BookMarked, BookPlus, PenLine, Eye,
 } from 'lucide-react';
 import { classifyAgentPath, topicFromMemoryKey, type AgentPathInfo } from '../utils/agentPaths';
 import { INTERVAL_LABEL } from '@/lib/bars';
@@ -51,11 +51,18 @@ type ParseTruncatedResult = TruncatedResultParsed | NotTruncatedResult;
 
 export const TOOL_DISPLAY_CONFIG: Record<string, ToolDisplayEntry> = {
   // Market Data
+  get_daily_prices:         { displayName: 'Daily Prices',         i18nKey: 'stockPrices',         icon: TrendingUp },
+  // Legacy name (pre-rename) — kept for SSE replay of historical threads
   get_stock_daily_prices:   { displayName: 'Stock Prices',         i18nKey: 'stockPrices',         icon: TrendingUp },
   get_company_overview:     { displayName: 'Company Overview',     i18nKey: 'companyOverview',     icon: Building2 },
+  get_quote:                { displayName: 'Live Quotes',          i18nKey: 'liveQuotes',          icon: Zap },
+  get_market_overview:      { displayName: 'Market Overview',      i18nKey: 'marketOverview',      icon: BarChart3 },
+  // Legacy names (pre-consolidation) — kept for SSE replay of historical threads
   get_market_indices:       { displayName: 'Market Indices',       i18nKey: 'marketIndices',       icon: BarChart3 },
   get_sector_performance:   { displayName: 'Sector Performance',   i18nKey: 'sectorPerformance',   icon: PieChart },
   screen_stocks:            { displayName: 'Stock Screener',       i18nKey: 'stockScreener',       icon: Search },
+  // Market watch (live price injection) — one tool, action="watch"/"unwatch"
+  watch_market:             { displayName: 'Watch Market',         i18nKey: 'watchMarket',         icon: Eye },
   // SEC
   get_sec_filing:           { displayName: 'SEC Filing',           i18nKey: 'secFiling',           icon: FileBarChart },
   // Web search / news
@@ -235,6 +242,7 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
   }
 
   switch (rawToolName) {
+    case 'get_daily_prices':
     case 'get_stock_daily_prices':
       return args?.symbol
         ? (tr?.('fetchingSymbolPrices', { symbol: args.symbol }) ?? `fetching ${args.symbol} prices...`)
@@ -243,12 +251,26 @@ export function getInProgressText(rawToolName: string, toolCall: ToolCall | unde
       return args?.symbol
         ? (tr?.('analyzingSymbol', { symbol: args.symbol }) ?? `analyzing ${args.symbol}...`)
         : (tr?.('analyzing') ?? 'analyzing...');
+    case 'get_quote': {
+      const symbols = Array.isArray(args?.symbols)
+        ? (args.symbols as unknown[]).filter((s): s is string => typeof s === 'string').join(', ')
+        : '';
+      return symbols
+        ? (tr?.('fetchingSymbolQuotes', { symbols }) ?? `quoting ${symbols}...`)
+        : (tr?.('fetchingQuotes') ?? 'fetching quotes...');
+    }
+    case 'get_market_overview':
+      return tr?.('fetchingMarketOverview') ?? 'fetching market overview...';
     case 'get_market_indices':
       return tr?.('fetchingMarketIndices') ?? 'fetching market indices...';
     case 'get_sector_performance':
       return tr?.('fetchingSectorData') ?? 'fetching sector data...';
     case 'screen_stocks':
       return tr?.('screeningStocks') ?? 'screening stocks...';
+    case 'watch_market':
+      return args?.action === 'unwatch'
+        ? (tr?.('unwatchingMarket') ?? 'stopping market watch...')
+        : (tr?.('watchingMarket') ?? 'starting market watch...');
     case 'get_sec_filing':
       return args?.symbol
         ? (tr?.('fetchingSymbolFiling', { symbol: args.symbol }) ?? `fetching ${args.symbol} filing...`)

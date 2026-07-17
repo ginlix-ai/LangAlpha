@@ -2,7 +2,6 @@
 
 import json
 
-import pytest
 
 from ptc_agent.agent.middleware.skills.discovery import SkillMetadata
 from ptc_agent.agent.middleware.skills.lock import (

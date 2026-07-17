@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
 import {
   Plus, ArrowUp, X, FileText, Loader2, Archive, Square,
-  ScrollText, ChartCandlestick, Zap, FileStack, ChevronDown, ChevronRight, FolderOpen, TextSelect,
+  ScrollText, Radar, ChartCandlestick, Zap, FileStack, ChevronDown, ChevronRight, FolderOpen, TextSelect,
   Terminal, Bot, Shrink, HardDriveDownload, Check, Brain, Flame, Rocket, CircleHelp,
   Mic, MicOff, Sparkles,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { TokenUsageRing, type TokenUsageData } from './token-usage-ring';
@@ -13,6 +14,7 @@ import {
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent,
 } from './dropdown-menu';
 import { usePreferences } from '@/hooks/usePreferences';
+import { useFeatureEnabled } from '@/hooks/useFeatures';
 import { useAllModels } from '@/hooks/useAllModels';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { areModelsCompatible, deriveQuickAccessModels, type ModelMetadata } from './chat-input.models';
@@ -57,6 +59,8 @@ interface ModelOptions {
   model: string | null;
   reasoningEffort: string | null;
   fastMode: boolean;
+  /** Per-message market-watch toggle — stamps live prices for tracked tickers. */
+  marketWatch?: boolean;
   /**
    * Widget context snapshots attached via the deck rail. Forwarded to the
    * backend as `additional_context` items of `type: "widget"`. Image-bearing
@@ -247,6 +251,56 @@ function getModelDisplayName(key: string | null): string {
   return name;
 }
 
+/**
+ * Composer pill toggle (Plan / Watch). Transparent when off; fills with
+ * `--color-border-muted` on hover and while active. `activeClass` tags the
+ * active state for CSS hooks; `title` is the hover tooltip.
+ */
+function PillToggle({
+  active,
+  onToggle,
+  icon: Icon,
+  label,
+  title,
+  activeClass,
+}: {
+  active: boolean;
+  onToggle: () => void;
+  icon: LucideIcon;
+  label: string;
+  title: string;
+  activeClass: string;
+}) {
+  return (
+    <button
+      className={`inline-flex items-center rounded-full border-none cursor-pointer${active ? ` ${activeClass}` : ''}`}
+      style={{
+        gap: '6px',
+        padding: '6px 10px',
+        fontSize: '13px',
+        fontWeight: 500,
+        background: active ? 'var(--color-border-muted)' : 'transparent',
+        color: 'var(--color-text-muted, #8b8fa3)',
+        border: '1px solid transparent',
+        transition: 'background 0.2s, color 0.2s, border-color 0.2s',
+      }}
+      onClick={(e) => { e.stopPropagation(); onToggle(); }}
+      onMouseEnter={(e) => {
+        if (!active) e.currentTarget.style.background = 'var(--color-border-muted)';
+      }}
+      onMouseLeave={(e) => {
+        if (!active) e.currentTarget.style.background = 'transparent';
+      }}
+      type="button"
+      title={title}
+      aria-pressed={active}
+    >
+      <Icon className="h-4 w-4" style={active ? { color: 'var(--color-accent-light)' } : {}} />
+      <span>{label}</span>
+    </button>
+  );
+}
+
 /* --- MAIN COMPONENT --- */
 
 const speechSupported = typeof window !== 'undefined' && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
@@ -387,6 +441,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   const { toast } = useToast();
   const isMobile = useIsMobile();
   const { preferences } = usePreferences();
+  const marketWatchEnabled = useFeatureEnabled('market_watch');
   const { validModelNames } = useAllModels();
   const otherPref = (preferences as Record<string, Record<string, unknown>> | null)?.other_preference;
   const starredModels = Array.isArray(otherPref?.starred_models)
@@ -398,6 +453,11 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   const [attachedFiles, setAttachedFiles] = useState<FileAttachment[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [planMode, setPlanMode] = useState(false);
+  const [watchMode, setWatchMode] = useState(false);
+  // Market watch is a PTC capability. The toggle state survives a switch to
+  // flash (the pill just hides), so every payload derives from this gated
+  // value — a watch flipped on in PTC must never ride a flash send.
+  const effectiveMarketWatch = watchMode && marketWatchEnabled && mode !== 'fast';
 
   // Model selector state — use flash model preference when in flash mode
   const modePreferredModel = mode === 'fast' ? (preferredFlashModel || preferredModel) : preferredModel;
@@ -584,7 +644,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   // Expose addContext method for external callers (e.g. FilePanel, message selection)
   useImperativeHandle(ref, () => ({
     getModelOptions() {
-      return { model: selectedModel, reasoningEffort, fastMode };
+      return { model: selectedModel, reasoningEffort, fastMode, marketWatch: effectiveMarketWatch };
     },
     addContext({ path, snippet, label, lineStart, lineEnd, lineCount, source }) {
       if (snippet) {
@@ -623,7 +683,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     setModel(model) {
       if (model) setSelectedModel(model);
     },
-  }), [selectedModel, reasoningEffort, fastMode]);
+  }), [selectedModel, reasoningEffort, fastMode, effectiveMarketWatch]);
 
   // Workspace dropdown
   const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false);
@@ -1105,6 +1165,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       model: selectedModel,
       reasoningEffort,
       fastMode,
+      marketWatch: effectiveMarketWatch,
       widgetSnapshots: widgetSnapshots.length ? widgetSnapshots : undefined,
     });
     setMessage('');
@@ -1124,7 +1185,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [hasContent, disabled, message, planMode, attachedFiles, onSend, onAction, mentionedFiles, slashCommands, selectedModel, reasoningEffort, fastMode, widgetSnapshots, t]);
+  }, [hasContent, disabled, message, planMode, effectiveMarketWatch, attachedFiles, onSend, onAction, mentionedFiles, slashCommands, selectedModel, reasoningEffort, fastMode, widgetSnapshots, t]);
 
   // --- Keyboard & Language Detection ---
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1564,31 +1625,27 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
 
               {/* Plan Mode Toggle — shown when no mode toggle (PTC enforced) OR mode === 'ptc' */}
               {(!hasModeToggle || mode === 'ptc') && (
-                <button
-                  className={`inline-flex items-center rounded-full border-none cursor-pointer${planMode ? ' plan-mode-toggle-active' : ''}`}
-                  style={{
-                    gap: '6px',
-                    padding: '6px 10px',
-                    fontSize: '13px',
-                    fontWeight: 500,
-                    background: planMode ? 'var(--color-border-muted)' : 'transparent',
-                    color: 'var(--color-text-muted, #8b8fa3)',
-                    border: '1px solid transparent',
-                    transition: 'background 0.2s, color 0.2s, border-color 0.2s',
-                  }}
-                  onClick={(e) => { e.stopPropagation(); setPlanMode(!planMode); }}
-                  onMouseEnter={(e) => {
-                    if (!planMode) e.currentTarget.style.background = 'var(--color-border-muted)';
-                  }}
-                  onMouseLeave={(e) => {
-                    if (!planMode) e.currentTarget.style.background = 'transparent';
-                  }}
-                  type="button"
-                  title="Plan mode — agent creates a plan for approval before executing"
-                >
-                  <ScrollText className="h-4 w-4" style={planMode ? { color: 'var(--color-accent-light)' } : {}} />
-                  <span>Plan</span>
-                </button>
+                <PillToggle
+                  active={planMode}
+                  onToggle={() => setPlanMode(!planMode)}
+                  icon={ScrollText}
+                  label={t('chat.pills.plan')}
+                  title={t('chat.pills.planTitle')}
+                  activeClass="plan-mode-toggle-active"
+                />
+              )}
+
+              {/* Market Watch Toggle — shown alongside Plan (PTC enforced OR mode === 'ptc'),
+                  gated behind the market_watch feature flag. */}
+              {(!hasModeToggle || mode === 'ptc') && marketWatchEnabled && (
+                <PillToggle
+                  active={watchMode}
+                  onToggle={() => setWatchMode(!watchMode)}
+                  icon={Radar}
+                  label={t('chat.pills.watch')}
+                  title={t('chat.pills.watchTitle')}
+                  activeClass="watch-mode-toggle-active"
+                />
               )}
             </div>
 
