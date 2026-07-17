@@ -101,6 +101,14 @@ class TestBuildLiveStamp:
             assert build_live_stamp([]) is None
             assert build_live_stamp([_snap(price=None, last_trade_price=None)]) is None
 
+    def test_nan_change_percent_is_omitted_not_rendered(self):
+        # A still-forming bar can carry NaN; it must drop the pct suffix, not
+        # print "nan%" into agent-visible stamp text.
+        with patch(f"{_MOD}.get_market_session", return_value=("REGULAR_HOURS", _FIXED_ET)):
+            stamp = build_live_stamp([_snap(change_percent=float("nan"))])
+        assert "NVDA $233.45" in stamp
+        assert "nan" not in stamp.lower()
+
 
 class TestCurrencyAndVenueAwareness:
     def test_hk_symbol_uses_hk_dollar_and_phase_suffix(self):

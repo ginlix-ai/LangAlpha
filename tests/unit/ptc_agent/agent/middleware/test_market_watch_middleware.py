@@ -129,6 +129,9 @@ def _assert_stamped(original, injected, count=1):
     assert tail.content.endswith("\n</market-watch>")
     # Self-identifies as feed output so it can't be mistaken for the user.
     assert "not a user message" in tail.content
+    # Tagged so history projection can drop the stamp by source, not just by
+    # content prefix (projector.py checks either).
+    assert tail.additional_kwargs.get("lc_source") == "market_watch"
     return tail
 
 

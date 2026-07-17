@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 # concurrency.
 BODY_WRITE_TASK_LIMIT = 16
 
+# Ceiling on any inline wait for in-flight writes. Pool-acquire failures raise
+# (and are swallowed), but a wedged connection can hang a write far longer than
+# any exception path — the store is best-effort, so neither the tool/model path
+# (schedule) nor turn-end (drain) may block behind a stall.
+BODY_WRITE_WAIT_TIMEOUT = 10.0
+
 
 async def store_bodies(items: list[tuple]) -> None:
     """Batch-write ``(sha, body, byte_len, content_type)`` rows (never raises).
@@ -94,7 +100,22 @@ async def schedule_body_write(
     """
     _reap(tasks)
     while len(tasks) >= max_tasks:
-        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait(
+            tasks,
+            return_when=asyncio.FIRST_COMPLETED,
+            timeout=BODY_WRITE_WAIT_TIMEOUT,
+        )
+        if not done:
+            # Every in-flight write is stalled. Piling more onto a stuck pool
+            # is worse than losing one best-effort body — drop this write.
+            logger.warning(
+                "[PROVENANCE] body-write backpressure stalled for %.0fs; "
+                "dropping one body write",
+                BODY_WRITE_WAIT_TIMEOUT,
+            )
+            if hasattr(coro, "close"):
+                coro.close()  # never-scheduled coroutine would warn at GC
+            return
         for task in done:
             tasks.discard(task)
             _consume(task)
@@ -116,8 +137,19 @@ async def drain_body_writes(tasks: set[asyncio.Task[None]]) -> None:
     if not pending:
         return
     try:
-        await asyncio.gather(
-            *(asyncio.shield(task) for task in pending), return_exceptions=True
+        await asyncio.wait_for(
+            asyncio.gather(
+                *(asyncio.shield(task) for task in pending), return_exceptions=True
+            ),
+            timeout=BODY_WRITE_WAIT_TIMEOUT,
+        )
+    except TimeoutError:
+        # Turn-end must not hang the SSE close behind a wedged write; the
+        # shielded tasks stay tracked and get consumed by their done callbacks.
+        logger.warning(
+            "[PROVENANCE] body-write drain timed out after %.0fs (%d pending)",
+            BODY_WRITE_WAIT_TIMEOUT,
+            len(pending),
         )
     finally:
         _reap(tasks)

@@ -24,6 +24,23 @@ def _thread_id(config: RunnableConfig) -> Optional[str]:
     return (config.get("configurable") or {}).get("thread_id")
 
 
+def _rejected(requested: Optional[List[str]], watched: List[str]) -> List[str]:
+    """Requested symbols that didn't land in the watch list (bad grammar or
+    over the max-symbols cap) — echoed back so a drop can't read as success.
+    Tokens are bounded to 20 chars; valid symbols (≤15) never truncate."""
+    accepted = set(watched)
+    seen: set = set()
+    out: List[str] = []
+    for raw in requested or []:
+        if not isinstance(raw, (str, int)):
+            continue
+        sym = str(raw).strip().upper()[:20]
+        if sym and sym not in accepted and sym not in seen:
+            seen.add(sym)
+            out.append(sym)
+    return out
+
+
 @tool
 async def watch_market(
     config: RunnableConfig,
@@ -60,4 +77,10 @@ async def watch_market(
         return "Market watch unavailable (cache offline)."
     if not watched:
         return "No valid ticker symbols provided."
-    return f"Now watching: {', '.join(watched)}.\n\n{_FEED_INSTRUCTIONS}"
+    result = f"Now watching: {', '.join(watched)}."
+    rejected = _rejected(symbols, watched)
+    if rejected:
+        result += (
+            f" Not added (invalid symbol or watch list full): {', '.join(rejected)}."
+        )
+    return f"{result}\n\n{_FEED_INSTRUCTIONS}"

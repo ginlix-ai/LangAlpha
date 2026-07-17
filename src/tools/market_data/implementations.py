@@ -7,6 +7,7 @@ Contains business logic separated from LangChain tool decorators.
 
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, timedelta, timezone
+import contextlib
 import logging
 import asyncio
 
@@ -881,9 +882,12 @@ Error retrieving price data: {str(e)}"""
     finally:
         # Success paths awaited the task (done → no-op); every other exit —
         # early return, error, or cancellation of this coroutine — must not
-        # leak a pending fetch.
+        # leak a pending fetch. cancel() only requests; await so the underlying
+        # HTTP call is actually closed before returning.
         if stamp_task is not None and not stamp_task.done():
             stamp_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await stamp_task
 
 
 async def fetch_company_overview_data(symbol: str) -> Dict[str, Any]:

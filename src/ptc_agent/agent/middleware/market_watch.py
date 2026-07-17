@@ -210,7 +210,14 @@ class MarketWatchMiddleware(AgentMiddleware):
         stamp = await self._stamp_for(request.messages, request.runtime)
         if stamp is None:
             return await handler(request)
-        messages = [*request.messages, HumanMessage(content=stamp)]
+        # lc_source lets history projection drop the stamp by tag, not just by
+        # content prefix, if the ephemeral invariant ever regresses.
+        messages = [
+            *request.messages,
+            HumanMessage(
+                content=stamp, additional_kwargs={"lc_source": "market_watch"}
+            ),
+        ]
         # Breakpoint-keyed caches (Anthropic; OpenAI explicit mode) write their
         # incremental entry at the request tail — the ephemeral stamp, a message
         # the next request doesn't contain at that position — so history would

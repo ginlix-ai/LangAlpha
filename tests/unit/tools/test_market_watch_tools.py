@@ -85,3 +85,23 @@ async def test_unwatch_cache_unavailable_is_not_reported_as_stopped():
         result = await watch_market.ainvoke({"action": "unwatch"}, config=_CFG)
     assert "unavailable" in result.lower()
     assert "stopped" not in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_watch_reports_rejected_symbols():
+    """A dropped symbol (bad grammar or cap overflow) must not read as success:
+    with a non-empty watchlist, "Now watching: AAPL." alone is indistinguishable
+    from the requested symbol having been added."""
+    with patch(f"{_MOD}.add_symbols", AsyncMock(return_value=["AAPL"])):
+        result = await watch_market.ainvoke({"symbols": ["SPX 500"]}, config=_CFG)
+    assert "Now watching: AAPL" in result
+    assert "Not added" in result
+    assert "SPX 500" in result
+
+
+@pytest.mark.asyncio
+async def test_watch_no_rejection_note_when_all_added():
+    # Lowercase input normalizes to the accepted symbol — not a rejection.
+    with patch(f"{_MOD}.add_symbols", AsyncMock(return_value=["AAPL", "NVDA"])):
+        result = await watch_market.ainvoke({"symbols": ["nvda"]}, config=_CFG)
+    assert "Not added" not in result

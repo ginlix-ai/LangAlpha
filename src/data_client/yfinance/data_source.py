@@ -179,6 +179,13 @@ def _fetch_single_snapshot(sym: str) -> dict[str, Any] | None:
 class YFinanceDataSource:
     """Market data source backed by Yahoo Finance (yfinance library)."""
 
+    @staticmethod
+    def _api_symbol(symbol: str, is_index: bool) -> str:
+        # Suffixed index symbols (000300.SS) are already valid — never caret them.
+        if not is_index or symbol.startswith("^") or "." in symbol:
+            return symbol
+        return f"^{symbol}"
+
     async def get_intraday(
         self,
         symbol: str,
@@ -193,8 +200,7 @@ class YFinanceDataSource:
             raise ValueError(
                 f"Interval '{interval}' is not supported by yfinance"
             )
-        # Suffixed index symbols (000300.SS) are already valid — never caret them.
-        api_symbol = f"^{symbol}" if is_index and not symbol.startswith("^") and "." not in symbol else symbol
+        api_symbol = self._api_symbol(symbol, is_index)
         scale = minor_unit_scale(symbol)
         return await asyncio.to_thread(
             _fetch_history, api_symbol, yf_interval, from_date, to_date, scale
@@ -208,8 +214,7 @@ class YFinanceDataSource:
         is_index: bool = False,
         user_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        # Suffixed index symbols (000300.SS) are already valid — never caret them.
-        api_symbol = f"^{symbol}" if is_index and not symbol.startswith("^") and "." not in symbol else symbol
+        api_symbol = self._api_symbol(symbol, is_index)
         scale = minor_unit_scale(symbol)
         return await asyncio.to_thread(
             _fetch_history, api_symbol, "1d", from_date, to_date, scale
@@ -222,8 +227,7 @@ class YFinanceDataSource:
         user_id: str | None = None,
     ) -> list[dict[str, Any]]:
         prepared = [
-            (f"^{s}" if asset_type == "indices" and not s.startswith("^") and "." not in s else s)
-            for s in symbols
+            self._api_symbol(s, is_index=(asset_type == "indices")) for s in symbols
         ]
         if not prepared:
             return []

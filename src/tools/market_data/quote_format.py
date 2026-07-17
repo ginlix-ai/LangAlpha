@@ -164,11 +164,13 @@ def build_live_stamp(snaps: list[dict[str, Any]]) -> Optional[str]:
     priced = [s for s in snaps if current_price(s) is not None]
     if not priced:
         return None
-    quotes = ", ".join(
-        f"{s.get('symbol', '?')} {_fmt_price(current_price(s), s.get('symbol'))}"
-        + (f" ({'+' if s['change_percent'] >= 0 else ''}{s['change_percent']:.2f}%)"
-           if s.get("change_percent") is not None else "")
-        for s in priced
-    )
+    parts = []
+    for s in priced:
+        text = f"{s.get('symbol', '?')} {_fmt_price(current_price(s), s.get('symbol'))}"
+        pct = finite_or_none(s.get("change_percent"))
+        if pct is not None:
+            text += f" ({'+' if pct >= 0 else ''}{pct:.2f}%)"
+        parts.append(text)
+    quotes = ", ".join(parts)
     label = _SESSION_LABELS.get(session_name, session_name.lower())
     return f"[Live: {quotes} — as of {now_et.strftime('%H:%M:%S ET')}, {label}]"
