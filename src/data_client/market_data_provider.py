@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from src.market_protocol import to_canonical
+from src.market_protocol import CARET_INDEX_REGIONS, to_canonical
 
 from .base import FetchResult, MarketDataSource
 
@@ -42,16 +42,6 @@ _SUFFIX_MAP: dict[str, str] = {
 }
 
 
-# Caret-prefixed indices carry no dot suffix, so the suffix parser would
-# misroute them to "us" and waste a doomed ginlix-data attempt.
-_CARET_INDEX_REGIONS: dict[str, str] = {
-    "^HSI": "hk", "^HSCE": "hk",
-    "^N225": "jp",
-    "^FTSE": "uk",
-    "^GDAXI": "eu", "^FCHI": "eu", "^STOXX50E": "eu",
-}
-
-
 def symbol_market(symbol: str) -> str:
     """Derive market region from a symbol's suffix (routing token).
 
@@ -62,8 +52,8 @@ def symbol_market(symbol: str) -> str:
     protocol (:func:`symbol_timezone`).
     """
     symbol = symbol.upper()
-    if symbol in _CARET_INDEX_REGIONS:
-        return _CARET_INDEX_REGIONS[symbol]
+    if symbol in CARET_INDEX_REGIONS:
+        return CARET_INDEX_REGIONS[symbol]
     if "." not in symbol or symbol.endswith(".US"):
         return "us"
     suffix = symbol.rsplit(".", 1)[-1]

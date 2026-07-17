@@ -557,14 +557,19 @@ class TestLangChainFetcherContract:
         for key in ("date", "open", "high", "low", "close", "volume"):
             assert key in bar
 
-    async def test_fetch_market_indices(self):
-        from src.tools.market_data.implementations import fetch_market_indices
+    async def test_fetch_index_day_snapshot(self):
+        from datetime import datetime, timezone
 
-        content, artifact = await fetch_market_indices()
+        from src.tools.market_data.implementations import _fetch_index_day_snapshot
+
+        today = datetime.now(timezone.utc).date().isoformat()
+        content, artifact, snapshot_date = await _fetch_index_day_snapshot(
+            ["^GSPC"], today
+        )
         assert artifact["type"] == "market_indices"
-        assert "indices" in artifact
-        # At least one index series should be populated.
-        assert any(len(v) > 0 for v in artifact["indices"].values())
+        assert snapshot_date is not None
+        # The index series should be populated with context bars.
+        assert len(artifact["indices"]["^GSPC"]["ohlcv"]) > 0
 
 
 # ---------------------------------------------------------------------------

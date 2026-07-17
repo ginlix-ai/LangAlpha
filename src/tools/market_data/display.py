@@ -118,6 +118,34 @@ def _is_us_clock(ref: Optional[InstrumentRef]) -> bool:
     return ref.tz == "America/New_York"
 
 
+def venue_phase(
+    ref: Optional[InstrumentRef], at: Optional[datetime] = None
+) -> Optional[MarketPhase]:
+    """Exchange-calendar phase for a listing at ``at`` (default now); ``None`` on any failure.
+
+    The single place the calendar lookup happens — display and quote helpers
+    build their phase suffixes on this so the lookup+guard live in one spot.
+    """
+    if ref is None:
+        return None
+    try:
+        return get_calendar(ref.calendar_id).phase_at(at or datetime.now(timezone.utc))
+    except Exception:
+        return None
+
+
+def venue_local_time(
+    ref: Optional[InstrumentRef], at: Optional[datetime] = None
+) -> Optional[datetime]:
+    """``at`` (default now) in the listing's exchange-local timezone; ``None`` on any failure."""
+    if ref is None:
+        return None
+    try:
+        return (at or datetime.now(timezone.utc)).astimezone(ZoneInfo(ref.tz))
+    except Exception:
+        return None
+
+
 # MarketPhase -> display label for the "Market Status:" quote line.
 _PHASE_LABELS: Dict[MarketPhase, str] = {
     MarketPhase.PRE: "Pre-Market",
@@ -148,11 +176,10 @@ def _market_status_line(
         return f"**Market Status:** {us_label} | **As of:** {us_clock_et.strftime('%H:%M ET')}"
     if ref is None:
         return None
-    try:
-        now = datetime.now(timezone.utc)
-        phase = get_calendar(ref.calendar_id).phase_at(now)
-        local = now.astimezone(ZoneInfo(ref.tz))
-    except Exception:
+    now = datetime.now(timezone.utc)
+    phase = venue_phase(ref, now)
+    local = venue_local_time(ref, now)
+    if phase is None or local is None:
         return None
     label = _PHASE_LABELS.get(phase, phase.value.replace("_", " ").title())
     return f"**Market Status:** {label} | **As of:** {local.strftime('%H:%M %Z')}"

@@ -1,6 +1,7 @@
 """Tests for the shared quote formatter."""
 
-from datetime import datetime
+import re
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytz
@@ -11,9 +12,12 @@ from src.tools.market_data.quote_format import (
     current_price,
     format_quote_block,
     format_quote_line,
+    venue_clock,
 )
 
 _MOD = "src.tools.market_data.quote_format"
+# The exchange-calendar lookup lives in display.venue_phase; patch it there.
+_DISPLAY = "src.tools.market_data.display"
 _ET = pytz.timezone("US/Eastern")
 _FIXED_ET = _ET.localize(datetime(2026, 7, 1, 14, 32, 5))
 
@@ -100,24 +104,34 @@ class TestBuildLiveStamp:
 
 class TestCurrencyAndVenueAwareness:
     def test_hk_symbol_uses_hk_dollar_and_phase_suffix(self):
-        # 0700.HK is priced in HKD and its venue phase is surfaced per line. The
-        # currency comes from the real protocol resolution; only the calendar
-        # (phase) boundary is mocked so the suffix is deterministic.
+        # 0700.HK is priced in HKD; its venue phase AND market-local clock are
+        # surfaced per line. The currency comes from the real protocol
+        # resolution; only the calendar (phase) boundary is mocked so the
+        # phase half of the suffix is deterministic.
         snap = {"symbol": "0700.HK", "last_trade_price": 318.20,
                 "change_percent": -0.5, "volume": 12_000_000}
-        with patch(f"{_MOD}.get_calendar") as gc:
+        with patch(f"{_DISPLAY}.get_calendar") as gc:
             gc.return_value.phase_at.return_value = MarketPhase.CLOSED
             line = format_quote_line(snap)
         assert "HK$318.20" in line
-        assert "(closed)" in line
+        assert re.search(r"\(closed, \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} HKT\)$", line)
 
-    def test_regular_hours_have_no_phase_suffix(self):
+    def test_regular_hours_suffix_is_venue_clock_only(self):
         snap = {"symbol": "0700.HK", "last_trade_price": 318.20}
-        with patch(f"{_MOD}.get_calendar") as gc:
+        with patch(f"{_DISPLAY}.get_calendar") as gc:
             gc.return_value.phase_at.return_value = MarketPhase.REGULAR
             line = format_quote_line(snap)
         assert "HK$318.20" in line
-        assert "(" not in line  # no phase suffix during regular hours
+        assert re.search(r"\(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} HKT\)$", line)
+        assert "closed" not in line
+
+    def test_us_symbol_line_has_no_venue_clock(self):
+        # US listings ride the block header's ET clock — no per-line stamp.
+        with patch(f"{_DISPLAY}.get_calendar") as gc:
+            gc.return_value.phase_at.return_value = MarketPhase.REGULAR
+            line = format_quote_line(_snap())
+        assert "ET" not in line
+        assert "(" not in line
 
     def test_unresolvable_symbol_falls_back_to_dollar(self):
         # A symbol the protocol can't resolve degrades to '$' with no suffix and
@@ -128,10 +142,36 @@ class TestCurrencyAndVenueAwareness:
         assert line.startswith("ZZZ")
         assert "$12.34" in line
 
+    def test_venue_clock_converts_to_market_timezone_with_date(self):
+        # 14:32:05 ET on 2026-07-01 (EDT, UTC-4) is 02:32:05 HKT the NEXT day —
+        # the date in the stamp is what disambiguates the rollover.
+        at = datetime(2026, 7, 1, 18, 32, 5, tzinfo=timezone.utc)
+        assert venue_clock("0700.HK", at) == "2026-07-02 02:32:05 HKT"
+
+    def test_venue_clock_none_for_us_and_unresolvable(self):
+        assert venue_clock("NVDA") is None
+        with patch(f"{_MOD}.resolve_ref", return_value=None):
+            assert venue_clock("ZZZ") is None
+
+    def test_grouping_parity_with_canonical_fmt_price(self):
+        # get_quote groups thousands ("$6,120.50"); the canonical
+        # company-overview path does not ("$6120.50"). Both now derive from the
+        # same fmt_price — the ONLY difference is the group flag, so stripping
+        # commas from the quote line yields the canonical spelling exactly.
+        from src.tools.market_data.currency import fmt_price
+
+        snap = {"symbol": "SPY", "last_trade_price": 6120.5}
+        with patch(f"{_DISPLAY}.get_calendar") as gc:
+            gc.return_value.phase_at.return_value = MarketPhase.REGULAR
+            line = format_quote_line(snap)
+        assert "$6,120.50" in line
+        assert fmt_price(6120.5, "USD") == "$6120.50"
+        assert line.replace(",", "").split()[1] == fmt_price(6120.5, "USD")
+
     def test_block_header_drops_us_label_for_foreign_venue(self):
         # A block containing a non-US listing must not claim a US session label.
         with patch(f"{_MOD}.get_market_session", return_value=("REGULAR_HOURS", _FIXED_ET)), \
-             patch(f"{_MOD}.get_calendar") as gc:
+             patch(f"{_DISPLAY}.get_calendar") as gc:
             gc.return_value.phase_at.return_value = MarketPhase.REGULAR
             block = format_quote_block([{"symbol": "0700.HK", "last_trade_price": 318.20}])
         header = block.split("\n")[0]

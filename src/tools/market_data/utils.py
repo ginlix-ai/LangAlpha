@@ -74,6 +74,11 @@ def format_number(value: Optional[float], suffix: bool = True) -> str:
         return f"{value:,.2f}"
 
 
+def finite_or_none(value) -> Optional[float]:
+    """Return value if it's a finite number, else None (NaN/Inf/non-numeric)."""
+    return value if isinstance(value, (int, float)) and math.isfinite(value) else None
+
+
 def format_percentage(value: Optional[float]) -> str:
     """
     Format decimal as percentage with sign.

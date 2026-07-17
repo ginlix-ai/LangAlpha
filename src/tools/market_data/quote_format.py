@@ -8,16 +8,20 @@ symbol degrades to US/``$`` formatting — the formatter must never raise (it si
 in tool-output paths and the market-watch middleware).
 """
 
-import math
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Optional
 
 from src.market_protocol import MarketPhase
-from src.market_protocol.calendars import get_calendar
 
-from .currency import currency_symbol
-from .display import _is_us_clock, _symbol_currency, resolve_ref
-from .utils import get_market_session
+from .currency import fmt_price
+from .display import (
+    _is_us_clock,
+    _symbol_currency,
+    resolve_ref,
+    venue_local_time,
+    venue_phase,
+)
+from .utils import finite_or_none, get_market_session
 
 _SESSION_LABELS = {
     "PRE_MARKET": "pre-market",
@@ -34,40 +38,65 @@ def current_price(snap: dict[str, Any]) -> Optional[float]:
     existing None handling skips them instead of rendering "$nan".
     """
     for key in ("last_trade_price", "price"):
-        value = snap.get(key)
-        if isinstance(value, (int, float)) and math.isfinite(value):
+        value = finite_or_none(snap.get(key))
+        if value is not None:
             return value
     return None
 
 
 def _fmt_price(price: float, symbol: Optional[str]) -> str:
-    """Currency-aware price with thousands grouping; falls back to '$' on any failure.
+    """Currency-aware, thousands-grouped price for quote output; '$' on any failure.
 
-    Takes the currency prefix and decimals from the protocol (``HK$``, ``£``,
-    ``¥`` …) but keeps the legacy comma grouping, so USD renders exactly as the
-    old hardcoded formatting.
+    Grouping is the get_quote house style — the only delta from the canonical
+    :func:`fmt_price`, which now owns the format. Never raises: the formatter
+    sits in tool-output and market-watch middleware paths.
     """
     try:
-        spec = _symbol_currency(resolve_ref(symbol))
-        return f"{currency_symbol(spec.currency)}{price:,.{spec.decimals}f}"
+        return fmt_price(price, _symbol_currency(resolve_ref(symbol)), group=True)
     except Exception:
         return f"${price:,.2f}"
 
 
-def _phase_suffix(symbol: Optional[str]) -> str:
-    """' (closed)'-style venue phase suffix; '' for regular hours or on any failure.
+def venue_clock(symbol: Optional[str], at: Optional[datetime] = None) -> Optional[str]:
+    """Venue-local stamp ('2026-07-14 15:32:05 HKT') for a non-US listing.
 
-    A non-regular phase (pre/post/lunch/closed/halted) is surfaced per line so an
-    off-hours quote doesn't read as a live regular-session price.
+    Carries the date — a venue's local date can differ from the ET header's.
+    None for US listings (the ET header clock already covers them),
+    unresolvable symbols, or on any failure.
+    """
+    try:
+        ref = resolve_ref(symbol)
+        if ref is None or _is_us_clock(ref):
+            return None
+        local = venue_local_time(ref, at)
+        if local is None:
+            return None
+        abbrev = local.strftime("%Z") or ref.tz
+        return f"{local.strftime('%Y-%m-%d %H:%M:%S')} {abbrev}"
+    except Exception:
+        return None
+
+
+def _venue_suffix(symbol: Optional[str]) -> str:
+    """Per-line venue suffix: phase and/or venue-local clock; '' on any failure.
+
+    A non-regular phase (pre/post/lunch/closed/halted) is surfaced so an
+    off-hours quote doesn't read as a live regular-session price. Non-US
+    listings additionally carry their market-local clock — the block header's
+    ET stamp doesn't locate their price in venue time.
     """
     try:
         ref = resolve_ref(symbol)
         if ref is None:
             return ""
-        phase = get_calendar(ref.calendar_id).phase_at(datetime.now(timezone.utc))
-        if phase == MarketPhase.REGULAR:
+        phase = venue_phase(ref)
+        if phase is None:  # calendar unreadable — omit the suffix
             return ""
-        return f" ({phase.value})"
+        clock = venue_clock(symbol)
+        parts = [] if phase == MarketPhase.REGULAR else [phase.value]
+        if clock:
+            parts.append(clock)
+        return f" ({', '.join(parts)})" if parts else ""
     except Exception:
         return ""
 
@@ -98,7 +127,7 @@ def format_quote_line(snap: dict[str, Any], prev_price: Optional[float] = None) 
     if prev_price and price is not None and prev_price > 0:
         delta_pct = (price - prev_price) / prev_price * 100
         parts.append(f"({'+' if delta_pct >= 0 else ''}{delta_pct:.2f}% since last check)")
-    return "  ".join(parts) + _phase_suffix(symbol)
+    return "  ".join(parts) + _venue_suffix(symbol)
 
 
 def format_quote_block(
@@ -112,7 +141,7 @@ def format_quote_block(
     for a non-US venue — each line carries its own phase suffix instead).
     """
     session_name, now_et = get_market_session()
-    clock = now_et.strftime("%H:%M:%S ET")
+    clock = now_et.strftime("%Y-%m-%d %H:%M:%S ET")
     all_us = all(_is_us_clock(resolve_ref(s.get("symbol"))) for s in snaps)
     if all_us:
         label = _SESSION_LABELS.get(session_name, session_name.lower())

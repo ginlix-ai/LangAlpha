@@ -9,7 +9,6 @@ from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, timedelta, timezone
 import logging
 import asyncio
-import math
 
 from langchain_core.runnables import RunnableConfig
 
@@ -21,12 +20,12 @@ from .display import (
     _symbol_currency,
     resolve_ref,
 )
-from .quote_format import build_live_stamp, format_quote_block
-from .utils import format_number, format_percentage, get_market_session
+from .quote_format import build_live_stamp, format_quote_block, venue_clock
+from .utils import finite_or_none, format_number, format_percentage, get_market_session
 from src.data_client import get_financial_data_provider, get_market_data_provider
 from src.data_client.ginlix_data.pagination import paginate_cursor
 from src.data_client.market_data_provider import symbol_timezone
-from src.market_protocol import to_legacy_api
+from src.market_protocol import CARET_INDEX_REGIONS, AssetClass, to_legacy_api
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +42,6 @@ def _safe_result(result, default=None):
     if isinstance(result, Exception):
         return default
     return result if result is not None else default
-
-
-def _finite_or_none(v):
-    """Return v if it's a finite number, else None (NaN/Inf/non-numeric)."""
-    return v if isinstance(v, (int, float)) and math.isfinite(v) else None
 
 
 def _normalize_market_bars(
@@ -81,9 +75,13 @@ def _normalize_market_bars(
         else:
             date_str = bar.get("date", "N/A")
 
-        # A forming bar can carry NaN prices; treat non-finite as missing so
-        # it can't poison the change computation or downstream JSON.
-        close = _finite_or_none(bar.get("close"))
+        # A forming bar can carry NaN OHLCV; drop non-finite fields to None so
+        # they never reach downstream JSON.
+        open_ = finite_or_none(bar.get("open"))
+        high = finite_or_none(bar.get("high"))
+        low = finite_or_none(bar.get("low"))
+        close = finite_or_none(bar.get("close"))
+        volume = finite_or_none(bar.get("volume"))
         change: Optional[float] = None
         change_pct: Optional[float] = None
         if close is not None and prev_close is not None and prev_close != 0:
@@ -93,11 +91,11 @@ def _normalize_market_bars(
         result.append(
             {
                 "date": date_str,
-                "open": bar.get("open"),
-                "high": bar.get("high"),
-                "low": bar.get("low"),
+                "open": open_,
+                "high": high,
+                "low": low,
                 "close": close,
-                "volume": bar.get("volume"),
+                "volume": volume,
                 "change": change,
                 "changePercent": change_pct,
                 "symbol": symbol,
@@ -324,94 +322,6 @@ def _format_price_data_as_table(data: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _format_indices_data_as_table(indices_data: Dict[str, List[Dict[str, Any]]]) -> str:
-    """
-    Format multiple market indices data as markdown tables.
-
-    Args:
-        indices_data: Dictionary mapping index symbol to list of price data
-
-    Returns:
-        Markdown-formatted tables string (one table per index)
-    """
-    if not indices_data:
-        return "No index data available."
-
-    lines = []
-
-    # Count total days
-    all_dates = set()
-    for data_list in indices_data.values():
-        for record in data_list:
-            if record.get("date"):
-                all_dates.add(record.get("date"))
-
-    num_days = len(all_dates)
-    sorted_dates = sorted(all_dates)
-    start_date = sorted_dates[0] if sorted_dates else "N/A"
-    end_date = sorted_dates[-1] if sorted_dates else "N/A"
-
-    # Header
-    lines.append(f"## Market Indices ({num_days} Trading Days)")
-    lines.append("")
-    lines.append(f"**Period:** {start_date} to {end_date}")
-    lines.append("")
-
-    # Create table for each index
-    for i, (symbol, data) in enumerate(indices_data.items()):
-        if not data:
-            continue
-
-        # Index name
-        index_name = _get_index_name(symbol)
-        lines.append(f"### {index_name} ({symbol})")
-        lines.append("")
-
-        # Table header
-        lines.append(
-            "| Date       | Open        | High        | Low         | Close       | Volume      | Change    |"
-        )
-        lines.append(
-            "|------------|-------------|-------------|-------------|-------------|-------------|-----------|"
-        )
-
-        # Table rows
-        for record in data:
-            date = record.get("date", "N/A")
-            open_price = record.get("open")
-            high_price = record.get("high")
-            low_price = record.get("low")
-            close_price = record.get("close")
-            volume = record.get("volume")
-            change_pct = record.get("changePercent")
-
-            # Format prices
-            open_str = f"{open_price:,.2f}" if open_price is not None else "N/A"
-            high_str = f"{high_price:,.2f}" if high_price is not None else "N/A"
-            low_str = f"{low_price:,.2f}" if low_price is not None else "N/A"
-            close_str = f"{close_price:,.2f}" if close_price is not None else "N/A"
-
-            # Format volume
-            volume_str = (
-                fmt_count(volume) if volume is not None else "N/A"
-            )
-
-            # Format change percentage
-            if change_pct is not None:
-                sign = "+" if change_pct >= 0 else ""
-                change_str = f"{sign}{change_pct:.2f}%"
-            else:
-                change_str = "N/A"
-
-            lines.append(
-                f"| {date} | {open_str:>11} | {high_str:>11} | {low_str:>11} | {close_str:>11} | {volume_str:>11} | {change_str:>9} |"
-            )
-
-        # Add spacing between indices
-        if i < len(indices_data) - 1:
-            lines.append("")
-
-    return "\n".join(lines)
 
 
 def _format_sectors_as_table(sectors_data: List[Dict[str, Any]]) -> str:
@@ -507,12 +417,12 @@ def _calculate_price_statistics(data: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     # Extract closing prices for calculations (finite values only — a forming
     # bar can carry NaN prices that would poison every derived stat)
-    closes = [c for c in (_finite_or_none(d.get("close")) for d in sorted_data) if c is not None]
+    closes = [c for c in (finite_or_none(d.get("close")) for d in sorted_data) if c is not None]
     if not closes:
         return {}
 
-    highs = [h for h in (_finite_or_none(d.get("high")) for d in sorted_data) if h is not None]
-    lows = [lo for lo in (_finite_or_none(d.get("low")) for d in sorted_data) if lo is not None]
+    highs = [h for h in (finite_or_none(d.get("high")) for d in sorted_data) if h is not None]
+    lows = [lo for lo in (finite_or_none(d.get("low")) for d in sorted_data) if lo is not None]
 
     # Aggregated OHLC
     first_day = sorted_data[0]
@@ -524,8 +434,8 @@ def _calculate_price_statistics(data: List[Dict[str, Any]]) -> Dict[str, Any]:
         "start_date": first_day.get("date", "N/A"),
         "end_date": last_day.get("date", "N/A"),
         # Aggregated OHLC
-        "period_open": _finite_or_none(first_day.get("open")),
-        "period_close": _finite_or_none(last_day.get("close")),
+        "period_open": finite_or_none(first_day.get("open")),
+        "period_close": finite_or_none(last_day.get("close")),
         "period_high": max(highs) if highs else None,
         "period_low": min(lows) if lows else None,
         # Price range
@@ -576,7 +486,7 @@ def _calculate_price_statistics(data: List[Dict[str, Any]]) -> Dict[str, Any]:
         stats["volatility"] = None
 
     # Volume statistics
-    volumes = [v for v in (_finite_or_none(d.get("volume")) for d in sorted_data) if v is not None]
+    volumes = [v for v in (finite_or_none(d.get("volume")) for d in sorted_data) if v is not None]
     if volumes:
         stats["avg_volume"] = sum(volumes) / len(volumes)
         stats["total_volume"] = sum(volumes)
@@ -691,111 +601,6 @@ def _format_price_summary(stats: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _format_indices_summary(
-    indices_data: Dict[str, List[Dict[str, Any]]], period_info: Dict[str, Any]
-) -> str:
-    """
-    Format multiple market indices statistics into a summary report.
-
-    Args:
-        indices_data: Dictionary mapping index symbol to list of price data
-        period_info: Dictionary with period metadata (num_days, start_date, end_date)
-
-    Returns:
-        Formatted string report with sections for each index
-    """
-    if not indices_data:
-        return "No index data available for summary"
-
-    from .utils import format_percentage
-
-    lines = []
-
-    # Header
-    num_days = period_info.get("num_days", 0)
-    start_date = period_info.get("start_date", "N/A")
-    end_date = period_info.get("end_date", "N/A")
-
-    lines.append(f"**Period:** {start_date} to {end_date} ({num_days} trading days)")
-    lines.append("")
-
-    # Process each index
-    for i, (symbol, data) in enumerate(indices_data.items()):
-        if not data:
-            continue
-
-        # Calculate statistics for this index using existing helper
-        stats = _calculate_price_statistics(data)
-
-        if not stats:
-            continue
-
-        # Index section header
-        index_name = _get_index_name(symbol)
-        lines.append(f"### {index_name} ({symbol})")
-        lines.append("")
-
-        # Collect metrics for table
-        metrics_rows = []
-
-        # Period OHLC
-        period_open = stats.get("period_open")
-        period_close = stats.get("period_close")
-        period_high = stats.get("period_high")
-        period_low = stats.get("period_low")
-
-        # Index levels are unitless points, not a currency amount — render bare
-        # (matching the short-period index table) so both paths agree.
-        if period_open is not None and period_close is not None:
-            metrics_rows.append(
-                ("Period", f"{period_open:,.2f} → {period_close:,.2f}")
-            )
-        if period_high is not None and period_low is not None:
-            metrics_rows.append(
-                ("Range", f"{period_low:,.2f} - {period_high:,.2f}")
-            )
-
-        # Performance
-        period_change = stats.get("period_change")
-        period_change_pct = stats.get("period_change_pct")
-        if period_change is not None and period_change_pct is not None:
-            sign = "+" if period_change >= 0 else ""
-            metrics_rows.append(
-                (
-                    "Change",
-                    f"{sign}{period_change:,.2f} ({format_percentage(period_change_pct)})",
-                )
-            )
-
-        # Volatility
-        volatility = stats.get("volatility")
-        if volatility is not None:
-            metrics_rows.append(("Volatility", f"{volatility:.2f}%"))
-
-        # Moving Averages
-        ma_20 = stats.get("ma_20")
-        ma_50 = stats.get("ma_50")
-        ma_200 = stats.get("ma_200")
-
-        if ma_20 is not None:
-            metrics_rows.append(("20-Day MA", f"{ma_20:,.2f}"))
-        if ma_50 is not None:
-            metrics_rows.append(("50-Day MA", f"{ma_50:,.2f}"))
-        if ma_200 is not None:
-            metrics_rows.append(("200-Day MA", f"{ma_200:,.2f}"))
-
-        # Output as markdown table
-        if metrics_rows:
-            lines.append("| Metric | Value |")
-            lines.append("|--------|-------|")
-            for metric, value in metrics_rows:
-                lines.append(f"| {metric} | {value} |")
-
-        # Add spacing between indices (except for last one)
-        if i < len(indices_data) - 1:
-            lines.append("")
-
-    return "\n".join(lines)
 
 
 def _get_index_name(symbol: str) -> str:
@@ -820,10 +625,15 @@ def _get_index_name(symbol: str) -> str:
     return index_names.get(symbol, symbol)
 
 
-async def _live_stamp_for(provider, symbols: List[str], user_id: Optional[str]) -> Optional[str]:
+async def _live_stamp_for(
+    provider,
+    symbols: List[str],
+    user_id: Optional[str],
+    asset_type: str = "stocks",
+) -> Optional[str]:
     """Best-effort `[Live: ...]` stamp; never raises."""
     try:
-        snaps = await provider.get_snapshots(symbols, asset_type="stocks", user_id=user_id)
+        snaps = await provider.get_snapshots(symbols, asset_type=asset_type, user_id=user_id)
         return build_live_stamp(snaps or [])
     except Exception:
         return None
@@ -861,9 +671,21 @@ async def fetch_daily_prices(
             symbol = to_legacy_api(ref)
         provider = await get_market_data_provider()
         user_id = _get_user_id(config)
+        # Index symbols need index-market routing in the provider chain; the
+        # resolved ref knows, and the caret prefix covers unresolved spellings.
+        is_index = (
+            ref.asset_class is AssetClass.INDEX
+            if ref is not None
+            else symbol.startswith("^")
+        )
         # Concurrent freshness fetch on the resolved symbol so the live stamp and
         # the price history agree on spelling; awaited only on the success paths.
-        stamp_task = asyncio.create_task(_live_stamp_for(provider, [symbol], user_id))
+        stamp_task = asyncio.create_task(
+            _live_stamp_for(
+                provider, [symbol], user_id,
+                asset_type="indices" if is_index else "stocks",
+            )
+        )
 
         # Default to last 60 trading days if no parameters
         if not start_date and not end_date and not limit:
@@ -872,7 +694,8 @@ async def fetch_daily_prices(
         # Fetch daily bars via provider chain (ginlix-data → FMP fallback)
         if start_date or end_date:
             raw_bars = await provider.get_daily(
-                symbol, from_date=start_date, to_date=end_date, user_id=user_id
+                symbol, from_date=start_date, to_date=end_date,
+                is_index=is_index, user_id=user_id,
             )
             results = _normalize_market_bars(raw_bars, symbol)
         else:
@@ -884,7 +707,7 @@ async def fetch_daily_prices(
 
                 raw_bars = await provider.get_daily(
                     symbol, from_date=start.isoformat(), to_date=end.isoformat(),
-                    user_id=user_id,
+                    is_index=is_index, user_id=user_id,
                 )
                 results = _normalize_market_bars(raw_bars, symbol)
 
@@ -892,7 +715,9 @@ async def fetch_daily_prices(
                 if results and len(results) > limit:
                     results = results[:limit]
             else:
-                raw_bars = await provider.get_daily(symbol, user_id=user_id)
+                raw_bars = await provider.get_daily(
+                    symbol, is_index=is_index, user_id=user_id
+                )
                 results = _normalize_market_bars(raw_bars, symbol)
 
         if not results:
@@ -973,6 +798,7 @@ No price data available for the specified period."""
                     interval=intraday_interval,
                     from_date=actual_start,
                     to_date=actual_end,
+                    is_index=is_index,
                     user_id=user_id,
                 )
                 if intraday_bars and len(intraday_bars) > 5:
@@ -2364,273 +2190,6 @@ Error retrieving company overview: {str(e)}"""
         return content, {"type": "company_overview", "symbol": symbol, "error": str(e)}
 
 
-async def fetch_market_indices(
-    indices: Optional[List[str]] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    limit: int = 60,
-    config: Optional[RunnableConfig] = None,
-) -> Tuple[str, Dict[str, Any]]:
-    """
-    Fetch market indices data (S&P 500, NASDAQ, Dow Jones).
-
-    For periods < 14 trading days: Returns markdown tables with OHLCV data per index
-    For periods >= 14 trading days: Returns formatted summary with sections per index
-
-    Args:
-        indices: List of index symbols, default is major US indices
-        start_date: Start date in YYYY-MM-DD format
-        end_date: End date in YYYY-MM-DD format
-        limit: Number of records per index (default 60)
-        config: LangChain RunnableConfig (injected by @tool decorator)
-
-    Returns:
-        Tuple of (content string, artifact dict with structured data for charts)
-    """
-    try:
-        provider = await get_market_data_provider()
-        user_id = _get_user_id(config)
-
-        # Default indices if not specified
-        if indices is None:
-            indices = ["^GSPC", "^IXIC", "^DJI", "^RUT"]
-
-        # Calculate date range once (outside the loop)
-        if start_date or end_date:
-            fetch_start = start_date
-            fetch_end = end_date
-            apply_limit = False
-        else:
-            end = datetime.now().date()
-            days_back = int(limit * 1.5)  # Buffer for weekends/holidays
-            start = end - timedelta(days=days_back)
-            fetch_start = start.isoformat()
-            fetch_end = end.isoformat()
-            apply_limit = True
-
-        async def fetch_single_index(index_symbol: str):
-            """Fetch data for a single index with error handling."""
-            try:
-                raw_bars = await provider.get_daily(
-                    index_symbol, from_date=fetch_start, to_date=fetch_end,
-                    is_index=True, user_id=user_id,
-                )
-                index_data = _normalize_market_bars(raw_bars, index_symbol)
-                # Apply limit if not using explicit date range (newest-first)
-                if apply_limit and index_data and len(index_data) > limit:
-                    index_data = index_data[:limit]
-                return (index_symbol, index_data)
-            except Exception as e:
-                logger.warning(f"Error fetching data for index {index_symbol}: {e}")
-                return (index_symbol, None)
-
-        # Fetch all indices in parallel
-        results = await asyncio.gather(*[fetch_single_index(sym) for sym in indices])
-
-        # Process results
-        indices_data = {}
-        all_results = []
-        for index_symbol, index_data in results:
-            if index_data:
-                indices_data[index_symbol] = index_data
-                all_results.extend(index_data)
-
-        if not all_results:
-            logger.warning(f"No index data found for {indices}")
-            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-            indices_str = (
-                ", ".join(indices[:3])
-                if len(indices) <= 3
-                else f"{', '.join(indices[:3])} and {len(indices) - 3} more"
-            )
-            content = f"""## Market Indices: {indices_str}
-**Retrieved:** {timestamp}
-**Status:** No data available
-
-No index data available for the specified period."""
-            return content, {"type": "market_indices", "indices": {}}
-
-        # Determine if we should normalize based on limit/date range
-        # For date ranges, estimate number of days
-        if start_date and end_date:
-            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-            calendar_days = (end_dt - start_dt).days
-            # Rough estimate: 252 trading days per 365 calendar days
-            estimated_trading_days = int(calendar_days * 252 / 365)
-            should_normalize = estimated_trading_days >= 14
-        else:
-            # Use limit directly
-            should_normalize = limit >= 14
-
-        # Find actual date range from data
-        all_dates = [d.get("date") for d in all_results if d.get("date")]
-        if all_dates:
-            all_dates_sorted = sorted(all_dates)
-            actual_start = all_dates_sorted[0]
-            actual_end = all_dates_sorted[-1]
-            # Count unique trading days
-            unique_days = len(set(all_dates))
-        else:
-            actual_start = start_date or "N/A"
-            actual_end = end_date or "N/A"
-            unique_days = limit
-
-        # Generate file-ready header
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        indices_str = (
-            ", ".join(indices[:3])
-            if len(indices) <= 3
-            else f"{', '.join(indices[:3])} and {len(indices) - 3} more"
-        )
-
-        if start_date and end_date:
-            title = f"Market Indices: {indices_str} ({start_date} to {end_date})"
-        elif actual_start != "N/A" and actual_end != "N/A":
-            title = f"Market Indices: {indices_str} ({actual_start} to {actual_end})"
-        else:
-            title = f"Market Indices: {indices_str}"
-
-        # "US Stock Indices" is a deliberate US-default, not a per-index label.
-        # The symbology registry seeds only the 6 US index families
-        # (SPX/DJI/COMP/NDX/RUT/VIX); non-US indices (HSI/N225/FTSE/…) hit the
-        # unknown-index fallback and resolve to XNYS/USD, so a label derived from
-        # to_canonical() would still read "US". Correct per-index calendars/regions
-        # are a Phase-1 symbology task (see CMDP plan); deferred intentionally.
-        header = f"""## {title}
-**Retrieved:** {timestamp}
-**Market:** US Stock Indices
-**Period:** {actual_start} to {actual_end}
-**Data Points:** {unique_days} trading days
-**Indices:** {len(indices_data)} indices
-
-"""
-
-        # Determine appropriate intraday interval based on period length
-        intraday_interval = None
-        if unique_days <= 5:
-            intraday_interval = "5min"
-        elif unique_days <= 20:
-            intraday_interval = "1hour"
-        elif unique_days <= 60:
-            intraday_interval = "4hour"
-
-        # Fetch intraday data for all indices in parallel if applicable
-        intraday_map = {}
-        if intraday_interval and actual_start != "N/A" and actual_end != "N/A":
-            async def fetch_intraday(sym):
-                try:
-                    raw = await provider.get_intraday(
-                        sym,
-                        interval=intraday_interval,
-                        from_date=actual_start,
-                        to_date=actual_end,
-                        is_index=True,
-                        user_id=user_id,
-                    )
-                    return (sym, _normalize_market_bars(raw, sym, datetime_format=True))
-                except Exception as e:
-                    logger.warning(f"Failed to fetch intraday for index {sym}: {e}")
-                    return (sym, None)
-
-            intraday_results = await asyncio.gather(
-                *[fetch_intraday(sym) for sym in indices_data.keys()]
-            )
-            for sym, idata in intraday_results:
-                if idata and len(idata) > 5:
-                    intraday_map[sym] = idata
-
-        # Build artifact with structured data per index
-        artifact_indices = {}
-        for idx_symbol, idx_data in indices_data.items():
-            sorted_for_chart = sorted(
-                idx_data, key=lambda x: x.get("date", ""), reverse=False
-            )
-            ohlcv = [
-                {
-                    "date": d.get("date"),
-                    "open": d.get("open"),
-                    "high": d.get("high"),
-                    "low": d.get("low"),
-                    "close": d.get("close"),
-                    "volume": d.get("volume"),
-                }
-                for d in sorted_for_chart
-                if d.get("date")
-            ]
-
-            # Build chart_ohlcv from intraday if available
-            chart_ohlcv = ohlcv
-            chart_interval = "daily"
-            if idx_symbol in intraday_map:
-                intraday_sorted = sorted(
-                    intraday_map[idx_symbol],
-                    key=lambda x: x.get("date", ""),
-                    reverse=False,
-                )
-                chart_ohlcv = [
-                    {
-                        "date": d.get("date"),
-                        "open": d.get("open"),
-                        "high": d.get("high"),
-                        "low": d.get("low"),
-                        "close": d.get("close"),
-                        "volume": d.get("volume"),
-                    }
-                    for d in intraday_sorted
-                    if d.get("date")
-                ]
-                chart_interval = intraday_interval
-
-            idx_stats = _calculate_price_statistics(idx_data)
-            artifact_indices[idx_symbol] = {
-                "name": _get_index_name(idx_symbol),
-                "ohlcv": ohlcv,
-                "chart_ohlcv": chart_ohlcv,
-                "chart_interval": chart_interval,
-                "stats": {
-                    "period_change_pct": idx_stats.get("period_change_pct"),
-                    "ma_20": idx_stats.get("ma_20"),
-                    "ma_50": idx_stats.get("ma_50"),
-                    "volatility": idx_stats.get("volatility"),
-                },
-            }
-
-        artifact = {"type": "market_indices", "indices": artifact_indices}
-
-        if should_normalize and indices_data:
-            # Return normalized summary
-            period_info = {
-                "num_days": unique_days,
-                "start_date": actual_start,
-                "end_date": actual_end,
-            }
-
-            logger.debug(
-                f"Retrieved {len(all_results)} records for {len(indices)} indices, returning normalized summary"
-            )
-            return header + _format_indices_summary(indices_data, period_info), artifact
-        else:
-            # Return markdown tables for short periods
-            logger.debug(
-                f"Retrieved {len(all_results)} records for {len(indices)} indices, returning markdown tables"
-            )
-            return header + _format_indices_data_as_table(indices_data), artifact
-
-    except Exception as e:
-        logger.error(f"Error retrieving market indices: {e}")
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        indices_str = (
-            ", ".join(indices[:3])
-            if len(indices) <= 3
-            else f"{', '.join(indices[:3])} and {len(indices) - 3} more"
-        )
-        content = f"""## Market Indices: {indices_str}
-**Retrieved:** {timestamp}
-**Status:** Error
-
-Error retrieving index data: {str(e)}"""
-        return content, {"type": "market_indices", "indices": {}, "error": str(e)}
 
 
 async def fetch_sector_performance(
@@ -2728,24 +2287,151 @@ Error retrieving sector performance data: {str(e)}"""
         }
 
 
+# Foreign caret-index baskets derive from the protocol's region table, so
+# adding an index there routes AND appears in its region basket in one touch.
+_FOREIGN_BASKETS: Dict[str, List[str]] = {}
+for _sym, _region in CARET_INDEX_REGIONS.items():
+    _FOREIGN_BASKETS.setdefault(_region, []).append(_sym)
+
 _REGION_INDEX_BASKETS: Dict[str, List[str]] = {
     "us": ["^GSPC", "^IXIC", "^DJI", "^RUT"],
     "cn": ["000001.SS", "399001.SZ", "000300.SS"],
-    "hk": ["^HSI", "^HSCE"],
-    "jp": ["^N225"],
-    "uk": ["^FTSE"],
-    "eu": ["^GDAXI", "^FCHI", "^STOXX50E"],
+    **_FOREIGN_BASKETS,
     "global": ["^GSPC", "^IXIC", "^HSI", "^N225", "^FTSE", "^GDAXI"],
 }
+
+
+# Calendar-day lookback feeding the snapshot's day-change and chart context.
+_SNAPSHOT_CONTEXT_DAYS = 45
+
+
+def _format_index_day_row(symbol: str, latest: Dict[str, Any]) -> str:
+    """One markdown table row for an index's latest daily bar."""
+    close = latest.get("close")
+    close_str = f"{close:,.2f}" if close is not None else "N/A"
+    change = latest.get("change")
+    change_pct = latest.get("changePercent")
+    if change is not None and change_pct is not None:
+        sign = "+" if change >= 0 else ""
+        move_str = f"{sign}{change:,.2f} ({sign}{change_pct:.2f}%)"
+    else:
+        move_str = "N/A"
+    volume = latest.get("volume")
+    volume_str = fmt_count(volume) if volume else "—"
+    return (
+        f"| {_get_index_name(symbol)} ({symbol}) | {close_str} "
+        f"| {move_str} | {volume_str} | {latest.get('date')} |"
+    )
+
+
+def _format_index_day_table(rows: List[str], missing: List[str]) -> str:
+    """Assemble the snapshot table, noting any symbols that returned no data."""
+    lines = [
+        "| Index | Close | Day Change | Volume | Date |",
+        "|---|---|---|---|---|",
+        *rows,
+    ]
+    if missing:
+        lines.append("")
+        lines.append(f"_No data: {', '.join(missing)}_")
+    return "\n".join(lines)
+
+
+async def _fetch_index_day_snapshot(
+    basket: List[str],
+    target_date: str,
+    config: Optional[RunnableConfig] = None,
+) -> Tuple[str, Dict[str, Any], Optional[str]]:
+    """Per-index closes for the last trading day on or before ``target_date``.
+
+    Returns (content, market_indices artifact, resolved snapshot date). The
+    artifact keeps the nested per-index shape the frontend charts expect, with
+    ``stats.period_change_pct`` carrying the day move rather than a window move.
+    """
+    provider = await get_market_data_provider()
+    user_id = _get_user_id(config)
+    end_dt = datetime.strptime(target_date, "%Y-%m-%d").date()
+    fetch_start = (end_dt - timedelta(days=_SNAPSHOT_CONTEXT_DAYS)).isoformat()
+
+    async def fetch_single(symbol: str):
+        try:
+            raw = await provider.get_daily(
+                symbol, from_date=fetch_start, to_date=target_date,
+                is_index=True, user_id=user_id,
+            )
+            return symbol, _normalize_market_bars(raw, symbol)
+        except Exception as e:
+            logger.warning(f"Error fetching data for index {symbol}: {e}")
+            return symbol, None
+
+    results = await asyncio.gather(*[fetch_single(sym) for sym in basket])
+
+    artifact_indices: Dict[str, Any] = {}
+    rows: List[str] = []
+    missing: List[str] = []
+    snapshot_date: Optional[str] = None
+    for symbol, bars in results:
+        if not bars:
+            missing.append(symbol)
+            continue
+        latest = bars[0]  # newest-first
+        day_date = latest.get("date")
+        if day_date and (snapshot_date is None or day_date > snapshot_date):
+            snapshot_date = day_date
+
+        ohlcv = [
+            {
+                "date": b.get("date"),
+                "open": b.get("open"),
+                "high": b.get("high"),
+                "low": b.get("low"),
+                "close": b.get("close"),
+                "volume": b.get("volume"),
+            }
+            for b in reversed(bars)
+            if b.get("date")
+        ]
+        stats = _calculate_price_statistics(bars)
+        artifact_indices[symbol] = {
+            "name": _get_index_name(symbol),
+            "ohlcv": ohlcv,
+            "chart_ohlcv": ohlcv,
+            "chart_interval": "daily",
+            "stats": {
+                "period_change_pct": latest.get("changePercent"),
+                "ma_20": stats.get("ma_20"),
+                "ma_50": stats.get("ma_50"),
+                "volatility": stats.get("volatility"),
+            },
+        }
+
+        rows.append(_format_index_day_row(symbol, latest))
+
+    if not artifact_indices:
+        return (
+            "No index data available for the requested date.",
+            {"type": "market_indices", "indices": {}},
+            None,
+        )
+
+    return (
+        _format_index_day_table(rows, missing),
+        {"type": "market_indices", "indices": artifact_indices},
+        snapshot_date,
+    )
 
 
 async def fetch_market_overview(
     region: str = "us",
     indices: Optional[List[str]] = None,
-    limit: int = 30,
+    date: Optional[str] = None,
     config: Optional[RunnableConfig] = None,
 ) -> Tuple[str, Dict[str, Any]]:
-    """Region market overview: index basket + sector performance (US only)."""
+    """Single-day market snapshot: index closes + sector performance (US only).
+
+    Defaults to the latest trading day; a non-trading ``date`` falls back to
+    the prior trading day with a notice in the content.
+    """
     region = (region or "us").strip().lower()
     basket = indices or _REGION_INDEX_BASKETS.get(region)
     if basket is None:
@@ -2755,41 +2441,78 @@ async def fetch_market_overview(
             {"type": "market_overview", "region": region},
         )
 
-    if region == "us":
-        (idx_content, idx_artifact), (sec_content, sec_artifact) = await asyncio.gather(
-            fetch_market_indices(indices=basket, limit=limit, config=config),
-            fetch_sector_performance(),
-        )
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    if date:
+        try:
+            requested = datetime.strptime(date.strip(), "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            return (
+                f"Invalid date '{date}'. Expected YYYY-MM-DD format.",
+                {
+                    "type": "market_overview",
+                    "region": region,
+                    "error": f"invalid date: {date}",
+                },
+            )
     else:
-        idx_content, idx_artifact = await fetch_market_indices(
-            indices=basket, limit=limit, config=config
-        )
-        sec_content, sec_artifact = None, None
+        requested = today_iso
 
-    parts = [f"## Market Overview — {region.upper()}", idx_content]
-    artifact: Dict[str, Any] = {
-        "type": "market_overview",
-        "region": region,
-        "indices": idx_artifact,
-    }
-    if sec_content is not None:
-        parts.append(sec_content)
-        artifact["sectors"] = sec_artifact
-    else:
-        parts.append("_Sector breakdown unavailable for this region (US only)._")
-
-    # Live index-level stamp during open sessions (best-effort, never raises).
     try:
-        provider = await get_market_data_provider()
-        snaps = await provider.get_snapshots(
-            basket, asset_type="indices", user_id=_get_user_id(config)
+        idx_content, idx_artifact, snapshot_date = await _fetch_index_day_snapshot(
+            basket, requested, config=config
         )
-        stamp = build_live_stamp(snaps or [])
-    except Exception:
-        stamp = None
-    if stamp:
-        parts.insert(0, stamp)
-    return "\n\n".join(parts), artifact
+
+        if region == "us":
+            # Align the sector half to the resolved trading day so both halves
+            # describe the same session; if the indices half came up empty,
+            # let the sector provider resolve the requested date itself.
+            sector_date = snapshot_date or (requested if date else None)
+            sec_content, sec_artifact = await fetch_sector_performance(date=sector_date)
+        else:
+            sec_content, sec_artifact = None, None
+
+        parts = [f"## Market Overview — {region.upper()} ({snapshot_date or requested})"]
+        if snapshot_date and snapshot_date != requested:
+            parts.append(
+                f"> ⚠️ **No daily bar for {requested}** "
+                f"(weekend / holiday / not yet published). "
+                f"Showing the last trading day: **{snapshot_date}**."
+            )
+        parts.append(idx_content)
+        artifact: Dict[str, Any] = {
+            "type": "market_overview",
+            "region": region,
+            "date": snapshot_date or requested,
+            "indices": idx_artifact,
+        }
+        if sec_content is not None:
+            parts.append(sec_content)
+            artifact["sectors"] = sec_artifact
+        else:
+            parts.append("_Sector breakdown unavailable for this region (US only)._")
+
+        # Live index-level stamp during open sessions (best-effort, never
+        # raises); skipped for historical snapshots.
+        if requested == today_iso:
+            try:
+                provider = await get_market_data_provider()
+                snaps = await provider.get_snapshots(
+                    basket, asset_type="indices", user_id=_get_user_id(config)
+                )
+                stamp = build_live_stamp(snaps or [])
+            except Exception:
+                stamp = None
+            if stamp:
+                parts.insert(0, stamp)
+        return "\n\n".join(parts), artifact
+    except Exception as e:
+        logger.error(f"Error building market overview for region {region}: {e}")
+        return (
+            f"## Market Overview — {region.upper()}\n"
+            f"**Status:** Error\n\n"
+            f"Error retrieving market overview: {str(e)}",
+            {"type": "market_overview", "region": region, "error": str(e)},
+        )
 
 
 async def fetch_earnings_transcript(symbol: str, year: int, quarter: int) -> str:
@@ -3285,6 +3008,10 @@ async def fetch_quote(
 ) -> Tuple[str, Dict[str, Any]]:
     """Fetch real-time quotes for up to 20 symbols via the snapshot provider chain."""
     empty = {"type": "quote", "quotes": []}
+    # LLM-supplied value that reaches the provider request path — restrict to
+    # the two documented values so it can't smuggle path segments.
+    if asset_type not in ("stocks", "indices"):
+        asset_type = "stocks"
     syms = [s.strip().upper() for s in (symbols or []) if s and s.strip()][:20]
     if not syms:
         return "No symbols provided.", empty
@@ -3300,15 +3027,35 @@ async def fetch_quote(
         snaps = await provider.get_snapshots(resolved, asset_type=asset_type, user_id=user_id)
         if not snaps:
             return f"No quote data available for {', '.join(syms)}.", empty
+        # Stamp non-US listings with their market-local retrieval clock — the
+        # artifact's ET as_of doesn't locate a foreign price in venue time.
+        retrieved_at = datetime.now(timezone.utc)
+        for snap in snaps:
+            local = venue_clock(snap.get("symbol"), retrieved_at)
+            if local:
+                snap["as_of_local"] = local
         content = format_quote_block(snaps)
-        # FMP lstrips the "^" prefix off index symbols in the returned snapshot
-        # (request "^GSPC" -> snapshot symbol "GSPC"), so diff on the
-        # caret-stripped form to avoid false "no data" for indices.
-        returned = {(s.get("symbol") or "").lstrip("^").upper() for s in snaps}
-        missing = sorted(s for s in syms if s.lstrip("^") not in returned)
+        # Diff on the RESOLVED spelling the provider actually saw (an alias like
+        # "SPX" is requested as "GSPC"), but report under the caller's input
+        # label. removeprefix("^") matches the provider's own normalize_symbol
+        # contract — FMP returns indices caret-stripped ("^GSPC" -> "GSPC").
+        returned = {(s.get("symbol") or "").removeprefix("^").upper() for s in snaps}
+        missing = sorted(
+            syms[i]
+            for i, r in enumerate(resolved)
+            if r.removeprefix("^").upper() not in returned
+        )
         if missing:
             content += f"\n(no data: {', '.join(missing)})"
-        return content, {"type": "quote", "quotes": snaps}
+        _, now_et = get_market_session()
+        return content, {
+            "type": "quote",
+            "quotes": snaps,
+            "as_of": now_et.strftime("%Y-%m-%d %H:%M:%S ET"),
+            # Epoch ms so the frontend can offer the user-local time (tooltip)
+            # without parsing the display strings.
+            "as_of_ts": int(retrieved_at.timestamp() * 1000),
+        }
     except Exception as e:
         logger.error(f"Error fetching quotes for {syms}: {e}")
         return f"Error fetching quotes: {e}", empty

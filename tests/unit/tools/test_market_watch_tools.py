@@ -1,10 +1,10 @@
-"""watch_market / unwatch_market tool behavior."""
+"""watch_market tool behavior (single tool, action="watch"/"unwatch")."""
 
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.tools.market_watch.tool import unwatch_market, watch_market
+from src.tools.market_watch.tool import watch_market
 
 _MOD = "src.tools.market_watch.tool"
 _CFG = {"configurable": {"thread_id": "t-1"}}
@@ -22,21 +22,66 @@ async def test_watch_registers_symbols():
 
 
 @pytest.mark.asyncio
+async def test_watch_result_instructs_feed_usage():
+    """The watch result carries the action-specific unwatch instruction.
+
+    Feed mechanics live in the market-watch skill; the result only needs the
+    reciprocal action (how to stop) plus what the feed looks like.
+    """
+    with patch(f"{_MOD}.add_symbols", AsyncMock(return_value=["NVDA"])):
+        result = await watch_market.ainvoke({"symbols": ["NVDA"]}, config=_CFG)
+    assert "<market-watch>" in result
+    assert 'action="unwatch"' in result
+
+
+@pytest.mark.asyncio
 async def test_watch_without_thread_id_errors_gracefully():
     result = await watch_market.ainvoke({"symbols": ["NVDA"]}, config={"configurable": {}})
     assert "unavailable" in result.lower()
 
 
 @pytest.mark.asyncio
+async def test_watch_without_symbols_asks_for_symbols():
+    result = await watch_market.ainvoke({}, config=_CFG)
+    assert "symbols" in result.lower()
+
+
+@pytest.mark.asyncio
 async def test_unwatch_specific():
     with patch(f"{_MOD}.remove_symbols", AsyncMock(return_value=["TSLA"])):
-        result = await unwatch_market.ainvoke({"symbols": ["NVDA"]}, config=_CFG)
+        result = await watch_market.ainvoke(
+            {"symbols": ["NVDA"], "action": "unwatch"}, config=_CFG
+        )
     assert "TSLA" in result
 
 
 @pytest.mark.asyncio
 async def test_unwatch_all():
     with patch(f"{_MOD}.remove_symbols", AsyncMock(return_value=[])) as mock_rm:
-        result = await unwatch_market.ainvoke({}, config=_CFG)
+        result = await watch_market.ainvoke({"action": "unwatch"}, config=_CFG)
     mock_rm.assert_awaited_once_with("t-1", None)
     assert "stopped" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_watch_cache_unavailable():
+    with patch(f"{_MOD}.add_symbols", AsyncMock(return_value=None)):
+        result = await watch_market.ainvoke({"symbols": ["NVDA"]}, config=_CFG)
+    assert "unavailable" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_watch_all_symbols_invalid():
+    with patch(f"{_MOD}.add_symbols", AsyncMock(return_value=[])):
+        result = await watch_market.ainvoke({"symbols": ["!!!"]}, config=_CFG)
+    assert "no valid" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_unwatch_cache_unavailable_is_not_reported_as_stopped():
+    """A failed mutation must never read as success — the Redis key survives
+    and injection would resume once the cache recovers."""
+    with patch(f"{_MOD}.remove_symbols", AsyncMock(return_value=None)):
+        result = await watch_market.ainvoke({"action": "unwatch"}, config=_CFG)
+    assert "unavailable" in result.lower()
+    assert "stopped" not in result.lower()

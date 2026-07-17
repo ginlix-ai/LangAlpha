@@ -50,18 +50,20 @@
   },
   "direct:get_market_overview": {
     "doc_lines": [
-      "Big-picture market view for a region — major index performance, plus daily",
-      "sector performance for the US.",
+      "Market snapshot for a region on a single trading day — index closes with",
+      "day moves, plus daily sector performance for the US. Defaults to the",
+      "latest trading day; pass a date to reconstruct that day's market picture.",
       "",
       "Args:",
       "    region: \"us\" (default), \"cn\", \"hk\", \"jp\", \"uk\", \"eu\", or \"global\".",
       "        Sector breakdown is US only.",
       "    indices: Explicit index symbols overriding the region basket (e.g. [\"^VIX\"]).",
-      "    limit: Trading days of index history to summarize (default 30)."
+      "    date: Snapshot date in YYYY-MM-DD format (default: latest trading day).",
+      "        A non-trading date falls back to the prior trading day."
     ],
     "params": [
+      "date",
       "indices",
-      "limit",
       "region"
     ],
     "required": []

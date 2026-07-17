@@ -90,20 +90,22 @@ async def get_market_overview(
     config: RunnableConfig,
     region: str = "us",
     indices: Optional[List[str]] = None,
-    limit: int = 30,
+    date: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """
-    Big-picture market view for a region — major index performance, plus daily
-    sector performance for the US.
+    Market snapshot for a region on a single trading day — index closes with
+    day moves, plus daily sector performance for the US. Defaults to the
+    latest trading day; pass a date to reconstruct that day's market picture.
 
     Args:
         region: "us" (default), "cn", "hk", "jp", "uk", "eu", or "global".
             Sector breakdown is US only.
         indices: Explicit index symbols overriding the region basket (e.g. ["^VIX"]).
-        limit: Trading days of index history to summarize (default 30).
+        date: Snapshot date in YYYY-MM-DD format (default: latest trading day).
+            A non-trading date falls back to the prior trading day.
     """
     content, artifact = await fetch_market_overview(
-        region=region, indices=indices, limit=limit, config=config
+        region=region, indices=indices, date=date, config=config
     )
     return content, artifact
 

@@ -15,7 +15,6 @@ from src.tools.market_data.implementations import (
     _normalize_market_bars,
     fetch_company_overview,
     fetch_daily_prices,
-    fetch_market_indices,
     fetch_market_movers,
     fetch_market_overview,
     fetch_options_chain,
@@ -331,9 +330,23 @@ class TestFetchDailyPrices:
             )
 
         provider.get_daily.assert_called_once_with(
-            "AAPL", from_date="2025-01-01", to_date="2025-01-05", user_id=None
+            "AAPL", from_date="2025-01-01", to_date="2025-01-05",
+            is_index=False, user_id=None,
         )
         assert artifact["symbol"] == "AAPL"
+
+    @pytest.mark.asyncio
+    async def test_caret_symbol_routes_as_index(self):
+        """Caret-prefixed symbols get index-market routing in the provider chain."""
+        bars = _make_provider_bars(5)
+        provider = _make_fake_market_provider(daily_bars=bars)
+
+        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
+            await fetch_daily_prices(
+                "^GSPC", start_date="2025-01-01", end_date="2025-01-05"
+            )
+
+        assert provider.get_daily.call_args.kwargs["is_index"] is True
 
     @pytest.mark.asyncio
     async def test_intraday_fetched_for_short_period(self):
@@ -628,82 +641,6 @@ class TestFetchCompanyOverview:
 
 
 # ---------------------------------------------------------------------------
-# fetch_market_indices
-# ---------------------------------------------------------------------------
-
-class TestFetchMarketIndices:
-    @pytest.mark.asyncio
-    async def test_default_indices(self):
-        """Should fetch ^GSPC, ^IXIC, ^DJI, ^RUT by default."""
-        bars = _make_provider_bars(5)
-        provider = _make_fake_market_provider(daily_bars=bars)
-
-        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
-            content, artifact = await fetch_market_indices(limit=5)
-
-        # Should call get_daily for each default index (4 calls)
-        assert provider.get_daily.call_count == 4
-        assert artifact["type"] == "market_indices"
-
-    @pytest.mark.asyncio
-    async def test_short_period_table_format(self):
-        """< 14 days should return markdown table format."""
-        bars = _make_provider_bars(5)
-        provider = _make_fake_market_provider(daily_bars=bars)
-
-        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
-            content, artifact = await fetch_market_indices(
-                indices=["^GSPC"], limit=5
-            )
-
-        # Short period uses table format
-        assert "| Date" in content
-        assert artifact["type"] == "market_indices"
-
-    @pytest.mark.asyncio
-    async def test_long_period_summary_format(self):
-        """>= 14 days should return summary format."""
-        bars = _make_provider_bars(20)
-        provider = _make_fake_market_provider(daily_bars=bars)
-
-        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
-            content, artifact = await fetch_market_indices(
-                indices=["^GSPC"], limit=20
-            )
-
-        assert "| Metric | Value |" in content
-        assert artifact["type"] == "market_indices"
-
-    @pytest.mark.asyncio
-    async def test_no_data_available(self):
-        """No data should return 'No data available' message."""
-        provider = _make_fake_market_provider(daily_bars=[])
-
-        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
-            content, artifact = await fetch_market_indices(indices=["^GSPC"])
-
-        assert "No data available" in content or "No index data available" in content
-
-    @pytest.mark.asyncio
-    async def test_date_range_query(self):
-        """Using start_date/end_date should pass dates through."""
-        bars = _make_provider_bars(5)
-        provider = _make_fake_market_provider(daily_bars=bars)
-
-        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
-            content, artifact = await fetch_market_indices(
-                indices=["^GSPC"],
-                start_date="2025-01-01",
-                end_date="2025-01-05",
-            )
-
-        provider.get_daily.assert_called_once_with(
-            "^GSPC", from_date="2025-01-01", to_date="2025-01-05",
-            is_index=True, user_id=None,
-        )
-
-
-# ---------------------------------------------------------------------------
 # fetch_sector_performance
 # ---------------------------------------------------------------------------
 
@@ -770,19 +707,30 @@ def _no_snapshot_provider():
     return provider
 
 
+def _snapshot_result(date="2025-02-14"):
+    return (
+        "IDX-CONTENT",
+        {"type": "market_indices", "indices": {"^GSPC": {"name": "S&P 500"}}},
+        date,
+    )
+
+
 class TestFetchMarketOverview:
     @pytest.mark.asyncio
     async def test_us_includes_sectors(self):
-        with patch(f"{_MOD}.fetch_market_indices",
-                   AsyncMock(return_value=("IDX-CONTENT", {"type": "market_indices"}))), \
+        with patch(f"{_MOD}._fetch_index_day_snapshot",
+                   AsyncMock(return_value=_snapshot_result())), \
              patch(f"{_MOD}.fetch_sector_performance",
-                   AsyncMock(return_value=("SECTOR-CONTENT", {"type": "sector_performance", "sectors": []}))), \
+                   AsyncMock(return_value=("SECTOR-CONTENT", {"type": "sector_performance", "sectors": []}))) as mock_sec, \
              patch(f"{_MOD}.get_market_data_provider", return_value=_no_snapshot_provider()):
             content, artifact = await fetch_market_overview(region="us")
         assert "IDX-CONTENT" in content
         assert "SECTOR-CONTENT" in content
         assert artifact["type"] == "market_overview"
         assert artifact["region"] == "us"
+        assert artifact["date"] == "2025-02-14"
+        # Sector half aligned to the resolved trading day
+        assert mock_sec.await_args.kwargs["date"] == "2025-02-14"
 
     @pytest.mark.asyncio
     async def test_live_index_stamp_when_open(self):
@@ -790,7 +738,8 @@ class TestFetchMarketOverview:
                       "volume": None, "last_trade_price": None, "market_status": "open"}]
         provider = AsyncMock()
         provider.get_snapshots = AsyncMock(return_value=idx_snaps)
-        with patch(f"{_MOD}.fetch_market_indices", AsyncMock(return_value=("IDX", {}))), \
+        with patch(f"{_MOD}._fetch_index_day_snapshot",
+                   AsyncMock(return_value=_snapshot_result())), \
              patch(f"{_MOD}.fetch_sector_performance", AsyncMock(return_value=("SEC", {}))), \
              patch(f"{_MOD}.get_market_data_provider", return_value=provider), \
              patch("src.tools.market_data.quote_format.get_market_session",
@@ -799,16 +748,26 @@ class TestFetchMarketOverview:
         assert content.startswith("[Live: ^GSPC $6,120.50")
 
     @pytest.mark.asyncio
+    async def test_historical_date_skips_live_stamp(self):
+        provider = _no_snapshot_provider()
+        with patch(f"{_MOD}._fetch_index_day_snapshot",
+                   AsyncMock(return_value=_snapshot_result("2025-02-14"))), \
+             patch(f"{_MOD}.fetch_sector_performance", AsyncMock(return_value=("SEC", {}))), \
+             patch(f"{_MOD}.get_market_data_provider", return_value=provider):
+            await fetch_market_overview(region="us", date="2025-02-14")
+        provider.get_snapshots.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_non_us_degrades_sectors_gracefully(self):
-        with patch(f"{_MOD}.fetch_market_indices",
-                   AsyncMock(return_value=("IDX-CONTENT", {"type": "market_indices"}))) as mock_idx, \
+        with patch(f"{_MOD}._fetch_index_day_snapshot",
+                   AsyncMock(return_value=_snapshot_result())) as mock_snap, \
              patch(f"{_MOD}.get_market_data_provider", return_value=_no_snapshot_provider()):
             content, artifact = await fetch_market_overview(region="hk")
         assert "IDX-CONTENT" in content
         assert "Sector breakdown unavailable" in content
         assert "sectors" not in artifact
         # HK basket passed through
-        assert mock_idx.await_args.kwargs["indices"] == ["^HSI", "^HSCE"]
+        assert mock_snap.await_args.args[0] == ["^HSI", "^HSCE"]
 
     @pytest.mark.asyncio
     async def test_unknown_region(self):
@@ -817,13 +776,148 @@ class TestFetchMarketOverview:
         assert "us" in content  # lists supported regions
 
     @pytest.mark.asyncio
+    async def test_invalid_date_is_graceful(self):
+        content, artifact = await fetch_market_overview(region="us", date="last tuesday")
+        assert "Invalid date" in content
+        assert artifact["type"] == "market_overview"
+        assert "error" in artifact
+
+    @pytest.mark.asyncio
     async def test_explicit_indices_override_basket(self):
-        with patch(f"{_MOD}.fetch_market_indices",
-                   AsyncMock(return_value=("X", {}))) as mock_idx, \
+        with patch(f"{_MOD}._fetch_index_day_snapshot",
+                   AsyncMock(return_value=_snapshot_result())) as mock_snap, \
              patch(f"{_MOD}.fetch_sector_performance", AsyncMock(return_value=("S", {}))), \
              patch(f"{_MOD}.get_market_data_provider", return_value=_no_snapshot_provider()):
             await fetch_market_overview(region="us", indices=["^VIX"])
-        assert mock_idx.await_args.kwargs["indices"] == ["^VIX"]
+        assert mock_snap.await_args.args[0] == ["^VIX"]
+
+    @pytest.mark.asyncio
+    async def test_fallback_reminder_when_requested_day_has_no_bar(self):
+        # Request a Sunday; snapshot resolves to the prior Friday.
+        with patch(f"{_MOD}._fetch_index_day_snapshot",
+                   AsyncMock(return_value=_snapshot_result("2025-02-14"))), \
+             patch(f"{_MOD}.fetch_sector_performance", AsyncMock(return_value=("SEC", {}))), \
+             patch(f"{_MOD}.get_market_data_provider", return_value=_no_snapshot_provider()):
+            content, artifact = await fetch_market_overview(region="us", date="2025-02-16")
+        assert "No daily bar for 2025-02-16" in content
+        assert "**2025-02-14**" in content
+        assert artifact["date"] == "2025-02-14"
+
+    @pytest.mark.asyncio
+    async def test_no_reminder_when_date_matches(self):
+        with patch(f"{_MOD}._fetch_index_day_snapshot",
+                   AsyncMock(return_value=_snapshot_result("2025-02-14"))), \
+             patch(f"{_MOD}.fetch_sector_performance", AsyncMock(return_value=("SEC", {}))), \
+             patch(f"{_MOD}.get_market_data_provider", return_value=_no_snapshot_provider()):
+            content, _ = await fetch_market_overview(region="us", date="2025-02-14")
+        assert "No daily bar" not in content
+
+    @pytest.mark.asyncio
+    async def test_indices_failure_still_returns_sectors(self):
+        empty = ("No index data available for the requested date.",
+                 {"type": "market_indices", "indices": {}}, None)
+        with patch(f"{_MOD}._fetch_index_day_snapshot",
+                   AsyncMock(return_value=empty)), \
+             patch(f"{_MOD}.fetch_sector_performance",
+                   AsyncMock(return_value=("SECTOR-CONTENT", {"type": "sector_performance"}))) as mock_sec, \
+             patch(f"{_MOD}.get_market_data_provider", return_value=_no_snapshot_provider()):
+            content, artifact = await fetch_market_overview(region="us", date="2025-02-14")
+        assert "No index data available" in content
+        assert "SECTOR-CONTENT" in content
+        # Unresolved snapshot: the sector provider resolves the requested date itself
+        assert mock_sec.await_args.kwargs["date"] == "2025-02-14"
+
+    @pytest.mark.asyncio
+    async def test_snapshot_error_returns_error_artifact(self):
+        with patch(f"{_MOD}._fetch_index_day_snapshot",
+                   AsyncMock(side_effect=RuntimeError("provider down"))):
+            content, artifact = await fetch_market_overview(region="us")
+        assert "Error retrieving market overview" in content
+        assert artifact["error"] == "provider down"
+
+
+# ---------------------------------------------------------------------------
+# _fetch_index_day_snapshot
+# ---------------------------------------------------------------------------
+
+class TestFetchIndexDaySnapshot:
+    @pytest.mark.asyncio
+    async def test_snapshot_shape_and_day_change(self):
+        from src.tools.market_data.implementations import _fetch_index_day_snapshot
+
+        bars = _make_provider_bars(30)
+        provider = _make_fake_market_provider(daily_bars=bars)
+        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
+            content, artifact, snapshot_date = await _fetch_index_day_snapshot(
+                ["^GSPC"], "2025-01-30"
+            )
+
+        provider.get_daily.assert_called_once()
+        assert provider.get_daily.call_args.kwargs["is_index"] is True
+        assert provider.get_daily.call_args.kwargs["to_date"] == "2025-01-30"
+
+        assert snapshot_date == "2025-01-30"
+        assert "| Index | Close | Day Change | Volume | Date |" in content
+        assert "S&P 500 (^GSPC)" in content
+        # Index levels are unitless points — no currency prefix anywhere.
+        assert "$" not in content
+
+        entry = artifact["indices"]["^GSPC"]
+        assert set(entry) == {"name", "ohlcv", "chart_ohlcv", "chart_interval", "stats"}
+        assert entry["chart_interval"] == "daily"
+        # ohlcv ascending for the chart
+        dates = [b["date"] for b in entry["ohlcv"]]
+        assert dates == sorted(dates)
+        # period_change_pct is the DAY move (last close vs prior close), not the window move
+        closes = sorted(b["close"] for b in entry["ohlcv"])[-2:]
+        expected_day_pct = (closes[1] - closes[0]) / closes[0] * 100
+        assert entry["stats"]["period_change_pct"] == pytest.approx(expected_day_pct)
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_lists_missing_symbols(self):
+        from src.tools.market_data.implementations import _fetch_index_day_snapshot
+
+        bars = _make_provider_bars(10)
+        provider = AsyncMock()
+        provider.get_daily = AsyncMock(side_effect=[bars, RuntimeError("boom")])
+        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
+            content, artifact, snapshot_date = await _fetch_index_day_snapshot(
+                ["^GSPC", "^IXIC"], "2025-01-30"
+            )
+        assert "^GSPC" in artifact["indices"]
+        assert "^IXIC" not in artifact["indices"]
+        assert "_No data: ^IXIC_" in content
+        assert snapshot_date is not None
+
+    @pytest.mark.asyncio
+    async def test_all_indices_empty(self):
+        from src.tools.market_data.implementations import _fetch_index_day_snapshot
+
+        provider = _make_fake_market_provider(daily_bars=[])
+        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
+            content, artifact, snapshot_date = await _fetch_index_day_snapshot(
+                ["^GSPC", "^IXIC"], "2025-01-30"
+            )
+        assert "No index data available" in content
+        assert artifact == {"type": "market_indices", "indices": {}}
+        assert snapshot_date is None
+
+    def test_index_day_row_volume_uses_fmt_count(self):
+        # Volume renders via fmt_count (B/M/T), matching the sibling price table —
+        # not the raw grouped integer; a falsy volume is an em-dash.
+        from src.tools.market_data.implementations import _format_index_day_row
+
+        row = _format_index_day_row(
+            "^GSPC",
+            {"close": 6120.5, "change": 12.0, "changePercent": 0.2,
+             "volume": 3_900_000, "date": "2025-01-30"},
+        )
+        assert "3.90M" in row
+        assert "3,900,000" not in row
+        zero = _format_index_day_row(
+            "^GSPC", {"close": 6120.5, "volume": 0, "date": "2025-01-30"}
+        )
+        assert "| — |" in zero
 
 
 # ---------------------------------------------------------------------------
@@ -1140,19 +1234,6 @@ class TestMarketHeaderLabel:
         assert "**Market:** A-Share" in content
 
 
-class TestIndexSummaryNoCurrencyPrefix:
-    """Index levels are unitless points — the summary path carries no `$`/prefix."""
-
-    @pytest.mark.asyncio
-    async def test_index_summary_has_no_currency_symbol(self):
-        provider = _make_fake_market_provider(daily_bars=_make_provider_bars(20))
-        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
-            content, _ = await fetch_market_indices(indices=["^GSPC"], limit=20)
-        # Summary path (>= 14 days) — metric table present, no currency prefix.
-        assert "| Metric | Value |" in content
-        assert "$" not in content
-
-
 class TestOverviewSessionClockGating:
     """US listings show the US-Eastern session phase + 'As of … ET' clock; non-US
     listings show their exchange-calendar phase + the exchange-local clock (never ET)."""
@@ -1270,6 +1351,17 @@ class TestFetchQuote:
         assert artifact["quotes"] == []
 
     @pytest.mark.asyncio
+    async def test_asset_type_coerced_to_known_values(self):
+        """LLM-supplied asset_type reaches the provider request path — anything
+        outside the two documented values is coerced, never forwarded."""
+        snaps = [{"symbol": "NVDA", "price": 231.0, "change_percent": 2.31,
+                  "volume": 1, "last_trade_price": 233.45, "market_status": "open"}]
+        provider = _make_fake_snapshot_provider(snaps)
+        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
+            await fetch_quote(["NVDA"], asset_type="../../admin")
+        assert provider.get_snapshots.await_args.kwargs["asset_type"] == "stocks"
+
+    @pytest.mark.asyncio
     async def test_provider_error_returns_message(self):
         provider = AsyncMock()
         provider.get_snapshots = AsyncMock(side_effect=RuntimeError("boom"))
@@ -1291,3 +1383,27 @@ class TestFetchQuote:
         assert provider.get_snapshots.await_args.args[0] == ["GSPC"]
         assert "GSPC" in content
         assert "no data" not in content
+
+    @pytest.mark.asyncio
+    async def test_alias_with_differing_canonical_not_flagged_missing(self):
+        # "SPX" is requested as its legacy spelling "GSPC"; diffing on the raw
+        # input (vs the resolved spelling the provider saw) would wrongly flag it.
+        snaps = [{"symbol": "GSPC", "price": 6120.5, "change_percent": 0.42,
+                  "volume": 0, "last_trade_price": 6120.5, "market_status": "open"}]
+        provider = _make_fake_snapshot_provider(snaps)
+        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
+            content, _ = await fetch_quote(["SPX"], asset_type="indices")
+        assert provider.get_snapshots.await_args.args[0] == ["GSPC"]
+        assert "no data" not in content
+
+    @pytest.mark.asyncio
+    async def test_missing_reported_under_input_spelling(self):
+        # A resolved-alias hit ("SPX"->"GSPC") plus a truly-absent symbol: only
+        # the absent one is flagged, under the caller's input spelling.
+        snaps = [{"symbol": "GSPC", "price": 6120.5, "change_percent": 0.42,
+                  "volume": 0, "last_trade_price": 6120.5, "market_status": "open"}]
+        provider = _make_fake_snapshot_provider(snaps)
+        with patch(f"{_MOD}.get_market_data_provider", return_value=provider):
+            content, _ = await fetch_quote(["SPX", "ZZZZ"])
+        assert "no data: ZZZZ" in content
+        assert "no data: SPX" not in content
