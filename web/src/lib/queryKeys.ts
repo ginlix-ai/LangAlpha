@@ -17,6 +17,10 @@ export const queryKeys = {
   models: {
     all: ['models'],
   },
+  features: {
+    all:  ['features'],
+    list: () => [...queryKeys.features.all, 'list'],
+  },
   platform: {
     all:    ['platform'],
     models: () => [...queryKeys.platform.all, 'models'],

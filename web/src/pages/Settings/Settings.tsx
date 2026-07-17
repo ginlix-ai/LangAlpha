@@ -1,14 +1,16 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { User, LogOut, Trash2, MessageSquareText, Sun, Moon, Monitor, Link2, Unlink, ExternalLink, Shield, ClipboardCopy, Search, Pin, Settings2, FileText, Code2 } from 'lucide-react';
+import { User, LogOut, Trash2, MessageSquareText, Sun, Moon, Monitor, Link2, Unlink, ExternalLink, Shield, ClipboardCopy, Search, Pin, Settings2, FileText, Code2, AlertTriangle } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
+import { ToggleSwitch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { updateCurrentUser, clearPreferences, uploadAvatar, getUserApiKeys, initiateCodexDevice, pollCodexDevice, getCodexOAuthStatus, disconnectCodexOAuth, initiateClaudeOAuth, submitClaudeCallback, getClaudeOAuthStatus, disconnectClaudeOAuth } from '@/pages/Dashboard/utils/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useUser } from '@/hooks/useUser';
 import { usePreferences } from '@/hooks/usePreferences';
 import { useUpdatePreferences } from '@/hooks/useUpdatePreferences';
+import { useFeatures, useSetFeatureOverride } from '@/hooks/useFeatures';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { useTheme } from '@/contexts/ThemeContext';
@@ -67,6 +69,8 @@ function Settings() {
   const { user: authUser, isLoading: isUserLoading } = useUser();
   const { preferences: prefsData, isLoading: isPrefsLoading } = usePreferences();
   const updatePrefsMutation = useUpdatePreferences();
+  const { data: featuresData, isLoading: isFeaturesLoading } = useFeatures();
+  const setFeatureOverrideMutation = useSetFeatureOverride();
   const queryClient = useQueryClient();
   const { theme: _theme, preference, setTheme: setThemePref } = useTheme();
   const { models: visibleModels, modelAccessMap, systemDefaults: hookSystemDefaults, validModelNames, compactionProfiles, searchProviders, isLoading: isModelsLoading } = useAllModels();
@@ -579,6 +583,18 @@ function Settings() {
     }
   };
 
+  const handleFeatureToggle = async (key: string, nextEnabled: boolean) => {
+    try {
+      await setFeatureOverrideMutation.mutateAsync({ key, enabled: nextEnabled });
+    } catch {
+      toast({
+        variant: 'destructive',
+        title: t('common.error'),
+        description: t('settings.failedToSaveSettings'),
+      });
+    }
+  };
+
   const handleOutputFormatChange = async (format: 'markdown' | 'html') => {
     const currentAgentPref = (prefsData as any)?.agent_preference || {};
     // null deletes the key (default behavior); 'html' opts into HTML reports.
@@ -652,6 +668,9 @@ function Settings() {
       await clearPreferences();
       setPreferences(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.user.preferences() });
+      // Feature overrides live in preferences too — refresh effective flags
+      // so gated surfaces (Watch pill, Experiments toggles) update at once.
+      queryClient.invalidateQueries({ queryKey: queryKeys.features.all });
       setShowResetConfirm(false);
     } catch {
       setError(t('settings.failedToResetPreferences'));
@@ -708,6 +727,17 @@ function Settings() {
             }}
           >
             {t('settings.model')}
+          </button>
+          <button
+            type="button"
+            onClick={() => handleTabChange('experiments')}
+            className="px-4 py-2 text-sm font-medium whitespace-nowrap flex-shrink-0"
+            style={{
+              color: activeTab === 'experiments' ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
+              borderBottom: activeTab === 'experiments' ? '2px solid var(--color-accent-primary)' : '2px solid transparent',
+            }}
+          >
+            {t('settings.experiments', 'Experiments')}
           </button>
         </div>
 
@@ -870,22 +900,10 @@ function Settings() {
                   <label className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{t('settings.voiceInput')}</label>
                   <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('settings.voiceInputDesc')}</p>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleVoiceInputToggle}
-                  className="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
-                  style={{
-                    backgroundColor: (prefsData as any)?.other_preference?.voice_input_enabled ? 'var(--color-accent-primary)' : 'var(--color-bg-elevated)',
-                    borderColor: 'var(--color-border-muted)',
-                  }}
-                >
-                  <span
-                    className="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
-                    style={{
-                      transform: (prefsData as any)?.other_preference?.voice_input_enabled ? 'translateX(16px)' : 'translateX(0)',
-                    }}
-                  />
-                </button>
+                <ToggleSwitch
+                  checked={!!(prefsData as any)?.other_preference?.voice_input_enabled}
+                  onChange={handleVoiceInputToggle}
+                />
               </div>
 
               {error && (
@@ -1606,6 +1624,68 @@ function Settings() {
                   )}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Text-heavy tab: cap the measure so descriptions stay readable
+              instead of spanning the full settings container. */}
+          {!isLoading && activeTab === 'experiments' && (
+            <div className="space-y-5 max-w-2xl">
+              <p className="text-sm leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>
+                {t('settings.experimentsIntro', 'Early-access features still in development. Turn one on to enable it for your account — you can switch it off at any time.')}
+              </p>
+              {/* Data-driven from the feature-flag API, so new user-overridable
+                  flags need zero frontend changes. */}
+              {(() => {
+                const overridable = (featuresData ?? []).filter((f) => f.gate === 'opt_in' || f.gate === 'opt_out');
+                if (overridable.length === 0) {
+                  // Wait out the features query before committing to the empty
+                  // state, so it never flashes before the real list lands.
+                  return isFeaturesLoading ? null : (
+                    <p className="text-sm" style={{ color: 'var(--color-text-tertiary)', opacity: 0.7 }}>
+                      {t('settings.experimentsEmpty', 'No experiments are available right now.')}
+                    </p>
+                  );
+                }
+                return (
+                  <div className="space-y-3">
+                    {overridable.map((feature) => (
+                      <div
+                        key={feature.key}
+                        className="p-4 rounded-lg"
+                        style={{ backgroundColor: 'var(--color-bg-card)', border: '1px solid var(--color-border-muted)' }}
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="space-y-1 min-w-0">
+                            <label className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{feature.label}</label>
+                            <p className="text-sm leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>{feature.description}</p>
+                          </div>
+                          <ToggleSwitch
+                            checked={feature.enabled}
+                            onChange={() => handleFeatureToggle(feature.key, !feature.enabled)}
+                            className="mt-0.5"
+                          />
+                        </div>
+                        {feature.tradeoffs && (
+                          <div
+                            className="mt-3 flex items-start gap-2 rounded-md px-3 py-2"
+                            style={{ backgroundColor: 'var(--color-warning-soft)' }}
+                          >
+                            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" style={{ color: 'var(--color-warning)' }} />
+                            <p className="text-xs leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
+                              <span className="font-medium" style={{ color: 'var(--color-warning)' }}>
+                                {t('settings.experimentTradeoff', 'Trade-off')}
+                              </span>
+                              {' — '}
+                              {feature.tradeoffs}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
             </div>
           )}
         </div>

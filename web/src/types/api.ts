@@ -26,6 +26,26 @@ export interface UserPreferences {
   [key: string]: unknown;
 }
 
+// --- Feature flags ---
+
+/**
+ * One feature flag as seen by the current user. `enabled` is the effective
+ * value (user override when allowed + set, else the system default);
+ * `user_override` is the raw override (null = unset, follows the default).
+ * `gate` is the access model — only `opt_in`/`opt_out` accept user overrides.
+ */
+export interface FeatureState {
+  key: string;
+  label: string;
+  description: string;
+  /** Honest cost of opting in to an experimental feature; English-only, null when none. */
+  tradeoffs: string | null;
+  enabled: boolean;
+  gate: 'none' | 'opt_in' | 'opt_out' | 'plan';
+  min_tier: number | null;
+  user_override: boolean | null;
+}
+
 // --- Workspace ---
 
 /** Sandbox resource tier. */
