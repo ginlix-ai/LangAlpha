@@ -1019,6 +1019,49 @@ export async function fetchThreadTurns(threadId: string) {
  * @param {Function} onEvent - Callback for each SSE event
  * @param {AbortSignal} signal - AbortController signal for cancellation
  */
+/**
+ * Raw line-oriented reader for the multiplexed thread stream
+ * (`GET /threads/{id}/stream`). The mux client parses SSE blocks itself —
+ * it needs the composite `chan@epoch#entry#logical` id line that
+ * streamFetch's parser would mangle — so this helper only owns transport:
+ * base URL, auth headers, abort, and line splitting.
+ * Resolves on server close; throws on HTTP error or network failure.
+ */
+export async function openThreadMuxStream(
+  threadId: string,
+  cursors: string | null,
+  onLine: (line: string) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  if (!threadId) throw new Error('Thread ID is required');
+  const authHeaders = await getAuthHeaders();
+  const qs = cursors ? `?cursors=${encodeURIComponent(cursors)}` : '';
+  const res = await fetch(`${baseURL}/api/v1/threads/${threadId}/stream${qs}`, {
+    method: 'GET',
+    headers: { ...authHeaders },
+    signal,
+  });
+  if (!res.ok) {
+    const err: Error & { status?: number } = new Error(
+      `mux stream HTTP ${res.status}`,
+    );
+    err.status = res.status;
+    throw err;
+  }
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) onLine(line);
+  }
+  if (buffer) onLine(buffer);
+}
+
 export async function streamSubagentTaskEvents(
   threadId: string,
   taskId: string,

@@ -35,3 +35,7 @@ class ResizeObserverMock {
   disconnect = vi.fn();
 }
 window.ResizeObserver = ResizeObserverMock as unknown as typeof ResizeObserver;
+
+// Pin feature flags off so a developer's .env.local (which Vite also loads
+// for the test env) can't flip transport paths under the suite.
+vi.stubEnv('VITE_MUX_STREAM', '');

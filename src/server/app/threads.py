@@ -1620,6 +1620,37 @@ async def stream_subagent_task(
     )
 
 
+@router.get("/{thread_id}/stream")
+async def thread_stream_mux_endpoint(
+    thread_id: str,
+    x_user_id: CurrentUserId,
+    cursors: Optional[str] = Query(
+        None,
+        description=(
+            "Per-channel resume cursors: task:<id>@<epoch>#<entry_id>,…"
+        ),
+    ),
+):
+    """Multiplexed thread stream: every task channel + watch on one socket.
+
+    Replaces N per-task GETs + the watch socket so the browser's per-host
+    connection budget stays constant in task count. The main run stream is
+    NOT carried here (v1) — the foreground POST owns it.
+    """
+    await require_thread_owner(thread_id, x_user_id)
+    from src.server.handlers.chat.thread_stream_mux import (
+        parse_mux_cursors,
+        stream_thread_mux,
+    )
+
+    cursor_map = parse_mux_cursors(cursors)
+    return StreamingResponse(
+        stream_thread_mux(thread_id, cursor_map),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
+
+
 @router.post("/{thread_id}/tasks/{task_id}/messages")
 async def send_subagent_message(
     thread_id: str,

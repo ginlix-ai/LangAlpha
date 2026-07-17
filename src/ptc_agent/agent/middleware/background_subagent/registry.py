@@ -694,6 +694,19 @@ class BackgroundTaskRegistry:
             if status == "running" and fenced:
                 pipe.sadd(active_key, task.task_id)
                 pipe.expire(active_key, get_redis_ttl_workflow_events())
+                # Nudge attached mux consumers: a new writer round exists
+                # (spawn or resume). Registry rescans alone can miss a fast
+                # spawn-and-settle because the active set drops membership
+                # on terminal.
+                pipe.publish(
+                    spawn_nudge_channel(self.thread_id),
+                    json.dumps(
+                        {
+                            "task_id": task.task_id,
+                            "epoch": task.spawned_run_id or "-",
+                        }
+                    ),
+                )
             elif status != "running":
                 pipe.srem(active_key, task.task_id)
             await asyncio.wait_for(pipe.execute(), timeout=_SPILL_TIMEOUT_SECONDS)
@@ -1254,6 +1267,15 @@ class BackgroundTaskRegistry:
     def pending_count(self) -> int:
         """Get the number of pending tasks."""
         return sum(1 for task in self._tasks.values() if task.is_pending)
+
+
+def spawn_nudge_channel(thread_id: str) -> str:
+    """Pub/sub channel nudged on every fenced task spawn/resume.
+
+    Payload: ``{"task_id": ..., "epoch": <spawned_run_id>}``. Consumed by the
+    thread-stream mux for mid-connection channel discovery.
+    """
+    return f"subagent:spawn:{thread_id}"
 
 
 async def read_task_meta(thread_id: str, task_id: str) -> dict[str, str] | None:

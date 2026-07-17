@@ -516,5 +516,28 @@ class HookOutboxDrainer:
             await outbox_db.ack_outbox_job(job_id, attempts=attempts)
         except Exception:
             # The effect ran; a lost ack re-runs it after lease expiry —
-            # acceptable because every executor is idempotent.
+            # acceptable because every executor is idempotent. No wake either:
+            # the row is still open, so the thread legitimately reads pending.
             logger.warning(f"[HookOutbox] ack failed for {job_id}", exc_info=True)
+            return
+        if hook_type == "task_report_back":
+            # Task report-back pendingness IS the open outbox row, and the
+            # frontend watch is push-driven — a /status read that raced ahead
+            # of this ack leaves the client armed with no later signal until
+            # the ~30-min watch recycle. `cleared` only means "reconcile now":
+            # the client re-reads /status, so a wake with another job still
+            # queued is harmless. Best-effort; a dropped wake degrades to the
+            # recycle snapshot.
+            from src.server.handlers.chat.report_back import publish_wake
+            from src.utils.cache.redis_cache import get_cache_client
+
+            thread_id = job.get("conversation_thread_id") or (
+                job.get("payload") or {}
+            ).get("thread_id")
+            if thread_id:
+                try:
+                    await publish_wake(
+                        get_cache_client(), str(thread_id), cleared=True
+                    )
+                except Exception:
+                    pass

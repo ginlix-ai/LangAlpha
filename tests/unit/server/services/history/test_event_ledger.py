@@ -68,6 +68,10 @@ LIVE_ONLY = {
     "replay_done",  # replay sentinel
     "market_watch_update",  # transient stamp notice, accumulate=False; the
     # durable watchlist re-seeds the chip via GET /{thread}/market-watch on replay
+    "chan_open",  # mux channel lifecycle (thread_stream_mux)
+    "chan_close",  # mux channel lifecycle (thread_stream_mux)
+    "transport_error",  # mux whole-socket retryable close
+    "timeout",  # watch/mux max-duration autoclose (predates mux; single-quoted emit sites evaded the scan)
 }
 
 # KNOWN GAP: survives replay only through persisted sse_events. Before

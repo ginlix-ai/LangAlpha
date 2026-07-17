@@ -1129,10 +1129,21 @@ class BackgroundTaskManager:
     # namespace lock, before its writer spawns and produces any record), so
     # this owner check refuses every post-restamp delete. Missing hash or
     # empty owner (legacy/unfenced writers) allows the delete.
-    _DELETE_TASK_KEYS_IF_OWNED_LUA = """
+    # Settled task streams are RETAINED for a bounded window instead of
+    # deleted: consumer counts are process-local, so a mux/SSE reader on
+    # another worker is invisible to the drain-wait above — a delete here
+    # would cut its backlog mid-drain. The stream ends in the producer's
+    # sentinel, so late attachers still close promptly. Resume's reset
+    # (_reset_task_for_resume) still hard-DELETEs — that delete IS the
+    # epoch bump and must not linger.
+    _TASK_STREAM_RETENTION_SECONDS = 900
+
+    _RETIRE_TASK_KEYS_IF_OWNED_LUA = """
     local owner = redis.call('HGET', KEYS[1], 'spawned_run_id')
     if owner == false or owner == '' or owner == ARGV[1] then
-        return redis.call('DEL', KEYS[2], KEYS[3], KEYS[4])
+        redis.call('EXPIRE', KEYS[2], ARGV[2])
+        redis.call('EXPIRE', KEYS[3], ARGV[2])
+        return redis.call('DEL', KEYS[4])
     end
     return -1
     """
@@ -1144,17 +1155,18 @@ class BackgroundTaskManager:
             return
         try:
             await cache.client.eval(
-                self._DELETE_TASK_KEYS_IF_OWNED_LUA,
+                self._RETIRE_TASK_KEYS_IF_OWNED_LUA,
                 4,
                 f"subagent:meta:{thread_id}:{task_id}",
                 f"subagent:events:meta:{thread_id}:{task_id}",
                 f"subagent:stream:{thread_id}:{task_id}",
                 f"subagent:events:{thread_id}:{task_id}",
                 response_id,
+                self._TASK_STREAM_RETENTION_SECONDS,
             )
         except Exception:
             logger.warning(
-                f"[SubagentCleanup] owned-delete failed for "
+                f"[SubagentCleanup] owned-retire failed for "
                 f"thread_id={thread_id} task_id={task_id}",
                 exc_info=True,
             )

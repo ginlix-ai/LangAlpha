@@ -11,6 +11,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
 import { useUser } from '@/hooks/useUser';
 import { sendChatMessageStream, sendRetryStream, replayThreadHistory, getWorkflowStatus, getReportBackStatus, reconnectToWorkflowStream, sendHitlResponse, streamSubagentTaskEvents, fetchThreadTurns, submitFeedback, removeFeedback, getThreadFeedback, cancelWorkflow } from '../utils/api';
+import { getThreadMux, muxStreamEnabled } from '../utils/threadStreamMux';
 import type { WorkflowStatusResponse, ReportBackStatusResponse } from '../utils/api';
 // Imported from the dependency-free signal module (not `../utils/api`) so this
 // keeps decoding wire status even in the hook tests that fully mock `../utils/api`.
@@ -3229,7 +3230,15 @@ export function useChatMessages(
     const controller = new AbortController();
     subagentStreamsRef.current.set(shortTaskId, controller);
 
-    streamSubagentTaskEvents(tid, shortTaskId, processEvent, controller.signal)
+    // Mux transport: one shared socket per thread; the promise resolves on
+    // chan_close {terminal} (or our own abort) — a network drop reconnects
+    // with cursors inside the mux instead of resolving, so the completion
+    // lifecycle below no longer fires on mere socket loss.
+    const streamDone = muxStreamEnabled()
+      ? getThreadMux(tid).openTask(shortTaskId, processEvent, controller.signal)
+      : streamSubagentTaskEvents(tid, shortTaskId, processEvent, controller.signal);
+
+    streamDone
       .catch((err) => {
         if (err.name !== 'AbortError') {
           console.error(`[SubagentStream:${shortTaskId}]`, err);
