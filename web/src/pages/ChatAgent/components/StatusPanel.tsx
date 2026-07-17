@@ -1,25 +1,14 @@
 import type { ReactElement, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { createDateFormatter } from '@/lib/format';
+import PulseDot from '@/components/ui/pulse-dot';
 import type { MarketWatchState } from '../hooks/utils/streamEventHandlers';
 
 const TERTIARY = { color: 'var(--color-text-tertiary)' as const };
 
-/** A small pulsing accent dot — the market-watch chip's two-span `animate-ping`
- *  idiom, reused as a "live" marker on a status section header. */
-function LiveDot(): ReactElement {
-  return (
-    <span className="relative flex h-2 w-2" aria-hidden="true">
-      <span
-        className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75"
-        style={{ background: 'var(--color-accent-primary)' }}
-      />
-      <span
-        className="relative inline-flex h-2 w-2 rounded-full"
-        style={{ background: 'var(--color-accent-primary)' }}
-      />
-    </span>
-  );
-}
+// Locale-aware clock (matches the prior `toLocaleTimeString()` shape: h:m:s).
+// StatusPanel calls useTranslation() so it re-renders on a locale switch.
+const formatWatchTime = createDateFormatter({ timeStyle: 'medium' });
 
 /** A titled panel section. Phase 1 renders only the market-watch section; later
  *  status sections (todos, skills, background tasks) append as siblings. */
@@ -35,7 +24,7 @@ function StatusSection({
   return (
     <section className="mb-4">
       <div className="mb-2 flex items-center gap-2">
-        <LiveDot />
+        <PulseDot />
         <span className="text-xs font-semibold uppercase tracking-wide" style={TERTIARY}>
           {title}
         </span>
@@ -92,7 +81,7 @@ export default function StatusPanel({ marketWatch }: StatusPanelProps): ReactEle
   const updatedCaption =
     timestamp != null
       ? t('chat.marketWatch.panelUpdated', {
-          time: new Date(timestamp * 1000).toLocaleTimeString(),
+          time: formatWatchTime(timestamp * 1000),
           defaultValue: 'Updated {{time}}',
         })
       : undefined;

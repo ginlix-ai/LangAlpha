@@ -19,18 +19,8 @@ import { useAnimatedText } from '@/components/ui/animated-text';
 import Markdown from './Markdown';
 import {
   INLINE_ARTIFACT_TOOLS,
-  InlineStockPriceCard,
-  InlineCompanyOverviewCard,
-  InlineMarketIndicesCard,
-  InlineSectorPerformanceCard,
-  InlineMarketOverviewCard,
-  InlineSecFilingCard,
-  InlineStockScreenerCard,
-  InlineWebSearchCard,
+  INLINE_ARTIFACT_MAP,
 } from './charts/InlineArtifactCards';
-import { InlineAutomationCard } from './charts/InlineAutomationCards';
-import { InlinePreviewCard } from './charts/InlinePreviewCard';
-import { InlineChartAnnotationCard } from './charts/InlineChartAnnotationCard';
 import { useTranslation } from 'react-i18next';
 import './ActivityBlock.css';
 
@@ -56,21 +46,6 @@ function shouldHideTimelineItem(item: ActivityItem): boolean {
   const fp = getFilePathFromArgs(item.toolCall?.args);
   return fp ? isUserProfileReadmePath(fp) : false;
 }
-
-/** Map artifact type to inline chart component */
-const INLINE_ARTIFACT_MAP: Record<string, React.ComponentType<{ artifact: Record<string, unknown>; onClick?: () => void }>> = {
-  stock_prices: InlineStockPriceCard,
-  company_overview: InlineCompanyOverviewCard,
-  market_indices: InlineMarketIndicesCard,
-  sector_performance: InlineSectorPerformanceCard,
-  market_overview: InlineMarketOverviewCard,
-  sec_filing: InlineSecFilingCard,
-  stock_screener: InlineStockScreenerCard,
-  automations: InlineAutomationCard,
-  preview_url: InlinePreviewCard,
-  web_search: InlineWebSearchCard,
-  chart_annotation: InlineChartAnnotationCard,
-};
 
 /** Spring config matching radix-accordion feel */
 const SPRING = { type: 'spring' as const, stiffness: 150, damping: 17 };

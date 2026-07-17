@@ -13,6 +13,7 @@ import {
 } from './charts/MarketDataCharts';
 import SecFilingViewer from './charts/SecFilingViewer';
 import { FaviconImg, googleFaviconUrl } from './charts/InlineArtifactCards';
+import { unwrapMarketOverview } from './charts/inlineCardsShared';
 import AutomationDetailPanel from './charts/AutomationDetailPanel';
 import Markdown, { CodeBlock } from './Markdown';
 import iconRobo from '../../../assets/img/icon-robo.png';
@@ -359,17 +360,11 @@ function ArtifactOrMarkdown({ artifact, content, toolName, toolCallProcess, onOp
       case 'market_overview': {
         // Composite artifact: legacy market_indices / sector_performance
         // artifacts nested verbatim under `indices` / `sectors`.
-        const indicesArtifact = artifact.indices as Record<string, unknown> | undefined;
-        const sectorsArtifact = artifact.sectors as Record<string, unknown> | undefined;
-        const hasIndices =
-          !!indicesArtifact &&
-          Object.keys((indicesArtifact.indices as Record<string, unknown> | undefined) ?? {}).length > 0;
-        const hasSectors =
-          Array.isArray(sectorsArtifact?.sectors) && (sectorsArtifact.sectors as unknown[]).length > 0;
+        const { indicesArtifact, sectorsArtifact, hasIndices, hasSectors } = unwrapMarketOverview(artifact);
         if (hasIndices || hasSectors) {
           return (
             <div className="flex flex-col gap-4">
-              {hasIndices && <MarketIndicesChart data={indicesArtifact} />}
+              {hasIndices && <MarketIndicesChart data={indicesArtifact!} />}
               {hasSectors && <SectorPerformanceChart data={sectorsArtifact!} />}
             </div>
           );

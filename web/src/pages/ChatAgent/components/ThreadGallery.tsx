@@ -742,7 +742,7 @@ function ThreadGallery({ workspaceId, onBack, onThreadSelect }: ThreadGalleryPro
               <RightPanel
                 workspaceId={workspaceId}
                 onClose={() => setShowFilePanel(false)}
-                targetFile={filePanelTargetFile}
+                panelTarget={filePanelTargetFile ? { kind: 'file', path: filePanelTargetFile } : null}
                 onTargetFileHandled={() => setFilePanelTargetFile(null)}
                 files={panelFiles}
                 filesLoading={panelFilesLoading}

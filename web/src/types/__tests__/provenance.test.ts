@@ -274,4 +274,32 @@ describe('provenanceRecordKey', () => {
       provenanceRecordKey({ ...common, tool_call_id: 'bash-2' }),
     );
   });
+
+  it('keeps each market-watch stamp refresh under its own storage key', () => {
+    // Stamps carry no tool_call_id, so without the sha discriminator every
+    // refresh of a symbol would collide and the accumulator would keep only
+    // the latest snapshot.
+    const common = {
+      source_type: 'market_data',
+      identifier: 'NVDA',
+      detail: 'market_watch',
+    };
+    const first = provenanceRecordKey({ ...common, result_sha256: 'stamp-1' });
+    const second = provenanceRecordKey({ ...common, result_sha256: 'stamp-2' });
+    expect(first).not.toBe(second);
+    // A throttled replay of the byte-identical stamp still collapses.
+    expect(provenanceRecordKey({ ...common, result_sha256: 'stamp-1' })).toBe(first);
+  });
+
+  it('leaves non-market-watch market_data records on the bare key', () => {
+    // Direct market tools carry a tool_call_id; their key shape is unchanged.
+    const key = provenanceRecordKey({
+      tool_call_id: 'call-1',
+      source_type: 'market_data',
+      identifier: 'NVDA',
+      detail: 'quote',
+      result_sha256: 'r',
+    });
+    expect(key).toBe('call-1:market_data:NVDA');
+  });
 });

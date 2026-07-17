@@ -1,4 +1,10 @@
 import { useTranslation } from 'react-i18next';
+import { createDateFormatter } from '@/lib/format';
+import PulseDot from '@/components/ui/pulse-dot';
+
+// Locale-aware clock (matches the prior `toLocaleTimeString()` shape: h:m:s).
+// The component calls useTranslation() so it re-renders on a locale switch.
+const formatWatchTime = createDateFormatter({ timeStyle: 'medium' });
 
 interface MarketWatchChipProps {
   /** Tickers the agent is currently live-stamping. Empty/undefined = watch off. */
@@ -24,25 +30,14 @@ export default function MarketWatchChip({ symbols, lastUpdate, onClick }: Market
   const joined = symbols.join(', ');
   const title = lastUpdate
     ? t('chat.marketWatch.chipTitleUpdated', {
-        time: new Date(lastUpdate * 1000).toLocaleTimeString(),
+        time: formatWatchTime(lastUpdate * 1000),
         defaultValue: 'Live prices for watched tickers — updated {{time}}',
       })
     : t('chat.marketWatch.chipTitle', {
         defaultValue: 'Live prices for the tickers the agent is watching',
       });
 
-  const dot = (
-    <span className="relative flex h-2 w-2" aria-hidden="true">
-      <span
-        className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75"
-        style={{ background: 'var(--color-accent-primary)' }}
-      />
-      <span
-        className="relative inline-flex h-2 w-2 rounded-full"
-        style={{ background: 'var(--color-accent-primary)' }}
-      />
-    </span>
-  );
+  const dot = <PulseDot />;
 
   const label = t('chat.marketWatch.watching', {
     symbols: joined,

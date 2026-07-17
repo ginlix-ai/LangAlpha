@@ -6,23 +6,39 @@ import {
 import { useTranslation } from 'react-i18next';
 import { utcMsToETDate } from '@/lib/utils';
 import { useIsMobile } from '@/hooks/useIsMobile';
-
-// ─── Constants ──────────────────────────────────────────────────────
-
-const GREEN = 'var(--color-profit)';
-const RED = 'var(--color-loss)';
-const TEXT_COLOR = 'var(--color-text-tertiary)';
-const CARD_BG = 'var(--color-bg-tool-card)';
-const CARD_BORDER = 'var(--color-border-muted)';
+import { InlineAutomationCard } from './InlineAutomationCards';
+import { InlinePreviewCard } from './InlinePreviewCard';
+import { InlineChartAnnotationCard } from './InlineChartAnnotationCard';
+import { InlineQuoteCard } from './InlineQuoteCard';
+import {
+  GREEN,
+  RED,
+  TEXT_COLOR,
+  CARD_BORDER,
+  SIZES_MOBILE,
+  SIZES_DESKTOP,
+  cardStyle,
+  mobileCardStyle,
+  formatPct,
+  formatCompactNumber,
+  MARKET_STATUS_LABELS,
+  MARKET_STATUS_COLORS,
+  extendedHoursLabel,
+  unwrapMarketOverview,
+  type InlineCardProps,
+} from './inlineCardsShared';
 
 export const INLINE_ARTIFACT_TOOLS = new Set([
   'get_daily_prices',
   'get_stock_daily_prices',
   'get_company_overview',
+  'get_quote',
   // Composite tool — renders InlineMarketOverviewCard, which nests the legacy
   // indices + sector cards. Requires the `market_overview` entry in
-  // INLINE_ARTIFACT_MAP (ActivityBlock.tsx / MessageList.tsx); the card never
-  // returns null, so a completed call always renders (see Task 6 bug).
+  // INLINE_ARTIFACT_MAP (ActivityBlock.tsx / MessageList.tsx). Unlike the other
+  // cards, InlineMarketOverviewCard never returns null — a completed
+  // get_market_overview call routed here always renders (the unknown-region
+  // error path falls back to a minimal region card rather than nothing).
   'get_market_overview',
   // Legacy names (pre-consolidation) — kept for SSE replay of historical threads
   'get_market_indices',
@@ -51,52 +67,6 @@ function downsample<T>(arr: T[] | null | undefined, maxPoints = 60): T[] | null 
   }
   return result;
 }
-
-function formatCompactNumber(num: number | null | undefined): string {
-  if (num == null) return 'N/A';
-  if (Math.abs(num) >= 1e9) return `${(num / 1e9).toFixed(1)}B`;
-  if (Math.abs(num) >= 1e6) return `${(num / 1e6).toFixed(1)}M`;
-  if (Math.abs(num) >= 1e3) return `${(num / 1e3).toFixed(1)}K`;
-  return typeof num === 'number' ? num.toFixed(2) : String(num);
-}
-
-function formatPct(val: number | null | undefined): string {
-  if (val == null) return 'N/A';
-  const sign = val >= 0 ? '+' : '';
-  return `${sign}${val.toFixed(2)}%`;
-}
-
-const cardStyle: React.CSSProperties = {
-  background: CARD_BG,
-  border: `1px solid ${CARD_BORDER}`,
-  borderRadius: 8,
-  padding: '12px 14px',
-  cursor: 'pointer',
-  transition: 'border-color 0.15s',
-  outline: 'none',
-  WebkitTapHighlightColor: 'transparent',
-  userSelect: 'none',
-};
-
-const mobileCardStyle: React.CSSProperties = {
-  ...cardStyle,
-  padding: '8px 10px',
-  borderRadius: 6,
-};
-
-/** Shared mobile / desktop sizing tokens for inline cards */
-const SIZES_MOBILE = {
-  gap: 6, listGap: 2, gridGap: '1px 12px',
-  headerFs: 12, rowFs: 11, labelFs: 10, badgeFs: 9,
-  rowPad: '2px 0', sectionMb: 4, filingMb: 6,
-  moreMt: 2, changeMinW: 48,
-} as const;
-const SIZES_DESKTOP = {
-  gap: 8, listGap: 4, gridGap: '2px 20px',
-  headerFs: 13, rowFs: 12, labelFs: 11, badgeFs: 10,
-  rowPad: '3px 0', sectionMb: 6, filingMb: 8,
-  moreMt: 4, changeMinW: 55,
-} as const;
 
 const ABBREVIATIONS: Record<string, string> = {
   'Consumer Cyclical': 'Cons. Cyclical',
@@ -136,11 +106,6 @@ function MeasuredContainer({ height, children }: { height: number; children: (wi
 }
 
 // ─── InlineStockPriceCard ───────────────────────────────────────────
-
-interface InlineCardProps {
-  artifact: Record<string, unknown> | null | undefined;
-  onClick?: () => void;
-}
 
 export function InlineStockPriceCard({ artifact, onClick }: InlineCardProps): React.ReactElement | null {
   const { t } = useTranslation();
@@ -258,19 +223,6 @@ function formatMarketCap(num: number | null | undefined): string {
   return `$${num.toLocaleString()}`;
 }
 
-const MARKET_STATUS_LABELS: Record<string, string> = {
-  early_trading: 'Pre-Market',
-  open: 'Regular',
-  late_trading: 'After-Hours',
-  closed: 'Closed',
-};
-const MARKET_STATUS_COLORS: Record<string, string> = {
-  early_trading: '#f59e0b',
-  open: GREEN,
-  late_trading: '#3b82f6',
-  closed: TEXT_COLOR,
-};
-
 export function InlineCompanyOverviewCard({ artifact, onClick }: InlineCardProps): React.ReactElement | null {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
@@ -341,7 +293,7 @@ export function InlineCompanyOverviewCard({ artifact, onClick }: InlineCardProps
       {hasExtPrice && (
         <div style={{ display: 'flex', alignItems: 'baseline', gap: sz.gap, marginBottom: sz.filingMb, fontSize: isMobile ? 11 : 13 }}>
           <span style={{ color: TEXT_COLOR }}>
-            {marketStatus === 'early_trading' ? 'Pre-Mkt' : 'After-Hrs'}
+            {extendedHoursLabel(t, marketStatus, 'long')}
           </span>
           <span style={{ fontWeight: 600, color: 'var(--color-text-primary)' }}>
             ${extPrice.toFixed(2)}
@@ -530,26 +482,19 @@ export function InlineSectorPerformanceCard({ artifact, onClick }: InlineCardPro
 /**
  * Composite card for the consolidated `get_market_overview` tool. It nests the
  * legacy market_indices / sector_performance artifacts (carried verbatim under
- * `indices` / `sectors`) into their existing cards. It MUST never return null:
- * a completed call routed here would otherwise render nothing (the original
- * Task 6 bug), so when neither nested card has data it falls back to a minimal
- * region card.
+ * `indices` / `sectors`) into their existing cards. InlineMarketOverviewCard
+ * must never return null — a completed get_market_overview call routed here
+ * would otherwise render nothing — so when neither nested card has data it
+ * falls back to a minimal region card.
  */
 export function InlineMarketOverviewCard({ artifact, onClick }: InlineCardProps): React.ReactElement {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
   const sz = isMobile ? SIZES_MOBILE : SIZES_DESKTOP;
 
-  const overview = (artifact || {}) as Record<string, unknown>;
-  const indicesArtifact = overview.indices as Record<string, unknown> | undefined;
-  const sectorsArtifact = overview.sectors as Record<string, unknown> | undefined;
-
-  // Mirror the nested cards' own null conditions so the composite knows whether
-  // either will actually render content (and thus whether the fallback is needed).
-  const indicesData = indicesArtifact?.indices as Record<string, unknown> | undefined;
-  const hasIndices = !!indicesData && Object.keys(indicesData).length > 0;
-  const sectorsData = sectorsArtifact?.sectors as unknown[] | undefined;
-  const hasSectors = Array.isArray(sectorsData) && sectorsData.length > 0;
+  // hasIndices / hasSectors mirror the nested cards' own null conditions, so the
+  // composite knows whether either will render content (and the fallback is needed).
+  const { indicesArtifact, sectorsArtifact, hasIndices, hasSectors } = unwrapMarketOverview(artifact);
 
   if (hasIndices || hasSectors) {
     return (
@@ -561,7 +506,7 @@ export function InlineMarketOverviewCard({ artifact, onClick }: InlineCardProps)
   }
 
   // Error / degenerate path (e.g. unknown region): keep the call visible.
-  const region = overview.region as string | undefined;
+  const region = (artifact as Record<string, unknown> | undefined)?.region as string | undefined;
   const regionLabel = region ? region.toUpperCase() : '';
 
   return (
@@ -1089,4 +1034,30 @@ export function InlineWebSearchCard({ artifact, onClick }: InlineCardProps): Rea
     </div>
   );
 }
+
+// ─── Artifact-type dispatch ─────────────────────────────────────────
+
+/**
+ * Maps an artifact `type` to its inline card component. Single source of truth
+ * for both the activity timeline (ActivityBlock) and the message list
+ * (MessageList) — a new inline card is registered here (plus its tool-name gate
+ * in INLINE_ARTIFACT_TOOLS) rather than in each surface separately.
+ */
+export const INLINE_ARTIFACT_MAP: Record<
+  string,
+  React.ComponentType<{ artifact: Record<string, unknown>; onClick?: () => void }>
+> = {
+  stock_prices: InlineStockPriceCard,
+  company_overview: InlineCompanyOverviewCard,
+  quote: InlineQuoteCard,
+  market_indices: InlineMarketIndicesCard,
+  sector_performance: InlineSectorPerformanceCard,
+  market_overview: InlineMarketOverviewCard,
+  sec_filing: InlineSecFilingCard,
+  stock_screener: InlineStockScreenerCard,
+  automations: InlineAutomationCard,
+  preview_url: InlinePreviewCard,
+  web_search: InlineWebSearchCard,
+  chart_annotation: InlineChartAnnotationCard,
+};
 

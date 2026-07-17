@@ -1,7 +1,8 @@
 /**
  * RightPanel Status tab: the tab appears whenever a watch is active or an
- * explicit chip click (targetStatus) is pending, snaps to Status on that click,
- * and falls back to Files when both signals clear while Status is open.
+ * explicit chip click (a `panelTarget` of kind 'status') is pending, snaps to
+ * Status on that click, and falls back to Files when both signals clear while
+ * Status is open.
  */
 import { describe, it, expect, vi } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
@@ -79,12 +80,12 @@ describe('RightPanel Status tab', () => {
     expect(screen.getByTestId('tabs').getAttribute('data-active')).toBe('files');
   });
 
-  it('snaps to the Status tab when targetStatus is set', async () => {
+  it('snaps to the Status tab when a status target is set', async () => {
     renderWithProviders(
       <RightPanel
         {...baseProps}
         initialTab="files"
-        targetStatus
+        panelTarget={{ kind: 'status' }}
         marketWatch={{ symbols: ['NVDA'] }}
       />,
     );
@@ -95,9 +96,9 @@ describe('RightPanel Status tab', () => {
     expect(await screen.findByTestId('status-panel')).toBeInTheDocument();
   });
 
-  it('opens on targetStatus even with no symbols yet (chip click before first stamp)', async () => {
+  it('opens on a status target even with no symbols yet (chip click before first stamp)', async () => {
     renderWithProviders(
-      <RightPanel {...baseProps} initialTab="files" targetStatus />,
+      <RightPanel {...baseProps} initialTab="files" panelTarget={{ kind: 'status' }} />,
     );
     await waitFor(() => {
       expect(screen.getByTestId('tabs').getAttribute('data-active')).toBe('status');
@@ -107,13 +108,13 @@ describe('RightPanel Status tab', () => {
 
   it('falls back to Files when the Status tab disappears (target cleared, no symbols)', async () => {
     const { rerender } = renderWithProviders(
-      <RightPanel {...baseProps} initialTab="files" targetStatus />,
+      <RightPanel {...baseProps} initialTab="files" panelTarget={{ kind: 'status' }} />,
     );
     await waitFor(() => {
       expect(screen.getByTestId('tabs').getAttribute('data-active')).toBe('status');
     });
-    // The chip-click flag clears and no watch is active → the tab is gone.
-    rerender(<RightPanel {...baseProps} initialTab="files" targetStatus={null} />);
+    // The chip-click target clears and no watch is active → the tab is gone.
+    rerender(<RightPanel {...baseProps} initialTab="files" panelTarget={null} />);
     await waitFor(() => {
       expect(screen.getByTestId('tabs').getAttribute('data-active')).toBe('files');
     });

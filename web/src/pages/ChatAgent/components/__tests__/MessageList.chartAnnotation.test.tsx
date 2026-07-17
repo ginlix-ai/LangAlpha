@@ -56,31 +56,34 @@ vi.mock('../Markdown', () => ({
 }));
 
 // draw_chart_annotation must be a recognized inline-artifact tool for the
-// latest-vs-intermediate split to engage.
-vi.mock('../charts/InlineArtifactCards', () => ({
-  INLINE_ARTIFACT_TOOLS: new Set<string>(['draw_chart_annotation']),
-  InlineStockPriceCard: () => null,
-  InlineCompanyOverviewCard: () => null,
-  InlineMarketIndicesCard: () => null,
-  InlineSectorPerformanceCard: () => null,
-  InlineMarketOverviewCard: () => null,
-  InlineSecFilingCard: () => null,
-  InlineStockScreenerCard: () => null,
-  InlineWebSearchCard: () => null,
-}));
-
-vi.mock('../charts/InlineAutomationCards', () => ({ InlineAutomationCard: () => null }));
-vi.mock('../charts/InlinePreviewCard', () => ({ InlinePreviewCard: () => null }));
-vi.mock('../charts/InlineChartAnnotationCard', () => ({
-  // Surface the annotation count so the test can confirm the pinned card is fed
-  // the LATEST cumulative artifact, not the first draw's.
-  InlineChartAnnotationCard: ({ artifact }: { artifact: Record<string, unknown> }) => (
+// latest-vs-intermediate split to engage. MessageList imports the dispatch map
+// from this module, so `chart_annotation` is routed here (surfacing the
+// annotation count so the test can confirm the pinned card is fed the LATEST
+// cumulative artifact, not the first draw's).
+vi.mock('../charts/InlineArtifactCards', () => {
+  const InlineChartAnnotationCard = ({ artifact }: { artifact: Record<string, unknown> }) => (
     <div
       data-testid="annotation-card"
       data-count={(artifact?.annotations as unknown[] | undefined)?.length ?? 0}
     />
-  ),
-}));
+  );
+  const NullCard = () => null;
+  return {
+    INLINE_ARTIFACT_TOOLS: new Set<string>(['draw_chart_annotation']),
+    InlineStockPriceCard: NullCard,
+    InlineCompanyOverviewCard: NullCard,
+    InlineMarketIndicesCard: NullCard,
+    InlineSectorPerformanceCard: NullCard,
+    InlineMarketOverviewCard: NullCard,
+    InlineSecFilingCard: NullCard,
+    InlineStockScreenerCard: NullCard,
+    InlineWebSearchCard: NullCard,
+    INLINE_ARTIFACT_MAP: { chart_annotation: InlineChartAnnotationCard },
+  };
+});
+
+vi.mock('../charts/InlineAutomationCards', () => ({ InlineAutomationCard: () => null }));
+vi.mock('../charts/InlinePreviewCard', () => ({ InlinePreviewCard: () => null }));
 
 type SegmentsProps = React.ComponentProps<typeof MessageContentSegments>;
 

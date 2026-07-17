@@ -20,6 +20,11 @@ vi.mock('react-i18next', () => ({
 
 vi.mock('@/lib/supabase', () => ({ supabase: null }));
 
+// Market watch is feature-gated; force the flag on so useMarketWatch seeds/refetches.
+vi.mock('@/hooks/useFeatures', () => ({
+  useFeatureEnabled: () => true,
+}));
+
 vi.mock('../utils/threadStorage', () => ({
   getStoredThreadId: vi.fn().mockReturnValue(null),
   setStoredThreadId: vi.fn(),
@@ -43,6 +48,7 @@ vi.mock('../../utils/api', () => ({
 
 import { fetchMarketWatch } from '../../utils/api';
 import { useChatMessages } from '../useChatMessages';
+import { useMarketWatch } from '../useMarketWatch';
 
 const mockFetchMarketWatch = fetchMarketWatch as Mock;
 
@@ -102,6 +108,77 @@ describe('useChatMessages – market watch chip state', () => {
     });
     await waitFor(() => {
       expect(result.current.marketWatch).toEqual({ symbols: ['AAPL'] });
+    });
+  });
+});
+
+// The turn-completion refetch (c) only knows the symbol list; it must MERGE onto
+// the live snapshot, not replace it — otherwise the `content`/`timestamp` a
+// mid-turn `market_watch_update` (b) just streamed is destroyed and the Status
+// panel blanks at turn end.
+describe('useMarketWatch – live stamp survives the turn-completion refetch (merge, not replace)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('preserves content/timestamp when the completion refetch returns the same symbols', async () => {
+    mockFetchMarketWatch.mockResolvedValue({ thread_id: 'thread-a', symbols: ['NVDA'] });
+    const threadIdRef = { current: 'thread-a' };
+    let loading = true;
+    const { result, rerender } = renderHookWithProviders(
+      () => useMarketWatch('thread-a', loading, threadIdRef),
+    );
+
+    // (a) seed from the GET endpoint.
+    await waitFor(() => {
+      expect(result.current.marketWatch).toEqual({ symbols: ['NVDA'] });
+    });
+
+    // (b) a live market_watch_update stamps content + timestamp mid-turn.
+    act(() => {
+      result.current.setMarketWatch({ symbols: ['NVDA'], content: 'As of 14:30 ET', timestamp: 1_700_000_000 });
+    });
+    expect(result.current.marketWatch).toEqual({
+      symbols: ['NVDA'], content: 'As of 14:30 ET', timestamp: 1_700_000_000,
+    });
+
+    // (c) turn completes (isLoading true → false); the refetch returns only the
+    // symbol list, and the merge keeps the live stamp.
+    mockFetchMarketWatch.mockResolvedValue({ thread_id: 'thread-a', symbols: ['NVDA'] });
+    loading = false;
+    await act(async () => {
+      rerender();
+    });
+    await waitFor(() => {
+      expect(result.current.marketWatch).toEqual({
+        symbols: ['NVDA'], content: 'As of 14:30 ET', timestamp: 1_700_000_000,
+      });
+    });
+  });
+
+  it('nulls the state when the completion refetch returns an empty watch list (unwatch)', async () => {
+    mockFetchMarketWatch.mockResolvedValue({ thread_id: 'thread-a', symbols: ['NVDA'] });
+    const threadIdRef = { current: 'thread-a' };
+    let loading = true;
+    const { result, rerender } = renderHookWithProviders(
+      () => useMarketWatch('thread-a', loading, threadIdRef),
+    );
+
+    await waitFor(() => {
+      expect(result.current.marketWatch).toEqual({ symbols: ['NVDA'] });
+    });
+    act(() => {
+      result.current.setMarketWatch({ symbols: ['NVDA'], content: 'live', timestamp: 1 });
+    });
+
+    // The unwatch turn's completion refetch returns an empty list → chip off.
+    mockFetchMarketWatch.mockResolvedValue({ thread_id: 'thread-a', symbols: [] });
+    loading = false;
+    await act(async () => {
+      rerender();
+    });
+    await waitFor(() => {
+      expect(result.current.marketWatch).toBeNull();
     });
   });
 });
