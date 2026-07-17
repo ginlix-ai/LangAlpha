@@ -1194,6 +1194,12 @@
     "anyoneWithLink": "任何拥有此链接的人都可以查看对话。"
   },
   "chat": {
+    "pills": {
+      "plan": "计划",
+      "planTitle": "计划模式 — 智能体先生成计划，经确认后再执行",
+      "watch": "盯盘",
+      "watchTitle": "盯盘模式 — 实时跟踪智能体关注的股票价格"
+    },
     "widgetContext": {
       "inContext_one": "{{count}} 项上下文",
       "inContext_other": "{{count}} 项上下文",
@@ -1768,6 +1774,12 @@
     "extendedHours": {
       "preMarket": { "long": "盘前", "short": "盘前" },
       "afterHours": { "long": "盘后", "short": "盘后" }
+    },
+    "marketStatus": {
+      "early_trading": "盘前",
+      "open": "盘中",
+      "late_trading": "盘后",
+      "closed": "休市"
     },
     "marketIndices": "市场指数",
     "marketOverview": "市场概览",

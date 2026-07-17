@@ -21,9 +21,9 @@ import {
   mobileCardStyle,
   formatPct,
   formatCompactNumber,
-  MARKET_STATUS_LABELS,
   MARKET_STATUS_COLORS,
   extendedHoursLabel,
+  marketStatusLabel,
   unwrapMarketOverview,
   type InlineCardProps,
 } from './inlineCardsShared';
@@ -270,7 +270,7 @@ export function InlineCompanyOverviewCard({ artifact, onClick }: InlineCardProps
             border: `1px solid ${MARKET_STATUS_COLORS[marketStatus] || TEXT_COLOR}`,
             whiteSpace: 'nowrap', flexShrink: 0,
           }}>
-            {MARKET_STATUS_LABELS[marketStatus] || marketStatus}
+            {marketStatusLabel(t, marketStatus)}
           </span>
         )}
       </div>

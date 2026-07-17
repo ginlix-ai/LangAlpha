@@ -1629,8 +1629,8 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                   active={planMode}
                   onToggle={() => setPlanMode(!planMode)}
                   icon={ScrollText}
-                  label="Plan"
-                  title="Plan mode — agent creates a plan for approval before executing"
+                  label={t('chat.pills.plan')}
+                  title={t('chat.pills.planTitle')}
                   activeClass="plan-mode-toggle-active"
                 />
               )}
@@ -1642,8 +1642,8 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
                   active={watchMode}
                   onToggle={() => setWatchMode(!watchMode)}
                   icon={Radar}
-                  label="Watch"
-                  title="Market watch — live prices for tickers the agent tracks"
+                  label={t('chat.pills.watch')}
+                  title={t('chat.pills.watchTitle')}
                   activeClass="watch-mode-toggle-active"
                 />
               )}

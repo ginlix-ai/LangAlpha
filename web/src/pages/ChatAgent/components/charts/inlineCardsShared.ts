@@ -87,6 +87,13 @@ export const MARKET_STATUS_COLORS: Record<string, string> = {
   closed: TEXT_COLOR,
 };
 
+/** Localized status badge; MARKET_STATUS_LABELS is the fallback for statuses
+ * without a `toolArtifact.marketStatus.*` key (and unknown ones stay raw). */
+export function marketStatusLabel(t: TFunction, status: string | undefined): string {
+  if (!status) return '';
+  return t(`toolArtifact.marketStatus.${status}`, MARKET_STATUS_LABELS[status] || status);
+}
+
 /**
  * Abbreviated extended-hours session label. Only `early_trading` /
  * `late_trading` carry an extended move, so those are the only statuses this

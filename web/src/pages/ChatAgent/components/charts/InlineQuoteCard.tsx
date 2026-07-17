@@ -14,9 +14,9 @@ import {
   mobileCardStyle,
   formatPct,
   formatCompactNumber,
-  MARKET_STATUS_LABELS,
   MARKET_STATUS_COLORS,
   extendedHoursLabel,
+  marketStatusLabel,
   type InlineCardProps,
 } from './inlineCardsShared';
 
@@ -162,7 +162,7 @@ function QuoteHero({ d, asOf, asOfTs }: { d: QuoteDisplay; asOf?: string; asOfTs
             border: `1px solid ${MARKET_STATUS_COLORS[d.status] || TEXT_COLOR}`,
             whiteSpace: 'nowrap', flexShrink: 0,
           }}>
-            {MARKET_STATUS_LABELS[d.status] || d.status}
+            {marketStatusLabel(t, d.status)}
           </span>
         )}
         {(d.asOfLocal ?? asOf) && (
@@ -303,7 +303,7 @@ export function InlineQuoteCard({ artifact, onClick }: InlineCardProps): React.R
                       </span>
                     ) : d.status && d.status !== 'open' ? (
                       <span style={{ fontSize: sz.badgeFs, color: MARKET_STATUS_COLORS[d.status] || TEXT_COLOR }}>
-                        {MARKET_STATUS_LABELS[d.status] || d.status}
+                        {marketStatusLabel(t, d.status)}
                       </span>
                     ) : null}
                     <QuoteRangeStrip d={d} />

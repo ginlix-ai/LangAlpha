@@ -1194,6 +1194,12 @@
     "anyoneWithLink": "Anyone with this link can view the conversation."
   },
   "chat": {
+    "pills": {
+      "plan": "Plan",
+      "planTitle": "Plan mode — agent creates a plan for approval before executing",
+      "watch": "Watch",
+      "watchTitle": "Market watch — live prices for tickers the agent tracks"
+    },
     "widgetContext": {
       "inContext_one": "{{count}} in context",
       "inContext_other": "{{count}} in context",
@@ -1771,6 +1777,12 @@
     "extendedHours": {
       "preMarket": { "long": "Pre-Mkt", "short": "Pre" },
       "afterHours": { "long": "After-Hrs", "short": "AH" }
+    },
+    "marketStatus": {
+      "early_trading": "Pre-Market",
+      "open": "Regular",
+      "late_trading": "After-Hours",
+      "closed": "Closed"
     },
     "marketIndices": "Market Indices",
     "marketOverview": "Market Overview",
