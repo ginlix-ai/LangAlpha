@@ -23,8 +23,9 @@ end-of-day work where a single snapshot is enough.
    request and register them immediately with `watch_market`.
 2. **While they matter**, read the ambient feed (below) for the current
    price rather than re-quoting on every step.
-3. **When live tracking is no longer relevant**, call `unwatch_market` to
-   stop watching some or all symbols.
+3. **When live tracking is no longer relevant**, call `watch_market` with
+   `action="unwatch"` to stop watching some or all symbols (omit `symbols`
+   to clear the whole list).
 
 ## How the feed works
 

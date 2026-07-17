@@ -40,6 +40,22 @@ def test_system_prompt_never_renders_the_market_watch_section():
         assert "<market_watch>" not in prompt
 
 
+def test_tool_guide_row_follows_the_master_switch():
+    """watch_market lists in the tool table by default (yaml default: enabled)
+    and disappears when the render passes the master switch as off."""
+    loader = get_loader()
+    base = dict(
+        current_time="2026-07-01 14:30 ET",
+        subagent_summary="",
+        tool_summary="",
+    )
+
+    assert "watch_market" in loader.get_system_prompt(**base)
+    assert "watch_market" not in loader.get_system_prompt(
+        **base, market_watch_enabled=False
+    )
+
+
 def test_market_watch_skill_md_exists_and_frontmatter_parses():
     assert SKILL_MD.is_file(), f"missing {SKILL_MD}"
 
@@ -56,5 +72,5 @@ def test_market_watch_skill_md_exists_and_frontmatter_parses():
 def test_market_watch_skill_body_covers_the_feed_vocabulary():
     body = SKILL_MD.read_text(encoding="utf-8")
     assert "watch_market" in body
-    assert "unwatch_market" in body
+    assert 'action="unwatch"' in body
     assert "<market-watch>" in body

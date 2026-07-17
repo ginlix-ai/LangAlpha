@@ -1,6 +1,14 @@
-"""MarketWatchMiddleware injection behavior (single-carrier abefore_model)."""
+"""MarketWatchMiddleware ephemeral injection behavior (awrap_model_call).
 
+The middleware appends one `<market-watch>` HumanMessage to the model request
+via ``request.override`` — nothing enters durable state, so there is no
+carrier selection, no idempotency guard, and no projector strip to test.
+"""
+
+import contextlib
+import hashlib
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -9,6 +17,31 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ptc_agent.agent.middleware.market_watch import MarketWatchMiddleware
 from src.market_protocol import MarketPhase
+
+
+@pytest.fixture(autouse=True)
+def body_store(monkeypatch):
+    """Silence the lazy body-store write (no DB in unit tests); assertable."""
+    mock = AsyncMock()
+    monkeypatch.setattr(
+        "src.server.database.provenance_bodies.store_result_body", mock
+    )
+    return mock
+
+
+@pytest.fixture
+def recording_handler():
+    """Model-call handler that records each request it sees and returns a sentinel."""
+
+    seen = []
+
+    async def handler(req):
+        seen.append(req)
+        return "MODEL_RESPONSE"
+
+    handler.seen = seen
+    return handler
+
 
 _MOD = "ptc_agent.agent.middleware.market_watch"
 _ET = pytz.timezone("US/Eastern")
@@ -19,6 +52,22 @@ _SNAPS = [{"symbol": "NVDA", "price": 231.0, "change_percent": 2.31,
            "volume": 1_000_000, "last_trade_price": 233.45, "market_status": "open"}]
 
 
+class _FakeRequest:
+    """Minimal ModelRequest stand-in: messages + runtime + model + immutable override."""
+
+    def __init__(self, messages, runtime=None, model=None):
+        self.messages = messages
+        self.runtime = runtime or MagicMock()
+        self.model = model
+
+    def override(self, **overrides):
+        return _FakeRequest(
+            overrides.get("messages", self.messages),
+            runtime=self.runtime,
+            model=self.model,
+        )
+
+
 def _fake_calendar(phase):
     """A calendar whose phase_at returns a fixed MarketPhase for the venue gate."""
     cal = MagicMock()
@@ -26,118 +75,250 @@ def _fake_calendar(phase):
     return cal
 
 
-def _mw(interval=25):
-    return MarketWatchMiddleware(min_interval_seconds=interval)
+def _mw(interval=25, **kwargs):
+    kwargs.setdefault("cache_breakpoint_pin", True)
+    return MarketWatchMiddleware(min_interval_seconds=interval, **kwargs)
 
 
-def _runtime():
-    rt = MagicMock()
-    rt.stream_writer = MagicMock()
-    return rt
+@contextlib.contextmanager
+def _patched(watchlist, snaps=_SNAPS, phase=MarketPhase.REGULAR, cfg=_CFG):
+    """Patch the middleware's collaborators for one test; yields the provider mock.
 
-
-def _patched(watchlist, snaps=_SNAPS, phase=MarketPhase.REGULAR):
+    A single context manager over the five patch points (watchlist read, provider
+    factory, market session, exchange calendar, run config) so tests read
+    ``with _patched([...]) as ctx: ... ctx.provider.get_snapshots``.
+    """
     provider = AsyncMock()
     provider.get_snapshots = AsyncMock(return_value=snaps)
-    return (
-        patch(f"{_MOD}.get_watchlist", AsyncMock(return_value=watchlist)),
-        patch(f"{_MOD}.get_market_data_provider", return_value=provider),
-        patch("src.tools.market_data.quote_format.get_market_session",
-              return_value=("REGULAR_HOURS", _FIXED_ET)),
-        patch(f"{_MOD}.get_calendar", return_value=_fake_calendar(phase)),
-    )
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(
+            patch(f"{_MOD}.get_watchlist", AsyncMock(return_value=watchlist))
+        )
+        stack.enter_context(
+            patch(f"{_MOD}.get_market_data_provider", return_value=provider)
+        )
+        stack.enter_context(
+            patch("src.tools.market_data.quote_format.get_market_session",
+                  return_value=("REGULAR_HOURS", _FIXED_ET))
+        )
+        stack.enter_context(
+            patch(f"{_MOD}.get_calendar", return_value=_fake_calendar(phase))
+        )
+        stack.enter_context(patch(f"{_MOD}.get_config", MagicMock(return_value=cfg)))
+        yield SimpleNamespace(provider=provider)
 
 
-def _human_state():
-    """Turn state whose tail is the incoming human message (the stamp target)."""
-    return {"messages": [HumanMessage(content="What is NVDA doing?", id="h-1")]}
+def _human_request():
+    """Request whose tail is the incoming human message."""
+    return _FakeRequest([HumanMessage(content="What is NVDA doing?", id="h-1")])
 
 
-def _batch_state(tool_msgs, tool_calls=None):
-    """Turn state whose tail is a just-completed tool batch (Human → AI → tools)."""
+def _batch_request(tool_msgs, tool_calls=None):
+    """Request whose tail is a just-completed tool batch (Human → AI → tools)."""
     ai = AIMessage(content="", tool_calls=tool_calls or [], id="ai-1")
-    return {"messages": [HumanMessage(content="hi", id="h-0"), ai, *tool_msgs]}
+    return _FakeRequest([HumanMessage(content="hi", id="h-0"), ai, *tool_msgs])
 
 
-# --- human message stamp ----------------------------------------------------
+def _assert_stamped(original, injected, count=1):
+    """Injected request = original messages + `count` ephemeral stamp tails."""
+    assert len(injected.messages) == len(original.messages) + count
+    assert injected.messages[: len(original.messages)] == original.messages
+    tail = injected.messages[-1]
+    assert isinstance(tail, HumanMessage)
+    assert tail.content.startswith("<market-watch>\n")
+    assert tail.content.endswith("\n</market-watch>")
+    # Self-identifies as feed output so it can't be mistaken for the user.
+    assert "not a user message" in tail.content
+    return tail
+
+
+# --- ephemeral stamp ----------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_stamps_human_str_content():
+async def test_appends_ephemeral_stamp_for_human_tail(recording_handler):
     mw = _mw()
-    p1, p2, p3, p4 = _patched(["NVDA"])
-    with p1, p2, p3, p4:
-        update = await mw.abefore_model(_human_state(), _runtime(), config=_CFG)
-    msgs = update["messages"]
-    assert len(msgs) == 1
-    out = msgs[0]
-    assert isinstance(out, HumanMessage)
-    assert out.id == "h-1"  # same id → add_messages replaces in place
-    assert "What is NVDA doing?" in out.content
-    assert "<market-watch>" in out.content
-    assert "</market-watch>" in out.content
-    assert "$233.45" in out.content
+    request = _human_request()
+
+    with _patched(["NVDA"]):
+        result = await mw.awrap_model_call(request, recording_handler)
+
+    assert result == "MODEL_RESPONSE"
+    tail = _assert_stamped(request, recording_handler.seen[0])
+    assert "$233.45" in tail.content
+    # Nothing persisted: the original request's messages are untouched.
+    assert len(request.messages) == 1
+    assert request.messages[0].content == "What is NVDA doing?"
 
 
 @pytest.mark.asyncio
-async def test_stamps_human_list_content():
+async def test_appends_after_tool_batch_without_touching_results(recording_handler):
     mw = _mw()
-    parts = [{"type": "text", "text": "What is NVDA doing?"}]
-    state = {"messages": [HumanMessage(content=parts, id="h-2")]}
-    p1, p2, p3, p4 = _patched(["NVDA"])
-    with p1, p2, p3, p4:
-        update = await mw.abefore_model(state, _runtime(), config=_CFG)
-    out = update["messages"][0]
-    assert out.id == "h-2"
-    assert isinstance(out.content, list)
-    # original part untouched, block appended as an extra text part
-    assert out.content[0] == {"type": "text", "text": "What is NVDA doing?"}
-    assert len(out.content) == 2
-    assert out.content[-1]["type"] == "text"
-    assert "<market-watch>" in out.content[-1]["text"]
-    assert "$233.45" in out.content[-1]["text"]
+    tools = [ToolMessage(content="a web search result",
+                         tool_call_id="tc-1", name="web_search", id="tm-1")]
+    request = _batch_request(tools)
+
+    with _patched(["NVDA"]):
+        await mw.awrap_model_call(request, recording_handler)
+
+    seen = recording_handler.seen
+    _assert_stamped(request, seen[0])
+    # Tool results pass through byte-identical — no carrier mutation.
+    assert seen[0].messages[2] is tools[0]
+    assert tools[0].content == "a web search result"
 
 
 @pytest.mark.asyncio
-async def test_noop_without_watchlist():
+async def test_noop_without_watchlist(recording_handler):
     mw = _mw()
-    p1, p2, p3, p4 = _patched([])
-    with p1, p2, p3, p4:
-        assert await mw.abefore_model(_human_state(), _runtime(), config=_CFG) is None
+    request = _human_request()
+
+    with _patched([]):
+        result = await mw.awrap_model_call(request, recording_handler)
+
+    assert result == "MODEL_RESPONSE"
+    assert recording_handler.seen[0] is request  # untouched request passes through
 
 
 @pytest.mark.asyncio
-async def test_noop_without_thread_id():
+async def test_noop_without_thread_id(recording_handler):
     mw = _mw()
-    result = await mw.abefore_model(
-        _human_state(), _runtime(), config={"configurable": {}}
-    )
-    assert result is None
+    request = _human_request()
+
+    with patch(f"{_MOD}.get_config", MagicMock(return_value={"configurable": {}})):
+        await mw.awrap_model_call(request, recording_handler)
+
+    assert recording_handler.seen[0] is request
 
 
 @pytest.mark.asyncio
-async def test_throttle_blocks_second_injection():
+async def test_noop_outside_runnable_context(recording_handler):
+    # get_config raising (no runnable context) must degrade to a pass-through.
+    mw = _mw()
+    request = _human_request()
+
+    with patch(f"{_MOD}.get_config", MagicMock(side_effect=RuntimeError("no ctx"))):
+        await mw.awrap_model_call(request, recording_handler)
+
+    assert recording_handler.seen[0] is request
+
+
+# --- throttle -----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_throttle_reinjects_cached_block_without_refetch(recording_handler):
     mw = _mw(interval=9999)
-    p1, p2, p3, p4 = _patched(["NVDA"])
-    with p1, p2, p3, p4:
-        assert await mw.abefore_model(_human_state(), _runtime(), config=_CFG) is not None
-        assert await mw.abefore_model(_human_state(), _runtime(), config=_CFG) is None
+
+    with _patched(["NVDA"]) as ctx:
+        first = _human_request()
+        await mw.awrap_model_call(first, recording_handler)
+        second = _human_request()
+        await mw.awrap_model_call(second, recording_handler)
+
+    # Both calls got a stamp, but the provider was only hit once — the second
+    # call re-injected the cached block (watchlist unchanged, still in window).
+    seen = recording_handler.seen
+    tail_1 = _assert_stamped(first, seen[0])
+    tail_2 = _assert_stamped(second, seen[1])
+    assert tail_1.content == tail_2.content
+    assert ctx.provider.get_snapshots.await_count == 1
 
 
 @pytest.mark.asyncio
-async def test_skips_when_all_venues_closed():
-    # Venue gate: every watched symbol's exchange is CLOSED → inject nothing.
-    mw = _mw()
+async def test_sse_emitted_only_on_fresh_fetch(recording_handler):
+    mw = _mw(interval=9999)
+    runtime = MagicMock()
+    runtime.stream_writer = MagicMock()
+
+    with _patched(["NVDA"]):
+        await mw.awrap_model_call(
+            _FakeRequest(_human_request().messages, runtime), recording_handler
+        )
+        await mw.awrap_model_call(
+            _FakeRequest(_human_request().messages, runtime), recording_handler
+        )
+
+    events = [c.args[0] for c in runtime.stream_writer.call_args_list]
+    updates = [e for e in events if e["type"] == "market_watch_update"]
+    # The UI update fires only on the fresh fetch; the throttled replay emits
+    # provenance only (covered in the provenance section below).
+    assert len(updates) == 1
+    assert updates[0]["symbols"] == ["NVDA"]
+    assert "$233.45" in updates[0]["content"]
+
+
+# --- watchlist / venue changes mid-throttle-window ----------------------------
+
+
+@pytest.mark.asyncio
+async def test_unwatch_mid_window_stops_injection(recording_handler):
+    # A mid-window unwatch must stop the replay: the throttle now sits below the
+    # watchlist read, so the cached block is only replayed while the list matches.
+    mw = _mw(interval=9999)
+    provider = AsyncMock()
+    provider.get_snapshots = AsyncMock(return_value=_SNAPS)
+    with patch(f"{_MOD}.get_watchlist",
+               AsyncMock(side_effect=[["NVDA", "TSLA"], ["NVDA"]])), \
+         patch(f"{_MOD}.get_market_data_provider", return_value=provider), \
+         patch("src.tools.market_data.quote_format.get_market_session",
+               return_value=("REGULAR_HOURS", _FIXED_ET)), \
+         patch(f"{_MOD}.get_calendar", return_value=_fake_calendar(MarketPhase.REGULAR)), \
+         patch(f"{_MOD}.get_config", MagicMock(return_value=_CFG)):
+        first = _human_request()
+        await mw.awrap_model_call(first, recording_handler)
+        second = _human_request()
+        await mw.awrap_model_call(second, recording_handler)
+
+    seen = recording_handler.seen
+    _assert_stamped(first, seen[0])
+    assert seen[1] is second  # list changed within window → nothing injected
+    assert provider.get_snapshots.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_venue_close_mid_window_stops_injection(recording_handler):
+    # A venue that closes mid-window must stop the replay: the venue gate sits
+    # above the throttle and is re-evaluated every call.
+    mw = _mw(interval=9999)
     provider = AsyncMock()
     provider.get_snapshots = AsyncMock(return_value=_SNAPS)
     with patch(f"{_MOD}.get_watchlist", AsyncMock(return_value=["NVDA"])), \
          patch(f"{_MOD}.get_market_data_provider", return_value=provider), \
-         patch(f"{_MOD}.get_calendar", return_value=_fake_calendar(MarketPhase.CLOSED)):
-        assert await mw.abefore_model(_human_state(), _runtime(), config=_CFG) is None
+         patch("src.tools.market_data.quote_format.get_market_session",
+               return_value=("REGULAR_HOURS", _FIXED_ET)), \
+         patch(f"{_MOD}.get_calendar",
+               side_effect=[_fake_calendar(MarketPhase.REGULAR),
+                            _fake_calendar(MarketPhase.CLOSED)]), \
+         patch(f"{_MOD}.get_config", MagicMock(return_value=_CFG)):
+        first = _human_request()
+        await mw.awrap_model_call(first, recording_handler)
+        second = _human_request()
+        await mw.awrap_model_call(second, recording_handler)
+
+    seen = recording_handler.seen
+    _assert_stamped(first, seen[0])
+    assert seen[1] is second  # venue closed within window → nothing injected
+    assert provider.get_snapshots.await_count == 1
+
+
+# --- gates and degradation ------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_stamps_when_hk_open_while_us_closed():
+async def test_skips_when_all_venues_closed(recording_handler):
+    # Venue gate: every watched symbol's exchange is CLOSED → inject nothing.
+    mw = _mw()
+    request = _human_request()
+
+    with _patched(["NVDA"], phase=MarketPhase.CLOSED):
+        await mw.awrap_model_call(request, recording_handler)
+
+    assert recording_handler.seen[0] is request
+
+
+@pytest.mark.asyncio
+async def test_stamps_when_hk_open_while_us_closed(recording_handler):
     # Deferred-bug fix: a watchlist mixing a closed US name and an open HK name
     # must still stamp — the gate opens when ANY watched venue is open, priced
     # per-symbol against its own exchange calendar.
@@ -146,6 +327,7 @@ async def test_stamps_when_hk_open_while_us_closed():
                  "volume": 1_000_000, "last_trade_price": 318.20, "market_status": "open"}]
     provider = AsyncMock()
     provider.get_snapshots = AsyncMock(return_value=hk_snaps)
+    request = _human_request()
 
     def _by_venue(calendar_id):
         # XNYS closed, XHKG open.
@@ -157,213 +339,355 @@ async def test_stamps_when_hk_open_while_us_closed():
          patch(f"{_MOD}.get_market_data_provider", return_value=provider), \
          patch("src.tools.market_data.quote_format.get_market_session",
                return_value=("CLOSED", _FIXED_ET)), \
-         patch(f"{_MOD}.get_calendar", side_effect=_by_venue):
-        update = await mw.abefore_model(_human_state(), _runtime(), config=_CFG)
-    assert update is not None
-    assert "<market-watch>" in update["messages"][0].content
+         patch(f"{_MOD}.get_calendar", side_effect=_by_venue), \
+         patch(f"{_MOD}.get_config", MagicMock(return_value=_CFG)):
+        await mw.awrap_model_call(request, recording_handler)
+
+    _assert_stamped(request, recording_handler.seen[0])
 
 
 @pytest.mark.asyncio
-async def test_provider_failure_is_silent():
+async def test_provider_failure_is_silent(recording_handler):
     mw = _mw()
+    request = _human_request()
+
     provider = AsyncMock()
     provider.get_snapshots = AsyncMock(side_effect=RuntimeError("down"))
     with patch(f"{_MOD}.get_watchlist", AsyncMock(return_value=["NVDA"])), \
          patch(f"{_MOD}.get_market_data_provider", return_value=provider), \
-         patch(f"{_MOD}.get_calendar", return_value=_fake_calendar(MarketPhase.REGULAR)):
-        assert await mw.abefore_model(_human_state(), _runtime(), config=_CFG) is None
+         patch(f"{_MOD}.get_calendar", return_value=_fake_calendar(MarketPhase.REGULAR)), \
+         patch(f"{_MOD}.get_config", MagicMock(return_value=_CFG)):
+        result = await mw.awrap_model_call(request, recording_handler)
+
+    assert result == "MODEL_RESPONSE"
+    assert recording_handler.seen[0] is request
 
 
 @pytest.mark.asyncio
-async def test_post_throttle_failure_is_silent():
+async def test_post_throttle_failure_is_silent(recording_handler):
     # A raise past the cheap in-memory guards (here the venue-gate calendar) must
     # degrade to injecting nothing — never break the turn.
     mw = _mw()
+    request = _human_request()
+
     with patch(f"{_MOD}.get_watchlist", AsyncMock(return_value=["NVDA"])), \
-         patch(f"{_MOD}.get_calendar", side_effect=RuntimeError("boom")):
-        assert await mw.abefore_model(_human_state(), _runtime(), config=_CFG) is None
+         patch(f"{_MOD}.get_calendar", side_effect=RuntimeError("boom")), \
+         patch(f"{_MOD}.get_config", MagicMock(return_value=_CFG)):
+        result = await mw.awrap_model_call(request, recording_handler)
 
-
-# --- tool-batch carrier selection -------------------------------------------
-#
-# (Removed: test_stamps_tool_result — the per-tool-result awrap_tool_call path is
-# gone; stamping is now a single abefore_model carrier pick. Removed:
-# test_throttle_race_single_stamp — abefore_model is the sole, sequential call
-# site, so the concurrency lock it exercised no longer exists.)
+    assert result == "MODEL_RESPONSE"
+    assert recording_handler.seen[0] is request
 
 
 @pytest.mark.asyncio
-async def test_stamps_tool_batch_carrier():
-    # Inverted from the old test_skips_when_tail_not_human: a ToolMessage-batch
-    # tail must now STAMP the selected carrier instead of returning None.
-    mw = _mw()
-    assert mw._last_injected_at is None
-    tools = [ToolMessage(content="a web search result",
-                         tool_call_id="tc-1", name="web_search", id="tm-1")]
-    state = _batch_state(tools)
-    p1, p2, p3, p4 = _patched(["NVDA"])
-    with p1, p2, p3, p4:
-        update = await mw.abefore_model(state, _runtime(), config=_CFG)
-    assert update is not None
-    out = update["messages"][0]
-    assert out.id == "tm-1"
-    assert "a web search result" in out.content
-    assert "<market-watch>" in out.content
-    assert "$233.45" in out.content
-
-
-@pytest.mark.asyncio
-async def test_batch_prefers_todowrite():
-    # TodoWrite result is chosen even though it is longer than the other result —
-    # priority beats length.
-    mw = _mw()
-    tools = [
-        ToolMessage(content="short", tool_call_id="tc-a", name="web_search", id="tm-a"),
-        ToolMessage(content="Todos have been modified successfully. Continue.",
-                    tool_call_id="tc-b", name="TodoWrite", id="tm-b"),
-    ]
-    state = _batch_state(tools)
-    p1, p2, p3, p4 = _patched(["NVDA"])
-    with p1, p2, p3, p4:
-        update = await mw.abefore_model(state, _runtime(), config=_CFG)
-    out = update["messages"][0]
-    assert out.id == "tm-b"
-    assert out.name == "TodoWrite"
-    assert out.tool_call_id == "tc-b"
-    assert "<market-watch>" in out.content
-
-
-@pytest.mark.asyncio
-async def test_batch_shortest_when_no_todowrite():
-    mw = _mw()
-    tools = [
-        ToolMessage(content="x" * 100, tool_call_id="tc-a", name="web_search", id="tm-long"),
-        ToolMessage(content="x" * 10, tool_call_id="tc-b", name="web_fetch", id="tm-short"),
-    ]
-    state = _batch_state(tools)
-    p1, p2, p3, p4 = _patched(["NVDA"])
-    with p1, p2, p3, p4:
-        update = await mw.abefore_model(state, _runtime(), config=_CFG)
-    out = update["messages"][0]
-    assert out.id == "tm-short"
-    assert "<market-watch>" in out.content
-
-
-@pytest.mark.asyncio
-async def test_batch_skips_errored_shortest():
-    # Shortest result is errored → skipped; next shortest successful is chosen.
-    mw = _mw()
-    tools = [
-        ToolMessage(content="err", tool_call_id="tc-a", name="web_search",
-                    id="tm-err", status="error"),
-        ToolMessage(content="a longer ok result", tool_call_id="tc-b",
-                    name="web_fetch", id="tm-ok"),
-    ]
-    state = _batch_state(tools)
-    p1, p2, p3, p4 = _patched(["NVDA"])
-    with p1, p2, p3, p4:
-        update = await mw.abefore_model(state, _runtime(), config=_CFG)
-    out = update["messages"][0]
-    assert out.id == "tm-ok"
-    assert "<market-watch>" in out.content
-
-
-@pytest.mark.asyncio
-async def test_batch_fallback_to_tail_when_no_string_candidate():
-    # No string-content candidate (all list-content) → carrier falls back to tail.
-    mw = _mw()
-    tools = [
-        ToolMessage(content=[{"type": "text", "text": "a"}],
-                    tool_call_id="tc-a", name="web_search", id="tm-1"),
-        ToolMessage(content=[{"type": "text", "text": "b"}],
-                    tool_call_id="tc-b", name="web_search", id="tm-2"),
-    ]
-    state = _batch_state(tools)
-    p1, p2, p3, p4 = _patched(["NVDA"])
-    with p1, p2, p3, p4:
-        update = await mw.abefore_model(state, _runtime(), config=_CFG)
-    out = update["messages"][0]
-    assert out.id == "tm-2"  # the tail
-    assert isinstance(out.content, list)
-    assert out.content[-1]["type"] == "text"
-    assert "<market-watch>" in out.content[-1]["text"]
-
-
-@pytest.mark.asyncio
-async def test_skips_when_batch_already_quoted():
+async def test_skips_when_batch_already_quoted(recording_handler):
     # The AIMessage that made the batch called a quote tool for a watched symbol
     # (case-insensitive) → the model already has a fresh price, so skip injection.
     mw = _mw()
     tools = [ToolMessage(content="NVDA  $230.00", tool_call_id="tc-q",
                          name="get_quote", id="tm-q")]
     tool_calls = [{"name": "get_quote", "args": {"symbols": ["nvda"]}, "id": "tc-q"}]
-    state = _batch_state(tools, tool_calls)
-    p1, p2, p3, p4 = _patched(["NVDA"])
-    with p1, p2, p3, p4:
-        assert await mw.abefore_model(state, _runtime(), config=_CFG) is None
+    request = _batch_request(tools, tool_calls)
+
+    with _patched(["NVDA"]):
+        await mw.awrap_model_call(request, recording_handler)
+
+    assert recording_handler.seen[0] is request
 
 
 @pytest.mark.asyncio
-async def test_idempotent_when_carrier_already_stamped():
+async def test_partial_quote_coverage_still_injects(recording_handler):
+    # Quoting only ONE of two watched symbols must not suppress the stamp —
+    # the un-quoted symbol would silently go stale for that model call.
     mw = _mw()
-    tools = [ToolMessage(content="result\n\n<market-watch>\nold\n</market-watch>",
-                         tool_call_id="tc-1", name="web_search", id="tm-1")]
-    state = _batch_state(tools)
-    p1, p2, p3, p4 = _patched(["NVDA"])
-    with p1, p2, p3, p4:
-        assert await mw.abefore_model(state, _runtime(), config=_CFG) is None
+    tools = [ToolMessage(content="NVDA  $230.00", tool_call_id="tc-q",
+                         name="get_quote", id="tm-q")]
+    tool_calls = [{"name": "get_quote", "args": {"symbols": ["nvda"]}, "id": "tc-q"}]
+    request = _batch_request(tools, tool_calls)
+
+    with _patched(["NVDA", "TSLA"]):
+        await mw.awrap_model_call(request, recording_handler)
+
+    _assert_stamped(request, recording_handler.seen[0])
 
 
 @pytest.mark.asyncio
-async def test_stamps_middle_of_batch_carrier():
-    # The chosen carrier is the shortest result, which is NOT the tail. The
-    # returned message id must equal that carrier's id — proving add_messages
-    # updates it in place off the tail.
+async def test_sse_symbols_are_watchlist_not_priced_subset(recording_handler):
+    # One provider timeout must not make the chip claim the symbol is unwatched:
+    # the SSE update carries the authoritative watch list, not the priced subset.
     mw = _mw()
-    tools = [
-        ToolMessage(content="short", tool_call_id="tc-a", name="web_search", id="tm-mid"),
-        ToolMessage(content="a much longer trailing result", tool_call_id="tc-b",
-                    name="web_fetch", id="tm-tail"),
+    runtime = MagicMock()
+    runtime.stream_writer = MagicMock()
+
+    with _patched(["NVDA", "TSLA"]):  # snaps only price NVDA
+        await mw.awrap_model_call(
+            _FakeRequest(_human_request().messages, runtime), recording_handler
+        )
+
+    events = [c.args[0] for c in runtime.stream_writer.call_args_list]
+    updates = [e for e in events if e["type"] == "market_watch_update"]
+    assert updates[0]["symbols"] == ["NVDA", "TSLA"]
+
+
+# --- anthropic cache breakpoint --------------------------------------------------
+
+
+def _anthropic_model():
+    from langchain_anthropic import ChatAnthropic
+
+    return ChatAnthropic(model="claude-sonnet-4-5", api_key="test-key")
+
+
+def _openai_model(**kwargs):
+    from langchain_openai import ChatOpenAI
+
+    return ChatOpenAI(model="gpt-5.6-sol", api_key="test-key", **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_anthropic_durable_tail_gets_cache_breakpoint(recording_handler):
+    # The stamp evaporates from the next request, so the moving breakpoint must
+    # land on the last durable message — pinned via a request-scoped copy.
+    mw = _mw()
+    original = HumanMessage(content="What is NVDA doing?", id="h-1")
+    request = _FakeRequest([original], model=_anthropic_model())
+
+    with _patched(["NVDA"]):
+        await mw.awrap_model_call(request, recording_handler)
+
+    durable = recording_handler.seen[0].messages[-2]
+    assert durable is not original
+    assert durable.content == [
+        {
+            "type": "text",
+            "text": "What is NVDA doing?",
+            "cache_control": {"type": "ephemeral"},
+        }
     ]
-    state = _batch_state(tools)
-    p1, p2, p3, p4 = _patched(["NVDA"])
-    with p1, p2, p3, p4:
-        update = await mw.abefore_model(state, _runtime(), config=_CFG)
-    out = update["messages"][0]
-    assert out.id == "tm-mid"  # off-tail carrier updated by id
-    assert "<market-watch>" in out.content
+    # The durable state message itself is never mutated.
+    assert original.content == "What is NVDA doing?"
+    assert isinstance(recording_handler.seen[0].messages[-1], HumanMessage)
 
 
 @pytest.mark.asyncio
-async def test_determinism_lowest_index_on_tie():
+async def test_non_anthropic_durable_tail_untouched(recording_handler):
+    # cache_control is Anthropic wire format; other providers must not see it.
     mw = _mw()
-    tools = [
-        ToolMessage(content="AAAA", tool_call_id="tc-a", name="web_search", id="tm-first"),
-        ToolMessage(content="BBBB", tool_call_id="tc-b", name="web_fetch", id="tm-second"),
+    original = HumanMessage(content="What is NVDA doing?", id="h-1")
+    request = _FakeRequest([original], model=MagicMock())
+
+    with _patched(["NVDA"]):
+        await mw.awrap_model_call(request, recording_handler)
+
+    assert recording_handler.seen[0].messages[-2] is original
+
+
+@pytest.mark.asyncio
+async def test_cache_breakpoint_tags_last_text_block_of_list_content(recording_handler):
+    mw = _mw()
+    tool = ToolMessage(
+        content=[{"type": "text", "text": "part 1"}, {"type": "text", "text": "part 2"}],
+        tool_call_id="tc-1", name="web_search", id="tm-1",
+    )
+    ai = AIMessage(content="", tool_calls=[], id="ai-1")
+    request = _FakeRequest(
+        [HumanMessage(content="hi", id="h-0"), ai, tool], model=_anthropic_model()
+    )
+
+    with _patched(["NVDA"]):
+        await mw.awrap_model_call(request, recording_handler)
+
+    tagged = recording_handler.seen[0].messages[-2]
+    assert tagged.content[0] == {"type": "text", "text": "part 1"}
+    assert tagged.content[1] == {
+        "type": "text", "text": "part 2", "cache_control": {"type": "ephemeral"}
+    }
+    assert "cache_control" not in tool.content[1]
+
+
+@pytest.mark.asyncio
+async def test_cache_breakpoint_skips_untaggable_tail(recording_handler):
+    # An empty tool result has no block that accepts cache_control — degrade to
+    # no breakpoint (today's cache behavior), never a malformed request.
+    mw = _mw()
+    tool = ToolMessage(content="", tool_call_id="tc-1", name="web_search", id="tm-1")
+    ai = AIMessage(content="", tool_calls=[], id="ai-1")
+    request = _FakeRequest(
+        [HumanMessage(content="hi", id="h-0"), ai, tool], model=_anthropic_model()
+    )
+
+    with _patched(["NVDA"]):
+        await mw.awrap_model_call(request, recording_handler)
+
+    assert recording_handler.seen[0].messages[-2] is tool
+
+
+@pytest.mark.asyncio
+async def test_openai_official_with_cache_options_gets_breakpoint(recording_handler):
+    # OpenAI's explicit mode keys reads at provided breakpoints only, so the
+    # durable tail needs the same pin — with the OpenAI marker, not Anthropic's.
+    mw = _mw()
+    original = HumanMessage(content="What is NVDA doing?", id="h-1")
+    request = _FakeRequest(
+        [original],
+        model=_openai_model(
+            prompt_cache_options={"mode": "implicit"},
+            base_url="https://api.openai.com/v1",
+        ),
+    )
+
+    with _patched(["NVDA"]):
+        await mw.awrap_model_call(request, recording_handler)
+
+    durable = recording_handler.seen[0].messages[-2]
+    assert durable is not original
+    assert durable.content == [
+        {
+            "type": "text",
+            "text": "What is NVDA doing?",
+            "prompt_cache_breakpoint": {"mode": "explicit"},
+        }
     ]
-    state = _batch_state(tools)
-    p1, p2, p3, p4 = _patched(["NVDA"])
-    with p1, p2, p3, p4:
-        update = await mw.abefore_model(state, _runtime(), config=_CFG)
-    out = update["messages"][0]
-    assert out.id == "tm-first"  # equal length → lowest batch index wins
+    assert original.content == "What is NVDA doing?"
 
 
 @pytest.mark.asyncio
-async def test_todo_card_safety_regression():
-    # Stamping a TodoWrite result leaves name/tool_call_id/id unchanged and only
-    # appends to content. The todo SSE card is built from the tool_call args, not
-    # the result content (sse_middleware.py:68-70), so the card is unaffected.
+@pytest.mark.parametrize(
+    "model_kwargs",
+    [
+        {},  # no prompt_cache_options opt-in
+        {  # opted in, but non-official endpoint (proxy) rejects the marker
+            "prompt_cache_options": {"mode": "implicit"},
+            "base_url": "https://proxy.example.com/v1",
+        },
+    ],
+)
+async def test_openai_without_optin_or_official_endpoint_untouched(
+    model_kwargs, recording_handler
+):
     mw = _mw()
-    todo = ToolMessage(content="Todos have been modified successfully.",
-                       tool_call_id="tc-td", name="TodoWrite", id="tm-td")
-    state = _batch_state([todo])
-    p1, p2, p3, p4 = _patched(["NVDA"])
-    with p1, p2, p3, p4:
-        update = await mw.abefore_model(state, _runtime(), config=_CFG)
-    out = update["messages"][0]
-    assert out.name == "TodoWrite"
-    assert out.tool_call_id == "tc-td"
-    assert out.id == "tm-td"
-    assert out.content.startswith("Todos have been modified successfully.")
-    assert "<market-watch>" in out.content
+    original = HumanMessage(content="What is NVDA doing?", id="h-1")
+    request = _FakeRequest([original], model=_openai_model(**model_kwargs))
+
+    with _patched(["NVDA"]):
+        await mw.awrap_model_call(request, recording_handler)
+
+    assert recording_handler.seen[0].messages[-2] is original
+
+
+@pytest.mark.asyncio
+async def test_cache_pin_flag_off_leaves_durable_tail_untouched(recording_handler):
+    mw = _mw(cache_breakpoint_pin=False)
+    original = HumanMessage(content="What is NVDA doing?", id="h-1")
+    request = _FakeRequest([original], model=_anthropic_model())
+
+    with _patched(["NVDA"]):
+        await mw.awrap_model_call(request, recording_handler)
+
+    # Stamp still appended; only the breakpoint pin is disabled.
+    seen = recording_handler.seen
+    assert seen[0].messages[-2] is original
+    assert isinstance(seen[0].messages[-1], HumanMessage)
+    assert seen[0].messages[-1].content.startswith("<market-watch>")
+
+
+# --- provenance ---------------------------------------------------------------
+
+
+def _events(runtime, type_):
+    return [c.args[0] for c in runtime.stream_writer.call_args_list
+            if c.args[0]["type"] == type_]
+
+
+def _runtime_request():
+    runtime = MagicMock()
+    runtime.stream_writer = MagicMock()
+    return runtime, _FakeRequest(_human_request().messages, runtime)
+
+
+@pytest.mark.asyncio
+async def test_provenance_emitted_per_symbol_with_provider_attribution(recording_handler):
+    mw = _mw()
+    runtime, request = _runtime_request()
+
+    snaps = [
+        {**_SNAPS[0], "source": "ginlix-data"},
+        {"symbol": "TSLA", "price": 310.0, "change_percent": -1.2,
+         "volume": 900_000, "last_trade_price": 309.10, "market_status": "open"},
+    ]
+    with _patched(["NVDA", "TSLA"], snaps=snaps):
+        await mw.awrap_model_call(request, recording_handler)
+
+    prov = _events(runtime, "provenance")
+    assert [(e["identifier"], e["provider"]) for e in prov] == [
+        ("NVDA", "ginlix-data"),
+        ("TSLA", "market_data_proxy"),  # no per-snap source → generic fallback
+    ]
+    stamp = recording_handler.seen[0].messages[-1].content
+    expected_sha = hashlib.sha256(stamp.encode("utf-8")).hexdigest()
+    for e in prov:
+        assert e["source_type"] == "market_data"
+        assert e["detail"] == "market_watch"
+        assert e["tool_call_id"] is None
+        # The record attests the exact bytes the model saw: the wrapped stamp.
+        assert e["result_sha256"] == expected_sha
+        assert e["result_snippet"].startswith("<market-watch>")
+
+
+@pytest.mark.asyncio
+async def test_provenance_replayed_stamp_reattested_with_fetch_timestamp(recording_handler):
+    # Ephemeral replays re-display the cached block, so every model call must
+    # attest it — same sha and same (original) fetch timestamp both times.
+    mw = _mw(interval=9999)
+    runtime, _ = _runtime_request()
+
+    with _patched(["NVDA"]) as ctx:
+        await mw.awrap_model_call(
+            _FakeRequest(_human_request().messages, runtime), recording_handler
+        )
+        await mw.awrap_model_call(
+            _FakeRequest(_human_request().messages, runtime), recording_handler
+        )
+
+    prov = _events(runtime, "provenance")
+    assert len(prov) == 2
+    assert prov[0]["result_sha256"] == prov[1]["result_sha256"]
+    assert prov[0]["timestamp"] == prov[1]["timestamp"]
+    assert ctx.provider.get_snapshots.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_provenance_body_stored_once_per_block(body_store, recording_handler):
+    mw = _mw(interval=9999)
+    runtime, _ = _runtime_request()
+
+    with _patched(["NVDA"]):
+        await mw.awrap_model_call(
+            _FakeRequest(_human_request().messages, runtime), recording_handler
+        )
+        await mw.awrap_model_call(
+            _FakeRequest(_human_request().messages, runtime), recording_handler
+        )
+        await mw.aafter_agent(None, runtime)  # drains the background write
+
+    stamp = recording_handler.seen[0].messages[-1].content
+    body_store.assert_awaited_once_with(
+        hashlib.sha256(stamp.encode("utf-8")).hexdigest(),
+        stamp,
+        len(stamp.encode("utf-8")),
+        "text/plain; charset=utf-8",
+    )
+
+
+@pytest.mark.asyncio
+async def test_provenance_failure_never_blocks_injection(recording_handler):
+    mw = _mw()
+    runtime = MagicMock()
+    runtime.stream_writer = MagicMock(side_effect=RuntimeError("no stream"))
+    request = _FakeRequest(_human_request().messages, runtime)
+
+    with _patched(["NVDA"]):
+        result = await mw.awrap_model_call(request, recording_handler)
+
+    assert result == "MODEL_RESPONSE"
+    _assert_stamped(request, recording_handler.seen[0])
