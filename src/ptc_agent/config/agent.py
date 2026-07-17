@@ -253,6 +253,16 @@ class AgentConfig(BaseModel):
         """Backward-compat shim: config.daytona -> config.sandbox.daytona."""
         return self.sandbox.daytona
 
+    def feature_enabled(self, key: str) -> bool:
+        """Effective feature flag for this build: the per-user value resolved
+        by ``resolve_llm_config`` when present, else the no-user default
+        (opt_in and platform plan gates resolve False)."""
+        if self.features is not None and key in self.features:
+            return self.features[key]
+        from src.config.features import default_feature_enabled
+
+        return default_feature_enabled(key)
+
     # Runtime data (not from config files)
     llm_definition: LLMDefinition | None = Field(default=None, exclude=True)
     llm_client: Any | None = Field(default=None, exclude=True)  # BaseChatModel instance
@@ -268,6 +278,9 @@ class AgentConfig(BaseModel):
     # Forwarded by ``get_llm_client()`` to ``create_llm(cache_key=...)`` for
     # the lazy factory path.
     cache_key: str | None = Field(default=None, exclude=True)
+    # Per-user resolved feature flags, set by ``resolve_llm_config``. None
+    # (entry points that skip resolution) falls back to system defaults.
+    features: dict[str, bool] | None = Field(default=None, exclude=True)
     config_file_dir: Path | None = Field(
         default=None, exclude=True
     )  # For path resolution

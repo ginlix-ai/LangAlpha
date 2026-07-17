@@ -12,13 +12,10 @@ Covers:
 - generate_config_template()
 """
 
-import asyncio
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from ptc_agent.config.agent import AgentConfig, LLMConfig
 from ptc_agent.config.loaders import generate_config_template, load_from_dict
 
 

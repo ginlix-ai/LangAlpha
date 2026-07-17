@@ -7,8 +7,9 @@ of tools that are pre-registered but hidden until the skill is loaded.
 """
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
+from src.config.features import is_feature_enabled_system
 from src.tools.automation import AUTOMATION_TOOLS
 from src.tools.chart_annotation import CHART_ANNOTATION_TOOLS
 from src.tools.onboarding import ONBOARDING_TOOLS
@@ -36,6 +37,10 @@ class SkillDefinition:
     skill_md_path: str | None = None
     exposure: Literal["ptc", "flash", "both", "hidden"] = "ptc"
     command: str | None = None
+    # Feature-flag key (src/config/features.py) owning this skill; the skill
+    # drops out of every accessor while the feature's system default is off.
+    # Per-user resolution happens at agent build (SkillsMiddleware injection).
+    feature: str | None = None
 
     def get_tool_names(self) -> list[str]:
         """Get list of tool names in this skill."""
@@ -58,6 +63,23 @@ class SkillDefinition:
                 desc = desc[:max_desc_len] + "..."
             lines.append(f"  - **{name}**: {desc}")
         return "\n".join(lines)
+
+
+def _is_enabled(
+    skill: SkillDefinition, feature_resolver: Callable[[str], bool] | None = None
+) -> bool:
+    """Feature-flag gate: skills of a disabled feature drop out of every
+    accessor (listings, lookups, sandbox sync).
+
+    ``feature_resolver`` defaults to the system gate — the no-user-context
+    default these accessors run under. The agent build injects a per-user
+    resolver (via ``get_skill_registry``) so a user's opt-in/out is honored
+    when skills are assembled for that build.
+    """
+    if skill.feature is None:
+        return True
+    resolve = feature_resolver or is_feature_enabled_system
+    return resolve(skill.feature)
 
 
 def _matches_mode(skill: SkillDefinition, mode: SkillMode | None) -> bool:
@@ -127,13 +149,15 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
             "before stating prices."
         ),
         tools=[],
-        # Guidance-only skill: the watch_market/unwatch_market tools are always
-        # registered (subsystem c), and the <market-watch> stamping middleware is
-        # always on (subsystem b) — this skill just tells the agent how to use
-        # them. Activated by the frontend Watch toggle via additional_context.
+        # Guidance-only skill: the watch_market tool (subsystem c) and the
+        # <market-watch> stamping middleware (subsystem b) are registered
+        # whenever the market_watch feature resolves enabled — this skill
+        # just tells the agent how to use them. Activated by the frontend
+        # Watch toggle via additional_context.
         skill_md_path="skills/market-watch/SKILL.md",
         exposure="ptc",
         command="market-watch",
+        feature="market_watch",
     ),
     "secretary": SkillDefinition(
         name="secretary",
@@ -347,21 +371,27 @@ SKILL_REGISTRY: dict[str, SkillDefinition] = {
 }
 
 
-def get_skill_registry(mode: SkillMode | None = None) -> dict[str, SkillDefinition]:
+def get_skill_registry(
+    mode: SkillMode | None = None,
+    *,
+    feature_resolver: Callable[[str], bool] | None = None,
+) -> dict[str, SkillDefinition]:
     """Get the skill registry filtered by agent mode.
 
     Args:
-        mode: Optional agent mode filter. None returns all skills.
+        mode: Optional agent mode filter. None applies no mode filter.
+              Feature-gated skills are excluded when disabled regardless.
+        feature_resolver: Optional per-user feature gate. Defaults to the
+              system gate; the agent build passes the build's own
+              ``feature_enabled`` so opt-in/out drops the skill for that user.
 
     Returns:
         Dict of skill name to SkillDefinition for matching skills
     """
-    if mode is None:
-        return dict(SKILL_REGISTRY)
     return {
         name: skill
         for name, skill in SKILL_REGISTRY.items()
-        if _matches_mode(skill, mode)
+        if _is_enabled(skill, feature_resolver) and _matches_mode(skill, mode)
     }
 
 
@@ -377,7 +407,7 @@ def get_sandbox_skill_names() -> set[str]:
     return {
         name
         for name, skill in SKILL_REGISTRY.items()
-        if skill.exposure in ("ptc", "both")
+        if _is_enabled(skill) and skill.exposure in ("ptc", "both")
     }
 
 
@@ -393,7 +423,7 @@ def get_skill(skill_name: str, mode: SkillMode | None = None) -> SkillDefinition
         SkillDefinition if found and mode-compatible, None otherwise
     """
     skill = SKILL_REGISTRY.get(skill_name)
-    if skill is None:
+    if skill is None or not _is_enabled(skill):
         return None
     if mode is not None and not _matches_mode(skill, mode):
         return None
@@ -413,7 +443,7 @@ def get_all_skill_tools(mode: SkillMode | None = None) -> list[Any]:
     """
     all_tools = []
     for skill in SKILL_REGISTRY.values():
-        if _matches_mode(skill, mode):
+        if _is_enabled(skill) and _matches_mode(skill, mode):
             all_tools.extend(skill.tools)
     return all_tools
 
@@ -431,7 +461,7 @@ def get_all_skill_tool_names(mode: SkillMode | None = None) -> set[str]:
     """
     names = set()
     for skill in SKILL_REGISTRY.values():
-        if _matches_mode(skill, mode):
+        if _is_enabled(skill) and _matches_mode(skill, mode):
             names.update(skill.get_tool_names())
     return names
 
@@ -452,7 +482,7 @@ def get_command_to_skill_map(mode: SkillMode | None = None) -> dict[str, str]:
     return {
         skill.command: name
         for name, skill in SKILL_REGISTRY.items()
-        if skill.command and _matches_mode(skill, mode)
+        if skill.command and _is_enabled(skill) and _matches_mode(skill, mode)
     }
 
 
@@ -477,5 +507,5 @@ def list_skills(mode: SkillMode | None = None) -> list[dict[str, Any]]:
             "command": skill.command,
         }
         for skill in SKILL_REGISTRY.values()
-        if _matches_mode(skill, mode) and skill.exposure != "hidden"
+        if _is_enabled(skill) and _matches_mode(skill, mode) and skill.exposure != "hidden"
     ]

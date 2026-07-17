@@ -14,6 +14,8 @@ from typing import Any
 
 from ptc_agent.config.agent import CredentialSource
 
+from src.server.services.features import effective_flags_for_user
+
 from ._common import logger
 from .model_availability import (
     _MODEL_PREF_KEYS,
@@ -806,6 +808,17 @@ async def resolve_llm_config(
         if enabled_subagents is not None
         else list(config.subagents.enabled)
     )
+
+    # Per-user feature flags (gates + user overrides), resolved once here so
+    # every build surface reads config.feature_enabled() instead of global
+    # state. Reuses this turn's prefs read; plan gates fetch the platform
+    # tier lazily inside the resolver (only when a plan feature exists).
+    overrides = model_pref.get("feature_overrides")
+    resolved_features = await effective_flags_for_user(
+        user_id, overrides if isinstance(overrides, dict) else {}
+    )
+    _cow()
+    config.features = resolved_features
 
     # Bootstrap LLMConfig when agent_config.yaml has llm: null.
     # The user must have configured a model via the UI or per-request param.

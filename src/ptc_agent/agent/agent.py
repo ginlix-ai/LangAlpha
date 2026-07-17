@@ -73,6 +73,7 @@ from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
 )
 from ptc_agent.agent.middleware.skills.discovery import SkillMetadata
+from ptc_agent.agent.middleware.skills.registry import get_skill_registry
 from ptc_agent.agent.prompts import (
     build_tool_summary_from_registry,
     format_current_time,
@@ -106,7 +107,7 @@ from src.tools.market_data.tool import (
     get_quote,
     screen_stocks,
 )
-from src.tools.market_watch import unwatch_market, watch_market
+from src.tools.market_watch import watch_market
 from ptc_agent.config import AgentConfig
 from ptc_agent.core.mcp_registry import MCPRegistry
 from ptc_agent.core.sandbox import PTCSandbox
@@ -176,6 +177,7 @@ class PTCAgent:
             working_directory=self.config.filesystem.working_directory,
             memory_enabled=memory_enabled,
             memo_enabled=memo_enabled,
+            market_watch_enabled=self.config.feature_enabled("market_watch"),
         )
 
     def _build_model_resilience_middleware(self) -> list[Any]:
@@ -461,12 +463,12 @@ class PTCAgent:
             get_quote,  # Real-time quotes (cheap — price freshness)
             get_daily_prices,  # Stock OHLCV price data
             get_company_overview,  # Company investment analysis (includes real-time quote)
-            get_market_overview,  # Region index basket + US sector performance
+            get_market_overview,  # Single-day market snapshot (indices + US sectors)
             get_options_chain,  # Options contracts chain with snapshot pricing
             screen_stocks,  # Stock screener with filters
-            watch_market,  # Market watch registration (live price injection)
-            unwatch_market,  # Market watch registration (live price injection)
         ]
+        if self.config.feature_enabled("market_watch"):
+            finance_tools.append(watch_market)  # Market watch start/stop (live price injection)
         tools.extend(finance_tools)
 
         if subagent_names is None:
@@ -525,7 +527,14 @@ class PTCAgent:
                 for name, meta in backend.skills_manifest["skills"].items()
             }
 
+        # Per-user feature resolution: inject this build's feature gate so a
+        # skill whose owning feature is off for this user drops out (the
+        # registry default only applies the system gate).
+        skill_registry = get_skill_registry(
+            "ptc", feature_resolver=self.config.feature_enabled
+        )
         skill_loader_middleware = SkillsMiddleware(
+            skill_registry=skill_registry,
             mode="ptc",
             backend=backend,
             sources=skill_sources,
@@ -568,10 +577,6 @@ class PTCAgent:
         ask_user_middleware = AskUserMiddleware()
         main_only_middleware.append(ask_user_middleware)
         tools.extend(ask_user_middleware.tools)
-
-        # Market watch: injects live prices for watched tickers (no-op when
-        # the thread's watch list is empty).
-        main_only_middleware.append(MarketWatchMiddleware())
 
         from ptc_agent.agent.tools import think_tool
 
@@ -738,6 +743,16 @@ class PTCAgent:
                 *model_resilience,
                 AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
                 OpenAIPromptCachingMiddleware(),
+                # Market watch (main agent only): appends the ephemeral
+                # <market-watch> price stamp. Inside model_resilience so it
+                # sees the post-fallback model — its provider-specific cache
+                # breakpoints (Anthropic cache_control / OpenAI
+                # prompt_cache_breakpoint) must never reach another provider.
+                *(
+                    [MarketWatchMiddleware()]
+                    if self.config.feature_enabled("market_watch")
+                    else []
+                ),
                 EmptyToolCallRetryMiddleware(),
                 PatchToolCallsMiddleware(),
                 *workspace_context_middleware,

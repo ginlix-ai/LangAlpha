@@ -18,7 +18,6 @@ from src.config.models import (
     MarketDataConfig,
     MarketDataProviderConfig,
     NewsDataConfig,
-    RedisConfig,
 )
 
 

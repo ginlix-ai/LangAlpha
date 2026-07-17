@@ -238,13 +238,42 @@ class NewsPollConfig(BaseModel):
     feeds: List[NewsPollFeedConfig] = Field(default_factory=list)
 
 
+class FeatureFlagOverride(BaseModel):
+    """Deployment override for a code-declared feature (src/config/features.py).
+
+    Unset fields inherit the catalog defaults, so a config.yaml entry only
+    needs the fields it wants to change.
+    """
+
+    enabled: Optional[bool] = Field(
+        default=None, description="Kill switch: false turns the feature off for everyone"
+    )
+    gate: Optional[Literal["none", "opt_in", "opt_out", "plan"]] = Field(
+        default=None,
+        description=(
+            "Access model while enabled: everyone / user opt-in / user opt-out "
+            "/ platform plan tier"
+        ),
+    )
+    min_tier: Optional[int] = Field(
+        default=None, description="Plan gate only: minimum platform access tier"
+    )
+
+
 class MarketWatchConfig(BaseModel):
-    """Market watch mode (live price injection) settings."""
+    """Market watch tuning (the on/off flag lives in the features registry)."""
 
     min_interval_seconds: int = Field(
         default=25, ge=5, description="Throttle between injections per thread"
     )
     max_symbols: int = Field(default=10, ge=1, le=50, description="Watch list cap")
+    cache_breakpoint_pin: bool = Field(
+        default=True,
+        description=(
+            "Pin a provider cache breakpoint on the last durable message so the "
+            "ephemeral stamp doesn't break incremental caching"
+        ),
+    )
 
 
 class InfrastructureConfig(BaseModel):
@@ -270,6 +299,11 @@ class InfrastructureConfig(BaseModel):
     )
     langsmith_tracing: bool = Field(default=False, description="Enable LangSmith tracing")
     market_watch: MarketWatchConfig = Field(default_factory=MarketWatchConfig)
+
+    # User-facing product features (deployment overrides of the code catalog
+    # in src/config/features.py). Distinct from the infra toggles above, which
+    # are operator-only and never exposed to users.
+    features: Dict[str, FeatureFlagOverride] = Field(default_factory=dict)
 
     # SSE Event Logging
     sse_event_log_enabled: bool = Field(default=True, description="Enable SSE event logging")

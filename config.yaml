@@ -22,10 +22,27 @@ flash_recursion_limit: 500
 workflow_timeout: 3200  # seconds (53 minutes)
 sse_keepalive_interval: 15  # seconds
 
-# Feature Flags
+# Feature Flags (operator-only infra toggles; never exposed to users)
 result_log_db_enabled: true
 redis_warm_on_startup: true
 langsmith_tracing: false
+
+# User-facing product features. Each entry overrides the code catalog
+# (src/config/features.py) for this deployment; unset fields inherit the
+# catalog defaults.
+#   enabled:   kill switch — false turns the feature off for everyone,
+#              hides every surface, and ignores stored user overrides
+#   gate:      access model while enabled:
+#                none    — available to everyone
+#                opt_in  — off until the user opts in (Settings toggle)
+#                opt_out — on unless the user opts out (Settings toggle)
+#                plan    — requires a platform plan with access tier >=
+#                          min_tier (OSS deployments bypass plan gates)
+#   min_tier:  plan gate only — minimum platform access tier
+features:
+  market_watch:
+    enabled: true
+    gate: opt_in
 
 # SSE Event Logging
 sse_event_log_enabled: false
@@ -200,10 +217,22 @@ news_poll:
 # =============================================================================
 # MARKET WATCH CONFIGURATION
 # =============================================================================
-# Market watch mode (live price injection via <market-watch> message stamping)
+# Market watch mode (live price injection via <market-watch> message stamping).
+# Tuning only — the on/off switch is features.market_watch above.
 market_watch:
   min_interval_seconds: 25
   max_symbols: 10
+  # Stamp delivery strategy:
+  #   ephemeral  — stamp overrides each model request only; never persisted
+  #                (checkpoints/history stay clean)
+  #   persistent — stamp is checkpointed into thread state; fallback if the
+  #                ephemeral tail proves to hurt prompt-cache hit rates
+  #                (grows history by ~1 stamp per refresh interval)
+  injection: ephemeral
+  # Ephemeral mode only: pin a provider cache breakpoint (Anthropic
+  # cache_control / OpenAI prompt_cache_breakpoint) on the last durable
+  # message so the ephemeral stamp doesn't break incremental caching.
+  cache_breakpoint_pin: true
 
 
 # =============================================================================

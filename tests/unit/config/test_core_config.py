@@ -15,7 +15,6 @@ from ptc_agent.config.core import (
     DEFAULT_BLOCKED_PATTERNS,
     CoreConfig,
     DaytonaConfig,
-    DockerConfig,
     FilesystemConfig,
     LoggingConfig,
     MCPConfig,
