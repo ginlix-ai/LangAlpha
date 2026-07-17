@@ -44,6 +44,11 @@ _STEERING_MARKERS = (
     "[Follow-up Instructions from Orchestrator]\n",
 )
 
+# Written by src/ptc_agent/agent/middleware/market_watch.py — the lc_source tag
+# and the content stamp prefix that mark a live-price injection.
+_MARKET_WATCH_SOURCE = "market_watch"
+_MARKET_WATCH_STAMP_OPEN = "<market-watch>"
+
 _FILE_OPERATION_TOOLS = {"Write", "Edit"}
 _ARTIFACT_FROM_TOOL_MESSAGE = {
     "ShowWidget": "html_widget",
@@ -205,6 +210,12 @@ def _project_human_message(message: HumanMessage, agent: str) -> list[HistoryEve
     kwargs = message.additional_kwargs or {}
     source = kwargs.get("lc_source")
     content = message.content if isinstance(message.content, str) else ""
+
+    if source == _MARKET_WATCH_SOURCE or content.startswith(_MARKET_WATCH_STAMP_OPEN):
+        # Live-price stamps are model-facing only — skipping them here keeps
+        # them out of history. Both guards stay: the content-prefix check is the
+        # safety net for any ephemeral stamp that reaches a message unstamped.
+        return []
 
     if source == "steering" or content.startswith(_STEERING_MARKERS):
         payload = kwargs.get("steering_delivered")

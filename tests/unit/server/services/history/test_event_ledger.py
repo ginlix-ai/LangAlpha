@@ -63,6 +63,8 @@ LIVE_ONLY = {
     "compaction_chunk",  # summarize context_window carries summary_text
     "subagent_stream_end",  # reconnect-stream sentinel
     "replay_done",  # replay sentinel
+    "market_watch_update",  # transient stamp notice, accumulate=False; the
+    # durable watchlist re-seeds the chip via GET /{thread}/market-watch on replay
 }
 
 # KNOWN GAP: survives replay only through persisted sse_events. Before

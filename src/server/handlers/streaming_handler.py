@@ -782,14 +782,22 @@ class WorkflowStreamHandler:
                             yield self._format_sse_event("artifact", ui_artifact_event)
                             continue
 
-                        # Live market-watch stamp notification
+                        # Live market-watch stamp notification. Transient like
+                        # ``metadata``/``model_retry`` (accumulate=False): the
+                        # durable watchlist re-seeds the chip on replay via
+                        # GET /{thread}/market-watch, so this must not persist —
+                        # see tests/.../history/test_event_ledger.py LIVE_ONLY.
                         if event_type == "market_watch_update":
-                            yield self._format_sse_event("market_watch_update", {
-                                "thread_id": self.thread_id,
-                                "symbols": event_data.get("symbols", []),
-                                "content": event_data.get("content", ""),
-                                "timestamp": event_data.get("timestamp"),
-                            })
+                            yield self._format_sse_event(
+                                "market_watch_update",
+                                {
+                                    "thread_id": self.thread_id,
+                                    "symbols": event_data.get("symbols", []),
+                                    "content": event_data.get("content", ""),
+                                    "timestamp": event_data.get("timestamp"),
+                                },
+                                accumulate=False,
+                            )
                             continue
 
                         # Check if this is an artifact event from middleware

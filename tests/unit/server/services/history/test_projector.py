@@ -365,6 +365,27 @@ def test_empty_content_key_dropped():
     assert "content" not in items[0]["data"]
 
 
+def test_market_watch_stamp_is_skipped():
+    # Persistent-mode live-price stamps are model-facing only: neither the
+    # stamped form nor a bare marker content leaks into history events.
+    items = _sse(
+        [
+            HumanMessage(
+                content="<market-watch>\nNVDA  $233.45  +2.31% today\n</market-watch>",
+                id="market-watch-1",
+                additional_kwargs={"lc_source": "market_watch"},
+            ),
+            HumanMessage(
+                content="<market-watch>\nunstamped historical form\n</market-watch>",
+                id="market-watch-2",
+            ),
+            AIMessage(content="ok", id="ai-1"),
+        ]
+    )
+    assert [i["event"] for i in items] == ["message_chunk"]
+    assert items[0]["data"]["content"] == "ok"
+
+
 def test_stamped_steering_message_projects_delivered():
     delivered = {
         "count": 1,

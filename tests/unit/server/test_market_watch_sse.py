@@ -70,3 +70,8 @@ async def test_market_watch_update_forwarded_to_sse():
     assert data["symbols"] == ["NVDA"]
     assert data["content"] == "NVDA $123.45"
     assert data["timestamp"] == 123.0
+
+    # The stamp is transient (accumulate=False) — it streams live but must not
+    # land in the persisted accumulator, matching the LIVE_ONLY ledger contract.
+    accumulated = handler.get_sse_events() or []
+    assert not any(e["event"] == "market_watch_update" for e in accumulated)

@@ -38,6 +38,10 @@ class TestGetMarketWatch:
                 new=AsyncMock(return_value=OWNER_ID),
             ),
             patch(
+                "src.server.app.threads.user_feature_enabled",
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
                 "src.server.app.threads.get_watchlist",
                 new=AsyncMock(return_value=["NVDA", "TSLA"]),
             ),
@@ -58,6 +62,10 @@ class TestGetMarketWatch:
                 new=AsyncMock(return_value=OWNER_ID),
             ),
             patch(
+                "src.server.app.threads.user_feature_enabled",
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
                 "src.server.app.threads.get_watchlist",
                 new=AsyncMock(return_value=[]),
             ),
@@ -67,6 +75,30 @@ class TestGetMarketWatch:
             )
         assert resp.status_code == 200
         assert resp.json()["symbols"] == []
+
+
+class TestGetMarketWatchDisabled:
+    @pytest.mark.asyncio
+    async def test_feature_off_reports_empty_without_reading_redis(
+        self, threads_client
+    ):
+        feature_gate = AsyncMock(return_value=False)
+        watchlist = AsyncMock(return_value=["NVDA"])
+        with (
+            patch(
+                "src.server.database.conversation.get_thread_owner_id",
+                new=AsyncMock(return_value=OWNER_ID),
+            ),
+            patch("src.server.app.threads.user_feature_enabled", new=feature_gate),
+            patch("src.server.app.threads.get_watchlist", new=watchlist),
+        ):
+            resp = await threads_client.get(
+                f"/api/v1/threads/{THREAD_ID}/market-watch"
+            )
+        assert resp.status_code == 200
+        assert resp.json()["symbols"] == []
+        feature_gate.assert_awaited_once_with(OWNER_ID, "market_watch")
+        watchlist.assert_not_awaited()
 
 
 class TestGetMarketWatchAuth:
