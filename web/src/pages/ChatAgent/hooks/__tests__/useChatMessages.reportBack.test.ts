@@ -5,10 +5,11 @@
  * workflow per completed analysis, named via a pub/sub wake (run_id payload)
  * and durably via `/status.report_back_run_id` / `recent_report_back_run_ids`.
  * These tests drive the REAL hook internals (mirroring the sibling stop suite)
- * with the api module mocked, covering: arming (load / approve / activation),
- * wake + catch-up attach paths, the FIFO wake latch, chained-attach ownership
- * (Bug A), the idle watchdog + terminality gate, dedup release on zero-content
- * ends, and the backstop give-up cap.
+ * with the api module mocked, covering: arming (load / approve / activation /
+ * tail subagents), wake + snapshot + catch-up attach paths, the FIFO wake
+ * latch, chained-attach ownership (Bug A), the idle watchdog + terminality
+ * gate, dedup release on zero-content ends, producer-undecided grace, and the
+ * no-polling contract.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Mock } from 'vitest';
@@ -30,9 +31,9 @@ vi.mock('../utils/threadStorage', () => ({
 
 vi.mock('../../utils/api', async () => (await import('./chatHookHarness')).apiMockModule());
 
-import { getWorkflowStatus, getReportBackStatus, replayThreadHistory, reconnectToWorkflowStream, watchThread, sendChatMessageStream } from '../../utils/api';
+import { getWorkflowStatus, getReportBackStatus, replayThreadHistory, reconnectToWorkflowStream, watchThread, sendChatMessageStream, streamSubagentTaskEvents } from '../../utils/api';
 import { useChatMessages } from '../useChatMessages';
-import { REPORT_BACK_IDLE_MAX_REARMS, REPORT_BACK_MAX_POLLS } from '../useReportBackWatch';
+import { REPORT_BACK_IDLE_MAX_REARMS } from '../useReportBackWatch';
 import { queryKeys } from '@/lib/queryKeys';
 
 /** One captured reconnect reader: the run it targeted, its onEvent sink, its signal. */
@@ -99,11 +100,8 @@ const mockSend = sendChatMessageStream as Mock;
 
 const captureWatch = () => captureWatchCalls(mockWatch);
 
-/**
- * Settle the mount effect under FAKE timers (the 60s backstop `setInterval` must
- * be fake-clock controllable); advancing 0ms drains the async chain without
- * firing a backstop tick.
- */
+/** Settle the mount effect under FAKE timers: advancing 0ms drains the async
+ *  chain without letting any real timer fire. */
 async function settleMountEffectFake() {
   for (let i = 0; i < 5; i++) {
     await act(async () => {
@@ -113,16 +111,14 @@ async function settleMountEffectFake() {
   }
 }
 
-/** Fire exactly one backstop `reconcile('poll')` tick (60s of fake clock). */
-async function backstopTick() {
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(60_000);
-  });
-}
-
 // Mirrors REPORT_BACK_IDLE_ABORT_MS in useReportBackWatch (kept in sync by hand
 // — not exported to avoid widening the hook's surface for a test).
 const IDLE_MS = 4000;
+
+// Mirrors REPORT_BACK_IDLE_CONFIRM_MS (same hand-sync convention). An idle read
+// only SCHEDULES this one-shot confirming re-read; the teardown tests advance
+// through it under fake timers.
+const IDLE_CONFIRM_MS = 15_000;
 
 describe('useChatMessages — report-back watch (PTC → flash report-back)', () => {
   beforeEach(() => {
@@ -158,9 +154,10 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
     renderHookWithProviders(() => useChatMessages('ws-rb', 'th-rb'));
 
     // Armed: persistent watch signature (tid, onWorkflowStarted, onClosed,
-    // onResubscribed); no reconnect yet (the PTC turn was already complete).
+    // onResubscribed, onSnapshot); no reconnect yet (the PTC turn was already
+    // complete).
     await waitFor(() => expect(mockWatch).toHaveBeenCalledTimes(1));
-    expect(mockWatch).toHaveBeenCalledWith('th-rb', expect.any(Function), expect.any(Function), expect.any(Function));
+    expect(mockWatch).toHaveBeenCalledWith('th-rb', expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function));
     expect(mockReconnect).not.toHaveBeenCalled();
 
     // The wake names the run → attach to exactly that run, fresh cursor, no
@@ -473,17 +470,27 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
       recent_report_back_run_ids: ['rb-drained'],
     }));
 
-    await act(async () => {
-      await watchCalls[0].cb();
-      await new Promise((r) => setTimeout(r, 0));
-    });
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        const p = watchCalls[0].cb(); // payload-less wake → 500ms register delay
+        await vi.advanceTimersByTimeAsync(600);
+        await p;
+      });
 
-    // Attached the drained run from the recents list, fresh cursor...
-    expect(mockReconnect).toHaveBeenCalledTimes(1);
-    expect(mockReconnect.mock.calls[0][0]).toBe('th-rb');
-    expect(mockReconnect.mock.calls[0][1]).toBe('rb-drained');
-    expect(mockReconnect.mock.calls[0][2]).toBeNull();
-    // ...THEN tore down: idle signal + every recent rendered + empty queue.
+      // Attached the drained run from the recents list, fresh cursor...
+      expect(mockReconnect).toHaveBeenCalledTimes(1);
+      expect(mockReconnect.mock.calls[0][0]).toBe('th-rb');
+      expect(mockReconnect.mock.calls[0][1]).toBe('rb-drained');
+      expect(mockReconnect.mock.calls[0][2]).toBeNull();
+      // ...THEN tore down — via the one-shot idle-confirm re-read (an idle
+      // observation alone never disarms): every recent rendered, empty queue.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(IDLE_CONFIRM_MS + 100);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
     await waitFor(() => expect(result.current.awaitingReportBack).toBe(false));
     expect(watchCalls[0].controller.signal.aborted).toBe(true);
 
@@ -562,7 +569,7 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
     await waitFor(() => expect(mockReconnect.mock.calls.some((c) => c[0] === 'th-flash')).toBe(true));
     // ...AND the report-back watch is armed as the reliable catch.
     await waitFor(() =>
-      expect(mockWatch).toHaveBeenCalledWith('th-flash', expect.any(Function), expect.any(Function), expect.any(Function)),
+      expect(mockWatch).toHaveBeenCalledWith('th-flash', expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function)),
     );
   });
 
@@ -739,6 +746,11 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
       // Idle watchdog fires → aborts the hung reader → teardown runs.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(IDLE_MS + 50);
+      });
+      // The streamEnd poke's idle read scheduled the one-shot confirm; a
+      // still-idle confirm is what actually drains the watch.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(IDLE_CONFIRM_MS + 100);
       });
     } finally {
       vi.useRealTimers();
@@ -945,7 +957,7 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
     await waitFor(() => expect(mockReconnect).toHaveBeenCalled());
     await settleMountEffect();
     // Armed as the reliable catch...
-    expect(mockWatch).toHaveBeenCalledWith('th-flash', expect.any(Function), expect.any(Function), expect.any(Function));
+    expect(mockWatch).toHaveBeenCalledWith('th-flash', expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function));
     // ...and ordering is the invariant: the live run attaches before the held
     // report-back ever could.
     expect(mockReconnect.mock.calls[0][1]).toBe('active-run');
@@ -1021,7 +1033,7 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
     });
 
     // Armed the keyed watch and streamed the named run.
-    expect(mockWatch).toHaveBeenCalledWith('th-rb', expect.any(Function), expect.any(Function), expect.any(Function));
+    expect(mockWatch).toHaveBeenCalledWith('th-rb', expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function));
     expect(mockReconnect.mock.calls.some((c) => c[1] === 'rb-active')).toBe(true);
     await waitFor(() => expect(result.current.awaitingReportBack).toBe(true));
   });
@@ -1045,7 +1057,7 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
       await new Promise((r) => setTimeout(r, 0));
     });
     expect(mockWatch).toHaveBeenCalledTimes(1);
-    expect(mockWatch).toHaveBeenCalledWith('th-rb', expect.any(Function), expect.any(Function), expect.any(Function));
+    expect(mockWatch).toHaveBeenCalledWith('th-rb', expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function));
     expect(result.current.awaitingReportBack).toBe(true);
     expect(mockReconnect).not.toHaveBeenCalled();
   });
@@ -1101,13 +1113,21 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
     // rb-1 drains the queue; its stream ends. Pre-fix its finally saw the
     // nulled abort ref, skipped cleanup, and isLoading stayed true forever.
     mockStatus.mockResolvedValue(threadStatus({ report_back_run_id: null }));
-    await act(async () => {
-      closers.get('rb-1')!();
-      await new Promise((r) => setTimeout(r, 0));
-    });
-
-    // Ownership was NOT orphaned: cleanup ran and the watch drained.
-    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        closers.get('rb-1')!();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      // Ownership was NOT orphaned: cleanup ran (isStreamingRef released).
+      expect(result.current.isLoading).toBe(false);
+      // The streamEnd poke read idle → confirm → still idle → watch drained.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(IDLE_CONFIRM_MS + 100);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
     await waitFor(() => expect(result.current.awaitingReportBack).toBe(false));
     expect(watchCalls[0].controller.signal.aborted).toBe(true);
   });
@@ -1150,12 +1170,20 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
     });
     await waitFor(() => expect(closers.has('rb-2')).toBe(true));
 
-    // rb-2 ends with everything drained → the watch tears down.
+    // rb-2 ends with everything drained → the idle-confirm drains the watch.
     mockStatus.mockResolvedValue(threadStatus({ report_back_run_id: null }));
-    await act(async () => {
-      closers.get('rb-2')!();
-      await new Promise((r) => setTimeout(r, 0));
-    });
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        closers.get('rb-2')!();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(IDLE_CONFIRM_MS + 100);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
     await waitFor(() => expect(result.current.awaitingReportBack).toBe(false));
 
     // In-order, no overwrite, exactly once each, on a single persistent watch.
@@ -1187,12 +1215,21 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
       report_back_run_id: null,
       recent_report_back_run_ids: ['rb-old'],
     }));
-    await act(async () => {
-      await watchCalls[0].cb();
-      await new Promise((r) => setTimeout(r, 0));
-    });
-
-    // Idle + all recents rendered + empty queue → teardown, zero attaches.
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        const p = watchCalls[0].cb(); // payload-less wake → 500ms register delay
+        await vi.advanceTimersByTimeAsync(600);
+        await p;
+      });
+      // Idle + all recents rendered + empty queue → confirm → teardown,
+      // zero attaches.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(IDLE_CONFIRM_MS + 100);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
     expect(mockReconnect).not.toHaveBeenCalled();
     await waitFor(() => expect(result.current.awaitingReportBack).toBe(false));
     expect(watchCalls[0].controller.signal.aborted).toBe(true);
@@ -1230,11 +1267,11 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
     expect(mockReconnect.mock.calls[1][1]).toBe('rb-x');
   });
 
-  it('resubscribe catch-up: in-loop /watch recovery reconciles as a NON-poll source (attaches; never burns the give-up cap)', async () => {
+  it('resubscribe catch-up: in-loop /watch recovery reconciles and never tears the watch down', async () => {
     // watchThread's own retry loop can re-subscribe after a transient error;
     // wakes fired during that gap are lost. The recovery callback must run a
-    // catch-up reconcile — and NEVER count toward the backstop give-up cap, or
-    // a flaky connection would burn the watch budget with no poll ever firing.
+    // catch-up reconcile — and repeated recoveries returning only the
+    // non-confirming unknown sentinel must leave the watch armed.
     mockStatus.mockResolvedValue(threadStatus({ pending_report_back: true, report_back_run_id: null }));
     mockReconnect.mockImplementation(streamedReconnect());
     const watchCalls = captureWatch();
@@ -1243,10 +1280,10 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
     await waitFor(() => expect(mockWatch).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(result.current.awaitingReportBack).toBe(true));
 
-    // Spam recoveries far past the give-up cap while the backend can only
-    // return the non-confirming unknown sentinel: the watch must stay armed.
+    // Spam recoveries while the backend can only return the non-confirming
+    // unknown sentinel: the watch must stay armed.
     mockStatus.mockResolvedValue(threadStatus({ pending_report_back: null, report_back_run_id: null }));
-    for (let i = 0; i < REPORT_BACK_MAX_POLLS + 3; i++) {
+    for (let i = 0; i < 13; i++) {
       await act(async () => {
         watchCalls[0].onResubscribed?.();
         await new Promise((r) => setTimeout(r, 0));
@@ -1266,17 +1303,11 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
     expect(mockReconnect.mock.calls.some((c) => c[1] === 'rb-gap')).toBe(true);
   });
 
-  it('backstop give-up cap: confirmed-pending ticks reset the budget; only CONSECUTIVE non-confirming ticks release', async () => {
-    // Pre-fix, EVERY backstop tick counted toward the cap, so any dispatch
-    // outlasting ~10 ticks silently lost its live stream. Now the cap is
-    // measured from the LAST confirmation: `pending` ticks reset it, and only a
-    // full consecutive run of `unknown` (the backend's own Redis read failing)
-    // ticks releases the watch. Fake timers drive the 60s backstop; nothing is
-    // ever named, so no attach can occur.
-    const PENDING = threadStatus({ pending_report_back: true, report_back_run_id: null });
-    const UNKNOWN = { ...PENDING, pending_report_back: null };
-
-    mockStatus.mockResolvedValue(PENDING);
+  it('no polling: an armed watch issues ZERO status reads on the clock alone', async () => {
+    // The watch is push-driven: snapshots + wakes + event pokes are the only
+    // reconcile triggers. Ten minutes of fake clock must not produce a single
+    // report-back status read, and the watch must stay armed.
+    mockStatus.mockResolvedValue(threadStatus({ pending_report_back: true, report_back_run_id: null }));
     const watchCalls = captureWatch();
 
     vi.useFakeTimers();
@@ -1286,33 +1317,305 @@ describe('useChatMessages — report-back watch (PTC → flash report-back)', ()
       expect(mockWatch).toHaveBeenCalledTimes(1);
       expect(result.current.awaitingReportBack).toBe(true);
 
-      // A healthy long-running dispatch: well past the cap, every tick
-      // confirming pending — still armed.
-      for (let i = 0; i < REPORT_BACK_MAX_POLLS + 3; i++) await backstopTick();
-      expect(result.current.awaitingReportBack).toBe(true);
-
-      // (cap - 1) consecutive unknown ticks: one short of giving up.
-      mockStatus.mockResolvedValue(UNKNOWN);
-      for (let i = 0; i < REPORT_BACK_MAX_POLLS - 1; i++) await backstopTick();
-      expect(result.current.awaitingReportBack).toBe(true);
-
-      // One confirmed-pending tick RESETS the budget...
-      mockStatus.mockResolvedValue(PENDING);
-      await backstopTick();
-      // ...so another (cap - 1) unknown ticks still leave the watch armed, even
-      // though the total unknown count far exceeds the cap.
-      mockStatus.mockResolvedValue(UNKNOWN);
-      for (let i = 0; i < REPORT_BACK_MAX_POLLS - 1; i++) await backstopTick();
+      const readsAfterLoad = mockReportBackStatus.mock.calls.length;
+      for (let i = 0; i < 10; i++) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(60_000);
+        });
+      }
+      expect(mockReportBackStatus.mock.calls.length).toBe(readsAfterLoad);
       expect(result.current.awaitingReportBack).toBe(true);
       expect(watchCalls[0].controller.signal.aborted).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
-      // The cap-th consecutive unknown tick SINCE the reset finally releases.
-      await backstopTick();
-      expect(result.current.awaitingReportBack).toBe(false);
-      expect(watchCalls[0].controller.signal.aborted).toBe(true);
-      // Never re-armed; nothing was ever named, so nothing ever attached.
+  it('snapshot: the state-on-attach frame names the run and attaches with NO status fetch', async () => {
+    // The backend mirrors /status?fields=report_back on every (re)subscribe.
+    // A run named there must attach directly — push-only, no fetch. The attach
+    // is HELD open so the attached stream's own end-poke (a legitimate fetch)
+    // can't muddy the count.
+    mockStatus.mockResolvedValue(threadStatus({ pending_report_back: true, report_back_run_id: null }));
+    const closers = new Map<string, () => void>();
+    mockReconnect.mockImplementation(heldReconnect(closers));
+    const watchCalls = captureWatch();
+
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-rb', 'th-rb'));
+    await waitFor(() => expect(mockWatch).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.awaitingReportBack).toBe(true));
+
+    const fetchesBefore = mockReportBackStatus.mock.calls.length;
+    await act(async () => {
+      void watchCalls[0].onSnapshot?.({
+        thread_id: 'th-rb',
+        pending_report_back: true,
+        report_back_run_id: 'rb-snap',
+        recent_report_back_run_ids: [],
+      });
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(mockReconnect.mock.calls.some((c) => c[1] === 'rb-snap')).toBe(true);
+    expect(mockReportBackStatus.mock.calls.length).toBe(fetchesBefore);
+    await act(async () => {
+      closers.get('rb-snap')?.();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+  });
+
+  it('snapshot never disarms: an idle snapshot right after arming is inert', async () => {
+    // Subscribe-at-dispatch arms BEFORE the backend registers pendingness, and
+    // the snapshot fires within ms of the subscribe — an idle read there is a
+    // race, not a drain. Only client-initiated event reconciles may tear down.
+    mockStatus.mockResolvedValue(threadStatus({ pending_report_back: true }));
+    const watchCalls = captureWatch();
+
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-rb', 'th-rb'));
+    await waitFor(() => expect(mockWatch).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.awaitingReportBack).toBe(true));
+
+    await act(async () => {
+      await watchCalls[0].onSnapshot?.({
+        thread_id: 'th-rb',
+        pending_report_back: false,
+        report_back_run_id: null,
+        recent_report_back_run_ids: [],
+      });
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(result.current.awaitingReportBack).toBe(true);
+    expect(watchCalls[0].controller.signal.aborted).toBe(false);
+  });
+
+  it('producer grace: idle reads keep the watch armed while tail subagents are live, draining once they settle', async () => {
+    // Tail mode on a PTC thread: /status reads idle the whole time a subagent
+    // runs (task pendingness only materializes at completion) — the backend's
+    // active_tasks list is what holds the watch open.
+    mockStatus.mockResolvedValue(threadStatus({ pending_report_back: true }));
+    const watchCalls = captureWatch();
+
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-rb', 'th-rb'));
+    await waitFor(() => expect(result.current.awaitingReportBack).toBe(true));
+
+    // A cleared wake forces a reconcile: idle, but a subagent still writes.
+    mockStatus.mockResolvedValue(threadStatus({ active_tasks: ['t1'] }));
+    await act(async () => {
+      await watchCalls[0].cb({ cleared: true });
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(result.current.awaitingReportBack).toBe(true);
+    expect(watchCalls[0].controller.signal.aborted).toBe(false);
+
+    // Every subagent settled with nothing due: idle + no writers. One idle
+    // read only SCHEDULES the confirm — the watch must still be armed…
+    mockStatus.mockResolvedValue(threadStatus({}));
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        await watchCalls[0].cb({ cleared: true });
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(result.current.awaitingReportBack).toBe(true);
+      expect(watchCalls[0].controller.signal.aborted).toBe(false);
+      // …and the still-idle confirm is what drains it.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(IDLE_CONFIRM_MS + 100);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    await waitFor(() => expect(result.current.awaitingReportBack).toBe(false));
+    expect(watchCalls[0].controller.signal.aborted).toBe(true);
+  });
+
+  it('tail load: live subagents alone arm the watch, and a task-stream close never disarms it', async () => {
+    // The mid-run refresh case: main turn done, subagent still writing, no
+    // pendingness yet. The load must arm from active_tasks; the later
+    // task-stream close pokes a reconcile whose idle read (the report-back
+    // enqueue may still be in flight) must NOT tear the watch down — the
+    // dispatch wake that follows attaches the turn.
+    let closeStream!: () => void;
+    (streamSubagentTaskEvents as Mock).mockImplementation(
+      () => new Promise<void>((res) => { closeStream = res; }),
+    );
+    mockStatus.mockResolvedValue(threadStatus({ active_tasks: ['t9'] }));
+    const watchCalls = captureWatch();
+
+    const { result } = renderHookWithProviders(() => useChatMessages('ws-rb', 'th-rb'));
+    await waitFor(() => expect(mockWatch).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.awaitingReportBack).toBe(true));
+
+    // The task settles; /status still reads idle with no live writers (its
+    // outbox row hasn't landed yet).
+    mockStatus.mockResolvedValue(threadStatus({}));
+    await act(async () => {
+      closeStream();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(result.current.awaitingReportBack).toBe(true);
+    expect(watchCalls[0].controller.signal.aborted).toBe(false);
+
+    // The dispatch wake names the notification turn → attaches live.
+    mockReconnect.mockImplementation(streamedReconnect());
+    await act(async () => {
+      await watchCalls[0].cb({ run_id: 'rb-tail' });
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(mockReconnect.mock.calls.some((c) => c[1] === 'rb-tail')).toBe(true);
+  });
+
+  it('idle-confirm: evidence of life before the confirm fires cancels the teardown (no extra read)', async () => {
+    // The settle-gap guard: an idle read races a ms-scale server window
+    // (pendingness registering, an outbox row landing). If a later read finds
+    // life before the confirm fires, the scheduled confirm must be CANCELLED —
+    // no teardown, and no leftover timer read either.
+    mockStatus.mockResolvedValue(threadStatus({ pending_report_back: true }));
+    const watchCalls = captureWatch();
+
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHookWithProviders(() => useChatMessages('ws-rb', 'th-rb'));
+      await settleMountEffectFake();
+      expect(result.current.awaitingReportBack).toBe(true);
+
+      // Idle read → schedules the confirm, does NOT disarm.
+      mockStatus.mockResolvedValue(threadStatus({}));
+      await act(async () => {
+        await watchCalls[0].cb({ cleared: true });
+      });
+      expect(result.current.awaitingReportBack).toBe(true);
+
+      // The gap closes: pendingness registers before the confirm fires.
+      mockStatus.mockResolvedValue(threadStatus({ pending_report_back: true }));
+      await act(async () => {
+        await watchCalls[0].cb({ cleared: true });
+      });
+
+      // The confirm window passes: still armed, and the cancelled timer
+      // issued no read of its own.
+      const reads = mockStatus.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(IDLE_CONFIRM_MS + 100);
+      });
+      expect(result.current.awaitingReportBack).toBe(true);
+      expect(watchCalls[0].controller.signal.aborted).toBe(false);
+      expect(mockStatus.mock.calls.length).toBe(reads);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('idle-confirm veto: a snapshot landing during the confirm fetch blocks the teardown', async () => {
+    // The confirm is the ONE read allowed to disarm, so it must yield to
+    // anything newer: a snapshot arriving while its fetch is in flight is
+    // latched (payload dropped — inFlight), and the stale idle result must
+    // NOT consume the watch over it. The drain pass re-reads fresh instead.
+    mockStatus.mockResolvedValue(threadStatus({ pending_report_back: true }));
+    const watchCalls = captureWatch();
+
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHookWithProviders(() => useChatMessages('ws-rb', 'th-rb'));
+      await settleMountEffectFake();
+      expect(result.current.awaitingReportBack).toBe(true);
+
+      // Idle read → schedules the confirm.
+      mockStatus.mockResolvedValue(threadStatus({}));
+      await act(async () => {
+        await watchCalls[0].cb({ cleared: true });
+      });
+      expect(result.current.awaitingReportBack).toBe(true);
+
+      // Hold the confirm's fetch open; anything after it reads pending.
+      let releaseConfirm!: (v: unknown) => void;
+      mockStatus.mockImplementationOnce(
+        () => new Promise((r) => { releaseConfirm = r; }),
+      );
+      mockStatus.mockResolvedValue(threadStatus({ pending_report_back: true }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(IDLE_CONFIRM_MS + 100);
+      });
+
+      // A reconnect snapshot lands mid-confirm, naming pending state — it
+      // can only be latched (inFlight), its payload dropped.
+      await act(async () => {
+        await watchCalls[0].onSnapshot?.(
+          threadStatus({ pending_report_back: true }) as Record<string, unknown>,
+        );
+      });
+
+      // The stale confirm resolves idle: veto — no teardown, and the drain
+      // pass re-reads the fresh (pending) state.
+      await act(async () => {
+        releaseConfirm(threadStatus({}));
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(result.current.awaitingReportBack).toBe(true);
+      expect(watchCalls[0].controller.signal.aborted).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('resubscribe pacing: a dropped watch retries forever with capped backoff, instantly after a stable connection', async () => {
+    // No lifetime budget: a sustained outage must never orphan an armed watch
+    // (the wake has no replay — only the next snapshot recovers it). Rate is
+    // what's bounded: short-lived connections back off doubling to the cap;
+    // a connection that lived the stable window re-attaches instantly.
+    mockStatus.mockResolvedValue(threadStatus({ pending_report_back: true }));
+    const watchCalls = captureWatch();
+
+    vi.useFakeTimers();
+    try {
+      renderHookWithProviders(() => useChatMessages('ws-rb', 'th-rb'));
+      await settleMountEffectFake();
       expect(mockWatch).toHaveBeenCalledTimes(1);
-      expect(mockReconnect).not.toHaveBeenCalled();
+
+      // Dies young (5s < stable window) → paced by the 1s floor, not instant.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      await act(async () => {
+        watchCalls[0].onClosed?.();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(mockWatch).toHaveBeenCalledTimes(1); // not yet — delayed
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_100);
+      });
+      expect(mockWatch).toHaveBeenCalledTimes(2);
+
+      // Dies young again → the delay doubled to 2s.
+      await act(async () => {
+        watchCalls[1].onClosed?.();
+        await vi.advanceTimersByTimeAsync(1_100);
+      });
+      expect(mockWatch).toHaveBeenCalledTimes(2); // 2s not elapsed yet
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      expect(mockWatch).toHaveBeenCalledTimes(3);
+
+      // Keeps failing: the delay caps and the retries NEVER stop (well past
+      // the old 5-attempt budget).
+      for (let n = 3; n < 12; n++) {
+        await act(async () => {
+          watchCalls[n - 1].onClosed?.();
+          await vi.advanceTimersByTimeAsync(30_100);
+        });
+        expect(mockWatch).toHaveBeenCalledTimes(n + 1);
+      }
+
+      // A connection that LIVES past the stable window resets the pacing:
+      // the next close re-attaches instantly (the backend's ~30-min recycle).
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(31_000);
+      });
+      await act(async () => {
+        watchCalls[watchCalls.length - 1].onClosed?.();
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(mockWatch).toHaveBeenCalledTimes(13);
     } finally {
       vi.useRealTimers();
     }

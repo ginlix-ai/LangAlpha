@@ -1330,18 +1330,11 @@ async def get_thread_status(
         raise HTTPException(status_code=403, detail="Forbidden")
 
     if fields == "report_back":
-        # Same JSON contract, different pending-registry per thread kind:
-        # flash pendingness lives in the Redis watch set, PTC task
-        # report-back pendingness IS the open outbox row.
-        if meta.get("msg_type") == "ptc":
-            from src.server.handlers.chat.task_report_back import (
-                read_task_report_back_status,
-            )
+        from src.server.handlers.chat.report_back import read_report_back_slice
 
-            return await read_task_report_back_status(thread_id)
-        from src.server.handlers.chat.report_back import read_report_back_status
-
-        return await read_report_back_status(thread_id)
+        return await read_report_back_slice(
+            thread_id, msg_type=meta.get("msg_type") or ""
+        )
 
     from src.server.handlers.workflow_handler import get_workflow_status
 

@@ -85,6 +85,7 @@ def _task(task_id: str = "abc123") -> SimpleNamespace:
         subagent_type="research",
         description="look things up",
         result={"success": True, "result": "the findings"},
+        report_back_claimed=False,
     )
 
 
@@ -164,6 +165,124 @@ class TestEnqueueStyle:
         assert "result_truncated" not in payload
 
 
+def _claim_gated_registry():
+    """Registry mock whose claim respects report_back_claimed, like the real
+    one — a retry pass must re-claim only released (failed) tasks."""
+    registry = MagicMock()
+
+    async def _claim(task):
+        if task.report_back_claimed:
+            return False
+        task.report_back_claimed = True
+        return True
+
+    registry.claim_report_back = AsyncMock(side_effect=_claim)
+    store = MagicMock()
+    store.get_registry = AsyncMock(return_value=registry)
+    return store
+
+
+@pytest.mark.asyncio
+async def test_enqueue_insert_failure_releases_claim_after_retries():
+    """A claim without an outbox row is a permanently lost notification: a
+    persistently failing insert must hand the claim back at the end while
+    sibling tasks still insert (exactly once, despite the retry passes)."""
+    store = _claim_gated_registry()
+    t_ok, t_fail = _task("aaa111"), _task("bbb222")
+    ok_inserts = 0
+
+    async def _insert(**kwargs):
+        if kwargs["payload"]["task_id"] == "bbb222":
+            raise RuntimeError("db down")
+        nonlocal ok_inserts
+        ok_inserts += 1
+
+    with (
+        patch(
+            "src.server.services.background_registry_store."
+            "BackgroundRegistryStore.get_instance",
+            return_value=store,
+        ),
+        patch(
+            "src.server.database.hook_outbox.enqueue_compensation_job",
+            new=AsyncMock(side_effect=_insert),
+        ),
+        patch(
+            "src.server.database.turn_lifecycle.get_run",
+            new=AsyncMock(return_value={"status": "completed"}),
+        ),
+        patch("src.server.services.hook_outbox.HookOutboxDrainer.get_instance"),
+        patch(
+            "src.server.handlers.chat.task_report_back._ENQUEUE_PASS_DELAYS",
+            (0.0, 0.0, 0.0),
+        ),
+    ):
+        n = await enqueue_task_report_backs(
+            thread_id="t1",
+            response_id="r1",
+            tasks=[t_ok, t_fail],
+            workspace_id="w1",
+            user_id="u1",
+            all_settled=True,
+        )
+
+    assert n == 1
+    assert ok_inserts == 1
+    assert t_ok.report_back_claimed is True
+    assert t_fail.report_back_claimed is False
+
+
+@pytest.mark.asyncio
+async def test_enqueue_transient_insert_failure_recovers_in_call():
+    """Retries must complete INSIDE the call: the all-settled fast paths
+    evict the registry right after it returns, so a released claim has no
+    later actor. A transient failure is absorbed by a follow-up pass."""
+    store = _claim_gated_registry()
+    t_ok, t_flaky = _task("aaa111"), _task("bbb222")
+    flaky_left = 1
+    enqueued: list[dict] = []
+
+    async def _insert(**kwargs):
+        nonlocal flaky_left
+        if kwargs["payload"]["task_id"] == "bbb222" and flaky_left:
+            flaky_left -= 1
+            raise RuntimeError("transient blip")
+        enqueued.append(kwargs)
+
+    with (
+        patch(
+            "src.server.services.background_registry_store."
+            "BackgroundRegistryStore.get_instance",
+            return_value=store,
+        ),
+        patch(
+            "src.server.database.hook_outbox.enqueue_compensation_job",
+            new=AsyncMock(side_effect=_insert),
+        ),
+        patch(
+            "src.server.database.turn_lifecycle.get_run",
+            new=AsyncMock(return_value={"status": "completed"}),
+        ),
+        patch("src.server.services.hook_outbox.HookOutboxDrainer.get_instance"),
+        patch(
+            "src.server.handlers.chat.task_report_back._ENQUEUE_PASS_DELAYS",
+            (0.0, 0.0, 0.0),
+        ),
+    ):
+        n = await enqueue_task_report_backs(
+            thread_id="t1",
+            response_id="r1",
+            tasks=[t_ok, t_flaky],
+            workspace_id="w1",
+            user_id="u1",
+            all_settled=True,
+        )
+
+    assert n == 2
+    assert [k["payload"]["task_id"] for k in enqueued] == ["aaa111", "bbb222"]
+    assert t_flaky.report_back_claimed is True
+
+
 # ---------------------------------------------------------------------------
 # dispatch: the recursion gate follows the style
 # ---------------------------------------------------------------------------
@@ -225,3 +344,93 @@ async def test_dispatch_gates_subagents_by_style(style, expected_gate):
         assert 'TaskOutput(task_id="abc123")' in content
     else:
         assert "<task_result" in content
+
+
+@pytest.mark.asyncio
+async def test_dispatch_nacks_when_pointer_persist_fails():
+    """merge_job_payload failure must propagate (drainer nack): an acked DONE
+    row without dispatched_run_id vanishes from the recents ledger, erasing
+    the notification from wake-miss recovery."""
+    wake = AsyncMock()
+    with (
+        patch(
+            "src.server.database.turn_lifecycle.get_latest_attempt",
+            new=AsyncMock(return_value={"status": "completed"}),
+        ),
+        patch(
+            "src.server.handlers.chat.notify_turn.post_notification_turn",
+            new=AsyncMock(return_value=("dispatched", "rb-run-1")),
+        ),
+        patch(
+            "src.server.database.hook_outbox.merge_job_payload",
+            new=AsyncMock(side_effect=RuntimeError("db down")),
+        ),
+        patch(
+            "src.server.handlers.chat.report_back.publish_wake",
+            new=wake,
+        ),
+        patch("src.utils.cache.redis_cache.get_cache_client"),
+    ):
+        with pytest.raises(RuntimeError, match="db down"):
+            await execute_task_report_back(_job("pointer"))
+
+    wake.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# recents: drained notification runs stay discoverable via DONE outbox rows
+# ---------------------------------------------------------------------------
+
+
+def _slice_env(recents):
+    """Patches for read_task_report_back_status with a stubbed recents read."""
+    btm = MagicMock()
+    btm.get_live_task_info = AsyncMock(return_value={"active_tasks": []})
+    return (
+        patch(
+            "src.server.database.hook_outbox.get_open_notification_job",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "src.server.services.background_task_manager."
+            "BackgroundTaskManager.get_instance",
+            return_value=btm,
+        ),
+        patch(
+            "src.server.database.hook_outbox.get_recent_notification_run_ids",
+            new=recents,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_status_slice_lists_recent_notification_runs():
+    from src.server.handlers.chat.task_report_back import (
+        read_task_report_back_status,
+    )
+
+    recents = AsyncMock(return_value=["rb-2", "rb-1"])
+    p1, p2, p3 = _slice_env(recents)
+    with p1, p2, p3:
+        out = await read_task_report_back_status("t1")
+
+    assert out["recent_report_back_run_ids"] == ["rb-2", "rb-1"]
+    assert recents.await_args.args == ("t1", "task_report_back")
+
+
+@pytest.mark.asyncio
+async def test_status_slice_recents_read_failure_reports_empty():
+    from src.server.handlers.chat.task_report_back import (
+        read_task_report_back_status,
+    )
+
+    recents = AsyncMock(side_effect=RuntimeError("db down"))
+    p1, p2, p3 = _slice_env(recents)
+    with p1, p2, p3:
+        out = await read_task_report_back_status("t1")
+
+    # Recents failure degrades to an empty list plus UNKNOWN pendingness:
+    # recents are the wake-miss recovery channel, so their outage must not
+    # let an otherwise-idle slice authorize the client's teardown.
+    assert out["recent_report_back_run_ids"] == []
+    assert out["pending_report_back"] is None

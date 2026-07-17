@@ -1152,6 +1152,24 @@ class BackgroundTaskManager:
                 if c.get("data", {}).get("agent", "") not in subagent_agent_ids
             ]
 
+            pending = {
+                t.asyncio_task: t for t in tasks
+                if t.is_pending and t.asyncio_task
+            }
+
+            # Report-back rows land BEFORE any event replay: a settled task
+            # drops out of active_tasks the moment its lock releases, and a
+            # client idle read in that window must find the outbox row — both
+            # the XRANGE replay and the persistence below are unbounded.
+            # Idempotent (registry claim + ON CONFLICT), so later calls
+            # safely repeat it.
+            settled_at_entry = [t for t in tasks if t not in pending.values()]
+            if settled_at_entry:
+                await self._enqueue_task_report_backs(
+                    thread_id, response_id, settled_at_entry, workspace_id,
+                    user_id, all_settled=not pending,
+                )
+
             all_subagent_events: list[dict] = []
 
             for task in tasks:
@@ -1159,11 +1177,6 @@ class BackgroundTaskManager:
                     async for record in iter_subagent_events_full(thread_id, task):
                         enriched = _record_to_persist_event(record, thread_id)
                         all_subagent_events.append(enriched)
-
-            pending = {
-                t.asyncio_task: t for t in tasks
-                if t.is_pending and t.asyncio_task
-            }
 
             if all_subagent_events:
                 await self._persist_collected_events(
@@ -1175,10 +1188,6 @@ class BackgroundTaskManager:
                 await self._persist_subagent_usage(
                     response_id, tasks, thread_id, workspace_id, user_id,
                     is_byok=is_byok,
-                )
-                await self._enqueue_task_report_backs(
-                    thread_id, response_id, tasks, workspace_id, user_id,
-                    all_settled=True,
                 )
                 await self._await_drain_and_cleanup_tasks(tasks, thread_id)
                 return
@@ -1203,6 +1212,7 @@ class BackgroundTaskManager:
                 if not done:
                     break
 
+                settled_now = []
                 for asyncio_task in done:
                     task = pending.pop(asyncio_task)
                     if not task.completed:
@@ -1212,7 +1222,18 @@ class BackgroundTaskManager:
                         except Exception as e:
                             task.error = str(e)
                             task.result = {"success": False, "error": str(e)}
+                    settled_now.append(task)
 
+                # Same ordering rule as the fast path: this batch's report-back
+                # rows go down before its event replay and the archival below;
+                # the loop-end call dedups via the registry claim.
+                if settled_now:
+                    await self._enqueue_task_report_backs(
+                        thread_id, response_id, settled_now, workspace_id,
+                        user_id, all_settled=False,
+                    )
+
+                for task in settled_now:
                     if task.captured_event_count > 0:
                         async for record in iter_subagent_events_full(thread_id, task):
                             enriched = _record_to_persist_event(record, thread_id)
@@ -1395,6 +1416,14 @@ class BackgroundTaskManager:
                 if t.is_pending and t.asyncio_task
             }
 
+            # Rows before any event replay — see the turn collector's fast path.
+            settled_at_entry = [t for t in tasks if t not in pending.values()]
+            if settled_at_entry:
+                await self._enqueue_task_report_backs(
+                    thread_id, response_id, settled_at_entry, workspace_id,
+                    user_id, all_settled=not pending,
+                )
+
             for task in tasks:
                 if (
                     task.completed
@@ -1414,10 +1443,6 @@ class BackgroundTaskManager:
                 await self._persist_subagent_usage(
                     response_id, tasks, thread_id, workspace_id, user_id,
                     is_byok=is_byok,
-                )
-                await self._enqueue_task_report_backs(
-                    thread_id, response_id, tasks, workspace_id, user_id,
-                    all_settled=True,
                 )
                 await self._await_drain_and_cleanup_tasks(tasks, thread_id)
                 logger.info(
@@ -1454,6 +1479,7 @@ class BackgroundTaskManager:
                 if done:
                     last_progress_time = time.time()
 
+                    settled_now = []
                     for asyncio_task in done:
                         task = pending.pop(asyncio_task)
                         last_activity.pop(asyncio_task, None)
@@ -1464,7 +1490,16 @@ class BackgroundTaskManager:
                             except Exception as e:
                                 task.error = str(e)
                                 task.result = {"success": False, "error": str(e)}
+                        settled_now.append(task)
 
+                    # Rows before any event replay — see the turn collector's loop.
+                    if settled_now:
+                        await self._enqueue_task_report_backs(
+                            thread_id, response_id, settled_now, workspace_id,
+                            user_id, all_settled=False,
+                        )
+
+                    for task in settled_now:
                         if task.captured_event_count > 0:
                             async for record in iter_subagent_events_full(thread_id, task):
                                 enriched = _record_to_persist_event(record, thread_id)

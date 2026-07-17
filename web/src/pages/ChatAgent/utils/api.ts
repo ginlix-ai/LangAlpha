@@ -740,6 +740,11 @@ interface ThreadReportBackStatus {
   // only way a client that missed the wake discovers the turn. Optional: older
   // backends omit it.
   recent_report_back_run_ids?: string[];
+  // Live tail-subagent writers on a PTC thread (producer-undecided signal):
+  // a task report-back only becomes `pending` once its subagent completes, so
+  // while this list is non-empty an `idle` read must not be taken as drained.
+  // Optional: older backends and the flash slice omit it.
+  active_tasks?: string[];
 }
 
 // Decoding lives in a dependency-free module (usable where `./api` is mocked);
@@ -824,6 +829,10 @@ export async function getDispatchLiveness(
 // must match report_back.WAKE_EVENT (src/server/handlers/chat/report_back.py).
 const REPORT_BACK_WAKE_EVENT = 'workflow_started';
 
+// State-on-attach frame the backend emits once per /watch subscription (same
+// JSON as /status?fields=report_back). Contract: report_back.SNAPSHOT_EVENT.
+const WATCH_SNAPSHOT_EVENT = 'watch_snapshot';
+
 /**
  * Watch a thread for new workflow activity via SSE (Redis pub/sub backed).
  * Returns an AbortController so the caller can close the connection.
@@ -838,6 +847,9 @@ const REPORT_BACK_WAKE_EVENT = 'workflow_started';
  *   fresh subscription after a transient error; wakes published during that gap
  *   are lost (pub/sub, no replay), so the caller should run a catch-up pull.
  *   Distinct from onClosed, which still fires exactly once at the final close.
+ * @param {Function} onSnapshot - Callback for the state-on-attach frame the
+ *   backend emits once per subscription; carries the report-back status slice,
+ *   making every (re)subscribe gapless without a /status round-trip.
  * @returns {{ abort: AbortController }} - Call abort.abort() to stop watching
  */
 export function watchThread(
@@ -847,6 +859,7 @@ export function watchThread(
   ) => void | Promise<void>,
   onClosed?: () => void,
   onResubscribed?: () => void,
+  onSnapshot?: (status: ReportBackStatusResponse) => void | Promise<void>,
 ): { abort: AbortController } {
   const abort = new AbortController();
   const MAX_RETRIES = 2;
@@ -886,34 +899,42 @@ export function watchThread(
             // /status fallback that, for a fast report-back, has already been torn
             // down. Splitting on the frame terminator guarantees the data line is
             // whole before we read the run_id.
-            let sep: number;
-            while ((sep = buffer.indexOf('\n\n')) >= 0) {
-              const frame = buffer.slice(0, sep);
-              buffer = buffer.slice(sep + 2);
-              // Skip keepalive pings / timeout frames — only the wake carries a run_id.
-              if (!frame.includes(`event: ${REPORT_BACK_WAKE_EVENT}`)) continue;
-              // Pull the run_id out of the event's data line so the caller can
-              // attach to that exact run without a /status round-trip. Per the SSE
-              // spec, multiple data: lines join with a newline — collect them all
-              // (mirroring streamFetch above) so a multi-line payload stays
-              // parseable instead of truncating to the first line and corrupting
-              // the JSON. The backend wake is single-line today; this is resilience.
-              let payload: {
-                run_id?: string | null;
-                needs_input?: string | null;
-                cleared?: boolean;
-              } = {};
+            // Per the SSE spec, multiple data: lines join with a newline —
+            // collect them all (mirroring streamFetch above) so a multi-line
+            // payload stays parseable instead of truncating to the first line
+            // and corrupting the JSON. Backend frames are single-line today;
+            // this is resilience.
+            const parseFrameData = (frame: string): unknown => {
               const dataLines: string[] = [];
               for (const raw of frame.split('\n')) {
                 if (raw.startsWith('data:')) dataLines.push(raw.slice(5).trim());
               }
-              if (dataLines.length) {
-                try {
-                  payload = JSON.parse(dataLines.join('\n'));
-                } catch {
-                  /* payload-less / malformed wake — caller falls back to /status */
-                }
+              if (!dataLines.length) return null;
+              try {
+                return JSON.parse(dataLines.join('\n'));
+              } catch {
+                return null; // payload-less / malformed — caller falls back to /status
               }
+            };
+            let sep: number;
+            while ((sep = buffer.indexOf('\n\n')) >= 0) {
+              const frame = buffer.slice(0, sep);
+              buffer = buffer.slice(sep + 2);
+              // State-on-attach snapshot: deliver the status slice directly.
+              if (frame.includes(`event: ${WATCH_SNAPSHOT_EVENT}`)) {
+                const snapshot = parseFrameData(frame);
+                if (snapshot) await onSnapshot?.(snapshot as ReportBackStatusResponse);
+                continue;
+              }
+              // Skip keepalive pings / timeout frames — only the wake carries a run_id.
+              if (!frame.includes(`event: ${REPORT_BACK_WAKE_EVENT}`)) continue;
+              // Pull the run_id out of the event's data line so the caller can
+              // attach to that exact run without a /status round-trip.
+              const payload = (parseFrameData(frame) ?? {}) as {
+                run_id?: string | null;
+                needs_input?: string | null;
+                cleared?: boolean;
+              };
               // PERSISTENT: do NOT cancel + return after the first wake — N
               // dispatched PTCs wake separately, and a re-subscribe would lose
               // wake #2+. Awaiting `onWorkflowStarted` (which blocks until that

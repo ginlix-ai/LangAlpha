@@ -1691,3 +1691,122 @@ async def test_resolve_restores_memberships_when_foreign_start_raced(
     assert "ptc-1" in cache.client.sets[report_back.flash_watch_key("flash-1")]
     assert "ptc-1" in cache.client.sets[report_back.flash_user_pending_key("u-1")]
     assert "g-1" in cache.client.sets[report_back.ptc_rb_resolved_key("ptc-1")]
+
+
+# ---------------------------------------------------------------------------
+# watch_wakes: subscribe ack drained before the snapshot read
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_watch_wakes_drains_subscribe_ack_before_snapshot():
+    # redis-py's subscribe() only WRITES the command. The generator must drain
+    # the server's confirmation before reading the slice, or a wake published
+    # in the registration window could miss both the buffer and the snapshot.
+    calls: list[str] = []
+
+    class _PubSub:
+        async def subscribe(self, ch):
+            calls.append("subscribe")
+
+        async def get_message(self, ignore_subscribe_messages=True, timeout=None):
+            calls.append("ack" if not ignore_subscribe_messages else "loop")
+            return (
+                {"type": "subscribe"}
+                if not ignore_subscribe_messages
+                else None
+            )
+
+        async def unsubscribe(self, ch):
+            pass
+
+        async def aclose(self):
+            pass
+
+    cache = SimpleNamespace(
+        enabled=True, client=SimpleNamespace(pubsub=lambda: _PubSub())
+    )
+
+    async def _slice(tid):
+        calls.append("slice")
+        return {"thread_id": tid}
+
+    with patch.object(
+        report_back, "read_report_back_slice", new=AsyncMock(side_effect=_slice)
+    ):
+        gen = report_back.watch_wakes(cache, "th-ack")
+        first = await gen.__anext__()
+        await gen.aclose()
+
+    assert first.startswith(f"event: {report_back.SNAPSHOT_EVENT}")
+    assert calls[:3] == ["subscribe", "ack", "slice"]
+
+
+@pytest.mark.asyncio
+async def test_watch_wakes_closes_when_subscribe_unconfirmed():
+    # No frame back within the ack window = registration unproven (Redis
+    # stalled). Serving a snapshot anyway would recreate the registration
+    # window; the stream must CLOSE and let the paced client retry.
+    class _PubSub:
+        async def subscribe(self, ch):
+            pass
+
+        async def get_message(self, ignore_subscribe_messages=True, timeout=None):
+            return None
+
+        async def unsubscribe(self, ch):
+            pass
+
+        async def aclose(self):
+            pass
+
+    cache = SimpleNamespace(
+        enabled=True, client=SimpleNamespace(pubsub=lambda: _PubSub())
+    )
+
+    with patch.object(
+        report_back, "read_report_back_slice", new=AsyncMock()
+    ) as sl:
+        gen = report_back.watch_wakes(cache, "th-stall")
+        with pytest.raises(StopAsyncIteration):
+            await gen.__anext__()
+    sl.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_watch_wakes_reemits_wake_that_raced_the_ack():
+    # A message on the ack read proves registration (only registered
+    # subscribers receive one) but must NOT be swallowed: it is held and
+    # delivered right behind the snapshot — state first, then the delta.
+    class _PubSub:
+        async def subscribe(self, ch):
+            pass
+
+        async def get_message(self, ignore_subscribe_messages=True, timeout=None):
+            if not ignore_subscribe_messages:
+                return {"type": "message", "data": '{"run_id": "rb-early"}'}
+            return None
+
+        async def unsubscribe(self, ch):
+            pass
+
+        async def aclose(self):
+            pass
+
+    cache = SimpleNamespace(
+        enabled=True, client=SimpleNamespace(pubsub=lambda: _PubSub())
+    )
+
+    with patch.object(
+        report_back,
+        "read_report_back_slice",
+        new=AsyncMock(return_value={"thread_id": "th-race"}),
+    ):
+        gen = report_back.watch_wakes(cache, "th-race")
+        first = await gen.__anext__()
+        second = await gen.__anext__()
+        await gen.aclose()
+
+    assert first.startswith(f"event: {report_back.SNAPSHOT_EVENT}")
+    assert second.startswith(f"event: {report_back.WAKE_EVENT}")
+    assert "rb-early" in second

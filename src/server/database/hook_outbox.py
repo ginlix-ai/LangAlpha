@@ -771,6 +771,39 @@ async def get_open_notification_job(
             return dict(row) if row else None
 
 
+async def get_recent_notification_run_ids(
+    thread_id: str,
+    hook_type: str,
+    *,
+    window_seconds: int = 900,
+    limit: int = 10,
+) -> List[str]:
+    """Dispatched run ids of recently DONE jobs of one type, newest first.
+
+    The durable recents ledger behind wake-miss recovery: once a job closes,
+    the slice reads idle and only this list can still name the notification
+    run to a client that held no subscription when the wake fired. Done rows
+    are never purged, so this needs no companion write path.
+    """
+    async with qr_db.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT payload->>'dispatched_run_id'
+                FROM hook_outbox
+                WHERE ordering_key = %s
+                  AND hook_type = %s
+                  AND status = 'done'
+                  AND payload->>'dispatched_run_id' IS NOT NULL
+                  AND completed_at > NOW() - make_interval(secs => %s)
+                ORDER BY completed_at DESC
+                LIMIT %s
+                """,
+                (thread_id, hook_type, window_seconds, limit),
+            )
+            return [str(r[0]) for r in await cur.fetchall()]
+
+
 async def list_pending_jobs(hook_type: str) -> List[Dict[str, Any]]:
     """Pending rows of one hook_type, for the one-shot legacy rekey sweep."""
     async with qr_db.get_db_connection() as conn:

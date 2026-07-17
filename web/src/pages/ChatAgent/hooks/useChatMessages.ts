@@ -886,6 +886,11 @@ export function useChatMessages(
     historyLoadingRef,
     reconnectToStream: (opts) => reconnectToStreamRef.current(opts),
     requestHistoryReload: () => setReloadTrigger((n) => n + 1),
+    // Producer-undecided grace: while per-task subagent streams are open, an
+    // idle /status read must not tear the watch down (tail report-backs only
+    // become pending once their subagent completes). Deferred call — the ref
+    // is declared below and initialized before any watch event can fire.
+    hasOpenProducers: () => subagentStreamsRef.current.size > 0,
   });
   // `arm` is identity-stable (facade over a latest-impl ref), so callbacks that
   // dispatch through it can dep on it without churning per render — the whole
@@ -2986,8 +2991,13 @@ export function useChatMessages(
       // status.run_id alone can miss the report-back run). The watch stays
       // dormant while a reconnect stream is live and attach() skips the run
       // already on screen, so this never double-streams. Arms on `pending` OR
-      // `unknown` (draining is only ever an explicit `false`).
-      if (shouldArmReportBack(decodeReportBackSignal(status.pending_report_back))) {
+      // `unknown` (draining is only ever an explicit `false`) OR live tail
+      // subagents — their report-backs haven't materialized yet, so a mid-run
+      // load reads idle while turns are still coming (producer-undecided).
+      if (
+        shouldArmReportBack(decodeReportBackSignal(status.pending_report_back)) ||
+        (status.active_tasks?.length ?? 0) > 0
+      ) {
         if (import.meta.env.DEV) console.log('[ReportBack] Pending report-back detected on load, opening watch');
         // Key the watch to THIS thread (pending_report_back is a flash-thread
         // property) and seed the run /status already named. Poke a catch-up
@@ -3218,6 +3228,16 @@ export function useChatMessages(
         if (subagentStreamsRef.current.size === 0) {
           setHasActiveSubagents(false);
           if (inactivateAllSubagents) inactivateAllSubagents();
+        }
+        // The natural report-back discovery moment: a tail task that just
+        // settled has its notification turn enqueued about now. Ensure the
+        // watch is armed and poke a reconcile; an idle read on this source
+        // never disarms (the enqueue may still be in flight — the `cleared`
+        // or dispatch wake is authoritative). Skip client-initiated aborts
+        // (navigation/teardown — arming would steal the keyed watch) and
+        // mid-turn closes (inline delivery, no report-back due).
+        if (!controller.signal.aborted && !isStreamingRef.current) {
+          armReportBackWatch(tid, null, 'taskStreamEnd');
         }
       });
   };

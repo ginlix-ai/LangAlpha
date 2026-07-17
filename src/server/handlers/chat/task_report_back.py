@@ -51,33 +51,28 @@ def _job_request_key(job_id: str) -> str:
     return str(uuid.uuid5(TASK_RB_REQUEST_NS, job_id))
 
 
-async def enqueue_task_report_backs(
-    *,
+# In-call retry pacing for enqueue_task_report_backs. Bounded and short:
+# it only needs to absorb transient blips (pool hiccup, brief failover).
+# The retries MUST live inside the call — the all-settled fast paths evict
+# the registry right after it returns, leaving no later actor to pick up a
+# released claim.
+_ENQUEUE_PASS_DELAYS = (0.0, 0.5, 2.0)
+
+
+async def _enqueue_pass(
     thread_id: str,
     response_id: str,
     tasks: list,
     workspace_id: str,
     user_id: str,
-    all_settled: bool,
-    style: str = TASK_RB_STYLE,
-) -> int:
-    """Claim finished-but-undelivered tasks and enqueue their report-back jobs.
+    style: str,
+) -> tuple[int, bool]:
+    """One claim+insert pass. Returns ``(due_enqueued, retry_needed)``.
 
-    Called by the subagent collectors right before task cleanup (claims
-    must land while the registry still holds the tasks). Idempotent per
-    (parent run, task): the idempotency key dedups a collector that runs
-    twice. ``all_settled`` = no task of this batch is still pending; when
-    additionally zero DUE jobs were enqueued, a ``cleared`` wake tells
-    watching clients to reconcile now instead of riding the status
-    backstop. Never raises — a lost enqueue is a lost notification, not a
-    broken collector.
-
-    ``style`` picks the notification-turn shape (default ``TASK_RB_STYLE``):
-    ``inline`` embeds the result in the message and gates subagent tooling
-    off; ``pointer`` announces completion and leaves TaskOutput available —
-    the fetch derives the result from the durable checkpoint archive
-    (TaskOutput's result resolver), so it survives registry eviction,
-    restarts, and other-worker reads.
+    A failed insert releases its claim, so a follow-up pass over the same
+    task list re-claims exactly the failures (successes hold their claim
+    and dedup out). Any batch-level exception counts as retry-needed —
+    eligible tasks may exist that this pass never reached.
     """
     from ptc_agent.agent.middleware.background_subagent.tools import (
         extract_result_content,
@@ -86,22 +81,24 @@ async def enqueue_task_report_backs(
     from src.server.database import turn_lifecycle as tl_db
     from src.server.services.background_registry_store import BackgroundRegistryStore
 
+    claimed: list = []
+    inserted: set[str] = set()
+    due_enqueued = 0
+    retry_needed = False
     try:
         registry = await BackgroundRegistryStore.get_instance().get_registry(
             thread_id
         )
         if registry is None:
-            return 0
+            return 0, False
 
-        claimed = []
         for task in tasks:
             if await registry.claim_report_back(task):
                 claimed.append(task)
 
-        due_enqueued = 0
         defer = False
         if claimed:
-            # Parent status from the durable run row, read ONCE per batch:
+            # Parent status from the durable run row, read ONCE per pass:
             # interrupted → deferred (posting would collide with the pending
             # HITL checkpoint); anything else → due.
             run = await tl_db.get_run(response_id)
@@ -125,15 +122,28 @@ async def enqueue_task_report_backs(
                 payload["result_text"] = content[:TASK_RB_RESULT_CAP]
                 payload["result_truncated"] = total_chars > TASK_RB_RESULT_CAP
                 payload["result_total_chars"] = total_chars
-            await outbox_db.enqueue_compensation_job(
-                run_id=response_id,
-                thread_id=thread_id,
-                hook_type="task_report_back",
-                payload=payload,
-                ordering_key=thread_id,
-                idempotency_key=f"{response_id}:task:{task.task_id}:report_back",
-                defer=defer,
-            )
+            try:
+                await outbox_db.enqueue_compensation_job(
+                    run_id=response_id,
+                    thread_id=thread_id,
+                    hook_type="task_report_back",
+                    payload=payload,
+                    ordering_key=thread_id,
+                    idempotency_key=f"{response_id}:task:{task.task_id}:report_back",
+                    defer=defer,
+                )
+            except Exception:
+                # A claim without a row is a permanently lost notification —
+                # release it so the next pass retries the insert.
+                task.report_back_claimed = False
+                retry_needed = True
+                logger.error(
+                    f"[TASK_REPORT_BACK] Insert failed for {task.display_id} "
+                    f"on thread {thread_id}; claim released for retry",
+                    exc_info=True,
+                )
+                continue
+            inserted.add(task.task_id)
             if not defer:
                 due_enqueued += 1
             logger.info(
@@ -141,8 +151,73 @@ async def enqueue_task_report_backs(
                 f"report-back for {task.display_id} ({task.subagent_type}) "
                 f"on thread {thread_id}"
             )
+        return due_enqueued, retry_needed
+    except Exception:
+        # Same rule as the per-task handler: claims whose insert never ran
+        # (e.g. the batch-level get_run failed) must not stay claimed.
+        for task in claimed:
+            if task.task_id not in inserted:
+                task.report_back_claimed = False
+        logger.error(
+            f"[TASK_REPORT_BACK] Enqueue pass failed for thread {thread_id} "
+            f"run {response_id}",
+            exc_info=True,
+        )
+        return due_enqueued, True
 
-        if due_enqueued:
+
+async def enqueue_task_report_backs(
+    *,
+    thread_id: str,
+    response_id: str,
+    tasks: list,
+    workspace_id: str,
+    user_id: str,
+    all_settled: bool,
+    style: str = TASK_RB_STYLE,
+) -> int:
+    """Claim finished-but-undelivered tasks and enqueue their report-back jobs.
+
+    Called by the subagent collectors right before task cleanup (claims
+    must land while the registry still holds the tasks). Idempotent per
+    (parent run, task): the idempotency key dedups a collector that runs
+    twice, and transient insert failures are retried in-call over
+    ``_ENQUEUE_PASS_DELAYS`` — after this returns the registry may be
+    evicted, so there is no later retry. ``all_settled`` = no task of this
+    batch is still pending; when additionally zero DUE jobs were enqueued,
+    a ``cleared`` wake tells watching clients to reconcile now instead of
+    riding the status backstop. Never raises — a lost enqueue is a lost
+    notification, not a broken collector.
+
+    ``style`` picks the notification-turn shape (default ``TASK_RB_STYLE``):
+    ``inline`` embeds the result in the message and gates subagent tooling
+    off; ``pointer`` announces completion and leaves TaskOutput available —
+    the fetch derives the result from the durable checkpoint archive
+    (TaskOutput's result resolver), so it survives registry eviction,
+    restarts, and other-worker reads.
+    """
+    import asyncio
+
+    total_due = 0
+    retry_needed = False
+    for delay in _ENQUEUE_PASS_DELAYS:
+        if delay:
+            await asyncio.sleep(delay)
+        due, retry_needed = await _enqueue_pass(
+            thread_id, response_id, tasks, workspace_id, user_id, style
+        )
+        total_due += due
+        if not retry_needed:
+            break
+    if retry_needed:
+        logger.error(
+            f"[TASK_REPORT_BACK] Giving up after {len(_ENQUEUE_PASS_DELAYS)} "
+            f"passes for thread {thread_id} run {response_id}; a report-back "
+            f"notification may be lost"
+        )
+
+    try:
+        if total_due:
             from src.server.services.hook_outbox import HookOutboxDrainer
 
             HookOutboxDrainer.get_instance().nudge()
@@ -150,21 +225,13 @@ async def enqueue_task_report_backs(
             # Nothing due and nothing still running: wake watchers so the
             # pending chip reconciles (drops, or keeps waiting on an older
             # open job /status still reports) instead of riding the backstop.
-            try:
-                from src.server.handlers.chat.report_back import publish_wake
-                from src.utils.cache.redis_cache import get_cache_client
+            from src.server.handlers.chat.report_back import publish_wake
+            from src.utils.cache.redis_cache import get_cache_client
 
-                await publish_wake(get_cache_client(), thread_id, cleared=True)
-            except Exception:
-                pass
-        return due_enqueued
+            await publish_wake(get_cache_client(), thread_id, cleared=True)
     except Exception:
-        logger.error(
-            f"[TASK_REPORT_BACK] Enqueue failed for thread {thread_id} "
-            f"run {response_id}",
-            exc_info=True,
-        )
-        return 0
+        pass
+    return total_due
 
 
 async def read_task_report_back_status(thread_id: str) -> dict:
@@ -173,7 +240,10 @@ async def read_task_report_back_status(thread_id: str) -> dict:
     Pendingness IS the oldest open non-deferred outbox row; its
     ``dispatched_run_id`` (present once the notification turn is POSTed) is
     the run to attach to. On a read failure ``pending_report_back`` is
-    ``None`` (unknown — the frontend keeps watching).
+    ``None`` (unknown — the frontend keeps watching). Drained notification
+    runs are derived from recently DONE outbox rows — the only recovery for
+    a wake published while the client held no subscription, and durable by
+    construction (the ack that closes the job IS the ledger write).
     """
     from src.server.database import hook_outbox as outbox_db
 
@@ -193,11 +263,45 @@ async def read_task_report_back_status(thread_id: str) -> dict:
             exc_info=True,
         )
         pending = None
+    # Producer-undecided signal: while a tail subagent still runs there is no
+    # open outbox row yet, so ``pending=False`` alone would read as drained.
+    # Listing the live writers lets the client keep its watch armed.
+    active_tasks: list[str] = []
+    try:
+        from src.server.services.background_task_manager import (
+            BackgroundTaskManager,
+        )
+
+        live = await BackgroundTaskManager.get_instance().get_live_task_info(
+            thread_id
+        )
+        active_tasks = live.get("active_tasks", [])
+    except Exception:
+        logger.warning(
+            f"Active-task read failed for {thread_id} report-back slice",
+            exc_info=True,
+        )
+    recent_run_ids: list[str] = []
+    try:
+        recent_run_ids = await outbox_db.get_recent_notification_run_ids(
+            thread_id, "task_report_back"
+        )
+    except Exception:
+        logger.warning(
+            f"Recents read failed for {thread_id} report-back slice",
+            exc_info=True,
+        )
+        # Recents are the wake-miss recovery channel; without them an idle
+        # answer would authorize teardown while a drained run may still be
+        # unrendered. Degrade to unknown so the client stays armed.
+        if pending is False:
+            pending = None
     return {
         "thread_id": thread_id,
         "pending_report_back": pending,
         "report_back_run_id": run_id,
-        "recent_report_back_run_ids": [],
+        "recent_report_back_run_ids": recent_run_ids,
+        "active_tasks": active_tasks,
     }
 
 
@@ -355,7 +459,9 @@ async def execute_task_report_back(job: dict) -> None:
             )
         # Durable resume pointer + result scrub in ONE update: after this a
         # reclaim resumes the terminal wait (before it, request_key dedup
-        # makes the re-POST safe). Merge failure is tolerable — log only.
+        # makes the re-POST safe). Merge failure must NACK — recents are
+        # derived from dispatched_run_id on DONE rows, so acking without the
+        # pointer erases the notification from wake-miss recovery.
         try:
             await outbox_db.merge_job_payload(
                 job_id, {"dispatched_run_id": rb_run_id}, remove=["result_text"]
@@ -363,10 +469,11 @@ async def execute_task_report_back(job: dict) -> None:
         except Exception:
             logger.warning(
                 f"[TASK_REPORT_BACK] Failed persisting dispatched_run_id "
-                f"{rb_run_id} on job {job_id}; request_key dedup covers a "
-                f"re-POST",
+                f"{rb_run_id} on job {job_id}; nacking (request_key dedup "
+                f"makes the retry's re-POST safe)",
                 exc_info=True,
             )
+            raise
         # Nudge watching clients toward the notification run. Best-effort;
         # unfenced — a stale owner's wake still points at the real run.
         try:
@@ -393,3 +500,7 @@ async def execute_task_report_back(job: dict) -> None:
             f"[TASK_REPORT_BACK] Terminal wait cap hit for {subject} on "
             f"thread {thread_id}; acking anyway"
         )
+    # No recovery-ledger write here: the drainer's ack (status='done' +
+    # completed_at) IS the ledger — the slice derives its recents from
+    # recently DONE rows, so wake-miss recovery cannot be lost to a Redis
+    # failure in this window.

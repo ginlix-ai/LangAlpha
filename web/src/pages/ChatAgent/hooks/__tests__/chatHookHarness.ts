@@ -17,7 +17,7 @@ export function apiMockModule() {
     getWorkflowStatus: vi.fn().mockResolvedValue({ can_reconnect: false, status: 'completed' }),
     getReportBackStatus: vi.fn().mockResolvedValue({ pending_report_back: false, report_back_run_id: null }),
     reconnectToWorkflowStream: vi.fn().mockResolvedValue({ disconnected: false, aborted: false }),
-    streamSubagentTaskEvents: vi.fn(),
+    streamSubagentTaskEvents: vi.fn().mockResolvedValue(undefined),
     fetchThreadTurns: vi.fn().mockResolvedValue({ turns: [], retry_checkpoint_id: null }),
     submitFeedback: vi.fn(),
     removeFeedback: vi.fn(),
@@ -54,9 +54,15 @@ export function threadStatus(over: Record<string, unknown> = {}) {
 /** One captured watchThread subscription: thread, callbacks, abort controller. */
 export interface WatchCall {
   tid: string;
-  cb: (p?: { run_id?: string | null; needs_input?: string | null }) => void | Promise<void>;
+  cb: (p?: {
+    run_id?: string | null;
+    needs_input?: string | null;
+    cleared?: boolean;
+  }) => void | Promise<void>;
   onClosed?: () => void;
   onResubscribed?: () => void;
+  /** State-on-attach frame (the backend's /watch snapshot). */
+  onSnapshot?: (status: Record<string, unknown>) => void | Promise<void>;
   controller: AbortController;
 }
 
@@ -64,9 +70,15 @@ export interface WatchCall {
 export function captureWatchCalls(mockWatch: Mock): WatchCall[] {
   const calls: WatchCall[] = [];
   mockWatch.mockImplementation(
-    (tid: string, cb: WatchCall['cb'], onClosed?: () => void, onResubscribed?: () => void) => {
+    (
+      tid: string,
+      cb: WatchCall['cb'],
+      onClosed?: () => void,
+      onResubscribed?: () => void,
+      onSnapshot?: WatchCall['onSnapshot'],
+    ) => {
       const controller = new AbortController();
-      calls.push({ tid, cb, onClosed, onResubscribed, controller });
+      calls.push({ tid, cb, onClosed, onResubscribed, onSnapshot, controller });
       return { abort: controller };
     },
   );

@@ -1614,6 +1614,13 @@ async def _record_drained_run(cache, flash_thread_id: str, run_id: str) -> None:
 # ``REPORT_BACK_WAKE_EVENT``) — keep the two in lockstep.
 WAKE_EVENT = "workflow_started"
 
+# State-on-attach frame emitted once per ``/watch`` subscription, carrying the
+# report-back slice (same JSON as ``/status?fields=report_back``). Pub/sub has
+# no replay, so this is what makes a (re)subscribe gapless: anything published
+# while the client was disconnected is reflected here. Contract with web
+# api.ts ``WATCH_SNAPSHOT_EVENT``.
+SNAPSHOT_EVENT = "watch_snapshot"
+
 # ``/watch`` subscriber defaults.
 WAKE_KEEPALIVE_INTERVAL = 45  # seconds between keepalive comment frames
 WAKE_MAX_WATCH_DURATION = 30 * 60  # auto-close an abandoned watch after 30 min
@@ -1683,13 +1690,58 @@ async def watch_wakes(cache, flash_thread_id: str):
     started_at = time.monotonic()
     try:
         await pubsub.subscribe(channel)
+        # subscribe() only WRITES the command; the registration is proven only
+        # by a frame coming back (the confirmation, or a message — which only
+        # a registered subscriber receives). Snapshotting without that proof
+        # recreates the very window the snapshot exists to close (a wake
+        # published during registration missing both the buffer and the
+        # slice), so an unproven subscribe CLOSES the stream instead — the
+        # client's paced resubscribe retries. A raced-in wake is held and
+        # delivered right behind the snapshot.
+        early_wake = None
+        registered = False
+        try:
+            ack = await pubsub.get_message(
+                ignore_subscribe_messages=False, timeout=1.0
+            )
+            if ack is not None:
+                registered = True
+                if ack.get("type") == "message":
+                    early_wake = ack
+        except Exception:
+            logger.warning(
+                f"[RB_WAKE] Subscribe-ack wait failed for thread "
+                f"{flash_thread_id}",
+                exc_info=True,
+            )
+        if not registered:
+            logger.warning(
+                f"[RB_WAKE] Subscribe unconfirmed for thread "
+                f"{flash_thread_id}; closing watch (client will resubscribe)"
+            )
+            return
+        # Snapshot AFTER subscribing: a wake published during the slice read
+        # waits in the pub/sub buffer and is delivered right behind it, so the
+        # subscriber sees state-then-deltas with no gap in either order.
+        try:
+            snapshot = await read_report_back_slice(flash_thread_id)
+            yield f'event: {SNAPSHOT_EVENT}\ndata: {json.dumps(snapshot)}\n\n'
+        except Exception:
+            logger.warning(
+                f"[RB_WAKE] Snapshot read failed for thread {flash_thread_id}",
+                exc_info=True,
+            )
         while True:
             if time.monotonic() - started_at > WAKE_MAX_WATCH_DURATION:
                 yield 'event: timeout\ndata: {}\n\n'
                 break
-            msg = await pubsub.get_message(
-                ignore_subscribe_messages=True, timeout=WAKE_KEEPALIVE_INTERVAL
-            )
+            if early_wake is not None:
+                msg, early_wake = early_wake, None
+            else:
+                msg = await pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=WAKE_KEEPALIVE_INTERVAL,
+                )
             if msg and msg["type"] == "message":
                 data = msg["data"]
                 if isinstance(data, bytes):
@@ -1790,7 +1842,33 @@ async def read_report_back_status(thread_id: str) -> dict:
         "pending_report_back": pending_report_back,
         "report_back_run_id": report_back_run_id,
         "recent_report_back_run_ids": recent_report_back_run_ids,
+        # Flash threads run no sandbox subagents; present for shape parity
+        # with the task slice so watch snapshots decode uniformly.
+        "active_tasks": [],
     }
+
+
+async def read_report_back_slice(
+    thread_id: str, msg_type: str | None = None
+) -> dict:
+    """Route to the right pending-registry read for this thread kind.
+
+    Flash pendingness lives in the Redis watch set; PTC task report-back
+    pendingness IS the open outbox row. ``msg_type`` skips the thread lookup
+    when the caller already holds it.
+    """
+    if msg_type is None:
+        from src.server.database.conversation import get_thread_auth_meta
+
+        meta = await get_thread_auth_meta(thread_id)
+        msg_type = (meta or {}).get("msg_type")
+    if msg_type == "ptc":
+        from src.server.handlers.chat.task_report_back import (
+            read_task_report_back_status,
+        )
+
+        return await read_task_report_back_status(thread_id)
+    return await read_report_back_status(thread_id)
 
 
 async def execute_report_back(job: dict) -> None:
