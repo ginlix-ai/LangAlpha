@@ -18,7 +18,9 @@ class _FakeGraph:
     def __init__(self, events):
         self._events = events
 
-    def astream(self, input_state, config=None, stream_mode=None, subgraphs=None):
+    def astream(
+        self, input_state, config=None, stream_mode=None, subgraphs=None, durability=None
+    ):
         events = self._events
 
         async def _gen():
