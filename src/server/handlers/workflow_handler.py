@@ -299,9 +299,10 @@ async def get_workflow_status(
             row_ts = latest.get("created_at") if latest is not None else None
         last_update = row_ts.isoformat() if row_ts is not None else None
 
-        # Local executor garnish: subagent ids for the frontend's task
-        # reattach — populated only when THIS worker executes the run
-        # (empty on peers; per-task streams re-resolve on their own).
+        # Subagent ids for the frontend's per-task reattach — cluster-wide
+        # (Redis active set verified against the namespace advisory locks),
+        # and NOT gated on an in_progress run: tail-mode subagents outlive
+        # the run's terminal row.
         active_tasks = []
         try:
             from src.server.services.background_task_manager import (
@@ -311,8 +312,7 @@ async def get_workflow_status(
             live = await BackgroundTaskManager.get_instance().get_live_task_info(
                 thread_id
             )
-            if live.get("live") and live.get("run_id") == run_id:
-                active_tasks = live.get("active_tasks", [])
+            active_tasks = live.get("active_tasks", [])
         except Exception as e:
             logger.debug(
                 f"Could not get background task status for {thread_id}: {e}"

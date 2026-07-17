@@ -720,7 +720,9 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 )
                 # Meta before spawn: a fast writer's terminal meta (written at
                 # settle) must never be overwritten by a late "running".
-                await self.registry.write_task_meta(task, "running")
+                await self.registry.write_task_meta(
+                task, "running", fenced=self.namespace_owner is not None
+            )
                 asyncio_task = create_task_with_context(
                     _run_background_task(
                         task, handler, request, subagent_token_tracker,
@@ -822,7 +824,9 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             )
             # Meta before spawn: a fast writer's terminal meta (written at
             # settle) must never be overwritten by a late "running".
-            await self.registry.write_task_meta(task, "running")
+            await self.registry.write_task_meta(
+                task, "running", fenced=self.namespace_owner is not None
+            )
             asyncio_task = create_task_with_context(
                 _run_background_task(
                     task, handler, request, subagent_token_tracker,

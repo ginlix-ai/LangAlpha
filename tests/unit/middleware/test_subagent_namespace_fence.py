@@ -490,7 +490,7 @@ async def test_settle_writes_terminal_meta_before_releasing_the_namespace():
     owner = OrderedOwner()
     mw = _middleware(owner)
 
-    async def _record_meta(task, status):
+    async def _record_meta(task, status, *, fenced=True):
         events.append(f"meta:{status}")
 
     mw.registry.write_task_meta = AsyncMock(side_effect=_record_meta)

@@ -2351,33 +2351,81 @@ class BackgroundTaskManager:
     async def get_live_task_info(self, thread_id: str) -> Dict[str, Any]:
         """Liveness snapshot ``{"live", "run_id", "active_tasks"}`` for a thread's latest run.
 
-        ``live`` is True when the in-process manager still holds a task record.
-        Since the reader cutover (v4 2.4) this is executor-locality garnish
-        (subagent ids for reattach), never lifecycle truth — the ledger row is.
-        Exposes no status string: a task record's lifecycle state is not a
-        workflow status.
+        ``live``/``run_id`` are executor-locality garnish from the in-process
+        record, never lifecycle truth — the ledger row is. ``active_tasks`` is
+        cluster-wide: the Redis active set verified against each task's
+        namespace advisory lock, so tail-mode subagents survive the run's
+        terminal row and a crashed worker's members are filtered out.
         """
+        # Snapshot under the lock, release BEFORE the awaits below: holding
+        # task_lock across them would let a slow path block /cancel from
+        # acquiring the lock to signal a stop.
         async with self.task_lock:
             task_info = self._find_latest_for_thread(thread_id)
-            if not task_info:
-                return {"live": False, "run_id": None, "active_tasks": []}
-            # Snapshot run_id under the lock, then release it BEFORE the registry
-            # lookup below. Holding task_lock across that await would let a slow
-            # registry path block /cancel from acquiring the lock to signal a stop.
-            run_id = task_info.run_id
+            run_id = task_info.run_id if task_info else None
 
-        active_tasks: list[str] = []
+        active_tasks = await self._resolve_active_tasks(thread_id)
+        return {
+            "live": task_info is not None,
+            "run_id": run_id,
+            "active_tasks": active_tasks,
+        }
+
+    async def _resolve_active_tasks(self, thread_id: str) -> list[str]:
+        """Cross-worker active-subagent ids: this process's live writers
+        (known-alive, no probe, and the only source for unfenced writers or
+        when their Redis publication failed) unioned with the remote Redis
+        set members that still hold their N(thread, task:id) lock. Probe
+        failure keeps members (availability over precision). Dead members
+        are filtered, never evicted — read-path SREM races a resume
+        re-adding the same task id.
+        """
+        from ptc_agent.agent.middleware.background_subagent.registry import (
+            read_active_task_ids,
+        )
+
+        local = await self._local_live_task_ids(thread_id)
+        members = await read_active_task_ids(thread_id)
+        if members is None:
+            return local
+
+        remote = [t for t in members if t not in set(local)]
+        if remote:
+            from src.server.services.writer_guard import held_task_namespaces
+
+            held = await held_task_namespaces(thread_id, remote)
+            if held is not None:
+                remote = [t for t in remote if t in held]
+        return sorted(set(local) | set(remote))
+
+    async def _local_live_task_ids(self, thread_id: str) -> list[str]:
+        """Ids whose writer coroutine is live in THIS process.
+
+        Only a running local asyncio task counts: checkpoint-hydrated
+        placeholders (``asyncio_task=None``, pending-shaped) stand in for
+        a writer on another worker and must go through the lock probe —
+        counting them as local would keep reporting a task the owner has
+        long since settled.
+        """
         try:
-            from src.server.services.background_registry_store import BackgroundRegistryStore
-            registry = await BackgroundRegistryStore.get_instance().get_registry(thread_id)
-            if registry:
-                for task in await registry.get_all_tasks():
-                    if task.is_pending:
-                        active_tasks.append(task.task_id)
-        except Exception:
-            pass
+            from src.server.services.background_registry_store import (
+                BackgroundRegistryStore,
+            )
 
-        return {"live": True, "run_id": run_id, "active_tasks": active_tasks}
+            registry = await BackgroundRegistryStore.get_instance().get_registry(
+                thread_id
+            )
+            if not registry:
+                return []
+            return sorted(
+                t.task_id
+                for t in await registry.get_all_tasks()
+                if not t.completed
+                and t.asyncio_task is not None
+                and not t.asyncio_task.done()
+            )
+        except Exception:
+            return []
 
     async def wait_for_admission(
         self,

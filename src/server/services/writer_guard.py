@@ -92,6 +92,54 @@ def namespace_key(thread_id: str, namespace: str) -> int:
     return advisory_key("N", thread_id, namespace)
 
 
+async def held_task_namespaces(
+    thread_id: str, task_ids: list[str]
+) -> set[str] | None:
+    """Which of these tasks' N(thread, task:{id}) locks are held right now,
+    across every worker of this database — a read of pg_locks, never an
+    acquisition, so it cannot refuse a starting subagent's fence. Scoped to
+    current_database(): advisory-lock identity is database-local and
+    pg_locks is cluster-global. Held ⇒ a live writer owns the namespace;
+    free ⇒ settled, or its worker died (session advisory locks release on
+    disconnect). None ⇒ probe failed (callers keep, not filter).
+    """
+    if not task_ids:
+        return set()
+    # pg_locks splits a 64-bit advisory key into (classid=high32, objid=low32)
+    # with objsubid=1; match on the unsigned halves of our signed keys.
+    pair_to_task: dict[tuple[int, int], str] = {}
+    for task_id in task_ids:
+        unsigned = namespace_key(thread_id, f"task:{task_id}") & 0xFFFFFFFFFFFFFFFF
+        pair_to_task[(unsigned >> 32, unsigned & 0xFFFFFFFF)] = task_id
+    try:
+        from src.server.database import conversation as qr_db
+
+        async with qr_db.get_db_connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    SELECT classid::bigint, objid::bigint FROM pg_locks
+                    WHERE locktype = 'advisory' AND granted AND objsubid = 1
+                      AND database = (
+                        SELECT oid FROM pg_database
+                        WHERE datname = current_database()
+                      )
+                    """
+                )
+                rows = await cur.fetchall()
+    except Exception:
+        logger.warning(
+            f"[WriterGuard] pg_locks probe failed for thread={thread_id}",
+            exc_info=True,
+        )
+        return None
+    return {
+        pair_to_task[(classid, objid)]
+        for classid, objid in rows
+        if (classid, objid) in pair_to_task
+    }
+
+
 # --------------------------------------------------------------------------
 # Pinned-session pool
 # --------------------------------------------------------------------------

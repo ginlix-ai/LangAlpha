@@ -21,6 +21,7 @@ from typing import Any, AsyncGenerator, Awaitable, Callable, Optional
 from src.config.settings import get_redis_socket_timeout
 from ptc_agent.agent.middleware.background_subagent.registry import (
     SUBAGENT_STREAM_END_EVENT,
+    read_task_meta,
 )
 from src.server.services.background_registry_store import BackgroundRegistryStore
 from src.server.services.background_task_manager import (
@@ -402,9 +403,14 @@ async def stream_from_log(
 
 
 async def _wait_for_subagent_task(thread_id: str, task_id: str) -> Any:
-    """Block until the per-task BackgroundTask exists, or timeout.
+    """Block until the per-task BackgroundTask exists locally, the task is
+    known cross-worker, or timeout.
 
-    Returns the task object on success, None on timeout.
+    Returns the local task object, or None when another worker owns the
+    task (its Redis meta exists — no point polling this process's registry
+    for 30s) or nothing ever appears. None-callers stream straight from
+    Redis. The window only serves the true spawn race: GET arriving before
+    the producer has registered anywhere.
     """
     registry_store = BackgroundRegistryStore.get_instance()
     waited = 0.0
@@ -414,9 +420,33 @@ async def _wait_for_subagent_task(thread_id: str, task_id: str) -> Any:
             task = await registry.get_task_by_task_id(task_id)
             if task is not None:
                 return task
+        if await read_task_meta(thread_id, task_id) is not None:
+            return None
         await asyncio.sleep(_SUBAGENT_STARTUP_POLL)
         waited += _SUBAGENT_STARTUP_POLL
     return None
+
+
+async def _subagent_writer_settled(thread_id: str, task_id: str) -> bool:
+    """Cross-worker terminal predicate for a per-task stream consumer with
+    no local live writer.
+
+    Lock-first: the N(thread, task:id) advisory lock IS the liveness signal
+    — held for the writer's whole life (kept even through a double-cancel
+    with the inner handler still running), released on settle or worker
+    death. Meta breaks the tie only when the probe is unavailable, because
+    meta can lag or be lost while the lock is authoritative (a resume that
+    re-locked but hasn't rewritten terminal meta yet; a spawn whose Redis
+    publication failed). The producer's stream-end sentinel remains the
+    canonical close signal; this predicate only ends sentinel-less streams.
+    """
+    from src.server.services.writer_guard import held_task_namespaces
+
+    held = await held_task_namespaces(thread_id, [task_id])
+    if held is not None:
+        return task_id not in held
+    meta = await read_task_meta(thread_id, task_id)
+    return meta is None or meta.get("status") != "running"
 
 
 # Subagent payload classifications used by ``_classify_subagent_payload``.
@@ -511,9 +541,10 @@ async def stream_subagent_from_log(
       records are dispatched in a single pass with at most one
       ``json.loads`` per entry.
 
-    On startup-timeout (no task ever appears), we still tail the Redis
-    Stream for ``last_event_id`` replay — the producer may have written
-    events that arrived before the registry call finished registering.
+    Without a local writer (peer worker under ``--workers>1``, evicted
+    entry, inert placeholder) the stream is served straight from Redis and
+    stays open while the cross-worker signals say the producer is alive —
+    never assume terminal just because THIS process doesn't know the task.
     """
     task = await _wait_for_subagent_task(thread_id, task_id)
     stream_key = f"subagent:stream:{thread_id}:{task_id}"
@@ -528,16 +559,21 @@ async def stream_subagent_from_log(
         # _PAYLOAD_WIRE / _PAYLOAD_UNKNOWN: pass through raw.
         return raw
 
-    if task is None:
-        # No registry — treat as a pure replay-from-Redis case. If the
-        # stream key doesn't exist either (TTL expired or never written),
-        # XREAD returns empty and we fall out via the terminal check.
-        async def _term_no_task() -> bool:
-            return True  # Nothing to wait for; stream is already at end.
+    # A local entry counts as the writer only while its asyncio task is
+    # mid-flight in THIS process. Anything else — no entry (peer worker,
+    # evicted after settle), an inert placeholder (asyncio_task=None), or a
+    # done outer task (a double-cancel can leave the shielded inner handler
+    # still emitting) — must not be trusted for liveness: the namespace
+    # lock is the truth.
+    ato = task.asyncio_task if task is not None else None
+    if ato is None or ato.done():
+
+        async def _term_remote() -> bool:
+            return await _subagent_writer_settled(thread_id, task_id)
 
         inner = _stream_from_redis_log(
             stream_key=stream_key,
-            terminal_check=_term_no_task,
+            terminal_check=_term_remote,
             last_event_id=last_event_id,
         )
     else:

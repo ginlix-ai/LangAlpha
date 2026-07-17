@@ -617,7 +617,9 @@ class BackgroundTaskRegistry:
                 error=str(exc),
             )
 
-    async def write_task_meta(self, task: BackgroundTask, status: str) -> None:
+    async def write_task_meta(
+        self, task: BackgroundTask, status: str, *, fenced: bool = True
+    ) -> None:
         """Best-effort mirror of the task's routing identity + writer liveness
         to Redis (``subagent:meta:{thread}:{task}``) so OTHER workers can
         resolve steer/update targets and gate resumes.
@@ -626,6 +628,14 @@ class BackgroundTaskRegistry:
         the namespace, "completed"/"cancelled" once it settled), not result
         availability. Advisory only — the N(thread, task:id) advisory lock,
         not this hash, is the write fence.
+
+        Also maintains ``subagent:active:{thread}``, the cross-worker set of
+        running task ids: added on a FENCED "running" (after the ns lock,
+        before the writer spawns), removed on terminal (before the lock
+        releases) — so a member without its lock means the owning worker
+        died. Unfenced writers (no namespace_owner: CLI, guard-less spawns)
+        must not advertise: readers verify members against the lock, and a
+        lockless member would always classify as dead.
         """
         if not self.thread_id:
             return
@@ -650,6 +660,12 @@ class BackgroundTaskRegistry:
                 },
             )
             pipe.expire(key, get_redis_ttl_workflow_events())
+            active_key = f"subagent:active:{self.thread_id}"
+            if status == "running" and fenced:
+                pipe.sadd(active_key, task.task_id)
+                pipe.expire(active_key, get_redis_ttl_workflow_events())
+            elif status != "running":
+                pipe.srem(active_key, task.task_id)
             await asyncio.wait_for(pipe.execute(), timeout=_SPILL_TIMEOUT_SECONDS)
         except Exception as exc:
             logger.warning(
@@ -1224,5 +1240,36 @@ async def read_task_meta(thread_id: str, task_id: str) -> dict[str, str] | None:
         logger.warning(
             "task meta read failed", thread_id=thread_id, task_id=task_id,
             error=str(exc),
+        )
+        return None
+
+
+async def read_active_task_ids(thread_id: str) -> list[str] | None:
+    """Task ids whose writers were last known running, from the cross-worker
+    ``subagent:active:{thread}`` set maintained by ``write_task_meta``.
+
+    Returns None when Redis is unavailable or the read fails ("no distributed
+    knowledge" — callers fall back to local state). A member is live unless
+    its worker died; verify against the N(thread, task:id) advisory lock.
+    Dead members are left in place — read-path eviction races a resume
+    re-adding the same task id (probe says free, resume re-locks + SADDs,
+    stale SREM hides the new writer); the terminal SREM and the set TTL are
+    the only removers.
+    """
+    if not thread_id:
+        return None
+    try:
+        from src.utils.cache.redis_cache import get_cache_client
+
+        cache = get_cache_client()
+        if not getattr(cache, "enabled", False) or not cache.client:
+            return None
+        raw = await cache.client.smembers(f"subagent:active:{thread_id}")
+        return sorted(
+            m.decode() if isinstance(m, bytes) else str(m) for m in raw
+        )
+    except Exception as exc:
+        logger.warning(
+            "active task set read failed", thread_id=thread_id, error=str(exc)
         )
         return None
