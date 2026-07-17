@@ -674,6 +674,72 @@ export function handleHistorySteeringDelivered({
   });
 }
 
+/** Task-artifact statuses the backend stamps onto replayed events. */
+const REPLAY_TASK_STATUSES = new Set(['running', 'completed', 'cancelled']);
+
+/**
+ * Patches an inline subagent card's status from a replayed task-artifact's
+ * stamped `payload.status`. The backend re-derives each task's real status at
+ * replay time (init cards are otherwise reborn as "running"); this stamps that
+ * truth onto the matching card.
+ *
+ * Cards live in the message's `subagentTasks` map keyed by the spawning Task
+ * tool call id, so we match on `toolCallId` — one card per turn, so a resumed
+ * task's per-turn cards are each patched by their own artifact. `taskId` is only
+ * a fallback for the (contract-wise absent) case of a missing tool_call_id, and
+ * then only patches resume cards whose `resumeTargetId` names the task.
+ *
+ * Ignores absent/unknown statuses. tool_calls is always replayed before its
+ * task artifact, so the card already exists when this runs.
+ */
+export function handleHistoryTaskArtifactStatus({ toolCallId, taskId, status, setMessages }: {
+  toolCallId: string | undefined;
+  taskId: string | undefined;
+  status: unknown;
+  setMessages: SetMessages;
+}): boolean {
+  if (typeof status !== 'string' || !REPLAY_TASK_STATUSES.has(status)) {
+    return false;
+  }
+
+  setMessages((prev: MessageRecord[]) =>
+    prev.map((msg: MessageRecord) => {
+      const subagentTasks = msg.subagentTasks as Record<string, Record<string, unknown>> | undefined;
+      if (!subagentTasks) return msg;
+
+      // Primary: exact match on the card's own Task tool_call_id.
+      if (toolCallId && subagentTasks[toolCallId]) {
+        if (subagentTasks[toolCallId].status === status) return msg;
+        return {
+          ...msg,
+          subagentTasks: {
+            ...subagentTasks,
+            [toolCallId]: { ...subagentTasks[toolCallId], status },
+          },
+        };
+      }
+
+      // Fallback: no tool_call_id — patch resume cards targeting this task.
+      if (!toolCallId && taskId) {
+        const agentId = `task:${taskId}`;
+        let changed = false;
+        const next = { ...subagentTasks };
+        for (const [key, task] of Object.entries(subagentTasks)) {
+          if (task.resumeTargetId === agentId && task.status !== status) {
+            next[key] = { ...task, status };
+            changed = true;
+          }
+        }
+        return changed ? { ...msg, subagentTasks: next } : msg;
+      }
+
+      return msg;
+    })
+  );
+
+  return true;
+}
+
 /** Handles artifact events with artifact_type "todo_update" in history replay. */
 export function handleHistoryTodoUpdate({ assistantMessageId, artifactType, artifactId, payload, pairState, setMessages, eventId }: {
   assistantMessageId: string;

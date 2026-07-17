@@ -1,7 +1,7 @@
 import React, { Suspense, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, FolderOpen, ScrollText, CheckCircle2, Circle, Loader2, TextSelect, Minus, PanelLeftOpen, Menu, Info, Pin, PinOff, Clock, AlertTriangle, X } from 'lucide-react';
+import { ArrowLeft, FolderOpen, ScrollText, CheckCircle2, Circle, Loader2, TextSelect, Minus, PanelLeftOpen, Menu, Info, Pin, PinOff, Clock, AlertTriangle, X, StopCircle } from 'lucide-react';
 import { HoverCard, HoverCardTrigger, HoverCardContent } from '@/components/ui/hover-card';
 import { useIsMobile, getIsMobileSnapshot } from '@/hooks/useIsMobile';
 import { useNarrowContainer } from '@/hooks/useNarrowContainer';
@@ -301,11 +301,13 @@ function SubagentStatusIndicator({ status, currentTool, toolCalls = 0, messages 
   // the old response ending and the new one starting.
   const effectiveStatus = status === 'completed'
     ? 'completed'
-    : messages.length === 0
-      ? 'initializing'
-      : isMessageStreaming || derivedCurrentTool
-        ? 'active'
-        : status;
+    : status === 'cancelled'
+      ? 'cancelled'
+      : messages.length === 0
+        ? 'initializing'
+        : isMessageStreaming || derivedCurrentTool
+          ? 'active'
+          : status;
 
   const getIcon = (): React.ReactElement => {
     if (derivedCurrentTool) {
@@ -317,6 +319,9 @@ function SubagentStatusIndicator({ status, currentTool, toolCalls = 0, messages 
     if (effectiveStatus === 'completed') {
       return <CheckCircle2 className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />;
     }
+    if (effectiveStatus === 'cancelled') {
+      return <StopCircle className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />;
+    }
     return <Circle className="h-3.5 w-3.5" style={{ color: 'var(--color-icon-muted)' }} />;
   };
 
@@ -324,6 +329,9 @@ function SubagentStatusIndicator({ status, currentTool, toolCalls = 0, messages 
     if (derivedCurrentTool) return t('chat.running', { tool: derivedCurrentTool });
     if (effectiveStatus === 'completed') {
       return toolCalls > 0 ? t('chat.completedWithCalls', { count: toolCalls }) : t('chat.completed');
+    }
+    if (effectiveStatus === 'cancelled') {
+      return t('chat.stoppedChip');
     }
     if (effectiveStatus === 'active') {
       return t('chat.runningStatus');

@@ -259,10 +259,12 @@ class TestRegistryEvictionAfterDrain:
             tool_call_id="tc-a", task_id="a", spawned_run_id="run-1",
         )
         task_a.sse_drain_complete.set()
+        task_a.collector_response_id = "resp-1"
         task_b = _make_subagent_task(
             tool_call_id="tc-b", task_id="b", spawned_run_id="run-1",
         )
         task_b.sse_drain_complete.set()
+        task_b.collector_response_id = "resp-1"
         registry._tasks["tc-a"] = task_a
         registry._tasks["tc-b"] = task_b
         registry._task_id_to_tool_call_id["a"] = "tc-a"
@@ -282,10 +284,79 @@ class TestRegistryEvictionAfterDrain:
             "src.server.services.background_task_manager.get_sse_drain_timeout",
             return_value=0.1,
         ):
-            await btm._await_drain_and_cleanup_tasks([task_a, task_b], thread_id)
+            await btm._await_drain_and_cleanup_tasks(
+                [task_a, task_b], thread_id, "resp-1"
+            )
 
         assert registry._tasks == {}
         assert registry._task_id_to_tool_call_id == {}
+
+    @pytest.mark.asyncio
+    async def test_cleanup_skips_task_stolen_by_a_resume(self):
+        """A resume steals the entry back mid-collection (clears the claim,
+        installs a live writer). The stale collector's cleanup must not null
+        the new writer's handles or evict the entry — the resuming run's
+        tail drain and collector depend on both."""
+        btm = _make_btm()
+        thread_id = "thread-D"
+
+        registry = BackgroundTaskRegistry(thread_id=thread_id)
+        task = _make_subagent_task(
+            tool_call_id="tc-a", task_id="a", spawned_run_id="run-2",
+        )
+        task.sse_drain_complete.set()
+        # The steal: resume reset cleared the round-1 claim and respawned.
+        task.collector_response_id = None
+        task.completed = False
+        new_writer = asyncio.create_task(asyncio.sleep(30))
+        task.asyncio_task = new_writer
+        task.per_call_records = [{"model": "m"}]
+        registry._tasks["tc-a"] = task
+        registry._task_id_to_tool_call_id["a"] = "tc-a"
+
+        bg_store = MagicMock()
+        bg_store.get_registry = AsyncMock(return_value=registry)
+        cache = MagicMock()
+        cache.delete = AsyncMock()
+
+        try:
+            with patch(
+                "src.server.services.background_registry_store.BackgroundRegistryStore.get_instance",
+                return_value=bg_store,
+            ), patch(
+                "src.server.services.background_task_manager.get_cache_client",
+                return_value=cache,
+            ), patch(
+                "src.server.services.background_task_manager.get_sse_drain_timeout",
+                return_value=0.1,
+            ):
+                await btm._await_drain_and_cleanup_tasks(
+                    [task], thread_id, "resp-1"
+                )
+
+            assert task.asyncio_task is new_writer  # handles untouched
+            assert task.per_call_records == [{"model": "m"}]  # usage kept
+            cache.delete.assert_not_awaited()  # round-2 keys not nuked
+            assert registry._tasks.get("tc-a") is task  # not evicted
+        finally:
+            new_writer.cancel()
+
+    @pytest.mark.asyncio
+    async def test_remove_task_if_owned_respects_the_claim(self):
+        registry = BackgroundTaskRegistry(thread_id="t")
+        task = _make_subagent_task(
+            tool_call_id="tc1", task_id="id1", spawned_run_id="r1",
+        )
+        task.collector_response_id = "resp-1"
+        registry._tasks["tc1"] = task
+        registry._task_id_to_tool_call_id["id1"] = "tc1"
+
+        assert not await registry.remove_task_if_owned("tc1", "resp-OTHER")
+        assert registry._tasks.get("tc1") is task
+
+        assert await registry.remove_task_if_owned("tc1", "resp-1")
+        assert "tc1" not in registry._tasks
+        assert "id1" not in registry._task_id_to_tool_call_id
 
 
 class TestRegistryRemoveTask:

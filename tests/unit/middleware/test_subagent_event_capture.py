@@ -120,6 +120,30 @@ async def test_redis_spill_called_for_every_event(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_record_carries_run_stamp(monkeypatch) -> None:
+    """Each spilled record is stamped with the writer's spawned_run_id — the
+    durable cross-worker fence replay filters on. Tasks without a run id
+    (compat shim) spill unstamped records."""
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    spilled: list[dict] = []
+
+    async def _capture(t, record):
+        spilled.append(record)
+
+    monkeypatch.setattr(registry, "_spill_record_to_redis", _capture)
+
+    await registry.append_captured_event(task.tool_call_id, _event(0))
+    task.spawned_run_id = "run-2"
+    await registry.append_captured_event(task.tool_call_id, _event(1))
+
+    assert "run" not in spilled[0]
+    assert spilled[1]["run"] == "run-2"
+
+
+@pytest.mark.asyncio
 async def test_redis_spill_failure_sets_flag_no_raise(monkeypatch) -> None:
     """Pipeline returning (False, 0) flips redis_write_failed without raising."""
     fake_cache = MagicMock()

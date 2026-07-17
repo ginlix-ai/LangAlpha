@@ -1121,6 +1121,65 @@ class BackgroundTaskManager:
 
     # ========== Subagent collection ==========
 
+    # Deletes a task's event keys only while the durable meta hash still names
+    # the caller's run as the writer's owner. The local claim and spill lock
+    # are process-local, so a stale collector on ANOTHER worker could
+    # otherwise delete a stream a cross-worker resume has already reset and
+    # refilled; the resume restamps ``spawned_run_id`` in the meta (under the
+    # namespace lock, before its writer spawns and produces any record), so
+    # this owner check refuses every post-restamp delete. Missing hash or
+    # empty owner (legacy/unfenced writers) allows the delete.
+    _DELETE_TASK_KEYS_IF_OWNED_LUA = """
+    local owner = redis.call('HGET', KEYS[1], 'spawned_run_id')
+    if owner == false or owner == '' or owner == ARGV[1] then
+        return redis.call('DEL', KEYS[2], KEYS[3], KEYS[4])
+    end
+    return -1
+    """
+
+    async def _delete_task_keys_if_owned(
+        self, cache, thread_id: str, task_id: str, response_id: str
+    ) -> None:
+        if not getattr(cache, "enabled", False) or cache.client is None:
+            return
+        try:
+            await cache.client.eval(
+                self._DELETE_TASK_KEYS_IF_OWNED_LUA,
+                4,
+                f"subagent:meta:{thread_id}:{task_id}",
+                f"subagent:events:meta:{thread_id}:{task_id}",
+                f"subagent:stream:{thread_id}:{task_id}",
+                f"subagent:events:{thread_id}:{task_id}",
+                response_id,
+            )
+        except Exception:
+            logger.warning(
+                f"[SubagentCleanup] owned-delete failed for "
+                f"thread_id={thread_id} task_id={task_id}",
+                exc_info=True,
+            )
+
+    async def _replay_owned_task_events(
+        self, thread_id: str, task, response_id: str, out: list[dict]
+    ) -> None:
+        """Append a task's captured events, fenced against a mid-replay steal.
+
+        Same-process: the claim is re-checked per yielded record — the XRANGE
+        await inside the iterator is a steal window, and the reclaim strictly
+        precedes any round-2 write, so the yield-time check always catches
+        stolen records. Cross-worker: the claim is process-local, so each
+        record's ``run`` stamp (the writer's spawned_run_id at capture time)
+        is the durable fence — a resumed round's records carry the resuming
+        run's id and are dropped here even when the stale collector's local
+        claim still looks intact. Unstamped records (pre-stamp writers) pass.
+        """
+        async for record in iter_subagent_events_full(thread_id, task):
+            if task.collector_response_id != response_id:
+                break  # stolen mid-replay: remaining records may be round-2
+            if record.get("run") not in (None, response_id):
+                continue  # another round's record (cross-worker resume)
+            out.append(_record_to_persist_event(record, thread_id))
+
     async def _collect_subagent_results_for_turn(
         self,
         thread_id: str,
@@ -1137,7 +1196,14 @@ class BackgroundTaskManager:
             timeout = get_subagent_collector_timeout()
 
         try:
+            # Every mark/mutation below is fenced on the collector claim: a
+            # resume steals a settled task back (clears
+            # collector_response_id, installs a fresh writer) at any await
+            # boundary — marking, replaying, enqueuing, or billing the
+            # stolen entry would corrupt the resumed run's state.
             for task in tasks:
+                if task.collector_response_id != response_id:
+                    continue
                 if not task.completed and task.asyncio_task and task.asyncio_task.done():
                     task.completed = True
                     try:
@@ -1152,9 +1218,14 @@ class BackgroundTaskManager:
                 if c.get("data", {}).get("agent", "") not in subagent_agent_ids
             ]
 
+            # Ownership filter alongside liveness: a resume can steal a task
+            # back at any await boundary (clears collector_response_id and
+            # installs a fresh writer) — a stolen task's new writer must
+            # never be awaited, marked, or cleaned under this collector.
             pending = {
                 t.asyncio_task: t for t in tasks
                 if t.is_pending and t.asyncio_task
+                and t.collector_response_id == response_id
             }
 
             # Report-back rows land BEFORE any event replay: a settled task
@@ -1162,8 +1233,14 @@ class BackgroundTaskManager:
             # client idle read in that window must find the outbox row — both
             # the XRANGE replay and the persistence below are unbounded.
             # Idempotent (registry claim + ON CONFLICT), so later calls
-            # safely repeat it.
-            settled_at_entry = [t for t in tasks if t not in pending.values()]
+            # safely repeat it. Ownership-filtered, not just pending-derived:
+            # a stolen task is excluded from ``pending`` too, so it would
+            # otherwise masquerade as settled here.
+            settled_at_entry = [
+                t for t in tasks
+                if t.collector_response_id == response_id
+                and t not in pending.values()
+            ]
             if settled_at_entry:
                 await self._enqueue_task_report_backs(
                     thread_id, response_id, settled_at_entry, workspace_id,
@@ -1173,10 +1250,14 @@ class BackgroundTaskManager:
             all_subagent_events: list[dict] = []
 
             for task in tasks:
-                if task.completed and task.captured_event_count > 0:
-                    async for record in iter_subagent_events_full(thread_id, task):
-                        enriched = _record_to_persist_event(record, thread_id)
-                        all_subagent_events.append(enriched)
+                if (
+                    task.collector_response_id == response_id
+                    and task.completed
+                    and task.captured_event_count > 0
+                ):
+                    await self._replay_owned_task_events(
+                        thread_id, task, response_id, all_subagent_events
+                    )
 
             if all_subagent_events:
                 await self._persist_collected_events(
@@ -1189,7 +1270,7 @@ class BackgroundTaskManager:
                     response_id, tasks, thread_id, workspace_id, user_id,
                     is_byok=is_byok,
                 )
-                await self._await_drain_and_cleanup_tasks(tasks, thread_id)
+                await self._await_drain_and_cleanup_tasks(tasks, thread_id, response_id)
                 return
 
             deadline = time.time() + timeout
@@ -1215,6 +1296,8 @@ class BackgroundTaskManager:
                 settled_now = []
                 for asyncio_task in done:
                     task = pending.pop(asyncio_task)
+                    if task.collector_response_id != response_id:
+                        continue  # stolen between settle and this wake
                     if not task.completed:
                         task.completed = True
                         try:
@@ -1234,10 +1317,16 @@ class BackgroundTaskManager:
                     )
 
                 for task in settled_now:
-                    if task.captured_event_count > 0:
-                        async for record in iter_subagent_events_full(thread_id, task):
-                            enriched = _record_to_persist_event(record, thread_id)
-                            all_subagent_events.append(enriched)
+                    # Re-checked: the enqueue above awaits, and a steal in
+                    # that window would make this replay archive round-2
+                    # events into round 1.
+                    if (
+                        task.collector_response_id == response_id
+                        and task.captured_event_count > 0
+                    ):
+                        await self._replay_owned_task_events(
+                            thread_id, task, response_id, all_subagent_events
+                        )
 
                 if all_subagent_events:
                     await self._persist_collected_events(
@@ -1267,7 +1356,14 @@ class BackgroundTaskManager:
                 )
                 self._track_orphan_collector(thread_id, response_id, orphan_task)
 
-            collected_tasks = [t for t in tasks if t not in pending.values()]
+            # Ownership-filtered like settled_at_entry: a stolen task's usage
+            # is billed by its new owner (resume keeps the merged records),
+            # and its report-back must be claimed under the new response id.
+            collected_tasks = [
+                t for t in tasks
+                if t.collector_response_id == response_id
+                and t not in pending.values()
+            ]
             await self._persist_subagent_usage(
                 response_id, collected_tasks, thread_id, workspace_id, user_id,
                 is_byok=is_byok,
@@ -1276,7 +1372,9 @@ class BackgroundTaskManager:
                 thread_id, response_id, collected_tasks, workspace_id, user_id,
                 all_settled=not pending,
             )
-            await self._await_drain_and_cleanup_tasks(collected_tasks, thread_id)
+            await self._await_drain_and_cleanup_tasks(
+                collected_tasks, thread_id, response_id
+            )
 
         except Exception as e:
             logger.error(
@@ -1310,8 +1408,18 @@ class BackgroundTaskManager:
         )
 
     async def _await_drain_and_cleanup_tasks(
-        self, tasks: list, thread_id: str, timeout: float | None = None
+        self,
+        tasks: list,
+        thread_id: str,
+        response_id: str,
+        timeout: float | None = None,
     ) -> None:
+        """Post-collection teardown, fenced on the collector claim: every
+        mutation and delete re-checks ``collector_response_id`` because a
+        resume can steal the entry back (clears the claim, installs a live
+        writer) at any await boundary — an unfenced pass here would null the
+        new writer's handles, nuke its fresh Redis keys, and evict the entry
+        out from under the resuming run's tail drain."""
         if timeout is None:
             timeout = get_sse_drain_timeout()
 
@@ -1340,29 +1448,25 @@ class BackgroundTaskManager:
         bg_registry = await BackgroundRegistryStore.get_instance().get_registry(thread_id)
 
         for task in tasks:
+            if task.collector_response_id != response_id:
+                continue  # stolen by a resume — the new owner cleans up
             task.per_call_records = []
             task.tool_usage = {}
             task.asyncio_task = None
             task.handler_task = None
             if cache is not None:
-                try:
-                    await cache.delete(
-                        f"subagent:events:meta:{thread_id}:{task.task_id}"
-                    )
-                except Exception:
-                    pass
-                try:
-                    await cache.delete(
-                        f"subagent:stream:{thread_id}:{task.task_id}"
-                    )
-                except Exception:
-                    pass
-                try:
-                    await cache.delete(
-                        f"subagent:events:{thread_id}:{task.task_id}"
-                    )
-                except Exception:
-                    pass
+                # Serialized on the spill lock: the resume's reset-deletes and
+                # the resumed writer's spills take the same lock, so a delete
+                # issued here can never be in flight when round-2 data lands
+                # (a pooled-connection delete can otherwise overtake the reset
+                # and erase the fresh key). Claim re-checked INSIDE the lock:
+                # if the steal won the lock first, these keys already hold the
+                # new run's events.
+                async with task.redis_spill_lock:
+                    if task.collector_response_id == response_id:
+                        await self._delete_task_keys_if_owned(
+                            cache, thread_id, task.task_id, response_id
+                        )
             logger.info(
                 "task_heavy_refs_released",
                 extra={
@@ -1377,7 +1481,11 @@ class BackgroundTaskManager:
 
             if bg_registry is not None:
                 try:
-                    await bg_registry.remove_task(task.tool_call_id)
+                    # Claim re-checked under the registry lock: eviction is
+                    # the one mutation that can't be undone by the new owner.
+                    await bg_registry.remove_task_if_owned(
+                        task.tool_call_id, response_id
+                    )
                 except Exception as exc:
                     logger.warning(
                         f"[SubagentCleanup] remove_task failed for "
@@ -1402,7 +1510,13 @@ class BackgroundTaskManager:
         try:
             all_subagent_events = list(prior_subagent_events)
 
+            # Every mark/mutation below is fenced on the collector claim: a
+            # resume steals a settled task back (clears
+            # collector_response_id, installs a fresh writer), and marking
+            # or awaiting the stolen entry would corrupt the new run's state.
             for task in tasks:
+                if task.collector_response_id != response_id:
+                    continue
                 if not task.completed and task.asyncio_task and task.asyncio_task.done():
                     task.completed = True
                     try:
@@ -1414,10 +1528,17 @@ class BackgroundTaskManager:
             pending = {
                 t.asyncio_task: t for t in tasks
                 if t.is_pending and t.asyncio_task
+                and t.collector_response_id == response_id
             }
 
-            # Rows before any event replay — see the turn collector's fast path.
-            settled_at_entry = [t for t in tasks if t not in pending.values()]
+            # Rows before any event replay — see the turn collector's fast
+            # path. Ownership-filtered: a stolen task is excluded from
+            # ``pending`` too, so it would otherwise masquerade as settled.
+            settled_at_entry = [
+                t for t in tasks
+                if t.collector_response_id == response_id
+                and t not in pending.values()
+            ]
             if settled_at_entry:
                 await self._enqueue_task_report_backs(
                     thread_id, response_id, settled_at_entry, workspace_id,
@@ -1426,13 +1547,14 @@ class BackgroundTaskManager:
 
             for task in tasks:
                 if (
-                    task.completed
+                    task.collector_response_id == response_id
+                    and task.completed
                     and task.captured_event_count > 0
                     and task not in pending.values()
                 ):
-                    async for record in iter_subagent_events_full(thread_id, task):
-                        enriched = _record_to_persist_event(record, thread_id)
-                        all_subagent_events.append(enriched)
+                    await self._replay_owned_task_events(
+                        thread_id, task, response_id, all_subagent_events
+                    )
 
             if not pending:
                 if all_subagent_events:
@@ -1440,11 +1562,16 @@ class BackgroundTaskManager:
                         main_chunks, all_subagent_events, response_id,
                         thread_id, workspace_id, user_id, sandbox=sandbox,
                     )
+                owned_tasks = [
+                    t for t in tasks if t.collector_response_id == response_id
+                ]
                 await self._persist_subagent_usage(
-                    response_id, tasks, thread_id, workspace_id, user_id,
+                    response_id, owned_tasks, thread_id, workspace_id, user_id,
                     is_byok=is_byok,
                 )
-                await self._await_drain_and_cleanup_tasks(tasks, thread_id)
+                await self._await_drain_and_cleanup_tasks(
+                    owned_tasks, thread_id, response_id
+                )
                 logger.info(
                     f"[OrphanCollector] All tasks already completed for "
                     f"thread_id={thread_id}"
@@ -1483,6 +1610,8 @@ class BackgroundTaskManager:
                     for asyncio_task in done:
                         task = pending.pop(asyncio_task)
                         last_activity.pop(asyncio_task, None)
+                        if task.collector_response_id != response_id:
+                            continue  # stolen between settle and this wake
                         if not task.completed:
                             task.completed = True
                             try:
@@ -1500,10 +1629,15 @@ class BackgroundTaskManager:
                         )
 
                     for task in settled_now:
+                        # Re-checked: the enqueue above awaits, and a steal
+                        # in that window would archive round-2 events into
+                        # round 1.
+                        if task.collector_response_id != response_id:
+                            continue
                         if task.captured_event_count > 0:
-                            async for record in iter_subagent_events_full(thread_id, task):
-                                enriched = _record_to_persist_event(record, thread_id)
-                                all_subagent_events.append(enriched)
+                            await self._replay_owned_task_events(
+                                thread_id, task, response_id, all_subagent_events
+                            )
 
                         logger.info(
                             f"[OrphanCollector] {task.display_id} completed, "
@@ -1528,14 +1662,21 @@ class BackgroundTaskManager:
 
             if pending:
                 for asyncio_task, task in pending.items():
-                    task.collector_response_id = None
+                    if task.collector_response_id == response_id:
+                        task.collector_response_id = None
                     logger.warning(
                         f"[OrphanCollector] Giving up on idle task "
                         f"{task.display_id} for thread_id={thread_id} "
                         f"(no progress for {idle_timeout}s)"
                     )
 
-            collected_tasks = [t for t in tasks if t not in pending.values()]
+            # Ownership-filtered like the turn collector's collected_tasks: a
+            # stolen task's usage and report-back belong to its new owner.
+            collected_tasks = [
+                t for t in tasks
+                if t.collector_response_id == response_id
+                and t not in pending.values()
+            ]
             if collected_tasks:
                 await self._persist_subagent_usage(
                     response_id, collected_tasks, thread_id, workspace_id, user_id,
@@ -1545,7 +1686,9 @@ class BackgroundTaskManager:
                     thread_id, response_id, collected_tasks, workspace_id, user_id,
                     all_settled=not pending,
                 )
-                await self._await_drain_and_cleanup_tasks(collected_tasks, thread_id)
+                await self._await_drain_and_cleanup_tasks(
+                    collected_tasks, thread_id, response_id
+                )
 
         except Exception as e:
             logger.error(
@@ -1659,9 +1802,10 @@ class BackgroundTaskManager:
             # them (N(root) drops at finalize either way).
             tail_drain = None
             if handle.guard is not None:
+                guard = handle.guard
 
                 async def tail_drain() -> None:
-                    await self._drain_run_subagent_writers(thread_id, run_id)
+                    await self._drain_run_subagent_writers(thread_id, run_id, guard)
 
             finalize_applied, status, survivor_status = (
                 await self._drive_finalize_cas(
@@ -1895,11 +2039,16 @@ class BackgroundTaskManager:
     # the session out from under it.
     TAIL_DRAIN_TIMEOUT = 1800.0
 
-    async def _drain_run_subagent_writers(self, thread_id: str, run_id: str) -> None:
-        """Wait until none of this run's subagents can touch the checkpointer
-        anymore — they write through the run's pinned session, so the guard
-        holds until the last of their asyncio tasks settles. Collectors are
-        not writers (they read Redis and persist via the app pool).
+    async def _drain_run_subagent_writers(
+        self, thread_id: str, run_id: str, guard
+    ) -> None:
+        """Wait until no writer fenced by this run's guard session can touch
+        the checkpointer anymore. Ownership is keyed on the guard's own
+        namespace set — the same membership check_write_ns enforces — not on
+        ``spawned_run_id`` bookkeeping, so any writer this session admitted
+        (spawned or resumed) holds the release, and foreign writers (another
+        run's tail) never do. Collectors are not writers (they read Redis
+        and persist via the app pool).
 
         Fail-closed: raises on registry failure or deadline, so the guard
         teardown discards the session instead of clean-releasing it under
@@ -1920,7 +2069,7 @@ class BackgroundTaskManager:
             writers: list[asyncio.Task] = []
             async with bg_registry._lock:
                 for t in bg_registry._tasks.values():
-                    if t.spawned_run_id is not None and t.spawned_run_id != run_id:
+                    if not guard.owns_task_ns(t.task_id):
                         continue
                     for writer in (t.asyncio_task, getattr(t, "handler_task", None)):
                         if writer is not None and not writer.done():
@@ -2432,6 +2581,32 @@ class BackgroundTaskManager:
             if held is not None:
                 remote = [t for t in remote if t in held]
         return sorted(set(local) | set(remote))
+
+    async def resolve_task_liveness(
+        self, thread_id: str, task_ids: list[str]
+    ) -> set[str] | None:
+        """Which of these tasks have a provably-live writer right now.
+
+        Candidate-aware, unlike ``_resolve_active_tasks``: every id's
+        namespace advisory lock is probed directly, so a live writer that
+        never made it into the best-effort ``subagent:active`` set (failed
+        Redis publication, resume's reset window) still counts. None = the
+        lock probe failed and liveness is unknown — callers fall back to
+        advisory state instead of assuming settled.
+        """
+        if not task_ids:
+            return set()
+        local = set(await self._local_live_task_ids(thread_id))
+        live = {t for t in task_ids if t in local}
+        remaining = [t for t in task_ids if t not in live]
+        if remaining:
+            from src.server.services.writer_guard import held_task_namespaces
+
+            held = await held_task_namespaces(thread_id, remaining)
+            if held is None:
+                return None
+            live |= {t for t in remaining if t in held}
+        return live
 
     async def _local_live_task_ids(self, thread_id: str) -> list[str]:
         """Ids whose writer coroutine is live in THIS process.

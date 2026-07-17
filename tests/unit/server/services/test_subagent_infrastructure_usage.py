@@ -168,7 +168,9 @@ async def test_cleanup_clears_tool_usage():
     """_await_drain_and_cleanup_tasks resets tool_usage so a reused task
     object can't be billed twice."""
     btm = _make_btm()
-    task = _make_task(tool_usage={"TavilySearchTool:deep": 1})
+    task = _make_task(
+        tool_usage={"TavilySearchTool:deep": 1}, collector_response_id="resp-1"
+    )
     task.sse_drain_complete.set()
 
     with patch.object(btm, "_await_drain_and_cleanup_tasks", wraps=btm._await_drain_and_cleanup_tasks), \
@@ -178,7 +180,9 @@ async def test_cleanup_clears_tool_usage():
              "src.server.services.background_registry_store.BackgroundRegistryStore.get_instance"
          ) as mock_store:
         mock_store.return_value.get_registry = AsyncMock(return_value=None)
-        await btm._await_drain_and_cleanup_tasks([task], thread_id="thread-1")
+        await btm._await_drain_and_cleanup_tasks(
+            [task], thread_id="thread-1", response_id="resp-1"
+        )
 
     assert task.tool_usage == {}
     assert task.per_call_records == []

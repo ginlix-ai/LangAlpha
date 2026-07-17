@@ -1591,3 +1591,197 @@ class TestNoPreFinalizeRunEndOnTerminalFlavors:
             await setter
 
         assert order == ["finalize:cancelled"]
+
+
+# ---------------------------------------------------------------------------
+# _await_drain_and_cleanup_tasks — spill-lock-serialized, claim-fenced deletes
+# ---------------------------------------------------------------------------
+
+class TestCleanupSpillLockFence:
+    """Cleanup's Redis deletes are serialized on the task's spill lock and
+    re-check the collector claim INSIDE it: a resume that steals the task
+    while cleanup waits on the lock has already re-deleted the keys and may
+    have written round-2 events — a late cleanup delete would erase them."""
+
+    def _task(self, claim: str | None):
+        from ptc_agent.agent.middleware.background_subagent.registry import (
+            BackgroundTask,
+        )
+
+        task = BackgroundTask(
+            tool_call_id="tc-1",
+            task_id="abc123",
+            description="d",
+            prompt="p",
+            subagent_type="general-purpose",
+            agent_id="general-purpose:x",
+            completed=True,
+        )
+        task.collector_response_id = claim
+        task.sse_drain_complete.set()
+        return task
+
+    def _cache(self):
+        cache = MagicMock()
+        cache.enabled = True
+        cache.client = MagicMock()
+        cache.client.eval = AsyncMock(return_value=3)
+        return cache
+
+    @pytest.mark.asyncio
+    async def test_steal_while_waiting_on_spill_lock_skips_deletes(self):
+        btm = _make_btm()
+        task = self._task("run-old")
+        cache = self._cache()
+
+        fake_store = MagicMock()
+        fake_store.get_registry = AsyncMock(return_value=None)
+
+        await task.redis_spill_lock.acquire()  # resume holds the lock
+        with patch(
+            "src.server.services.background_task_manager.get_cache_client",
+            return_value=cache,
+        ), patch(
+            "src.server.services.background_registry_store.BackgroundRegistryStore.get_instance",
+            return_value=fake_store,
+        ):
+            cleanup = asyncio.create_task(
+                btm._await_drain_and_cleanup_tasks([task], "thread-x", "run-old")
+            )
+            for _ in range(10):  # let cleanup reach and block on the lock
+                await asyncio.sleep(0)
+            task.collector_response_id = None  # the steal
+            task.redis_spill_lock.release()
+            await cleanup
+
+        # Fenced before the conditional delete is even attempted.
+        assert cache.client.eval.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_owned_task_conditional_delete_under_the_lock(self):
+        btm = _make_btm()
+        task = self._task("run-old")
+        locked_during_eval: list[bool] = []
+
+        cache = self._cache()
+
+        async def _eval(*args):
+            locked_during_eval.append(task.redis_spill_lock.locked())
+            return 3
+
+        cache.client.eval = AsyncMock(side_effect=_eval)
+
+        fake_store = MagicMock()
+        fake_store.get_registry = AsyncMock(return_value=None)
+
+        with patch(
+            "src.server.services.background_task_manager.get_cache_client",
+            return_value=cache,
+        ), patch(
+            "src.server.services.background_registry_store.BackgroundRegistryStore.get_instance",
+            return_value=fake_store,
+        ):
+            await btm._await_drain_and_cleanup_tasks([task], "thread-x", "run-old")
+
+        assert locked_during_eval == [True]
+        # One atomic script call: meta hash checked as owner key, the three
+        # event keys deleted only if the owner check passes, caller's run
+        # as the sole argument.
+        args = cache.client.eval.await_args.args
+        assert args[1] == 4
+        assert list(args[2:6]) == [
+            "subagent:meta:thread-x:abc123",
+            "subagent:events:meta:thread-x:abc123",
+            "subagent:stream:thread-x:abc123",
+            "subagent:events:thread-x:abc123",
+        ]
+        assert args[6] == "run-old"
+
+
+# ---------------------------------------------------------------------------
+# _replay_owned_task_events — per-record claim recheck across the XRANGE await
+# ---------------------------------------------------------------------------
+
+class TestReplayOwnershipRecheck:
+    """The replay iterator awaits Redis between yields: a resume can steal the
+    task mid-iteration and write round-2 records with reused seq numbers — a
+    record yielded after the steal must never archive under round 1."""
+
+    @pytest.mark.asyncio
+    async def test_records_after_steal_are_dropped(self):
+        from ptc_agent.agent.middleware.background_subagent.registry import (
+            BackgroundTask,
+        )
+
+        btm = _make_btm()
+        task = BackgroundTask(
+            tool_call_id="tc-1",
+            task_id="abc123",
+            description="d",
+            prompt="p",
+            subagent_type="general-purpose",
+            agent_id="general-purpose:x",
+            completed=True,
+        )
+        task.collector_response_id = "run-1"
+
+        async def _iter(thread_id, t):
+            yield {"event": "message_chunk", "data": {"content": "ROUND-1"}}
+            t.collector_response_id = None  # the steal, mid-XRANGE
+            yield {"event": "message_chunk", "data": {"content": "ROUND-2"}}
+
+        out: list[dict] = []
+        with patch(
+            "src.server.services.background_task_manager.iter_subagent_events_full",
+            side_effect=_iter,
+        ):
+            await btm._replay_owned_task_events("thread-x", task, "run-1", out)
+
+        contents = [e["data"]["content"] for e in out]
+        assert contents == ["ROUND-1"]
+
+    @pytest.mark.asyncio
+    async def test_cross_worker_stamped_records_are_dropped(self):
+        """A resume on ANOTHER worker never touches this process's claim: the
+        stale collector's local token still matches, so the per-record claim
+        recheck passes. The record's own run stamp is the durable fence —
+        round-2 records carry round-2's id and must be dropped; unstamped
+        (legacy-writer) records and own-round records pass."""
+        from ptc_agent.agent.middleware.background_subagent.registry import (
+            BackgroundTask,
+        )
+
+        btm = _make_btm()
+        task = BackgroundTask(
+            tool_call_id="tc-1",
+            task_id="abc123",
+            description="d",
+            prompt="p",
+            subagent_type="general-purpose",
+            agent_id="general-purpose:x",
+            completed=True,
+        )
+        task.collector_response_id = "run-1"  # worker A's claim, never stolen
+
+        async def _iter(thread_id, t):
+            yield {"event": "message_chunk", "data": {"content": "LEGACY"}}
+            yield {
+                "event": "message_chunk",
+                "data": {"content": "OWN"},
+                "run": "run-1",
+            }
+            yield {
+                "event": "message_chunk",
+                "data": {"content": "ROUND-2"},
+                "run": "run-2",
+            }
+
+        out: list[dict] = []
+        with patch(
+            "src.server.services.background_task_manager.iter_subagent_events_full",
+            side_effect=_iter,
+        ):
+            await btm._replay_owned_task_events("thread-x", task, "run-1", out)
+
+        contents = [e["data"]["content"] for e in out]
+        assert contents == ["LEGACY", "OWN"]

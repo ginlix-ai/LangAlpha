@@ -297,38 +297,26 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
     async def _reset_task_for_resume(self, task: BackgroundTask) -> None:
         """Reset a completed task's state so it can be re-run.
 
-        Clears the Redis event keys first so the resumed run starts fresh.
-        Without this the resumed run's events would interleave with the prior
-        run's (the seq counter resets to 0, causing seq collisions on replay).
+        Steal-then-delete ordering is load-bearing: the collector claim is
+        cleared (and registry membership restored) BEFORE the awaited Redis
+        deletes, so an in-flight collector pass can't pass its ownership
+        fence mid-reset — evicting the entry, nulling the new writer's
+        handles, or claiming the resumed round's result under the prior
+        round's response id. The deletes then clear the event keys so the
+        resumed run starts fresh (the seq counter resets to 0; leftovers
+        would collide on replay), serialized on ``redis_spill_lock`` so a
+        stale cleanup delete can't land after them and erase round-2 data.
         """
-        if self.registry.thread_id:
-            try:
-                from src.utils.cache.redis_cache import get_cache_client
-
-                cache = get_cache_client()
-                if getattr(cache, "enabled", False):
-                    await cache.delete(
-                        f"subagent:events:meta:{self.registry.thread_id}:{task.task_id}"
-                    )
-                    await cache.delete(
-                        f"subagent:stream:{self.registry.thread_id}:{task.task_id}"
-                    )
-                    # One-release backward-compat sweep for the legacy List
-                    # key written by pre-cutover workers. Safe to drop once
-                    # no worker on the old code path is in rotation.
-                    await cache.delete(
-                        f"subagent:events:{self.registry.thread_id}:{task.task_id}"
-                    )
-            except Exception:
-                logger.warning(
-                    "Failed to clear Redis spool on resume; replay may include stale events",
-                    task_id=task.task_id,
-                    exc_info=True,
-                )
+        await self.registry.reclaim_for_resume(task)
         task.completed = False
         task.result = None
         task.result_seen = False
         task.error = None
+        # The prior round's delivery/claim are spent; without clearing them a
+        # same-process resume can never report back (claim_report_back gates
+        # on both).
+        task.result_delivered = False
+        task.report_back_claimed = False
         # tool_usage / per_call_records are intentionally NOT cleared here: if a
         # collector hasn't billed the prior run yet, the next completion merges
         # into them so run-1 usage survives the resume. Cleanup drops them only
@@ -337,9 +325,33 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         task.captured_event_count = 0
         task.captured_event_bytes = 0
         task.redis_write_failed = False
-        task.collector_response_id = None
         task.sse_drain_complete = asyncio.Event()
         task.sse_consumer_count = 0
+        if self.registry.thread_id:
+            try:
+                from src.utils.cache.redis_cache import get_cache_client
+
+                cache = get_cache_client()
+                if getattr(cache, "enabled", False):
+                    async with task.redis_spill_lock:
+                        await cache.delete(
+                            f"subagent:events:meta:{self.registry.thread_id}:{task.task_id}"
+                        )
+                        await cache.delete(
+                            f"subagent:stream:{self.registry.thread_id}:{task.task_id}"
+                        )
+                        # One-release backward-compat sweep for the legacy List
+                        # key written by pre-cutover workers. Safe to drop once
+                        # no worker on the old code path is in rotation.
+                        await cache.delete(
+                            f"subagent:events:{self.registry.thread_id}:{task.task_id}"
+                        )
+            except Exception:
+                logger.warning(
+                    "Failed to clear Redis spool on resume; replay may include stale events",
+                    task_id=task.task_id,
+                    exc_info=True,
+                )
         # Reset timestamps so the LLM sees honest staleness for the
         # resumed run, not leftover values from the prior asyncio.Task.
         task.last_checked_at = time.time()
@@ -524,12 +536,14 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         # Extract the current turn's run_id from the LangGraph config so the
         # registry can stamp it on newly-spawned subagents without relying on
         # ``registry.current_run_id`` (which races when two concurrent turns
-        # on the same thread share the per-thread registry).
-        current_run_id = (
-            request.runtime.config.get("run_id")
-            if request.runtime
-            else None
-        )
+        # on the same thread share the per-thread registry). Config metadata
+        # is the reliable channel: LangChain strips the top-level ``run_id``
+        # from child configs by the time a tool call executes, while metadata
+        # is inherited verbatim (build_graph_config stamps run_id into both).
+        runtime_config = request.runtime.config if request.runtime else {}
+        current_run_id = (runtime_config.get("metadata") or {}).get(
+            "run_id"
+        ) or runtime_config.get("run_id")
 
         # --- Action-based routing ---
         if action == "update":
@@ -687,9 +701,11 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 # This run owns the writer now: rebind run ownership so its
                 # drain/stop teardown and collector account for the resumed
                 # writer (the original spawner may be another, long-finalized
-                # run — under whose id nothing would ever await it).
-                if current_run_id:
-                    task.spawned_run_id = current_run_id
+                # run — under whose id nothing would ever await it). Stamp
+                # unconditionally: None is safe (collectors treat it as
+                # claimable-by-any-run), whereas keeping the stale spawner id
+                # detaches the writer from every run's teardown.
+                task.spawned_run_id = current_run_id or self.registry.current_run_id
 
                 # Clear stale namespace mappings so new ones can be registered
                 self.registry.clear_namespaces_for_task(task.tool_call_id)

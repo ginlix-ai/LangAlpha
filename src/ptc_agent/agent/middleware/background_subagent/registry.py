@@ -356,7 +356,9 @@ class BackgroundTaskRegistry:
                 return self._tasks.get(tool_call_id)
             return None
 
-    async def claim_report_back(self, task: BackgroundTask) -> bool:
+    async def claim_report_back(
+        self, task: BackgroundTask, response_id: str | None = None
+    ) -> bool:
         """Atomically claim a task for a report-back notification turn.
 
         Eligible = completed with a successful handler result whose content
@@ -364,6 +366,12 @@ class BackgroundTaskRegistry:
         True exactly once per task; the claim is what makes a collector
         enqueue at most one notification job even when the run collector
         and the orphan collector both observe the same completion.
+
+        ``response_id`` is the caller's collector token: a claim is refused
+        unless the task is still owned by that collector, so a stale
+        collector can't claim a resumed round's result under the prior
+        round's response id (whose idempotency row would absorb the insert
+        and permanently swallow the notification).
         """
         async with self._lock:
             if (
@@ -371,11 +379,27 @@ class BackgroundTaskRegistry:
                 or task.cancelled
                 or task.result_delivered
                 or task.report_back_claimed
+                or task.collector_response_id != response_id
                 or not (isinstance(task.result, dict) and task.result.get("success"))
             ):
                 return False
             task.report_back_claimed = True
             return True
+
+    async def reclaim_for_resume(self, task: BackgroundTask) -> None:
+        """Atomically steal a task back from any collector for a resume.
+
+        Clears the collector claim and restores registry membership in one
+        lock-held section: past this point every collector mutation site
+        (settle-mark, replay, report-back enqueue, cleanup, eviction) fences
+        on the claim and skips the task, and an eviction that already
+        happened is healed by the re-insert — the resumed writer always
+        spawns onto a registered entry.
+        """
+        async with self._lock:
+            task.collector_response_id = None
+            self._tasks[task.tool_call_id] = task
+            self._task_id_to_tool_call_id[task.task_id] = task.tool_call_id
 
     async def get_task_by_task_id(self, task_id: str) -> BackgroundTask | None:
         """Alias for get_by_task_id, used by the HTTP layer."""
@@ -445,6 +469,12 @@ class BackgroundTaskRegistry:
             }
             if ts is not None:
                 record["ts"] = ts
+            # Round stamp: collectors on OTHER workers can't see this
+            # process's claim state, so the record itself carries which run's
+            # writer produced it — the durable replay fence a resumed round's
+            # reused seq numbers would otherwise slip past.
+            if task.spawned_run_id:
+                record["run"] = task.spawned_run_id
 
             task.captured_event_count = seq
             task.captured_event_bytes += _estimate_record_bytes(record)
@@ -1128,6 +1158,20 @@ class BackgroundTaskRegistry:
         """
         async with self._lock:
             self._remove_entry_unlocked(tool_call_id)
+
+    async def remove_task_if_owned(
+        self, tool_call_id: str, response_id: str
+    ) -> bool:
+        """Evict only while the caller's collector claim still holds. A
+        resume steals the entry back (clears ``collector_response_id``), and
+        the check must share the lock with the eviction — a stale collector
+        racing the steal would otherwise evict the live resumed writer."""
+        async with self._lock:
+            task = self._tasks.get(tool_call_id)
+            if task is None or task.collector_response_id != response_id:
+                return False
+            self._remove_entry_unlocked(tool_call_id)
+            return True
 
     def _remove_entry_unlocked(self, tool_call_id: str) -> None:
         task = self._tasks.pop(tool_call_id, None)

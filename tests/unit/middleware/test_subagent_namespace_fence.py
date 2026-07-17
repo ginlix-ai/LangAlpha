@@ -39,12 +39,20 @@ class FakeOwner:
         self.released.append(task_id)
 
 
-def _request(args: dict, tool_call_id: str = "tc-1") -> SimpleNamespace:
+def _request(
+    args: dict, tool_call_id: str = "tc-1", config: dict | None = None
+) -> SimpleNamespace:
+    # Production shape: LangChain strips the top-level run_id from child
+    # configs by the tool-call layer — only metadata carries it. Tests that
+    # exercise the top-level fallback pass their own config.
+    if config is None:
+        config = {
+            "configurable": {"thread_id": "thread-x"},
+            "metadata": {"run_id": "run-1"},
+        }
     return SimpleNamespace(
         tool_call={"name": "Task", "id": tool_call_id, "args": args},
-        runtime=SimpleNamespace(
-            config={"configurable": {"thread_id": "thread-x"}, "run_id": "run-1"}
-        ),
+        runtime=SimpleNamespace(config=config),
     )
 
 
@@ -434,6 +442,175 @@ async def test_resume_rebinds_run_ownership_to_the_current_run():
     assert "Resumed" in result.content
     assert task.spawned_run_id == "run-1"  # the resuming turn's run_id
     await task.asyncio_task
+
+
+@pytest.mark.asyncio
+async def test_resume_rebinds_from_top_level_run_id_fallback():
+    """No metadata (non-server invocation): the top-level key still works."""
+    owner = FakeOwner(grant=True)
+    mw = _middleware(owner)
+    mw.registry.write_task_meta = AsyncMock()
+    task = _seed_task(mw, completed=True)
+    task.spawned_run_id = "run-OLD"
+
+    result = await mw.awrap_tool_call(
+        _request(
+            {
+                "action": "resume",
+                "task_id": "abc123",
+                "description": "d",
+                "prompt": "p",
+                "subagent_type": "general-purpose",
+            },
+            config={"configurable": {"thread_id": "thread-x"}, "run_id": "run-top"},
+        ),
+        _ok_handler,
+    )
+
+    assert "Resumed" in result.content
+    assert task.spawned_run_id == "run-top"
+    await task.asyncio_task
+
+
+@pytest.mark.asyncio
+async def test_resume_rebinds_from_registry_when_config_has_no_run_id():
+    """Config carries no run_id anywhere: the registry stamp (set by the
+    workflow before graph execution) is the last resort — the stale spawner
+    id must never survive a resume."""
+    owner = FakeOwner(grant=True)
+    mw = _middleware(owner)
+    mw.registry.write_task_meta = AsyncMock()
+    mw.registry.current_run_id = "run-registry"
+    task = _seed_task(mw, completed=True)
+    task.spawned_run_id = "run-OLD"
+
+    result = await mw.awrap_tool_call(
+        _request(
+            {
+                "action": "resume",
+                "task_id": "abc123",
+                "description": "d",
+                "prompt": "p",
+                "subagent_type": "general-purpose",
+            },
+            config={"configurable": {"thread_id": "thread-x"}},
+        ),
+        _ok_handler,
+    )
+
+    assert "Resumed" in result.content
+    assert task.spawned_run_id == "run-registry"
+    await task.asyncio_task
+
+
+@pytest.mark.asyncio
+async def test_resume_clears_spent_delivery_and_claim_flags():
+    """result_delivered/report_back_claimed are per-round: left set from the
+    prior round, claim_report_back refuses the resumed round's completion and
+    its report-back is silently lost."""
+    owner = FakeOwner(grant=True)
+    mw = _middleware(owner)
+    mw.registry.write_task_meta = AsyncMock()
+    task = _seed_task(mw, completed=True)
+    task.result_delivered = True
+    task.report_back_claimed = True
+
+    result = await mw.awrap_tool_call(
+        _request(
+            {
+                "action": "resume",
+                "task_id": "abc123",
+                "description": "d",
+                "prompt": "p",
+                "subagent_type": "general-purpose",
+            }
+        ),
+        _ok_handler,
+    )
+
+    assert "Resumed" in result.content
+    assert task.result_delivered is False
+    assert task.report_back_claimed is False
+    await task.asyncio_task
+
+
+@pytest.mark.asyncio
+async def test_resume_steals_claim_before_redis_deletes():
+    """The collector claim is stolen (and membership restored) BEFORE the
+    awaited Redis deletes: a stale collector racing the reset can no longer
+    pass its ownership fence mid-delete and evict the entry the resumed
+    writer is about to spawn onto. The deletes themselves run under the
+    task's spill lock so an in-flight cleanup delete can't erase them."""
+    owner = FakeOwner(grant=True)
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    mw = BackgroundSubagentMiddleware(
+        registry=registry, enabled=True, namespace_owner=owner
+    )
+    mw.registry.write_task_meta = AsyncMock()
+    task = _seed_task(mw, completed=True)
+    task.collector_response_id = "run-old"
+
+    evictions: list[bool] = []
+    locked_during_delete: list[bool] = []
+
+    class FakeCache:
+        enabled = True
+
+        async def delete(self, key: str) -> None:
+            locked_during_delete.append(task.redis_spill_lock.locked())
+            # Simulate the stale collector's in-flight pass landing mid-reset:
+            # with the steal already done, its ownership fence must refuse.
+            evictions.append(
+                await registry.remove_task_if_owned("tc-orig", "run-old")
+            )
+
+    with patch(
+        "src.utils.cache.redis_cache.get_cache_client", return_value=FakeCache()
+    ):
+        result = await mw.awrap_tool_call(
+            _request(
+                {
+                    "action": "resume",
+                    "task_id": "abc123",
+                    "description": "d",
+                    "prompt": "p",
+                    "subagent_type": "general-purpose",
+                }
+            ),
+            _ok_handler,
+        )
+
+    assert "Resumed" in result.content
+    assert evictions == [False, False, False]  # fence refused every attempt
+    assert locked_during_delete == [True, True, True]
+    assert registry._tasks.get("tc-orig") is task  # membership survived
+    assert task.collector_response_id is None
+    await task.asyncio_task
+
+
+@pytest.mark.asyncio
+async def test_claim_report_back_requires_collector_token():
+    """A report-back claim is fenced on the collector token: a stale
+    collector can't claim a resumed round's result under the prior round's
+    response id (its idempotency row would absorb the insert and the
+    notification would be lost)."""
+    registry = BackgroundTaskRegistry(thread_id="")
+    task = BackgroundTask(
+        tool_call_id="tc-1",
+        task_id="abc123",
+        description="d",
+        prompt="p",
+        subagent_type="general-purpose",
+        agent_id="general-purpose:x",
+        completed=True,
+        result={"success": True, "content": "r2"},
+    )
+    task.collector_response_id = "run-2"
+
+    assert await registry.claim_report_back(task, "run-1") is False  # stale
+    assert task.report_back_claimed is False
+    assert await registry.claim_report_back(task, "run-2") is True  # owner
+    assert await registry.claim_report_back(task, "run-2") is False  # spent
 
 
 @pytest.mark.asyncio

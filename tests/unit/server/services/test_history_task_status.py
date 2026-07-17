@@ -1,0 +1,169 @@
+"""Locks for read-time task-status stamping in history replay.
+
+The stamp is the only completion signal a refreshed client gets for
+subagent cards: running requires proven liveness, terminal is the default,
+and stamping must copy — stored/cached event dicts are shared objects.
+"""
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from src.server.services.history.task_status import (
+    collect_task_ids,
+    resolve_task_statuses,
+    stamp_replay_task_status,
+    stamp_task_artifact_data,
+)
+
+
+def _artifact(task_id: str, **extra) -> dict:
+    return {
+        "event": "artifact",
+        "data": {
+            "artifact_type": "task",
+            "artifact_id": f"task:{task_id}",
+            "tool_call_id": f"call_{task_id}",
+            "payload": {"task_id": task_id, "action": "init", **extra},
+        },
+    }
+
+
+class TestCollectTaskIds:
+    def test_collects_unique_ids_in_order(self):
+        items = [
+            _artifact("aaa"),
+            {"event": "message_chunk", "data": {"content": "x"}},
+            _artifact("bbb"),
+            _artifact("aaa"),
+            {"event": "artifact", "data": {"artifact_type": "todo_list"}},
+            {"event": "artifact", "data": "not-a-dict"},
+        ]
+        assert collect_task_ids(items) == ["aaa", "bbb"]
+
+
+class TestResolveTaskStatuses:
+    def _patch(self, live, metas: dict):
+        btm = MagicMock()
+        btm.resolve_task_liveness = AsyncMock(return_value=live)
+        return (
+            patch(
+                "src.server.services.background_task_manager"
+                ".BackgroundTaskManager.get_instance",
+                return_value=btm,
+            ),
+            patch(
+                "ptc_agent.agent.middleware.background_subagent.registry"
+                ".read_task_meta",
+                new=AsyncMock(side_effect=lambda t, tid: metas.get(tid)),
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_liveness_wins_then_meta_labels_terminal(self):
+        p1, p2 = self._patch(
+            live={"live1"},
+            metas={
+                "canc1": {"status": "cancelled"},
+                "done1": {"status": "completed"},
+            },
+        )
+        with p1, p2:
+            statuses = await resolve_task_statuses(
+                "t", ["live1", "canc1", "done1", "gone1"]
+            )
+        assert statuses == {
+            "live1": "running",
+            "canc1": "cancelled",
+            "done1": "completed",
+            "gone1": "completed",  # no meta -> terminal default
+        }
+
+    @pytest.mark.asyncio
+    async def test_probe_failure_falls_back_to_meta(self):
+        p1, p2 = self._patch(
+            live=None,
+            metas={
+                "run1": {"status": "running"},
+                "done1": {"status": "completed"},
+            },
+        )
+        with p1, p2:
+            statuses = await resolve_task_statuses("t", ["run1", "done1", "gone1"])
+        # Availability over precision: meta says running, probe unknown.
+        assert statuses == {
+            "run1": "running",
+            "done1": "completed",
+            "gone1": "completed",
+        }
+
+
+class TestStamping:
+    def test_stamp_copies_never_mutates(self):
+        data = _artifact("aaa")["data"]
+        stamped = stamp_task_artifact_data(data, {"aaa": "completed"})
+        assert stamped["payload"]["status"] == "completed"
+        assert "status" not in data["payload"]  # original untouched
+        assert stamped is not data
+
+    def test_non_task_and_unknown_ids_pass_through_identically(self):
+        chunk = {"content_type": "text"}
+        assert stamp_task_artifact_data(chunk, {"aaa": "completed"}) is chunk
+        other = _artifact("zzz")["data"]
+        assert stamp_task_artifact_data(other, {"aaa": "completed"}) is other
+
+    @pytest.mark.asyncio
+    async def test_replay_stamp_replaces_positionally(self):
+        items = [_artifact("aaa"), {"event": "message_chunk", "data": {"c": 1}}]
+        original_artifact = items[0]
+        with patch(
+            "src.server.services.history.task_status.resolve_task_statuses",
+            new=AsyncMock(return_value={"aaa": "cancelled"}),
+        ):
+            await stamp_replay_task_status("t", items)
+        assert items[0]["data"]["payload"]["status"] == "cancelled"
+        # Shared/cached original object untouched; replaced, not mutated.
+        assert "status" not in original_artifact["data"]["payload"]
+        assert items[1] == {"event": "message_chunk", "data": {"c": 1}}
+
+    @pytest.mark.asyncio
+    async def test_resolution_failure_is_swallowed(self):
+        items = [_artifact("aaa")]
+        with patch(
+            "src.server.services.history.task_status.resolve_task_statuses",
+            new=AsyncMock(side_effect=RuntimeError("redis down")),
+        ):
+            await stamp_replay_task_status("t", items)  # must not raise
+        assert "status" not in items[0]["data"]["payload"]
+
+
+class TestResolveTaskLiveness:
+    def _btm(self):
+        from src.server.services.background_task_manager import (
+            BackgroundTaskManager,
+        )
+
+        return BackgroundTaskManager.__new__(BackgroundTaskManager)
+
+    @pytest.mark.asyncio
+    async def test_local_and_lock_held_union(self):
+        btm = self._btm()
+        with patch.object(
+            btm, "_local_live_task_ids", new=AsyncMock(return_value=["loc1"])
+        ), patch(
+            "src.server.services.writer_guard.held_task_namespaces",
+            new=AsyncMock(return_value={"rem1"}),
+        ):
+            live = await btm.resolve_task_liveness("t", ["loc1", "rem1", "dead1"])
+        assert live == {"loc1", "rem1"}
+
+    @pytest.mark.asyncio
+    async def test_probe_failure_returns_none(self):
+        btm = self._btm()
+        with patch.object(
+            btm, "_local_live_task_ids", new=AsyncMock(return_value=[])
+        ), patch(
+            "src.server.services.writer_guard.held_task_namespaces",
+            new=AsyncMock(return_value=None),
+        ):
+            assert await btm.resolve_task_liveness("t", ["x"]) is None

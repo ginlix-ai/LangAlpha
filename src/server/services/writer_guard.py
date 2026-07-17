@@ -444,6 +444,11 @@ class WriterGuard:
             return False
         return ok
 
+    def owns_task_ns(self, task_id: str) -> bool:
+        """True while this session may still write ns=task:{task_id} — the
+        authoritative "is this writer mine" test for teardown decisions."""
+        return task_id in self._task_ns
+
     async def release_task_ns(self, task_id: str) -> None:
         """Best-effort drop of N(thread, task:{id}) once the task's writer
         settled. Removed from the held set first, so post-seal writes to the
@@ -471,6 +476,14 @@ class WriterGuard:
             return
         try:
             async with self.mutex:
+                # Re-checked after the drain await: membership fell above, so
+                # the tail drain no longer waits on this writer and the full
+                # release can complete first — its unlock_all reclaims the
+                # lock, and the conn may already be back in the pool (or
+                # serving another session). Executing here then would fire a
+                # stray unlock on a connection this guard no longer owns.
+                if self.lost or self._released or self.conn.closed:
+                    return
                 await self.conn.execute(
                     "SELECT pg_advisory_unlock(%s)",
                     (namespace_key(self.thread_id, f"task:{task_id}"),),

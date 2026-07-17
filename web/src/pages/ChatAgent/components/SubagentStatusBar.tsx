@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { CheckCircle2, Circle, Loader2, MessageSquarePlus, Send, X } from 'lucide-react';
+import { CheckCircle2, Circle, Loader2, MessageSquarePlus, Send, X, StopCircle } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import iconRobo from '../../../assets/img/icon-robo.png';
 import iconRoboSing from '../../../assets/img/icon-robo-sing.png';
@@ -47,7 +47,8 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
   const handleSend = useCallback(async (): Promise<void> => {
     const text = inputValue.trim();
     const tId = agent?.name?.replace('Task-', '') || null;
-    if (!text || sending || !threadId || !tId || agent?.status === 'completed') return;
+    // 'completed' and 'cancelled' are both terminal — no steering a settled task.
+    if (!text || sending || !threadId || !tId || agent?.status === 'completed' || agent?.status === 'cancelled') return;
 
     // Immediately show pending message in the subagent view
     onInstructionSent?.(text);
@@ -91,25 +92,29 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
     return inProgress?.toolName || '';
   })();
 
-  // Effective status: if card-level status is explicitly 'completed', trust it
-  // (set by inactivateAllSubagents, subagent_status handler, or history load).
-  // Otherwise derive from message streaming state.
+  // Effective status: explicit terminal card statuses ('completed'/'cancelled')
+  // are trusted (set by inactivateAllSubagents, subagent_status handler, or the
+  // history task-artifact stamp). Otherwise derive from message streaming state.
   const effectiveStatus = agent.status === 'completed'
     ? 'completed'
-    : messages.length === 0
-      ? 'initializing'
-      : isMessageStreaming || derivedCurrentTool
-        ? 'active'
-        : agent.status || 'active';
+    : agent.status === 'cancelled'
+      ? 'cancelled'
+      : messages.length === 0
+        ? 'initializing'
+        : isMessageStreaming || derivedCurrentTool
+          ? 'active'
+          : agent.status || 'active';
 
   const isActive = effectiveStatus === 'active';
   const isCompleted = effectiveStatus === 'completed';
+  const isCancelled = effectiveStatus === 'cancelled';
+  const isTerminal = isCompleted || isCancelled;
 
   // Extract task ID from display ID (e.g. "Task-k7Xm2p" -> "k7Xm2p")
   const taskId = agent.name?.replace('Task-', '') || null;
 
-  // Can send: subagent is still running, we have a thread and task ID
-  const canSend = !isCompleted && threadId && taskId != null;
+  // Can send: subagent is not terminal (running/initializing), with thread + task.
+  const canSend = !isTerminal && threadId && taskId != null;
 
   const getStatusIcon = (): React.ReactElement => {
     if (derivedCurrentTool) {
@@ -120,6 +125,9 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
     }
     if (isCompleted) {
       return <CheckCircle2 className="h-4 w-4" style={{ color: 'var(--color-accent-primary)' }} />;
+    }
+    if (isCancelled) {
+      return <StopCircle className="h-4 w-4" style={{ color: 'var(--color-text-tertiary)' }} />;
     }
     return <Circle className="h-4 w-4" style={{ color: 'var(--color-icon-muted)' }} />;
   };
@@ -133,6 +141,9 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
         return `Completed (${agent.toolCalls} tool calls)`;
       }
       return 'Completed';
+    }
+    if (isCancelled) {
+      return 'Stopped';
     }
     if (isActive) {
       return 'Running';
@@ -162,7 +173,7 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
           }}
         >
           <img
-            src={isCompleted ? iconRobo : iconRoboSing}
+            src={isTerminal ? iconRobo : iconRoboSing}
             alt="Agent"
             className="h-5 w-5"
             style={{ filter: 'brightness(0) saturate(100%) invert(100%)' }}

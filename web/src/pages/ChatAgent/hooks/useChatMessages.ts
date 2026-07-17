@@ -60,6 +60,7 @@ import {
   handleHistoryHtmlWidget,
   handleHistoryProvenance,
   handleHistorySteeringDelivered,
+  handleHistoryTaskArtifactStatus,
   isSubagentHistoryEvent,
 } from './utils/historyEventHandlers';
 import { useMarketWatch } from './useMarketWatch';
@@ -344,6 +345,8 @@ interface SubagentHistoryData {
   description?: string;
   prompt?: string;
   type?: string;
+  /** Backend-stamped real task status from replayed task artifacts (running|completed|cancelled). */
+  status?: string;
   resumePoints: Array<{ description: string; turnIndex?: number }>;
 }
 
@@ -1599,6 +1602,10 @@ export function useChatMessages(
             const description = payload.description as string | undefined;
             const prompt = payload.prompt as string | undefined;
             const type = payload.type as string | undefined;
+            // Backend stamps the task's real status on every replayed task artifact
+            // (payload.status). The top-level `status` is a hardcoded "completed"
+            // and MUST be ignored.
+            const stampedStatus = payload.status as string | undefined;
             const action = (() => { if (rawAction === 'spawned') return 'init'; if (rawAction === 'steering_accepted') return 'update'; if (rawAction === 'resumed') return 'resume'; return rawAction || 'init'; })();
             if (task_id) {
               const agentId = `task:${task_id}`;
@@ -1609,6 +1616,7 @@ export function useChatMessages(
                   description: description || '',
                   prompt: prompt || description || '',
                   type: type || 'general-purpose',
+                  status: stampedStatus,
                   resumePoints: [],
                 });
               } else {
@@ -1616,7 +1624,16 @@ export function useChatMessages(
                 if (description && !existing.description) existing.description = description;
                 if (prompt && !existing.prompt) existing.prompt = prompt || description || '';
                 if (type && !existing.type) existing.type = type;
+                if (stampedStatus) existing.status = stampedStatus;
               }
+              // Patch the inline card(s) for THIS artifact's tool_call_id so a
+              // reborn "running" card reflects the stamped terminal status.
+              handleHistoryTaskArtifactStatus({
+                toolCallId: event.tool_call_id as string | undefined,
+                taskId: task_id,
+                status: stampedStatus,
+                setMessages: setMessagesForHandlers,
+              });
               // Track resume boundaries for history replay
               if (action === 'resume') {
                 const existing = subagentHistoryByTaskId.get(agentId);
@@ -2317,7 +2334,9 @@ export function useChatMessages(
               prompt: taskMetadata?.prompt || taskMetadata?.description || '',
               type: taskMetadata?.type || 'general-purpose',
               messages: finalMessages,
-              status: 'completed', // History events are always completed
+              // Prefer the backend-stamped real status; fall back to 'completed'
+              // for pre-stamp data or tasks with no replayed task artifact.
+              status: taskMetadata?.status || 'completed',
               toolCalls: countToolCalls(finalMessages),
               tokenUsage: tempTokenUsage,
               currentTool: '',
@@ -3121,10 +3140,10 @@ export function useChatMessages(
         }
         setHasActiveSubagents(true);
       } else {
-        // Workflow is not active — mark all subagent tasks as completed.
-        // (Skipped when reconnecting because per-task SSE streams
-        //  will deliver live events with the real status.)
-        markAllSubagentTasksCompleted();
+        // Workflow is not active. Inline subagent cards are already born with
+        // their real status from the replayed task-artifact stamp
+        // (handleHistoryTaskArtifactStatus), so no blanket completion here —
+        // that would clobber a legitimately 'cancelled' card.
         // Finalize any incomplete todos as stale (they weren't completed by the agent)
         if (finalizePendingTodos) finalizePendingTodos();
         // Also patch inline todoListProcesses in messages
@@ -3155,11 +3174,12 @@ export function useChatMessages(
   // teardown, so the thread-load effect above deliberately doesn't touch it.
 
   /**
-   * Marks all subagentTasks in messages as 'completed'.
-   * Called when the SSE stream ends or history finishes loading, because a finished
-   * workflow implies all subagents are done. This is a safety net — artifact events
-   * and per-task SSE streams should have already updated most of them, but the final
-   * completion may not be persisted in sse_events or may have been missed.
+   * Advances still-'running' subagentTasks to 'completed' (leaving terminal
+   * 'cancelled'/'completed' cards untouched). A live safety net for stream-end:
+   * a finished workflow implies its remaining in-flight subagents are done, but
+   * the final completion may not have arrived on the stream. Not used on history
+   * load — replayed cards are born with their real status from the task-artifact
+   * stamp.
    */
   const markAllSubagentTasksCompleted = () => {
     // Skip tasks with open per-task SSE streams (still active)
@@ -3181,7 +3201,9 @@ export function useChatMessages(
             if (activeShortIds.has(shortId)) return;
           }
 
-          if (updatedTasks[toolCallId].status !== 'completed') {
+          // Only advance still-running cards to completed; never overwrite a
+          // terminal 'cancelled' (a stopped subagent) back to 'completed'.
+          if (updatedTasks[toolCallId].status === 'running') {
             updatedTasks[toolCallId] = { ...updatedTasks[toolCallId], status: 'completed' };
             changed = true;
           }

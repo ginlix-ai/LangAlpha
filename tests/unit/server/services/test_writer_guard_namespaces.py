@@ -321,6 +321,29 @@ async def test_release_task_ns_keeps_lock_over_inflight_write(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_release_task_ns_skips_unlock_after_full_release(monkeypatch):
+    """release_task_ns drops membership before draining, so the tail drain
+    stops waiting on this writer and the full release can win the race: once
+    it has run, the conn may be recycled into the pool (or serving another
+    session), and the woken release_task_ns must not fire a stray unlock on
+    a connection this guard no longer owns."""
+    monkeypatch.setattr(wg_module, "WRITE_DRAIN_TIMEOUT", 1.0)
+    guard = _guard()
+    guard._try_lock = AsyncMock(return_value=True)
+    await guard.acquire_task_ns("abc")
+    release, writer = await _hold_write(guard, _cfg("task:abc"))
+
+    task_release = asyncio.create_task(guard.release_task_ns("abc"))
+    await asyncio.sleep(0.02)  # parked in the in-flight drain
+    guard._released = True  # the full release completed meanwhile
+    release.set()
+    await writer
+    await task_release
+
+    guard.conn.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_write_queued_at_release_is_refused_not_uncounted():
     """A task writer that had NOT yet authorized when release_task_ns ran
     (queued behind the session mutex, so invisible to the in-flight drain)

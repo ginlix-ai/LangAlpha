@@ -93,7 +93,7 @@ async def _enqueue_pass(
             return 0, False
 
         for task in tasks:
-            if await registry.claim_report_back(task):
+            if await registry.claim_report_back(task, response_id):
                 claimed.append(task)
 
         defer = False

@@ -1262,6 +1262,15 @@ async def replay_thread_messages(
             else build_sse_replay_items(thread_id, queries, responses_by_turn)
         )
 
+        # After source selection and outside the projection cache: task
+        # artifacts replay their spawn-time payload, so the card's status is
+        # stamped here from current liveness (see history/task_status.py).
+        from src.server.services.history.task_status import (
+            stamp_replay_task_status,
+        )
+
+        await stamp_replay_task_status(thread_id, replay_items)
+
         async def event_generator():
             seq = 0
             for item in replay_items:

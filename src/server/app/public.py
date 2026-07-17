@@ -209,6 +209,32 @@ async def replay_shared_thread(share_token: str):
     responses, _ = await get_responses_for_thread(thread_id)
     responses_by_turn = {r.get("turn_index"): r for r in responses if isinstance(r, dict)}
 
+    # Public replay has no /status reconciliation at all, so without the
+    # stamp its task cards would be stuck "running" forever (see
+    # history/task_status.py). Only the whitelisted status value is added.
+    from src.server.services.history.task_status import (
+        collect_task_ids,
+        resolve_task_statuses,
+        stamp_task_artifact_data,
+    )
+
+    task_statuses: dict[str, str] = {}
+    try:
+        stored_events = [
+            item
+            for r in responses_by_turn.values()
+            for item in (r.get("sse_events") or [])
+            if isinstance(item, dict)
+        ]
+        task_statuses = await resolve_task_statuses(
+            thread_id, collect_task_ids(stored_events)
+        )
+    except Exception:
+        logger.warning(
+            f"[PUBLIC REPLAY] task-status stamping failed for {thread_id}",
+            exc_info=True,
+        )
+
     async def event_generator():
         seq = 0
 
@@ -271,6 +297,8 @@ async def replay_shared_thread(share_token: str):
                 replay_data.setdefault("thread_id", thread_id)
                 replay_data["turn_index"] = turn_index
                 replay_data["response_id"] = str(response.get("conversation_response_id"))
+                if task_statuses:
+                    replay_data = stamp_task_artifact_data(replay_data, task_statuses)
 
                 yield (
                     f"id: {seq}\n"

@@ -170,7 +170,7 @@ def _claim_gated_registry():
     one — a retry pass must re-claim only released (failed) tasks."""
     registry = MagicMock()
 
-    async def _claim(task):
+    async def _claim(task, response_id=None):
         if task.report_back_claimed:
             return False
         task.report_back_claimed = True
