@@ -901,8 +901,9 @@ function Settings() {
                   <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>{t('settings.voiceInputDesc')}</p>
                 </div>
                 <ToggleSwitch
-                  checked={!!(prefsData as any)?.other_preference?.voice_input_enabled}
+                  checked={(prefsData as Preferences | null)?.other_preference?.voice_input_enabled === true}
                   onChange={handleVoiceInputToggle}
+                  ariaLabel={t('settings.voiceInput')}
                 />
               </div>
 
@@ -1664,6 +1665,7 @@ function Settings() {
                             checked={feature.enabled}
                             onChange={() => handleFeatureToggle(feature.key, !feature.enabled)}
                             className="mt-0.5"
+                            ariaLabel={feature.label}
                           />
                         </div>
                         {feature.tradeoffs && (

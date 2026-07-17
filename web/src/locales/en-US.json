@@ -1402,7 +1402,9 @@
         "company_overview": "Company overview",
         "daily_prices": "Daily prices",
         "options_chain": "Options chain",
-        "market_index": "Market index"
+        "market_index": "Market index",
+        "quote": "Quote",
+        "market_overview": "Market overview"
       }
     },
     "a11y": {

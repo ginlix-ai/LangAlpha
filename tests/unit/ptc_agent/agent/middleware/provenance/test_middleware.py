@@ -221,9 +221,9 @@ async def test_market_data_one_event_per_index(middleware):
 
     assert [e["identifier"] for e in emitted] == ["^AAA", "^BBB"]
     assert {e["source_type"] for e in emitted} == {"market_data"}
-    # get_market_overview has no _MARKET_DATA_KINDS entry (it's usually
-    # symbol-less — the region basket isn't reflected in the tool call args).
-    assert {e["detail"] for e in emitted} == {None}
+    # Explicit `indices` yields symbol-bearing rows, so they carry the
+    # data-kind slug; the no-arg form stays keyed by tool name (below).
+    assert {e["detail"] for e in emitted} == {"market_overview"}
 
 
 @pytest.mark.asyncio
@@ -240,6 +240,7 @@ async def test_market_data_one_event_per_symbol_list(middleware):
 
     assert [e["identifier"] for e in emitted] == ["NVDA", "TSLA"]
     assert {e["source_type"] for e in emitted} == {"market_data"}
+    assert {e["detail"] for e in emitted} == {"quote"}
 
 
 @pytest.mark.asyncio

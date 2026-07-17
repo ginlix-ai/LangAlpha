@@ -85,12 +85,16 @@ _MARKET_SYMBOL_ARGS = ("symbol", "underlying")
 # rows so the Sources panel can group by ticker yet still distinguish, in a
 # hover, which data products that ticker was accessed through (a single AAPL row
 # may cover both company_overview and daily_prices). The slug is i18n-mapped by
-# the frontend; symbol-less tools (screen_stocks, get_market_movers,
-# get_market_overview) already surface their tool name as the identifier.
+# the frontend; symbol-less tools (screen_stocks, get_market_movers) already
+# surface their tool name as the identifier.
 _MARKET_DATA_KINDS = {
     "get_company_overview": "company_overview",
     "get_daily_prices": "daily_prices",
     "get_options_chain": "options_chain",
+    "get_quote": "quote",
+    # Symbol-bearing only when the caller passes an explicit `indices` list;
+    # the no-arg form stays keyed by tool name (detail guard below).
+    "get_market_overview": "market_overview",
 }
 
 # Market-data tools that all share _extract_market_data. Superset of

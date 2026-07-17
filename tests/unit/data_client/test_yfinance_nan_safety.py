@@ -106,21 +106,21 @@ class TestFetchSnapshotNanSafety:
         ticker.fast_info = fast_info
         return ticker
 
-    def test_nan_last_price_becomes_zero(self):
+    def test_nan_last_price_drops_snapshot(self):
+        # A snapshot without a finite last price is no quote at all — a 0.0
+        # would render as a real $0.00 downstream.
         fi = {"lastPrice": float("nan"), "previousClose": 100.0}
         with patch(
             "src.data_client.yfinance.data_source.yf.Ticker",
             return_value=self._mock_ticker_with_fast_info(fi),
         ):
-            snap = _fetch_single_snapshot("TEST")
+            assert _fetch_single_snapshot("TEST") is None
 
-        assert snap is not None
-        assert snap["price"] == 0.0
-        json.dumps(snap, allow_nan=False)
-
-    def test_all_nan_fast_info_is_finite(self):
+    def test_nan_optional_fields_become_none_not_zero(self):
+        # Valid price, NaN everything else: the snapshot survives with the
+        # optional fields omitted (None), never coerced to phantom zeros.
         fi = {
-            "lastPrice": float("nan"),
+            "lastPrice": 105.5,
             "previousClose": float("nan"),
             "open": float("nan"),
             "dayHigh": float("nan"),
@@ -134,6 +134,11 @@ class TestFetchSnapshotNanSafety:
             snap = _fetch_single_snapshot("TEST")
 
         assert snap is not None
+        assert snap["price"] == 105.5
+        assert snap["previous_close"] is None
+        assert snap["open"] is None
+        assert snap["high"] is None
+        assert snap["low"] is None
         assert snap["volume"] == 0
         json.dumps(snap, allow_nan=False)
 

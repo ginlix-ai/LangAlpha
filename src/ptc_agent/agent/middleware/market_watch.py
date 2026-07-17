@@ -191,8 +191,8 @@ class MarketWatchMiddleware(AgentMiddleware):
         self._last_prices: dict[str, float] = {}
         self._last_block: str | None = None
         # Watchlist the cached block was fetched for (uppercased): a throttled
-        # round only replays the block when the CURRENT list still matches it, so
-        # a mid-window unwatch stops injecting dropped symbols.
+        # round only replays the block when the CURRENT list still matches it —
+        # a mid-window mutation refetches for the new list instead.
         self._last_symbols: set[str] = set()
         # Provenance for the last fetched block: (symbol, provider) per line
         # plus the fetch time — replays attest the original access, not the
@@ -229,8 +229,8 @@ class MarketWatchMiddleware(AgentMiddleware):
 
         The tail-shape guard runs first (no I/O), then the watchlist read (one
         Redis GET). Past that, the venue gate and throttle are re-evaluated on the
-        CURRENT list every call, so a mid-window unwatch or venue close stops the
-        replay — only the provider fetch + formatting are throttled away.
+        CURRENT list every call: a venue close stops the replay and a mid-window
+        watchlist mutation refetches — only an unchanged list is throttled away.
         """
         messages = messages or []
         if not messages:
@@ -269,15 +269,17 @@ class MarketWatchMiddleware(AgentMiddleware):
 
             # Throttle (no provider I/O): within the window re-inject the cached
             # block so the model keeps a price view between refreshes — but only
-            # while the watchlist is unchanged, so a mid-window unwatch drops the
-            # stale block instead of replaying removed symbols. Venue re-checked above.
+            # while the watchlist is unchanged. A mid-window mutation falls
+            # through to a fresh fetch: replaying would resurface removed
+            # symbols, and going silent would blind the model to a just-watched
+            # one for the rest of the window. Venue re-checked above.
             watched = {s.upper() for s in symbols}
             if (
                 self._last_injected_at is not None
                 and time.monotonic() - self._last_injected_at < self._min_interval
+                and self._last_block
+                and watched == self._last_symbols
             ):
-                if not self._last_block or watched != self._last_symbols:
-                    return None
                 stamp = self._wrap(self._last_block)
                 await self._emit_provenance(runtime, stamp)
                 return stamp

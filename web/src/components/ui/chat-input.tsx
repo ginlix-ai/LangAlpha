@@ -293,6 +293,7 @@ function PillToggle({
       }}
       type="button"
       title={title}
+      aria-pressed={active}
     >
       <Icon className="h-4 w-4" style={active ? { color: 'var(--color-accent-light)' } : {}} />
       <span>{label}</span>
@@ -453,6 +454,10 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   const [isDragging, setIsDragging] = useState(false);
   const [planMode, setPlanMode] = useState(false);
   const [watchMode, setWatchMode] = useState(false);
+  // Market watch is a PTC capability. The toggle state survives a switch to
+  // flash (the pill just hides), so every payload derives from this gated
+  // value — a watch flipped on in PTC must never ride a flash send.
+  const effectiveMarketWatch = watchMode && marketWatchEnabled && mode !== 'fast';
 
   // Model selector state — use flash model preference when in flash mode
   const modePreferredModel = mode === 'fast' ? (preferredFlashModel || preferredModel) : preferredModel;
@@ -639,7 +644,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
   // Expose addContext method for external callers (e.g. FilePanel, message selection)
   useImperativeHandle(ref, () => ({
     getModelOptions() {
-      return { model: selectedModel, reasoningEffort, fastMode, marketWatch: watchMode && marketWatchEnabled };
+      return { model: selectedModel, reasoningEffort, fastMode, marketWatch: effectiveMarketWatch };
     },
     addContext({ path, snippet, label, lineStart, lineEnd, lineCount, source }) {
       if (snippet) {
@@ -678,7 +683,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     setModel(model) {
       if (model) setSelectedModel(model);
     },
-  }), [selectedModel, reasoningEffort, fastMode, watchMode, marketWatchEnabled]);
+  }), [selectedModel, reasoningEffort, fastMode, effectiveMarketWatch]);
 
   // Workspace dropdown
   const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false);
@@ -1160,7 +1165,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
       model: selectedModel,
       reasoningEffort,
       fastMode,
-      marketWatch: watchMode && marketWatchEnabled,
+      marketWatch: effectiveMarketWatch,
       widgetSnapshots: widgetSnapshots.length ? widgetSnapshots : undefined,
     });
     setMessage('');
@@ -1180,7 +1185,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [hasContent, disabled, message, planMode, watchMode, marketWatchEnabled, attachedFiles, onSend, onAction, mentionedFiles, slashCommands, selectedModel, reasoningEffort, fastMode, widgetSnapshots, t]);
+  }, [hasContent, disabled, message, planMode, effectiveMarketWatch, attachedFiles, onSend, onAction, mentionedFiles, slashCommands, selectedModel, reasoningEffort, fastMode, widgetSnapshots, t]);
 
   // --- Keyboard & Language Detection ---
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {

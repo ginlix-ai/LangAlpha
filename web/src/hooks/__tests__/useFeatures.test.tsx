@@ -66,11 +66,14 @@ describe('useFeatureEnabled', () => {
 
   it('returns false for a disabled flag', async () => {
     mockGetFeatures.mockResolvedValue(FEATURES);
-    const { result } = renderHookWithProviders(() => useFeatureEnabled('beta_thing'));
-    // Wait for the query to settle, then confirm the disabled flag reads false.
-    const features = renderHookWithProviders(() => useFeatures());
-    await waitFor(() => expect(features.result.current.data).toBeDefined());
-    expect(result.current).toBe(false);
+    // Both hooks share one render (one query client): the wait settles the
+    // SAME query the gate reads, so this asserts "disabled", not "loading".
+    const { result } = renderHookWithProviders(() => ({
+      enabled: useFeatureEnabled('beta_thing'),
+      features: useFeatures(),
+    }));
+    await waitFor(() => expect(result.current.features.data).toBeDefined());
+    expect(result.current.enabled).toBe(false);
   });
 
   it('returns false while loading (fails closed)', () => {
@@ -82,10 +85,12 @@ describe('useFeatureEnabled', () => {
 
   it('returns false for an unknown flag', async () => {
     mockGetFeatures.mockResolvedValue(FEATURES);
-    const { result } = renderHookWithProviders(() => useFeatureEnabled('does_not_exist'));
-    const features = renderHookWithProviders(() => useFeatures());
-    await waitFor(() => expect(features.result.current.data).toBeDefined());
-    expect(result.current).toBe(false);
+    const { result } = renderHookWithProviders(() => ({
+      enabled: useFeatureEnabled('does_not_exist'),
+      features: useFeatures(),
+    }));
+    await waitFor(() => expect(result.current.features.data).toBeDefined());
+    expect(result.current.enabled).toBe(false);
   });
 });
 

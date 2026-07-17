@@ -7,6 +7,8 @@ interface ToggleSwitchProps {
   disabled?: boolean;
   /** Extra classes layered onto the pill (e.g. `mt-0.5` for top alignment). */
   className?: string;
+  /** Accessible name — the visual label beside the pill isn't associated with it. */
+  ariaLabel?: string;
 }
 
 /**
@@ -14,10 +16,13 @@ interface ToggleSwitchProps {
  * Deliberately a plain button rather than the Radix switch — it preserves the
  * exact markup and theme-var styling both call sites already shipped.
  */
-export function ToggleSwitch({ checked, onChange, disabled, className }: ToggleSwitchProps): React.ReactElement {
+export function ToggleSwitch({ checked, onChange, disabled, className, ariaLabel }: ToggleSwitchProps): React.ReactElement {
   return (
     <button
       type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel}
       onClick={onChange}
       disabled={disabled}
       className={cn(

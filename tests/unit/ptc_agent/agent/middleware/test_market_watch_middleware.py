@@ -252,9 +252,10 @@ async def test_sse_emitted_only_on_fresh_fetch(recording_handler):
 
 
 @pytest.mark.asyncio
-async def test_unwatch_mid_window_stops_injection(recording_handler):
-    # A mid-window unwatch must stop the replay: the throttle now sits below the
-    # watchlist read, so the cached block is only replayed while the list matches.
+async def test_watchlist_change_mid_window_refetches(recording_handler):
+    # A mid-window mutation must not replay the stale block (removed symbols
+    # would resurface) nor go silent (a just-watched symbol would be invisible
+    # for the rest of the window) — it refetches for the current list.
     mw = _mw(interval=9999)
     provider = AsyncMock()
     provider.get_snapshots = AsyncMock(return_value=_SNAPS)
@@ -272,8 +273,10 @@ async def test_unwatch_mid_window_stops_injection(recording_handler):
 
     seen = recording_handler.seen
     _assert_stamped(first, seen[0])
-    assert seen[1] is second  # list changed within window → nothing injected
-    assert provider.get_snapshots.await_count == 1
+    _assert_stamped(second, seen[1])  # changed list → fresh fetch, not replay
+    assert provider.get_snapshots.await_count == 2
+    # The refetch targets the CURRENT list, not the cached one.
+    assert provider.get_snapshots.await_args_list[1].args[0] == ["NVDA"]
 
 
 @pytest.mark.asyncio
@@ -503,6 +506,33 @@ async def test_cache_breakpoint_tags_last_text_block_of_list_content(recording_h
         "type": "text", "text": "part 2", "cache_control": {"type": "ephemeral"}
     }
     assert "cache_control" not in tool.content[1]
+
+
+@pytest.mark.asyncio
+async def test_cache_breakpoint_skips_non_text_tail_block(recording_handler):
+    # A durable message can end in a non-text block (image attachment); the
+    # marker must land on the last TEXT block, leaving the tail untouched —
+    # some providers reject cache markers on non-text blocks.
+    mw = _mw()
+    image_block = {"type": "image", "source": {"type": "base64", "data": "xx"}}
+    tool = ToolMessage(
+        content=[{"type": "text", "text": "part 1"}, image_block],
+        tool_call_id="tc-1", name="web_search", id="tm-1",
+    )
+    ai = AIMessage(content="", tool_calls=[], id="ai-1")
+    request = _FakeRequest(
+        [HumanMessage(content="hi", id="h-0"), ai, tool], model=_anthropic_model()
+    )
+
+    with _patched(["NVDA"]):
+        await mw.awrap_model_call(request, recording_handler)
+
+    tagged = recording_handler.seen[0].messages[-2]
+    assert tagged.content[0] == {
+        "type": "text", "text": "part 1", "cache_control": {"type": "ephemeral"}
+    }
+    assert tagged.content[1] == image_block
+    assert "cache_control" not in image_block
 
 
 @pytest.mark.asyncio

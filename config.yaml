@@ -222,14 +222,8 @@ news_poll:
 market_watch:
   min_interval_seconds: 25
   max_symbols: 10
-  # Stamp delivery strategy:
-  #   ephemeral  — stamp overrides each model request only; never persisted
-  #                (checkpoints/history stay clean)
-  #   persistent — stamp is checkpointed into thread state; fallback if the
-  #                ephemeral tail proves to hurt prompt-cache hit rates
-  #                (grows history by ~1 stamp per refresh interval)
-  injection: ephemeral
-  # Ephemeral mode only: pin a provider cache breakpoint (Anthropic
+  # The stamp is ephemeral (overrides each model request only; never enters
+  # checkpoints or history), so pin a provider cache breakpoint (Anthropic
   # cache_control / OpenAI prompt_cache_breakpoint) on the last durable
   # message so the ephemeral stamp doesn't break incremental caching.
   cache_breakpoint_pin: true

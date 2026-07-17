@@ -69,13 +69,17 @@ def _exclusive_end(end: str) -> str:
         return end
 
 
-def _finite(v: Any) -> float:
-    """Coerce to float, returning 0.0 for None/non-finite/unparseable values."""
+def _finite(v: Any) -> float | None:
+    """Coerce to float, returning None for None/non-finite/unparseable values.
+
+    None (not 0.0): a missing price coerced to zero reads as a real $0.00
+    quote downstream, while None lets callers drop or omit the field.
+    """
     try:
         f = float(v)
     except (TypeError, ValueError):
-        return 0.0
-    return f if math.isfinite(f) else 0.0
+        return None
+    return f if math.isfinite(f) else None
 
 
 def _normalize_bar(idx, row: Any, scale: float = 1.0) -> dict[str, Any]:
@@ -140,21 +144,29 @@ def _fetch_single_snapshot(sym: str) -> dict[str, Any] | None:
         fi = ticker.fast_info
         # NaN is truthy, so `nan or 0` stays NaN — route every numeric field
         # through _finite() so a snapshot can never carry non-finite floats.
-        price = _finite(fi.get("lastPrice", 0))
-        prev = _finite(fi.get("previousClose", 0))
+        # No finite last price means no quote: a None snapshot beats a $0.00
+        # phantom; missing optional fields stay None rather than becoming 0.
+        price = _finite(fi.get("lastPrice"))
+        if price is None:
+            return None
+        prev = _finite(fi.get("previousClose"))
         change = price - prev if prev else 0.0
         change_pct = (change / prev * 100) if prev else 0.0
+        open_ = _finite(fi.get("open"))
+        high = _finite(fi.get("dayHigh"))
+        low = _finite(fi.get("dayLow"))
+        volume = _finite(fi.get("lastVolume"))
         return {
             "symbol": sym,
             "name": None,
             "price": round(price, 4),
             "change": round(change, 4),
             "change_percent": round(change_pct, 4),
-            "previous_close": round(prev, 4),
-            "open": round(_finite(fi.get("open", 0)), 4),
-            "high": round(_finite(fi.get("dayHigh", 0)), 4),
-            "low": round(_finite(fi.get("dayLow", 0)), 4),
-            "volume": int(_finite(fi.get("lastVolume", 0))),
+            "previous_close": round(prev, 4) if prev is not None else None,
+            "open": round(open_, 4) if open_ is not None else None,
+            "high": round(high, 4) if high is not None else None,
+            "low": round(low, 4) if low is not None else None,
+            "volume": int(volume) if volume is not None else 0,
             "market_status": None,
             "early_trading_change_percent": None,
             "late_trading_change_percent": None,

@@ -40,21 +40,26 @@ def tag_last_text_block(
 ) -> list[Any] | None:
     """New content list with ``key: marker`` on its last text block, or None.
 
-    Tags a plain-string body as one text block, or the last block of a list body
-    (a dict block keeps its type; a bare-string element is promoted to text).
-    Returns None when there is no text-bearing tail to tag — the caller then
-    leaves the message unchanged (worse caching, never a malformed request).
+    Tags a plain-string body as one text block; for a list body it searches
+    backward for the last text-bearing block (a ``type: "text"`` dict, or a
+    bare-string element promoted to text) so a non-text tail — an image or
+    tool-use block a provider may reject the marker on — is never tagged.
+    Returns None when no block accepts the marker — the caller then leaves the
+    message unchanged (worse caching, never a malformed request).
     """
     if isinstance(content, str):
         if not content:
             return None
         return [{"type": "text", "text": content, key: dict(marker)}]
     if isinstance(content, list):
-        if not content:
-            return None
-        last = content[-1]
-        if isinstance(last, dict):
-            return [*content[:-1], {**last, key: dict(marker)}]
-        if isinstance(last, str):
-            return [*content[:-1], {"type": "text", "text": last, key: dict(marker)}]
+        for i in range(len(content) - 1, -1, -1):
+            block = content[i]
+            if isinstance(block, dict) and block.get("type") == "text":
+                return [*content[:i], {**block, key: dict(marker)}, *content[i + 1:]]
+            if isinstance(block, str):
+                return [
+                    *content[:i],
+                    {"type": "text", "text": block, key: dict(marker)},
+                    *content[i + 1:],
+                ]
     return None

@@ -56,12 +56,16 @@ def _drop_non_finite(value: Any) -> Any:
 def finite_json_dumps(value: Any, **kwargs: Any) -> str:
     """json.dumps that emits valid JSON even when the tree contains NaN/Inf.
 
-    Fast path: single dumps with allow_nan=False; only on ValueError does it
-    pay one tree walk to null out non-finite floats.
+    Fast path: single dumps with allow_nan=False; only on the non-finite
+    ValueError does it pay one tree walk to null out non-finite floats. Other
+    ValueErrors (circular reference) re-raise — _drop_non_finite would recurse
+    forever on them.
     """
     try:
         return json.dumps(value, allow_nan=False, **kwargs)
-    except ValueError:
+    except ValueError as e:
+        if "Out of range float" not in str(e):
+            raise
         return json.dumps(_drop_non_finite(value), allow_nan=False, **kwargs)
 
 

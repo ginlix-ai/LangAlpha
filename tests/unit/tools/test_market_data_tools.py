@@ -405,9 +405,15 @@ class TestFreshnessStamp:
 
     @pytest.mark.asyncio
     async def test_daily_prices_unstamped_when_closed(self):
+        # A priced snapshot IS available — only the CLOSED session gate must
+        # suppress the stamp (an empty snapshot list would suppress it in any
+        # session and prove nothing about the gate).
         bars = _make_provider_bars(5)
         provider = _make_fake_market_provider(daily_bars=bars)
-        provider.get_snapshots = AsyncMock(return_value=[])
+        provider.get_snapshots = AsyncMock(return_value=[
+            {"symbol": "AAPL", "price": 210.0, "change_percent": 1.1,
+             "volume": 1_000, "last_trade_price": 211.50, "market_status": "closed"},
+        ])
         with patch(f"{_MOD}.get_market_data_provider", return_value=provider), \
              patch("src.tools.market_data.quote_format.get_market_session",
                    return_value=("CLOSED", _FIXED_ET)):
@@ -868,9 +874,11 @@ class TestFetchIndexDaySnapshot:
         # ohlcv ascending for the chart
         dates = [b["date"] for b in entry["ohlcv"]]
         assert dates == sorted(dates)
-        # period_change_pct is the DAY move (last close vs prior close), not the window move
-        closes = sorted(b["close"] for b in entry["ohlcv"])[-2:]
-        expected_day_pct = (closes[1] - closes[0]) / closes[0] * 100
+        # period_change_pct is the DAY move (last close vs prior close), not the
+        # window move — take the final two bars chronologically (ohlcv is
+        # ascending), never by close value.
+        prior, last = entry["ohlcv"][-2:]
+        expected_day_pct = (last["close"] - prior["close"]) / prior["close"] * 100
         assert entry["stats"]["period_change_pct"] == pytest.approx(expected_day_pct)
 
     @pytest.mark.asyncio

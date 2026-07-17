@@ -118,12 +118,12 @@ def format_quote_line(snap: dict[str, Any], prev_price: Optional[float] = None) 
     price = current_price(snap)
     if price is not None:
         parts.append(_fmt_price(price, symbol))
-    pct = snap.get("change_percent")
+    pct = finite_or_none(snap.get("change_percent"))
     if pct is not None:
         parts.append(f"{'+' if pct >= 0 else ''}{pct:.2f}% today")
-    vol = snap.get("volume")
+    vol = finite_or_none(snap.get("volume"))
     if vol:
-        parts.append(f"vol {_fmt_volume(vol)}")
+        parts.append(f"vol {_fmt_volume(int(vol))}")
     if prev_price and price is not None and prev_price > 0:
         delta_pct = (price - prev_price) / prev_price * 100
         parts.append(f"({'+' if delta_pct >= 0 else ''}{delta_pct:.2f}% since last check)")

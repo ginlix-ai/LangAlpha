@@ -50,6 +50,26 @@ class TestGetFeatures:
         assert mw["tradeoffs"]
 
     @pytest.mark.asyncio
+    async def test_kill_switched_feature_is_omitted(self, features_client):
+        """Deployment ``enabled: false`` hides every surface — the list must
+        not advertise a toggle that can never turn on."""
+        from src.config.features import FeatureGate, SystemFlag
+
+        killed = SystemFlag(enabled=False, gate=FeatureGate.OPT_IN, min_tier=None)
+        with (
+            patch(
+                "src.server.services.features.get_user_preferences",
+                new=AsyncMock(return_value=_prefs()),
+            ),
+            patch("src.server.services.features.system_flag", lambda key: killed),
+        ):
+            resp = await features_client.get("/api/v1/features")
+        assert resp.status_code == 200
+        assert all(
+            f["key"] != "market_watch" for f in resp.json()["features"]
+        )
+
+    @pytest.mark.asyncio
     async def test_user_override_wins_and_is_reported(self, features_client):
         with patch(
             "src.server.services.features.get_user_preferences",

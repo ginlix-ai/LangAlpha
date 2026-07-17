@@ -1401,7 +1401,9 @@
         "company_overview": "公司概况",
         "daily_prices": "每日价格",
         "options_chain": "期权链",
-        "market_index": "市场指数"
+        "market_index": "市场指数",
+        "quote": "实时报价",
+        "market_overview": "市场概览"
       }
     },
     "a11y": {

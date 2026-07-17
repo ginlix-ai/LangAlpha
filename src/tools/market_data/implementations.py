@@ -722,7 +722,6 @@ async def fetch_daily_prices(
 
         if not results:
             logger.warning(f"No price data found for {symbol}")
-            stamp_task.cancel()
             timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
             content = f"""## Stock Price Data: {symbol}
 **Retrieved:** {timestamp}
@@ -872,8 +871,6 @@ No price data available for the specified period."""
 
     except Exception as e:
         logger.error(f"Error retrieving daily prices for {symbol}: {e}")
-        if stamp_task:
-            stamp_task.cancel()
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         content = f"""## Stock Price Data: {symbol}
 **Retrieved:** {timestamp}
@@ -881,6 +878,12 @@ No price data available for the specified period."""
 
 Error retrieving price data: {str(e)}"""
         return content, {"type": "stock_prices", "symbol": symbol, "error": str(e)}
+    finally:
+        # Success paths awaited the task (done → no-op); every other exit —
+        # early return, error, or cancellation of this coroutine — must not
+        # leak a pending fetch.
+        if stamp_task is not None and not stamp_task.done():
+            stamp_task.cancel()
 
 
 async def fetch_company_overview_data(symbol: str) -> Dict[str, Any]:

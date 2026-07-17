@@ -114,6 +114,15 @@ class TestFiniteJsonDumps:
         assert "NaN" not in out and "Infinity" not in out
         assert json.loads(out) == {"deep": [{"x": None}, [None, 2.0]]}
 
+    def test_circular_reference_reraises(self):
+        # Only the non-finite ValueError takes the tree-walk fallback; a
+        # circular structure must surface its own error, not recurse forever
+        # inside _drop_non_finite.
+        loop: list = []
+        loop.append(loop)
+        with pytest.raises(ValueError, match="[Cc]ircular"):
+            finite_json_dumps(loop)
+
 
 class TestSafeJson:
     def test_is_a_psycopg_Json_subclass(self):

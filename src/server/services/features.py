@@ -88,12 +88,19 @@ async def user_feature_enabled(user_id: str, key: str) -> bool:
 
 
 async def list_user_features(user_id: str) -> list[FeatureState]:
-    """Resolved state of every cataloged feature, shaped for the API."""
+    """Resolved state of every cataloged feature, shaped for the API.
+
+    Kill-switched features (deployment ``enabled: false``) are omitted — the
+    catalog contract is that the kill switch hides every surface, and a listed
+    entry would render a Settings toggle that can never turn on.
+    """
     overrides = await _get_overrides(user_id)
     resolved = await effective_flags_for_user(user_id, overrides)
     features = []
     for key, spec in FEATURES.items():
         flag = system_flag(key)
+        if not flag.enabled:
+            continue
         override = overrides.get(key)
         user_controllable = flag.gate in USER_CONTROLLABLE_GATES
         features.append(
