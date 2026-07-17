@@ -143,7 +143,7 @@ class TestFormatNotes:
             ],
         }
         result = format_notes(parsed)
-        assert "3 commits total" in result
+        assert "3 changes total" in result
         assert "2 features" in result
         assert "1 fix" in result
 

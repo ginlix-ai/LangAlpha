@@ -47,8 +47,13 @@ CONVENTIONAL_RE = re.compile(
 
 
 def get_commits(commit_range: str | None) -> list[tuple[str, str]]:
-    """Run git log and return (full_sha, subject) pairs."""
-    cmd = ["git", "log", "--no-merges", "--format=%H %s"]
+    """Run git log and return (full_sha, subject) pairs.
+
+    First-parent only: a PR's individual commits are implementation detail, so
+    the walk yields one entry per PR — the merge commit under merge-commit PRs,
+    the squashed commit under squash PRs — plus any direct push to main.
+    """
+    cmd = ["git", "log", "--first-parent", "--format=%H %s"]
     if commit_range:
         cmd.append(commit_range)
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -208,7 +213,7 @@ def format_notes(
         )
         count_parts.append(f"{n} {singular if n == 1 else plural}")
 
-    lines.append(f"*{', '.join(count_parts)} — {total} commits total*")
+    lines.append(f"*{', '.join(count_parts)} — {total} changes total*")
     lines.append("")
 
     return "\n".join(lines)
