@@ -11,7 +11,9 @@ or a broken truthiness mapping fails here instead of silently in production.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -19,6 +21,21 @@ from .redis_fakes import FakeCache
 
 CACHE = "src.utils.cache.redis_cache.get_cache_client"
 KEY = "workflow:steering:t-1"
+SR_DB = "src.server.database.subagent_runs"
+
+
+@contextlib.contextmanager
+def _ledger(*, active=None, chain=(), latest_statuses=None):
+    """Patch the steering fallback's ledger reads."""
+    with (
+        patch(f"{SR_DB}.get_active_task_run", new=AsyncMock(return_value=active)),
+        patch(f"{SR_DB}.list_task_runs", new=AsyncMock(return_value=list(chain))),
+        patch(
+            f"{SR_DB}.get_latest_run_statuses",
+            new=AsyncMock(return_value=latest_statuses or {}),
+        ),
+    ):
+        yield
 
 
 @pytest.mark.asyncio
@@ -206,8 +223,75 @@ async def test_steer_subagent_unknown_everywhere_is_404(monkeypatch):
     cache = FakeCache()
     monkeypatch.setattr(CACHE, lambda: cache)
 
-    with pytest.raises(HTTPException) as exc:
+    with _ledger(), pytest.raises(HTTPException) as exc:
         await steer_subagent("t-nowhere", "zzz999", "go", "u-1")
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_steer_subagent_lapsed_meta_resolves_via_ledger(monkeypatch):
+    """Meta gone (TTL/flush) but the ledger names a live run: routing
+    identity comes from the chain's init launch call, the fence from the
+    active slot — a provably-running task must not 404."""
+    from src.server.handlers.chat.steering import steer_subagent
+
+    cache = FakeCache()
+    monkeypatch.setattr(CACHE, lambda: cache)
+
+    with _ledger(
+        active={"task_run_id": "run-77", "task_id": "abc123"},
+        chain=[
+            {"cause": "init", "launch_tool_call_id": "tc-init"},
+            {"cause": "resume", "launch_tool_call_id": "tc-resume"},
+        ],
+    ):
+        result = await steer_subagent("t-lapsed", "abc123", "go", "u-1")
+
+    assert result["success"] is True
+    assert result["tool_call_id"] == "tc-init"
+    key = "subagent:steering:tc-init:run-77"
+    (payload,) = _queued(cache, key)
+    assert payload["expected_task_run_id"] == "run-77"
+    assert payload["input_id"] == result["input_id"]
+
+
+@pytest.mark.asyncio
+async def test_steer_subagent_lapsed_meta_terminal_chain_is_409(monkeypatch):
+    from fastapi import HTTPException
+
+    from src.server.handlers.chat.steering import steer_subagent
+
+    cache = FakeCache()
+    monkeypatch.setattr(CACHE, lambda: cache)
+
+    with (
+        _ledger(latest_statuses={"abc123": "cancelled"}),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await steer_subagent("t-lapsed2", "abc123", "go", "u-1")
+    assert exc.value.status_code == 409
+    assert "cancelled" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_steer_subagent_lapsed_meta_unstamped_chain_is_404(monkeypatch):
+    """A live run whose chain never recorded an init launch call has no
+    routing identity — there is no queue key the writer would drain."""
+    from fastapi import HTTPException
+
+    from src.server.handlers.chat.steering import steer_subagent
+
+    cache = FakeCache()
+    monkeypatch.setattr(CACHE, lambda: cache)
+
+    with (
+        _ledger(
+            active={"task_run_id": "run-77", "task_id": "abc123"},
+            chain=[{"cause": "init", "launch_tool_call_id": None}],
+        ),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await steer_subagent("t-lapsed3", "abc123", "go", "u-1")
     assert exc.value.status_code == 404
 
 

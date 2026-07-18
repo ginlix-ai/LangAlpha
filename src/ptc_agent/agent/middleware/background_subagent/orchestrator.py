@@ -451,14 +451,11 @@ class BackgroundSubagentOrchestrator:
                     task.error = str(e)
                     task.result = {"success": False, "error": str(e)}
 
-        # Completed tasks whose results the agent hasn't seen. A task claimed
-        # for a report-back notification turn is owned by the outbox pipeline
-        # — announcing it here would deliver it twice.
+        # Completed tasks whose results the agent hasn't seen. Server-side
+        # report-back is outbox-owned and never reaches this CLI-only path.
         all_tasks = list(self.middleware.registry._tasks.values())
         unseen_tasks = [
-            t
-            for t in all_tasks
-            if t.completed and not t.result_seen and not t.report_back_claimed
+            t for t in all_tasks if t.completed and not t.result_seen
         ]
 
         logger.debug(

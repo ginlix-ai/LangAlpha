@@ -598,11 +598,6 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         task.result = None
         task.result_seen = False
         task.error = None
-        # The prior round's delivery/claim are spent; without clearing them a
-        # same-process resume can never report back (claim_report_back gates
-        # on both).
-        task.result_delivered = False
-        task.report_back_claimed = False
         # tool_usage / per_call_records are intentionally NOT cleared here: if a
         # collector hasn't billed the prior run yet, the next completion merges
         # into them so run-1 usage survives the resume. Cleanup drops them only

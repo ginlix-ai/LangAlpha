@@ -154,10 +154,33 @@ class SubagentRunLedger:
                 payload={"outcome": run["status"]},
                 terminal=True,
             )
+            if run["status"] == "completed" and run.get("parent_run_id"):
+                # The report-back job committed with the CAS; wake the
+                # drainer so a tail completion notifies promptly instead of
+                # riding the poll interval. Best-effort — the job is durable.
+                try:
+                    from src.server.services.hook_outbox import HookOutboxDrainer
+
+                    HookOutboxDrainer.get_instance().nudge()
+                except Exception:
+                    pass
         return result
 
     async def mark_result_delivered(self, task_run_id: str) -> bool:
         return await sr_db.mark_result_delivered(task_run_id)
+
+    async def get_latest_run(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Latest-chain run row for a task, or None (pre-ledger/unknown).
+
+        The duck-typed read TaskOutput uses to answer honestly about a task
+        with no live registry entry — running elsewhere, failed, cancelled,
+        or completed-with-archive.
+        """
+        task_row = await sr_db.get_task(self.thread_id, task_id)
+        latest = task_row.get("latest_run_id") if task_row else None
+        if latest is None:
+            return None
+        return await sr_db.get_task_run(str(latest))
 
     async def request_task_run_cancel(self, task_run_id: str) -> Dict[str, Any]:
         """Durable cancel intent, thread-scoped. Stamped before the local

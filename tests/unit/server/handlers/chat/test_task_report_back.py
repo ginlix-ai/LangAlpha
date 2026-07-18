@@ -1,19 +1,21 @@
-"""Locks the task report-back notification-style contract.
+"""Locks the task report-back contract.
 
-``style`` is chosen at enqueue, carried in the durable payload, and honored
-at dispatch: inline embeds the result and gates subagent tooling off;
-pointer announces and keeps TaskOutput available. Unknown styles must fall
-back to inline — a durable job may outlive the code that enqueued it.
+Jobs are born on the run ledger's terminal CAS; the EXECUTOR arbitrates at
+claim time against the durable row (result_delivered_at → drop; live or
+interrupted parent → park until the thread's next completed finalize).
+``style`` is carried in the durable payload and honored at dispatch: inline
+embeds the result and gates subagent tooling off; pointer announces and
+keeps TaskOutput available. Unknown styles must fall back to inline — a
+durable job may outlive the code that enqueued it.
 """
 
-from types import SimpleNamespace
+import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.server.handlers.chat.task_report_back import (
     TASK_RB_RESULT_CAP,
-    TASK_RB_STYLE,
     _build_notification_message,
     enqueue_task_report_backs,
     execute_task_report_back,
@@ -74,213 +76,220 @@ class TestBuildNotificationMessage:
 
 
 # ---------------------------------------------------------------------------
-# enqueue: style stamped into the durable payload
+# settled-watch reconciliation (jobs are born at the run's terminal CAS)
 # ---------------------------------------------------------------------------
 
 
-def _task(task_id: str = "abc123") -> SimpleNamespace:
-    return SimpleNamespace(
-        task_id=task_id,
-        display_id=f"Task-{task_id}",
-        subagent_type="research",
-        description="look things up",
-        result={"success": True, "result": "the findings"},
-        report_back_claimed=False,
+@pytest.mark.asyncio
+async def test_settled_wake_publishes_when_no_open_job():
+    wake = AsyncMock()
+    with (
+        patch(
+            "src.server.database.hook_outbox.get_open_notification_job",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("src.server.handlers.chat.report_back.publish_wake", new=wake),
+        patch("src.utils.cache.redis_cache.get_cache_client"),
+    ):
+        await enqueue_task_report_backs(thread_id="t1", all_settled=True)
+
+    assert wake.await_args.kwargs.get("cleared") is True
+
+
+@pytest.mark.asyncio
+async def test_settled_wake_skipped_while_a_job_is_open():
+    """An open job means the executor's own outcome (run_id wake or cleared)
+    is the signal — a premature cleared wake would drop the pending chip
+    while a notification turn is still owed."""
+    wake = AsyncMock()
+    with (
+        patch(
+            "src.server.database.hook_outbox.get_open_notification_job",
+            new=AsyncMock(return_value={"hook_outbox_id": "j1"}),
+        ),
+        patch("src.server.handlers.chat.report_back.publish_wake", new=wake),
+        patch("src.utils.cache.redis_cache.get_cache_client"),
+    ):
+        await enqueue_task_report_backs(thread_id="t1", all_settled=True)
+
+    wake.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_not_settled_is_a_noop():
+    probe = AsyncMock()
+    with patch(
+        "src.server.database.hook_outbox.get_open_notification_job", new=probe
+    ):
+        await enqueue_task_report_backs(thread_id="t1", all_settled=False)
+
+    probe.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# executor arbitration against the ledger row
+# ---------------------------------------------------------------------------
+
+
+def _arb_job(**payload_over) -> dict:
+    payload = {
+        "task_id": "abc123",
+        "task_run_id": "run-1",
+        "display_id": "Task-abc123",
+        "subagent_type": "research",
+        "description": "look things up",
+        "style": "pointer",
+        "workspace_id": "w1",
+        "user_id": "u1",
+    }
+    payload.update(payload_over)
+    return {
+        "hook_outbox_id": "0f1e2d3c-0000-0000-0000-000000000001",
+        "conversation_thread_id": "t1",
+        "attempts": 0,
+        "payload": payload,
+    }
+
+
+@contextlib.contextmanager
+def _arb_env(
+    *,
+    run_row,
+    latest_statuses,
+    post=None,
+    defer=None,
+    release=None,
+    wake=None,
+):
+    """Patch set for the executor's pre-dispatch arbitration."""
+    latest = AsyncMock(
+        side_effect=[{"status": s} if s else None for s in latest_statuses]
     )
-
-
-@pytest.fixture
-def enqueue_env():
-    registry = MagicMock()
-    registry.claim_report_back = AsyncMock(return_value=True)
-    store = MagicMock()
-    store.get_registry = AsyncMock(return_value=registry)
-    enqueued: list[dict] = []
-
-    async def _capture(**kwargs):
-        enqueued.append(kwargs)
-
-    with (
+    patches = (
         patch(
-            "src.server.services.background_registry_store."
-            "BackgroundRegistryStore.get_instance",
-            return_value=store,
+            "src.server.database.subagent_runs.get_task_run",
+            new=AsyncMock(return_value=run_row),
         ),
         patch(
-            "src.server.database.hook_outbox.enqueue_compensation_job",
-            new=AsyncMock(side_effect=_capture),
+            "src.server.database.turn_lifecycle.get_latest_attempt", new=latest
         ),
         patch(
-            "src.server.database.turn_lifecycle.get_run",
-            new=AsyncMock(return_value={"status": "completed"}),
+            "src.server.handlers.chat.notify_turn.post_notification_turn",
+            new=post or AsyncMock(return_value=("dispatched", "rb-run-1")),
         ),
+        patch(
+            "src.server.handlers.chat.notify_turn.await_run_terminal",
+            new=AsyncMock(return_value="done"),
+        ),
+        patch(
+            "src.server.database.hook_outbox.merge_job_payload",
+            new=AsyncMock(return_value=True),
+        ),
+        patch(
+            "src.server.database.hook_outbox.defer_claimed_job",
+            new=defer or AsyncMock(return_value="pending"),
+        ),
+        patch(
+            "src.server.database.hook_outbox.release_deferred_jobs",
+            new=release or AsyncMock(return_value=1),
+        ),
+        patch(
+            "src.server.handlers.chat.report_back.publish_wake",
+            new=wake or AsyncMock(),
+        ),
+        patch("src.utils.cache.redis_cache.get_cache_client"),
+        patch("src.server.database.conversation.get_db_connection"),
         patch("src.server.services.hook_outbox.HookOutboxDrainer.get_instance"),
-    ):
-        yield enqueued
-
-
-class TestEnqueueStyle:
-    @pytest.mark.asyncio
-    async def test_default_style_follows_module_constant(self, enqueue_env):
-        n = await enqueue_task_report_backs(
-            thread_id="t1",
-            response_id="r1",
-            tasks=[_task()],
-            workspace_id="w1",
-            user_id="u1",
-            all_settled=True,
-        )
-        assert n == 1
-        assert enqueue_env[0]["payload"]["style"] == TASK_RB_STYLE
-
-    @pytest.mark.asyncio
-    async def test_inline_style_carries_result_text(self, enqueue_env):
-        await enqueue_task_report_backs(
-            thread_id="t1",
-            response_id="r1",
-            tasks=[_task()],
-            workspace_id="w1",
-            user_id="u1",
-            all_settled=True,
-            style="inline",
-        )
-        payload = enqueue_env[0]["payload"]
-        assert payload["style"] == "inline"
-        assert payload["result_text"] == "the findings"
-
-    @pytest.mark.asyncio
-    async def test_pointer_style_omits_result_text(self, enqueue_env):
-        await enqueue_task_report_backs(
-            thread_id="t1",
-            response_id="r1",
-            tasks=[_task()],
-            workspace_id="w1",
-            user_id="u1",
-            all_settled=True,
-            style="pointer",
-        )
-        payload = enqueue_env[0]["payload"]
-        assert payload["style"] == "pointer"
-        assert "result_text" not in payload
-        assert "result_truncated" not in payload
-
-
-def _claim_gated_registry():
-    """Registry mock whose claim respects report_back_claimed, like the real
-    one — a retry pass must re-claim only released (failed) tasks."""
-    registry = MagicMock()
-
-    async def _claim(task, response_id=None):
-        if task.report_back_claimed:
-            return False
-        task.report_back_claimed = True
-        return True
-
-    registry.claim_report_back = AsyncMock(side_effect=_claim)
-    store = MagicMock()
-    store.get_registry = AsyncMock(return_value=registry)
-    return store
+    )
+    with contextlib.ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        yield
 
 
 @pytest.mark.asyncio
-async def test_enqueue_insert_failure_releases_claim_after_retries():
-    """A claim without an outbox row is a permanently lost notification: a
-    persistently failing insert must hand the claim back at the end while
-    sibling tasks still insert (exactly once, despite the retry passes)."""
-    store = _claim_gated_registry()
-    t_ok, t_fail = _task("aaa111"), _task("bbb222")
-    ok_inserts = 0
-
-    async def _insert(**kwargs):
-        if kwargs["payload"]["task_id"] == "bbb222":
-            raise RuntimeError("db down")
-        nonlocal ok_inserts
-        ok_inserts += 1
-
-    with (
-        patch(
-            "src.server.services.background_registry_store."
-            "BackgroundRegistryStore.get_instance",
-            return_value=store,
-        ),
-        patch(
-            "src.server.database.hook_outbox.enqueue_compensation_job",
-            new=AsyncMock(side_effect=_insert),
-        ),
-        patch(
-            "src.server.database.turn_lifecycle.get_run",
-            new=AsyncMock(return_value={"status": "completed"}),
-        ),
-        patch("src.server.services.hook_outbox.HookOutboxDrainer.get_instance"),
-        patch(
-            "src.server.handlers.chat.task_report_back._ENQUEUE_PASS_DELAYS",
-            (0.0, 0.0, 0.0),
-        ),
+async def test_dispatch_drops_when_result_already_delivered():
+    """TaskOutput delivered after the CAS: nothing is owed — no POST, and a
+    cleared wake reconciles watchers riding the pending chip."""
+    post, wake = AsyncMock(), AsyncMock()
+    with _arb_env(
+        run_row={"status": "completed", "result_delivered_at": "now"},
+        latest_statuses=["completed"],
+        post=post,
+        wake=wake,
     ):
-        n = await enqueue_task_report_backs(
-            thread_id="t1",
-            response_id="r1",
-            tasks=[t_ok, t_fail],
-            workspace_id="w1",
-            user_id="u1",
-            all_settled=True,
-        )
+        await execute_task_report_back(_arb_job())
 
-    assert n == 1
-    assert ok_inserts == 1
-    assert t_ok.report_back_claimed is True
-    assert t_fail.report_back_claimed is False
+    post.assert_not_awaited()
+    assert wake.await_args.kwargs.get("cleared") is True
 
 
 @pytest.mark.asyncio
-async def test_enqueue_transient_insert_failure_recovers_in_call():
-    """Retries must complete INSIDE the call: the all-settled fast paths
-    evict the registry right after it returns, so a released claim has no
-    later actor. A transient failure is absorbed by a follow-up pass."""
-    store = _claim_gated_registry()
-    t_ok, t_flaky = _task("aaa111"), _task("bbb222")
-    flaky_left = 1
-    enqueued: list[dict] = []
-
-    async def _insert(**kwargs):
-        nonlocal flaky_left
-        if kwargs["payload"]["task_id"] == "bbb222" and flaky_left:
-            flaky_left -= 1
-            raise RuntimeError("transient blip")
-        enqueued.append(kwargs)
-
-    with (
-        patch(
-            "src.server.services.background_registry_store."
-            "BackgroundRegistryStore.get_instance",
-            return_value=store,
-        ),
-        patch(
-            "src.server.database.hook_outbox.enqueue_compensation_job",
-            new=AsyncMock(side_effect=_insert),
-        ),
-        patch(
-            "src.server.database.turn_lifecycle.get_run",
-            new=AsyncMock(return_value={"status": "completed"}),
-        ),
-        patch("src.server.services.hook_outbox.HookOutboxDrainer.get_instance"),
-        patch(
-            "src.server.handlers.chat.task_report_back._ENQUEUE_PASS_DELAYS",
-            (0.0, 0.0, 0.0),
-        ),
+async def test_dispatch_drops_when_run_row_gone():
+    post, wake = AsyncMock(), AsyncMock()
+    with _arb_env(
+        run_row=None, latest_statuses=["completed"], post=post, wake=wake
     ):
-        n = await enqueue_task_report_backs(
-            thread_id="t1",
-            response_id="r1",
-            tasks=[t_ok, t_flaky],
-            workspace_id="w1",
-            user_id="u1",
-            all_settled=True,
-        )
+        await execute_task_report_back(_arb_job())
 
-    assert n == 2
-    assert [k["payload"]["task_id"] for k in enqueued] == ["aaa111", "bbb222"]
-    assert t_flaky.report_back_claimed is True
+    post.assert_not_awaited()
+    wake.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_parks_on_live_parent():
+    """Jobs are born mid-turn (at the run's CAS); a live parent may still
+    fetch the result itself, so the executor parks instead of busy-waiting
+    a POST into the running turn."""
+    post, defer, release = (
+        AsyncMock(),
+        AsyncMock(return_value="pending"),
+        AsyncMock(),
+    )
+    with _arb_env(
+        run_row={"status": "completed", "result_delivered_at": None},
+        latest_statuses=["in_progress", "in_progress"],
+        post=post,
+        defer=defer,
+        release=release,
+    ):
+        await execute_task_report_back(_arb_job())
+
+    post.assert_not_awaited()
+    defer.assert_awaited_once()
+    release.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_park_self_releases_when_parent_finalized_meanwhile():
+    """The parent's completed finalize releases deferred jobs — but only
+    ones already parked. A finalize landing between the status read and the
+    park must be caught by the post-park re-read, which releases the job
+    itself (else it waits at infinity for a turn that may never come)."""
+    defer, release = AsyncMock(return_value="pending"), AsyncMock()
+    with _arb_env(
+        run_row={"status": "completed", "result_delivered_at": None},
+        latest_statuses=["in_progress", "completed"],
+        defer=defer,
+        release=release,
+    ):
+        await execute_task_report_back(_arb_job())
+
+    defer.assert_awaited_once()
+    release.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_proceeds_for_undelivered_run_on_settled_parent():
+    post = AsyncMock(return_value=("dispatched", "rb-run-1"))
+    with _arb_env(
+        run_row={"status": "completed", "result_delivered_at": None},
+        latest_statuses=["completed"],
+        post=post,
+    ):
+        await execute_task_report_back(_arb_job())
+
+    post.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

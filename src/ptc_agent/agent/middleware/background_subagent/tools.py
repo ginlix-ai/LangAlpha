@@ -69,22 +69,71 @@ async def _delivered_result_text(registry, task, result=None) -> str:
 
 
 async def _missing_task_reply(registry, task_id: str) -> str:
-    """Reply for a task_id with no live registry entry.
+    """Reply for a task_id with no live registry entry, answered from the
+    run ledger.
 
-    The entry may be gone while the result is durably archived (evicted after
-    collection, wiped by a stop, lost to a restart, or held by another
-    worker) — recover from the archive first; only report cancelled when the
-    archive has nothing either.
+    Honest failure semantics: only a completed latest run serves the durable
+    archive — an errored/interrupted/cancelled run reports its actual fate
+    instead of presenting a predecessor's stale text (or the legacy guess of
+    "cancelled"). A run live on another worker or turn says so. Pre-ledger
+    tasks (no run row) keep the archive-first legacy behavior.
     """
-    recovered = await registry.resolve_result_text(task_id)
-    if recovered:
+    ledger = getattr(registry, "run_ledger", None)
+    run = None
+    if ledger is not None:
+        try:
+            run = await ledger.get_latest_run(task_id)
+        except Exception:
+            logger.warning(
+                "missing-task ledger read failed", task_id=task_id, exc_info=True
+            )
+    status = str(run["status"]) if run else None
+
+    if status == "in_progress":
         return (
-            f"**Task-{task_id}** completed (result recovered from the "
-            f"durable archive):\n\n{recovered}"
+            f"Task-{task_id} is still running (owned by another turn or "
+            f"worker). Check again with TaskOutput(task_id=\"{task_id}\")."
         )
+    if status in (None, "completed"):
+        recovered = await registry.resolve_result_text(task_id)
+        if recovered:
+            if run is not None:
+                # The archive delivery IS a delivery — stamp the run so the
+                # report-back executor knows nothing further is owed.
+                try:
+                    await ledger.mark_result_delivered(str(run["task_run_id"]))
+                except Exception:
+                    pass
+            return (
+                f"**Task-{task_id}** completed (result recovered from the "
+                f"durable archive):\n\n{recovered}"
+            )
+        if status == "completed":
+            return (
+                f"Task-{task_id} completed but its result text is no longer "
+                f"available; recover it from the workspace files it produced."
+            )
+        return (
+            f"Task-{task_id} was cancelled by a user stop (no result "
+            f"was produced). It is not running and cannot be resumed."
+        )
+    if status == "cancelled":
+        return (
+            f"Task-{task_id} was cancelled before finishing; no result was "
+            f"delivered. Re-dispatch it if the work is still needed."
+        )
+    if status == "interrupted":
+        return (
+            f"Task-{task_id} stopped at an interrupt and was never resumed; "
+            f"no final result was produced."
+        )
+    failure = run.get("failure") if isinstance(run, dict) else None
+    detail = ""
+    if isinstance(failure, dict) and failure.get("error"):
+        detail = f" Error: {str(failure['error'])[:300]}"
     return (
-        f"Task-{task_id} was cancelled by a user stop (no result "
-        f"was produced). It is not running and cannot be resumed."
+        f"Task-{task_id} failed and produced no result.{detail} "
+        f"Re-dispatch it if the work is still needed."
     )
 
 

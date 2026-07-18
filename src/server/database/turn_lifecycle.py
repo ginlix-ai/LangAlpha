@@ -569,6 +569,26 @@ async def get_active_run(thread_id: str) -> Optional[Dict[str, Any]]:
             return dict(row) if row else None
 
 
+async def workspace_has_active_run(workspace_id: str) -> bool:
+    """Any live root run on any thread of the workspace — cross-worker,
+    unlike the in-process task map."""
+    async with qr_db.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM conversation_responses r
+                    JOIN conversation_threads t
+                      ON t.conversation_thread_id = r.conversation_thread_id
+                    WHERE t.workspace_id = %s AND r.status = 'in_progress'
+                )
+                """,
+                (workspace_id,),
+            )
+            return bool((await cur.fetchone())[0])
+
+
 async def get_latest_attempt(thread_id: str) -> Optional[Dict[str, Any]]:
     """The thread's most recent attempt row — /retry's validation target."""
     async with qr_db.get_db_connection() as conn:

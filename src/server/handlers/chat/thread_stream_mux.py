@@ -252,6 +252,22 @@ async def _discover_tasks(thread_id: str) -> dict[str, str]:
         logger.warning(
             "[mux] active-set discovery failed for %s", thread_id, exc_info=True
         )
+    # Ledger backstop: the active set + meta hash are TTL'd Redis state, so a
+    # long-lived cross-worker task can outlive both and become undiscoverable.
+    # Its in_progress ledger row cannot lapse. A stale row (dead worker, not
+    # yet reaped) only opens a channel that replays and settles via the
+    # quiescence probe — never a wrong stream.
+    try:
+        from src.server.database import subagent_runs as sr_db
+
+        for run in await sr_db.list_open_runs_for_thread(thread_id):
+            task_id = str(run["task_id"])
+            if task_id not in out:
+                out[task_id] = str(run["task_run_id"])
+    except Exception:
+        logger.warning(
+            "[mux] ledger discovery backstop failed for %s", thread_id, exc_info=True
+        )
     return out
 
 

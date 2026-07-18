@@ -726,6 +726,22 @@ class TestSetWorkspaceSpecDiskGuard:
     def teardown_method(self):
         WorkspaceManager.reset_instance()
 
+    @pytest.fixture(autouse=True)
+    def _quiet_durable_probes(self):
+        """The spec-change activity guard also reads the run ledgers; keep
+        both quiet so these tests exercise only the disk-guard mechanics."""
+        with (
+            patch(
+                "src.server.database.turn_lifecycle.workspace_has_active_run",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "src.server.database.subagent_runs.count_open_runs_for_workspace",
+                new=AsyncMock(return_value=0),
+            ),
+        ):
+            yield
+
     @staticmethod
     def _config_with_tiers():
         config = _make_config()

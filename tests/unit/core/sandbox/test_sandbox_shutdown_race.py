@@ -8,6 +8,7 @@ Verifies that:
 """
 
 import asyncio
+import contextlib
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -78,13 +79,33 @@ def mock_provider(mock_runtime):
     return provider
 
 
+@contextlib.contextmanager
+def _durable_probes(*, root_active=False, open_task_runs=0, error=None):
+    """Patch the guard's ledger reads (root-run rows + subagent runs)."""
+    root = AsyncMock(return_value=root_active)
+    if error is not None:
+        root.side_effect = error
+    with (
+        patch(
+            "src.server.database.turn_lifecycle.workspace_has_active_run",
+            new=root,
+        ),
+        patch(
+            "src.server.database.subagent_runs.count_open_runs_for_workspace",
+            new=AsyncMock(return_value=open_task_runs),
+        ),
+    ):
+        yield
+
+
 class TestHasActiveTasksForWorkspace:
     """BackgroundTaskManager.has_active_tasks_for_workspace returns correct results."""
 
     @pytest.mark.asyncio
     async def test_no_tasks(self):
         mgr = BackgroundTaskManager()
-        assert await mgr.has_active_tasks_for_workspace("ws-1") is False
+        with _durable_probes():
+            assert await mgr.has_active_tasks_for_workspace("ws-1") is False
 
     @pytest.mark.asyncio
     async def test_running_task_matches(self):
@@ -120,7 +141,8 @@ class TestHasActiveTasksForWorkspace:
             created_at=datetime.now(),
             metadata={"workspace_id": "ws-1"},
         )
-        assert await mgr.has_active_tasks_for_workspace("ws-1") is False
+        with _durable_probes():
+            assert await mgr.has_active_tasks_for_workspace("ws-1") is False
 
     @pytest.mark.asyncio
     async def test_different_workspace_does_not_match(self):
@@ -132,7 +154,32 @@ class TestHasActiveTasksForWorkspace:
             created_at=datetime.now(),
             metadata={"workspace_id": "ws-other"},
         )
-        assert await mgr.has_active_tasks_for_workspace("ws-1") is False
+        with _durable_probes():
+            assert await mgr.has_active_tasks_for_workspace("ws-1") is False
+
+    @pytest.mark.asyncio
+    async def test_remote_root_run_counts(self):
+        """An in_progress response row on another worker's thread keeps the
+        workspace active even with an empty local task map."""
+        mgr = BackgroundTaskManager()
+        with _durable_probes(root_active=True):
+            assert await mgr.has_active_tasks_for_workspace("ws-1") is True
+
+    @pytest.mark.asyncio
+    async def test_open_subagent_run_counts(self):
+        """A tail-mode subagent (no root run anywhere) still holds the
+        sandbox via its in_progress ledger row."""
+        mgr = BackgroundTaskManager()
+        with _durable_probes(open_task_runs=1):
+            assert await mgr.has_active_tasks_for_workspace("ws-1") is True
+
+    @pytest.mark.asyncio
+    async def test_probe_failure_counts_as_active(self):
+        """Fail closed: the callers gate sandbox teardown, so an unreadable
+        ledger must defer, never destroy."""
+        mgr = BackgroundTaskManager()
+        with _durable_probes(error=RuntimeError("db down")):
+            assert await mgr.has_active_tasks_for_workspace("ws-1") is True
 
 
 class TestCleanupIdleWorkspacesGuard:

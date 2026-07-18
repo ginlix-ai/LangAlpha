@@ -2,9 +2,9 @@
 
 The mid-turn pointer nudge announces only tasks this turn can actually
 fetch: never when the middleware is disabled (the turn has no TaskOutput
-tool — e.g. a disable_subagents notification turn), and never a task the
-report-back outbox pipeline has claimed (it will be delivered by its own
-notification turn; announcing it here would deliver it twice).
+tool — e.g. a disable_subagents notification turn), and each completion
+at most once (result_seen). Server-side report-back is outbox-owned and
+never reaches this CLI-only path.
 """
 
 from types import SimpleNamespace
@@ -22,14 +22,12 @@ def _task(
     *,
     completed: bool = True,
     result_seen: bool = False,
-    report_back_claimed: bool = False,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         task_id=task_id,
         display_id=f"Task-{task_id}",
         completed=completed,
         result_seen=result_seen,
-        report_back_claimed=report_back_claimed,
         asyncio_task=None,
         result={"success": True},
         error=None,
@@ -46,7 +44,7 @@ def _orchestrator(tasks: list, *, enabled: bool = True):
 
 class TestCheckAndGetNotification:
     @pytest.mark.asyncio
-    async def test_unclaimed_unseen_task_is_announced(self):
+    async def test_unseen_task_is_announced(self):
         task = _task()
         orch = _orchestrator([task])
         notification = await orch.check_and_get_notification()
@@ -64,20 +62,18 @@ class TestCheckAndGetNotification:
         assert task.result_seen is False
 
     @pytest.mark.asyncio
-    async def test_claimed_task_belongs_to_the_outbox_pipeline(self):
-        task = _task(report_back_claimed=True)
+    async def test_seen_task_is_not_reannounced(self):
+        task = _task(result_seen=True)
         orch = _orchestrator([task])
         assert await orch.check_and_get_notification() is None
-        assert task.result_seen is False
 
     @pytest.mark.asyncio
-    async def test_mixed_batch_announces_only_unclaimed(self):
-        claimed = _task("claimed1", report_back_claimed=True)
+    async def test_mixed_batch_announces_only_unseen(self):
+        seen = _task("seenta1", result_seen=True)
         fresh = _task("fresh12")
-        orch = _orchestrator([claimed, fresh])
+        orch = _orchestrator([seen, fresh])
         notification = await orch.check_and_get_notification()
         assert notification is not None
         assert "fresh12" in notification
-        assert "claimed1" not in notification
+        assert "seenta1" not in notification
         assert fresh.result_seen is True
-        assert claimed.result_seen is False

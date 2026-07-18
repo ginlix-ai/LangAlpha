@@ -64,8 +64,10 @@ class MutationUnavailable(Exception):
 
 
 # Verbs whose mutation deletes rows that subagent_runs cascades from. These
-# alone gate on live task runs; compact/offload rewrite checkpoint state and
-# leave the ledger intact.
+# alone gate on live task runs; compact/offload rewrite ONLY root-namespace
+# checkpoint state (never task:*) and leave the ledger intact — and a live
+# tail writer still holds shared T(thread), so the exclusive-T take below
+# refuses them with thread_busy whenever the guard is enabled.
 CASCADING_VERBS = frozenset({"delete"})
 
 

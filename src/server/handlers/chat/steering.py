@@ -151,6 +151,50 @@ async def unsteer_thread(thread_id: str, payload: str) -> bool:
         return False
 
 
+async def _steering_identity_from_ledger(
+    thread_id: str, task_id: str
+) -> tuple[str, str]:
+    """(tool_call_id, expected_task_run_id) for a live run whose Redis meta
+    has lapsed.
+
+    The queue key the writer drains is keyed by its registry identity — the
+    ORIGINAL tool_call_id, constant across resumes — which the chain's init
+    run recorded as its launch call. Raises 409 for a terminal chain, 404
+    when the ledger knows nothing (pre-ledger or unstamped tasks included:
+    without a routing identity there is no queue to publish to).
+    """
+    from src.server.database import subagent_runs as sr_db
+
+    active = await sr_db.get_active_task_run(thread_id, task_id)
+    if active is None:
+        statuses = await sr_db.get_latest_run_statuses(thread_id, [task_id])
+        status = statuses.get(task_id)
+        if status:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Task-{task_id} has already {status}",
+            )
+        raise HTTPException(
+            status_code=404,
+            detail=f"Task-{task_id} not found in thread {thread_id}",
+        )
+    chain = await sr_db.list_task_runs(thread_id, task_id)
+    init_call = next(
+        (
+            r["launch_tool_call_id"]
+            for r in chain
+            if r.get("cause") == "init" and r.get("launch_tool_call_id")
+        ),
+        None,
+    )
+    if not init_call:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Task-{task_id} not found in thread {thread_id}",
+        )
+    return str(init_call), str(active["task_run_id"])
+
+
 async def steer_subagent(
     thread_id: str,
     task_id: str,
@@ -208,18 +252,20 @@ async def steer_subagent(
         )
 
         meta = await read_task_meta(thread_id, task_id)
-        if meta is None or not meta.get("tool_call_id"):
-            raise HTTPException(
-                status_code=404,
-                detail=f"Task-{task_id} not found in thread {thread_id}",
+        if meta is not None and meta.get("tool_call_id"):
+            if meta.get("status") != "running":
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Task-{task_id} has already {meta.get('status')}",
+                )
+            tool_call_id = meta["tool_call_id"]
+            expected_task_run_id = meta.get("task_run_id") or None
+        else:
+            # 2c. Meta lapsed (TTL, flush): the durable ledger can still
+            # name a live run — don't 404 a task that is provably running.
+            tool_call_id, expected_task_run_id = (
+                await _steering_identity_from_ledger(thread_id, task_id)
             )
-        if meta.get("status") != "running":
-            raise HTTPException(
-                status_code=409,
-                detail=f"Task-{task_id} has already {meta.get('status')}",
-            )
-        tool_call_id = meta["tool_call_id"]
-        expected_task_run_id = meta.get("task_run_id") or None
 
     # 3. Queue to Redis (same pattern as _queue_followup_to_redis)
     cache = get_cache_client()

@@ -634,8 +634,9 @@ async def enqueue_compensation_job(
     idempotency_key: str,
     backdate_seconds: Optional[float] = None,
     defer: bool = False,
+    conn=None,
 ) -> None:
-    """Insert a single follow-up job outside any finalize transaction.
+    """Insert a single follow-up job.
 
     Used by the legacy-FIFO migration sweep (and any caller needing a
     durable one-off job). ``backdate_seconds`` shifts created_at into the
@@ -645,34 +646,60 @@ async def enqueue_compensation_job(
     ``release_deferred_jobs`` flips it due (interrupted-root task
     report-backs wait for the thread's next completed finalize). ON
     CONFLICT DO NOTHING: re-running the sweep never double-registers.
+    ``conn`` joins the caller's transaction — how a job commits atomically
+    with the finalize that owes it (subagent report-back).
     """
+    if conn is not None:
+        async with conn.cursor() as cur:
+            await _insert_compensation_job(
+                cur, run_id, thread_id, hook_type, payload,
+                ordering_key, idempotency_key, backdate_seconds, defer,
+            )
+        return
     async with qr_db.get_db_connection() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                INSERT INTO hook_outbox (
-                    run_id, conversation_thread_id, hook_type,
-                    payload, ordering_key, idempotency_key, created_at,
-                    next_retry_at
-                )
-                VALUES (
-                    %s, %s, %s, %s, %s, %s,
-                    NOW() - make_interval(secs => %s),
-                    CASE WHEN %s THEN 'infinity'::timestamptz ELSE NULL END
-                )
-                ON CONFLICT (idempotency_key) DO NOTHING
-                """,
-                (
-                    run_id,
-                    thread_id,
-                    hook_type,
-                    SafeJson(payload),
-                    ordering_key,
-                    idempotency_key,
-                    float(backdate_seconds or 0.0),
-                    defer,
-                ),
+            await _insert_compensation_job(
+                cur, run_id, thread_id, hook_type, payload,
+                ordering_key, idempotency_key, backdate_seconds, defer,
             )
+
+
+async def _insert_compensation_job(
+    cur,
+    run_id: str,
+    thread_id: str,
+    hook_type: str,
+    payload: Dict[str, Any],
+    ordering_key: Optional[str],
+    idempotency_key: str,
+    backdate_seconds: Optional[float],
+    defer: bool,
+) -> None:
+    await cur.execute(
+        """
+        INSERT INTO hook_outbox (
+            run_id, conversation_thread_id, hook_type,
+            payload, ordering_key, idempotency_key, created_at,
+            next_retry_at
+        )
+        VALUES (
+            %s, %s, %s, %s, %s, %s,
+            NOW() - make_interval(secs => %s),
+            CASE WHEN %s THEN 'infinity'::timestamptz ELSE NULL END
+        )
+        ON CONFLICT (idempotency_key) DO NOTHING
+        """,
+        (
+            run_id,
+            thread_id,
+            hook_type,
+            SafeJson(payload),
+            ordering_key,
+            idempotency_key,
+            float(backdate_seconds or 0.0),
+            defer,
+        ),
+    )
 
 
 async def release_deferred_jobs(

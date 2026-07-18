@@ -204,6 +204,43 @@ async def start_task_run(
     )
 
 
+async def _enqueue_report_back_job(conn, run_row: Dict[str, Any]) -> None:
+    """Insert the run's task_report_back outbox job on the finalize txn.
+
+    Keyed per (parent run, task, task_run) — the same shape the collector
+    enqueue used, so any transitional double-observation dedups on the
+    idempotency index. Pointer style only: the executor derives the result
+    from the durable archive; nothing volatile rides the payload.
+    """
+    parent_run_id = run_row.get("parent_run_id")
+    if not parent_run_id:
+        return
+    from src.server.database import hook_outbox as outbox_db
+
+    task_id = str(run_row["task_id"])
+    task_run_id = str(run_row["task_run_id"])
+    final_pin = run_row.get("final_checkpoint_id")
+    await outbox_db.enqueue_compensation_job(
+        run_id=str(parent_run_id),
+        thread_id=str(run_row["thread_id"]),
+        hook_type="task_report_back",
+        payload={
+            "task_id": task_id,
+            "task_run_id": task_run_id,
+            "display_id": f"Task-{task_id}",
+            "subagent_type": str(run_row.get("subagent_type") or "subagent"),
+            "description": str(run_row.get("description") or "")[:500],
+            "style": "pointer",
+            "final_checkpoint_id": str(final_pin) if final_pin else None,
+        },
+        ordering_key=str(run_row["thread_id"]),
+        idempotency_key=(
+            f"{parent_run_id}:task:{task_id}:{task_run_id}:report_back"
+        ),
+        conn=conn,
+    )
+
+
 async def finalize_task_run(
     *,
     task_run_id: str,
@@ -253,6 +290,14 @@ async def finalize_task_run(
                     ),
                 )
                 run_row = await cur.fetchone()
+            if run_row is not None and run_row["status"] == "completed":
+                # Report-back owed ⟺ run completed: the outbox row commits
+                # with the terminal CAS, so no crash window can lose the
+                # notification or record it against a run that never
+                # terminalized. Eligibility (already delivered, parent
+                # still live/interrupted) is the executor's call at claim
+                # time, against the ledger — not decided here.
+                await _enqueue_report_back_job(conn, dict(run_row))
 
     if run_row is None:
         raise _AlreadyTerminal()
@@ -436,6 +481,43 @@ async def list_runs_for_thread(thread_id: str) -> List[Dict[str, Any]]:
             )
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
+
+
+async def list_open_runs_for_thread(thread_id: str) -> List[Dict[str, Any]]:
+    """The thread's live runs, oldest first — the durable discovery backstop
+    for consumers whose Redis-side signal (active set, meta hash) can lapse
+    while the run is still open."""
+    async with qr_db.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT * FROM subagent_runs
+                WHERE thread_id = %s AND status = 'in_progress'
+                ORDER BY started_at
+                """,
+                (thread_id,),
+            )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def count_open_runs_for_workspace(workspace_id: str) -> int:
+    """Live task runs across every thread of the workspace — the durable
+    signal that a background subagent still needs the sandbox, regardless of
+    which worker owns it or whether any root run is active."""
+    async with qr_db.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM subagent_runs r
+                JOIN conversation_threads t
+                  ON t.conversation_thread_id = r.thread_id
+                WHERE t.workspace_id = %s AND r.status = 'in_progress'
+                """,
+                (workspace_id,),
+            )
+            return (await cur.fetchone())[0]
 
 
 async def list_open_task_runs() -> List[Dict[str, Any]]:

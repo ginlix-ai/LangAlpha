@@ -412,6 +412,22 @@ class TestCleanupIdle:
     def teardown_method(self):
         WorkspaceManager.reset_instance()
 
+    @pytest.fixture(autouse=True)
+    def _quiet_durable_probes(self):
+        """The reaper's activity guard also reads the run ledgers; keep both
+        quiet so these tests exercise only the idle-timeout mechanics."""
+        with (
+            patch(
+                "src.server.database.turn_lifecycle.workspace_has_active_run",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "src.server.database.subagent_runs.count_open_runs_for_workspace",
+                new=AsyncMock(return_value=0),
+            ),
+        ):
+            yield
+
     @pytest.mark.asyncio
     @patch("src.server.services.workspace_manager.get_workspaces_by_status", new_callable=AsyncMock)
     async def test_cleanup_idle_stops_old_workspaces(self, mock_get_by_status):

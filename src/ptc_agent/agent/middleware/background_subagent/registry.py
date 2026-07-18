@@ -125,16 +125,6 @@ class BackgroundTask:
     result_seen: bool = False
     """Whether the agent has seen this task's result (via task_output, wait, or notification)."""
 
-    result_delivered: bool = False
-    """Whether the model actually RECEIVED the result content (TaskOutput or a
-    wait_* fetch) — unlike ``result_seen``, which also flips on a bare
-    completion notification the model may never have followed up on.
-    Report-back eligibility keys on this."""
-
-    report_back_claimed: bool = False
-    """Set under the registry lock by the collector that claims this task for
-    a task_report_back notification turn — at most one claim per task."""
-
     # Tool call tracking
     tool_call_counts: dict[str, int] = field(default_factory=dict)
     """Count of tool calls by tool name."""
@@ -281,11 +271,9 @@ class BackgroundTaskRegistry:
         self.run_ledger: Any | None = None
 
     async def mark_result_delivered(self, task: BackgroundTask) -> None:
-        """Flip the volatile delivery flag AND stamp the durable
-        result_delivered_at on the run's ledger row (best-effort — the flag
-        is what today's report-back eligibility keys on; the durable stamp
-        is what replaces it at cutover)."""
-        task.result_delivered = True
+        """Stamp the durable result_delivered_at on the run's ledger row —
+        the report-back executor's arbitration signal (best-effort: a missed
+        stamp costs one redundant notification, never a lost result)."""
         if self.run_ledger is not None and task.task_run_id:
             try:
                 await self.run_ledger.mark_result_delivered(task.task_run_id)
@@ -397,36 +385,6 @@ class BackgroundTaskRegistry:
             if tool_call_id:
                 return self._tasks.get(tool_call_id)
             return None
-
-    async def claim_report_back(
-        self, task: BackgroundTask, response_id: str | None = None
-    ) -> bool:
-        """Atomically claim a task for a report-back notification turn.
-
-        Eligible = completed with a successful handler result whose content
-        the model never actually received (``result_delivered``). Returns
-        True exactly once per task; the claim is what makes a collector
-        enqueue at most one notification job even when the run collector
-        and the orphan collector both observe the same completion.
-
-        ``response_id`` is the caller's collector token: a claim is refused
-        unless the task is still owned by that collector, so a stale
-        collector can't claim a resumed round's result under the prior
-        round's response id (whose idempotency row would absorb the insert
-        and permanently swallow the notification).
-        """
-        async with self._lock:
-            if (
-                not task.completed
-                or task.cancelled
-                or task.result_delivered
-                or task.report_back_claimed
-                or task.collector_response_id != response_id
-                or not (isinstance(task.result, dict) and task.result.get("success"))
-            ):
-                return False
-            task.report_back_claimed = True
-            return True
 
     async def reclaim_for_resume(self, task: BackgroundTask) -> None:
         """Atomically steal a task back from any collector for a resume.

@@ -326,7 +326,14 @@ class BackgroundTaskManager:
         return best
 
     async def has_active_tasks_for_workspace(self, workspace_id: str) -> bool:
-        """Check if any active tasks exist for a workspace."""
+        """Check if any active tasks exist for a workspace.
+
+        Local root turns first (cheap), then the durable ledgers: in_progress
+        response rows cover other workers' root turns, in_progress subagent
+        runs cover tail-mode subagents that outlive every root run. A probe
+        failure counts as active — callers gate sandbox teardown/recreate,
+        where a false "idle" is destructive and a false "active" only defers.
+        """
         async with self.task_lock:
             active = (TaskStatus.RUNNING, TaskStatus.QUEUED)
             for info in self.tasks.values():
@@ -335,7 +342,20 @@ class BackgroundTaskManager:
                     and info.status in active
                 ):
                     return True
-        return False
+        try:
+            from src.server.database import subagent_runs as sr_db
+            from src.server.database import turn_lifecycle as tl_db
+
+            if await tl_db.workspace_has_active_run(workspace_id):
+                return True
+            return await sr_db.count_open_runs_for_workspace(workspace_id) > 0
+        except Exception:
+            logger.warning(
+                f"Workspace activity probe failed for {workspace_id}; "
+                "treating as active",
+                exc_info=True,
+            )
+            return True
 
     async def is_run_live(self, thread_id: str, run_id: str) -> bool:
         """True while this exact run's workflow task (or inner task) is still
@@ -1404,18 +1424,17 @@ class BackgroundTaskManager:
         *,
         all_settled: bool,
     ) -> None:
-        """Claim + enqueue report-back jobs BEFORE task cleanup evicts the
-        registry entries. Never raises (the helper swallows its own errors)."""
+        """Settled-watch reconciliation. Report-back jobs are born on the run
+        ledger's terminal CAS, not by the collectors — this only publishes
+        the cleared wake when the batch has fully settled with no open job.
+        Never raises (the helper swallows its own errors); the extra args
+        are legacy call-site shape, retired with the collector migration."""
         from src.server.handlers.chat.task_report_back import (
             enqueue_task_report_backs,
         )
 
         await enqueue_task_report_backs(
             thread_id=thread_id,
-            response_id=response_id,
-            tasks=tasks,
-            workspace_id=workspace_id,
-            user_id=user_id,
             all_settled=all_settled,
         )
 

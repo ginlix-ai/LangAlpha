@@ -1,22 +1,21 @@
 """PTC←background-subagent report-backs, mirroring flash←PTC.
 
-When a background subagent finishes after its parent PTC turn ended (tail
-mode) and the agent never fetched the result, the subagent collectors —
-the single enqueue point; they are the only code that reliably observes
-every task's completion regardless of how the turn ended — claim the task
-and enqueue a durable ``task_report_back`` outbox job. The executor POSTs
-a synthetic notification turn into the PTC thread via the shared
-``notify_turn`` machinery, shaped by the job's ``style``: ``inline``
-(default) embeds the result in the message, ``pointer`` announces it and
-leaves TaskOutput available to fetch.
+Every completed subagent run bears a ``task_report_back`` outbox job in
+the same transaction as its terminal CAS (``subagent_runs.
+finalize_task_run``) — enqueue is unconditional and crash-safe. Whether a
+notification is actually owed is the EXECUTOR's decision at claim time,
+against the ledger: a run whose ``result_delivered_at`` is stamped
+(TaskOutput delivered it) is dropped with a cleared wake; a live or
+interrupted parent parks the job until the thread's next completed
+finalize releases it. The POST is a synthetic notification turn via the
+shared ``notify_turn`` machinery, shaped by the job's ``style``
+(``pointer`` — announces and leaves TaskOutput to fetch; ``inline`` —
+legacy payloads with the result embedded).
 
 Unlike the flash pipeline there is no Redis reserve state: the open outbox
 row IS the pending-registry (its open lifetime — enqueue through the
 executor's terminal wait — is exactly the pending window, and /status
-reads it via ``get_open_notification_job``). Interrupted parents get the
-job DEFERRED (``next_retry_at='infinity'``): a synthetic POST would
-freshly admit and collide with the pending HITL checkpoint, so the row
-waits for the thread's next completed finalize to release it.
+reads it via ``get_open_notification_job``).
 """
 
 import logging
@@ -32,12 +31,6 @@ TASK_RB_REQUEST_NS = uuid.UUID("3d9c4e8a-1b6f-4a72-9e05-7f8a2c31d4b6")
 # enough that the notification turn's prompt stays sane.
 TASK_RB_RESULT_CAP = 20_000
 
-# Default notification style. Pointer is under live evaluation: the
-# notification turn keeps TaskOutput and fetches the result via the durable
-# checkpoint archive. Flip to "inline" to embed results in the message and
-# gate subagent tooling off instead.
-TASK_RB_STYLE = "pointer"
-
 # POST defer-loop cap per lease chain. Short on purpose: a busy thread's
 # cap exhaustion doesn't drop the notification — the executor re-parks the
 # job as deferred and the thread's next completed finalize releases it.
@@ -51,197 +44,40 @@ def _job_request_key(job_id: str) -> str:
     return str(uuid.uuid5(TASK_RB_REQUEST_NS, job_id))
 
 
-# In-call retry pacing for enqueue_task_report_backs. Bounded and short:
-# it only needs to absorb transient blips (pool hiccup, brief failover).
-# The retries MUST live inside the call — the all-settled fast paths evict
-# the registry right after it returns, leaving no later actor to pick up a
-# released claim.
-_ENQUEUE_PASS_DELAYS = (0.0, 0.5, 2.0)
-
-
-async def _enqueue_pass(
-    thread_id: str,
-    response_id: str,
-    tasks: list,
-    workspace_id: str,
-    user_id: str,
-    style: str,
-) -> tuple[int, bool]:
-    """One claim+insert pass. Returns ``(due_enqueued, retry_needed)``.
-
-    A failed insert releases its claim, so a follow-up pass over the same
-    task list re-claims exactly the failures (successes hold their claim
-    and dedup out). Any batch-level exception counts as retry-needed —
-    eligible tasks may exist that this pass never reached.
-    """
-    from ptc_agent.agent.middleware.background_subagent.tools import (
-        extract_result_content,
-    )
-    from src.server.database import hook_outbox as outbox_db
-    from src.server.database import turn_lifecycle as tl_db
-    from src.server.services.background_registry_store import BackgroundRegistryStore
-
-    claimed: list = []
-    inserted: set[str] = set()
-    due_enqueued = 0
-    retry_needed = False
-    try:
-        registry = await BackgroundRegistryStore.get_instance().get_registry(
-            thread_id
-        )
-        if registry is None:
-            return 0, False
-
-        for task in tasks:
-            if await registry.claim_report_back(task, response_id):
-                claimed.append(task)
-
-        defer = False
-        if claimed:
-            # Parent status from the durable run row, read ONCE per pass:
-            # interrupted → deferred (posting would collide with the pending
-            # HITL checkpoint); anything else → due.
-            run = await tl_db.get_run(response_id)
-            defer = bool(run and run.get("status") == "interrupted")
-
-        for task in claimed:
-            task_run_id = getattr(task, "task_run_id", None)
-            payload = {
-                "task_id": task.task_id,
-                "task_run_id": task_run_id,
-                "display_id": task.display_id,
-                "subagent_type": task.subagent_type,
-                "description": (task.description or "")[:500],
-                "style": style,
-                "workspace_id": workspace_id,
-                "user_id": user_id,
-            }
-            if style != "pointer":
-                # Pointer turns fetch from the registry; only inline turns
-                # need the result carried (durably) in the job itself.
-                _, content = extract_result_content(task.result)
-                total_chars = len(content)
-                payload["result_text"] = content[:TASK_RB_RESULT_CAP]
-                payload["result_truncated"] = total_chars > TASK_RB_RESULT_CAP
-                payload["result_total_chars"] = total_chars
-            try:
-                await outbox_db.enqueue_compensation_job(
-                    run_id=response_id,
-                    thread_id=thread_id,
-                    hook_type="task_report_back",
-                    payload=payload,
-                    ordering_key=thread_id,
-                    # Run-scoped for ledgered executions: two runs of the same
-                    # task under one parent must not dedup into one
-                    # notification. Pre-ledger tasks keep the legacy shape so
-                    # a mid-deploy re-pass can't double-insert their jobs.
-                    idempotency_key=(
-                        f"{response_id}:task:{task.task_id}:{task_run_id}:report_back"
-                        if task_run_id
-                        else f"{response_id}:task:{task.task_id}:report_back"
-                    ),
-                    defer=defer,
-                )
-            except Exception:
-                # A claim without a row is a permanently lost notification —
-                # release it so the next pass retries the insert.
-                task.report_back_claimed = False
-                retry_needed = True
-                logger.error(
-                    f"[TASK_REPORT_BACK] Insert failed for {task.display_id} "
-                    f"on thread {thread_id}; claim released for retry",
-                    exc_info=True,
-                )
-                continue
-            inserted.add(task.task_id)
-            if not defer:
-                due_enqueued += 1
-            logger.info(
-                f"[TASK_REPORT_BACK] Enqueued {'deferred ' if defer else ''}"
-                f"report-back for {task.display_id} ({task.subagent_type}) "
-                f"on thread {thread_id}"
-            )
-        return due_enqueued, retry_needed
-    except Exception:
-        # Same rule as the per-task handler: claims whose insert never ran
-        # (e.g. the batch-level get_run failed) must not stay claimed.
-        for task in claimed:
-            if task.task_id not in inserted:
-                task.report_back_claimed = False
-        logger.error(
-            f"[TASK_REPORT_BACK] Enqueue pass failed for thread {thread_id} "
-            f"run {response_id}",
-            exc_info=True,
-        )
-        return due_enqueued, True
-
-
 async def enqueue_task_report_backs(
     *,
     thread_id: str,
-    response_id: str,
-    tasks: list,
-    workspace_id: str,
-    user_id: str,
     all_settled: bool,
-    style: str = TASK_RB_STYLE,
 ) -> int:
-    """Claim finished-but-undelivered tasks and enqueue their report-back jobs.
+    """Settled-watch reconciliation for the subagent collectors.
 
-    Called by the subagent collectors right before task cleanup (claims
-    must land while the registry still holds the tasks). Idempotent per
-    (parent run, task): the idempotency key dedups a collector that runs
-    twice, and transient insert failures are retried in-call over
-    ``_ENQUEUE_PASS_DELAYS`` — after this returns the registry may be
-    evicted, so there is no later retry. ``all_settled`` = no task of this
-    batch is still pending; when additionally zero DUE jobs were enqueued,
-    a ``cleared`` wake tells watching clients to reconcile now instead of
-    riding the status backstop. Never raises — a lost enqueue is a lost
-    notification, not a broken collector.
-
-    ``style`` picks the notification-turn shape (default ``TASK_RB_STYLE``):
-    ``inline`` embeds the result in the message and gates subagent tooling
-    off; ``pointer`` announces completion and leaves TaskOutput available —
-    the fetch derives the result from the durable checkpoint archive
-    (TaskOutput's result resolver), so it survives registry eviction,
-    restarts, and other-worker reads.
+    Report-back jobs are born on the run ledger's terminal CAS
+    (``subagent_runs.finalize_task_run``), not here — the collector's only
+    remaining duty is the cleared wake: when every task of its batch has
+    settled and no report-back job is open for the thread, watchers are
+    told to reconcile now instead of riding the status backstop. An open
+    job means the executor's own outcome (run_id wake or cleared) is the
+    signal to wait for. Never raises.
     """
-    import asyncio
-
-    total_due = 0
-    retry_needed = False
-    for delay in _ENQUEUE_PASS_DELAYS:
-        if delay:
-            await asyncio.sleep(delay)
-        due, retry_needed = await _enqueue_pass(
-            thread_id, response_id, tasks, workspace_id, user_id, style
-        )
-        total_due += due
-        if not retry_needed:
-            break
-    if retry_needed:
-        logger.error(
-            f"[TASK_REPORT_BACK] Giving up after {len(_ENQUEUE_PASS_DELAYS)} "
-            f"passes for thread {thread_id} run {response_id}; a report-back "
-            f"notification may be lost"
-        )
-
+    if not all_settled:
+        return 0
     try:
-        if total_due:
-            from src.server.services.hook_outbox import HookOutboxDrainer
+        from src.server.database import hook_outbox as outbox_db
+        from src.server.handlers.chat.report_back import publish_wake
+        from src.utils.cache.redis_cache import get_cache_client
 
-            HookOutboxDrainer.get_instance().nudge()
-        elif all_settled:
-            # Nothing due and nothing still running: wake watchers so the
-            # pending chip reconciles (drops, or keeps waiting on an older
-            # open job /status still reports) instead of riding the backstop.
-            from src.server.handlers.chat.report_back import publish_wake
-            from src.utils.cache.redis_cache import get_cache_client
-
+        job = await outbox_db.get_open_notification_job(
+            thread_id, "task_report_back"
+        )
+        if job is None:
             await publish_wake(get_cache_client(), thread_id, cleared=True)
     except Exception:
-        pass
-    return total_due
+        logger.warning(
+            f"[TASK_REPORT_BACK] Settled-wake reconciliation failed for "
+            f"thread {thread_id}",
+            exc_info=True,
+        )
+    return 0
 
 
 async def read_task_report_back_status(thread_id: str) -> dict:
@@ -396,21 +232,43 @@ async def execute_task_report_back(job: dict) -> None:
     attempts = job["attempts"]
     subject = f"task {payload.get('display_id') or payload.get('task_id')}"
 
-    if not thread_id or not user_id:
+    if not thread_id:
         logger.warning(
-            f"[TASK_REPORT_BACK] Job {job_id} missing thread/user; dropping"
+            f"[TASK_REPORT_BACK] Job {job_id} missing thread; dropping"
         )
         return
     # psycopg returns uuid columns as UUID objects; downstream wants str
     # (wake payloads are json.dumps'd — UUID is not serializable).
     thread_id = str(thread_id)
 
+    # Ledger-enqueued jobs carry task identity only — owner and workspace
+    # resolve from the thread, the durable source (legacy collector jobs
+    # carried both in the payload).
+    workspace_id = payload.get("workspace_id")
+    if not user_id or not workspace_id:
+        from src.server.database import conversation as conv_db
+
+        if not user_id:
+            meta = await conv_db.get_thread_auth_meta(thread_id)
+            user_id = str(meta["user_id"]) if meta and meta.get("user_id") else None
+        if not workspace_id:
+            row = await conv_db.get_thread_by_id(thread_id)
+            workspace_id = (
+                str(row["workspace_id"]) if row and row.get("workspace_id") else None
+            )
+    if not user_id:
+        logger.warning(
+            f"[TASK_REPORT_BACK] Job {job_id} on thread {thread_id}: owner "
+            f"unresolvable (thread deleted?); dropping"
+        )
+        return
+
     async def _fence() -> bool:
         return await outbox_db.extend_job_lease(
             job_id, LEASE_SECONDS, attempts=attempts
         )
 
-    async def _repark() -> None:
+    async def _repark() -> str | None:
         status = await outbox_db.defer_claimed_job(
             job_id, attempts=attempts, max_attempts=MAX_ATTEMPTS
         )
@@ -418,16 +276,72 @@ async def execute_task_report_back(job: dict) -> None:
             f"[TASK_REPORT_BACK] Re-parked job {job_id} for {subject} on "
             f"thread {thread_id} (status={status})"
         )
+        return status
 
     rb_run_id = payload.get("dispatched_run_id")
     if not rb_run_id:
-        # Interrupted-latest guard: the deferred release races a NEW
-        # interrupt (release commits with a completed finalize, then a
-        # fresh turn interrupts before we claim). Re-park rather than POST
-        # into the pending HITL checkpoint.
+        # Ledger arbitration: the job was enqueued unconditionally at the
+        # run's terminal CAS; whether a notification is still owed is
+        # decided HERE, at claim time, against the durable row. TaskOutput
+        # deliveries stamp result_delivered_at — a stamped run owes nothing.
+        task_run_id = payload.get("task_run_id")
+        if task_run_id:
+            from src.server.database import subagent_runs as sr_db
+
+            run_row = await sr_db.get_task_run(str(task_run_id))
+            if run_row is None:
+                logger.info(
+                    f"[TASK_REPORT_BACK] Run row gone for {subject} on "
+                    f"thread {thread_id}; dropping"
+                )
+                return
+            if run_row.get("result_delivered_at"):
+                logger.info(
+                    f"[TASK_REPORT_BACK] Result already delivered for "
+                    f"{subject} on thread {thread_id}; dropping"
+                )
+                # Watchers may be riding the pending chip on this job —
+                # tell them to reconcile now instead of via the backstop.
+                try:
+                    await publish_wake(
+                        get_cache_client(), thread_id, cleared=True
+                    )
+                except Exception:
+                    pass
+                return
+
+        # Live/interrupted-latest guard. A live parent turn may still fetch
+        # the result itself (jobs are born at the run's CAS, usually
+        # mid-turn); an interrupted one must not receive a POST that would
+        # collide with the pending HITL checkpoint. Both park the job until
+        # the thread's next completed finalize releases it — the re-read
+        # closes the race where that finalize landed between the status
+        # read and the park (its release pass saw no deferred row yet).
         latest = await tl_db.get_latest_attempt(thread_id)
-        if latest and latest.get("status") == "interrupted":
-            await _repark()
+        if latest and latest.get("status") in ("interrupted", "in_progress"):
+            parked = await _repark()
+            if parked == "pending":
+                latest = await tl_db.get_latest_attempt(thread_id)
+                if not latest or latest.get("status") not in (
+                    "interrupted",
+                    "in_progress",
+                ):
+                    from src.server.database.conversation import (
+                        get_db_connection,
+                    )
+
+                    async with get_db_connection() as conn:
+                        await outbox_db.release_deferred_jobs(
+                            conn, thread_id, "task_report_back"
+                        )
+                    try:
+                        from src.server.services.hook_outbox import (
+                            HookOutboxDrainer,
+                        )
+
+                        HookOutboxDrainer.get_instance().nudge()
+                    except Exception:
+                        pass
             return
 
         body = {
@@ -435,7 +349,7 @@ async def execute_task_report_back(job: dict) -> None:
                 {"role": "user", "content": _build_notification_message(payload)}
             ],
             "agent_mode": "ptc",
-            "workspace_id": payload.get("workspace_id"),
+            "workspace_id": workspace_id,
             "query_type": "system",
             "request_key": _job_request_key(job_id),
             # Structural recursion gate: an inline notification turn must

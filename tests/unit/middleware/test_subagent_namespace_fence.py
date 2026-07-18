@@ -504,16 +504,15 @@ async def test_resume_rebinds_from_registry_when_config_has_no_run_id():
 
 
 @pytest.mark.asyncio
-async def test_resume_clears_spent_delivery_and_claim_flags():
-    """result_delivered/report_back_claimed are per-round: left set from the
-    prior round, claim_report_back refuses the resumed round's completion and
-    its report-back is silently lost."""
+async def test_resume_clears_spent_result_seen():
+    """result_seen is per-round: left set from the prior round, the CLI
+    orchestrator would treat the resumed round's completion as already
+    announced and never nudge the agent to fetch it."""
     owner = FakeOwner(grant=True)
     mw = _middleware(owner)
     mw.registry.write_task_meta = AsyncMock()
     task = _seed_task(mw, completed=True)
-    task.result_delivered = True
-    task.report_back_claimed = True
+    task.result_seen = True
 
     result = await mw.awrap_tool_call(
         _request(
@@ -529,8 +528,7 @@ async def test_resume_clears_spent_delivery_and_claim_flags():
     )
 
     assert "Resumed" in result.content
-    assert task.result_delivered is False
-    assert task.report_back_claimed is False
+    assert task.result_seen is False
     await task.asyncio_task
 
 
@@ -586,31 +584,6 @@ async def test_resume_steals_claim_before_redis_deletes():
     assert registry._tasks.get("tc-orig") is task  # membership survived
     assert task.collector_response_id is None
     await task.asyncio_task
-
-
-@pytest.mark.asyncio
-async def test_claim_report_back_requires_collector_token():
-    """A report-back claim is fenced on the collector token: a stale
-    collector can't claim a resumed round's result under the prior round's
-    response id (its idempotency row would absorb the insert and the
-    notification would be lost)."""
-    registry = BackgroundTaskRegistry(thread_id="")
-    task = BackgroundTask(
-        tool_call_id="tc-1",
-        task_id="abc123",
-        description="d",
-        prompt="p",
-        subagent_type="general-purpose",
-        agent_id="general-purpose:x",
-        completed=True,
-        result={"success": True, "content": "r2"},
-    )
-    task.collector_response_id = "run-2"
-
-    assert await registry.claim_report_back(task, "run-1") is False  # stale
-    assert task.report_back_claimed is False
-    assert await registry.claim_report_back(task, "run-2") is True  # owner
-    assert await registry.claim_report_back(task, "run-2") is False  # spent
 
 
 @pytest.mark.asyncio
