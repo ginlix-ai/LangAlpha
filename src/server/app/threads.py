@@ -1280,6 +1280,24 @@ async def replay_thread_messages(
                     f"event: {item['event']}\n"
                     f"data: {json.dumps(item['data'], ensure_ascii=False, default=str)}\n\n"
                 )
+
+            # Cursors for the runs replay could not project — an in-flight run
+            # belongs to its stream, so the snapshot hands the client where to
+            # resume instead of its content. Additive: a snapshot outage (None)
+            # just omits the frame, and v1 clients ignore the unknown event.
+            from src.server.services.history.snapshot import (
+                build_thread_snapshot,
+            )
+
+            snapshot = await build_thread_snapshot(thread_id)
+            if snapshot is not None:
+                seq += 1
+                yield (
+                    f"id: {seq}\n"
+                    f"event: snapshot\n"
+                    f"data: {json.dumps(snapshot, ensure_ascii=False, default=str)}\n\n"
+                )
+
             seq += 1
             yield f"id: {seq}\nevent: replay_done\ndata: {json.dumps({'thread_id': thread_id}, default=str)}\n\n"
 

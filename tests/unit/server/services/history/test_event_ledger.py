@@ -65,6 +65,8 @@ LIVE_ONLY = {
     "stream_gap",  # reconnect trim notice (Last-Event-ID < stream head)
     "run_end",  # post-CAS terminal frame closing the run stream (I6)
     "replay_done",  # replay sentinel
+    "snapshot",  # read-time cursors for the runs replay could not project;
+    # recomputed from ledger+Redis on every load, never replayed from a store
     "market_watch_update",  # transient stamp notice, accumulate=False; the
     # durable watchlist re-seeds the chip via GET /{thread}/market-watch on replay
     "chan_open",  # mux channel lifecycle (thread_stream_mux)
