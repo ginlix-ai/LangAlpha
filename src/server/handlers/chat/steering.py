@@ -7,6 +7,7 @@ SteeringMiddleware (main agent) or SubagentSteeringMiddleware (subagents).
 
 import json
 import time
+import uuid
 
 from fastapi import HTTPException
 
@@ -198,6 +199,7 @@ async def steer_subagent(
                 detail=f"Task-{task_id} has already {status}",
             )
         tool_call_id = task.tool_call_id
+        expected_task_run_id = task.task_run_id
     else:
         # 2b. Foreign or lost task: the meta hash carries routing identity
         # (tool_call_id) and writer liveness.
@@ -217,6 +219,7 @@ async def steer_subagent(
                 detail=f"Task-{task_id} has already {meta.get('status')}",
             )
         tool_call_id = meta["tool_call_id"]
+        expected_task_run_id = meta.get("task_run_id") or None
 
     # 3. Queue to Redis (same pattern as _queue_followup_to_redis)
     cache = get_cache_client()
@@ -227,8 +230,19 @@ async def steer_subagent(
         )
 
     try:
-        key = f"subagent:steering:{tool_call_id}"
-        payload = json.dumps(content)
+        from ptc_agent.agent.middleware.background_subagent.registry import (
+            steering_queue_key,
+        )
+
+        input_id = uuid.uuid4().hex
+        key = steering_queue_key(tool_call_id, expected_task_run_id)
+        payload = json.dumps(
+            {
+                "content": content,
+                "expected_task_run_id": expected_task_run_id,
+                "input_id": input_id,
+            }
+        )
         pipe = cache.client.pipeline()
         pipe.rpush(key, payload)
         pipe.llen(key)
@@ -246,6 +260,7 @@ async def steer_subagent(
             "tool_call_id": tool_call_id,
             "display_id": f"Task-{task_id}",
             "queue_position": position,
+            "input_id": input_id,
         }
     except Exception as e:
         logger.error(f"[SUBAGENT_MSG] Failed to steer subagent: {e}")

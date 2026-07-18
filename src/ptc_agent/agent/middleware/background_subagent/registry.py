@@ -1407,6 +1407,39 @@ class BackgroundTaskRegistry:
         return sum(1 for task in self._tasks.values() if task.is_pending)
 
 
+def steering_queue_key(tool_call_id: str, task_run_id: str | None = None) -> str:
+    """Redis list a subagent drains for follow-up steering input.
+
+    Run-scoped when the execution's ledger identity is known — a queued
+    message can then never be consumed by a later resume of the same task;
+    the run-end sweep returns whatever its own run left unconsumed. The
+    task-lifetime key is the pre-ledger fallback (legacy semantics: next
+    writer drains it).
+    """
+    if task_run_id:
+        return f"subagent:steering:{tool_call_id}:{task_run_id}"
+    return f"subagent:steering:{tool_call_id}"
+
+
+def parse_steering_payload(raw: Any) -> dict[str, Any] | None:
+    """Normalize a raw steering-queue entry to ``{content,
+    expected_task_run_id, input_id}``. Legacy entries are bare JSON strings
+    (no fence, no id); unparseable entries return None."""
+    try:
+        data = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if isinstance(data, str):
+        return {"content": data, "expected_task_run_id": None, "input_id": None}
+    if isinstance(data, dict) and data.get("content"):
+        return {
+            "content": str(data["content"]),
+            "expected_task_run_id": data.get("expected_task_run_id") or None,
+            "input_id": data.get("input_id") or None,
+        }
+    return None
+
+
 def spawn_nudge_channel(thread_id: str) -> str:
     """Pub/sub channel nudged on every fenced task spawn/resume.
 

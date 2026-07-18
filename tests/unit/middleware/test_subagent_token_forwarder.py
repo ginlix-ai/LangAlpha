@@ -241,18 +241,13 @@ async def test_finalize_closes_dangling_reasoning_signal():
 
 
 @pytest.mark.asyncio
-async def test_finalize_emits_stream_end_sentinel():
-    """The per-task SSE consumer's only signal that the subagent has finished
-    streaming is a ``subagent_stream_end`` sentinel record on the per-task
-    Redis Stream. ``finalize()`` must write it via
-    ``append_sentinel_to_stream`` — without that the consumer falls back to
-    polling ``task.asyncio_task.done()`` between BLOCK timeouts and the
-    frontend card stays "Running" until the post-turn collector flips
-    ``task.completed``.
-
-    The sentinel must NOT land in ``captured_events_tail`` (which gets
-    persisted to Postgres + replayed on history load) — it's a transport
-    signal, not content.
+async def test_finalize_does_not_write_the_sentinel():
+    """``finalize()`` must NOT seal the stream. Content spills XADD with
+    explicit ``{seq}-0`` ids, and Redis rejects ids behind the sentinel's
+    auto-generated (timestamp) id — a sentinel written at astream-loop exit
+    makes any later terminal-sequence spill (the unconsumed-steering sweep's
+    ``steering_returned``) fail and trips the write circuit-breaker. The run
+    wrapper's finally writes the sentinel after the sweep instead.
     """
     registry = BackgroundTaskRegistry()
     task = await _register(registry)
@@ -268,31 +263,11 @@ async def test_finalize_emits_stream_end_sentinel():
     await fw.forward(_chunk("Hello"))
     await fw.finalize()
 
-    assert sentinel_calls == [task.tool_call_id]
-    # The deque should hold only the real text chunk — no sentinel record.
+    assert sentinel_calls == []
+    # The deque holds only the real text chunk — no sentinel record.
     assert all(
         e["event"] != "subagent_stream_end" for e in task._test_records
     )
-
-
-@pytest.mark.asyncio
-async def test_finalize_sentinel_failure_does_not_propagate():
-    """Sentinel write is best-effort — if Redis is degraded or
-    ``append_sentinel_to_stream`` raises, ``finalize`` must still return
-    normally so the parent ``_arun_subagent_streaming`` finally-block
-    completes. The terminal_check fallback closes the stream eventually.
-    """
-    registry = BackgroundTaskRegistry()
-    task = await _register(registry)
-    fw = _SubagentTokenForwarder(registry, task.tool_call_id, "task:abc")
-
-    async def boom(_tool_call_id):
-        raise RuntimeError("redis is on fire")
-
-    registry.append_sentinel_to_stream = boom  # type: ignore[method-assign]
-
-    # Should not raise.
-    await fw.finalize()
 
 
 @pytest.mark.asyncio

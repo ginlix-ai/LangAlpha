@@ -276,14 +276,14 @@ class _SubagentTokenForwarder:
             )
 
     async def finalize(self) -> None:
-        """Close any still-open reasoning lifecycle and signal stream-end.
+        """Close any still-open reasoning lifecycle at astream-loop exit.
 
-        The stream-end sentinel is what tells the per-task SSE consumer it can
-        close immediately — without it the consumer falls back to polling
-        ``task.asyncio_task.done()`` between XREAD BLOCK timeouts (~4-8 s) and
-        in some flows waits until the post-turn collector flips
-        ``task.completed``. Best-effort: failures in the sentinel write are
-        absorbed so a degraded Redis can't break subagent termination.
+        The stream-end sentinel is NOT written here: content spills XADD with
+        explicit ``{seq}-0`` ids and Redis rejects ids behind the sentinel's
+        auto-generated (timestamp) id, so anything appended after the sentinel
+        is silently lost. The run wrapper's terminal sequence
+        (``_run_background_task``'s finally) writes it after the terminal meta
+        and the unconsumed-steering sweep, keeping it the stream's last record.
         """
         if self._reasoning_active and self._last_msg_id is not None:
             await self.registry.append_captured_event(
@@ -291,19 +291,6 @@ class _SubagentTokenForwarder:
                 self._signal_record(self._last_msg_id, "complete"),
             )
             self._reasoning_active = False
-
-        try:
-            await self.registry.append_sentinel_to_stream(self.tool_call_id)
-        except Exception:
-            # Best-effort: degraded Redis falls back to the polling path
-            # (XREAD BLOCK timeout + asyncio_task.done()). Log so an oncall
-            # has a breadcrumb when "subagents close slowly" — without it
-            # the failure is invisible.
-            logger.warning(
-                "subagent_sentinel_write_failed",
-                tool_call_id=self.tool_call_id,
-                exc_info=True,
-            )
 
 
 class SubAgent(TypedDict):

@@ -8,6 +8,7 @@ import asyncio
 import contextvars
 import json
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +23,8 @@ from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
     TaskRunRejected,
     TaskWriterLive,
+    parse_steering_payload,
+    steering_queue_key,
 )
 from ptc_agent.agent.middleware.background_subagent.tools import (
     create_task_output_tool,
@@ -106,6 +109,58 @@ def _merge_subagent_usage(
     )
     for name, count in tool_tracker.get_summary().items():
         task.tool_usage[name] = task.tool_usage.get(name, 0) + count
+
+
+async def _return_unconsumed_steering(
+    registry: "BackgroundTaskRegistry | None", task: BackgroundTask
+) -> None:
+    """Drain the run-scoped steering queue at run end into
+    ``steering_returned`` events — accepted input a run never consumed is
+    surfaced, not left for a later resume or a silent TTL death."""
+    try:
+        from src.utils.cache.redis_cache import get_cache_client
+
+        cache = get_cache_client()
+        if not cache.enabled or not cache.client:
+            return
+        key = steering_queue_key(task.tool_call_id, task.task_run_id)
+        pipe = cache.client.pipeline()
+        pipe.lrange(key, 0, -1)
+        pipe.delete(key)
+        results = await pipe.execute()
+        raw_messages = results[0] or []
+        if not raw_messages or registry is None:
+            return
+        ts = time.time()
+        for raw in raw_messages:
+            payload = parse_steering_payload(raw)
+            if payload is None:
+                continue
+            await registry.append_captured_event(
+                task.tool_call_id,
+                {
+                    "event": "steering_returned",
+                    "data": {
+                        "agent": f"task:{task.task_id}",
+                        "content": payload["content"],
+                        "input_id": payload["input_id"],
+                        "reason": "run_ended",
+                    },
+                    "ts": ts,
+                },
+            )
+        logger.info(
+            "returned unconsumed steering input",
+            task_id=task.task_id,
+            task_run_id=task.task_run_id,
+            count=len(raw_messages),
+        )
+    except Exception:
+        logger.warning(
+            "unconsumed-steering sweep failed",
+            task_id=task.task_id,
+            exc_info=True,
+        )
 
 
 async def _run_background_task(
@@ -264,6 +319,27 @@ async def _run_background_task(
                         task_id=task.task_id,
                         exc_info=True,
                     )
+            # Accepted-but-unconsumed steering must not outlive its run: the
+            # sender was told "success", and the run-scoped queue would
+            # otherwise sit in Redis until TTL. Sweep it into
+            # steering_returned events (after the terminal meta, so producers
+            # that re-check status can no longer enqueue behind the sweep).
+            if task.task_run_id:
+                await _return_unconsumed_steering(registry, task)
+            # Seal the per-task stream LAST. Content spills XADD with
+            # explicit ``{seq}-0`` ids and Redis rejects ids behind the
+            # sentinel's auto-generated (timestamp) id — a sentinel written
+            # at astream-loop exit would make the sweep's steering_returned
+            # spill fail and trip the write circuit-breaker.
+            if registry is not None:
+                try:
+                    await registry.append_sentinel_to_stream(task.tool_call_id)
+                except Exception:
+                    logger.warning(
+                        "subagent_sentinel_write_failed",
+                        task_id=task.task_id,
+                        exc_info=True,
+                    )
             if namespace_owner is not None:
                 try:
                     await namespace_owner.release_task_ns(task.task_id)
@@ -331,26 +407,43 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
         """Sync path: no background spawn, falls back to blocking execution."""
         return handler(request)
 
-    async def _queue_followup_to_redis(self, task_id: str, description: str) -> bool:
-        """Push a follow-up message to Redis for a running subagent. Returns True on success."""
+    async def _queue_followup_to_redis(
+        self, task: "BackgroundTask", description: str
+    ) -> str | None:
+        """Push a follow-up message onto the task's steering queue.
+
+        Fenced by run identity: the payload stamps the run the sender
+        believes it is steering, and the queue key is run-scoped so a later
+        resume can never consume it. Returns the message's input_id, or None
+        when queuing failed.
+        """
         try:
             from src.utils.cache.redis_cache import get_cache_client
 
             cache = get_cache_client()
             if not cache.enabled or not cache.client:
-                return False
+                return None
 
-            key = f"subagent:steering:{task_id}"
-            payload = json.dumps(description)
+            input_id = uuid.uuid4().hex
+            key = steering_queue_key(task.tool_call_id, task.task_run_id)
+            payload = json.dumps(
+                {
+                    "content": description,
+                    "expected_task_run_id": task.task_run_id,
+                    "input_id": input_id,
+                }
+            )
             await cache.client.rpush(key, payload)
             # 1 hour TTL — if not consumed, it's stale
             await cache.client.expire(key, 3600)
-            return True
+            return input_id
         except Exception as e:
             logger.error(
-                "Failed to queue follow-up to Redis", task_id=task_id, error=str(e)
+                "Failed to queue follow-up to Redis",
+                task_id=task.task_id,
+                error=str(e),
             )
-            return False
+            return None
 
     async def _acquire_task_ns(self, task_id: str) -> bool:
         """Fail-closed wrapper around the namespace fence: an acquire error
@@ -776,15 +869,14 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                     name="Task",
                 )
 
-            success = await self._queue_followup_to_redis(
-                task.tool_call_id, prompt
-            )
-            if success:
+            input_id = await self._queue_followup_to_redis(task, prompt)
+            if input_id:
                 task.last_updated_at = time.time()
                 logger.info(
                     "Queued follow-up for running task",
                     task_id=target_task_id,
                     display_id=task.display_id,
+                    input_id=input_id,
                 )
                 return ToolMessage(
                     content=f"Follow-up sent to **{task.display_id}**. The subagent will receive your instructions before its next reasoning step.",
@@ -793,9 +885,11 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                     additional_kwargs={
                         "task_artifact": {
                             "task_id": task.task_id,
+                            "task_run_id": task.task_run_id,
                             "action": "update",
                             "description": description,
                             "prompt": prompt,
+                            "input_id": input_id,
                         }
                     },
                 )

@@ -85,6 +85,9 @@ _PASSTHROUGH_EVENTS = (
     "context_window",
     "provenance",
     "steering_delivered",
+    # No projected twin: nothing was injected, so only the captured/stored
+    # copy can ever surface a returned steering input.
+    "steering_returned",
     "credit_usage",
     "interrupt",
     "error",

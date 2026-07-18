@@ -119,12 +119,20 @@ async def test_unsteer_false_on_redis_error(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _seed_meta(cache, thread_id: str, task_id: str, status: str) -> None:
+def _seed_meta(
+    cache, thread_id: str, task_id: str, status: str, task_run_id: str = ""
+) -> None:
     cache.client.hashes[f"subagent:meta:{thread_id}:{task_id}"] = {
         "tool_call_id": "tc-remote",
         "status": status,
         "subagent_type": "research",
+        "task_run_id": task_run_id,
     }
+
+
+def _queued(cache, key: str) -> list[dict]:
+    """Decoded steering payloads on a queue key."""
+    return [json.loads(e) for e in cache.client.lists[key]]
 
 
 @pytest.mark.asyncio
@@ -142,8 +150,35 @@ async def test_steer_subagent_resolves_foreign_task_via_meta(monkeypatch):
 
     assert result["success"] is True
     assert result["tool_call_id"] == "tc-remote"
+    # Meta without a task_run_id (pre-ledger) → legacy task-lifetime key,
+    # unfenced payload.
     key = "subagent:steering:tc-remote"
-    assert cache.client.lists[key] == [json.dumps("go left")]
+    (payload,) = _queued(cache, key)
+    assert payload["content"] == "go left"
+    assert payload["expected_task_run_id"] is None
+    assert payload["input_id"] == result["input_id"]
+    assert key in cache.client.ttls
+
+
+@pytest.mark.asyncio
+async def test_steer_subagent_meta_run_id_fences_the_queue(monkeypatch):
+    """Meta carrying the execution's task_run_id routes the steer onto the
+    run-scoped key and stamps the payload — a later resume of the same task
+    can never consume it."""
+    from src.server.handlers.chat.steering import steer_subagent
+
+    cache = FakeCache()
+    monkeypatch.setattr(CACHE, lambda: cache)
+    _seed_meta(cache, "t-fenced", "abc123", "running", task_run_id="run-9")
+
+    result = await steer_subagent("t-fenced", "abc123", "go", "u-1")
+
+    assert result["success"] is True
+    key = "subagent:steering:tc-remote:run-9"
+    (payload,) = _queued(cache, key)
+    assert payload["content"] == "go"
+    assert payload["expected_task_run_id"] == "run-9"
+    assert payload["input_id"] == result["input_id"]
     assert key in cache.client.ttls
 
 
@@ -209,9 +244,10 @@ async def test_steer_subagent_local_task_fast_path(monkeypatch):
 
     assert result["success"] is True
     assert result["tool_call_id"] == "tc-local"
-    assert cache.client.lists["subagent:steering:tc-local"] == [
-        json.dumps("hello")
-    ]
+    # register() without a ledger run id → legacy key, unfenced payload.
+    (payload,) = _queued(cache, "subagent:steering:tc-local")
+    assert payload["content"] == "hello"
+    assert payload["expected_task_run_id"] is None
 
 
 @pytest.mark.asyncio
@@ -250,7 +286,8 @@ async def test_done_local_handle_defers_to_fresh_running_meta(monkeypatch):
 
     assert result["success"] is True
     assert result["tool_call_id"] == "tc-remote"  # meta identity, not tc-old-local
-    assert cache.client.lists["subagent:steering:tc-remote"] == [json.dumps("go")]
+    (payload,) = _queued(cache, "subagent:steering:tc-remote")
+    assert payload["content"] == "go"
 
 
 @pytest.mark.asyncio
