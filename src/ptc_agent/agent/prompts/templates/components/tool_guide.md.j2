@@ -14,6 +14,10 @@ Call these directly as tool calls for all fundamental operations:
 | ExecuteCode | Run Python code |
 | WebSearch | Search the web |
 | WebFetch | Fetch and extract content from URLs |
+{% if crawl_enabled -%}
+| WebMap | List a site's URLs (cheap discovery) |
+| WebCrawl | Crawl a site, dumping pages to workspace files |
+{% endif -%}
 | TodoWrite | Track task progress |
 | ShowWidget | Render interactive HTML/SVG inline in the chat |
 
@@ -30,7 +34,14 @@ Quick reference:
 - **`data_files`**: optional list of workspace file paths — embedded as `window.__WIDGET_DATA__["filename"]` in the widget (text as strings, images as data URLs)
 - **No** `ResizeObserver`, `parent.postMessage`, `position: fixed`, `window.top`/`window.parent`
 - **`sendPrompt('text')`**: trigger follow-up chat messages from buttons (add ↗ arrow) (optional)
+{% if crawl_enabled %}
+### Site crawling (WebMap → WebFetch → WebCrawl)
 
+Escalate in this order:
+1. **WebMap** — list a site's URLs first (fast, near-free) to see what exists.
+2. **WebFetch** — read the handful of specific pages you actually need.
+3. **WebCrawl** — only when you genuinely need many pages at once (docs sites, filing archives). It bills per crawled page: keep `limit` tight, scope with `include_paths`/`exclude_paths`, and pass `output_dir="work/<task_name>/crawl"` inside a task workflow. Pages land as `.md` files plus an `index.jsonl` manifest — Glob/Read them selectively; never re-crawl what you already dumped.
+{% endif %}
 ## Financial Tools (Direct)
 
 Call these directly for quick data retrieval. No complex post-processing — just get the data and present it:
