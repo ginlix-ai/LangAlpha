@@ -1286,6 +1286,19 @@
     ],
     "moonshot": [
       {
+        "id": "kimi-k3",
+        "name": "Kimi K3",
+        "is_reasoning": true,
+        "description": "Moonshot AI's flagship Kimi K3 multi-modal model with 1M-token context",
+        "context_window": 1000000,
+        "pricing": {
+          "input": 3.0,
+          "cached_input": 0.3,
+          "output": 15.0,
+          "unit": "per_1m_tokens"
+        }
+      },
+      {
         "id": "kimi-k2.6",
         "name": "Kimi K2.6",
         "is_reasoning": true,
@@ -1313,6 +1326,19 @@
       }
     ],
     "moonshot-coding": [
+      {
+        "id": "kimi-k3",
+        "name": "Kimi K3",
+        "is_reasoning": true,
+        "description": "Moonshot AI's flagship Kimi K3 multi-modal model with 1M-token context",
+        "context_window": 1000000,
+        "pricing": {
+          "input": 3.0,
+          "cached_input": 0.3,
+          "output": 15.0,
+          "unit": "per_1m_tokens"
+        }
+      },
       {
         "id": "kimi-for-coding",
         "name": "Kimi for Coding",
