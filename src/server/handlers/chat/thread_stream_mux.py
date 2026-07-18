@@ -17,7 +17,9 @@ Wire contract (M0, scratchpad/mux_build_plan.md):
   that carry no integer seq), and ``logical`` is the producer's original
   ``id: N`` value (``-`` when absent) for UI ordering.
 - Control frames (never advance cursors): ``chan_open``, ``chan_close``,
-  ``stream_gap``, ``transport_error``, ``timeout``.
+  ``resync_required``, ``transport_error``, ``timeout``. A cursor gap on an
+  active stream is ``resync_required`` + ``chan_close`` (contract
+  §Retention), never a gap-and-continue advisory.
 - Tri-state liveness: a probe answering "unknown" never closes a channel;
   only an XREAD-level Redis failure ends the socket, as a retryable
   ``transport_error`` with client cursors intact. ``chan_close terminal``
@@ -272,11 +274,17 @@ async def _discover_tasks(thread_id: str) -> dict[str, str]:
 
 
 async def _attach_gap_probe(cache, chan: _Chan) -> Optional[str]:
-    """stream_gap frame when the resume cursor's successor was trimmed away.
+    """``resync_required`` frame when the resume cursor's successor was
+    trimmed away on an ACTIVE stream.
 
-    Only meaningful for explicit ``seq-0`` cursors (auto-ID cursors carry no
-    logical position to compare). Mirrors the single-stream trimmed-head
-    probe; the mux variant just scopes the frame to a channel.
+    Contract §Retention: a cursor gap on an active run is never
+    gap-and-continue — the caller closes the channel so the client
+    re-syncs from replay. With the write-side quota this is unreachable
+    for post-quota streams (the writer finalizes transport_lost before
+    FIFO trim can engage); it fires only on legacy or externally-trimmed
+    state. Only meaningful for explicit ``seq-0`` cursors (auto-ID cursors
+    carry no logical position to compare). No reader-side finalize — the
+    writer/scanner owns terminal status.
     """
     major_s, _, minor_s = chan.cursor.decode().partition("-")
     try:
@@ -303,7 +311,7 @@ async def _attach_gap_probe(cache, chan: _Chan) -> Optional[str]:
         return None
     if first_seq > major + 1:
         return _control(
-            "stream_gap",
+            "resync_required",
             {
                 "chan": chan.name,
                 "expected_from": major + 1,
@@ -386,9 +394,17 @@ async def stream_thread_mux(
             )
         )
         if mode == "resume":
-            gap = await _attach_gap_probe(cache, chan)
-            if gap is not None:
-                attach_frames.append(gap)
+            resync = await _attach_gap_probe(cache, chan)
+            if resync is not None:
+                # Never gap-and-continue on an active stream: close the
+                # channel so the client re-syncs from replay. ``closed`` is
+                # set before the pumps start, so this chan is never read;
+                # the map entry survives for generation identity.
+                chan.closed = True
+                attach_frames.append(resync)
+                attach_frames.append(
+                    _chan_close(chan.name, "resync_required")
+                )
 
     for frame in attach_frames:
         yield frame

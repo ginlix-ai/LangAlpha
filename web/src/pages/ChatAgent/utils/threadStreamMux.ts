@@ -44,7 +44,7 @@ const MAX_RETRIES = 10;
 const CONTROL_EVENTS = new Set([
   'chan_open',
   'chan_close',
-  'stream_gap',
+  'resync_required',
   'transport_error',
   'timeout',
   'watch_snapshot',
@@ -64,6 +64,9 @@ export class ThreadStreamMux {
   private running = false;
   private retry = 0;
   private disposed = false;
+  // Set by a resync_required close: the socket abort is a cursor-reset
+  // reconnect, not a teardown.
+  private forceReconnect = false;
 
   constructor(
     private threadId: string,
@@ -153,7 +156,8 @@ export class ThreadStreamMux {
       }
       this.flushBlock();
       if (this.disposed || this.channels.size === 0) break;
-      if (aborted.aborted) break;
+      if (aborted.aborted && !this.forceReconnect) break;
+      this.forceReconnect = false;
       this.retry += 1;
       if (this.retry > MAX_RETRIES) {
         // Degraded parity with the old transport: give up and let callers
@@ -273,6 +277,16 @@ export class ThreadStreamMux {
         return;
       }
       this.preSubBuffers.delete(taskId);
+      if (chan && data.reason === 'resync_required') {
+        // Contract §Retention: our resume cursor is unserviceable on an
+        // active stream. Drop it and force one reconnect — the channel
+        // re-attaches in replay mode from 0 instead of starving until the
+        // next natural socket cycle.
+        chan.entryId = null;
+        this.forceReconnect = true;
+        this.controller?.abort();
+        return;
+      }
       if (chan && data.reason === 'terminal') {
         this.channels.delete(taskId);
         chan.closed = true;
@@ -281,8 +295,8 @@ export class ThreadStreamMux {
       }
       return;
     }
-    if (event === 'stream_gap') {
-      console.info(`[mux:${this.threadId}] stream_gap`, data);
+    if (event === 'resync_required') {
+      console.info(`[mux:${this.threadId}] resync_required`, data);
       return;
     }
     // transport_error / timeout: the server closes the socket after these —

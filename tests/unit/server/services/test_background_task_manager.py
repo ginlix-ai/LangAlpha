@@ -1401,15 +1401,23 @@ class TestAppendRunEndEvent:
         ):
             await btm.append_run_end_event("t-1", "r-1", "completed")
 
-        # Exactly-once gate taken first (SET NX with TTL), then the frame.
-        assert calls[0][0] == "set"
-        assert calls[0][1][0] == "workflow:run_end_gate:t-1:r-1"
-        assert calls[0][2].get("nx") is True
-        assert calls[1][0] == "xadd"
-        assert calls[1][1] == "workflow:stream:t-1:r-1"
+        # Terminal retention stamp first — unconditional, both emitters,
+        # because active streams carry no TTL and the attach-grace clock
+        # starts here. Then the exactly-once gate (SET NX), then the frame.
+        assert calls[0] == ("expire", "workflow:stream:t-1:r-1", btm.redis_event_ttl)
+        assert calls[1] == (
+            "expire",
+            "workflow:events:meta:t-1:r-1",
+            btm.redis_event_ttl,
+        )
+        assert calls[2][0] == "set"
+        assert calls[2][1][0] == "workflow:run_end_gate:t-1:r-1"
+        assert calls[2][2].get("nx") is True
+        assert calls[3][0] == "xadd"
+        assert calls[3][1] == "workflow:stream:t-1:r-1"
         # Pre-rendered SSE wire string — the consumer passes it through and
         # close-matches on the "event: run_end" prefix.
-        wire = calls[1][2][b"event"].decode("utf-8")
+        wire = calls[3][2][b"event"].decode("utf-8")
         assert wire.startswith("event: run_end\ndata: ")
         assert wire.endswith("\n\n")
         assert _json.loads(wire.split("data: ", 1)[1]) == {

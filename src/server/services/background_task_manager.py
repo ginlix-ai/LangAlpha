@@ -1055,11 +1055,17 @@ class BackgroundTaskManager:
         meta_k = stream_meta_key(thread_id, run_id)
         stream_k = stream_key(thread_id, run_id)
 
+        # Retention contract: active streams carry NO TTL (ttl=None) — a
+        # quiet-but-alive run must never lose its stream mid-run. The
+        # attach-grace TTL is stamped once, at terminal, by
+        # ``append_run_end_event``. MAXLEN is a 2x backstop only: the quota
+        # check below finalizes the run before FIFO trim could ever touch
+        # the head, so a served replay never has a silent hole.
         success, seq = await cache.pipelined_event_buffer(
             meta_key=meta_k,
             event=event,
-            max_size=self.max_stored_messages,
-            ttl=self.redis_event_ttl,
+            max_size=self.max_stored_messages * 2,
+            ttl=None,
             last_event_id=event_id,
             stream_key=stream_k,
         )
@@ -1071,12 +1077,19 @@ class BackgroundTaskManager:
 
         logger.debug(f"[EventBuffer] Buffered event to Redis: {key} (id={event_id}, seq={seq})")
 
+        if seq > self.max_stored_messages:
+            raise TransportLostError(
+                f"transport_lost: stream quota exceeded for {key} "
+                f"({seq}/{self.max_stored_messages} events); finalizing "
+                "instead of silently trimming the replay head"
+            )
+
         capacity_threshold = int(self.max_stored_messages * 0.9)
         if seq >= capacity_threshold and (seq - capacity_threshold) % 1000 == 0:
             logger.warning(
-                f"[EventBuffer] Buffer near capacity for {key}: "
+                f"[EventBuffer] Buffer near quota for {key}: "
                 f"{seq}/{self.max_stored_messages} events. "
-                "Oldest events will be dropped (FIFO)."
+                "At quota the run finalizes error(transport_lost)."
             )
 
     async def append_run_end_event(
@@ -1098,6 +1111,23 @@ class BackgroundTaskManager:
             cache = get_cache_client()
             if not cache.enabled or not cache.client:
                 return
+            stream_k = stream_key(thread_id, run_id)
+            meta_k = stream_meta_key(thread_id, run_id)
+            # Terminal retention stamp: active streams carry no TTL, so the
+            # attach-grace clock starts HERE. Unconditional and idempotent —
+            # both the owner and the recovery scanner stamp it, regardless
+            # of who wins the run_end gate below (EXPIRE on a missing key
+            # is a no-op).
+            try:
+                async with cache.client.pipeline(transaction=False) as pipe:
+                    pipe.expire(stream_k, self.redis_event_ttl)
+                    pipe.expire(meta_k, self.redis_event_ttl)
+                    await pipe.execute()
+            except Exception as exc:
+                logger.debug(
+                    f"[EventBuffer] terminal TTL stamp failed for "
+                    f"({thread_id}, {run_id}): {exc}"
+                )
             # Atomic exactly-once gate: the owner (possibly alive but
             # fence-lost) and a recovery scanner can both reach this after
             # the same finalize CAS — SETNX picks one emitter, so the
@@ -1108,7 +1138,6 @@ class BackgroundTaskManager:
             )
             if not acquired:
                 return
-            stream_k = stream_key(thread_id, run_id)
             data = json.dumps(
                 {"thread_id": thread_id, "run_id": run_id, "outcome": outcome},
                 ensure_ascii=False,
@@ -1126,10 +1155,10 @@ class BackgroundTaskManager:
                 pipe.xadd(
                     stream_k,
                     {b"event": payload},
-                    maxlen=self.max_stored_messages,
+                    maxlen=self.max_stored_messages * 2,
                     approximate=True,
                 )
-                # Refresh TTL so a run_end landing on an expired/cleared
+                # Stamp TTL so a run_end landing on an expired/cleared
                 # key can't recreate it without an expiry.
                 pipe.expire(stream_k, self.redis_event_ttl)
                 await pipe.execute()

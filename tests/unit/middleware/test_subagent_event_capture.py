@@ -278,11 +278,11 @@ async def test_spill_disabled_skips_redis(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_redis_spill_uses_durable_persistence_cap(monkeypatch) -> None:
-    """The Redis spool MUST use the durable per-workflow cap
-    (``get_max_stored_messages_per_agent`` / ``get_redis_ttl_workflow_events``).
-    A regression that read a smaller per-task buffer cap would silently truncate
-    early events for long-running subagents, corrupting
-    ``conversation_responses.sse_events`` on persistence.
+    """Active spills carry NO TTL (retention contract: an active stream must
+    not expire mid-run; the attach-grace TTL is stamped at terminal) and a
+    2x MAXLEN backstop over the quota — FIFO trim must never engage before
+    the quota check opens the circuit, or early events would silently
+    truncate and corrupt ``conversation_responses.sse_events``.
     """
     fake_cache = MagicMock()
     fake_cache.enabled = True
@@ -308,8 +308,8 @@ async def test_redis_spill_uses_durable_persistence_cap(monkeypatch) -> None:
 
     assert fake_cache.pipelined_event_buffer.await_count == 5_000
     for call in fake_cache.pipelined_event_buffer.await_args_list:
-        assert call.kwargs["max_size"] == 150_000
-        assert call.kwargs["ttl"] == 86_400
+        assert call.kwargs["max_size"] == 300_000
+        assert call.kwargs["ttl"] is None
 
 
 @pytest.mark.asyncio
@@ -432,7 +432,7 @@ async def test_sentinel_writes_xadd_no_seq_bump(monkeypatch) -> None:
     assert len(queued["xadd"]) == 1
     write = queued["xadd"][0]
     assert write["name"] == f"subagent:stream:thread-x:{task.task_id}"
-    assert write["maxlen"] == 1000
+    assert write["maxlen"] == 2000  # 2x backstop over the quota
     assert write["approximate"] is True
     fields = write["fields"]
     assert b"event" in fields
@@ -446,6 +446,99 @@ async def test_sentinel_writes_xadd_no_seq_bump(monkeypatch) -> None:
 
     assert task.captured_event_seq == 0
     assert task.captured_event_count == 0
+
+
+@pytest.mark.asyncio
+async def test_quota_breach_opens_the_spill_circuit(monkeypatch) -> None:
+    """A write that lands PAST the per-agent quota flips redis_write_failed —
+    the abort loop + terminal escalation then finalize error(transport_lost)
+    instead of the 2x MAXLEN backstop silently trimming the served head."""
+    fake_cache = MagicMock()
+    fake_cache.enabled = True
+    fake_cache.client = MagicMock()
+    fake_cache.pipelined_event_buffer = AsyncMock(return_value=(True, 151))
+    monkeypatch.setattr(
+        "src.utils.cache.redis_cache.get_cache_client", lambda: fake_cache
+    )
+    monkeypatch.setattr(
+        "src.config.settings.is_subagent_event_redis_spill_enabled", lambda: True
+    )
+    monkeypatch.setattr(
+        "src.config.settings.get_max_stored_messages_per_agent", lambda: 150
+    )
+
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+
+    await registry.append_captured_event(task.tool_call_id, _event(1))
+    assert task.redis_write_failed is True
+
+    # Circuit open: further appends never reach the pipeline.
+    await registry.append_captured_event(task.tool_call_id, _event(2))
+    assert fake_cache.pipelined_event_buffer.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_at_quota_write_does_not_open_the_circuit(monkeypatch) -> None:
+    fake_cache = MagicMock()
+    fake_cache.enabled = True
+    fake_cache.client = MagicMock()
+    fake_cache.pipelined_event_buffer = AsyncMock(return_value=(True, 150))
+    monkeypatch.setattr(
+        "src.utils.cache.redis_cache.get_cache_client", lambda: fake_cache
+    )
+    monkeypatch.setattr(
+        "src.config.settings.is_subagent_event_redis_spill_enabled", lambda: True
+    )
+    monkeypatch.setattr(
+        "src.config.settings.get_max_stored_messages_per_agent", lambda: 150
+    )
+
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+
+    await registry.append_captured_event(task.tool_call_id, _event(1))
+    assert task.redis_write_failed is False
+
+
+@pytest.mark.asyncio
+async def test_stamp_terminal_retention_runs_even_when_circuit_open(
+    monkeypatch,
+) -> None:
+    """Active streams carry no TTL, so the terminal stamp is the only place
+    their expiry clock starts — it must run even for a torn stream (the
+    sentinel is skipped then), or the partial stream leaks forever."""
+    fake_cache = MagicMock()
+    fake_cache.enabled = True
+    fake_cache.client = MagicMock()
+    queued, _new_pipe = _make_pipeline_capture()
+    fake_cache.client.pipeline = _new_pipe
+    monkeypatch.setattr(
+        "src.utils.cache.redis_cache.get_cache_client", lambda: fake_cache
+    )
+    monkeypatch.setattr(
+        "src.config.settings.get_redis_ttl_workflow_events", lambda: 86400
+    )
+
+    registry = BackgroundTaskRegistry(thread_id="thread-x")
+    task = await registry.register(
+        tool_call_id="tc1", description="d", prompt="p", subagent_type="general-purpose"
+    )
+    task.redis_write_failed = True
+    task.task_run_id = "run-77"
+
+    await registry.stamp_terminal_retention(task.tool_call_id)
+
+    assert queued["expire"] == [
+        {"name": f"subagent:stream:thread-x:{task.task_id}", "ttl": 86400},
+        {"name": f"subagent:events:meta:thread-x:{task.task_id}", "ttl": 86400},
+        {"name": "subagent:stream:thread-x:run-77", "ttl": 86400},
+    ]
+    assert queued["xadd"] == []
 
 
 @pytest.mark.asyncio

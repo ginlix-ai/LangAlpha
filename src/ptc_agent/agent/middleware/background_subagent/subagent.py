@@ -24,7 +24,10 @@ from ptc_agent.agent.middleware.background_subagent.middleware import (
     current_background_token_tracker,
     current_background_tool_call_id,
 )
-from ptc_agent.agent.middleware.background_subagent.registry import BackgroundTaskRegistry
+from ptc_agent.agent.middleware.background_subagent.registry import (
+    BackgroundTaskRegistry,
+    TransportLostError,
+)
 from ptc_agent.agent.middleware._utils import append_to_system_message
 from ptc_agent.agent.state import DeltaAgentState
 from src.llms.content_utils import extract_reasoning_summary_index
@@ -523,6 +526,7 @@ def _create_task_tool(
         """
         last_state: dict | None = None
         forwarder: _SubagentTokenForwarder | None = None
+        bg_task = None
 
         if registry is not None:
             tool_call_id = current_background_tool_call_id.get()
@@ -539,6 +543,16 @@ def _create_task_tool(
             async for mode, data in subagent.astream(
                 state, config, stream_mode=["values", "messages", "custom"]
             ):
+                # Root symmetry (retention contract): once the spill circuit
+                # opens, every further frame widens the hole in the replay
+                # archive — abort the graph instead of completing a run
+                # whose stream is torn.
+                if bg_task is not None and bg_task.redis_write_failed:
+                    raise TransportLostError(
+                        "transport_lost: subagent event spill failed; "
+                        "aborting so the run finalizes instead of "
+                        "completing with a torn stream"
+                    )
                 if mode == "values":
                     last_state = data
                 elif mode == "messages" and forwarder is not None:

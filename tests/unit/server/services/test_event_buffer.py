@@ -75,8 +75,10 @@ class TestBufferEventRedisHappyPath:
         assert call.kwargs["meta_key"] == "workflow:events:meta:thread-1:run-1"
         assert call.kwargs["stream_key"] == "workflow:stream:thread-1:run-1"
         assert call.kwargs["last_event_id"] == 42
-        assert call.kwargs["max_size"] == 1000
-        assert call.kwargs["ttl"] == 86400
+        # Retention contract: 2x MAXLEN backstop over the quota, no TTL on
+        # active writes (attach-grace is stamped at terminal).
+        assert call.kwargs["max_size"] == 2000
+        assert call.kwargs["ttl"] is None
 
     @pytest.mark.asyncio
     async def test_malformed_event_id_is_fatal(self):
@@ -160,6 +162,34 @@ class TestBufferEventRedisFailureModes:
                 await btm._buffer_event_redis("thread-1", "run-1", "id: 1\ndata: x\n\n")
 
         assert mock_cache.pipelined_event_buffer.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_quota_breach_is_fatal_before_trim_can_engage(self):
+        """Retention contract: at quota the run finalizes error(transport_lost)
+        — the 2x MAXLEN backstop must never FIFO-trim a served head. Exactly
+        at quota still passes; one past it raises."""
+        btm = _make_btm()  # quota = 1000
+        _register_task(btm)
+
+        mock_cache = MagicMock()
+        mock_cache.enabled = True
+        mock_cache.pipelined_event_buffer = AsyncMock(return_value=(True, 1000))
+
+        with patch(
+            "src.server.services.background_task_manager.get_cache_client",
+            return_value=mock_cache,
+        ):
+            await btm._buffer_event_redis(
+                "thread-1", "run-1", "id: 1000\ndata: x\n\n"
+            )
+
+            mock_cache.pipelined_event_buffer = AsyncMock(
+                return_value=(True, 1001)
+            )
+            with pytest.raises(TransportLostError, match="quota"):
+                await btm._buffer_event_redis(
+                    "thread-1", "run-1", "id: 1001\ndata: x\n\n"
+                )
 
     @pytest.mark.asyncio
     async def test_memory_backend_stays_best_effort(self):

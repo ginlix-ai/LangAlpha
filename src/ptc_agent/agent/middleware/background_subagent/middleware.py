@@ -23,6 +23,7 @@ from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
     TaskRunRejected,
     TaskWriterLive,
+    TransportLostError,
     parse_steering_payload,
     steering_queue_key,
 )
@@ -163,6 +164,22 @@ async def _return_unconsumed_steering(
         )
 
 
+def _transport_lost_failure() -> dict[str, Any]:
+    return {
+        "error": (
+            "transport_lost: the task's Redis event stream tore mid-run "
+            "(spill failure or quota); the replay archive is incomplete"
+        ),
+        "error_type": "transport_lost",
+    }
+
+
+def _error_type(e: BaseException) -> str:
+    # One spelling for the retention contract's torn-transport terminal —
+    # consumers grep "transport_lost", never the class name.
+    return "transport_lost" if isinstance(e, TransportLostError) else type(e).__name__
+
+
 async def _run_background_task(
     task: BackgroundTask,
     handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
@@ -225,6 +242,19 @@ async def _run_background_task(
                 "error": str(result.content)[:2000],
                 "error_type": "tool_error",
             }
+        if task.redis_write_failed and not task.cancelled:
+            # Retention contract: a run whose event spill tore mid-flight
+            # must not settle "completed" — the replay archive has holes the
+            # consumer can't detect. The abort loop usually raises first;
+            # this covers a tear on the final events.
+            ledger_status = "error"
+            ledger_failure = _transport_lost_failure()
+            logger.error(
+                "%s finished with a torn event stream; finalizing transport_lost",
+                label,
+                display_id=task.display_id,
+            )
+            return {"success": False, **_transport_lost_failure()}
         logger.debug(
             "%s completed",
             label,
@@ -243,10 +273,14 @@ async def _run_background_task(
             result = await handler_task
             ledger_status, ledger_failure = "completed", None
             _merge_subagent_usage(task, tracker, tool_tracker)
+            if task.redis_write_failed and not task.cancelled:
+                ledger_status = "error"
+                ledger_failure = _transport_lost_failure()
+                return {"success": False, **_transport_lost_failure()}
             return {"success": True, "result": result}
         except Exception as e:
             ledger_status = "error"
-            ledger_failure = {"error": str(e), "error_type": type(e).__name__}
+            ledger_failure = {"error": str(e), "error_type": _error_type(e)}
             _merge_subagent_usage(task, tracker, tool_tracker)
             logger.error(
                 "%s failed after cancellation",
@@ -254,10 +288,10 @@ async def _run_background_task(
                 display_id=task.display_id,
                 error=str(e),
             )
-            return {"success": False, "error": str(e), "error_type": type(e).__name__}
+            return {"success": False, "error": str(e), "error_type": _error_type(e)}
     except Exception as e:
         ledger_status = "error"
-        ledger_failure = {"error": str(e), "error_type": type(e).__name__}
+        ledger_failure = {"error": str(e), "error_type": _error_type(e)}
         _merge_subagent_usage(task, tracker, tool_tracker)
         logger.error(
             "%s failed",
@@ -265,7 +299,7 @@ async def _run_background_task(
             display_id=task.display_id,
             error=str(e),
         )
-        return {"success": False, "error": str(e), "error_type": type(e).__name__}
+        return {"success": False, "error": str(e), "error_type": _error_type(e)}
     finally:
         # A double-cancel can exit while the shielded handler still runs; in
         # that case keep the fence (the guard's teardown unlock_all reclaims
@@ -337,6 +371,17 @@ async def _run_background_task(
                 except Exception:
                     logger.warning(
                         "subagent_sentinel_write_failed",
+                        task_id=task.task_id,
+                        exc_info=True,
+                    )
+                # Attach-grace TTL starts at terminal (active streams carry
+                # none) — stamped even when redis_write_failed skipped the
+                # sentinel, so a torn stream expires instead of leaking.
+                try:
+                    await registry.stamp_terminal_retention(task.tool_call_id)
+                except Exception:
+                    logger.warning(
+                        "subagent_terminal_ttl_stamp_failed",
                         task_id=task.task_id,
                         exc_info=True,
                     )

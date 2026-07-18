@@ -45,6 +45,16 @@ _CANCEL_INTENT_STAMP_TIMEOUT_S = 2.0
 SUBAGENT_STREAM_END_EVENT = "subagent_stream_end"
 
 
+class TransportLostError(RuntimeError):
+    """The task's Redis event transport is torn (spill failure or quota).
+
+    Agent-layer twin of the server's root-stream ``TransportLostError`` —
+    defined here so subagent code needn't import server modules. Raised by
+    the astream forwarder loop once ``redis_write_failed`` flips, aborting
+    the graph instead of completing a run whose replay archive has holes.
+    """
+
+
 class TaskRunRejected(Exception):
     """The run ledger refused this spawn/resume (admission-authoritative).
 
@@ -519,7 +529,6 @@ class BackgroundTaskRegistry:
         try:
             from src.config.settings import (
                 get_max_stored_messages_per_agent,
-                get_redis_ttl_workflow_events,
                 is_subagent_event_redis_spill_enabled,
             )
         except Exception:
@@ -603,18 +612,21 @@ class BackgroundTaskRegistry:
         # acquired distinct seq numbers can race to the server via
         # different pool connections and land out of order.
         try:
+            quota = get_max_stored_messages_per_agent()
             async with task.redis_spill_lock:
                 # XADD carries both the pre-rendered SSE wire string
                 # (``b"event"``, consumed live by ``stream_subagent_from_log``)
                 # and the JSON record (``b"record"``, consumed post-turn by
-                # ``iter_subagent_events_full`` via XRANGE). MAXLEN + TTL match
-                # the main-workflow buffer so long-running subagents don't
-                # silently drop events.
-                success, _seq = await asyncio.wait_for(
+                # ``iter_subagent_events_full`` via XRANGE). Active streams
+                # carry no TTL (retention contract — the attach-grace TTL is
+                # stamped at terminal by ``stamp_terminal_retention``), and
+                # MAXLEN is a 2x backstop: the quota check below opens the
+                # circuit before FIFO trim could touch the head.
+                success, seq_count = await asyncio.wait_for(
                     cache.pipelined_event_buffer(
                         meta_key=meta_key,
-                        max_size=get_max_stored_messages_per_agent(),
-                        ttl=get_redis_ttl_workflow_events(),
+                        max_size=quota * 2,
+                        ttl=None,
                         last_event_id=record.get("seq"),
                         stream_key=stream_key,
                         stream_event=stream_payload,
@@ -630,6 +642,9 @@ class BackgroundTaskRegistry:
                 if success and task.task_run_id:
                     v2_key = f"subagent:stream:{self.thread_id}:{task.task_run_id}"
                     try:
+                        # No per-write TTL: the immutable per-run stream is
+                        # active until terminal, when stamp_terminal_retention
+                        # applies the attach-grace TTL.
                         await asyncio.wait_for(
                             cache.client.xadd(
                                 v2_key,
@@ -643,9 +658,6 @@ class BackgroundTaskRegistry:
                                 },
                             ),
                             timeout=_SPILL_TIMEOUT_SECONDS,
-                        )
-                        await cache.client.expire(
-                            v2_key, get_redis_ttl_workflow_events()
                         )
                     except Exception:
                         logger.warning(
@@ -662,6 +674,20 @@ class BackgroundTaskRegistry:
                     tool_call_id=task.tool_call_id,
                     task_id=task.task_id,
                     seq=record.get("seq"),
+                )
+            elif int(seq_count or 0) > quota:
+                # Quota breach tears the transport by contract: opening the
+                # circuit here (instead of trimming FIFO) makes the abort
+                # loop + terminal escalation finalize error(transport_lost),
+                # so a replay with a silent hole is never served.
+                task.redis_write_failed = True
+                logger.warning(
+                    "subagent_event_spill_failed",
+                    phase="quota",
+                    tool_call_id=task.tool_call_id,
+                    task_id=task.task_id,
+                    seq=record.get("seq"),
+                    quota=quota,
                 )
         except asyncio.TimeoutError:
             task.redis_write_failed = True
@@ -834,7 +860,7 @@ class BackgroundTaskRegistry:
                     pipe.xadd(
                         stream_key,
                         {b"event": payload},
-                        maxlen=get_max_stored_messages_per_agent(),
+                        maxlen=get_max_stored_messages_per_agent() * 2,
                         approximate=True,
                     )
                     pipe.expire(stream_key, get_redis_ttl_workflow_events())
@@ -847,6 +873,48 @@ class BackgroundTaskRegistry:
                 "subagent_stream_end_sentinel_failed",
                 tool_call_id=tool_call_id,
                 task_id=task.task_id,
+                error=str(exc),
+            )
+
+    async def stamp_terminal_retention(self, tool_call_id: str) -> None:
+        """Stamp the attach-grace TTL on the task's event keys at terminal.
+
+        Active streams carry no TTL (retention contract), so this is the
+        only place their expiry clock starts. Runs unconditionally from the
+        run wrapper's finally — including when ``redis_write_failed`` skipped
+        the sentinel — because a torn stream must still expire, not leak.
+        Idempotent and best-effort.
+        """
+        if not self.thread_id:
+            return
+        async with self._lock:
+            task = self._tasks.get(tool_call_id)
+            if not task:
+                return
+        try:
+            from src.config.settings import get_redis_ttl_workflow_events
+            from src.utils.cache.redis_cache import get_cache_client
+
+            cache = get_cache_client()
+            if not getattr(cache, "enabled", False) or not cache.client:
+                return
+            ttl = get_redis_ttl_workflow_events()
+            async with cache.client.pipeline(transaction=False) as pipe:
+                pipe.expire(f"subagent:stream:{self.thread_id}:{task.task_id}", ttl)
+                pipe.expire(
+                    f"subagent:events:meta:{self.thread_id}:{task.task_id}", ttl
+                )
+                if task.task_run_id:
+                    pipe.expire(
+                        f"subagent:stream:{self.thread_id}:{task.task_run_id}", ttl
+                    )
+                await asyncio.wait_for(
+                    pipe.execute(), timeout=_SPILL_TIMEOUT_SECONDS
+                )
+        except Exception as exc:
+            logger.debug(
+                "subagent_terminal_ttl_stamp_failed",
+                tool_call_id=tool_call_id,
                 error=str(exc),
             )
 

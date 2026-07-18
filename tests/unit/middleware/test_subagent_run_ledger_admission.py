@@ -23,6 +23,7 @@ from ptc_agent.agent.middleware.background_subagent.middleware import (
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTaskRegistry,
     TaskRunRejected,
+    TransportLostError,
 )
 
 
@@ -204,6 +205,71 @@ async def test_cancelled_flag_maps_to_cancelled_finalize():
 
     await mw.awrap_tool_call(
         _request({"description": "d", "prompt": "p"}), _cancelling_handler
+    )
+    await mw.registry._tasks["tc-1"].asyncio_task
+
+    assert ledger.finalized[0][1] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_torn_stream_escalates_completed_to_transport_lost():
+    """Retention contract: a handler that settles cleanly with the spill
+    circuit open must finalize error(transport_lost), never completed —
+    the replay archive has holes the consumer cannot detect."""
+    ledger = FakeLedger()
+    mw = _middleware(FakeOwner(), ledger)
+    mw.registry.write_task_meta = AsyncMock()
+
+    async def _torn_handler(_request):
+        mw.registry._tasks["tc-1"].redis_write_failed = True
+        return ToolMessage(content="done", tool_call_id="tc-1", name="Task")
+
+    await mw.awrap_tool_call(
+        _request({"description": "d", "prompt": "p"}), _torn_handler
+    )
+    await mw.registry._tasks["tc-1"].asyncio_task
+
+    (_run_id, status, failure) = ledger.finalized[0]
+    assert status == "error"
+    assert failure["error_type"] == "transport_lost"
+    assert failure["error"].startswith("transport_lost:")
+
+
+@pytest.mark.asyncio
+async def test_abort_path_normalizes_error_type_spelling():
+    """The abort loop raises TransportLostError; the ledger row must carry
+    the contract spelling ("transport_lost"), never the class name."""
+    ledger = FakeLedger()
+    mw = _middleware(FakeOwner(), ledger)
+    mw.registry.write_task_meta = AsyncMock()
+
+    async def _torn(_request):
+        raise TransportLostError("transport_lost: spill failed mid-run")
+
+    await mw.awrap_tool_call(_request({"description": "d", "prompt": "p"}), _torn)
+    await mw.registry._tasks["tc-1"].asyncio_task
+
+    (_run_id, status, failure) = ledger.finalized[0]
+    assert status == "error"
+    assert failure["error_type"] == "transport_lost"
+
+
+@pytest.mark.asyncio
+async def test_cancel_wins_over_torn_stream_escalation():
+    """A user cancel stays cancelled even when the spill circuit is open —
+    transport_lost only replaces a would-be completed."""
+    ledger = FakeLedger()
+    mw = _middleware(FakeOwner(), ledger)
+    mw.registry.write_task_meta = AsyncMock()
+
+    async def _torn_cancelled_handler(_request):
+        task = mw.registry._tasks["tc-1"]
+        task.redis_write_failed = True
+        task.cancelled = True
+        return ToolMessage(content="done", tool_call_id="tc-1", name="Task")
+
+    await mw.awrap_tool_call(
+        _request({"description": "d", "prompt": "p"}), _torn_cancelled_handler
     )
     await mw.registry._tasks["tc-1"].asyncio_task
 
