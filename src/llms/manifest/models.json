@@ -986,6 +986,30 @@
       "enable_thinking": true
     }
   },
+  "kimi-k3": {
+    "model_id": "kimi-k3",
+    "provider": "moonshot",
+    "visible": true,
+    "speed": 2,
+    "intelligence": 5,
+    "context": 1000000,
+    "input_modalities": [
+      "text",
+      "image"
+    ]
+  },
+  "kimi-k3-coding": {
+    "model_id": "kimi-k3",
+    "provider": "moonshot-coding",
+    "visible": true,
+    "speed": 2,
+    "intelligence": 5,
+    "context": 1000000,
+    "input_modalities": [
+      "text",
+      "image"
+    ]
+  },
   "kimi-k2.6": {
     "model_id": "kimi-k2.6",
     "provider": "moonshot",
