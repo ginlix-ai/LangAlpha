@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.config.tools import SearchEngine
 from src.tools.decorators import (
     ToolUsageTracker,
     start_tool_tracking,
@@ -20,37 +19,14 @@ from src.tools.decorators import (
 
 
 # ---------------------------------------------------------------------------
-# Tests for SearchEngine enum
+# Provider registry consistency
 # ---------------------------------------------------------------------------
 
 
-class TestSearchEngineEnum:
-    """Tests for SearchEngine enum values."""
-
-    def test_tavily_value(self):
-        assert SearchEngine.TAVILY.value == "tavily"
-
-    def test_serper_value(self):
-        assert SearchEngine.SERPER.value == "serper"
-
-    def test_bocha_value(self):
-        assert SearchEngine.BOCHA.value == "bocha"
-
-    def test_all_members(self):
-        members = [e.value for e in SearchEngine]
-        assert "tavily" in members
-        assert "serper" in members
-        assert "bocha" in members
-
-    def test_manifest_matches_enum(self):
-        """Every search-capable manifest provider has an enum member and vice versa."""
-        from src.tools.web.manifest import CAPABILITY_SEARCH, providers_with_capability
-
-        assert set(providers_with_capability(CAPABILITY_SEARCH)) == {
-            e.value for e in SearchEngine
-        }
-
+class TestProviderRegistry:
     def test_every_manifest_provider_has_a_builder(self):
+        """The manifest is the provider registry; every search-capable entry
+        must have a matching builder (and no orphan builders)."""
         from src.tools.web.manifest import CAPABILITY_SEARCH, providers_with_capability
         from src.tools.web.search import _PROVIDER_BUILDERS
 
@@ -87,7 +63,7 @@ class TestGetWebSearchToolRouting:
         mock_tool = MagicMock()
 
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.SERPER.value),
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "serper"),
             patch.dict("sys.modules", {"src.tools.web.providers.serper": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
@@ -114,7 +90,7 @@ class TestGetWebSearchToolRouting:
         mock_tool = MagicMock()
 
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "tavily"),
             patch.dict("sys.modules", {"src.tools.web.providers.tavily": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool),
         ):
@@ -149,7 +125,7 @@ class TestGetWebSearchToolProviderOverride:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "tavily"),
             patch.dict("sys.modules", {"src.tools.web.providers.serper": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
@@ -170,7 +146,7 @@ class TestGetWebSearchToolProviderOverride:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.SERPER.value),
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "serper"),
             patch.dict("sys.modules", {"src.tools.web.providers.tavily": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
@@ -190,7 +166,7 @@ class TestGetWebSearchToolProviderOverride:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "tavily"),
             patch.dict("sys.modules", {"src.tools.web.providers.bocha": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
@@ -210,7 +186,7 @@ class TestGetWebSearchToolProviderOverride:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.SERPER.value),
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "serper"),
             patch.dict("sys.modules", {"src.tools.web.providers.serper": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
             caplog.at_level(logging.WARNING, logger="src.tools.web.search"),
@@ -237,7 +213,7 @@ class TestGetWebSearchToolProviderOverride:
         mock_tool = MagicMock()
         builders = {"serper": __import__("src.tools.web.search", fromlist=["x"])._PROVIDER_BUILDERS["serper"]}
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.SERPER.value),
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "serper"),
             patch("src.tools.web.search._PROVIDER_BUILDERS", builders),
             patch.dict("sys.modules", {"src.tools.web.providers.serper": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
@@ -258,7 +234,7 @@ class TestGetWebSearchToolProviderOverride:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "tavily"),
             patch.dict("sys.modules", {"src.tools.web.providers.tavily": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
@@ -295,7 +271,7 @@ class TestGetWebSearchToolDepth:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "tavily"),
             patch.dict("sys.modules", {"src.tools.web.providers.tavily": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
@@ -311,7 +287,7 @@ class TestGetWebSearchToolDepth:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "tavily"),
             patch.dict("sys.modules", {"src.tools.web.providers.tavily": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
@@ -328,7 +304,7 @@ class TestGetWebSearchToolDepth:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.SERPER.value),
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "serper"),
             patch.dict("sys.modules", {"src.tools.web.providers.serper": mock_module}),
             patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):

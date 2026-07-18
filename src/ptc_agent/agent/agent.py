@@ -96,8 +96,9 @@ from ptc_agent.agent.tools import (
     create_show_widget_tool,
     TodoWrite,
 )
-from src.tools.search import get_web_search_tool
-from src.tools.fetch import web_fetch_tool
+from src.tools.web.search import get_web_search_tool
+from src.tools.web.fetch import web_fetch_tool
+from src.tools.web.crawl import create_crawl_tools
 from src.tools.sec.tool import get_sec_filing
 from src.tools.market_data.tool import (
     get_daily_prices,
@@ -160,6 +161,7 @@ class PTCAgent:
         thread_id: str | None = None,
         memory_enabled: bool = True,
         memo_enabled: bool = True,
+        crawl_enabled: bool = False,
     ) -> str:
         """Build the static system prompt (excludes time/profile for cacheability)."""
         loader = get_loader()
@@ -178,6 +180,7 @@ class PTCAgent:
             memory_enabled=memory_enabled,
             memo_enabled=memo_enabled,
             market_watch_enabled=self.config.feature_enabled("market_watch"),
+            crawl_enabled=crawl_enabled,
         )
 
     def _build_model_resilience_middleware(self) -> list[Any]:
@@ -458,6 +461,14 @@ class PTCAgent:
         tools.append(web_search_tool)
         tools.append(web_fetch_tool)
 
+        # Site-crawl tools (PTC-only): experimental opt-in feature, further
+        # tier-gated at resolve time. The factory returns [] when the crawl
+        # provider's API key is unset.
+        crawl_tools: list[Any] = []
+        if self.config.feature_enabled("site_crawl"):
+            crawl_tools = create_crawl_tools(filesystem_backend)
+            tools.extend(crawl_tools)
+
         finance_tools = [
             get_sec_filing,  # SEC filing extraction (10-K, 10-Q, 8-K)
             get_quote,  # Real-time quotes (cheap — price freshness)
@@ -636,6 +647,7 @@ class PTCAgent:
             thread_id=short_thread_id,
             memory_enabled=memory_enabled,
             memo_enabled=memo_enabled,
+            crawl_enabled=bool(crawl_tools),
         )
 
         self.subagents = {}

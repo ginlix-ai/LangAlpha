@@ -880,59 +880,67 @@ async def resolve_llm_config(
         _cow()
         config.llm.fallback = user_fallback
 
+    # Lazy, Redis-cached platform tier — shared by the search-pref gates and
+    # the crawl capability gate below. ChatAuthResult.access_tier is -1 for
+    # BYOK/OAuth users, so the true tier is resolved here — once per turn.
+    from src.config.settings import HOST_MODE
+
+    is_platform = HOST_MODE == "platform"
+    _user_tier: int | None = None
+
+    async def _platform_tier() -> int:
+        nonlocal _user_tier
+        if _user_tier is None:
+            from src.server.dependencies.usage_limits import _fetch_platform_tier
+
+            _user_tier = await _fetch_platform_tier(user_id)
+        return _user_tier
+
+    async def _tier_permits(min_tier: int) -> bool:
+        """One polarity for every capability gate: OSS/BYOK deployments are
+        never gated; platform users must meet the manifest min tier."""
+        return not is_platform or await _platform_tier() >= min_tier
+
     # Per-user search provider + depth, gated per the search manifest. This
     # resolve-time check is the enforcement point, so a stale pref from a
-    # downgraded plan is ignored at consumption. ChatAuthResult.access_tier
-    # is -1 for BYOK/OAuth users, so the true tier is resolved here
-    # (Redis-cached) — once, lazily, shared by both checks.
+    # downgraded plan is ignored at consumption.
     pref_search_provider = model_pref.get("search_provider")
     pref_search_depth = model_pref.get("search_depth")
     if pref_search_provider or pref_search_depth:
-        from src.config.settings import HOST_MODE
-        from src.tools.search_manifest import (
-            get_search_provider_spec,
-            resolve_depth_tier,
-            resolve_provider_tier,
+        from src.tools.web.manifest import (
+            CAPABILITY_SEARCH,
+            get_capability,
+            resolve_min_tier,
         )
 
-        is_platform = HOST_MODE == "platform"
-        _user_tier: int | None = None
-
-        async def _platform_tier() -> int:
-            nonlocal _user_tier
-            if _user_tier is None:
-                from src.server.dependencies.usage_limits import _fetch_platform_tier
-
-                _user_tier = await _fetch_platform_tier(user_id)
-            return _user_tier
-
         if pref_search_provider:
-            spec = (
-                get_search_provider_spec(pref_search_provider)
+            search_cap = (
+                get_capability(pref_search_provider, CAPABILITY_SEARCH)
                 if isinstance(pref_search_provider, str)
                 else None
             )
-            if spec is None:
+            if search_cap is None:
                 logger.warning(
                     f"[CHAT] Ignoring unknown search_provider preference: {pref_search_provider!r}"
                 )
-            elif not is_platform or await _platform_tier() >= resolve_provider_tier(spec):
+            elif await _tier_permits(resolve_min_tier(search_cap)):
                 _cow()
-                config.search_api = spec.name
-                logger.debug(f"[CHAT] Using search_provider: {spec.name}")
+                config.search_api = pref_search_provider
+                logger.debug(f"[CHAT] Using search_provider: {pref_search_provider}")
             else:
                 logger.debug(
-                    f"[CHAT] search_provider pref ignored (tier below {resolve_provider_tier(spec)})"
+                    f"[CHAT] search_provider pref ignored "
+                    f"(tier below {resolve_min_tier(search_cap)})"
                 )
 
         if pref_search_depth:
             # Depth names are provider-scoped: validate against the EFFECTIVE
             # provider (post-provider-resolution), so a stale depth left over
             # from another provider degrades to that provider's default.
-            eff_spec = get_search_provider_spec(config.search_api)
+            eff_cap = get_capability(config.search_api, CAPABILITY_SEARCH)
             depth_spec = (
-                eff_spec.depth(pref_search_depth)
-                if eff_spec is not None and isinstance(pref_search_depth, str)
+                eff_cap.level(pref_search_depth)
+                if eff_cap is not None and isinstance(pref_search_depth, str)
                 else None
             )
             if depth_spec is None:
@@ -940,14 +948,29 @@ async def resolve_llm_config(
                     f"[CHAT] search_depth pref {pref_search_depth!r} not offered by "
                     f"provider {config.search_api!r}; using provider default"
                 )
-            elif not is_platform or await _platform_tier() >= resolve_depth_tier(depth_spec):
+            elif await _tier_permits(resolve_min_tier(depth_spec)):
                 _cow()
                 config.search_depth = depth_spec.name
                 logger.debug(f"[CHAT] Using search_depth: {depth_spec.name}")
             else:
                 logger.debug(
-                    f"[CHAT] search_depth pref ignored (tier below {resolve_depth_tier(depth_spec)})"
+                    f"[CHAT] search_depth pref ignored (tier below {resolve_min_tier(depth_spec)})"
                 )
+
+    # Crawl tools (WebCrawl/WebMap): experimental opt-in via the site_crawl
+    # feature; for opted-in users the crawl capability's manifest min_tier
+    # still applies (_tier_permits keeps OSS deployments ungated). The tool
+    # factory self-skips when the provider key is unset.
+    if config.feature_enabled("site_crawl"):
+        from src.config.tool_settings import get_crawl_provider
+        from src.tools.web.manifest import CAPABILITY_CRAWL, get_capability, resolve_min_tier
+
+        crawl_cap = get_capability(get_crawl_provider(), CAPABILITY_CRAWL)
+        if crawl_cap is not None and not await _tier_permits(resolve_min_tier(crawl_cap)):
+            # No _cow() needed: features was rebound above to a dict this
+            # resolve owns, never aliased to base_config.
+            config.features["site_crawl"] = False
+            logger.debug(f"[CHAT] crawl tools disabled (tier below {resolve_min_tier(crawl_cap)})")
 
     # Compaction profile: a named preset (aggressive/moderate/extended/relaxed)
     # that bundles token_threshold, truncate_args_trigger_messages, and

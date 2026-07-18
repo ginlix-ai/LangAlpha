@@ -36,8 +36,8 @@ from ptc_agent.agent.middleware.model_resilience import (
 )
 
 # External tools only (no sandbox, no MCP)
-from src.tools.search import get_web_search_tool
-from src.tools.fetch import web_fetch_tool
+from src.tools.web.search import get_web_search_tool
+from src.tools.web.fetch import web_fetch_tool
 from src.tools.sec.tool import get_sec_filing
 from src.tools.market_data.tool import (
     get_daily_prices,

@@ -7,11 +7,12 @@ This module provides functions to:
 3. Convert costs to credits for unified billing
 
 Pricing is merged from two manifests at module initialization:
-- src/tools/manifest/search_providers.json — web-search providers (per depth
-  level, keyed "TrackingName:depth" plus a bare "TrackingName" legacy key) and
-  auxiliary search tools (images, research).
+- src/tools/manifest/web_providers.json — web-search providers (per depth
+  level, keyed "TrackingName:depth" plus a bare "TrackingName" legacy key),
+  fetch capabilities (per fetched URL, same key scheme), and auxiliary
+  search tools (images).
 - src/llms/manifest/providers.json `infrastructure_pricing` — any remaining
-  non-search infrastructure entries. Search-manifest keys win on collision.
+  non-search infrastructure entries. Web-manifest keys win on collision.
 
 Free tools (DuckDuckGo, Arxiv) and internal operations (cache, storage, filesystem)
 are not charged and will result in 0 credits.
@@ -61,34 +62,37 @@ def _load_legacy_pricing_from_manifest() -> Dict[str, Any]:
 
 def _build_pricing_table() -> Dict[str, Any]:
     """
-    Merge search-manifest pricing with any remaining legacy entries.
+    Merge web-manifest pricing with any remaining legacy entries.
 
-    For each search provider, every depth level registers a qualified key
-    ("TavilySearchTool:deep") plus a bare key priced at the provider's
-    default depth (covers legacy/unqualified usage counts). The search
-    manifest wins over legacy providers.json entries on key collision.
+    Every capability level registers under ``CapabilitySpec.tracking_key``
+    (the same authority dispatchers record usage through), plus a bare key
+    priced at the capability's default level for legacy/unqualified usage
+    counts. Usage counts are in the verb's natural unit (calls, URLs, or
+    delivered pages), so ``level.credits`` is always the per-count price.
+    The manifest wins over legacy providers.json entries on key collision.
     """
-    from src.tools.search_manifest import get_auxiliary_search_pricing, get_search_providers
+    from src.tools.web.manifest import get_auxiliary_pricing, get_web_providers
 
     pricing: Dict[str, Any] = dict(_load_legacy_pricing_from_manifest())
 
-    for spec in get_search_providers().values():
-        for depth in spec.depths:
-            pricing[f"{spec.tracking_name}:{depth.name}"] = {
-                "credits_per_use": depth.credits_per_use,
-                "search_type": depth.name,
+    for provider in get_web_providers().values():
+        for cap in provider.capabilities.values():
+            for level in cap.levels:
+                pricing[cap.tracking_key(level)] = {
+                    "credits_per_use": level.credits,
+                    "search_type": level.name,
+                }
+            default_level = cap.default_level_spec
+            pricing[cap.tracking_name] = {
+                "credits_per_use": default_level.credits,
+                "search_type": default_level.name,
             }
-        default = spec.default_depth_spec
-        pricing[spec.tracking_name] = {
-            "credits_per_use": default.credits_per_use,
-            "search_type": default.name,
-        }
 
-    pricing.update(get_auxiliary_search_pricing())
+    pricing.update(get_auxiliary_pricing())
 
     logger.info(
         f"Loaded infrastructure pricing: {len(pricing)} entries "
-        f"(search manifest + legacy providers.json)"
+        f"(web manifest + legacy providers.json)"
     )
     return pricing
 
@@ -102,8 +106,18 @@ TOOL_TO_SERVICE_MAPPING = {
     "TavilySearchImages": "tavily_images",
     "BochaSearchTool": "bocha_search",
     "SerperSearchTool": "serper_search",
-    "TavilyResearchMini": "tavily_research_mini",
-    "TavilyResearchPro": "tavily_research_pro",
+    "ExaSearchTool": "exa_search",
+    "ParallelSearchTool": "parallel_search",
+    "ExaFetchTool": "exa_fetch",
+    "ParallelFetchTool": "parallel_fetch",
+    "FirecrawlFetchTool": "firecrawl_fetch",
+    "TavilyFetchTool": "tavily_fetch",
+    "WebFetchTool": "web_fetch",
+    "FirecrawlCrawlTool": "firecrawl_crawl",
+    "FirecrawlMapTool": "firecrawl_map",
+    "TavilyResearchTool": "tavily_research",
+    "ExaResearchTool": "exa_research",
+    "ParallelResearchTool": "parallel_research",
 }
 
 

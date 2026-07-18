@@ -89,9 +89,6 @@ ALLOWLIST: dict[tuple[str, str], int] = {
     # compaction middleware model coercion (string model -> chat model).
     ("src/ptc_agent/agent/middleware/compaction/middleware.py", "init_chat_model"): 1,
     # non-BYOK fetch name path (reached only for non-credentialed users).
-    ("src/tools/fetch.py", "get_llm"): 1,
-    # same path in the new web stack (the legacy entry above retires with
-    # the legacy-stack cutover).
     ("src/tools/web/fetch.py", "get_llm"): 1,
     # user_id=None system path AND resolved-None platform fallback (two calls).
     ("src/server/services/llm_service.py", "create_llm"): 2,

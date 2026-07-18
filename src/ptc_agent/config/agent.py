@@ -231,12 +231,12 @@ class AgentConfig(BaseModel):
     # Compaction middleware configuration
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
 
-    # Search API provider (tavily, bocha, serper)
+    # Search API provider (tavily, serper, bocha, exa, parallel)
     search_api: str = "tavily"
 
     # Search depth level name from the provider's manifest entry
-    # (src/tools/manifest/search_providers.json). Unknown levels fall back to
-    # the provider's default_depth.
+    # (src/tools/manifest/web_providers.json). Unknown levels fall back to
+    # the provider's default level.
     search_depth: str = "standard"
 
     # Background task configuration

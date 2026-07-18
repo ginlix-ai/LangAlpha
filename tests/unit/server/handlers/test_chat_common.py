@@ -481,7 +481,7 @@ class TestApplyFetchOverrideContextVars:
         """Run apply_fetch_override in an isolated context; return snapshot."""
         import contextvars
         from src.server.handlers.chat._common import apply_fetch_override
-        from src.tools.fetch import fetch_model_override, fetch_llm_client_override
+        from src.tools.web.fetch import fetch_model_override, fetch_llm_client_override
 
         results = {}
 
@@ -552,7 +552,7 @@ class TestApplyFetchOverrideContextVars:
         """Override set in one isolated run must not bleed into the next run."""
         import contextvars
         from src.server.handlers.chat._common import apply_fetch_override
-        from src.tools.fetch import fetch_llm_client_override
+        from src.tools.web.fetch import fetch_llm_client_override
 
         leak_sentinel = MagicMock(name="leaked-client")
 

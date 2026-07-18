@@ -1,15 +1,4 @@
 
-import enum
-
-
-class SearchEngine(enum.Enum):
-    TAVILY = "tavily"
-    BOCHA = "bocha"
-    SERPER = "serper"
-    EXA = "exa"
-    PARALLEL = "parallel"
-
-
 def _get_search_api() -> str:
     """Get search API from agent_config.yaml via shared YAML cache."""
     from src.config.tool_settings import _get_agent_config_dict
