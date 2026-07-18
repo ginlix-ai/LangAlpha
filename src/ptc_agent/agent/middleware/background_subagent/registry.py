@@ -765,6 +765,10 @@ class BackgroundTaskRegistry:
                     "subagent_type": task.subagent_type,
                     "description": (task.description or "")[:200],
                     "spawned_run_id": task.spawned_run_id or "",
+                    # Execution-scoped stream epoch: spawned_run_id is
+                    # parent-turn-scoped and does NOT change on a same-turn
+                    # resume, so epoch consumers prefer this field.
+                    "task_run_id": task.task_run_id or "",
                     "updated_at": str(time.time()),
                 },
             )
@@ -782,7 +786,9 @@ class BackgroundTaskRegistry:
                     json.dumps(
                         {
                             "task_id": task.task_id,
-                            "epoch": task.spawned_run_id or "-",
+                            "epoch": task.task_run_id
+                            or task.spawned_run_id
+                            or "-",
                         }
                     ),
                 )
@@ -1404,8 +1410,9 @@ class BackgroundTaskRegistry:
 def spawn_nudge_channel(thread_id: str) -> str:
     """Pub/sub channel nudged on every fenced task spawn/resume.
 
-    Payload: ``{"task_id": ..., "epoch": <spawned_run_id>}``. Consumed by the
-    thread-stream mux for mid-connection channel discovery.
+    Payload: ``{"task_id": ..., "epoch": <task_run_id, falling back to
+    spawned_run_id for pre-ledger rounds>}``. Consumed by the thread-stream
+    mux for mid-connection channel discovery.
     """
     return f"subagent:spawn:{thread_id}"
 

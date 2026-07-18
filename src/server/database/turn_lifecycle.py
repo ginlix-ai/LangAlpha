@@ -19,6 +19,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from src.server.database import conversation as qr_db
+from src.server.database import subagent_runs as sr_db
 from src.server.database.hook_outbox import (
     build_finalize_jobs_from_run_row,
     enqueue_hooks,
@@ -188,12 +189,28 @@ async def start_run(
                         live = await cur.fetchone()
                         if live:
                             raise RunSlotBusyError(thread_id, dict(live))
+                    # A background subagent outlives the turn that dispatched
+                    # it, so the root-run check above can pass while a task run
+                    # is still live under a response row about to be deleted.
+                    # The cascade would erase it out from under its executor.
+                    live_task = await sr_db.find_open_run_from_turn(
+                        thread_id, fork.from_turn, conn=conn
+                    )
+                    if live_task:
+                        raise sr_db.TaskRunSlotBusyError(
+                            thread_id, str(live_task["task_id"]), live_task
+                        )
                     deleted = await qr_db.truncate_thread_from_turn(
                         thread_id,
                         fork.from_turn,
                         preserve_query_at_fork=fork.preserve_query_at_fork,
                         conn=conn,
                     )
+                    # Truncation cascaded away the task runs the surviving
+                    # branch no longer owns; re-anchor the task rows in the
+                    # same transaction so no window exists where a resume can
+                    # read an empty latest_run_id.
+                    await sr_db.repair_task_chains(thread_id, conn=conn)
                     # update_thread_checkpoint_id swallows failures into
                     # False; inside this transaction that must abort loudly,
                     # not commit a truncation with an unpinned checkpoint.

@@ -187,6 +187,7 @@ async def handle_workflow_error(
     error occurred before the workspace was resolved.
     ``timezone_str`` is the resolved timezone; falls back to ``request.timezone``.
     """
+    from src.server.database.subagent_runs import TaskRunSlotBusyError
     from src.server.services.turn_lifecycle import (
         AttemptConflictError,
         DuplicateRequestError,
@@ -323,11 +324,14 @@ async def handle_workflow_error(
         yield _emit_sse_error(handler, error_payload)
         return
 
-    if isinstance(e, (RunSlotBusyError, AttemptConflictError)):
+    # TaskRunSlotBusyError reaches here from the fork guard: a background task
+    # run still owns a response row the truncation would delete. Same remedy
+    # as a live root run — wait, then retry — so it gets the same 409 detail.
+    if isinstance(e, (RunSlotBusyError, TaskRunSlotBusyError, AttemptConflictError)):
         await release_burst_slot(user_id, getattr(request, "burst_slot_id", None))
         detail = (
             admission_conflict_detail("running")
-            if isinstance(e, RunSlotBusyError)
+            if isinstance(e, (RunSlotBusyError, TaskRunSlotBusyError))
             else {
                 "code": "attempt_conflict",
                 "message": "A concurrent request already claimed this attempt.",

@@ -132,6 +132,7 @@ def _task(task_id: str = "aaa111") -> SimpleNamespace:
         subagent_type="research",
         description="look things up",
         spawned_run_id="run-1",
+        task_run_id=None,
     )
 
 

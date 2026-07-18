@@ -136,6 +136,12 @@ class RecoveryScanner:
                 "[RecoveryScanner] open-task-run query failed", exc_info=True
             )
             open_task_runs = []
+
+        # Before the early-return: an idle deployment is exactly where
+        # cascade-orphaned task rows sit unnoticed, so the heal must not be
+        # conditional on there being open runs to recover.
+        await self.heal_task_chains()
+
         if not open_runs and not open_task_runs:
             return 0
 
@@ -575,3 +581,23 @@ class RecoveryScanner:
                 "[RecoveryScanner] thread projection heal failed", exc_info=True
             )
             return 0
+
+    async def heal_task_chains(self) -> Dict[str, int]:
+        """Per-cycle heal of task rows orphaned by a response-row cascade.
+
+        The truncation paths repair their own thread transactionally; this
+        catches damage from before that existed and from any path that ever
+        escapes the guard. An anti-join over a small table, so running it
+        every cycle costs nothing on a healthy ledger.
+        """
+        try:
+            healed = await sr_db.repair_dangling_task_chains()
+            if healed["rewound"] or healed["deleted"]:
+                logger.warning(
+                    f"[RecoveryScanner] healed task chains: "
+                    f"rewound={healed['rewound']} deleted={healed['deleted']}"
+                )
+            return healed
+        except Exception:
+            logger.error("[RecoveryScanner] task chain heal failed", exc_info=True)
+            return {"rewound": 0, "deleted": 0}

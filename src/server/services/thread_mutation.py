@@ -63,6 +63,12 @@ class MutationUnavailable(Exception):
     """Pinned-session budget exhausted — bounded 503, like WriterGuardUnavailable."""
 
 
+# Verbs whose mutation deletes rows that subagent_runs cascades from. These
+# alone gate on live task runs; compact/offload rewrite checkpoint state and
+# leave the ledger intact.
+CASCADING_VERBS = frozenset({"delete"})
+
+
 @dataclass
 class MutationSession:
     """One held mutation: the locked conn (and a saver on it) when fenced.
@@ -286,6 +292,7 @@ class ThreadMutationRunner:
         T(thread) on a writer-pool conn. Checkpoint writes belong on the
         yielded ``saver`` so the fence and the writes share one session.
         """
+        from src.server.database import subagent_runs as sr_db
         from src.server.database import turn_lifecycle as tl_db
         from src.server.services import writer_guard as wg
 
@@ -319,6 +326,21 @@ class ThreadMutationRunner:
                     "thread. Wait for the current turn to finish, then try "
                     "again.",
                 )
+
+            if verb in CASCADING_VERBS:
+                # A background subagent outlives its dispatching turn, so the
+                # root-run gate above can pass while task runs are still live.
+                # Deleting the thread cascades their ledger rows away under
+                # them; refuse with the same 409 the frontend already handles.
+                open_tasks = await sr_db.count_open_runs_for_thread(thread_id)
+                if open_tasks:
+                    raise MutationConflict(
+                        "workflow_active",
+                        verb,
+                        f"Cannot {verb} while {open_tasks} background task(s) "
+                        "are still running on this thread. Wait for them to "
+                        "finish, then try again.",
+                    )
 
             saver = None
             if wg.guard_enabled():

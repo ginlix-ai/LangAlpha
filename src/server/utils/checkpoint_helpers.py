@@ -124,9 +124,9 @@ _warned_skeleton_fallback = False
 
 
 async def _list_skeletons_via_tables(
-    checkpointer: AsyncPostgresSaver, thread_id: str
+    checkpointer: AsyncPostgresSaver, thread_id: str, checkpoint_ns: str = ""
 ) -> list[CheckpointTuple]:
-    """Main-namespace checkpoint skeletons straight from the saver's tables.
+    """Single-namespace checkpoint skeletons straight from the saver's tables.
 
     ``alist`` eagerly joins every checkpoint's channel blobs and writes —
     hundreds of ms on long threads — while the walk only needs ids, parents,
@@ -144,18 +144,18 @@ async def _list_skeletons_via_tables(
         await cur.execute(
             """SELECT checkpoint_id, parent_checkpoint_id, metadata
                FROM checkpoints
-               WHERE thread_id = %s AND checkpoint_ns = ''
+               WHERE thread_id = %s AND checkpoint_ns = %s
                ORDER BY checkpoint_id DESC""",
-            (thread_id,),
+            (thread_id, checkpoint_ns),
         )
         rows = await cur.fetchall()
         await cur.execute(
             """SELECT checkpoint_id, task_id, channel, type, blob
                FROM checkpoint_writes
-               WHERE thread_id = %s AND checkpoint_ns = ''
+               WHERE thread_id = %s AND checkpoint_ns = %s
                  AND channel = ANY(%s)
                ORDER BY checkpoint_id, task_id, idx""",
-            (thread_id, list(_BOUNDARY_WRITE_CHANNELS)),
+            (thread_id, checkpoint_ns, list(_BOUNDARY_WRITE_CHANNELS)),
         )
         write_rows = await cur.fetchall()
 
@@ -168,7 +168,7 @@ async def _list_skeletons_via_tables(
         return {
             "configurable": {
                 "thread_id": thread_id,
-                "checkpoint_ns": "",
+                "checkpoint_ns": checkpoint_ns,
                 "checkpoint_id": checkpoint_id,
             }
         }
@@ -190,18 +190,18 @@ async def _list_skeletons_via_tables(
 
 
 async def _list_skeletons_via_alist(
-    checkpointer: Any, thread_id: str
+    checkpointer: Any, thread_id: str, checkpoint_ns: str = ""
 ) -> list[CheckpointTuple]:
-    """Public-API fallback: full tuples via ``alist``, main namespace only."""
+    """Public-API fallback: full tuples via ``alist``, one namespace only."""
     config = build_checkpoint_config(thread_id)
-    config["configurable"]["checkpoint_ns"] = ""
+    config["configurable"]["checkpoint_ns"] = checkpoint_ns
     return [cp_tuple async for cp_tuple in checkpointer.alist(config)]
 
 
 async def _list_checkpoint_skeletons(
-    checkpointer: Any, thread_id: str
+    checkpointer: Any, thread_id: str, checkpoint_ns: str = ""
 ) -> list[CheckpointTuple]:
-    """Newest-first main-namespace checkpoints, as walk-sufficient skeletons.
+    """Newest-first single-namespace checkpoints, as walk-sufficient skeletons.
 
     Skeletons carry config/metadata/parent_config plus pending writes for the
     boundary channels only — no channel values. Fast path reads the postgres
@@ -212,7 +212,9 @@ async def _list_checkpoint_skeletons(
     global _warned_skeleton_fallback
     if isinstance(checkpointer, AsyncPostgresSaver):
         try:
-            return await _list_skeletons_via_tables(checkpointer, thread_id)
+            return await _list_skeletons_via_tables(
+                checkpointer, thread_id, checkpoint_ns
+            )
         except Exception:
             if not _warned_skeleton_fallback:
                 _warned_skeleton_fallback = True
@@ -222,7 +224,7 @@ async def _list_checkpoint_skeletons(
                     "schema compatibility.",
                     exc_info=True,
                 )
-    return await _list_skeletons_via_alist(checkpointer, thread_id)
+    return await _list_skeletons_via_alist(checkpointer, thread_id, checkpoint_ns)
 
 
 async def walk_current_branch_boundaries(
@@ -231,6 +233,7 @@ async def walk_current_branch_boundaries(
     branch_tip_checkpoint_id: str | None = None,
     *,
     strict_branch_tip: bool = False,
+    checkpoint_ns: str = "",
 ) -> tuple[list[Any], str | None]:
     """Chronological turn-boundary checkpoints on the thread's current branch.
 
@@ -246,7 +249,9 @@ async def walk_current_branch_boundaries(
     ``CheckpointTuple``s (no channel values; pending writes limited to the
     boundary channels); ``tip_id`` is None only when the thread has none.
     """
-    checkpoints = await _list_checkpoint_skeletons(checkpointer, thread_id)
+    checkpoints = await _list_checkpoint_skeletons(
+        checkpointer, thread_id, checkpoint_ns
+    )
     if not checkpoints:
         if strict_branch_tip and branch_tip_checkpoint_id is not None:
             raise CheckpointBranchTipNotFound(thread_id, branch_tip_checkpoint_id)

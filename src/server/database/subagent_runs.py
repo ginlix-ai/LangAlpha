@@ -453,6 +453,225 @@ async def list_open_task_runs() -> List[Dict[str, Any]]:
             return [dict(r) for r in rows]
 
 
+async def get_latest_run_statuses(
+    thread_id: str, task_ids: List[str]
+) -> Dict[str, str]:
+    """task_id -> latest run's status, for tasks that HAVE a ledgered run.
+
+    Tasks absent from the result (no task row, or dangling latest_run_id)
+    are pre-ledger / shadow-damaged — callers fall back to legacy inference.
+    """
+    if not task_ids:
+        return {}
+    async with qr_db.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT t.task_id, r.status
+                FROM subagent_tasks t
+                JOIN subagent_runs r ON r.task_run_id = t.latest_run_id
+                WHERE t.thread_id = %s AND t.task_id = ANY(%s)
+                """,
+                (thread_id, list(task_ids)),
+            )
+            rows = await cur.fetchall()
+            return {str(r["task_id"]): str(r["status"]) for r in rows}
+
+
+# ------------------------------------------------------------------ repair
+
+# The lazy global sweep runs unfenced, so it ignores rows younger than this.
+# A task row is born without runs for the width of the START transaction; the
+# FK from subagent_runs already makes deleting a run-bearing task impossible,
+# and this makes the sweep's zero-run read stale-proof as well.
+SWEEP_MIN_AGE_SECONDS = 300
+
+# A task's latest_run_id is dangling when nothing in subagent_runs answers to
+# it. NULL counts: the FK is ON DELETE SET NULL, so a cascade-deleted run
+# leaves the pointer empty rather than pointing at a tombstone. Both shapes
+# read the same to every consumer — the task has no resolvable latest run.
+_DANGLING_LATEST = """
+    NOT EXISTS (
+        SELECT 1 FROM subagent_runs r WHERE r.task_run_id = t.latest_run_id
+    )
+"""
+
+_HAS_SURVIVING_RUN = """
+    EXISTS (
+        SELECT 1 FROM subagent_runs r
+        WHERE r.thread_id = t.thread_id AND r.task_id = t.task_id
+    )
+"""
+
+
+async def repair_task_chains(thread_id: str, conn=None) -> Dict[str, int]:
+    """Re-anchor a thread's task rows to their surviving runs.
+
+    Deleting conversation_responses cascades their subagent_runs away, which
+    can strand a task pointing at nothing (rewind to the newest survivor) or
+    with nothing left at all (delete the row). Left unrepaired, a later resume
+    reads the empty pointer and starts an unchained run with no predecessor
+    and no start pin. Idempotent and safe on any thread — a healthy thread
+    matches neither statement — so truncation paths can call it unconditionally
+    inside their own transaction.
+    """
+    async with _ledger_connection(conn) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                UPDATE subagent_tasks t
+                SET latest_run_id = (
+                        SELECT r.task_run_id FROM subagent_runs r
+                        WHERE r.thread_id = t.thread_id
+                          AND r.task_id = t.task_id
+                        ORDER BY r.started_at DESC
+                        LIMIT 1
+                    ),
+                    updated_at = NOW()
+                WHERE t.thread_id = %s
+                  AND {_DANGLING_LATEST}
+                  AND {_HAS_SURVIVING_RUN}
+                """,
+                (thread_id,),
+            )
+            rewound = cur.rowcount
+
+            await cur.execute(
+                f"""
+                DELETE FROM subagent_tasks t
+                WHERE t.thread_id = %s
+                  AND NOT {_HAS_SURVIVING_RUN}
+                """,
+                (thread_id,),
+            )
+            deleted = cur.rowcount
+
+    if rewound or deleted:
+        logger.info(
+            f"[subagent_runs] REPAIR thread={thread_id} rewound={rewound} "
+            f"deleted={deleted}"
+        )
+    return {"rewound": rewound, "deleted": deleted}
+
+
+async def repair_dangling_task_chains(
+    min_age_seconds: int = SWEEP_MIN_AGE_SECONDS,
+) -> Dict[str, int]:
+    """The global, thread-agnostic form of repair_task_chains.
+
+    Heals damage that predates the transactional rewind — the shadow-deploy
+    window, and any truncation path that ever escapes the guard. Drives off
+    the dangling-pointer anti-join so a healthy ledger scans a small table and
+    updates nothing.
+    """
+    async with qr_db.get_db_connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                UPDATE subagent_tasks t
+                SET latest_run_id = (
+                        SELECT r.task_run_id FROM subagent_runs r
+                        WHERE r.thread_id = t.thread_id
+                          AND r.task_id = t.task_id
+                        ORDER BY r.started_at DESC
+                        LIMIT 1
+                    ),
+                    updated_at = NOW()
+                WHERE t.updated_at < NOW() - MAKE_INTERVAL(secs => %s)
+                  AND {_DANGLING_LATEST}
+                  AND {_HAS_SURVIVING_RUN}
+                """,
+                (min_age_seconds,),
+            )
+            rewound = cur.rowcount
+
+            await cur.execute(
+                f"""
+                DELETE FROM subagent_tasks t
+                WHERE t.updated_at < NOW() - MAKE_INTERVAL(secs => %s)
+                  AND NOT {_HAS_SURVIVING_RUN}
+                """,
+                (min_age_seconds,),
+            )
+            deleted = cur.rowcount
+
+    return {"rewound": rewound, "deleted": deleted}
+
+
+# ------------------------------------------------------------ mutation guard
+
+
+async def count_open_runs_for_responses(
+    thread_id: str, response_ids: List[str], conn=None
+) -> int:
+    """Live runs dispatched by any of these response rows.
+
+    Deleting those rows would cascade the runs away under their live
+    executors, so a mutation that plans to must refuse first.
+    """
+    if not response_ids:
+        return 0
+    async with _ledger_connection(conn) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT COUNT(*) FROM subagent_runs
+                WHERE thread_id = %s
+                  AND status = 'in_progress'
+                  AND parent_run_id = ANY(%s)
+                """,
+                (thread_id, [str(r) for r in response_ids]),
+            )
+            return (await cur.fetchone())[0]
+
+
+async def find_open_run_from_turn(
+    thread_id: str, from_turn_index: int, conn=None
+) -> Optional[Dict[str, Any]]:
+    """One live run whose dispatching response sits at or past the fork cut.
+
+    The same guard as count_open_runs_for_responses, expressed for the fork
+    path: it knows the turn cut rather than the row ids, and resolving those
+    separately would race the truncation it performs in the same transaction.
+    Returns the offending row so the refusal can name it.
+    """
+    async with _ledger_connection(conn) as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT * FROM subagent_runs
+                WHERE thread_id = %s
+                  AND status = 'in_progress'
+                  AND parent_run_id IN (
+                        SELECT conversation_response_id
+                        FROM conversation_responses
+                        WHERE conversation_thread_id = %s
+                          AND turn_index >= %s
+                    )
+                ORDER BY started_at
+                LIMIT 1
+                """,
+                (thread_id, thread_id, from_turn_index),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+
+async def count_open_runs_for_thread(thread_id: str, conn=None) -> int:
+    """Every live run on the thread — the full-delete case, where the cascade
+    reaches all of them regardless of which response dispatched them."""
+    async with _ledger_connection(conn) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT COUNT(*) FROM subagent_runs
+                WHERE thread_id = %s AND status = 'in_progress'
+                """,
+                (thread_id,),
+            )
+            return (await cur.fetchone())[0]
+
+
 async def get_task(thread_id: str, task_id: str) -> Optional[Dict[str, Any]]:
     async with qr_db.get_db_connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:

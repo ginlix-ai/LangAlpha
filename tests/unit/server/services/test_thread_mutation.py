@@ -39,6 +39,7 @@ from src.server.services.thread_mutation import (
 )
 
 TL_DB = "src.server.database.turn_lifecycle"
+SR_DB = "src.server.database.subagent_runs"
 WG = "src.server.services.writer_guard"
 
 
@@ -84,6 +85,12 @@ def _guard_off():
 
 def _no_active_run():
     return patch(f"{TL_DB}.get_active_run", new=AsyncMock(return_value=None))
+
+
+def _open_task_runs(count: int):
+    """Live background subagent runs on the thread, as the delete gate sees
+    them."""
+    return patch(f"{SR_DB}.count_open_runs_for_thread", new=AsyncMock(return_value=count))
 
 
 @contextmanager
@@ -276,12 +283,44 @@ class TestExclusiveFence:
         """Single-worker fallback: no conn, no saver — checkpoint writes go
         through the global pooled saver, exactly as unfenced runs do."""
         runner = _make_runner()
-        with _guard_off(), _no_active_run():
+        with _guard_off(), _no_active_run(), _open_task_runs(0):
             async with runner.exclusive("t1", "delete") as session:
                 assert session.conn is None
                 assert session.saver is None
                 assert "t1" in runner._local
         assert "t1" not in runner._local
+
+    @pytest.mark.asyncio
+    async def test_delete_refuses_while_a_background_task_run_is_live(self):
+        """A background subagent outlives the turn that dispatched it, so the
+        root-run gate can pass while task runs are still writing. Deleting the
+        thread would cascade their ledger rows away under them."""
+        runner = _make_runner()
+        with _guard_off(), _no_active_run(), _open_task_runs(2):
+            with pytest.raises(MutationConflict) as exc:
+                async with runner.exclusive("t1", "delete"):
+                    pass  # pragma: no cover
+        assert exc.value.detail["code"] == "workflow_active"
+        assert exc.value.detail["verb"] == "delete"
+        assert "background task" in exc.value.detail["message"]
+        # The refusal must not strand the local slot.
+        assert "t1" not in runner._local
+
+    @pytest.mark.asyncio
+    async def test_compact_ignores_live_task_runs(self):
+        """Only verbs that delete rows gate on the cascade. Compact/offload
+        rewrite checkpoint state and leave the ledger intact, so a live
+        background task is none of their business."""
+        runner = _make_runner()
+        probe = AsyncMock(return_value=5)
+        with (
+            _guard_off(),
+            _no_active_run(),
+            patch(f"{SR_DB}.count_open_runs_for_thread", new=probe),
+        ):
+            async with runner.exclusive("t1", "compact"):
+                pass
+        probe.assert_not_awaited()
 
 
 class TestWindow:

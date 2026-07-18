@@ -8,9 +8,11 @@ muxing it would double-consume the same Redis stream.
 Wire contract (M0, scratchpad/mux_build_plan.md):
 - Channels: ``task:<task_id>`` and ``watch``.
 - Task-frame SSE id line: ``id: <chan>@<epoch>#<entry_id>#<logical>`` where
-  ``epoch`` is the writer round's ``spawned_run_id`` (resume mints a new one
-  and deletes the stream — an epoch mismatch means a client cursor predates
-  the current stream incarnation and must be discarded), ``entry_id`` is the
+  ``epoch`` is the writer round's ``task_run_id`` (execution-scoped: every
+  resume mints a new one, including same-turn resumes; pre-ledger rounds fall
+  back to ``spawned_run_id``). Resume deletes the stream — an epoch mismatch
+  means a client cursor predates the current stream incarnation and must be
+  discarded. ``entry_id`` is the
   opaque Redis entry ID (the transport cursor — valid for auto-ID entries
   that carry no integer seq), and ``logical`` is the producer's original
   ``id: N`` value (``-`` when absent) for UI ordering.
@@ -222,7 +224,12 @@ async def _discover_tasks(thread_id: str) -> dict[str, str]:
         for task in await registry.get_all_tasks():
             ato = task.asyncio_task
             if ato is not None and not ato.done():
-                out[task.task_id] = task.spawned_run_id or _NO_EPOCH
+                # Execution-scoped epoch: spawned_run_id survives a same-turn
+                # resume unchanged, which a retained closed channel would
+                # refuse to reopen — task_run_id changes per execution.
+                out[task.task_id] = (
+                    task.task_run_id or task.spawned_run_id or _NO_EPOCH
+                )
     try:
         cache = get_cache_client()
         if getattr(cache, "enabled", False) and cache.client:
@@ -234,7 +241,11 @@ async def _discover_tasks(thread_id: str) -> dict[str, str]:
                 status, meta = await _read_task_meta_tristate(thread_id, task_id)
                 if status == "ok" and meta is not None:
                     if meta.get("status") == "running":
-                        out[task_id] = meta.get("spawned_run_id") or _NO_EPOCH
+                        out[task_id] = (
+                            meta.get("task_run_id")
+                            or meta.get("spawned_run_id")
+                            or _NO_EPOCH
+                        )
                 elif status == "absent":
                     continue
     except Exception:
@@ -331,7 +342,11 @@ async def stream_thread_mux(
         # producer's sentinel, which closes the channel after the tail is
         # delivered. An expired stream closes on the first settled probe.
         status, meta = await _read_task_meta_tristate(thread_id, task_id)
-        current_epoch = (meta or {}).get("spawned_run_id") or _NO_EPOCH
+        current_epoch = (
+            (meta or {}).get("task_run_id")
+            or (meta or {}).get("spawned_run_id")
+            or _NO_EPOCH
+        )
         cursor = entry_id.encode() if current_epoch == epoch else b"0"
         chan = _open_channel(task_id, current_epoch, cursor)
         attach_frames.append(

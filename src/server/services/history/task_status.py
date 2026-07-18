@@ -19,6 +19,17 @@ logger = logging.getLogger(__name__)
 
 _TERMINAL_STATUSES = ("completed", "cancelled", "error")
 
+# Ledger run status -> client vocabulary. 'interrupted' maps to error: task
+# HITL is descoped, so an interrupted task run is a failure, not a resumable
+# state the client could act on.
+_LEDGER_TO_CLIENT = {
+    "in_progress": "running",
+    "completed": "completed",
+    "cancelled": "cancelled",
+    "error": "error",
+    "interrupted": "error",
+}
+
 
 def _artifact_task_id(data: Any) -> str | None:
     if not isinstance(data, dict) or data.get("artifact_type") != "task":
@@ -43,12 +54,49 @@ async def resolve_task_statuses(
 ) -> dict[str, str]:
     """Map each task id to ``running`` / ``completed`` / ``cancelled`` / ``error``.
 
+    The run ledger is the authority (M4): the latest run row's status maps
+    straight to the client vocabulary — a dead worker's in_progress row reads
+    "running" only until the recovery scanner finalizes it. Tasks without a
+    ledgered run (pre-ledger launches, shadow-window damage) fall back to the
+    legacy liveness-probe + meta inference, as does everything on a ledger
+    read failure.
+    """
+    if not task_ids:
+        return {}
+    from src.server.database import subagent_runs as sr_db
+
+    ledger: dict[str, str] = {}
+    try:
+        ledger = await sr_db.get_latest_run_statuses(thread_id, task_ids)
+    except Exception:
+        logger.warning(
+            f"[REPLAY] ledger status read failed for {thread_id}; "
+            "falling back to legacy inference",
+            exc_info=True,
+        )
+
+    statuses: dict[str, str] = {}
+    legacy_ids: list[str] = []
+    for task_id in task_ids:
+        run_status = ledger.get(task_id)
+        if run_status is None:
+            legacy_ids.append(task_id)
+        else:
+            statuses[task_id] = _LEDGER_TO_CLIENT.get(run_status, "error")
+    if legacy_ids:
+        statuses.update(await _resolve_legacy_statuses(thread_id, legacy_ids))
+    return statuses
+
+
+async def _resolve_legacy_statuses(
+    thread_id: str, task_ids: list[str]
+) -> dict[str, str]:
+    """Pre-ledger fallback: liveness probe + meta hash.
+
     On lock-probe failure the meta hash breaks the tie (availability over
     precision: a live task wrongly stamped terminal would stick until the
     next load, while a dead one stamped running self-corrects the same way).
     """
-    if not task_ids:
-        return {}
     from ptc_agent.agent.middleware.background_subagent.registry import (
         read_task_meta,
     )

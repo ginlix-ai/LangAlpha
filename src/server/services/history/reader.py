@@ -500,6 +500,23 @@ class CheckpointHistoryReader:
         """Compatibility wrapper returning only a task namespace's transcript."""
         return (await self.aget_task_history(thread_id, task_id)).messages
 
+    async def aget_task_run_stamps(
+        self, thread_id: str, task_id: str
+    ) -> list[str | None]:
+        """Per-run ``task_run_id`` stamps for a task namespace, oldest-first.
+
+        Each spawn/resume writes a ``source=input`` boundary whose metadata
+        carries the execution's ledger identity (stamped at spawn via the
+        child-graph config) — stamp k belongs to run segment k of the
+        namespace transcript. None entries are pre-ledger runs.
+        """
+        boundaries, _tip = await walk_current_branch_boundaries(
+            self._checkpointer,
+            thread_id,
+            checkpoint_ns=f"task:{task_id}",
+        )
+        return [(b.metadata or {}).get("task_run_id") for b in boundaries]
+
     async def aget_turn_anchors(
         self, thread_id: str, branch_tip_checkpoint_id: str | None = None
     ) -> tuple[list[TurnAnchor], str | None]:
