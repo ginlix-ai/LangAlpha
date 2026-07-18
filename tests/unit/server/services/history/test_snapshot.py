@@ -48,12 +48,16 @@ def _patches(
     *,
     active_run,
     task_rows=(),
-    statuses=None,
     streams=None,
     parent_rows=None,
     raises=False,
 ):
-    """Patch at the source modules — snapshot.py imports them lazily."""
+    """Patch at the source modules — snapshot.py imports them lazily.
+
+    ``task_rows`` is either a flat list of rows (stable across every read)
+    or a list of lists (one per ``list_open_runs_for_thread`` call — the
+    loop reads it twice per pass: sample, then recheck).
+    """
     cache = AsyncMock()
     cache.client = _FakeRedis(streams or {}, raises=raises)
 
@@ -61,6 +65,12 @@ def _patches(
         AsyncMock(side_effect=list(active_run))
         if isinstance(active_run, list)
         else AsyncMock(return_value=active_run)
+    )
+    task_rows = list(task_rows)
+    open_runs = (
+        AsyncMock(side_effect=[list(r) for r in task_rows])
+        if task_rows and isinstance(task_rows[0], (list, tuple))
+        else AsyncMock(return_value=task_rows)
     )
     parent_rows = parent_rows or {}
     return (
@@ -74,17 +84,7 @@ def _patches(
         ),
         patch(
             "src.server.database.subagent_runs.list_open_runs_for_thread",
-            new=AsyncMock(return_value=list(task_rows)),
-        ),
-        patch(
-            "src.server.database.subagent_runs.get_latest_run_statuses",
-            new=AsyncMock(
-                return_value=(
-                    statuses
-                    if statuses is not None
-                    else {str(r["task_id"]): "in_progress" for r in task_rows}
-                )
-            ),
+            new=open_runs,
         ),
         active,
     )
@@ -92,7 +92,7 @@ def _patches(
 
 async def _build(**kw):
     *ctxs, active = _patches(**kw)
-    with ctxs[0], ctxs[1], ctxs[2], ctxs[3], ctxs[4]:
+    with ctxs[0], ctxs[1], ctxs[2], ctxs[3]:
         return await build_thread_snapshot(THREAD), active
 
 
@@ -115,16 +115,40 @@ class TestRevalidationLoop:
         assert active.await_count == 4
 
     @pytest.mark.asyncio
-    async def test_task_status_flip_triggers_revalidation(self):
+    async def test_epoch_rotation_at_recheck_forces_a_second_pass(self):
+        # R1 finalizes and R2 resumes the same task mid-sample: the recheck
+        # compares exact {task_id: task_run_id} maps, so the rotation is
+        # caught and the SECOND pass's epoch is what gets served.
+        run = uuid.uuid4()
+        r1, r2 = uuid.uuid4(), uuid.uuid4()
+        snap, _ = await _build(
+            active_run=_root_row(run),
+            task_rows=[
+                [_task_row("k7Xm2p", r1)],
+                [_task_row("k7Xm2p", r2)],
+                [_task_row("k7Xm2p", r2)],
+                [_task_row("k7Xm2p", r2)],
+            ],
+        )
+        assert snap["revalidations"] == 1
+        assert snap["active_runs"][1]["epoch"] == str(r2)
+
+    @pytest.mark.asyncio
+    async def test_spawn_during_sampling_is_picked_up(self):
+        # The initial open-run read is empty; the root spawns a task before
+        # the recheck. Comparing full maps (not sampled-row statuses) makes
+        # the growth visible and the new task lands in the snapshot.
         run = uuid.uuid4()
         row = _task_row("k7Xm2p", uuid.uuid4())
         snap, _ = await _build(
             active_run=_root_row(run),
-            task_rows=[row],
-            statuses={"k7Xm2p": "completed"},
+            task_rows=[[], [row], [row], [row]],
         )
-        # Status left in_progress never again -> loop runs to the cap.
-        assert snap["revalidations"] == 3
+        assert snap["revalidations"] == 1
+        assert [lane["lane"] for lane in snap["active_runs"]] == [
+            "main",
+            "task:k7Xm2p",
+        ]
 
     @pytest.mark.asyncio
     async def test_stable_first_pass_does_not_revalidate(self):
@@ -133,10 +157,13 @@ class TestRevalidationLoop:
         assert active.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_three_iteration_cap(self):
+    async def test_pass_exhaustion_returns_none_not_a_stale_sample(self):
+        # Every pass is invalidated: the final sample is PROVEN stale, so
+        # serving it would hand out cursors for dead epochs. Degrade to no
+        # snapshot instead — replay falls back to the settled projection.
         a, b = _root_row(uuid.uuid4()), _root_row(uuid.uuid4())
         snap, active = await _build(active_run=[a, b] * 3)
-        assert snap["revalidations"] == 3
+        assert snap is None
         # 3 passes x (sample + recheck), never a fourth.
         assert active.await_count == 6
 

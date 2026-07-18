@@ -117,20 +117,27 @@ async def _return_unconsumed_steering(
 ) -> None:
     """Drain the run-scoped steering queue at run end into
     ``steering_returned`` events — accepted input a run never consumed is
-    surfaced, not left for a later resume or a silent TTL death."""
+    surfaced, not left for a later resume or a silent TTL death.
+
+    Read → surface → delete, in that order: the queue is erased only after
+    every entry made it into the event archive, so a spill failure (or a
+    crash) between the two leaves the entries in Redis until TTL instead of
+    silently destroying acknowledged input. No producer can slip in behind
+    the read — the post-push verify sees the terminal meta (written before
+    this sweep) and reclaims its own entry."""
     try:
         from src.utils.cache.redis_cache import get_cache_client
 
         cache = get_cache_client()
         if not cache.enabled or not cache.client:
             return
+        if task.redis_write_failed or registry is None:
+            # Torn transport: appends would no-op against the open circuit
+            # and the delete would erase input nothing surfaced.
+            return
         key = steering_queue_key(task.tool_call_id, task.task_run_id)
-        pipe = cache.client.pipeline()
-        pipe.lrange(key, 0, -1)
-        pipe.delete(key)
-        results = await pipe.execute()
-        raw_messages = results[0] or []
-        if not raw_messages or registry is None:
+        raw_messages = await cache.client.lrange(key, 0, -1) or []
+        if not raw_messages:
             return
         ts = time.time()
         for raw in raw_messages:
@@ -150,6 +157,9 @@ async def _return_unconsumed_steering(
                     "ts": ts,
                 },
             )
+        if task.redis_write_failed:
+            return  # a spill tore mid-sweep — keep the queue for the record
+        await cache.client.delete(key)
         logger.info(
             "returned unconsumed steering input",
             task_id=task.task_id,
@@ -481,6 +491,52 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             await cache.client.rpush(key, payload)
             # 1 hour TTL — if not consumed, it's stale
             await cache.client.expire(key, 3600)
+
+            # Push-then-verify: the terminal sweep drains this queue once,
+            # so a push that lands after it would sit unread until TTL
+            # while the sender reports success. Terminal meta is written
+            # BEFORE the sweep, so a meta read issued AFTER our push that
+            # still says "running" proves the sweep hadn't started — it
+            # will collect our entry if the run ends before delivery.
+            stale = task.completed or task.cancelled
+            try:
+                if not stale:
+                    from ptc_agent.agent.middleware.background_subagent.registry import (
+                        read_task_meta,
+                    )
+
+                    meta = await read_task_meta(
+                        self.registry.thread_id or "", task.task_id
+                    )
+                    if meta is not None:
+                        # "Running" must mean THIS run: a rotated epoch means
+                        # our run-scoped entry sits on a queue whose one sweep
+                        # has already passed.
+                        stale = meta.get("status") != "running" or bool(
+                            task.task_run_id
+                            and (meta.get("task_run_id") or None)
+                            != task.task_run_id
+                        )
+                    else:
+                        # Meta lapsed: the injected ledger (when present) is
+                        # the durable authority. An unknown task fails open —
+                        # the arbitration must never be worse than admission.
+                        ledger = getattr(self.registry, "run_ledger", None)
+                        if ledger is not None:
+                            row = await ledger.get_latest_run(task.task_id)
+                            stale = row is not None and (
+                                row.get("status") != "in_progress"
+                                or bool(
+                                    task.task_run_id
+                                    and str(row.get("task_run_id"))
+                                    != task.task_run_id
+                                )
+                            )
+            except Exception:
+                stale = False  # unreadable authority keeps the admission
+            if stale:
+                await cache.client.lrem(key, 0, payload)
+                return None
             return input_id
         except Exception as e:
             logger.error(
@@ -773,7 +829,11 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 "description", "Restored subagent"
             )
 
-            # Reconstruct BackgroundTask and insert into registry
+            # Reconstruct BackgroundTask and insert into registry. The run
+            # fence travels with it: without task_run_id, a cross-worker
+            # update would land on the legacy task-lifetime queue with
+            # expected_task_run_id=null — unreclaimed by the remote run's
+            # run-scoped sweep, and delivered unfenced to any later resume.
             task = BackgroundTask(
                 tool_call_id=(
                     (meta or {}).get("tool_call_id") or f"hydrated-{task_id}"
@@ -785,6 +845,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 completed=not running_elsewhere,
                 result_seen=not running_elsewhere,
                 spawned_run_id=(meta or {}).get("spawned_run_id") or None,
+                task_run_id=(meta or {}).get("task_run_id") or None,
             )
             async with self.registry._lock:
                 # Publish-once CAS: two concurrent resolves of one lost task
@@ -934,6 +995,33 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                     },
                 )
             else:
+                # The push-then-verify recheck reclaims a follow-up that
+                # landed after the run settled — report the terminal race
+                # honestly instead of a generic transport error.
+                meta_status = None
+                try:
+                    from ptc_agent.agent.middleware.background_subagent.registry import (
+                        read_task_meta,
+                    )
+
+                    meta = await read_task_meta(
+                        parent_thread_id or "", task.task_id
+                    )
+                    meta_status = (meta or {}).get("status")
+                except Exception:
+                    pass
+                if meta_status and meta_status != "running":
+                    return ToolMessage(
+                        content=(
+                            f"Error: Task-{target_task_id} finished "
+                            f"({meta_status}) before the follow-up could be "
+                            f"delivered. Check its output with "
+                            f"action='output', or use action='resume' to "
+                            f"continue it with new instructions."
+                        ),
+                        tool_call_id=tool_call_id,
+                        name="Task",
+                    )
                 return ToolMessage(
                     content=f"Error: Could not deliver follow-up to {task.display_id} -- message queue not available.",
                     tool_call_id=tool_call_id,

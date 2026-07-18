@@ -296,6 +296,47 @@ async def steer_subagent(
         results = await pipe.execute()
         position = results[1]
 
+        # Push-then-verify (accept/sweep arbitration): the owner's terminal
+        # sweep drains this queue exactly once, ordered AFTER its terminal
+        # meta and ledger writes. A liveness read issued AFTER our push that
+        # still shows this run "running" proves the sweep is still ahead of
+        # our entry; anything else means it may already be behind us — so
+        # reclaim the entry and refuse instead of acknowledging input
+        # nobody will ever read.
+        from ptc_agent.agent.middleware.background_subagent.registry import (
+            read_task_meta as _read_meta,
+        )
+
+        try:
+            recheck = await _read_meta(thread_id, task_id)
+            if recheck is not None:
+                still_live = recheck.get("status") == "running" and (
+                    not expected_task_run_id
+                    or (recheck.get("task_run_id") or None)
+                    == expected_task_run_id
+                )
+            else:
+                from src.server.database import subagent_runs as sr_db
+
+                row = await sr_db.get_active_task_run(thread_id, task_id)
+                still_live = row is not None and (
+                    not expected_task_run_id
+                    or str(row["task_run_id"]) == expected_task_run_id
+                )
+        except Exception:
+            # The arbitration is best-effort: an unreadable authority keeps
+            # the pre-push admission rather than failing an accepted input.
+            still_live = True
+        if not still_live:
+            await cache.client.lrem(key, 0, payload)
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Task-{task_id} finished before the message could be "
+                    "delivered"
+                ),
+            )
+
         logger.info(
             f"[SUBAGENT_MSG] Steering for subagent: "
             f"thread_id={thread_id} task=Task-{task_id} position={position}"
@@ -308,6 +349,8 @@ async def steer_subagent(
             "queue_position": position,
             "input_id": input_id,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[SUBAGENT_MSG] Failed to steer subagent: {e}")
         raise HTTPException(

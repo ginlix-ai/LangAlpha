@@ -274,6 +274,15 @@ class RecoveryScanner:
                 if not acquired:
                     continue  # live writer holds the fence
             try:
+                # Retention stamp FIRST: a terminal row is never revisited,
+                # so a failed stamp after finalize would leak the dead
+                # worker's no-TTL keys forever. Deferring the finalize keeps
+                # the row open and this pass's work retried by the next scan
+                # — recovery is not time-critical, immortal keys are.
+                if not await self._stamp_task_retention(
+                    thread_id, task_id, task_run_id
+                ):
+                    continue
                 status = (
                     "cancelled" if run.get("cancel_requested_at") else "error"
                 )
@@ -314,6 +323,40 @@ class RecoveryScanner:
                     except Exception:
                         pass
         return recovered
+
+    async def _stamp_task_retention(
+        self, thread_id: str, task_id: str, task_run_id: str
+    ) -> bool:
+        """Start the attach-grace expiry clock on a recovered task's event keys.
+
+        Active task streams carry no TTL, and the only other stamp sites
+        (the run wrapper's finally, the post-turn collector) live on the
+        dead worker. Runs BEFORE the ledger finalize: False defers the
+        finalize so the still-open row retries the stamp next scan. A
+        disabled cache has no keys to stamp and never blocks recovery.
+        """
+        try:
+            from src.config.settings import get_redis_ttl_workflow_events
+            from src.utils.cache.redis_cache import get_cache_client
+
+            cache = get_cache_client()
+            if not getattr(cache, "enabled", False) or not cache.client:
+                return True
+            ttl = get_redis_ttl_workflow_events()
+            async with cache.client.pipeline(transaction=False) as pipe:
+                pipe.expire(f"subagent:stream:{thread_id}:{task_id}", ttl)
+                pipe.expire(f"subagent:events:meta:{thread_id}:{task_id}", ttl)
+                pipe.expire(f"subagent:stream:{thread_id}:{task_run_id}", ttl)
+                await pipe.execute()
+            return True
+        except Exception:
+            logger.warning(
+                f"[RecoveryScanner] retention stamp failed for task "
+                f"{task_id} run {task_run_id} (thread={thread_id}); "
+                "finalize deferred to the next scan",
+                exc_info=True,
+            )
+            return False
 
     async def _recover_run(
         self, run: Dict[str, Any], run_id: str, thread_id: str

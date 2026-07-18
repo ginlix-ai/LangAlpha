@@ -215,6 +215,70 @@ async def test_steer_subagent_meta_terminal_is_409(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_steer_subagent_reclaims_when_run_settles_mid_push(monkeypatch):
+    """Accept/sweep arbitration: the owner finalizes and sweeps between the
+    sender's admission read and its RPUSH. The post-push recheck sees the
+    terminal meta (written before the sweep), reclaims the entry with an
+    exact-match LREM, and refuses — never a success ack for input nobody
+    will ever read."""
+    from fastapi import HTTPException
+
+    from src.server.handlers.chat.steering import steer_subagent
+
+    cache = FakeCache()
+    monkeypatch.setattr(CACHE, lambda: cache)
+
+    running = {
+        "tool_call_id": "tc-remote",
+        "status": "running",
+        "task_run_id": "run-9",
+    }
+    settled = dict(running, status="completed")
+    with (
+        patch(
+            "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
+            AsyncMock(side_effect=[running, settled]),
+        ),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await steer_subagent("t-race", "abc123", "go", "u-1")
+
+    assert exc.value.status_code == 409
+    assert cache.client.lists.get("subagent:steering:tc-remote:run-9", []) == []
+
+
+@pytest.mark.asyncio
+async def test_steer_subagent_refuses_when_epoch_rotates_mid_push(monkeypatch):
+    """R1 settles and R2 resumes the task between admission and push: the
+    recheck's meta says "running" but for a different task_run_id, so the
+    R1-scoped entry (which no sweep will ever visit again) is reclaimed."""
+    from fastapi import HTTPException
+
+    from src.server.handlers.chat.steering import steer_subagent
+
+    cache = FakeCache()
+    monkeypatch.setattr(CACHE, lambda: cache)
+
+    r1 = {
+        "tool_call_id": "tc-remote",
+        "status": "running",
+        "task_run_id": "run-9",
+    }
+    r2 = dict(r1, task_run_id="run-10")
+    with (
+        patch(
+            "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
+            AsyncMock(side_effect=[r1, r2]),
+        ),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await steer_subagent("t-race2", "abc123", "go", "u-1")
+
+    assert exc.value.status_code == 409
+    assert cache.client.lists.get("subagent:steering:tc-remote:run-9", []) == []
+
+
+@pytest.mark.asyncio
 async def test_steer_subagent_unknown_everywhere_is_404(monkeypatch):
     from fastapi import HTTPException
 

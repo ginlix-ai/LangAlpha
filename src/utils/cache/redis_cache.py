@@ -736,10 +736,12 @@ class RedisCacheClient:
         collector (``iter_subagent_events_full``) reads this field via
         XRANGE to rebuild full subagent history without a separate List.
 
-        ``ttl=None`` skips the per-write EXPIRE on both keys — active
-        run streams carry no TTL (retention contract: an active stream
-        must not expire mid-run); the terminal path stamps the
-        attach-grace TTL instead.
+        ``ttl=None`` PERSISTs both keys on every write instead of
+        stamping an EXPIRE — active run streams carry no TTL (retention
+        contract: an active stream must not expire mid-run), and the
+        write path enforces that rather than assuming it, so a TTL
+        inherited from a failed cleanup or a stale collector stamp heals
+        on the next write. The terminal path stamps the attach-grace TTL.
 
         Raises ValueError when a stream write is requested (both
         ``stream_key`` and ``last_event_id`` provided) but neither
@@ -777,6 +779,8 @@ class RedisCacheClient:
                     pipe.hset(meta_key, "last_event_id", json.dumps(last_event_id))
                 if ttl is not None:
                     pipe.expire(meta_key, ttl)
+                else:
+                    pipe.persist(meta_key)
                 # Stream write when both key and id are provided. Explicit
                 # ID `<seq>-0` keeps the cursor integer-friendly for the
                 # frontend's parseInt-based last_event_id parsing while
@@ -806,6 +810,8 @@ class RedisCacheClient:
                     )
                     if ttl is not None:
                         pipe.expire(stream_key, ttl)
+                    else:
+                        pipe.persist(stream_key)
                 results = await pipe.execute()
             self.stats["sets"] += 1
             seq = (

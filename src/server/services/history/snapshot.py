@@ -92,16 +92,15 @@ async def build_thread_snapshot(thread_id: str) -> dict | None:
             return None
 
         revalidations = 0
-        active_runs: list[dict] = []
 
         for _ in range(_MAX_PASSES):
+            active_runs: list[dict] = []
             root = await tl_db.get_active_run(thread_id)
             root_id = (
                 str(root["conversation_response_id"]) if root else None
             )
             task_rows = await sr_db.list_open_runs_for_thread(thread_id)
 
-            active_runs = []
             if root_id:
                 active_runs.append(
                     {
@@ -141,24 +140,40 @@ async def build_thread_snapshot(thread_id: str) -> dict | None:
                     }
                 )
 
-            sampled_task_ids = [str(r["task_id"]) for r in task_rows]
+            # Recheck the FULL open-run map, not just the sampled rows'
+            # statuses: a spawn during sampling grows the map, a resume
+            # rotates an epoch, a finalize drops a row — all must trigger
+            # a re-pass, or the snapshot serves cursors for a set that no
+            # longer exists.
+            sampled_map = {
+                str(r["task_id"]): str(r["task_run_id"]) for r in task_rows
+            }
             recheck_root = await tl_db.get_active_run(thread_id)
             recheck_root_id = (
                 str(recheck_root["conversation_response_id"])
                 if recheck_root
                 else None
             )
-            statuses = await sr_db.get_latest_run_statuses(
-                thread_id, sampled_task_ids
-            )
-            moved = recheck_root_id != root_id or any(
-                statuses.get(tid) != "in_progress" for tid in sampled_task_ids
-            )
+            recheck_map = {
+                str(r["task_id"]): str(r["task_run_id"])
+                for r in await sr_db.list_open_runs_for_thread(thread_id)
+            }
+            moved = recheck_root_id != root_id or recheck_map != sampled_map
             if not moved:
-                break
+                return {
+                    "active_runs": active_runs,
+                    "revalidations": revalidations,
+                }
             revalidations += 1
 
-        return {"active_runs": active_runs, "revalidations": revalidations}
+        # Every pass was invalidated — the sample in hand is proven stale.
+        # Serving it would hand out cursors for dead epochs; degrading to no
+        # snapshot costs freshness only (the live stream reconciles).
+        logger.info(
+            f"[SNAPSHOT] {thread_id} churned through {_MAX_PASSES} passes; "
+            "degrading to the settled projection"
+        )
+        return None
     except Exception:
         logger.warning(
             f"[SNAPSHOT] build failed for {thread_id}; replay degrades to "

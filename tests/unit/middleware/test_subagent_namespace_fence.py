@@ -261,6 +261,7 @@ async def test_hydrate_running_meta_builds_live_task_with_real_identity():
         "subagent_type": "research",
         "description": "remote work",
         "spawned_run_id": "run-9",
+        "task_run_id": "tr-remote-1",
     }
     with patch(
         "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
@@ -272,6 +273,10 @@ async def test_hydrate_running_meta_builds_live_task_with_real_identity():
     assert task.tool_call_id == "tc-remote"  # update routes to the real list
     assert task.completed is False and task.is_pending
     assert task.spawned_run_id == "run-9"
+    # The run fence travels with the hydration: without it, a cross-worker
+    # update would enqueue on the legacy task-lifetime queue with
+    # expected_task_run_id=null — unfenced against a later resume.
+    assert task.task_run_id == "tr-remote-1"
 
 
 @pytest.mark.asyncio
@@ -651,3 +656,254 @@ async def test_settle_writes_terminal_meta_before_releasing_the_namespace():
     await mw.registry._tasks["tc-1"].asyncio_task
 
     assert events == ["meta:running", "meta:completed", "release"]
+
+
+# ---------------------------------------------------------------------------
+# follow-up queue push-then-verify
+# ---------------------------------------------------------------------------
+
+
+def _fake_cache():
+    client = SimpleNamespace(
+        rpush=AsyncMock(), expire=AsyncMock(), lrem=AsyncMock()
+    )
+    return SimpleNamespace(enabled=True, client=client)
+
+
+def _live_task(task_run_id: str = "run-9") -> BackgroundTask:
+    return BackgroundTask(
+        tool_call_id="tc-9",
+        task_id="abc123",
+        description="d",
+        prompt="p",
+        subagent_type="general-purpose",
+        task_run_id=task_run_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_followup_reclaimed_when_run_settles_mid_push():
+    """The terminal sweep drains the queue exactly once, ordered AFTER the
+    terminal meta write. A follow-up whose post-push meta read shows the run
+    settled may have landed behind that sweep — reclaim it and report
+    failure instead of acknowledging input nobody will ever read."""
+    mw = _middleware(FakeOwner())
+    cache = _fake_cache()
+
+    with (
+        patch(
+            "src.utils.cache.redis_cache.get_cache_client",
+            return_value=cache,
+        ),
+        patch(
+            "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
+            AsyncMock(return_value={"status": "completed"}),
+        ),
+    ):
+        input_id = await mw._queue_followup_to_redis(_live_task(), "more")
+
+    assert input_id is None
+    cache.client.lrem.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_followup_stands_while_meta_still_running():
+    """A post-push read that still says "running" FOR THIS RUN proves the
+    sweep hadn't started at push time — the entry is either delivered or
+    collected by the sweep, so the acknowledgement is honest."""
+    mw = _middleware(FakeOwner())
+    cache = _fake_cache()
+
+    with (
+        patch(
+            "src.utils.cache.redis_cache.get_cache_client",
+            return_value=cache,
+        ),
+        patch(
+            "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
+            AsyncMock(
+                return_value={"status": "running", "task_run_id": "run-9"}
+            ),
+        ),
+    ):
+        input_id = await mw._queue_followup_to_redis(_live_task(), "more")
+
+    assert input_id is not None
+    cache.client.rpush.assert_awaited_once()
+    cache.client.lrem.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_followup_reclaimed_when_epoch_rotates_mid_push():
+    """Meta says "running" but for a different task_run_id: R1's queue has
+    had its one sweep — a run-scoped entry there is unreachable forever, so
+    it must be reclaimed even though the task is nominally live."""
+    mw = _middleware(FakeOwner())
+    cache = _fake_cache()
+
+    with (
+        patch(
+            "src.utils.cache.redis_cache.get_cache_client",
+            return_value=cache,
+        ),
+        patch(
+            "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
+            AsyncMock(
+                return_value={"status": "running", "task_run_id": "run-10"}
+            ),
+        ),
+    ):
+        input_id = await mw._queue_followup_to_redis(
+            _live_task("run-9"), "more"
+        )
+
+    assert input_id is None
+    cache.client.lrem.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_followup_lapsed_meta_falls_back_to_the_injected_ledger():
+    """Meta absent: the injected run ledger is the durable authority. A
+    terminal latest run means the sweep is behind us — reclaim."""
+    mw = _middleware(FakeOwner())
+    cache = _fake_cache()
+    mw.registry.run_ledger = SimpleNamespace(
+        get_latest_run=AsyncMock(
+            return_value={"status": "completed", "task_run_id": "run-9"}
+        )
+    )
+
+    with (
+        patch(
+            "src.utils.cache.redis_cache.get_cache_client",
+            return_value=cache,
+        ),
+        patch(
+            "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        input_id = await mw._queue_followup_to_redis(
+            _live_task("run-9"), "more"
+        )
+
+    assert input_id is None
+    cache.client.lrem.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_followup_fails_open_when_no_authority_is_readable():
+    """Meta absent and no ledger injected: the arbitration must never be
+    worse than the admission — keep the accepted push."""
+    mw = _middleware(FakeOwner())
+    cache = _fake_cache()
+
+    with (
+        patch(
+            "src.utils.cache.redis_cache.get_cache_client",
+            return_value=cache,
+        ),
+        patch(
+            "ptc_agent.agent.middleware.background_subagent.registry.read_task_meta",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        input_id = await mw._queue_followup_to_redis(
+            _live_task("run-9"), "more"
+        )
+
+    assert input_id is not None
+    cache.client.lrem.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# terminal sweep: read -> surface -> delete
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sweep_deletes_only_after_every_entry_is_surfaced():
+    """The queue must outlive its own archival: DEL runs after the appends,
+    so a crash or spill failure between the two leaves acknowledged input
+    recoverable in Redis instead of silently destroyed."""
+    from ptc_agent.agent.middleware.background_subagent.middleware import (
+        _return_unconsumed_steering,
+    )
+
+    order: list[str] = []
+    payload = '{"content": "c", "expected_task_run_id": "run-9", "input_id": "i1"}'
+
+    client = SimpleNamespace(
+        lrange=AsyncMock(
+            side_effect=lambda *a: order.append("read") or [payload]
+        ),
+        delete=AsyncMock(side_effect=lambda *a: order.append("delete")),
+    )
+    cache = SimpleNamespace(enabled=True, client=client)
+    registry = SimpleNamespace(
+        append_captured_event=AsyncMock(
+            side_effect=lambda *a: order.append("surface")
+        )
+    )
+    task = _live_task("run-9")
+
+    with patch(
+        "src.utils.cache.redis_cache.get_cache_client", return_value=cache
+    ):
+        await _return_unconsumed_steering(registry, task)
+
+    assert order == ["read", "surface", "delete"]
+
+
+@pytest.mark.asyncio
+async def test_sweep_keeps_the_queue_when_the_spill_tears_mid_sweep():
+    """An append that opens the write circuit means the entries never made
+    the archive — the DEL is skipped so they survive to their TTL as the
+    durable record of what was lost."""
+    from ptc_agent.agent.middleware.background_subagent.middleware import (
+        _return_unconsumed_steering,
+    )
+
+    payload = '{"content": "c", "expected_task_run_id": "run-9", "input_id": "i1"}'
+    task = _live_task("run-9")
+
+    async def _torn_append(*_a):
+        task.redis_write_failed = True
+
+    client = SimpleNamespace(
+        lrange=AsyncMock(return_value=[payload]),
+        delete=AsyncMock(),
+    )
+    cache = SimpleNamespace(enabled=True, client=client)
+    registry = SimpleNamespace(append_captured_event=AsyncMock(side_effect=_torn_append))
+
+    with patch(
+        "src.utils.cache.redis_cache.get_cache_client", return_value=cache
+    ):
+        await _return_unconsumed_steering(registry, task)
+
+    client.delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sweep_skips_entirely_when_the_circuit_is_already_open():
+    """With a torn transport, appends would no-op against the circuit and
+    the delete would erase unsurfaced input — leave everything to TTL."""
+    from ptc_agent.agent.middleware.background_subagent.middleware import (
+        _return_unconsumed_steering,
+    )
+
+    task = _live_task("run-9")
+    task.redis_write_failed = True
+    client = SimpleNamespace(lrange=AsyncMock(), delete=AsyncMock())
+    cache = SimpleNamespace(enabled=True, client=client)
+    registry = SimpleNamespace(append_captured_event=AsyncMock())
+
+    with patch(
+        "src.utils.cache.redis_cache.get_cache_client", return_value=cache
+    ):
+        await _return_unconsumed_steering(registry, task)
+
+    client.lrange.assert_not_awaited()
+    client.delete.assert_not_awaited()
+    registry.append_captured_event.assert_not_awaited()
