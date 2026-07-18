@@ -23,7 +23,9 @@ from src.utils.cache.redis_cache import get_cache_client
 
 logger = logging.getLogger(__name__)
 
-_KEY_PREFIX = "replay:turn:v1"
+# v2: per-run task-namespace projection + task-lane user_message events —
+# v1 entries carry the whole-namespace-at-spawn-turn shape and must not mix.
+_KEY_PREFIX = "replay:turn:v2"
 # Entries beyond this are pathological (widget-heavy legacy stored events);
 # skip caching rather than bloat Redis — replay just rebuilds those threads.
 _MAX_ENTRY_BYTES = 512 * 1024

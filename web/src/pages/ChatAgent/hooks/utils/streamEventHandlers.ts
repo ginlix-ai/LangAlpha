@@ -1483,11 +1483,12 @@ export function handleSubagentToolCallResult({ taskId, assistantMessageId, toolC
 }
 
 /**
- * Handles steering_accepted events on per-task SSE streams.
- * Emitted when a follow-up instruction (steering) is accepted for the running subagent.
- * Inserts a user message bubble with the instruction content, finalizes
- * the current assistant message, and bumps runIndex so subsequent events
- * create a new assistant message below the user bubble.
+ * Renders a user instruction into a subagent transcript — steering
+ * follow-ups (steering_delivered) AND run boundaries (the epoch-opening
+ * user_message a spawn/resume writes). The mechanics are identical:
+ * insert the instruction bubble, finalize the current assistant message,
+ * and bump runIndex so subsequent events open a new assistant message
+ * below the bubble.
  *
  * @param {Object} params - Handler parameters
  * @param {string} params.taskId - Task ID (e.g., "task:k7Xm2p")

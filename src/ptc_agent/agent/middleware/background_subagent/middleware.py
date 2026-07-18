@@ -138,6 +138,16 @@ async def _run_background_task(
     try:
         result = await asyncio.shield(handler_task)
         _merge_subagent_usage(task, tracker, tool_tracker)
+        if isinstance(result, ToolMessage) and result.status == "error":
+            # e.g. schema validation rejected the call before the subagent
+            # ran — without this the writer settles "completed" and the only
+            # trace of the failure is the result text nobody reads.
+            logger.error(
+                "%s returned a tool error without running",
+                label,
+                display_id=task.display_id,
+                error_preview=str(result.content)[:300],
+            )
         logger.debug(
             "%s completed",
             label,
@@ -293,6 +303,31 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 "task-ns acquire raised; refusing", task_id=task_id, exc_info=True
             )
             return False
+
+    async def _append_run_opener(self, task: BackgroundTask, prompt: str) -> None:
+        """First stream entry of a run's epoch: the instruction that launched
+        it (spawn and resume alike) — the live counterpart of the checkpointed
+        run-boundary HumanMessage, so live and replay share one transcript
+        shape. Best-effort: the run proceeds without it."""
+        try:
+            await self.registry.append_captured_event(
+                task.tool_call_id,
+                {
+                    "event": "user_message",
+                    "data": {
+                        "agent": f"task:{task.task_id}",
+                        "role": "user",
+                        "content": prompt,
+                    },
+                    "ts": time.time(),
+                },
+            )
+        except Exception:
+            logger.warning(
+                "run-opener user_message append failed",
+                task_id=task.task_id,
+                exc_info=True,
+            )
 
     async def _reset_task_for_resume(self, task: BackgroundTask) -> None:
         """Reset a completed task's state so it can be re-run.
@@ -718,9 +753,19 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 current_background_tool_call_id.set(task.tool_call_id)
                 current_background_agent_id.set(task.agent_id)
 
-                # Update args with inferred subagent_type for the handler
+                # Backfill args the model may omit on resume (the task already
+                # carries them): the downstream Task tool schema requires
+                # `description`, so a missing one would fail validation inside
+                # the spawned writer — an instant no-op resume that still
+                # reports success.
+                arg_fills = {}
                 if subagent_type is None:
-                    args = {**args, "subagent_type": task.subagent_type}
+                    arg_fills["subagent_type"] = task.subagent_type
+                if not args.get("description"):
+                    arg_fills["description"] = task.description or prompt[:200]
+                    description = arg_fills["description"]
+                if arg_fills:
+                    args = {**args, **arg_fills}
                     tool_call = {**tool_call, "args": args}
                     request = request.override(tool_call=tool_call)
 
@@ -739,6 +784,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 await self.registry.write_task_meta(
                 task, "running", fenced=self.namespace_owner is not None
             )
+                await self._append_run_opener(task, prompt)
                 asyncio_task = create_task_with_context(
                     _run_background_task(
                         task, handler, request, subagent_token_tracker,
@@ -843,6 +889,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             await self.registry.write_task_meta(
                 task, "running", fenced=self.namespace_owner is not None
             )
+            await self._append_run_opener(task, prompt)
             asyncio_task = create_task_with_context(
                 _run_background_task(
                     task, handler, request, subagent_token_tracker,

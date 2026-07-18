@@ -1361,3 +1361,154 @@ async def test_model_fallback_stored_events_preferred(monkeypatch):
     # The passthrough insert copies the stored event's data — enrichment must
     # not mutate the pristine source row.
     assert "turn_index" not in stored[1]["data"]
+
+
+async def test_resumed_run_segments_attribute_to_their_launch_turns(monkeypatch):
+    # A task namespace holds one segment per run; each launch claims the
+    # segment whose boundary opener equals its artifact prompt. A launch
+    # whose run never wrote a boundary (a failed/no-op resume) projects
+    # nothing — positional pairing would hand it the next run's transcript.
+    def launch(ordinal, action, prompt):
+        artifact = {
+            "task_id": "tsk1",
+            "action": action,
+            "description": "d",
+            "prompt": prompt,
+        }
+        return [
+            AIMessage(
+                content="",
+                id=f"ai-{ordinal}",
+                tool_calls=[{"name": "Task", "args": {}, "id": f"tc-{ordinal}"}],
+            ),
+            ToolMessage(
+                content="dispatched",
+                tool_call_id=f"tc-{ordinal}",
+                name="Task",
+                id=f"tm-{ordinal}",
+                additional_kwargs={"task_artifact": artifact},
+            ),
+        ]
+
+    history = ThreadHistory(
+        thread_id=THREAD,
+        turns=[
+            _turn(0, launch(0, "init", "run one")),
+            _turn(1, launch(1, "resume", "run two")),  # no-op: wrote no segment
+            _turn(2, launch(2, "resume", "run three")),
+        ],
+    )
+    _mock_reader(
+        monkeypatch,
+        history,
+        task_messages=[
+            HumanMessage(content="run one", id="sub-h-1"),
+            AIMessage(content="one done", id="sub-ai-1"),
+            HumanMessage(content="run three", id="sub-h-3"),
+            AIMessage(content="three done", id="sub-ai-3"),
+        ],
+    )
+    items = await build_checkpoint_replay_items(
+        THREAD,
+        [_query(0), _query(1, content="r2"), _query(2, content="r3")],
+        {0: _response(0), 1: _response(1), 2: _response(2)},
+    )
+    openers = [
+        i["data"]
+        for i in items
+        if i["event"] == "user_message" and i["data"].get("agent") == "task:tsk1"
+    ]
+    assert [(o["content"], o["turn_index"], o["response_id"]) for o in openers] == [
+        ("run one", 0, "resp-0"),
+        ("run three", 2, "resp-2"),
+    ]
+    chunks = {
+        i["data"]["content"]: i["data"]["turn_index"]
+        for i in items
+        if i["event"] == "message_chunk" and i["data"].get("agent") == "task:tsk1"
+    }
+    assert chunks == {"one done": 0, "three done": 2}
+
+
+async def test_live_task_final_launch_defers_to_stream(monkeypatch):
+    # Tail mode: the launching turn commits while the task still writes, so
+    # the namespace already holds the in-flight run's boundary. Replay must
+    # not project that segment — the live stream replays the same epoch from
+    # seq 1, and both together render the instruction bubble twice. Earlier
+    # settled runs still attribute; the live remainder is not salvaged as
+    # trailing either.
+    from src.server.services.history import replay as replay_module
+
+    async def fake_statuses(thread_id, task_ids):
+        return {tid: "running" for tid in task_ids}
+
+    monkeypatch.setattr(replay_module, "resolve_task_statuses", fake_statuses)
+
+    def launch(ordinal, action, prompt):
+        artifact = {
+            "task_id": "tsk1",
+            "action": action,
+            "description": "d",
+            "prompt": prompt,
+        }
+        return [
+            AIMessage(
+                content="",
+                id=f"ai-{ordinal}",
+                tool_calls=[{"name": "Task", "args": {}, "id": f"tc-{ordinal}"}],
+            ),
+            ToolMessage(
+                content="dispatched",
+                tool_call_id=f"tc-{ordinal}",
+                name="Task",
+                id=f"tm-{ordinal}",
+                additional_kwargs={"task_artifact": artifact},
+            ),
+        ]
+
+    # Resume tail: run one settled, run two mid-flight with its boundary
+    # already checkpointed.
+    _mock_reader(
+        monkeypatch,
+        ThreadHistory(
+            thread_id=THREAD,
+            turns=[
+                _turn(0, launch(0, "init", "run one")),
+                _turn(1, launch(1, "resume", "run two")),
+            ],
+        ),
+        task_messages=[
+            HumanMessage(content="run one", id="sub-h-1"),
+            AIMessage(content="one done", id="sub-ai-1"),
+            HumanMessage(content="run two", id="sub-h-2"),
+            AIMessage(content="two partial", id="sub-ai-2"),
+        ],
+    )
+    items = await build_checkpoint_replay_items(
+        THREAD,
+        [_query(0), _query(1, content="r2")],
+        {0: _response(0), 1: _response(1)},
+    )
+    task_items = [
+        i["data"].get("content")
+        for i in items
+        if i["data"].get("agent") == "task:tsk1"
+    ]
+    assert task_items == ["run one", "one done"]
+
+    # Init tail (a freshly spawned live task): the only launch is the final
+    # one, so replay projects nothing from the namespace.
+    _mock_reader(
+        monkeypatch,
+        ThreadHistory(
+            thread_id=THREAD, turns=[_turn(0, launch(0, "init", "solo run"))]
+        ),
+        task_messages=[
+            HumanMessage(content="solo run", id="sub-h-1"),
+            AIMessage(content="solo partial", id="sub-ai-1"),
+        ],
+    )
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0)}
+    )
+    assert not [i for i in items if i["data"].get("agent") == "task:tsk1"]

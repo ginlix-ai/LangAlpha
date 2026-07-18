@@ -423,9 +423,6 @@ class WorkflowStreamHandler:
         self.injected_steerings: list[dict] = []
         self.on_steering_delivered: Optional[Any] = None
 
-        # Snapshot of task IDs from previous workflow (set at stream start)
-        self._old_tool_call_ids: set[str] = set()
-
         self.event_counter: Optional[Any] = None
 
         # Track message IDs that have already emitted content via AIMessageChunk streaming.
@@ -433,9 +430,6 @@ class WorkflowStreamHandler:
         # with the full content at node completion. This set prevents re-emitting that
         # duplicate content while still allowing non-streaming AIMessage content through.
         self._streamed_content_ids: Set[str] = set()
-
-        # When True, skip all subagent-related emission (drain, status) — tail handles it
-        self.skip_subagent_events: bool = False
 
         # Namespace tuples currently inside a "summarize" window. Opened on
         # the context_window summarize start signal, closed on complete OR
@@ -550,16 +544,6 @@ class WorkflowStreamHandler:
                 accumulate=False,
             )
 
-            # Snapshot old task IDs and emit initial batch of captured events.
-            # Events are streamed with accumulate=False so they are NOT persisted
-            # with this (new) response — the collector owns persistence to the
-            # OLD response where the subagent was created.
-            # When skip_subagent_events is True, the concurrent tail handles all
-            # subagent event delivery, so this block is skipped entirely.
-            if self._background_registry and not self.skip_subagent_events:
-                old_tasks = list(self._background_registry._tasks.values())
-                self._old_tool_call_ids = {t.tool_call_id for t in old_tasks}
-
             # Create graph stream. durability="sync" awaits each checkpoint
             # put before the next step — necessary but NOT sufficient for
             # interrupt durability (output yields before the sync await, and
@@ -576,6 +560,15 @@ class WorkflowStreamHandler:
             async for graph_event in graph_stream:
                 # Unpack graph event data
                 agent_from_stream, stream_mode, event_data = graph_event
+
+                # Exclusive lane ownership: frames originating inside a
+                # background task's namespace belong to the per-task channel
+                # (spool → task SSE / mux) — the main stream must not
+                # re-deliver them. The two copies carry incomparable ids, so
+                # clients cannot dedup; double delivery rendered every live
+                # task transcript twice and archived the copies into the
+                # turn's stream.
+                task_lane = self._resolve_task_lane(agent_from_stream)
 
                 # Check for timeout (if configured)
                 if self.workflow_timeout > 0:
@@ -631,6 +624,19 @@ class WorkflowStreamHandler:
                 # inline — exposure waits for the durability barrier after
                 # the stream drains (I8).
                 if isinstance(event_data, dict) and "__interrupt__" in event_data:
+                    if task_lane:
+                        # A task-namespace interrupt must never enter root
+                        # lifecycle: saw_interrupt classifies the TURN's
+                        # outcome, and exposing it as a main interrupt would
+                        # advertise a resume the root checkpoint can't honor.
+                        # Task HITL is unsupported (descoped) — surface
+                        # loudly; the task settles via its own error path.
+                        logger.error(
+                            f"[TASK_INTERRUPT] Unsupported interrupt from "
+                            f"{task_lane} on thread_id={self.thread_id} — "
+                            f"suppressed from root lifecycle"
+                        )
+                        continue
                     self.saw_interrupt = True
                     self._pending_interrupts.append(event_data)
                     continue  # Skip further processing for interrupt events
@@ -690,6 +696,11 @@ class WorkflowStreamHandler:
                                 elif signal in ("complete", "error"):
                                     self._close_compaction_window(ns_key)
 
+                            # Task-lane copies are delivered by the per-task
+                            # channel (forwarder whitelist) — only the window
+                            # bookkeeping above runs for them here.
+                            if task_lane:
+                                continue
                             logger.debug(
                                 f"[CONTEXT_WINDOW] Emitting {action}/{signal} "
                                 f"(thread_id={self.thread_id})"
@@ -703,6 +714,10 @@ class WorkflowStreamHandler:
                         # get task:{id} attribution. All other fields pass
                         # through flat to match the frontend's ProvenanceEvent.
                         if event_type == "provenance":
+                            # Task-lane copies are delivered by the per-task
+                            # channel (forwarder whitelist).
+                            if task_lane:
+                                continue
                             prov_data = self._resolve_provenance_event(
                                 event_data, agent_from_stream
                             )
@@ -855,6 +870,13 @@ class WorkflowStreamHandler:
 
                 # Process message chunks (stream_mode="messages")
                 if stream_mode != "messages":
+                    continue
+
+                # Task content (text/reasoning/tool frames) is owned by the
+                # per-task channel; it also stays out of the main turn's
+                # ExecutionTracker — task messages live in the task's own
+                # checkpoint namespace, not the turn transcript.
+                if task_lane:
                     continue
 
                 message_chunk, message_metadata = cast(
@@ -1136,6 +1158,30 @@ class WorkflowStreamHandler:
         }
         prov_data["agent"] = agent
         return prov_data
+
+    def _resolve_task_lane(self, namespace_tuple: tuple) -> Optional[str]:
+        """Lane owner for a graph event: ``task:{id}`` when any namespace
+        segment belongs to a background task, else None (main lane).
+
+        Two matchers, because the segment forms differ by event path: the
+        UUID map registered at ``subagent_identity`` time, and the literal
+        ``task:{id}`` checkpoint namespace every background subagent runs
+        under — the latter needs no registration, so frames that beat the
+        identity event still classify correctly. Any-segment matching (not
+        just the tail) catches multi-segment task namespaces whose leaf UUID
+        was never registered (e.g. per-call model nodes).
+        """
+        if not namespace_tuple:
+            return None
+        for element in namespace_tuple:
+            raw = str(element)
+            if self._background_registry is not None:
+                task = self._background_registry.get_task_by_namespace(raw)
+                if task:
+                    return f"task:{task.task_id}"
+            if raw.startswith("task:"):
+                return raw
+        return None
 
     def _extract_agent_name(self, namespace_tuple: tuple, message_metadata: dict) -> str:
         """Return the agent identifier, resolving to unified subagent identity when possible.
@@ -1590,12 +1636,14 @@ class WorkflowStreamHandler:
             # Emit task artifact as a dedicated artifact SSE event
             task_artifact = message_chunk.additional_kwargs.get("task_artifact")
             if task_artifact:
+                # No top-level status: a live task artifact can't know its
+                # task's outcome — the client derives status from the task
+                # lifecycle, replay stamps payload.status from liveness truth.
                 yield self._format_sse_event("artifact", {
                     "artifact_type": "task",
                     "artifact_id": f"task:{task_artifact['task_id']}",
                     "agent": "main",
                     "thread_id": self.thread_id,
-                    "status": "completed",
                     "payload": task_artifact,
                     "tool_call_id": message_chunk.tool_call_id,
                 })

@@ -5,6 +5,7 @@ import iconRobo from '../../../assets/img/icon-robo.png';
 import iconRoboSing from '../../../assets/img/icon-robo-sing.png';
 import Markdown from './Markdown';
 import { sendSubagentMessage } from '../utils/api';
+import { deriveSubagentStatus } from '../utils/subagentStatus';
 import './NavigationPanel.css';
 
 interface AgentMessage {
@@ -80,9 +81,7 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
 
   const messages = (agent.messages || []) as AgentMessage[];
 
-  // Derive streaming state from messages (self-sufficient, no subagent_status dependency)
   const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
-  const isMessageStreaming = lastAssistant?.isStreaming === true;
 
   // Derive current tool from message state
   const derivedCurrentTool = ((): string => {
@@ -92,18 +91,9 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
     return inProgress?.toolName || '';
   })();
 
-  // Effective status: explicit terminal card statuses ('completed'/'cancelled')
-  // are trusted (set by inactivateAllSubagents, subagent_status handler, or the
-  // history task-artifact stamp). Otherwise derive from message streaming state.
-  const effectiveStatus = agent.status === 'completed'
-    ? 'completed'
-    : agent.status === 'cancelled'
-      ? 'cancelled'
-      : messages.length === 0
-        ? 'initializing'
-        : isMessageStreaming || derivedCurrentTool
-          ? 'active'
-          : agent.status || 'active';
+  // Shared derivation (also used by the nav tree): terminal card statuses are
+  // authoritative, everything else displays as running.
+  const effectiveStatus = deriveSubagentStatus(agent);
 
   const isActive = effectiveStatus === 'active';
   const isCompleted = effectiveStatus === 'completed';

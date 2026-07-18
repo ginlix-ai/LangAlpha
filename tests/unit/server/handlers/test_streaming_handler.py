@@ -1574,3 +1574,179 @@ class TestSanitizeErrorText:
 
         text = "Error code: 404 - model 'some-model' not found"
         assert _sanitize_error_text(text) == text
+
+
+class _MultiModeGraph:
+    """LangGraph stand-in whose astream yields pre-built (ns, mode, data) tuples."""
+
+    def __init__(self, events):
+        self._events = events
+
+    def astream(
+        self, _input_state, config=None, stream_mode=None, subgraphs=None,
+        durability=None,
+    ):
+        async def _gen():
+            for event in self._events:
+                yield event
+
+        return _gen()
+
+
+class _StubTask:
+    def __init__(self, task_id):
+        self.task_id = task_id
+
+
+class _StubRegistry:
+    """Registry stand-in: resolves registered namespace-element UUIDs."""
+
+    def __init__(self, uuid_to_task_id=None):
+        self._map = uuid_to_task_id or {}
+
+    def get_task_by_namespace(self, ns_element):
+        parts = str(ns_element).split(":", 1)
+        if len(parts) == 2 and parts[1] in self._map:
+            return _StubTask(self._map[parts[1]])
+        return None
+
+
+class TestTaskLaneOwnership:
+    """Exclusive lane ownership: task-namespace frames never ride the main
+    stream (their canonical copies live in the per-task channel), and a
+    task-namespace interrupt never enters root lifecycle."""
+
+    def _make_handler(self, registry=None):
+        from src.server.handlers.streaming_handler import WorkflowStreamHandler
+
+        return WorkflowStreamHandler(
+            thread_id="lane-thread", run_id="r-lane", background_registry=registry
+        )
+
+    async def _collect(self, handler, events):
+        return [
+            chunk
+            async for chunk in handler.stream_workflow(
+                _MultiModeGraph(events), input_state={}, config={}
+            )
+        ]
+
+    def test_resolve_task_lane_literal_namespace_needs_no_registration(self):
+        handler = self._make_handler(registry=_StubRegistry())
+        assert (
+            handler._resolve_task_lane(("task:e88Ssw", "model:abc"))
+            == "task:e88Ssw"
+        )
+
+    def test_resolve_task_lane_registered_uuid_any_segment(self):
+        handler = self._make_handler(
+            registry=_StubRegistry({"uuid-1": "Zz9Xw2"})
+        )
+        # Leaf segment unregistered — the interior registered segment decides.
+        assert (
+            handler._resolve_task_lane(("tools:uuid-1", "model:uuid-fresh"))
+            == "task:Zz9Xw2"
+        )
+
+    def test_resolve_task_lane_main_namespaces_stay_main(self):
+        handler = self._make_handler(registry=_StubRegistry())
+        assert handler._resolve_task_lane(()) is None
+        assert handler._resolve_task_lane(("model:uuid-a",)) is None
+        assert handler._resolve_task_lane(("tools:uuid-b", "model:uuid-c")) is None
+
+    @pytest.mark.asyncio
+    async def test_task_message_frames_suppressed_from_main(self):
+        from langchain_core.messages import AIMessageChunk
+
+        handler = self._make_handler(registry=_StubRegistry())
+        events = [
+            (
+                ("task:e88Ssw",),
+                "messages",
+                (AIMessageChunk(content="task text", id="m-task"), {}),
+            ),
+            (
+                ("model:uuid-main",),
+                "messages",
+                (AIMessageChunk(content="main text", id="m-main"), {}),
+            ),
+        ]
+        chunks = await self._collect(handler, events)
+        joined = "".join(chunks)
+        assert "main text" in joined
+        assert "task text" not in joined
+        persisted = handler.get_sse_events() or []
+        assert not any(
+            "task text" in json.dumps(e.get("data", {})) for e in persisted
+        )
+
+    @pytest.mark.asyncio
+    async def test_task_interrupt_never_enters_root_lifecycle(self):
+        handler = self._make_handler(registry=_StubRegistry())
+        events = [
+            (("task:e88Ssw",), "updates", {"__interrupt__": [object()]}),
+        ]
+        await self._collect(handler, events)
+        assert handler.saw_interrupt is False
+        assert handler._pending_interrupts == []
+
+    @pytest.mark.asyncio
+    async def test_main_interrupt_still_buffers(self):
+        handler = self._make_handler(registry=_StubRegistry())
+
+        async def _no_verify(_graph):
+            return False
+
+        handler._verify_interrupt_durable = _no_verify
+        events = [((), "updates", {"__interrupt__": [object()]})]
+        await self._collect(handler, events)
+        assert handler.saw_interrupt is True
+        assert len(handler._pending_interrupts) == 1
+
+    @pytest.mark.asyncio
+    async def test_task_context_window_and_provenance_suppressed(self):
+        handler = self._make_handler(registry=_StubRegistry())
+        events = [
+            (
+                ("task:e88Ssw",),
+                "custom",
+                {"type": "context_window", "action": "token_usage",
+                 "input_tokens": 10, "total_tokens": 10},
+            ),
+            (
+                ("task:e88Ssw",),
+                "custom",
+                {"type": "provenance", "source": "web", "result_sha256": "x"},
+            ),
+            (
+                (),
+                "custom",
+                {"type": "context_window", "action": "token_usage",
+                 "input_tokens": 5, "total_tokens": 5},
+            ),
+        ]
+        chunks = await self._collect(handler, events)
+        cw = [c for c in chunks if "event: context_window\n" in c]
+        assert len(cw) == 1  # only the main-lane copy
+        assert '"agent": "main"' in cw[0] or '"agent": "agent"' in cw[0]
+        assert not any("event: provenance\n" in c for c in chunks)
+
+    @pytest.mark.asyncio
+    async def test_task_summarize_window_bookkeeping_still_runs(self):
+        # Suppressed from the wire, but the compaction admission window must
+        # still open for task namespaces (the stream-end finally closes it).
+        handler = self._make_handler(registry=_StubRegistry())
+        runner = MagicMock()
+        runner.open_window.return_value = True
+        events = [
+            (
+                ("task:e88Ssw",),
+                "custom",
+                {"type": "context_window", "action": "summarize",
+                 "signal": "start"},
+            ),
+        ]
+        with patch(TestCompactionWindowGuard.RUNNER, return_value=runner):
+            chunks = await self._collect(handler, events)
+        runner.open_window.assert_called_once_with("lane-thread")
+        assert not any("event: context_window\n" in c for c in chunks)

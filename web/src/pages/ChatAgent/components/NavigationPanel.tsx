@@ -21,6 +21,7 @@ import {
   toggleWorkspaceExpansion,
   toggleThreadExpansion,
 } from './navExpansionStore';
+import { deriveSubagentStatus } from '../utils/subagentStatus';
 import './NavigationPanel.css';
 
 interface WorkspaceEntry {
@@ -299,20 +300,11 @@ function NavigationPanel({
 
   const activeDragWs = activeDragId ? workspaces.find((ws) => ws.workspace_id === activeDragId) : null;
 
-  // Derive agent status for display
+  // Derive agent status for display — shared with SubagentStatusBar so the
+  // nav tree and the detail header can never disagree.
   const getAgentStatus = useCallback((agent: AgentEntry): string => {
     if (agent.isMainAgent) return 'active';
-    const messages = agent.messages || [];
-    if (agent.status === 'completed') return 'completed';
-    if (messages.length === 0) return 'initializing';
-    const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
-    const isStreaming = lastAssistant?.isStreaming === true;
-    const hasInProgressTool = lastAssistant?.toolCallProcesses
-      ? Object.values(lastAssistant.toolCallProcesses).some((p) => p.isInProgress)
-      : false;
-    if (isStreaming || hasInProgressTool) return 'active';
-    if (lastAssistant && lastAssistant.isStreaming === false) return 'completed';
-    return agent.status || 'pending';
+    return deriveSubagentStatus(agent);
   }, []);
 
   return (

@@ -521,13 +521,14 @@ async def stream_thread_mux(
         if not task_id or not _TASK_CHAN_RE.match(f"task:{task_id}"):
             return
         existing = channels.get(task_id)
-        if existing is not None:
-            if existing.epoch == epoch or epoch == _NO_EPOCH:
-                return
-            # Resume re-incarnated the stream under a new epoch: the old
-            # round settled (its sentinel may have been lost with the reset
-            # DEL), so close the stale channel and restart from 0.
-            await _close_channel(existing, "terminal")
+        if existing is not None and (existing.epoch == epoch or epoch == _NO_EPOCH):
+            return
+        # First sighting — or a new epoch re-incarnating the stream after a
+        # resume. Either way just (re)open: _open_channel replaces any stale
+        # channel and the fresh chan_open supersedes it client-side. Never
+        # chan_close(terminal) on rotation: `terminal` means the task
+        # settled, and a resume is a continuation — a false terminal made
+        # clients mark live resumed tasks completed.
         chan = _open_channel(task_id, epoch, b"0")
         await out_q.put(
             (

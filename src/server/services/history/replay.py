@@ -32,9 +32,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 
 from ptc_agent.agent.middleware.image_capture import (
     IMAGE_MD_RE,
@@ -51,10 +52,13 @@ from src.server.services.history.projector import (
     MAIN_AGENT,
     HistoryEvent,
     history_events_to_sse,
+    is_run_boundary_message,
     messages_to_history_events,
 )
 from src.server.services.history.reader import CheckpointHistoryReader
+from src.server.services.history.task_status import resolve_task_statuses
 from src.server.utils.checkpoint_helpers import CheckpointBranchTipNotFound
+from src.server.utils.content_normalizer import normalize_text_content
 from src.server.utils.error_sanitization import (
     sanitize_error_text as _sanitize_error_text,
 )
@@ -278,7 +282,8 @@ async def _build_and_backfill(
     provenance_by_response = _rows_by_response(provenance, many=True)
 
     items: list[dict[str, Any]] = []
-    projected_task_ids: set[str] = set()
+    task_lane = _TaskLaneProjector(thread_id, windowed=last_n_turns is not None)
+    await task_lane.prepare(reader, pairs)
 
     for turn_index, turn in pairs:
         if turn is None:
@@ -311,11 +316,10 @@ async def _build_and_backfill(
         turn_items[:0] = _context_signal_items(thread_id, turn) + _model_fallback_items(
             thread_id, turn
         )
-        tasks_before = set(projected_task_ids)
-        turn_items.extend(
-            await _project_new_tasks(reader, thread_id, turn_items, projected_task_ids)
+        task_items, turn_task_ids = task_lane.project_for_turn(
+            turn, turn_index, response_id
         )
-        turn_task_ids = projected_task_ids - tasks_before
+        turn_items.extend(task_items)
         # Legacy path→URL records belong to the turn whose state delta contains
         # them. A thread-global map is incorrect when a sandbox filename is
         # reused later: last-write-wins would rewrite the older turn's image to
@@ -372,6 +376,8 @@ async def _build_and_backfill(
             await projection_cache.store_turn(
                 thread_id, turn.tail_checkpoint_id, segment
             )
+
+    items.extend(await task_lane.trailing_items())
 
     for interrupt in history.interrupts:
         items.append(_interrupt_item(thread_id, interrupt))
@@ -880,77 +886,268 @@ def _restore_evicted_results(
             )
 
 
-async def _project_new_tasks(
-    reader: CheckpointHistoryReader,
-    thread_id: str,
-    turn_items: list[dict[str, Any]],
-    projected_task_ids: set[str],
-) -> list[dict[str, Any]]:
-    """Project each background task namespace once, at first reference.
+def _split_run_segments(messages: list[Any]) -> list[list[Any]]:
+    """Split a task namespace's transcript at run boundaries (the plain
+    HumanMessage each spawn/resume opens with). A defensive leading slice
+    with no boundary attaches to the first run."""
+    segments: list[list[Any]] = []
+    current: list[Any] = []
+    saw_boundary = False
+    for message in messages:
+        if is_run_boundary_message(message):
+            if saw_boundary:
+                segments.append(current)
+                current = []
+            saw_boundary = True
+        current.append(message)
+    if current:
+        segments.append(current)
+    return segments
 
-    Task messages, compaction-private state, and UI fallback records all live
-    in that namespace. Any materialization failure makes checkpoint replay
-    unavailable so ``source=auto`` can use the complete stored-SSE fallback.
+
+@dataclass
+class _TaskRuns:
+    history: Any
+    segments: list[list[Any]]
+    cursor: int = 0
+    attributed: bool = False
+    last_ctx: tuple[Any, str | None] | None = None
+    # A live writer's in-flight run is owned by its stream, not replay: the
+    # final launch of a live task claims no segment (tail mode commits the
+    # launch while the run still writes — projecting it would duplicate the
+    # epoch the stream replays from seq 1).
+    live: bool = False
+    remaining_launches: int = 0
+
+
+def _segment_opener_text(segment: list[Any]) -> str | None:
+    """Text of a segment's run-boundary HumanMessage (its launch input)."""
+    for message in segment:
+        if is_run_boundary_message(message):
+            content = message.content
+            if isinstance(content, str):
+                return content.strip()
+            text, _ = normalize_text_content(content)
+            return text.strip() if text else None
+    return None
+
+
+class _TaskLaneProjector:
+    """Per-run projection of background-task namespaces.
+
+    A task namespace holds every run's transcript back-to-back; each run
+    opens at a plain HumanMessage (its spawn/resume input). Launch artifacts
+    (action ``init``/``resume``) in the main transcript attribute to run
+    segments in order, each pairing verified by content: a segment's boundary
+    HumanMessage carries the launch prompt verbatim, so a launch only claims
+    a segment whose opener matches its prompt. A launch with no matching
+    segment projects nothing — either its boundary isn't checkpointed yet
+    (the live stream owns that run until the next rebuild) or the run never
+    wrote one (a failed/no-op launch); blind positional pairing would hand
+    it the NEXT run's transcript. ``update`` (steering) artifacts never
+    launch a run.
+
+    Windowed builds may start after a task's init: the cursor then starts at
+    ``offset`` (the leading segments belong to out-of-window turns). Any
+    namespace read failure makes checkpoint replay unavailable so
+    ``source=auto`` can use the complete stored-SSE fallback.
     """
-    new_task_ids: list[str] = []
-    for item in turn_items:
-        if item.get("event") != "artifact":
-            continue
-        data = item.get("data", {})
-        if data.get("artifact_type") != "task":
-            continue
-        task_id = (data.get("payload") or {}).get("task_id")
-        if not task_id or task_id in projected_task_ids:
-            continue
-        projected_task_ids.add(task_id)
-        new_task_ids.append(task_id)
-    if not new_task_ids:
-        return []
 
-    task_histories = await asyncio.gather(
-        *(reader.aget_task_history(thread_id, tid) for tid in new_task_ids),
-        return_exceptions=True,
-    )
-    task_items: list[dict[str, Any]] = []
-    for task_id, task_history in zip(new_task_ids, task_histories):
-        if isinstance(task_history, BaseException):
-            logger.warning(
-                "[REPLAY] Failed to read subagent checkpoint state task:%s",
-                task_id,
-                exc_info=(
-                    type(task_history),
-                    task_history,
-                    task_history.__traceback__,
-                ),
-            )
-            # Silent continuation would produce a plausible-looking but
-            # incomplete transcript and bypass the endpoint's SSE fallback.
-            raise CheckpointReplayUnavailable(
-                f"subagent checkpoint state unavailable for task:{task_id}"
-            ) from task_history
+    def __init__(self, thread_id: str, *, windowed: bool):
+        self._thread_id = thread_id
+        self._windowed = windowed
+        self._tasks: dict[str, _TaskRuns] = {}
 
-        task_agent = f"task:{task_id}"
-        task_items.extend(
-            _context_signal_items(thread_id, task_history, agent=task_agent)
-        )
-        task_items.extend(
-            _model_fallback_items(thread_id, task_history, agent=task_agent)
-        )
-        if task_history.messages:
-            task_items.extend(
-                item
-                for item in history_events_to_sse(
-                    messages_to_history_events(
-                        task_history.messages, agent=task_agent
-                    ),
-                    thread_id=thread_id,
+    @staticmethod
+    def _launches_in(turn: Any) -> list[tuple[str, str, str | None]]:
+        """Ordered ``(task_id, action, prompt)`` launch artifacts in a turn."""
+        launches: list[tuple[str, str, str | None]] = []
+        for message in turn.messages:
+            if not isinstance(message, ToolMessage):
+                continue
+            artifact = (message.additional_kwargs or {}).get("task_artifact")
+            if not isinstance(artifact, dict) or not artifact.get("task_id"):
+                continue
+            action = artifact.get("action", "init")
+            if action in ("init", "resume"):
+                prompt = artifact.get("prompt")
+                launches.append(
+                    (
+                        str(artifact["task_id"]),
+                        action,
+                        prompt.strip() if isinstance(prompt, str) else None,
+                    )
                 )
-                # Live streams never emit artifact events in the task lane
-                # (subagent writer events carry node labels, not task:{id});
-                # the frontend subagent handler has no artifact case.
-                if item.get("event") != "artifact"
+        return launches
+
+    async def prepare(
+        self, reader: CheckpointHistoryReader, pairs: list[tuple[Any, Any]]
+    ) -> None:
+        launch_actions: dict[str, list[str]] = {}
+        for _, turn in pairs:
+            if turn is None:
+                continue
+            for task_id, action, _prompt in self._launches_in(turn):
+                launch_actions.setdefault(task_id, []).append(action)
+        if not launch_actions:
+            return
+
+        task_ids = list(launch_actions)
+        histories = await asyncio.gather(
+            *(reader.aget_task_history(self._thread_id, tid) for tid in task_ids),
+            return_exceptions=True,
+        )
+        for task_id, history in zip(task_ids, histories):
+            if isinstance(history, BaseException):
+                logger.warning(
+                    "[REPLAY] Failed to read subagent checkpoint state task:%s",
+                    task_id,
+                    exc_info=(type(history), history, history.__traceback__),
+                )
+                # Silent continuation would produce a plausible-looking but
+                # incomplete transcript and bypass the endpoint's SSE fallback.
+                raise CheckpointReplayUnavailable(
+                    f"subagent checkpoint state unavailable for task:{task_id}"
+                ) from history
+            segments = _split_run_segments(history.messages)
+            actions = launch_actions[task_id]
+            # A window that opens on a resume is missing the older runs'
+            # launches; their segments are skipped, not re-attributed. A full
+            # build always sees the init, so its cursor starts at segment 0.
+            cursor = (
+                max(0, len(segments) - len(actions))
+                if self._windowed and actions[0] != "init"
+                else 0
             )
-    return task_items
+            self._tasks[task_id] = _TaskRuns(
+                history=history,
+                segments=segments,
+                cursor=cursor,
+                remaining_launches=len(actions),
+            )
+
+        # Same liveness truth that stamps card status (advisory-lock probe):
+        # a task is live only while its writer provably runs, so an expired
+        # stream never demotes a settled run's transcript. On probe failure
+        # nothing is marked live — availability over precision (a transient
+        # duplicate beats a missing transcript).
+        try:
+            statuses = await resolve_task_statuses(
+                self._thread_id, list(self._tasks)
+            )
+        except Exception:
+            logger.warning(
+                "[REPLAY] task liveness probe failed for %s",
+                self._thread_id,
+                exc_info=True,
+            )
+            statuses = {}
+        for task_id, runs in self._tasks.items():
+            runs.live = statuses.get(task_id) == "running"
+
+    def project_for_turn(
+        self, turn: Any, turn_index: Any, response_id: str | None
+    ) -> tuple[list[dict[str, Any]], set[str]]:
+        """Items for every run launched in this turn, plus the launched task
+        ids (the caller's cache guard: a turn that launched a still-writing
+        run must not be cached)."""
+        items: list[dict[str, Any]] = []
+        launched: set[str] = set()
+        for task_id, _action, prompt in self._launches_in(turn):
+            runs = self._tasks.get(task_id)
+            if runs is None:
+                continue
+            launched.add(task_id)
+            task_agent = f"task:{task_id}"
+            runs.last_ctx = (turn_index, response_id)
+            runs.remaining_launches -= 1
+            if runs.live and runs.remaining_launches <= 0:
+                # The in-flight run: its stream replays the epoch (opener
+                # included) from seq 1, so claiming the segment here would
+                # render it twice. The turn stays uncached (launched set +
+                # live stream), so the settled rebuild projects it normally.
+                continue
+            segment = self._claim_segment(runs, prompt)
+            if segment is None:
+                continue
+            if not runs.attributed:
+                # Namespace-scoped signals (compaction, model fallback) are
+                # not per-run; they ride with the first projected run.
+                runs.attributed = True
+                items.extend(
+                    _context_signal_items(
+                        self._thread_id, runs.history, agent=task_agent
+                    )
+                )
+                items.extend(
+                    _model_fallback_items(
+                        self._thread_id, runs.history, agent=task_agent
+                    )
+                )
+            items.extend(self._segment_items(task_agent, segment))
+        return items, launched
+
+    @staticmethod
+    def _claim_segment(runs: _TaskRuns, prompt: str | None) -> list[Any] | None:
+        """The launch's run segment, or None if no segment belongs to it.
+
+        Scans forward from the cursor for the segment whose boundary opener
+        matches the launch prompt (skipped-over segments belong to earlier,
+        already-projected turns and are never revisited). Verification needs
+        both sides: a prompt-less artifact or a boundary-less segment (legacy
+        data) can't be checked, so those claim positionally at the cursor —
+        only a present-but-different opener refuses the pairing.
+        """
+        if runs.cursor >= len(runs.segments):
+            return None
+        candidate = runs.segments[runs.cursor]
+        if prompt is None or _segment_opener_text(candidate) is None:
+            runs.cursor += 1
+            return candidate
+        for idx in range(runs.cursor, len(runs.segments)):
+            if _segment_opener_text(runs.segments[idx]) == prompt:
+                segment = runs.segments[idx]
+                runs.cursor = idx + 1
+                return segment
+        return None
+
+    def _segment_items(
+        self, task_agent: str, segment: list[Any]
+    ) -> list[dict[str, Any]]:
+        return [
+            item
+            for item in history_events_to_sse(
+                messages_to_history_events(segment, agent=task_agent),
+                thread_id=self._thread_id,
+            )
+            # Live streams never emit artifact events in the task lane
+            # (subagent writer events carry node labels, not task:{id});
+            # the frontend subagent handler has no artifact case.
+            if item.get("event") != "artifact"
+        ]
+
+    async def trailing_items(self) -> list[dict[str, Any]]:
+        """Segments beyond the last in-window launch, for settled tasks only.
+
+        Covers a launch whose turn never committed (e.g. the launching turn
+        errored before persist) — salvaged under the last known launch's
+        stamps. A live writer's trailing segment is excluded: the live stream
+        owns it, and projecting it would re-attach an in-flight run to an
+        older turn."""
+        items: list[dict[str, Any]] = []
+        for task_id, runs in self._tasks.items():
+            remaining = runs.segments[runs.cursor :]
+            if not remaining or runs.last_ctx is None:
+                continue
+            if runs.live:
+                continue
+            task_agent = f"task:{task_id}"
+            turn_index, response_id = runs.last_ctx
+            for segment in remaining:
+                for item in self._segment_items(task_agent, segment):
+                    _enrich(item, self._thread_id, turn_index, response_id)
+                    items.append(item)
+        return items
 
 
 def _collect_image_url_map(records: list[dict[str, Any]]) -> dict[str, str]:

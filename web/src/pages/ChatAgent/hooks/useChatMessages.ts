@@ -348,7 +348,6 @@ interface SubagentHistoryData {
   type?: string;
   /** Backend-stamped real task status from replayed task artifacts (running|completed|cancelled). */
   status?: string;
-  resumePoints: Array<{ description: string; turnIndex?: number }>;
 }
 
 /** Refs passed to createStreamEventProcessor and its processEvent closure. */
@@ -1285,7 +1284,6 @@ export function useChatMessages(
               subagentHistoryByTaskId.set(taskId, {
                 messages: [],
                 events: [],
-                resumePoints: [],
               });
             }
 
@@ -1618,7 +1616,6 @@ export function useChatMessages(
                   prompt: prompt || description || '',
                   type: type || 'general-purpose',
                   status: stampedStatus,
-                  resumePoints: [],
                 });
               } else {
                 const existing = subagentHistoryByTaskId.get(agentId)!;
@@ -1635,17 +1632,6 @@ export function useChatMessages(
                 status: stampedStatus,
                 setMessages: setMessagesForHandlers,
               });
-              // Track resume boundaries for history replay
-              if (action === 'resume') {
-                const existing = subagentHistoryByTaskId.get(agentId);
-                if (existing) {
-                  existing.resumePoints = existing.resumePoints || [];
-                  existing.resumePoints.push({
-                    description: description || 'Resume',
-                    turnIndex: event.turn_index,
-                  });
-                }
-              }
               // Track steering_accepted actions for inline card "Updated" label
               if (action === 'update') {
                 steeredAgentIds.add(agentId);
@@ -1738,7 +1724,6 @@ export function useChatMessages(
                   description: artifact.description as string,
                   prompt: (artifact.prompt || artifact.description || '') as string,
                   type: (artifact.type || 'general-purpose') as string,
-                  resumePoints: [],
                 });
               }
             }
@@ -2134,16 +2119,6 @@ export function useChatMessages(
             // the in-memory message structures in tempSubagentStateRefs.
             const historyUpdateSubagentCard = () => {};
 
-            // Pre-compute resume boundary turn indices from stored resumePoints
-            const resumePoints = subagentHistory.resumePoints || [];
-            const resumeByTurnIndex = new Map();
-            for (const rp of resumePoints) {
-              if (rp.turnIndex != null) {
-                resumeByTurnIndex.set(rp.turnIndex, rp);
-              }
-            }
-            let lastTurnIndex = null;
-
             // Process each event in chronological order
             for (let i = 0; i < subagentHistory.events.length; i++) {
               const event = subagentHistory.events[i];
@@ -2154,42 +2129,6 @@ export function useChatMessages(
               // it does not mingle with the subagent's own messages.
               if (eventType === 'compaction_chunk') {
                 continue;
-              }
-
-              // Detect resume boundary: turn_index transitions to a resume turn
-              const eventTurnIndex = event.turn_index;
-              if (eventTurnIndex != null && eventTurnIndex !== lastTurnIndex && resumeByTurnIndex.has(eventTurnIndex)) {
-                const resumePoint = resumeByTurnIndex.get(eventTurnIndex);
-                const taskRefsLocal = tempSubagentStateRefs[taskId];
-
-                // Finalize the previous run's last assistant message
-                for (let j = taskRefsLocal.messages.length - 1; j >= 0; j--) {
-                  const taskMsg = taskRefsLocal.messages[j];
-                  if (taskMsg.role === 'assistant' && taskMsg.isStreaming) {
-                    taskRefsLocal.messages[j] = { ...taskMsg, isStreaming: false };
-                    break;
-                  }
-                }
-
-                // Inject user message with resume instruction
-                taskRefsLocal.messages.push({
-                  id: `resume-${taskId}-${currentRunIndex + 1}`,
-                  role: 'user',
-                  content: resumePoint.description || 'Resume',
-                  contentSegments: [{ type: 'text', content: resumePoint.description || 'Resume', order: 0 }],
-                  reasoningProcesses: {},
-                  toolCallProcesses: {},
-                });
-
-                // Bump run index and reset per-run counters
-                currentRunIndex++;
-                taskRefsLocal.runIndex = currentRunIndex;
-                taskRefsLocal.contentOrderCounterRef.current = 0;
-                taskRefsLocal.currentReasoningIdRef.current = null;
-                taskRefsLocal.currentToolCallIdRef.current = null;
-              }
-              if (eventTurnIndex != null) {
-                lastTurnIndex = eventTurnIndex;
               }
 
               // Use per-run assistant message ID
@@ -2250,6 +2189,20 @@ export function useChatMessages(
                     updateSubagentCard: historyUpdateSubagentCard,
                   });
                   // Sync local run index — handleTaskSteeringAccepted bumps runIndex
+                  currentRunIndex = tempSubagentStateRefs[taskId].runIndex;
+                }
+              } else if (eventType === 'user_message') {
+                // Run boundary from the wire: the spawn/resume instruction the
+                // backend materializes from the task namespace. Same mechanics
+                // as a steering follow-up — finalize the previous run's
+                // message, render the instruction bubble, open a new run.
+                if (event.content) {
+                  handleTaskSteeringAccepted({
+                    taskId,
+                    content: event.content as string,
+                    refs: tempRefs,
+                    updateSubagentCard: historyUpdateSubagentCard,
+                  });
                   currentRunIndex = tempSubagentStateRefs[taskId].runIndex;
                 }
               } else if (eventType === 'context_window') {
@@ -4019,6 +3972,19 @@ export function useChatMessages(
                 updateSubagentCard,
               });
             }
+          } else if (eventType === 'user_message') {
+            // Epoch-opening run boundary (spawn/resume instruction) — first
+            // entry of the task stream. Same mechanics as a steering
+            // follow-up: finalize the previous run, render the bubble,
+            // open a new run.
+            if (event.content) {
+              handleTaskSteeringAccepted({
+                taskId,
+                content: event.content as string,
+                refs,
+                updateSubagentCard,
+              });
+            }
           }
         }
         return; // Don't process subagent events in main chat view
@@ -4226,35 +4192,9 @@ export function useChatMessages(
               openSubagentStream(currentThreadId, task_id as string, processEvent);
             }
           } else if (action === 'resume') {
-            // Resume: preserve existing messages, inject user boundary, bump runIndex
-            const taskRefsForResume = getOrCreateTaskRefs(refs, agentId);
-
-            // Finalize the last assistant message from the previous run
-            const updatedMessages = [...taskRefsForResume.messages] as Record<string, unknown>[];
-            for (let i = updatedMessages.length - 1; i >= 0; i--) {
-              if (updatedMessages[i].role === 'assistant' && updatedMessages[i].isStreaming) {
-                updatedMessages[i] = { ...updatedMessages[i], isStreaming: false };
-                break;
-              }
-            }
-
-            // Inject user message with resume instruction
-            updatedMessages.push({
-              id: `resume-${agentId}-${Date.now()}`,
-              role: 'user',
-              content: prompt || description || 'Resume',
-              contentSegments: [{ type: 'text', content: prompt || description || 'Resume', order: 0 }],
-              reasoningProcesses: {},
-              toolCallProcesses: {},
-            });
-
-            // Bump runIndex and reset per-run counters
-            taskRefsForResume.runIndex = (taskRefsForResume.runIndex || 0) + 1;
-            taskRefsForResume.contentOrderCounterRef.current = 0;
-            taskRefsForResume.currentReasoningIdRef.current = null;
-            taskRefsForResume.currentToolCallIdRef.current = null;
-            taskRefsForResume.messages = updatedMessages;
-
+            // Resume: reactivate the card and reattach the stream. The
+            // transcript boundary (instruction bubble + run bump) arrives on
+            // the task stream itself, as its epoch-opening user_message.
             if (updateSubagentCard) {
               // Prefer preserving the original spawn description (already on the card).
               // But after reconnect the card may have been wiped + recreated without a
@@ -4268,7 +4208,6 @@ export function useChatMessages(
                 type: (type || 'general-purpose') as string,
                 status: 'active',
                 isActive: true,
-                messages: updatedMessages,
                 ...(historyDesc ? { description: historyDesc } : {}),
                 ...(historyPrompt ? { prompt: historyPrompt } : {}),
               });
