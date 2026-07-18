@@ -17,7 +17,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_TERMINAL_STATUSES = ("completed", "cancelled")
+_TERMINAL_STATUSES = ("completed", "cancelled", "error")
 
 
 def _artifact_task_id(data: Any) -> str | None:
@@ -41,7 +41,7 @@ def collect_task_ids(items: list[dict]) -> list[str]:
 async def resolve_task_statuses(
     thread_id: str, task_ids: list[str]
 ) -> dict[str, str]:
-    """Map each task id to ``running`` / ``completed`` / ``cancelled``.
+    """Map each task id to ``running`` / ``completed`` / ``cancelled`` / ``error``.
 
     On lock-probe failure the meta hash breaks the tie (availability over
     precision: a live task wrongly stamped terminal would stick until the

@@ -33,12 +33,44 @@ _SPILL_TIMEOUT_SECONDS = 0.5
 # (normal unwind is milliseconds; see ``cancel_run_tasks``).
 CANCEL_UNWIND_TIMEOUT = 15.0
 
+# Cap on the pre-signal durable cancel-intent stamp (``_stamp_cancel_intent``):
+# a hung ledger call must not block the user-facing local cancel.
+_CANCEL_INTENT_STAMP_TIMEOUT_S = 2.0
+
 # Event-type marker for the per-task stream-end sentinel. The producer writes
 # one of these via ``append_sentinel_to_stream`` when the subagent finishes
 # streaming; the per-task SSE consumer treats it as "drain complete" and exits.
 # Shared between producer (registry) and consumer (stream_from_log) so the
 # string lives in exactly one place.
 SUBAGENT_STREAM_END_EVENT = "subagent_stream_end"
+
+
+class TaskRunRejected(Exception):
+    """The run ledger refused this spawn/resume (admission-authoritative).
+
+    Defined here — not in the server — so middleware code can catch it
+    without importing server modules; the server-side ledger raises it.
+    ``existing`` carries the conflicting run row when the rejection is a
+    duplicate/slot conflict rather than an infra failure.
+    """
+
+    def __init__(self, reason: str, existing: dict[str, Any] | None = None):
+        self.reason = reason
+        self.existing = existing
+        super().__init__(reason)
+
+
+class TaskWriterLive(Exception):
+    """register() refused a tool_call_id whose previous writer still runs.
+
+    Raised atomically under the registry lock so checkpoint re-execution of
+    an already-spawned Task call cannot displace the live writer's routing
+    identity; ``task`` is the live entry, for an idempotent answer.
+    """
+
+    def __init__(self, task: "BackgroundTask"):
+        self.task = task
+        super().__init__(f"live writer already registered for {task.tool_call_id}")
 
 
 def _estimate_record_bytes(record: dict[str, Any]) -> int:
@@ -164,6 +196,12 @@ class BackgroundTask:
     so subagents from prior turns can't get claimed by a later turn's
     collector after the registry is reused across turns."""
 
+    task_run_id: str | None = None
+    """This execution's ledger identity (subagent_runs row). Stamped by the
+    middleware after the admission INSERT, re-stamped on every resume (a
+    resume is a NEW run). None when no ledger is injected (CLI/tests) or
+    for pre-ledger launches."""
+
     per_call_records: list[dict[str, Any]] = field(default_factory=list)
     """Token usage records collected when subagent completes."""
 
@@ -236,6 +274,28 @@ class BackgroundTaskRegistry:
         self.result_resolver: (
             Callable[[str, str], Awaitable[str | None]] | None
         ) = None
+        # Admission-authoritative run ledger (server-injected, same pattern
+        # as result_resolver): duck-typed `start_task_run`/`finalize_task_run`
+        # raising TaskRunRejected on conflict. None in CLI/tests — spawn and
+        # finalize then skip the ledger entirely.
+        self.run_ledger: Any | None = None
+
+    async def mark_result_delivered(self, task: BackgroundTask) -> None:
+        """Flip the volatile delivery flag AND stamp the durable
+        result_delivered_at on the run's ledger row (best-effort — the flag
+        is what today's report-back eligibility keys on; the durable stamp
+        is what replaces it at cutover)."""
+        task.result_delivered = True
+        if self.run_ledger is not None and task.task_run_id:
+            try:
+                await self.run_ledger.mark_result_delivered(task.task_run_id)
+            except Exception:
+                logger.warning(
+                    "durable result_delivered stamp failed",
+                    task_id=task.task_id,
+                    task_run_id=task.task_run_id,
+                    exc_info=True,
+                )
 
     async def resolve_result_text(self, task_id: str) -> str | None:
         """Derive a task's result text from its durable archive.
@@ -269,6 +329,9 @@ class BackgroundTaskRegistry:
     ) -> BackgroundTask:
         """Register a new background task and return it.
 
+        Raises :class:`TaskWriterLive` when a live writer already holds
+        ``tool_call_id`` (checkpoint re-execution of a spawned call).
+
         ``run_id`` is the LangGraph run_id of the dispatching turn, stamped on
         the task so the collector can filter prior-turn subagents. Callers
         should always pass it explicitly (read from request config) rather
@@ -277,36 +340,15 @@ class BackgroundTaskRegistry:
         """
         async with self._lock:
             # A same-id re-registration (checkpoint replay re-executing the
-            # tool call) must not evict a still-live writer from the guard
-            # drain's view: the displaced entry moves to a tombstone key —
-            # drains iterate values, so any key keeps it visible — and is
-            # reaped once its writers settle. Known residual: the displaced
-            # writer's own late ops still key by the original tool_call_id
-            # and so attribute to the replacement — same logical call, no
-            # fence impact; run/task-scoped routing identity lands with the
-            # namespace-sealing milestone (v4 Phase 2.4).
+            # tool call) while the previous writer is still alive must not
+            # displace it — check and refusal are atomic under this lock,
+            # and the raise carries the live task for an idempotent answer.
             existing = self._tasks.get(tool_call_id)
             if existing is not None and any(
                 t is not None and not t.done()
                 for t in (existing.asyncio_task, existing.handler_task)
             ):
-                tombstone = f"{tool_call_id}#displaced-{secrets.token_hex(3)}"
-                self._tasks[tombstone] = self._tasks.pop(tool_call_id)
-                self._task_id_to_tool_call_id[existing.task_id] = tombstone
-                for ns, tid in list(self._ns_uuid_to_tool_call_id.items()):
-                    if tid == tool_call_id:
-                        self._ns_uuid_to_tool_call_id[ns] = tombstone
-                if tool_call_id in self._results:
-                    self._results[tombstone] = self._results.pop(tool_call_id)
-                logger.warning(
-                    "tool_call_id re-registered while previous writer alive; "
-                    "displaced entry retained for drain visibility",
-                    tool_call_id=tool_call_id,
-                    tombstone=tombstone,
-                    old_run_id=existing.spawned_run_id,
-                    new_run_id=run_id,
-                )
-                self._remove_when_settled(tombstone, existing)
+                raise TaskWriterLive(existing)
 
             # Generate short alphanumeric task_id
             task_id = secrets.token_urlsafe(4)[:6]
@@ -475,6 +517,11 @@ class BackgroundTaskRegistry:
             # reused seq numbers would otherwise slip past.
             if task.spawned_run_id:
                 record["run"] = task.spawned_run_id
+            # Ledger identity: the attribution join key for replay. Every
+            # captured record names the execution that produced it, so a
+            # resumed task's rounds partition without content matching.
+            if task.task_run_id:
+                record["task_run"] = task.task_run_id
 
             task.captured_event_count = seq
             task.captured_event_bytes += _estimate_record_bytes(record)
@@ -617,6 +664,38 @@ class BackgroundTaskRegistry:
                     ),
                     timeout=_SPILL_TIMEOUT_SECONDS,
                 )
+                # v2 shadow dual-write (STREAM_CONTRACT_V2.md): the immutable
+                # per-run stream, keyed by ledger identity. Same lock hold so
+                # per-run frame order matches append order; seq is the XADD
+                # id (Redis-side). Best-effort while readerless — its own
+                # failure must not trip the v1 circuit breaker.
+                if success and task.task_run_id:
+                    v2_key = f"subagent:stream:{self.thread_id}:{task.task_run_id}"
+                    try:
+                        await asyncio.wait_for(
+                            cache.client.xadd(
+                                v2_key,
+                                {
+                                    b"run_id": task.task_run_id.encode(),
+                                    b"lane": f"task:{task.task_id}".encode(),
+                                    b"type": (
+                                        record.get("event") or "message_chunk"
+                                    ).encode(),
+                                    b"payload": payload.encode("utf-8"),
+                                },
+                            ),
+                            timeout=_SPILL_TIMEOUT_SECONDS,
+                        )
+                        await cache.client.expire(
+                            v2_key, get_redis_ttl_workflow_events()
+                        )
+                    except Exception:
+                        logger.warning(
+                            "subagent_v2_spill_failed",
+                            task_id=task.task_id,
+                            task_run_id=task.task_run_id,
+                            seq=record.get("seq"),
+                        )
             if not success:
                 task.redis_write_failed = True
                 logger.warning(
@@ -655,9 +734,9 @@ class BackgroundTaskRegistry:
         resolve steer/update targets and gate resumes.
 
         ``status`` tracks the WRITER ("running" while an asyncio writer owns
-        the namespace, "completed"/"cancelled" once it settled), not result
-        availability. Advisory only — the N(thread, task:id) advisory lock,
-        not this hash, is the write fence.
+        the namespace, "completed"/"cancelled"/"error" once it settled), not
+        result availability. Advisory only — the N(thread, task:id) advisory
+        lock, not this hash, is the write fence.
 
         Also maintains ``subagent:active:{thread}``, the cross-worker set of
         running task ids: added on a FENCED "running" (after the ns lock,
@@ -1051,8 +1130,54 @@ class BackgroundTaskRegistry:
 
         return results
 
+    async def _stamp_cancel_intent(self, tasks: list["BackgroundTask"]) -> None:
+        """Best-effort durable cancel intent for ledgered tasks, stamped
+        BEFORE their writers are signalled: a worker that dies mid-unwind
+        must recover as `cancelled`, not `worker_lost`. Ledger failure —
+        including a hung call — never blocks the local cancellation (fail
+        open, bounded wait — cancel is user-facing)."""
+        ledger = self.run_ledger
+        if ledger is None:
+            return
+        targets = [t for t in tasks if t.task_run_id]
+        if not targets:
+            return
+
+        async def _stamp_one(task: "BackgroundTask") -> None:
+            try:
+                await ledger.request_task_run_cancel(task.task_run_id)
+            except Exception:
+                logger.warning(
+                    "subagent_cancel_intent_stamp_failed",
+                    task_id=task.task_id,
+                    task_run_id=task.task_run_id,
+                    exc_info=True,
+                )
+
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(_stamp_one(t) for t in targets)),
+                timeout=_CANCEL_INTENT_STAMP_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "subagent_cancel_intent_stamp_timed_out",
+                task_count=len(targets),
+                timeout=_CANCEL_INTENT_STAMP_TIMEOUT_S,
+            )
+
+    def _cancellable(self, task: "BackgroundTask") -> bool:
+        return (
+            task.asyncio_task is not None
+            and not task.completed
+            and not task.asyncio_task.done()
+        )
+
     async def cancel_all(self, *, force: bool = False) -> int:
         """Cancel all pending background tasks; returns the count cancelled."""
+        async with self._lock:
+            intent_targets = [t for t in self._tasks.values() if self._cancellable(t)]
+        await self._stamp_cancel_intent(intent_targets)
         cancelled = 0
         async with self._lock:
             for task in self._tasks.values():
@@ -1087,6 +1212,13 @@ class BackgroundTaskRegistry:
         are left alone — killing work whose owner is ambiguous is the failure
         mode this exists to prevent.
         """
+        async with self._lock:
+            intent_targets = [
+                t
+                for t in self._tasks.values()
+                if t.spawned_run_id == run_id and self._cancellable(t)
+            ]
+        await self._stamp_cancel_intent(intent_targets)
         scoped: list[str] = []
         cancelled = 0
         async with self._lock:

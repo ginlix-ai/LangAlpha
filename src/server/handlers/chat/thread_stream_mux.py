@@ -123,6 +123,11 @@ class _Chan:
     cursor: bytes
     empty_rounds: int = 0
     last_probe_at: float = field(default=0.0)
+    # Terminal closes MARK the channel instead of popping it: the identity
+    # must survive in the map so a queued frame from an OLDER generation
+    # keeps failing the dequeue identity check even after this generation
+    # settles (ABA). A resume rotation overwrites the entry wholesale.
+    closed: bool = False
 
     @property
     def name(self) -> str:
@@ -361,19 +366,30 @@ async def stream_thread_mux(
     block_ms = _xread_block_ms()
 
     async def _close_channel(chan: _Chan, reason: str) -> None:
-        channels.pop(chan.task_id, None)
-        await out_q.put(("frame", _chan_close(chan.name, reason)))
+        # Identity-guarded: a resume rotates channels[task_id] to a NEW _Chan
+        # on the SAME stream key, so a stale chan (from an older pump
+        # snapshot) must neither evict its successor nor emit a close for a
+        # channel that is no longer this incarnation.
+        if channels.get(chan.task_id) is not chan or chan.closed:
+            return
+        chan.closed = True
+        # Tagged like content frames: a close whose put suspended across a
+        # rotation must not overtake-and-kill the successor client-side —
+        # the dequeue filter drops it unless THIS chan still owns the slot.
+        await out_q.put(("task_frame", (chan, _chan_close(chan.name, reason))))
 
     async def _task_pump() -> None:
         while True:
-            if not channels:
+            # Closed entries stay in the map for generation identity only —
+            # they must not be read (a settled stream would spin the pump).
+            snapshot = [c for c in channels.values() if not c.closed]
+            if not snapshot:
                 new_chan_evt.clear()
                 try:
                     await asyncio.wait_for(new_chan_evt.wait(), timeout=5.0)
                 except asyncio.TimeoutError:
                     pass
                 continue
-            snapshot = list(channels.values())
             streams = {c.stream_key: c.cursor for c in snapshot}
             try:
                 result = await asyncio.wait_for(
@@ -398,7 +414,11 @@ async def stream_thread_mux(
                 chan = next(
                     (c for c in snapshot if c.stream_key == stream_name), None
                 )
-                if chan is None or chan.task_id not in channels:
+                # `is` check, not membership: _admit rotates in a NEW _Chan
+                # for the same task on resume — a stale snapshot chan must
+                # not emit the successor's entries under the old epoch (or
+                # advance a cursor nobody reads).
+                if chan is None or channels.get(chan.task_id) is not chan:
                     continue
                 got.add(chan.task_id)
                 chan.empty_rounds = 0
@@ -425,10 +445,24 @@ async def stream_thread_mux(
                         if isinstance(entry_id, bytes)
                         else str(entry_id)
                     )
+                    # Revalidate per entry: a put on a full out_q suspends
+                    # mid-batch and a resume can rotate the channel at that
+                    # await. This pre-put check is only a fast-path bail —
+                    # asyncio.Queue does NOT order a woken putter ahead of a
+                    # fresh put, so a suspended put can still land after the
+                    # successor's chan_open. The dequeue-side identity filter
+                    # in the drain loop is the authoritative guard.
+                    if channels.get(chan.task_id) is not chan:
+                        break
                     await out_q.put(
                         (
-                            "frame",
-                            _mux_frame(chan.name, chan.epoch, entry_id_s, payload),
+                            "task_frame",
+                            (
+                                chan,
+                                _mux_frame(
+                                    chan.name, chan.epoch, entry_id_s, payload
+                                ),
+                            ),
                         )
                     )
                 if closed:
@@ -439,7 +473,7 @@ async def stream_thread_mux(
             # probes rate-limited, and 'unknown' NEVER closes.
             now = time.monotonic()
             for chan in snapshot:
-                if chan.task_id in got or chan.task_id not in channels:
+                if chan.task_id in got or channels.get(chan.task_id) is not chan:
                     continue
                 chan.empty_rounds += 1
                 if chan.empty_rounds < _QUIESCE_EMPTY_ROUNDS:
@@ -560,6 +594,18 @@ async def stream_thread_mux(
                 continue
             if kind == "frame":
                 yield payload
+            elif kind == "task_frame":
+                # Authoritative stale-generation filter: the enqueue-side
+                # check cannot cover a put that suspended on a full queue
+                # across a rotation (a fresh put can overtake the woken
+                # putter), so a rotated-out frame can sit behind the
+                # successor's chan_open. Terminal closes mark instead of pop,
+                # so the slot always holds the latest generation — a frame
+                # emits iff its own chan still owns the slot (drops lose
+                # nothing: a successor replays its stream from 0).
+                chan, frame = payload
+                if channels.get(chan.task_id) is chan:
+                    yield frame
             elif kind == "timeout":
                 yield _control("timeout", {})
                 return

@@ -131,7 +131,7 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
             # If already completed, return immediately regardless of timeout
             if task.completed:
                 task.result_seen = True
-                task.result_delivered = True
+                await registry.mark_result_delivered(task)
                 return (
                     f"**{task.display_id}** ({task.subagent_type}) completed:\n\n"
                     f"{await _delivered_result_text(registry, task)}"
@@ -169,7 +169,7 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
                         f"(waited {timeout}s, task continues in background)"
                     )
                 task.result_seen = True
-                task.result_delivered = True
+                await registry.mark_result_delivered(task)
                 return (
                     f"**{task.display_id}** ({task.subagent_type}) completed:\n\n"
                     f"{await _delivered_result_text(registry, task, result)}"
@@ -200,7 +200,7 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
             for task in sorted(all_tasks, key=lambda t: t.task_id):
                 if task.completed:
                     task.result_seen = True
-                    task.result_delivered = True
+                    await registry.mark_result_delivered(task)
                     output += (
                         f"### {task.display_id} ({task.subagent_type})\n"
                         f"{await _delivered_result_text(registry, task)}\n\n"
@@ -239,7 +239,7 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
                 t = registry.get_by_tool_call_id(tcid)
                 if t and not (isinstance(r, dict) and r.get("status") == "interrupted"):
                     t.result_seen = True
-                    t.result_delivered = True
+                    await registry.mark_result_delivered(t)
                     completed_parts.append(
                         f"### {t.display_id} ({t.subagent_type}) - completed\n"
                         f"{await _delivered_result_text(registry, t, r)}\n"
@@ -275,7 +275,7 @@ def create_task_output_tool(middleware: BackgroundSubagentMiddleware) -> Structu
                 )
                 if not is_running:
                     task.result_seen = True
-                    task.result_delivered = True
+                    await registry.mark_result_delivered(task)
                 status = "still running" if is_running else "completed"
                 output += f"### {task.display_id} ({task.subagent_type}) - {status}\n"
                 if not is_running:

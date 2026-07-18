@@ -22,6 +22,7 @@ import random
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.config.settings import get_recovery_scan_interval
+from src.server.database import subagent_runs as sr_db
 from src.server.database import turn_lifecycle as tl_db
 
 logger = logging.getLogger(__name__)
@@ -127,8 +128,15 @@ class RecoveryScanner:
             open_runs = await tl_db.list_open_runs()
         except Exception:
             logger.error("[RecoveryScanner] open-run query failed", exc_info=True)
-            return 0
-        if not open_runs:
+            open_runs = []
+        try:
+            open_task_runs = await sr_db.list_open_task_runs()
+        except Exception:
+            logger.error(
+                "[RecoveryScanner] open-task-run query failed", exc_info=True
+            )
+            open_task_runs = []
+        if not open_runs and not open_task_runs:
             return 0
 
         if wg.guard_enabled():
@@ -136,7 +144,14 @@ class RecoveryScanner:
                 async with wg.get_writer_pool().connection() as lock_conn:
                     # The pool's reset callback re-runs unlock_all on the way
                     # out, backstopping any probe lock this scan leaks.
-                    return await self._scan(open_runs, lock_conn)
+                    recovered = (
+                        await self._scan(open_runs, lock_conn) if open_runs else 0
+                    )
+                    if open_task_runs:
+                        recovered += await self._scan_task_runs(
+                            open_task_runs, lock_conn
+                        )
+                    return recovered
             except Exception:
                 logger.error(
                     "[RecoveryScanner] guarded scan session failed", exc_info=True
@@ -146,7 +161,10 @@ class RecoveryScanner:
             # No fence, no liveness oracle: a periodic scan here would reap
             # LIVE runs of this very process.
             return 0
-        return await self._scan(open_runs, None)
+        recovered = await self._scan(open_runs, None) if open_runs else 0
+        if open_task_runs:
+            recovered += await self._scan_task_runs(open_task_runs, None)
+        return recovered
 
     async def _scan(
         self, open_runs: List[Dict[str, Any]], lock_conn
@@ -207,6 +225,85 @@ class RecoveryScanner:
                     try:
                         await lock_conn.execute(
                             "SELECT pg_advisory_unlock(%s)", (root_key,)
+                        )
+                    except Exception:
+                        pass
+        return recovered
+
+    async def _scan_task_runs(
+        self, open_task_runs: List[Dict[str, Any]], lock_conn
+    ) -> int:
+        """Minimal task-run orphan recovery (M3): an in_progress subagent_runs
+        row whose N(thread, task:id) fence is acquirable has no live writer —
+        the row is born under that fence and the fence outlives finalize.
+        Classification is deliberately thin (durable cancel intent →
+        cancelled, else error worker_lost); task HITL is descoped, so no
+        interrupted branch exists here.
+        """
+        from src.server.services import writer_guard as wg
+        from src.server.services.subagent_run_ledger import SubagentRunLedger
+
+        recovered = 0
+        for run in open_task_runs:
+            if self._stop_event.is_set():
+                break
+            task_run_id = str(run["task_run_id"])
+            thread_id = str(run["thread_id"])
+            task_id = str(run["task_id"])
+            ns_key = None
+            if lock_conn is not None:
+                ns_key = wg.namespace_key(thread_id, f"task:{task_id}")
+                try:
+                    cur = await lock_conn.execute(
+                        "SELECT pg_try_advisory_lock(%s)", (ns_key,)
+                    )
+                    acquired = (await cur.fetchone())[0]
+                except Exception:
+                    logger.error(
+                        f"[RecoveryScanner] task-ns probe failed for "
+                        f"{task_run_id}",
+                        exc_info=True,
+                    )
+                    continue
+                if not acquired:
+                    continue  # live writer holds the fence
+            try:
+                status = (
+                    "cancelled" if run.get("cancel_requested_at") else "error"
+                )
+                result = await SubagentRunLedger(thread_id).finalize_task_run(
+                    task_run_id,
+                    status,
+                    task_id=task_id,
+                    failure=(
+                        None
+                        if status == "cancelled"
+                        else {
+                            "error": (
+                                "worker_lost: no live executor holds this "
+                                "task's namespace fence"
+                            )
+                        }
+                    ),
+                )
+                if result["applied"]:
+                    recovered += 1
+                    logger.warning(
+                        f"[RecoveryScanner] recovered task run {task_run_id} "
+                        f"(thread={thread_id} task={task_id}) -> "
+                        f"{result['run']['status']}"
+                    )
+            except Exception:
+                logger.error(
+                    f"[RecoveryScanner] task-run recovery failed for "
+                    f"{task_run_id}",
+                    exc_info=True,
+                )
+            finally:
+                if lock_conn is not None and ns_key is not None:
+                    try:
+                        await lock_conn.execute(
+                            "SELECT pg_advisory_unlock(%s)", (ns_key,)
                         )
                     except Exception:
                         pass

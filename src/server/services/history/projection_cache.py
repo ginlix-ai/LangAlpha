@@ -84,6 +84,19 @@ async def store_turn(
         logger.warning(f"[ProjectionCache] store failed for {thread_id}: {e}")
 
 
+async def delete_turns(thread_id: str, tail_checkpoint_ids: list[str]) -> None:
+    """Best-effort eviction — keeps salvage-bearing turns out of the cache so
+    the fast path can't replay them without their trailing salvage."""
+    if not tail_checkpoint_ids or not cache_active():
+        return
+    try:
+        client = get_cache_client()
+        for tail_checkpoint_id in tail_checkpoint_ids:
+            await client.delete(_key(thread_id, tail_checkpoint_id))
+    except Exception as e:
+        logger.warning(f"[ProjectionCache] delete failed for {thread_id}: {e}")
+
+
 async def task_streams_live(thread_id: str, task_ids: set[str]) -> bool:
     """True when any task's per-task Redis stream is still unfinalized.
 

@@ -652,6 +652,24 @@ def _create_task_tool(
             return f"task:{bg_task.task_id}", bg_task.subagent_type
         return None, None
 
+    def _subagent_run_metadata(effective_type: str, prompt: str) -> dict[str, Any]:
+        """Child-graph config metadata; carries the execution's ledger
+        identity (task_run_id) so checkpoints written by this run stamp it
+        into CheckpointMetadata — the replay-side attribution join key."""
+        md: dict[str, Any] = {
+            "subagent_type": effective_type,
+            "description": prompt[:200],
+        }
+        bg_tool_call_id = current_background_tool_call_id.get()
+        bg_task = (
+            registry.get_by_tool_call_id(bg_tool_call_id)
+            if bg_tool_call_id and registry
+            else None
+        )
+        if bg_task is not None and bg_task.task_run_id:
+            md["task_run_id"] = bg_task.task_run_id
+        return md
+
     def task(
         description: Annotated[
             str,
@@ -723,10 +741,7 @@ def _create_task_tool(
                     "thread_id": parent_configurable.get("thread_id", ""),
                     "checkpoint_ns": checkpoint_ns,
                 },
-                "metadata": {
-                    "subagent_type": effective_type,
-                    "description": prompt[:200],
-                },
+                "metadata": _subagent_run_metadata(effective_type, prompt),
             }
         else:
             config = {}
@@ -818,10 +833,7 @@ def _create_task_tool(
                     "thread_id": parent_configurable.get("thread_id", ""),
                     "checkpoint_ns": bg_checkpoint_ns,
                 },
-                "metadata": {
-                    "subagent_type": effective_type,
-                    "description": prompt[:200],
-                },
+                "metadata": _subagent_run_metadata(effective_type, prompt),
             }
             callbacks = _compose_callbacks()
             if callbacks:
@@ -855,10 +867,7 @@ def _create_task_tool(
                         "thread_id": parent_configurable.get("thread_id", ""),
                         "checkpoint_ns": checkpoint_ns,
                     },
-                    "metadata": {
-                        "subagent_type": effective_type,
-                        "description": prompt[:200],
-                    },
+                    "metadata": _subagent_run_metadata(effective_type, prompt),
                 }
             else:
                 config = {}

@@ -105,8 +105,10 @@ async def _enqueue_pass(
             defer = bool(run and run.get("status") == "interrupted")
 
         for task in claimed:
+            task_run_id = getattr(task, "task_run_id", None)
             payload = {
                 "task_id": task.task_id,
+                "task_run_id": task_run_id,
                 "display_id": task.display_id,
                 "subagent_type": task.subagent_type,
                 "description": (task.description or "")[:500],
@@ -129,7 +131,15 @@ async def _enqueue_pass(
                     hook_type="task_report_back",
                     payload=payload,
                     ordering_key=thread_id,
-                    idempotency_key=f"{response_id}:task:{task.task_id}:report_back",
+                    # Run-scoped for ledgered executions: two runs of the same
+                    # task under one parent must not dedup into one
+                    # notification. Pre-ledger tasks keep the legacy shape so
+                    # a mid-deploy re-pass can't double-insert their jobs.
+                    idempotency_key=(
+                        f"{response_id}:task:{task.task_id}:{task_run_id}:report_back"
+                        if task_run_id
+                        else f"{response_id}:task:{task.task_id}:report_back"
+                    ),
                     defer=defer,
                 )
             except Exception:

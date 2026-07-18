@@ -3198,6 +3198,13 @@ export function useChatMessages(
         }
       })
       .finally(() => {
+        // Strict ownership: this finalizer acts only while its own controller
+        // is still the mapped one. A resume that replaced the entry (the
+        // successor owns the lifecycle) or a teardown that cleared the map
+        // (closeAllSubagentStreams — the caller did its own state cleanup)
+        // both mean someone else took responsibility; terminalizing here
+        // would mark a live resumed or intentionally-aborted task completed.
+        if (subagentStreamsRef.current.get(shortTaskId) !== controller) return;
         subagentStreamsRef.current.delete(shortTaskId);
         completedTaskIdsRef.current.add(shortTaskId);
         // Per-task stream close = task completion signal
@@ -3962,7 +3969,25 @@ export function useChatMessages(
               updateSubagentCard,
             });
           } else if (eventType === 'artifact') {
-            // Subagent artifact events are intentionally filtered out of the main chat view.
+            // Task-lane artifacts don't render in the main chat view — but
+            // thread-scoped side-channel pings stay honored regardless of
+            // lane: a subagent's file writes / preview servers change the
+            // same workspace the panels show. Everything else (todo_update,
+            // widgets) is task-internal until the detail view renders them.
+            const taskArtifactType = event.artifact_type as string;
+            if (taskArtifactType === 'file_operation' && onFileArtifact) {
+              onFileArtifact(event);
+            } else if (taskArtifactType === 'preview_url' && onPreviewUrl) {
+              const payload = (event.payload || {}) as Record<string, unknown>;
+              onPreviewUrl({
+                url: '',  // resolved by ChatView via authenticated endpoint
+                port: payload.port as number,
+                title: payload.title as string | undefined,
+                command: payload.command as string | undefined,
+                path: payload.path as string | undefined,
+                loading: true,
+              });
+            }
           } else if (eventType === 'steering_delivered') {
             if (event.content) {
               handleTaskSteeringAccepted({

@@ -285,6 +285,9 @@ async def _build_and_backfill(
     task_lane = _TaskLaneProjector(thread_id, windowed=last_n_turns is not None)
     await task_lane.prepare(reader, pairs)
 
+    # Stores are deferred past trailing_items(): only then is it known which
+    # turns carry trailing salvage and must stay out of the cache.
+    cacheable: list[tuple[Any, str | None, list[dict[str, Any]]]] = []
     for turn_index, turn in pairs:
         if turn is None:
             items.extend(
@@ -373,11 +376,26 @@ async def _build_and_backfill(
         # would never be invalidated. Rebuild-per-read until the task's
         # stream finalizes, then the next read caches the full transcript.
         if not await projection_cache.task_streams_live(thread_id, turn_task_ids):
-            await projection_cache.store_turn(
-                thread_id, turn.tail_checkpoint_id, segment
-            )
+            cacheable.append((turn_index, turn.tail_checkpoint_id, segment))
 
     items.extend(await task_lane.trailing_items())
+    # Trailing salvage rides items but belongs to no turn's checkpoint range,
+    # so the all-cache-hit fast path (which never runs the task lane) would
+    # silently drop it. Keep the salvage-stamped turn uncacheable — skip its
+    # store and evict any entry from before the orphan appeared — so every
+    # read misses there and rebuilds until the salvage resolves.
+    salvaged = task_lane.salvaged_turn_indexes
+    for turn_index, tail_checkpoint_id, segment in cacheable:
+        if turn_index not in salvaged:
+            await projection_cache.store_turn(
+                thread_id, tail_checkpoint_id, segment
+            )
+    if salvaged:
+        tails_by_turn = {ti: t.tail_checkpoint_id for ti, t in pairs if t is not None}
+        await projection_cache.delete_turns(
+            thread_id,
+            [tails_by_turn[ti] for ti in salvaged if tails_by_turn.get(ti)],
+        )
 
     for interrupt in history.interrupts:
         items.append(_interrupt_item(thread_id, interrupt))
@@ -957,6 +975,10 @@ class _TaskLaneProjector:
         self._thread_id = thread_id
         self._windowed = windowed
         self._tasks: dict[str, _TaskRuns] = {}
+        # Turn indexes whose stamps carry trailing salvage (populated by
+        # trailing_items) — those turns must not be cached, or the fast path
+        # would replay them without the salvage.
+        self.salvaged_turn_indexes: set[Any] = set()
 
     @staticmethod
     def _launches_in(turn: Any) -> list[tuple[str, str, str | None]]:
@@ -1143,6 +1165,7 @@ class _TaskLaneProjector:
                 continue
             task_agent = f"task:{task_id}"
             turn_index, response_id = runs.last_ctx
+            self.salvaged_turn_indexes.add(turn_index)
             for segment in remaining:
                 for item in self._segment_items(task_agent, segment):
                     _enrich(item, self._thread_id, turn_index, response_id)

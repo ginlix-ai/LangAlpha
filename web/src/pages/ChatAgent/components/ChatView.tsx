@@ -35,6 +35,7 @@ import {
   isManualCompactionInFlight,
 } from '../utils/compactionControl';
 import { countToolCalls } from '../utils/subagentMetrics';
+import { deriveSubagentStatus } from '../utils/subagentStatus';
 import { type SubagentTokenUsage, ZERO_USAGE } from '../utils/tokenUsage';
 import {
   resolveSubagentTelemetry as resolveSubagentTelemetryPure,
@@ -282,9 +283,8 @@ const MAIN_AGENT: AgentInfo = {
 
 function SubagentStatusIndicator({ status, currentTool, toolCalls = 0, messages = [] }: SubagentStatusIndicatorProps): React.ReactElement {
   const { t } = useTranslation();
-  // Derive streaming state from messages (self-sufficient, no subagent_status dependency)
+  // Derive the in-flight tool from messages (self-sufficient, no subagent_status dependency)
   const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
-  const isMessageStreaming = lastAssistant?.isStreaming === true;
 
   // Derive current tool from message state
   const derivedCurrentTool = (() => {
@@ -294,23 +294,22 @@ function SubagentStatusIndicator({ status, currentTool, toolCalls = 0, messages 
     return (inProgress?.toolName as string) || '';
   })();
 
-  // Effective status: only trust the authoritative card status for 'completed'
-  // (set by openSubagentStream.finally when the per-task SSE closes).
-  // Never derive 'completed' from message streaming gaps — those are transient,
-  // especially after update/resume actions where there's a natural pause between
-  // the old response ending and the new one starting.
-  const effectiveStatus = status === 'completed'
-    ? 'completed'
-    : status === 'cancelled'
-      ? 'cancelled'
-      : messages.length === 0
-        ? 'initializing'
-        : isMessageStreaming || derivedCurrentTool
-          ? 'active'
-          : status;
+  // Shared derivation (same as the nav tree and SubagentStatusBar, so the
+  // surfaces can never disagree): terminal card statuses — completed,
+  // cancelled, error — are authoritative; everything else displays as
+  // running. Never derive 'completed' from message streaming gaps — those
+  // are transient, especially after update/resume actions.
+  const effectiveStatus = deriveSubagentStatus({ status, messages });
+
+  // A terminal card never shows a live tool spinner — a tool process that was
+  // mid-flight when the run settled is history, not activity.
+  const isTerminal =
+    effectiveStatus === 'completed' ||
+    effectiveStatus === 'cancelled' ||
+    effectiveStatus === 'error';
 
   const getIcon = (): React.ReactElement => {
-    if (derivedCurrentTool) {
+    if (!isTerminal && derivedCurrentTool) {
       return <Loader2 className="h-3.5 w-3.5 animate-spin" style={{ color: 'var(--color-text-tertiary)' }} />;
     }
     if (effectiveStatus === 'active') {
@@ -322,11 +321,15 @@ function SubagentStatusIndicator({ status, currentTool, toolCalls = 0, messages 
     if (effectiveStatus === 'cancelled') {
       return <StopCircle className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />;
     }
+    if (effectiveStatus === 'error') {
+      return <AlertTriangle className="h-3.5 w-3.5" style={{ color: 'var(--color-text-tertiary)' }} />;
+    }
     return <Circle className="h-3.5 w-3.5" style={{ color: 'var(--color-icon-muted)' }} />;
   };
 
   const getText = (): string => {
-    if (derivedCurrentTool) return t('chat.running', { tool: derivedCurrentTool });
+    if (!isTerminal && derivedCurrentTool) return t('chat.running', { tool: derivedCurrentTool });
+    if (effectiveStatus === 'error') return t('common.failed');
     if (effectiveStatus === 'completed') {
       return toolCalls > 0 ? t('chat.completedWithCalls', { count: toolCalls }) : t('chat.completed');
     }
@@ -2875,8 +2878,12 @@ function ChatView({ workspaceId, threadId, initialTaskId, onBack, workspaceName:
                           {activeAgent.description}
                         </div>
                       )}
-                      {/* Prompt as user message bubble — matches MessageBubble user style */}
-                      {activeAgent.prompt && (
+                      {/* Prompt as user message bubble — matches MessageBubble user style.
+                          Only until the transcript's own epoch-opening user bubble
+                          arrives: new task streams open with the run's instruction as
+                          a user_message, so rendering both would duplicate it. Legacy
+                          tasks (no opener) keep the static bubble. */}
+                      {activeAgent.prompt && activeAgent.messages?.[0]?.role !== 'user' && (
                         <div className="flex justify-end">
                           <div
                             className={`max-w-[80%] rounded-lg rounded-tr-none ${isMobile ? 'px-3 py-2' : 'px-4 py-3'} overflow-hidden`}

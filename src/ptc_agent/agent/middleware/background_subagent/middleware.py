@@ -20,6 +20,8 @@ from langgraph.types import Command
 from ptc_agent.agent.middleware.background_subagent.registry import (
     BackgroundTask,
     BackgroundTaskRegistry,
+    TaskRunRejected,
+    TaskWriterLive,
 )
 from ptc_agent.agent.middleware.background_subagent.tools import (
     create_task_output_tool,
@@ -135,19 +137,39 @@ async def _run_background_task(
         run_handler()
     )
     task.handler_task = handler_task
+    # Ledger outcome, decided by whichever branch settles the writer; the
+    # default only survives a path that exits without settling (double
+    # cancel), where the finally skips finalize anyway.
+    ledger_status = "error"
+    ledger_failure: dict[str, Any] | None = {
+        "error": "writer terminated without settling"
+    }
     try:
         result = await asyncio.shield(handler_task)
+        ledger_status, ledger_failure = "completed", None
         _merge_subagent_usage(task, tracker, tool_tracker)
         if isinstance(result, ToolMessage) and result.status == "error":
             # e.g. schema validation rejected the call before the subagent
-            # ran — without this the writer settles "completed" and the only
-            # trace of the failure is the result text nobody reads.
+            # ran. The run did not succeed — ledger, task result, and
+            # terminal meta all record it as such; a success=True here would
+            # let the report-back gate and TaskOutput present the failure
+            # as a delivered result.
+            ledger_status = "error"
+            ledger_failure = {
+                "error": str(result.content)[:2000],
+                "error_type": "tool_error",
+            }
             logger.error(
                 "%s returned a tool error without running",
                 label,
                 display_id=task.display_id,
                 error_preview=str(result.content)[:300],
             )
+            return {
+                "success": False,
+                "error": str(result.content)[:2000],
+                "error_type": "tool_error",
+            }
         logger.debug(
             "%s completed",
             label,
@@ -164,9 +186,12 @@ async def _run_background_task(
         )
         try:
             result = await handler_task
+            ledger_status, ledger_failure = "completed", None
             _merge_subagent_usage(task, tracker, tool_tracker)
             return {"success": True, "result": result}
         except Exception as e:
+            ledger_status = "error"
+            ledger_failure = {"error": str(e), "error_type": type(e).__name__}
             _merge_subagent_usage(task, tracker, tool_tracker)
             logger.error(
                 "%s failed after cancellation",
@@ -176,6 +201,8 @@ async def _run_background_task(
             )
             return {"success": False, "error": str(e), "error_type": type(e).__name__}
     except Exception as e:
+        ledger_status = "error"
+        ledger_failure = {"error": str(e), "error_type": type(e).__name__}
         _merge_subagent_usage(task, tracker, tool_tracker)
         logger.error(
             "%s failed",
@@ -194,11 +221,43 @@ async def _run_background_task(
         # only acquire after the release) always writes "running" after this
         # writer's terminal state — never under it.
         if handler_task.done():
+            # Ledger CAS first (durable truth), still under N(task:id) so
+            # finalize-vs-successor ordering matches the meta's guarantee. A
+            # failed CAS is left to orphan recovery — the row stays
+            # in_progress and the released guard makes it provably dead.
+            run_ledger = getattr(registry, "run_ledger", None) if registry else None
+            # Local view of the outcome — superseded by the CAS-returned row
+            # status below: the DB overrides a settle to 'cancelled' when a
+            # durable cancel intent raced it, and a lost CAS returns the
+            # survivor. Meta must mirror the row, not the local request.
+            terminal_status = (
+                "cancelled"
+                if task.cancelled
+                else ("completed" if ledger_status == "completed" else "error")
+            )
+            if run_ledger is not None and task.task_run_id:
+                try:
+                    finalized = await run_ledger.finalize_task_run(
+                        task.task_run_id,
+                        "cancelled" if task.cancelled else ledger_status,
+                        task_id=task.task_id,
+                        # A user cancel is not a failure — don't let the
+                        # unwind path's default failure text ride the row.
+                        failure=None if task.cancelled else ledger_failure,
+                    )
+                    row_status = (finalized.get("run") or {}).get("status")
+                    if row_status:
+                        terminal_status = str(row_status)
+                except Exception:
+                    logger.warning(
+                        "task-run ledger finalize failed",
+                        task_id=task.task_id,
+                        task_run_id=task.task_run_id,
+                        exc_info=True,
+                    )
             if registry is not None:
                 try:
-                    await registry.write_task_meta(
-                        task, "cancelled" if task.cancelled else "completed"
-                    )
+                    await registry.write_task_meta(task, terminal_status)
                 except Exception:
                     logger.warning(
                         "terminal task-meta write failed",
@@ -303,6 +362,105 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 "task-ns acquire raised; refusing", task_id=task_id, exc_info=True
             )
             return False
+
+    async def _release_task_ns(self, task_id: str) -> None:
+        """Best-effort fence release for admission/setup failure paths — no
+        writer will spawn, so the namespace must not stay held."""
+        if self.namespace_owner is None:
+            return
+        try:
+            await self.namespace_owner.release_task_ns(task_id)
+        except Exception:
+            logger.warning(
+                "task-ns release failed on admission abort",
+                task_id=task_id,
+                exc_info=True,
+            )
+
+    async def _admit_task_run(
+        self,
+        task: BackgroundTask,
+        *,
+        cause: str,
+        description: str,
+        launch_tool_call_id: str,
+        parent_run_id: str | None,
+    ) -> str | ToolMessage:
+        """Bear the ledger row for this execution (admission-authoritative).
+
+        Called under the task's namespace guard, before any spawn side
+        effect. Returns the task_run_id, or — after releasing the guard —
+        an error ToolMessage: on conflict the spawn is rejected, and on
+        ledger infra failure it fails closed (a run we cannot record is a
+        run we do not start). No ledger injected → returns "" and the task
+        keeps task_run_id=None.
+        """
+        ledger = getattr(self.registry, "run_ledger", None)
+        if ledger is None:
+            return ""
+        try:
+            return await ledger.start_task_run(
+                task_id=task.task_id,
+                cause=cause,
+                description=description,
+                subagent_type=task.subagent_type,
+                parent_run_id=parent_run_id,
+                launch_tool_call_id=launch_tool_call_id,
+            )
+        except TaskRunRejected as e:
+            logger.warning(
+                "task-run admission rejected",
+                task_id=task.task_id,
+                cause=cause,
+                reason=e.reason,
+            )
+            await self._release_task_ns(task.task_id)
+            return ToolMessage(
+                content=f"Error: could not start {task.display_id} — {e.reason}.",
+                tool_call_id=launch_tool_call_id,
+                name="Task",
+            )
+        except Exception:
+            logger.error(
+                "task-run ledger unavailable; refusing spawn",
+                task_id=task.task_id,
+                cause=cause,
+                exc_info=True,
+            )
+            await self._release_task_ns(task.task_id)
+            return ToolMessage(
+                content=(
+                    f"Error: could not start {task.display_id} — its run "
+                    f"could not be recorded. Try again."
+                ),
+                tool_call_id=launch_tool_call_id,
+                name="Task",
+            )
+
+    async def _abort_admitted_run(self, task: BackgroundTask, exc: Exception) -> None:
+        """Post-INSERT setup failure: finalize the just-born row as error and
+        release the fence — an admitted run either spawns or terminates, it
+        never strands in_progress."""
+        ledger = getattr(self.registry, "run_ledger", None)
+        if ledger is not None and task.task_run_id:
+            try:
+                await ledger.finalize_task_run(
+                    task.task_run_id,
+                    "error",
+                    task_id=task.task_id,
+                    failure={
+                        "error": f"setup failed before spawn: {exc}",
+                        "error_type": type(exc).__name__,
+                    },
+                )
+            except Exception:
+                logger.warning(
+                    "setup-failure ledger finalize failed",
+                    task_id=task.task_id,
+                    task_run_id=task.task_run_id,
+                    exc_info=True,
+                )
+        await self._release_task_ns(task.task_id)
 
     async def _append_run_opener(self, task: BackgroundTask, prompt: str) -> None:
         """First stream entry of a run's epoch: the instruction that launched
@@ -731,6 +889,24 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                     checkpoint_ns=task.task_id,
                 )
 
+                # A resume is a NEW run: bear its ledger row under the fence
+                # BEFORE the v1 reset destroys the prior round's streams — a
+                # rejected resume must leave them intact.
+                resume_run_id = current_run_id or self.registry.current_run_id
+                admitted = await self._admit_task_run(
+                    task,
+                    cause="resume",
+                    # Args aren't backfilled yet at admission time; a model
+                    # that omitted description would otherwise ledger the
+                    # schema default instead of the task's real one.
+                    description=args.get("description") or task.description or "",
+                    launch_tool_call_id=tool_call_id,
+                    parent_run_id=resume_run_id,
+                )
+                if isinstance(admitted, ToolMessage):
+                    return admitted  # fence already released by _admit_task_run
+                task.task_run_id = admitted or None
+
                 await self._reset_task_for_resume(task)
 
                 # This run owns the writer now: rebind run ownership so its
@@ -740,7 +916,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 # unconditionally: None is safe (collectors treat it as
                 # claimable-by-any-run), whereas keeping the stale spawner id
                 # detaches the writer from every run's teardown.
-                task.spawned_run_id = current_run_id or self.registry.current_run_id
+                task.spawned_run_id = resume_run_id
 
                 # Clear stale namespace mappings so new ones can be registered
                 self.registry.clear_namespaces_for_task(task.tool_call_id)
@@ -776,24 +952,41 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 # propagates the current OTel context (via contextvars
                 # snapshot) so spans emitted inside the subagent inherit the
                 # launching chat.turn trace.
-                emit_subagent_launch(
-                    task.subagent_type, action="resume", description_len=len(description),
-                )
-                # Meta before spawn: a fast writer's terminal meta (written at
-                # settle) must never be overwritten by a late "running".
-                await self.registry.write_task_meta(
-                task, "running", fenced=self.namespace_owner is not None
-            )
-                await self._append_run_opener(task, prompt)
-                asyncio_task = create_task_with_context(
-                    _run_background_task(
-                        task, handler, request, subagent_token_tracker,
-                        "Resumed background subagent",
-                        registry=self.registry,
-                        namespace_owner=self.namespace_owner,
-                    ),
-                    name=f"background_subagent_resume_{task.display_id}",
-                )
+                try:
+                    emit_subagent_launch(
+                        task.subagent_type, action="resume", description_len=len(description),
+                    )
+                    # Meta before spawn: a fast writer's terminal meta (written at
+                    # settle) must never be overwritten by a late "running".
+                    await self.registry.write_task_meta(
+                        task, "running", fenced=self.namespace_owner is not None
+                    )
+                    await self._append_run_opener(task, prompt)
+                    asyncio_task = create_task_with_context(
+                        _run_background_task(
+                            task, handler, request, subagent_token_tracker,
+                            "Resumed background subagent",
+                            registry=self.registry,
+                            namespace_owner=self.namespace_owner,
+                        ),
+                        name=f"background_subagent_resume_{task.display_id}",
+                    )
+                except Exception as e:
+                    # An admitted run either spawns or terminates — never a
+                    # stranded in_progress row. Re-settle the entry so the
+                    # task stays resumable (its durable result survives in
+                    # the task:{id} checkpoint).
+                    await self._abort_admitted_run(task, e)
+                    task.completed = True
+                    task.error = f"resume setup failed before spawn: {e}"
+                    return ToolMessage(
+                        content=(
+                            f"Error: could not resume {task.display_id} — setup "
+                            f"failed before the subagent spawned. Try again."
+                        ),
+                        tool_call_id=tool_call_id,
+                        name="Task",
+                    )
                 task.asyncio_task = asyncio_task
                 asyncio_task.add_done_callback(_make_task_done_callback(task))
             finally:
@@ -821,6 +1014,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 additional_kwargs={
                     "task_artifact": {
                         "task_id": task.task_id,
+                        "task_run_id": task.task_run_id,
                         "action": "resume",
                         "description": description,
                         "prompt": prompt,
@@ -834,15 +1028,52 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
             if subagent_type is None:
                 subagent_type = "general-purpose"
 
-            # Register the task first to get the task_id
-            task = await self.registry.register(
-                tool_call_id=tool_call_id,
-                description=description,
-                prompt=prompt,
-                subagent_type=subagent_type,
-                asyncio_task=None,  # Will be set after task creation
-                run_id=current_run_id,
-            )
+            # Register the task first to get the task_id. A checkpoint
+            # re-execution of an already-spawned call raises TaskWriterLive
+            # (atomically, under the registry lock): re-registering would
+            # displace the live writer's routing identity (events would
+            # attribute to an inert replacement without its task_run_id/v2
+            # stream) and ledger admission would reject the duplicate anyway
+            # — answer idempotently with the live task instead.
+            try:
+                task = await self.registry.register(
+                    tool_call_id=tool_call_id,
+                    description=description,
+                    prompt=prompt,
+                    subagent_type=subagent_type,
+                    asyncio_task=None,  # Will be set after task creation
+                    run_id=current_run_id,
+                )
+            except TaskWriterLive as exc:
+                existing = exc.task
+                logger.info(
+                    "Task tool call re-executed while its writer is alive; "
+                    "returning the existing task",
+                    tool_call_id=tool_call_id,
+                    task_id=existing.task_id,
+                )
+                return ToolMessage(
+                    content=(
+                        f"Background subagent already running: "
+                        f"**{existing.display_id}**\n"
+                        f"- Type: {existing.subagent_type}\n"
+                        f"- Status: Running in background\n\n"
+                        f'Use `TaskOutput(task_id="{existing.task_id}")` to get '
+                        f"progress or result"
+                    ),
+                    tool_call_id=tool_call_id,
+                    name="Task",
+                    additional_kwargs={
+                        "task_artifact": {
+                            "task_id": existing.task_id,
+                            "task_run_id": existing.task_run_id,
+                            "action": "init",
+                            "description": existing.description,
+                            "prompt": existing.prompt,
+                            "type": existing.subagent_type,
+                        }
+                    },
+                )
             logger.info(
                 "Intercepting task tool call for background execution",
                 tool_call_id=tool_call_id,
@@ -872,33 +1103,67 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                     name="Task",
                 )
 
-            current_background_tool_call_id.set(tool_call_id)
-            current_background_agent_id.set(task.agent_id)
+            # Ledger row born under N(thread, task:id), before any spawn side
+            # effect — admission-authoritative from day one.
+            admitted = await self._admit_task_run(
+                task,
+                cause="init",
+                description=description,
+                launch_tool_call_id=tool_call_id,
+                parent_run_id=task.spawned_run_id,
+            )
+            if isinstance(admitted, ToolMessage):
+                task.completed = True
+                task.cancelled = True
+                task.result_seen = True
+                task.error = "run admission rejected"
+                return admitted
+            task.task_run_id = admitted or None
 
-            # Create a dedicated token tracker for this subagent
-            subagent_token_tracker = PerCallTokenTracker()
+            try:
+                current_background_tool_call_id.set(tool_call_id)
+                current_background_agent_id.set(task.agent_id)
 
-            # Spawn background task. create_task_with_context propagates the
-            # current OTel context (via contextvars snapshot) so spans emitted
-            # inside the subagent inherit the launching chat.turn trace.
-            emit_subagent_launch(
-                subagent_type, action="init", description_len=len(description),
-            )
-            # Meta before spawn: a fast writer's terminal meta (written at
-            # settle) must never be overwritten by a late "running".
-            await self.registry.write_task_meta(
-                task, "running", fenced=self.namespace_owner is not None
-            )
-            await self._append_run_opener(task, prompt)
-            asyncio_task = create_task_with_context(
-                _run_background_task(
-                    task, handler, request, subagent_token_tracker,
-                    "Background subagent",
-                    registry=self.registry,
-                    namespace_owner=self.namespace_owner,
-                ),
-                name=f"background_subagent_{task.display_id}",
-            )
+                # Create a dedicated token tracker for this subagent
+                subagent_token_tracker = PerCallTokenTracker()
+
+                # Spawn background task. create_task_with_context propagates the
+                # current OTel context (via contextvars snapshot) so spans emitted
+                # inside the subagent inherit the launching chat.turn trace.
+                emit_subagent_launch(
+                    subagent_type, action="init", description_len=len(description),
+                )
+                # Meta before spawn: a fast writer's terminal meta (written at
+                # settle) must never be overwritten by a late "running".
+                await self.registry.write_task_meta(
+                    task, "running", fenced=self.namespace_owner is not None
+                )
+                await self._append_run_opener(task, prompt)
+                asyncio_task = create_task_with_context(
+                    _run_background_task(
+                        task, handler, request, subagent_token_tracker,
+                        "Background subagent",
+                        registry=self.registry,
+                        namespace_owner=self.namespace_owner,
+                    ),
+                    name=f"background_subagent_{task.display_id}",
+                )
+            except Exception as e:
+                # An admitted run either spawns or terminates — never a
+                # stranded in_progress row.
+                await self._abort_admitted_run(task, e)
+                task.completed = True
+                task.cancelled = True
+                task.result_seen = True
+                task.error = f"setup failed before spawn: {e}"
+                return ToolMessage(
+                    content=(
+                        f"Error: could not start {task.display_id} — setup "
+                        f"failed before the subagent spawned. Try again."
+                    ),
+                    tool_call_id=tool_call_id,
+                    name="Task",
+                )
 
             # Update the task with the asyncio task reference
             task.asyncio_task = asyncio_task
@@ -925,6 +1190,7 @@ class BackgroundSubagentMiddleware(AgentMiddleware):
                 additional_kwargs={
                     "task_artifact": {
                         "task_id": task.task_id,
+                        "task_run_id": task.task_run_id,
                         "action": "init",
                         "description": description,
                         "prompt": prompt,

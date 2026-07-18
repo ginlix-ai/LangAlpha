@@ -803,7 +803,12 @@ class WorkflowStreamHandler:
                         # Map onto the existing artifact SSE event so the wire
                         # contract is unchanged.
                         if event_type == "ui":
-                            ui_agent = self._extract_agent_name(agent_from_stream, {})
+                            # Lane ownership beats last-segment resolution: a
+                            # multi-segment task namespace whose leaf UUID was
+                            # never registered must still attribute task:{id}.
+                            ui_agent = task_lane or self._extract_agent_name(
+                                agent_from_stream, {}
+                            )
                             ui_artifact_event = {
                                 "artifact_type": event_data.get("name"),
                                 "artifact_id": event_data.get("id"),
@@ -840,8 +845,17 @@ class WorkflowStreamHandler:
                         if artifact_type:
                             extracted_agent_name = self._extract_agent_name(agent_from_stream, {})
 
-                            # Use agent from event payload if present (set by middleware)
-                            agent_name = event_data.get("agent") or extracted_agent_name
+                            # Lane ownership is not the emitter's to claim: a
+                            # payload-supplied agent (TodoWriteMiddleware
+                            # hardcodes "ptc") from inside a task namespace
+                            # would evade the client's task routing and the
+                            # collector's task:* scrub — a subagent's TodoWrite
+                            # would overwrite the root todo list and archive as
+                            # parent output. The namespace decides the lane;
+                            # the payload's agent applies only on main.
+                            agent_name = task_lane or (
+                                event_data.get("agent") or extracted_agent_name
+                            )
                             payload = event_data.get("payload", {})
 
                             # Build artifact event with proper structure

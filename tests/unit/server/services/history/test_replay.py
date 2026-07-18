@@ -1512,3 +1512,86 @@ async def test_live_task_final_launch_defers_to_stream(monkeypatch):
         THREAD, [_query(0)], {0: _response(0)}
     )
     assert not [i for i in items if i["data"].get("agent") == "task:tsk1"]
+
+
+async def test_trailing_salvage_keeps_its_turn_uncacheable(monkeypatch):
+    # An orphan run beyond the last committed launch (its launching turn never
+    # persisted) is salvaged under that launch's stamps. The salvage-stamped
+    # turn must stay OUT of the projection cache: the all-cache-hit fast path
+    # never runs the task lane, so a cached entry would replay the turn
+    # without the salvage on the next refresh. Fixed regression.
+    from src.server.services.history import replay as replay_module
+
+    async def fake_statuses(thread_id, task_ids):
+        return {}  # settled — no live writer owns the trailing segment
+
+    async def fake_live(thread_id, task_ids):
+        return False
+
+    stored: list[str | None] = []
+    deleted: list[str] = []
+
+    async def fake_store(thread_id, tail_checkpoint_id, items):
+        stored.append(tail_checkpoint_id)
+
+    async def fake_delete(thread_id, tail_checkpoint_ids):
+        deleted.extend(tail_checkpoint_ids)
+
+    monkeypatch.setattr(replay_module, "resolve_task_statuses", fake_statuses)
+    monkeypatch.setattr(
+        replay_module.projection_cache, "task_streams_live", fake_live
+    )
+    monkeypatch.setattr(replay_module.projection_cache, "store_turn", fake_store)
+    monkeypatch.setattr(replay_module.projection_cache, "delete_turns", fake_delete)
+
+    def launch(ordinal, action, prompt):
+        artifact = {
+            "task_id": "tsk1",
+            "action": action,
+            "description": "d",
+            "prompt": prompt,
+        }
+        return [
+            AIMessage(
+                content="",
+                id=f"ai-{ordinal}",
+                tool_calls=[{"name": "Task", "args": {}, "id": f"tc-{ordinal}"}],
+            ),
+            ToolMessage(
+                content="dispatched",
+                tool_call_id=f"tc-{ordinal}",
+                name="Task",
+                id=f"tm-{ordinal}",
+                additional_kwargs={"task_artifact": artifact},
+            ),
+        ]
+
+    turn0 = _turn(0, launch(0, "init", "run one"))
+    turn0.tail_checkpoint_id = "tail-0"
+    turn1 = _turn(1, [AIMessage(content="plain turn", id="ai-plain")])
+    turn1.tail_checkpoint_id = "tail-1"
+    _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[turn0, turn1]),
+        task_messages=[
+            HumanMessage(content="run one", id="sub-h-1"),
+            AIMessage(content="one done", id="sub-ai-1"),
+            HumanMessage(content="run two", id="sub-h-2"),
+            AIMessage(content="orphan done", id="sub-ai-2"),
+        ],
+    )
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0), _query(1)], {0: _response(0), 1: _response(1)}
+    )
+
+    salvaged = [
+        i["data"]
+        for i in items
+        if i["event"] == "message_chunk"
+        and i["data"].get("agent") == "task:tsk1"
+        and i["data"].get("content") == "orphan done"
+    ]
+    assert salvaged and salvaged[0]["turn_index"] == 0  # last launch's stamps
+    assert stored == ["tail-1"]  # the salvage-stamped turn is never stored
+    assert deleted == ["tail-0"]  # and any pre-orphan entry is evicted
