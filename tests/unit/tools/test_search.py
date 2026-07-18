@@ -43,16 +43,18 @@ class TestSearchEngineEnum:
         assert "bocha" in members
 
     def test_manifest_matches_enum(self):
-        """Every manifest provider has an enum member and vice versa."""
-        from src.tools.search_manifest import get_search_providers
+        """Every search-capable manifest provider has an enum member and vice versa."""
+        from src.tools.web.manifest import CAPABILITY_SEARCH, providers_with_capability
 
-        assert set(get_search_providers()) == {e.value for e in SearchEngine}
+        assert set(providers_with_capability(CAPABILITY_SEARCH)) == {
+            e.value for e in SearchEngine
+        }
 
     def test_every_manifest_provider_has_a_builder(self):
-        from src.tools.search import _PROVIDER_BUILDERS
-        from src.tools.search_manifest import get_search_providers
+        from src.tools.web.manifest import CAPABILITY_SEARCH, providers_with_capability
+        from src.tools.web.search import _PROVIDER_BUILDERS
 
-        assert set(get_search_providers()) == set(_PROVIDER_BUILDERS)
+        assert set(providers_with_capability(CAPABILITY_SEARCH)) == set(_PROVIDER_BUILDERS)
 
 
 # ---------------------------------------------------------------------------
@@ -85,11 +87,11 @@ class TestGetWebSearchToolRouting:
         mock_tool = MagicMock()
 
         with (
-            patch("src.tools.search.SELECTED_SEARCH_ENGINE", SearchEngine.SERPER.value),
-            patch.dict("sys.modules", {"src.tools.search_services.serper": mock_module}),
-            patch("src.tools.search.create_logged_tool", return_value=mock_tool) as mock_create,
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.SERPER.value),
+            patch.dict("sys.modules", {"src.tools.web.providers.serper": mock_module}),
+            patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
-            from src.tools.search import get_web_search_tool
+            from src.tools.web.search import get_web_search_tool
             result = get_web_search_tool(max_search_results=5, time_range="w")
 
         mock_build.assert_called_once_with(
@@ -100,8 +102,8 @@ class TestGetWebSearchToolRouting:
 
     def test_unsupported_engine_raises(self):
         """An unknown deployment-default engine string raises ValueError."""
-        with patch("src.tools.search.SELECTED_SEARCH_ENGINE", "unknown_engine"):
-            from src.tools.search import get_web_search_tool
+        with patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", "unknown_engine"):
+            from src.tools.web.search import get_web_search_tool
             with pytest.raises(ValueError, match="Unsupported search engine"):
                 get_web_search_tool(max_search_results=5)
 
@@ -112,11 +114,11 @@ class TestGetWebSearchToolRouting:
         mock_tool = MagicMock()
 
         with (
-            patch("src.tools.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
-            patch.dict("sys.modules", {"src.tools.search_services.tavily": mock_module}),
-            patch("src.tools.search.create_logged_tool", return_value=mock_tool),
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
+            patch.dict("sys.modules", {"src.tools.web.providers.tavily": mock_module}),
+            patch("src.tools.web.search.create_logged_tool", return_value=mock_tool),
         ):
-            from src.tools.search import get_web_search_tool
+            from src.tools.web.search import get_web_search_tool
             result = get_web_search_tool(
                 max_search_results=10, time_range="m", verbose=False
             )
@@ -147,11 +149,11 @@ class TestGetWebSearchToolProviderOverride:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
-            patch.dict("sys.modules", {"src.tools.search_services.serper": mock_module}),
-            patch("src.tools.search.create_logged_tool", return_value=mock_tool) as mock_create,
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
+            patch.dict("sys.modules", {"src.tools.web.providers.serper": mock_module}),
+            patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
-            from src.tools.search import get_web_search_tool
+            from src.tools.web.search import get_web_search_tool
 
             result = get_web_search_tool(max_search_results=5, provider="serper")
 
@@ -168,11 +170,11 @@ class TestGetWebSearchToolProviderOverride:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.search.SELECTED_SEARCH_ENGINE", SearchEngine.SERPER.value),
-            patch.dict("sys.modules", {"src.tools.search_services.tavily": mock_module}),
-            patch("src.tools.search.create_logged_tool", return_value=mock_tool) as mock_create,
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.SERPER.value),
+            patch.dict("sys.modules", {"src.tools.web.providers.tavily": mock_module}),
+            patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
-            from src.tools.search import get_web_search_tool
+            from src.tools.web.search import get_web_search_tool
 
             result = get_web_search_tool(max_search_results=7, provider="tavily")
 
@@ -188,11 +190,11 @@ class TestGetWebSearchToolProviderOverride:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
-            patch.dict("sys.modules", {"src.tools.search_services.bocha": mock_module}),
-            patch("src.tools.search.create_logged_tool", return_value=mock_tool) as mock_create,
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
+            patch.dict("sys.modules", {"src.tools.web.providers.bocha": mock_module}),
+            patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
-            from src.tools.search import get_web_search_tool
+            from src.tools.web.search import get_web_search_tool
 
             result = get_web_search_tool(max_search_results=3, provider="bocha")
 
@@ -208,12 +210,12 @@ class TestGetWebSearchToolProviderOverride:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.search.SELECTED_SEARCH_ENGINE", SearchEngine.SERPER.value),
-            patch.dict("sys.modules", {"src.tools.search_services.serper": mock_module}),
-            patch("src.tools.search.create_logged_tool", return_value=mock_tool) as mock_create,
-            caplog.at_level(logging.WARNING, logger="src.tools.search"),
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.SERPER.value),
+            patch.dict("sys.modules", {"src.tools.web.providers.serper": mock_module}),
+            patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
+            caplog.at_level(logging.WARNING, logger="src.tools.web.search"),
         ):
-            from src.tools.search import get_web_search_tool
+            from src.tools.web.search import get_web_search_tool
 
             result = get_web_search_tool(
                 max_search_results=5, provider="not-a-real-engine"
@@ -233,15 +235,15 @@ class TestGetWebSearchToolProviderOverride:
         degrades to the default engine instead of raising per request."""
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
-        builders = {"serper": __import__("src.tools.search", fromlist=["x"])._build_serper}
+        builders = {"serper": __import__("src.tools.web.search", fromlist=["x"])._PROVIDER_BUILDERS["serper"]}
         with (
-            patch("src.tools.search.SELECTED_SEARCH_ENGINE", SearchEngine.SERPER.value),
-            patch("src.tools.search._PROVIDER_BUILDERS", builders),
-            patch.dict("sys.modules", {"src.tools.search_services.serper": mock_module}),
-            patch("src.tools.search.create_logged_tool", return_value=mock_tool) as mock_create,
-            caplog.at_level(logging.WARNING, logger="src.tools.search"),
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.SERPER.value),
+            patch("src.tools.web.search._PROVIDER_BUILDERS", builders),
+            patch.dict("sys.modules", {"src.tools.web.providers.serper": mock_module}),
+            patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
+            caplog.at_level(logging.WARNING, logger="src.tools.web.search"),
         ):
-            from src.tools.search import get_web_search_tool
+            from src.tools.web.search import get_web_search_tool
 
             # "tavily" is in the manifest, but not in the patched builders.
             result = get_web_search_tool(max_search_results=5, provider="tavily")
@@ -256,11 +258,11 @@ class TestGetWebSearchToolProviderOverride:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
-            patch.dict("sys.modules", {"src.tools.search_services.tavily": mock_module}),
-            patch("src.tools.search.create_logged_tool", return_value=mock_tool) as mock_create,
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
+            patch.dict("sys.modules", {"src.tools.web.providers.tavily": mock_module}),
+            patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
-            from src.tools.search import get_web_search_tool
+            from src.tools.web.search import get_web_search_tool
 
             result = get_web_search_tool(max_search_results=5, provider=None)
 
@@ -293,11 +295,11 @@ class TestGetWebSearchToolDepth:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
-            patch.dict("sys.modules", {"src.tools.search_services.tavily": mock_module}),
-            patch("src.tools.search.create_logged_tool", return_value=mock_tool) as mock_create,
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
+            patch.dict("sys.modules", {"src.tools.web.providers.tavily": mock_module}),
+            patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
-            from src.tools.search import get_web_search_tool
+            from src.tools.web.search import get_web_search_tool
 
             get_web_search_tool(max_search_results=5, depth=depth)
 
@@ -309,11 +311,11 @@ class TestGetWebSearchToolDepth:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
-            patch.dict("sys.modules", {"src.tools.search_services.tavily": mock_module}),
-            patch("src.tools.search.create_logged_tool", return_value=mock_tool) as mock_create,
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.TAVILY.value),
+            patch.dict("sys.modules", {"src.tools.web.providers.tavily": mock_module}),
+            patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
-            from src.tools.search import get_web_search_tool
+            from src.tools.web.search import get_web_search_tool
 
             get_web_search_tool(max_search_results=5, depth="warp9")
 
@@ -326,11 +328,11 @@ class TestGetWebSearchToolDepth:
         mock_build, mock_module = _make_provider_module()
         mock_tool = MagicMock()
         with (
-            patch("src.tools.search.SELECTED_SEARCH_ENGINE", SearchEngine.SERPER.value),
-            patch.dict("sys.modules", {"src.tools.search_services.serper": mock_module}),
-            patch("src.tools.search.create_logged_tool", return_value=mock_tool) as mock_create,
+            patch("src.tools.web.search.SELECTED_SEARCH_ENGINE", SearchEngine.SERPER.value),
+            patch.dict("sys.modules", {"src.tools.web.providers.serper": mock_module}),
+            patch("src.tools.web.search.create_logged_tool", return_value=mock_tool) as mock_create,
         ):
-            from src.tools.search import get_web_search_tool
+            from src.tools.web.search import get_web_search_tool
 
             get_web_search_tool(max_search_results=5, depth="deep")
 
@@ -349,19 +351,29 @@ class TestPerRequestBuilders:
     """Builders return fresh tools with independent closure state per call."""
 
     def test_tavily_builder_returns_fresh_tools(self):
-        from src.tools.search_services.tavily import build_web_search_tool
+        from src.tools.web.providers.tavily import build_web_search_tool
 
         t1 = build_web_search_tool(max_results=1, search_depth="basic")
         t2 = build_web_search_tool(max_results=2, search_depth="advanced")
         assert t1 is not t2
 
     def test_serper_builder_returns_fresh_tools(self):
-        from src.tools.search_services.serper import build_web_search_tool
+        from src.tools.web.providers.serper import build_web_search_tool
 
         assert build_web_search_tool() is not build_web_search_tool()
 
     def test_bocha_builder_returns_fresh_tools(self):
-        from src.tools.search_services.bocha import build_web_search_tool
+        from src.tools.web.providers.bocha import build_web_search_tool
+
+        assert build_web_search_tool() is not build_web_search_tool()
+
+    def test_exa_builder_returns_fresh_tools(self):
+        from src.tools.web.providers.exa import build_web_search_tool
+
+        assert build_web_search_tool() is not build_web_search_tool()
+
+    def test_parallel_builder_returns_fresh_tools(self):
+        from src.tools.web.providers.parallel import build_web_search_tool
 
         assert build_web_search_tool() is not build_web_search_tool()
 
@@ -370,10 +382,30 @@ class TestPerRequestBuilders:
         """The API wrapper is created lazily inside the tool call, so a
         missing key surfaces as an error result — never a build-time raise."""
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-        from src.tools.search_services.tavily import build_web_search_tool
+        from src.tools.web.providers.tavily import build_web_search_tool
 
         tool = build_web_search_tool(max_results=1)  # must not raise
         content, artifact = await tool.coroutine(query="anything")
+        assert "error" in artifact
+        assert isinstance(content, str)
+
+    @pytest.mark.asyncio
+    async def test_missing_exa_api_key_is_a_per_call_error(self, monkeypatch):
+        monkeypatch.delenv("EXA_API_KEY", raising=False)
+        from src.tools.web.providers.exa import build_web_search_tool
+
+        tool = build_web_search_tool(max_results=1)  # must not raise
+        content, artifact = await tool.coroutine(query="anything")
+        assert "error" in artifact
+        assert isinstance(content, str)
+
+    @pytest.mark.asyncio
+    async def test_missing_parallel_api_key_is_a_per_call_error(self, monkeypatch):
+        monkeypatch.delenv("PARALLEL_API_KEY", raising=False)
+        from src.tools.web.providers.parallel import build_web_search_tool
+
+        tool = build_web_search_tool(max_results=1)  # must not raise
+        content, artifact = await tool.coroutine(objective="anything")
         assert "error" in artifact
         assert isinstance(content, str)
 
@@ -441,3 +473,71 @@ class TestToolTrackingContextVar:
         stop_tool_tracking()
         result = stop_tool_tracking()
         assert result is None
+
+
+class TestTavilyResultCleaning:
+    @pytest.mark.asyncio
+    async def test_malformed_row_does_not_discard_search(self):
+        """One provider row missing fields must not throw away the whole
+        (already billed) search via KeyError."""
+        from src.tools.web.providers.tavily import TavilySearchWrapper
+
+        wrapper = TavilySearchWrapper.__new__(TavilySearchWrapper)
+        cleaned = await wrapper.clean_results_with_images(
+            {
+                "results": [
+                    {
+                        "title": "T",
+                        "url": "https://site.example/a",
+                        "content": "c",
+                        "score": 0.5,
+                    },
+                    {"url": "https://site.example/b"},
+                ]
+            }
+        )
+        assert len(cleaned) == 2
+        assert cleaned[1]["title"] == ""
+        assert cleaned[1]["score"] == 0.0
+
+
+class TestArtifactProviderContract:
+    """Every search artifact must carry search_engine — provenance reads it."""
+
+    def test_tavily_filter_adds_search_engine_and_snippet(self):
+        from src.tools.web.providers.tavily import _filter_artifact_for_frontend
+
+        raw = {
+            "query": "q",
+            "response_time": 1.0,
+            "results": [
+                {
+                    "title": "T",
+                    "url": "https://site.example/x",
+                    "favicon": "",
+                    "content": "body text " * 60,
+                    "raw_content": "raw",
+                    "score": 0.9,
+                }
+            ],
+        }
+        artifact = _filter_artifact_for_frontend(raw)
+
+        assert artifact["type"] == "web_search"
+        assert artifact["search_engine"] == "tavily"
+        result = artifact["results"][0]
+        assert "content" not in result and "raw_content" not in result
+        assert "score" not in result
+        assert result["snippet"].startswith("body text")
+        assert len(result["snippet"]) <= 300
+
+    def test_bocha_filter_adds_search_engine_on_empty_results(self):
+        from src.tools.web.providers.bocha import _filter_artifact_for_frontend
+
+        artifact = _filter_artifact_for_frontend(
+            {"query": "q", "response_time": 1.0, "total_results": 0, "results": []},
+            verbose=False,
+        )
+
+        assert artifact["type"] == "web_search"
+        assert artifact["search_engine"] == "bocha"

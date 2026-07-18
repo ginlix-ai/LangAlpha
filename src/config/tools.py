@@ -6,6 +6,8 @@ class SearchEngine(enum.Enum):
     TAVILY = "tavily"
     BOCHA = "bocha"
     SERPER = "serper"
+    EXA = "exa"
+    PARALLEL = "parallel"
 
 
 def _get_search_api() -> str:
