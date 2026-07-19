@@ -272,7 +272,10 @@ class FirecrawlCrawlAdapter:
 
     async def crawl_status(self, job_id: str, skip: int = 0) -> CrawlStatus:
         """Poll job progress; returns pages past ``skip``, following pagination."""
-        api = FirecrawlAPI()
+        try:
+            api = FirecrawlAPI()
+        except ValueError as e:
+            raise WebToolError(missing_key_error(str(e)))
         pages: List[CrawlPage] = []
         try:
             data = await api.crawl_status(job_id, skip=skip)
