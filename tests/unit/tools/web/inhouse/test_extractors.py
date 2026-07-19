@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -418,14 +419,15 @@ class TestYouTubeExtract:
             "author_name": "Rick Astley",
         }
 
-        # Mock transcript API returning snippet objects
+        # v1.0+ fetch() is an instance method returning snippet objects with
+        # .start/.text attributes (not dicts).
         mock_transcript = [
-            {"start": 0.0, "text": "We're no strangers to love"},
-            {"start": 5.0, "text": "You know the rules and so do I"},
+            SimpleNamespace(start=0.0, text="We're no strangers to love"),
+            SimpleNamespace(start=5.0, text="You know the rules and so do I"),
         ]
 
         mock_yta = MagicMock()
-        mock_yta.fetch.return_value = mock_transcript
+        mock_yta.return_value.fetch.return_value = mock_transcript
 
         with patch.object(
             self.extractor._client, "get", return_value=oembed_response
@@ -455,7 +457,7 @@ class TestYouTubeExtract:
         }
 
         mock_yta = MagicMock()
-        mock_yta.fetch.side_effect = Exception("NoTranscriptFound")
+        mock_yta.return_value.fetch.side_effect = Exception("NoTranscriptFound")
 
         with patch.object(
             self.extractor._client, "get", return_value=oembed_response
@@ -479,9 +481,9 @@ class TestYouTubeExtract:
             "Not Found", request=MagicMock(), response=oembed_response
         )
 
-        mock_transcript = [{"start": 0.0, "text": "Hello world"}]
+        mock_transcript = [SimpleNamespace(start=0.0, text="Hello world")]
         mock_yta = MagicMock()
-        mock_yta.fetch.return_value = mock_transcript
+        mock_yta.return_value.fetch.return_value = mock_transcript
 
         with patch.object(
             self.extractor._client, "get", return_value=oembed_response

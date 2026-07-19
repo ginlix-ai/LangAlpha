@@ -41,6 +41,10 @@ class CircuitBreaker:
         self._consecutive_opens = 0
         self.last_failure_time: Optional[float] = None
         self._lock = asyncio.Lock()
+        # Strong refs to detached on-open callbacks: asyncio keeps only weak
+        # refs to tasks, so without this the fire-and-forget callback can be
+        # collected before it finishes.
+        self._open_callbacks: set[asyncio.Task] = set()
 
     async def check_state(self) -> None:
         """Check and potentially transition state based on time elapsed."""
@@ -91,7 +95,9 @@ class CircuitBreaker:
 
             if should_open and on_open:
                 logger.info("Running circuit-open callback")
-                asyncio.create_task(on_open())
+                task = asyncio.create_task(on_open())
+                self._open_callbacks.add(task)
+                task.add_done_callback(self._open_callbacks.discard)
 
     def is_open(self) -> bool:
         return self.state == CircuitState.OPEN

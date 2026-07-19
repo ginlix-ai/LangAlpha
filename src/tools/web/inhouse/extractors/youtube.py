@@ -99,12 +99,11 @@ class YouTubeExtractor(ContentExtractor):
         try:
             from youtube_transcript_api import YouTubeTranscriptApi
 
-            transcript = await asyncio.to_thread(YouTubeTranscriptApi.fetch, video_id)
-            segments = []
-            for entry in transcript:
-                ts = _format_timestamp(entry.get("start", 0))
-                text = entry.get("text", "")
-                segments.append(f"[{ts}] {text}")
+            # v1.0+ is instance-based; fetch() returns FetchedTranscriptSnippet
+            # objects with .start/.text attributes, not dicts.
+            api = YouTubeTranscriptApi()
+            transcript = await asyncio.to_thread(api.fetch, video_id)
+            segments = [f"[{_format_timestamp(s.start)}] {s.text}" for s in transcript]
             return "\n".join(segments) if segments else None
         except Exception as e:
             logger.debug(f"Transcript fetch failed for {video_id}: {e}")
