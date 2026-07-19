@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import httpx
 
 from ..backend import CrawlOutput
+from ..guard import GuardedAsyncTransport
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class ContentExtractor(ABC):
 
     def __init__(self) -> None:
         self._client = httpx.AsyncClient(
+            transport=GuardedAsyncTransport(),
             timeout=30.0,
             follow_redirects=True,
             headers={"User-Agent": "Mozilla/5.0 (compatible; LangAlpha/1.0)"},

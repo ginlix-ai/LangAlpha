@@ -15,6 +15,8 @@ from collections import defaultdict
 
 import httpx
 
+from .guard import GuardedAsyncTransport
+
 logger = logging.getLogger(__name__)
 
 _SITEMAP_NS = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
@@ -139,6 +141,7 @@ async def fetch_sitemap_urls(domain: str, max_urls: int = 100, timeout: float = 
     """
     try:
         async with httpx.AsyncClient(
+            transport=GuardedAsyncTransport(),
             timeout=httpx.Timeout(timeout, connect=5.0),
             follow_redirects=True,
             headers={"User-Agent": _USER_AGENT},
