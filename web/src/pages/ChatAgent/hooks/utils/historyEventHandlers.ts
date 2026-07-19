@@ -675,7 +675,7 @@ export function handleHistorySteeringDelivered({
 }
 
 /** Task-artifact statuses the backend stamps onto replayed events. */
-const REPLAY_TASK_STATUSES = new Set(['running', 'completed', 'cancelled']);
+const REPLAY_TASK_STATUSES = new Set(['running', 'completed', 'cancelled', 'error']);
 
 /**
  * Patches an inline subagent card's status from a replayed task-artifact's

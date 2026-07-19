@@ -26,7 +26,7 @@ import { computeSteeringBoundary, shouldSkipSteeringRollback } from '../utils/st
 import { bumpThreadNavOrder } from './useNavigationData';
 export { removeStoredThreadId } from './utils/threadStorage';
 import { createUserMessage, createAssistantMessage, createNotificationMessage, appendMessage, updateMessage, type AttachmentMeta } from './utils/messageHelpers';
-import type { ChatMessage, AssistantMessage, UserMessage, NotificationSegment } from '@/types/chat';
+import type { ChatMessage, AssistantMessage, UserMessage, NotificationSegment, SubagentTask } from '@/types/chat';
 import type { ActionRequest, ToolCallData, TodoItem } from '@/types/sse';
 import type { HtmlWidgetData, PreviewData } from './utils/types';
 import { createRecentlySentTracker } from './utils/recentlySentTracker';
@@ -316,6 +316,10 @@ interface SubagentHistoryEntry {
   toolCalls: number;
   tokenUsage: SubagentTokenUsage;
   currentTool: string;
+  /** Start (epoch ms) of the newest run whose transcript the history
+   *  projection contained — the run-level watermark the mux drain guard
+   *  filters against. */
+  projectedRunStartedMs?: number;
 }
 
 /** Per-task ref state used by stream handlers.
@@ -348,6 +352,10 @@ interface SubagentHistoryData {
   type?: string;
   /** Backend-stamped real task status from replayed task artifacts (running|completed|cancelled). */
   status?: string;
+  /** Build-time stamp: start (epoch ms) of the newest run whose transcript
+   *  the projection actually claimed — NOT the ledger's latest run, which
+   *  can still be executing and deliberately excluded from the payload. */
+  projectedRunStartedMs?: number;
 }
 
 /** Refs passed to createStreamEventProcessor and its processEvent closure. */
@@ -788,9 +796,18 @@ export function useChatMessages(
     isStreamingRef.current = true;
     streamingThreadIdRef.current = tid;
   };
+  // A mux resync that arrived mid-stream waits here: bumping the reload
+  // trigger while streaming would run the load effect's cleanup (detaching
+  // the mux) and then bail on the streaming guard — losing the reload.
+  const pendingMuxResyncRef = useRef(false);
+
   const releaseStreamOwnership = () => {
     isStreamingRef.current = false;
     streamingThreadIdRef.current = null;
+    if (pendingMuxResyncRef.current) {
+      pendingMuxResyncRef.current = false;
+      setReloadTrigger((n) => n + 1);
+    }
   };
 
   // Feedback state: { [turnIndex]: { rating, ... } }
@@ -851,7 +868,7 @@ export function useChatMessages(
   // watch.onStreamEnd). The ref starts as a no-op and is assigned the real reader
   // right after its definition — before any async watch callback can fire.
   const reconnectToStreamRef = useRef<
-    (opts?: { activeTasks?: string[]; runId?: string | null; resetCursor?: boolean; idleAbortMs?: number }) => Promise<void>
+    (opts?: { activeTasks?: string[]; runId?: string | null; resetCursor?: boolean; idleAbortMs?: number; snapshotAtMs?: number }) => Promise<void>
   >(async () => {});
   // Counter to re-trigger loadAndMaybeReconnect (failed reconnection, or a
   // stale-run reactivation of a cached view). Declared before the watch so
@@ -1615,6 +1632,10 @@ export function useChatMessages(
             // (payload.status). The top-level `status` is a hardcoded "completed"
             // and MUST be ignored.
             const stampedStatus = payload.status as string | undefined;
+            const stampedRunStartedMs =
+              typeof payload.projected_run_started_ms === 'number'
+                ? payload.projected_run_started_ms
+                : undefined;
             const action = (() => { if (rawAction === 'spawned') return 'init'; if (rawAction === 'steering_accepted') return 'update'; if (rawAction === 'resumed') return 'resume'; return rawAction || 'init'; })();
             if (task_id) {
               const agentId = `task:${task_id}`;
@@ -1626,6 +1647,7 @@ export function useChatMessages(
                   prompt: prompt || description || '',
                   type: type || 'general-purpose',
                   status: stampedStatus,
+                  projectedRunStartedMs: stampedRunStartedMs,
                 });
               } else {
                 const existing = subagentHistoryByTaskId.get(agentId)!;
@@ -1633,6 +1655,14 @@ export function useChatMessages(
                 if (prompt && !existing.prompt) existing.prompt = prompt || description || '';
                 if (type && !existing.type) existing.type = type;
                 if (stampedStatus) existing.status = stampedStatus;
+                // Monotonic max: artifacts stamp claims-through-their-turn, and
+                // page/artifact processing order must not regress the watermark.
+                if (stampedRunStartedMs != null) {
+                  existing.projectedRunStartedMs =
+                    existing.projectedRunStartedMs != null
+                      ? Math.max(existing.projectedRunStartedMs, stampedRunStartedMs)
+                      : stampedRunStartedMs;
+                }
               }
               // Patch the inline card(s) for THIS artifact's tool_call_id so a
               // reborn "running" card reflects the stamped terminal status.
@@ -2304,6 +2334,7 @@ export function useChatMessages(
               toolCalls: countToolCalls(finalMessages),
               tokenUsage: tempTokenUsage,
               currentTool: '',
+              projectedRunStartedMs: taskMetadata?.projectedRunStartedMs,
             };
 
             // Seed persistent subagent state refs from history so that
@@ -2389,7 +2420,7 @@ export function useChatMessages(
    * Reconnects to an in-progress workflow stream after page refresh.
    * Creates an assistant message placeholder and processes live SSE events.
    */
-  const reconnectToStream = async ({ activeTasks = [], runId, resetCursor = false, idleAbortMs }: { activeTasks?: string[]; runId?: string | null; resetCursor?: boolean; idleAbortMs?: number } = {}) => {
+  const reconnectToStream = async ({ activeTasks = [], runId, resetCursor = false, idleAbortMs, snapshotAtMs }: { activeTasks?: string[]; runId?: string | null; resetCursor?: boolean; idleAbortMs?: number; snapshotAtMs?: number } = {}) => {
     // Reconnect targets the LATCHED thread, not the threadId prop. A brand-new
     // chat keeps the prop at '__default__' until the first SSE event updates the
     // route, but Content-Location already latched the real id into threadIdRef.
@@ -2688,8 +2719,11 @@ export function useChatMessages(
       // Pre-seed subagent cards from history for tasks whose artifact events were
       // cleared from the Redis buffer after the spawning turn persisted to DB.
       // This mirrors the Scenario B pre-seed at lines 1611-1626.
-      if (activeTasks.length > 0 && updateSubagentCard && subagentHistoryRef.current) {
-        for (const taskId of activeTasks) {
+      // A task the (older) /status snapshot calls active but history already
+      // shows terminal is settled — re-activating its card would wedge it.
+      const liveActiveTasks = activeTasks.filter((t) => !isHistoryTerminalTask(t));
+      if (liveActiveTasks.length > 0 && updateSubagentCard && subagentHistoryRef.current) {
+        for (const taskId of liveActiveTasks) {
           const agentId = `task:${taskId}`;
           const historyData = subagentHistoryRef.current[agentId];
           if (historyData) {
@@ -2716,9 +2750,9 @@ export function useChatMessages(
       // Attach the thread mux for live subagent frames. The server seeds a
       // channel per open run and replays each immutable per-run stream from
       // 0, so no events are lost.
-      if (activeTasks.length > 0) {
-        console.log('[Reconnect] Attaching thread mux for active tasks:', activeTasks);
-        attachSubagentMux(tid, processEvent);
+      if (liveActiveTasks.length > 0) {
+        console.log('[Reconnect] Attaching thread mux for active tasks:', liveActiveTasks);
+        attachSubagentMux(tid, processEvent, snapshotAtMs);
       }
     } catch (err: unknown) {
       // User stop aborted the reader — stopWorkflow owns teardown; bail before
@@ -2835,6 +2869,7 @@ export function useChatMessages(
       }
 
       try {
+        const snapshotAtMs = Date.now();
         const status = await getWorkflowStatus(tid);
         if (!status.can_reconnect) {
           console.log('[Reconnect] Workflow no longer reconnectable, cleaning up');
@@ -2842,7 +2877,7 @@ export function useChatMessages(
         }
 
         console.log('[Reconnect] Attempt', attempt + 1, 'of', MAX_RETRIES);
-        await reconnectToStream({ activeTasks: status.active_tasks || [] });
+        await reconnectToStream({ activeTasks: status.active_tasks || [], snapshotAtMs });
 
         setIsReconnecting(false);
         return;
@@ -2936,6 +2971,10 @@ export function useChatMessages(
       // persists Turn N (on_background_workflow_complete) while /status already
       // sees COMPLETED — which would cause the frontend to skip reconnect and
       // miss the latest turn's events entirely.
+      // Snapshot moment = the client's knowledge horizon: everything below
+      // (active_tasks above all) reflects the world at this instant, and the
+      // mux attach may lag it by the whole history load.
+      const snapshotAtMs = Date.now();
       const status: WorkflowStatusResponse = await getWorkflowStatus(threadId).catch((statusErr: unknown) => {
         console.log('[Reconnect] Could not check workflow status:', (statusErr as Error).message);
         return { can_reconnect: false, status: 'error' } as WorkflowStatusResponse;
@@ -2993,7 +3032,7 @@ export function useChatMessages(
         // Workflow is active → interrupt was answered, reconnect will deliver resolution
         console.log('[Reconnect] Unresolved interrupt from history, reconnecting to get resolution events');
         historyHasUnresolvedInterruptRef.current = false;
-        await reconnectToStream({ activeTasks: status.active_tasks || [], runId: status.run_id ?? null, resetCursor: true });
+        await reconnectToStream({ activeTasks: status.active_tasks || [], runId: status.run_id ?? null, resetCursor: true, snapshotAtMs });
         unresolvedHistoryInterruptRef.current = [];
       } else if (historyHasUnresolvedInterruptRef.current && !status.can_reconnect) {
         // Workflow genuinely paused → make interrupt(s) interactive
@@ -3060,11 +3099,15 @@ export function useChatMessages(
         historyHasUnresolvedInterruptRef.current = false;
       } else if (status.can_reconnect) {
         console.log('[Reconnect] Workflow status:', status.status, 'can_reconnect:', status.can_reconnect, 'active_tasks:', status.active_tasks);
-        await reconnectToStream({ activeTasks: status.active_tasks || [], runId: status.run_id ?? null, resetCursor: true });
-      } else if (status.active_tasks && status.active_tasks.length > 0) {
+        await reconnectToStream({ activeTasks: status.active_tasks || [], runId: status.run_id ?? null, resetCursor: true, snapshotAtMs });
+      } else if ((status.active_tasks || []).some((t) => !isHistoryTerminalTask(t))) {
         // Main workflow completed but subagent tasks still running.
-        // Attach the thread mux so cards stay live after refresh.
-        console.log('[Reconnect] Main workflow done, attaching mux for active subagents:', status.active_tasks);
+        // Attach the thread mux so cards stay live after refresh. Tasks the
+        // stale /status snapshot calls active but history already shows
+        // terminal are settled — never re-activate those cards (the mux
+        // would have no closure to send for them).
+        const muxTasks = (status.active_tasks || []).filter((t) => !isHistoryTerminalTask(t));
+        console.log('[Reconnect] Main workflow done, attaching mux for active subagents:', muxTasks);
         const dummyAssistantId = `assistant-subagent-reconnect-${Date.now()}`;
         const refs = {
           contentOrderCounterRef,
@@ -3081,7 +3124,7 @@ export function useChatMessages(
         };
         const processEvent = createStreamEventProcessor(dummyAssistantId, refs, getTaskIdFromEvent);
         // Pre-seed cards from history so per-task events don't create empty cards
-        for (const taskId of status.active_tasks) {
+        for (const taskId of muxTasks) {
           const agentId = `task:${taskId}`;
           const historyData = subagentHistoryRef.current?.[agentId];
           if (updateSubagentCard && historyData) {
@@ -3100,7 +3143,7 @@ export function useChatMessages(
             });
           }
         }
-        attachSubagentMux(threadId, processEvent);
+        attachSubagentMux(threadId, processEvent, snapshotAtMs);
         setHasActiveSubagents(true);
       } else {
         // Workflow is not active. Inline subagent cards are already born with
@@ -3181,6 +3224,34 @@ export function useChatMessages(
     });
   };
 
+  /** Stamp one task's still-'running' inline chips (by mux agent id) with a
+   * non-success terminal status, so the completed-sweep can't paint over it. */
+  const setInlineSubagentTaskStatus = (
+    agentId: string,
+    status: SubagentTask['status'],
+  ) => {
+    setMessages((prev) => {
+      let anyChanged = false;
+      const updated = prev.map((msg) => {
+        if (msg.role !== 'assistant') return msg;
+        const aMsg = msg as AssistantMessage;
+        if (!aMsg.subagentTasks || Object.keys(aMsg.subagentTasks).length === 0) return msg;
+        let changed = false;
+        const tasks = { ...aMsg.subagentTasks };
+        Object.keys(tasks).forEach((toolCallId) => {
+          if (toolCallIdToTaskIdMapRef.current.get(toolCallId) !== agentId) return;
+          if (tasks[toolCallId].status === 'running') {
+            tasks[toolCallId] = { ...tasks[toolCallId], status };
+            changed = true;
+          }
+        });
+        if (changed) anyChanged = true;
+        return changed ? { ...aMsg, subagentTasks: tasks } : msg;
+      });
+      return anyChanged ? updated : prev;
+    });
+  };
+
   /**
    * Thread-level sink for the v2 mux. Task frames route through the CURRENT
    * stream processor (last attach wins), and run closure — run_end or
@@ -3189,17 +3260,52 @@ export function useChatMessages(
    */
   const muxSink: ThreadMuxSink = {
     onTaskEvent: (ev) => {
+      // A drain channel replays a settled run's backlog from 0. When the
+      // task is already terminal on our side — stamped by the history
+      // projection or a live closure — that content is on screen, and the
+      // chunk handlers concatenate; delivering it would duplicate the
+      // transcript. Live (non-drain) frames always flow.
+      if (ev._drain === true) {
+        const agentId = typeof ev.agent === 'string' ? ev.agent : '';
+        const shortId = agentId.startsWith('task:') ? agentId.slice(5) : '';
+        const hist = subagentHistoryRef.current?.[agentId];
+        if (
+          completedTaskIdsRef.current.has(shortId) ||
+          (!!hist?.status && hist.status !== 'running')
+        ) {
+          return;
+        }
+        // Run-level guard: a task can be live under a successor run while a
+        // stale drain re-delivers a settled predecessor. The watermark is
+        // stamped by the projection build from the runs it actually claimed,
+        // so anything at or before it is on screen already; a run the
+        // projection excluded (still executing at build) or never saw starts
+        // after it and still flows.
+        if (
+          typeof ev._runStartedMs === 'number' &&
+          typeof hist?.projectedRunStartedMs === 'number' &&
+          ev._runStartedMs <= hist.projectedRunStartedMs
+        ) {
+          return;
+        }
+      }
       subagentProcessEventRef.current?.(ev as SSEEvent);
     },
     onTaskRunClosed: (shortTaskId, outcome) => {
       completedTaskIdsRef.current.add(shortTaskId);
-      // Positive closure from the run ledger: honor a cancelled outcome
-      // instead of guessing 'completed' from stream teardown.
+      // Positive closure from the run ledger: honor the real terminal
+      // outcome — cancelled and error must not render as success.
+      const status =
+        outcome === 'cancelled' ? 'cancelled'
+        : outcome === 'error' ? 'error'
+        : 'completed';
       if (updateSubagentCard) {
-        updateSubagentCard(`task:${shortTaskId}`, {
-          status: outcome === 'cancelled' ? 'cancelled' : 'completed',
-          isActive: false,
-        });
+        updateSubagentCard(`task:${shortTaskId}`, { status, isActive: false });
+      }
+      // Stamp the just-closed task's inline chip with its outcome first —
+      // the sweep below only advances still-'running' chips to completed.
+      if (status !== 'completed') {
+        setInlineSubagentTaskStatus(`task:${shortTaskId}`, status);
       }
       // Flip the chat-card status for the just-closed task (its channel is
       // already closed, so the mux truth skips only the still-active ones).
@@ -3219,16 +3325,44 @@ export function useChatMessages(
         armReportBackWatch(threadIdRef.current, null, 'taskStreamEnd');
       }
     },
+    onResyncRequired: () => {
+      // The knowledge horizon outran the server's catch-up window (tab
+      // asleep / long outage): reload the projection from history, which
+      // re-attaches the mux with a fresh snapshot when it finishes.
+      console.log('[mux] horizon beyond catch-up window, reloading history');
+      if (isStreamingRef.current) {
+        // Mid-stream the load effect would detach the mux in its cleanup
+        // and then bail on the streaming guard — defer to stream end
+        // (releaseStreamOwnership flushes this).
+        pendingMuxResyncRef.current = true;
+        return;
+      }
+      setReloadTrigger((n) => n + 1);
+    },
+  };
+
+  /** A task from a stale /status snapshot that history already shows
+   * terminal must not be revived: its run settled before the mux's window,
+   * so no closure would ever arrive for a re-activated card. */
+  const isHistoryTerminalTask = (shortTaskId: string): boolean => {
+    const st = subagentHistoryRef.current?.[`task:${shortTaskId}`]?.status;
+    return !!st && st !== 'running';
   };
 
   /**
    * Keep the thread's v2 mux attached with the current stream processor.
    * Idempotent; the mux discovers runs itself (attach seeds + control lane),
-   * so callers never name a task.
+   * so callers never name a task. `snapshotAtMs` — when the driving
+   * status/history snapshot was taken — anchors the server's settled-run
+   * catch-up window at the client's true knowledge horizon.
    */
-  const attachSubagentMux = (tid: string, processEvent: (event: SSEEvent) => void) => {
+  const attachSubagentMux = (
+    tid: string,
+    processEvent: (event: SSEEvent) => void,
+    snapshotAtMs?: number,
+  ) => {
     subagentProcessEventRef.current = processEvent;
-    getThreadMux(tid).attach(muxSink);
+    getThreadMux(tid).attach(muxSink, snapshotAtMs);
   };
 
   /**

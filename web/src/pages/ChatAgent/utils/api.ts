@@ -1032,10 +1032,14 @@ export async function openThreadMuxStream(
   cursors: string | null,
   onLine: (line: string) => void,
   signal: AbortSignal,
+  sinceAgeS = 0,
 ): Promise<void> {
   if (!threadId) throw new Error('Thread ID is required');
   const authHeaders = await getAuthHeaders();
-  const qs = cursors ? `&cursors=${encodeURIComponent(cursors)}` : '';
+  let qs = cursors ? `&cursors=${encodeURIComponent(cursors)}` : '';
+  // Knowledge-horizon age: how far the client's snapshot/last-frame lags
+  // this connect. The server widens its settled-run catch-up window by it.
+  if (sinceAgeS > 0) qs += `&since_age_s=${Math.ceil(sinceAgeS)}`;
   const res = await fetch(
     `${baseURL}/api/v1/threads/${threadId}/stream?contract=v2${qs}`,
     {

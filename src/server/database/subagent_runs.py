@@ -501,6 +501,28 @@ async def list_open_runs_for_thread(thread_id: str) -> List[Dict[str, Any]]:
             return [dict(r) for r in rows]
 
 
+async def list_recently_finalized_runs_for_thread(
+    thread_id: str, *, within_seconds: int
+) -> List[Dict[str, Any]]:
+    """Terminal runs finalized inside the grace window, oldest first — closes
+    the mux discovery race where a fast run settles between the control-lane
+    snapshot and the open-run seed (or its best-effort announce was lost)."""
+    async with qr_db.get_db_connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT * FROM subagent_runs
+                WHERE thread_id = %s
+                  AND status != 'in_progress'
+                  AND finalized_at >= NOW() - make_interval(secs => %s)
+                ORDER BY started_at
+                """,
+                (thread_id, within_seconds),
+            )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+
 async def count_open_runs_for_workspace(workspace_id: str) -> int:
     """Live task runs across every thread of the workspace — the durable
     signal that a background subagent still needs the sandbox, regardless of

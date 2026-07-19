@@ -1652,6 +1652,15 @@ async def thread_stream_mux_endpoint(
     contract: Optional[str] = Query(
         None, description="Stream contract version: 'v2' for run-scoped lanes"
     ),
+    since_age_s: float = Query(
+        0.0,
+        ge=0.0,
+        description=(
+            "v2 only: seconds between the client's status/history snapshot "
+            "(its knowledge horizon) and this connect; widens the server's "
+            "settled-run catch-up window"
+        ),
+    ),
 ):
     """Multiplexed thread stream: every task channel + watch on one socket.
 
@@ -1668,7 +1677,9 @@ async def thread_stream_mux_endpoint(
         )
 
         return StreamingResponse(
-            stream_thread_mux_v2(thread_id, parse_mux_cursors_v2(cursors)),
+            stream_thread_mux_v2(
+                thread_id, parse_mux_cursors_v2(cursors), since_age_s
+            ),
             media_type="text/event-stream",
             headers=SSE_HEADERS,
         )

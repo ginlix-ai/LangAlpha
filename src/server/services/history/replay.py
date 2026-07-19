@@ -58,7 +58,10 @@ from src.server.services.history.projector import (
 )
 from src.server.database import subagent_runs as sr_db
 from src.server.services.history.reader import CheckpointHistoryReader
-from src.server.services.history.task_status import resolve_task_statuses
+from src.server.services.history.task_status import (
+    _artifact_task_id,
+    resolve_task_statuses,
+)
 from src.server.utils.checkpoint_helpers import CheckpointBranchTipNotFound
 from src.server.utils.content_normalizer import normalize_text_content
 from src.server.utils.error_sanitization import (
@@ -372,6 +375,11 @@ async def _build_and_backfill(
         if error_item:
             turn_items.append(error_item)
 
+        # After the stored-events merge so both projected and stored-copy
+        # artifacts are covered, and before caching: the watermark is a fact
+        # about what this build claimed, and a cached turn's claims are final
+        # (a turn with a still-writing run is never cached).
+        _stamp_projected_watermarks(turn_items, task_lane.claimed_watermarks)
         for item in turn_items:
             _enrich(item, thread_id, turn_index, response_id)
         segment.extend(turn_items)
@@ -406,6 +414,27 @@ async def _build_and_backfill(
         items.append(_interrupt_item(thread_id, interrupt))
 
     return items
+
+
+def _stamp_projected_watermarks(
+    items: list[dict[str, Any]], watermarks: dict[str, float]
+) -> None:
+    """Stamp ``payload.projected_run_started_ms`` onto each task artifact
+    whose task has claimed runs: the newest run this payload's transcript
+    contains. Replaces items copy-on-write — stored-event items share payload
+    dicts with the request's pristine rows."""
+    if not watermarks:
+        return
+    for i, item in enumerate(items):
+        data = item.get("data") if isinstance(item, dict) else None
+        task_id = _artifact_task_id(data)
+        if not task_id or task_id not in watermarks:
+            continue
+        payload = {
+            **(data.get("payload") or {}),
+            "projected_run_started_ms": watermarks[task_id],
+        }
+        items[i] = {**item, "data": {**data, "payload": payload}}
 
 
 def _stub_turn_items(
@@ -989,10 +1018,19 @@ class _TaskLaneProjector:
         self._thread_id = thread_id
         self._windowed = windowed
         self._tasks: dict[str, _TaskRuns] = {}
+        self._run_started: dict[str, float] = {}
         # Turn indexes whose stamps carry trailing salvage (populated by
         # trailing_items) — those turns must not be cached, or the fast path
         # would replay them without the salvage.
         self.salvaged_turn_indexes: set[Any] = set()
+        # task_id -> max started_at (epoch ms) over ledgered runs whose
+        # segment THIS build claimed. Stamped onto the turn's task artifacts
+        # as ``projected_run_started_ms``: the client's authority for which
+        # runs its history payload already contains. Derived from the claim
+        # act itself — never from a separate ledger read, which can name a
+        # run the projection skipped (its skip decision and this watermark
+        # must share one snapshot).
+        self.claimed_watermarks: dict[str, float] = {}
 
     @staticmethod
     def _launches_in(turn: Any) -> list[tuple[str, str, str | None, str | None]]:
@@ -1121,6 +1159,11 @@ class _TaskLaneProjector:
             run_status = {
                 str(r["task_run_id"]): str(r["status"]) for r in runs
             }
+            self._run_started = {
+                str(r["task_run_id"]): r["started_at"].timestamp() * 1000.0
+                for r in runs
+                if r.get("started_at") is not None
+            }
         except Exception:
             logger.warning(
                 "[REPLAY] run-ledger read failed for %s",
@@ -1167,6 +1210,12 @@ class _TaskLaneProjector:
                 segment = self._claim_segment(runs, prompt)
             if segment is None:
                 continue
+            started = self._run_started.get(run_id) if run_id else None
+            if started is not None:
+                prev = self.claimed_watermarks.get(task_id)
+                self.claimed_watermarks[task_id] = (
+                    started if prev is None else max(prev, started)
+                )
             if not runs.attributed:
                 # Namespace-scoped signals (compaction, model fallback) are
                 # not per-run; they ride with the first projected run.

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { CheckCircle2, Circle, Loader2, MessageSquarePlus, Send, X, StopCircle } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Circle, Loader2, MessageSquarePlus, Send, X, StopCircle } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import iconRobo from '../../../assets/img/icon-robo.png';
 import iconRoboSing from '../../../assets/img/icon-robo-sing.png';
@@ -48,8 +48,10 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
   const handleSend = useCallback(async (): Promise<void> => {
     const text = inputValue.trim();
     const tId = agent?.name?.replace('Task-', '') || null;
-    // 'completed' and 'cancelled' are both terminal — no steering a settled task.
-    if (!text || sending || !threadId || !tId || agent?.status === 'completed' || agent?.status === 'cancelled') return;
+    // 'completed', 'cancelled' and 'error' are all terminal — no steering a
+    // settled task (an optimistic instruction would render before the
+    // backend rejects it).
+    if (!text || sending || !threadId || !tId || agent?.status === 'completed' || agent?.status === 'cancelled' || agent?.status === 'error') return;
 
     // Immediately show pending message in the subagent view
     onInstructionSent?.(text);
@@ -98,7 +100,8 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
   const isActive = effectiveStatus === 'active';
   const isCompleted = effectiveStatus === 'completed';
   const isCancelled = effectiveStatus === 'cancelled';
-  const isTerminal = isCompleted || isCancelled;
+  const isError = effectiveStatus === 'error';
+  const isTerminal = isCompleted || isCancelled || isError;
 
   // Extract task ID from display ID (e.g. "Task-k7Xm2p" -> "k7Xm2p")
   const taskId = agent.name?.replace('Task-', '') || null;
@@ -119,6 +122,9 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
     if (isCancelled) {
       return <StopCircle className="h-4 w-4" style={{ color: 'var(--color-text-tertiary)' }} />;
     }
+    if (isError) {
+      return <AlertCircle className="h-4 w-4" style={{ color: 'var(--color-danger, #c43d3d)' }} />;
+    }
     return <Circle className="h-4 w-4" style={{ color: 'var(--color-icon-muted)' }} />;
   };
 
@@ -134,6 +140,9 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
     }
     if (isCancelled) {
       return 'Stopped';
+    }
+    if (isError) {
+      return 'Failed';
     }
     if (isActive) {
       return 'Running';
@@ -238,8 +247,9 @@ function SubagentStatusBar({ agent, threadId, onInstructionSent }: SubagentStatu
         </div>
       </div>
 
-      {/* Expandable instruction input */}
-      {inputOpen && (
+      {/* Expandable instruction input — canSend gates it so an input left
+          open when the task reaches terminal (e.g. errors) disappears. */}
+      {inputOpen && canSend && (
         <div
           className="flex items-center gap-2 px-3 py-2 rounded-lg"
           style={{

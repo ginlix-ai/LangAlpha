@@ -335,6 +335,12 @@ async def _run_background_task(
                 else ("completed" if ledger_status == "completed" else "error")
             )
             run_finalized = False
+            # False only when this coroutine provably lost the terminal CAS
+            # to a recovery finalizer (whose run_end is already appended).
+            # A finalize *exception* keeps it True: the row is still open,
+            # this writer still owns the stream, and recovery will append
+            # run_end after whatever it writes.
+            cas_applied = True
             if run_ledger is not None and task.task_run_id:
                 try:
                     finalized = await run_ledger.finalize_task_run(
@@ -350,6 +356,7 @@ async def _run_background_task(
                         defer_run_end=True,
                     )
                     run_finalized = True
+                    cas_applied = bool(finalized.get("applied"))
                     row_status = (finalized.get("run") or {}).get("status")
                     if row_status:
                         terminal_status = str(row_status)
@@ -374,13 +381,19 @@ async def _run_background_task(
             # otherwise sit in Redis until TTL. Sweep it into
             # steering_returned events (after the terminal meta, so producers
             # that re-check status can no longer enqueue behind the sweep).
-            if task.task_run_id:
+            # A lost CAS skips the sweep: the recovery winner's run_end is
+            # already on the stream, and frames appended after it are never
+            # read — worse, they'd bait append_run_end's tail check into a
+            # second terminal frame. That steering TTLs out with the queue.
+            if task.task_run_id and cas_applied:
                 await _return_unconsumed_steering(registry, task)
             # The cursor-bearing run_end closes the v2 run stream — only
-            # after a durable CAS (a still-open row must stay probe-visible)
-            # and only on a healthy transport: a torn stream resolves via
-            # the ledger backstop + replay, never reads as complete.
-            if run_finalized and not task.redis_write_failed:
+            # after a durable CAS won by THIS writer (a lost CAS means the
+            # recovery finalizer already appended it; a still-open row must
+            # stay probe-visible) and only on a healthy transport: a torn
+            # stream resolves via the ledger backstop + replay, never reads
+            # as complete.
+            if run_finalized and cas_applied and not task.redis_write_failed:
                 try:
                     await run_ledger.append_run_end(
                         task.task_run_id,

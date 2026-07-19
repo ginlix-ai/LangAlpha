@@ -1,5 +1,5 @@
 import React from 'react';
-import { Check, Loader2, ArrowRight, ChevronRight, RotateCw, RefreshCw, StopCircle } from 'lucide-react';
+import { AlertCircle, Check, Loader2, ArrowRight, ChevronRight, RotateCw, RefreshCw, StopCircle } from 'lucide-react';
 import { compactNumber } from '@/lib/format';
 import { type SubagentTokenUsage } from '../utils/tokenUsage';
 import { useSubagentTelemetry } from './SubagentTelemetryContext';
@@ -84,29 +84,33 @@ function SubagentTaskMessageContent({
   // A cancelled subagent is terminal like completed (workflow stopped) — it may
   // still have captured partial output worth viewing.
   const isCancelled = status === 'cancelled';
+  const isError = status === 'error';
   const hasResult = (isCompleted || isCancelled) && toolCallProcess?.toolCallResult?.content;
   const summary = summarize(description);
 
   // Status discriminator — drives icon, label, and accent color.
   // Updated/Resumed share the warning-amber treatment with Running because
   // those are all "in-flight or recent change" states; Completed is success;
-  // Cancelled is terminal-neutral (the turn was stopped).
-  const statusKind: 'completed' | 'running' | 'cancelled' | 'updated' | 'resumed' | 'unknown' =
+  // Cancelled is terminal-neutral (the turn was stopped); Failed is danger.
+  const statusKind: 'completed' | 'running' | 'cancelled' | 'error' | 'updated' | 'resumed' | 'unknown' =
     action === 'update' ? 'updated'
     : action === 'resume' ? 'resumed'
     : action === 'init' && isRunning ? 'running'
     : action === 'init' && isCompleted ? 'completed'
     : action === 'init' && isCancelled ? 'cancelled'
+    : action === 'init' && isError ? 'error'
     : 'unknown';
 
   const statusColor =
     statusKind === 'completed' ? 'var(--color-success)'
+    : statusKind === 'error' ? 'var(--color-danger, #c43d3d)'
     : statusKind === 'unknown' || statusKind === 'cancelled' ? 'var(--color-text-tertiary)'
     : 'var(--color-warning)';
 
   const statusLabel =
     statusKind === 'completed' ? 'Completed'
     : statusKind === 'cancelled' ? 'Stopped'
+    : statusKind === 'error' ? 'Failed'
     : statusKind === 'running' ? 'Running'
     : statusKind === 'updated' ? 'Updated'
     : statusKind === 'resumed' ? 'Resumed'
@@ -115,6 +119,7 @@ function SubagentTaskMessageContent({
   const StatusIcon =
     statusKind === 'completed' ? Check
     : statusKind === 'cancelled' ? StopCircle
+    : statusKind === 'error' ? AlertCircle
     : statusKind === 'running' ? Loader2
     : statusKind === 'updated' ? RefreshCw
     : statusKind === 'resumed' ? RotateCw

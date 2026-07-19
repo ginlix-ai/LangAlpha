@@ -787,6 +787,141 @@ async def test_subagent_private_state_and_ui_are_checkpoint_projected(monkeypatc
     assert task_items[4]["data"]["content"] == "task answer"
 
 
+async def test_claimed_run_stamps_projection_watermark(monkeypatch):
+    """A settled ledgered run the build claims stamps its start onto the task
+    artifact (``projected_run_started_ms``) — the client's authority for
+    which runs the payload already contains."""
+    from datetime import datetime, timezone
+
+    started = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    task_artifact = {
+        "task_id": "tsk1",
+        "action": "init",
+        "description": "d",
+        "prompt": "p",
+        "task_run_id": "run-1",
+    }
+    turn_msgs = [
+        AIMessage(
+            content="",
+            id="ai-1",
+            tool_calls=[{"name": "Task", "args": {}, "id": "tc-t"}],
+        ),
+        ToolMessage(
+            content="dispatched",
+            tool_call_id="tc-t",
+            name="Task",
+            id="tm-1",
+            additional_kwargs={"task_artifact": task_artifact},
+        ),
+    ]
+    _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, turn_msgs)]),
+        task_messages=[AIMessage(content="task answer", id="sub-ai-1")],
+    )
+    monkeypatch.setattr(
+        "src.server.services.history.replay.sr_db.list_runs_for_thread",
+        AsyncMock(
+            return_value=[
+                {
+                    "task_run_id": "run-1",
+                    "status": "completed",
+                    "started_at": started,
+                }
+            ]
+        ),
+    )
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0)}
+    )
+    artifacts = [
+        i
+        for i in items
+        if i["event"] == "artifact"
+        and i["data"].get("artifact_type") == "task"
+    ]
+    assert len(artifacts) == 1
+    assert (
+        artifacts[0]["data"]["payload"]["projected_run_started_ms"]
+        == started.timestamp() * 1000.0
+    )
+    # The claimed transcript really is in the payload.
+    assert [
+        i["data"]["content"]
+        for i in items
+        if i["event"] == "message_chunk"
+        and i["data"].get("agent") == "task:tsk1"
+    ] == ["task answer"]
+
+
+async def test_in_progress_run_is_excluded_from_the_watermark(monkeypatch):
+    """A run the build skips (in_progress — its live stream owns it) must not
+    enter the watermark: stamping it would make the client drop the run's
+    later drain even though its transcript was never projected."""
+    from datetime import datetime, timezone
+
+    task_artifact = {
+        "task_id": "tsk1",
+        "action": "init",
+        "description": "d",
+        "prompt": "p",
+        "task_run_id": "run-1",
+    }
+    turn_msgs = [
+        AIMessage(
+            content="",
+            id="ai-1",
+            tool_calls=[{"name": "Task", "args": {}, "id": "tc-t"}],
+        ),
+        ToolMessage(
+            content="dispatched",
+            tool_call_id="tc-t",
+            name="Task",
+            id="tm-1",
+            additional_kwargs={"task_artifact": task_artifact},
+        ),
+    ]
+    reader = _mock_reader(
+        monkeypatch,
+        ThreadHistory(thread_id=THREAD, turns=[_turn(0, turn_msgs)]),
+        task_messages=[AIMessage(content="live text", id="sub-ai-1")],
+    )
+    reader.aget_task_run_stamps = AsyncMock(return_value=["run-1"])
+    monkeypatch.setattr(
+        "src.server.services.history.replay.sr_db.list_runs_for_thread",
+        AsyncMock(
+            return_value=[
+                {
+                    "task_run_id": "run-1",
+                    "status": "in_progress",
+                    "started_at": datetime(2026, 1, 2, tzinfo=timezone.utc),
+                }
+            ]
+        ),
+    )
+
+    items = await build_checkpoint_replay_items(
+        THREAD, [_query(0)], {0: _response(0)}
+    )
+    artifacts = [
+        i
+        for i in items
+        if i["event"] == "artifact"
+        and i["data"].get("artifact_type") == "task"
+    ]
+    assert len(artifacts) == 1
+    assert "projected_run_started_ms" not in artifacts[0]["data"]["payload"]
+    # And the skipped run's transcript stayed out of the payload too.
+    assert not [
+        i
+        for i in items
+        if i["event"] == "message_chunk"
+        and i["data"].get("agent") == "task:tsk1"
+    ]
+
+
 async def test_subagent_checkpoint_read_failure_makes_replay_unavailable(monkeypatch):
     task_artifact = {
         "task_id": "tsk1",
